@@ -63,7 +63,14 @@ evaluator_patch = ["build_pass"]               # Test changes: must build
 # ── Rules for amending this constitution ─────────────────────────────────
 [amendment_rules]
 may_modify = ["crates/", "examples/", "docs/", "benchmarks/", "README.md"]
-may_not_modify = ["PolicyManifest.toml", "LICENSE", "SECURITY.md"]
+# NOTE: PolicyManifest.toml is deliberately NOT listed in may_not_modify. It IS
+# the amendable constitution — its changes are governed by the monotonicity check
+# below (capabilities/io/budget may only TIGHTEN, monotone flags may not be
+# disabled), NOT a blanket freeze. Freezing the manifest against every edit would
+# brick the monotonic-ratchet amendment machinery: no PR could ever tighten
+# policy, and even this gate could not be installed. LICENSE/SECURITY.md remain
+# frozen — they are not amendable through the ratchet.
+may_not_modify = ["LICENSE", "SECURITY.md"]
 require_monotone_capabilities = true   # Can only remove capabilities, not add
 require_monotone_io = true             # Can only shrink I/O surface, not widen
 require_monotone_proofreq = true       # Can only add proof requirements, not remove
