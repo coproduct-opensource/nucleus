@@ -45,14 +45,18 @@ jobs:
         with:
           cache: true
       - name: Extract base manifest + changed files
+        # Pass github.base_ref via env (never interpolate ${{ }} into a run
+        # script — zizmor template-injection / code-injection hardening).
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           # merge_group has no base_ref; in that case base == HEAD~ is irrelevant
           # (the queue already evaluated the PR), so fall back to the current file.
-          if [ -n "${{ github.base_ref }}" ]; then
-            git show "origin/${{ github.base_ref }}:PolicyManifest.toml" > before.toml \
+          if [ -n "$BASE_REF" ]; then
+            git show "origin/$BASE_REF:PolicyManifest.toml" > before.toml \
               || cp PolicyManifest.toml before.toml
-            git diff --name-only "origin/${{ github.base_ref }}...HEAD" > changed.txt
+            git diff --name-only "origin/$BASE_REF...HEAD" > changed.txt
           else
             cp PolicyManifest.toml before.toml
             : > changed.txt
