@@ -30,6 +30,16 @@ pub struct PodSpec {
     /// sets [`ContainmentMode::MicroVM`] once its `SandboxProof` is verified, or
     /// a Tier-1 `--local` run opts into [`ContainmentMode::Unsandboxed`]).
     pub containment: ContainmentMode,
+    /// Third-party artifacts this pod pulls (images/packages/models/MCP servers).
+    /// Each must carry a verified provenance attestation under [`Self::provenance`]
+    /// or the pod refuses to spawn (most-paranoid next-bet #3).
+    pub artifacts: Vec<nucleus_provenance::ArtifactRef>,
+    /// DSSE-signed in-toto attestations covering [`Self::artifacts`].
+    pub attestations: Vec<nucleus_provenance::SignedAttestation>,
+    /// Provenance policy. Fail-closed default
+    /// ([`nucleus_provenance::ProvenancePolicy::Unconfigured`]): declaring an
+    /// artifact with no policy refuses the spawn.
+    pub provenance: nucleus_provenance::ProvenancePolicy,
 }
 
 impl PodSpec {
@@ -37,6 +47,9 @@ impl PodSpec {
     ///
     /// The containment mode defaults to [`ContainmentMode::Unconfigured`]
     /// (fail-closed); callers must declare a posture via [`Self::with_containment`].
+    /// Artifacts default to empty with an `Unconfigured` provenance policy — a
+    /// pod that declares no artifacts is admitted; declaring one without a policy
+    /// is fail-closed.
     pub fn new(policy: PermissionLattice, work_dir: PathBuf, timeout: Duration) -> Self {
         Self {
             policy: policy.normalize(),
@@ -44,6 +57,9 @@ impl PodSpec {
             timeout,
             budget_model: BudgetModel::default(),
             containment: ContainmentMode::Unconfigured,
+            artifacts: Vec::new(),
+            attestations: Vec::new(),
+            provenance: nucleus_provenance::ProvenancePolicy::Unconfigured,
         }
     }
 
@@ -51,6 +67,28 @@ impl PodSpec {
     #[must_use]
     pub fn with_containment(mut self, mode: ContainmentMode) -> Self {
         self.containment = mode;
+        self
+    }
+
+    /// Declare the third-party artifacts + their attestations this pod pulls
+    /// (most-paranoid next-bet #3). Verified against [`Self::provenance`] at
+    /// [`PodRuntime::new`] — fail-closed before any subprocess can spawn.
+    #[must_use]
+    pub fn with_artifacts(
+        mut self,
+        artifacts: Vec<nucleus_provenance::ArtifactRef>,
+        attestations: Vec<nucleus_provenance::SignedAttestation>,
+    ) -> Self {
+        self.artifacts = artifacts;
+        self.attestations = attestations;
+        self
+    }
+
+    /// Declare the provenance policy (trusted attestation keys + allowed
+    /// predicates). Absent ⇒ `Unconfigured` ⇒ any declared artifact refuses spawn.
+    #[must_use]
+    pub fn with_provenance(mut self, policy: nucleus_provenance::ProvenancePolicy) -> Self {
+        self.provenance = policy;
         self
     }
 }
@@ -66,7 +104,32 @@ pub struct PodRuntime {
 
 impl PodRuntime {
     /// Create a new pod runtime from a spec.
+    ///
+    /// **Fail-closed artifact-provenance gate (most-paranoid next-bet #3).**
+    /// Before constructing any sandbox or executor, verify that every declared
+    /// third-party artifact carries a trusted, digest-bound, allowed-predicate
+    /// attestation. A refusal returns [`NucleusError::ProvenanceUnverified`] so
+    /// no process can ever spawn from an unverified supply chain. (The Executor
+    /// re-asserts the resulting verdict at each spawn site as defense-in-depth.)
     pub fn new(spec: PodSpec) -> Result<Self> {
+        if let nucleus_provenance::ProvenanceVerdict::Refused(e) =
+            nucleus_provenance::verify(&spec.artifacts, &spec.attestations, &spec.provenance)
+        {
+            let artifact = match &e {
+                nucleus_provenance::ProvenanceError::NotConfigured { artifact }
+                | nucleus_provenance::ProvenanceError::Missing { artifact }
+                | nucleus_provenance::ProvenanceError::Untrusted { artifact }
+                | nucleus_provenance::ProvenanceError::DigestMismatch { artifact }
+                | nucleus_provenance::ProvenanceError::PredicateRejected { artifact } => {
+                    artifact.clone()
+                }
+            };
+            return Err(crate::error::NucleusError::ProvenanceUnverified {
+                artifact,
+                reason: e.to_string(),
+            });
+        }
+
         let sandbox = Sandbox::new(&spec.policy, &spec.work_dir)?;
         let budget = AtomicBudget::new(&spec.policy.budget);
         let time_guard = MonotonicGuard::new(spec.timeout);
@@ -121,5 +184,64 @@ impl PodRuntime {
         }
 
         executor
+    }
+}
+
+#[cfg(test)]
+mod provenance_gate_tests {
+    use super::*;
+    use nucleus_provenance::{ArtifactKind, ArtifactRef, DigestAlgo, ProvenancePolicy, TrustedKey};
+
+    fn artifact() -> ArtifactRef {
+        ArtifactRef {
+            kind: ArtifactKind::Package,
+            name: "pypi:requests@2.32.0".to_string(),
+            digest_algo: DigestAlgo::Sha256,
+            digest_hex: "deadbeef00".to_string(),
+        }
+    }
+
+    fn spec() -> PodSpec {
+        PodSpec::new(
+            PermissionLattice::default(),
+            std::env::temp_dir(),
+            Duration::from_secs(60),
+        )
+    }
+
+    #[test]
+    fn declared_artifact_without_provenance_policy_refuses_spawn() {
+        // Fail-closed: a declared artifact + Unconfigured (default) policy ⇒ refuse
+        // BEFORE any sandbox/executor is built.
+        let s = spec().with_artifacts(vec![artifact()], vec![]);
+        // (PodRuntime isn't Debug, so match the Result rather than unwrap_err.)
+        assert!(matches!(
+            PodRuntime::new(s),
+            Err(crate::error::NucleusError::ProvenanceUnverified { .. })
+        ));
+    }
+
+    #[test]
+    fn no_artifacts_is_admitted() {
+        // A pod that declares no artifacts spawns normally.
+        assert!(PodRuntime::new(spec()).is_ok());
+    }
+
+    #[test]
+    fn unsigned_declared_artifact_refused_under_required_policy() {
+        let policy = ProvenancePolicy::Required {
+            trusted_keys: vec![TrustedKey {
+                keyid: "k1".to_string(),
+                key: [1u8; 32],
+            }],
+            required_predicates: vec!["https://slsa.dev/provenance/v1".to_string()],
+        };
+        let s = spec()
+            .with_artifacts(vec![artifact()], vec![]) // no attestation supplied
+            .with_provenance(policy);
+        assert!(matches!(
+            PodRuntime::new(s),
+            Err(crate::error::NucleusError::ProvenanceUnverified { .. })
+        ));
     }
 }

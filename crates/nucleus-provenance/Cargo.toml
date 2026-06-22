@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-provenance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Fail-closed third-party artifact provenance verification (DSSE-over-in-toto) for the pod spawn boundary"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "provenance", "slsa", "supply-chain"]
+categories = ["development-tools"]
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

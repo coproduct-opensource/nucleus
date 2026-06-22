@@ -120,6 +120,19 @@ pub enum NucleusError {
         platform: String,
     },
 
+    /// Subprocess execution refused because a declared third-party artifact has
+    /// no verified provenance attestation (most-paranoid next-bet #3). Fail-closed:
+    /// an unsigned / untrusted-key / digest-mismatched / wrong-predicate artifact,
+    /// or any declared artifact under an unconfigured provenance policy, blocks the
+    /// spawn before any process exists.
+    #[error("artifact provenance unverified for '{artifact}': {reason}")]
+    ProvenanceUnverified {
+        /// The artifact that failed provenance verification.
+        artifact: String,
+        /// Why verification refused it.
+        reason: String,
+    },
+
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
