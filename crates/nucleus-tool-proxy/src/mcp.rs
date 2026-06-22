@@ -188,6 +188,25 @@ impl NucleusMcpServer {
         }
     }
 
+    /// Taint a tool RESULT as adversarial (most-paranoid next-bet #2): an
+    /// embedded instruction in the result then cannot drive a subsequent
+    /// privileged action (the next `run`/`git push`/`write`/`create_pr` hits the
+    /// IFC egress gate, since `McpToolResult` is `Adversarial` ⇒ `is_tainted`).
+    ///
+    /// **Opt-in** via `NUCLEUS_PARANOID_TOOL_IO=1`. Off by default because
+    /// blanket-tainting the proxy's own command output makes a session
+    /// "one privileged action then locked" (run-tests → can't commit) — a policy
+    /// choice an operator should make deliberately. The human-authorized
+    /// `cleanse` path clears the taint when on.
+    async fn observe_tool_result(&self) {
+        let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if paranoid {
+            self.observe_flow(NodeKind::McpToolResult).await;
+        }
+    }
+
     /// Check the kernel for a decision on the given operation/subject.
     ///
     /// Constructs an [`ActionTerm`] and routes through [`Kernel::decide_term`],
@@ -452,6 +471,9 @@ impl NucleusMcpServer {
         }) {
             Ok(output) => {
                 self.record_verdict(Operation::RunBash, &subject, VerdictOutcome::Allow);
+                // Most-paranoid #2: command output may carry injected instructions;
+                // taint it (opt-in) so it can't drive a later privileged action.
+                self.observe_tool_result().await;
                 let run_result = RunResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
