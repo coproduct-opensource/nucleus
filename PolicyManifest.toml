@@ -12,7 +12,7 @@
 #
 # The key invariant is MONOTONICITY: agents can only tighten policy, never
 # loosen it. A PR that adds "evil.example.com" to network_allow is blocked.
-# A PR that removes an allowed domain passes. This is enforced by 48 Kani
+# A PR that removes an allowed domain passes. This is enforced by 17 Kani
 # bounded model checking proofs in the constitutional kernel (ck-kernel).
 #
 # To install: https://github.com/apps/constitutional-gate

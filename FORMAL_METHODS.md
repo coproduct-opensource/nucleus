@@ -147,19 +147,31 @@ These are important security properties that have NO formal verification:
 | Layer | Tool | Scope | Bound | Artifacts | CI |
 |-------|------|-------|-------|-----------|-----|
 | Lattice algebra + correspondence | Lean 4 + Mathlib + Aeneas | `CapabilityLevel`, `CapabilityLattice` HeytingAlgebra | Unbounded | 23 theorems | Every PR |
-| Exposure tracker | Lean 4 | `ExposureSet`, `classify_operation`, `should_gate` | Unbounded | 16 theorems | Every PR |
-| IFC labels + flow kernel | Lean 4 | Authority, integrity, Invariant exploit | Unbounded | 20 theorems | Every PR |
-| Flow graph DAG | Lean 4 | Semilattice, label propagation | Unbounded | 15 theorems | Every PR |
-| Declassification rules | Lean 4 | Rule safety properties | Unbounded | 11 theorems | Every PR |
-| Decision logic | Lean 4 | `decide_pure()` correctness | Unbounded | 12 theorems | Every PR |
-| Bridge/correspondence | Lean 4 | Aeneas fn = lattice op | Unbounded | 23 theorems (overlap) | Every PR |
+| Exposure tracker | Lean 4 | `ExposureSet`, `classify_operation`, `should_gate` | Unbounded | 14 theorems | Every PR |
+| IFC labels + flow kernel | Lean 4 | Authority, integrity, Invariant exploit | Unbounded | 39 theorems | Every PR |
+| Flow graph DAG | Lean 4 | Semilattice, label propagation | Unbounded | 15 theorems (†) | Every PR |
+| Declassification rules | Lean 4 | Rule safety properties | Unbounded | 19 theorems | Every PR |
+| Decision logic | Lean 4 | `decide_pure()` correctness | Unbounded | 11 theorems | Every PR |
+| Bridge/correspondence | Lean 4 | Aeneas fn = lattice op | Unbounded | 24 theorems (overlap) | Every PR |
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 harnesses | Every PR |
 | FlowGraph DAG | Kani BMC | Denied-parent, structural invariants | Bounded | 8 harnesses | Every PR |
 | Certificate delegation | Kani BMC | Monotonicity, depth, hash | Bounded | 3 harnesses | Every PR |
 | I/O confinement | Kani BMC | Never→Deny, delegation narrowing | Bounded | 2 harnesses | Every PR |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid | Bounded | ~45 harnesses | PR (fast) + nightly |
 
-**Total: 68 Kani BMC harnesses + 98 Lean 4 theorems = 166 verification artifacts.**
+**Total: 114 Kani BMC harnesses repo-wide** (portcullis 64, portcullis-core 31,
+ck-kernel 17, nucleus-econ-kernels 1, nucleus-audit 1) **+ ~277 kernel-checked
+Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
+the exploratory alignment-tax / cohomology / braid formalizations are
+research-tier and **not discharged** (40 open `sorry` proof holes across 11
+files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
+`portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
+fails if any proof hole appears outside that manifest.
+
+(†) `FlowGraphProofs.lean` uses `native_decide` in 3 of its 15 theorems, which
+trusts the **native compiler** (`Lean.ofReduceBool` axiom) — `sorry`-free but
+outside the pure Lean kernel. The CI gate discloses this via `#print axioms`
+rather than hiding it.
 
 ## Claude Code Hook — What's Verified vs Not
 
@@ -211,9 +223,17 @@ The `nucleus-claude-hook` binary is the user-facing product. Here's what's verif
 ## How to Reproduce
 
 ```bash
-# Lean 4 proofs (requires elan)
+# Lean 4 proofs (requires elan + Mathlib cache)
 cd crates/portcullis-core/lean
-lake build   # All proof files
+lake exe cache get                       # prebuilt Mathlib oleans (~5 min)
+lake build PortcullisCoreBridge FlowProofs ExposureProofs DeclassifyProofs \
+           DecidePureProofs CompartmentProofs DelegationProofs DerivationProofs \
+           FlowGraphProofs IFCSemilatticeProofs IntegrityNoninterferenceExtracted \
+           SemanticIFC ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary \
+           BelnapDecisionProofs                # ... the proven tier (CONJECTURES.md, Tier 1)
+# A bare `lake build` of the WHOLE tree also compiles the research libs, but it
+# exits 0 even with open holes, because `sorry` is a WARNING, not an error. Do
+# NOT use a bare whole-tree build as a regression gate — use the proof-hole scan.
 
 # Kani BMC (requires kani toolchain)
 cargo kani -p portcullis --solver cadical
@@ -221,9 +241,13 @@ cargo kani -p portcullis --solver cadical
 # Aeneas pipeline (requires Nix or manual Charon/Aeneas install)
 ./scripts/aeneas-translate.sh
 
-# Verify no sorry (proof holes)
-grep -rn 'sorry' crates/portcullis-core/lean/ --include='*.lean'
-# Should return only comments, never proof terms
+# Verify no NEW proof hole escaped the research quarantine (what CI actually does):
+#   .github/workflows/portcullis-core-proven-lean.yml strips comments, counts
+#   `sorry`/`admit` tokens per file, and fails if any file NOT listed in
+#   crates/portcullis-core/lean/CONJECTURES.md (Tier 2) has a hole.
+# A bare grep is NOT a hole check — it also matches "no sorry" doc comments:
+grep -rn 'sorry' crates/portcullis-core/lean/ --include='*.lean' | wc -l
+# ~100 raw occurrences; only 40 are actual proof terms, all in the 11 research files.
 
 # Assurance report
 cargo run -p nucleus-audit -- assurance --project-dir .
@@ -246,7 +270,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 162K LOC, 1,443 tests, 297 Verus VCs, 112 Kani BMC proofs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | ~165K LOC, 64 Kani BMC proofs in the `portcullis` crate (114 repo-wide), Lean 4 lattice/IFC proofs, proptest conformance suite. (Verus removed — see note below.) |
 | **Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, Lean proofs for delegation narrowing |
@@ -282,20 +306,25 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 
 | Tool | Type | Count | What It Proves |
 |------|------|-------|----------------|
-| **Lean 4 + Mathlib** | Unbounded, kernel-checked | 165 theorems | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
-| **Kani** | Bounded model checking | 112 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
-| **Verus** | SMT (Z3) | 297 VCs | Lattice laws, nucleus operator, Heyting adjunction, Galois connections, graded monad |
-| **Proptest** | Property-based testing | 130+ invariants | Full PermissionLattice composition |
+| **Lean 4 + Mathlib** | Unbounded, kernel-checked | ~277 theorems (security core; `sorry`-free, CI-gated) | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
+| **Kani** | Bounded model checking | 114 harnesses repo-wide (portcullis 64, portcullis-core 31, ck-kernel 17, +2) | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
+| **Proptest** | Property-based testing | ~47 suites incl. `verus_conformance.rs` | Full PermissionLattice composition (the surviving "Verus" artifact — property tests, not SMT) |
 | **Red team** | Adversarial testing | 162 scenarios | OWASP LLM Top 10, DPI flow attacks, delegation chain attacks |
+
+> **Verus has been removed** from the workspace. Earlier revisions of this doc
+> cited "297 Verus VCs"; there is no `verus!` macro, no `crates/portcullis-verified`,
+> and no `verus.yml` workflow. The lattice/Heyting/Galois guarantees it once
+> carried are now proved in Lean 4 and cross-checked by the `verus_conformance.rs`
+> proptest suite.
 
 ## Permission Lattice Algebra
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
-| **Quotient Lattice** | Uninhabitable state detection as a structural nucleus operator | Verified (Verus) |
-| **Heyting Algebra** | Conditional permissions with formal semantics | Verified (Verus + Lean) |
-| **Galois Connections** | Policy translation across trust domains | Verified (Verus) |
-| **Graded Monad** | Risk accumulation through computation chains | Verified (Verus) |
+| **Quotient Lattice** | Uninhabitable state detection as a structural nucleus operator | Verified (Lean) + conformance (proptest) |
+| **Heyting Algebra** | Conditional permissions with formal semantics | Verified (Lean) |
+| **Galois Connections** | Policy translation across trust domains | Verified (Lean) + conformance (proptest) |
+| **Graded Monad** | Risk accumulation through computation chains | Conformance (proptest) |
 | **Deep Packet Inspection** | DerivationClass, EffectKind, StorageLane, FieldEnvelope, WitnessBundle | Verified (Kani + Lean) |
 | **Attenuation Tokens** | Compact delegation credentials for wire transport | Verified (Kani D1-D7) |
 | **Exposure Invariants** | Exposure-set monotonicity, uninhabitable state iff count==3 | Verified (Kani B1-B9) |
