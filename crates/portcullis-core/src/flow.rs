@@ -34,6 +34,12 @@ pub enum NodeKind {
     ToolResponse,
     /// Web content — public, adversarial, no authority.
     WebContent,
+    /// MCP tool result from an UPSTREAM / untrusted tool (most-paranoid
+    /// next-bet #2). **Adversarial** integrity (like web content): an embedded
+    /// instruction in a tool result must not be able to drive a subsequent
+    /// privileged action. Distinct from `ToolResponse` (the proxy's own trusted
+    /// tool output, merely `Untrusted`), so it actually trips `is_tainted`.
+    McpToolResult,
     /// Memory entry — internal, untrusted, informational authority.
     MemoryRead,
     /// Memory write — outbound action that persists data.
@@ -146,6 +152,7 @@ impl NodeKind {
             "user_prompt" => Self::UserPrompt,
             "tool_response" => Self::ToolResponse,
             "web_content" => Self::WebContent,
+            "mcp_tool_result" => Self::McpToolResult,
             "memory_read" => Self::MemoryRead,
             "memory_write" => Self::MemoryWrite,
             "file_read" => Self::FileRead,
@@ -175,6 +182,7 @@ impl NodeKind {
             Self::UserPrompt => 0,
             Self::ToolResponse => 1,
             Self::WebContent => 2,
+            Self::McpToolResult => 20,
             Self::MemoryRead => 3,
             Self::MemoryWrite => 4,
             Self::FileRead => 5,
@@ -202,6 +210,7 @@ impl NodeKind {
             Self::UserPrompt => "user_prompt",
             Self::ToolResponse => "tool_response",
             Self::WebContent => "web_content",
+            Self::McpToolResult => "mcp_tool_result",
             Self::MemoryRead => "memory_read",
             Self::MemoryWrite => "memory_write",
             Self::FileRead => "file_read",
@@ -268,6 +277,9 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
         NodeKind::UserPrompt => IFCLabel::user_prompt(now),
         NodeKind::ToolResponse => IFCLabel::tool_response(now),
         NodeKind::WebContent => IFCLabel::web_content(now),
+        // Upstream/untrusted MCP tool result: adversarial, exactly like web
+        // content (public, adversarial integrity, no authority).
+        NodeKind::McpToolResult => IFCLabel::web_content(now),
         NodeKind::MemoryRead => IFCLabel::memory_entry(now),
         NodeKind::MemoryWrite => IFCLabel {
             confidentiality: ConfLevel::Internal,

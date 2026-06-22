@@ -130,6 +130,7 @@ fn prov_category(kind: NodeKind) -> ProvCategory {
         // Entities: data that exists
         NodeKind::FileRead
         | NodeKind::WebContent
+        | NodeKind::McpToolResult
         | NodeKind::MemoryRead
         | NodeKind::EnvVar
         | NodeKind::Secret
@@ -193,6 +194,7 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::UserPrompt => "UserPrompt",
         NodeKind::ToolResponse => "ToolResponse",
         NodeKind::WebContent => "WebContent",
+        NodeKind::McpToolResult => "McpToolResult",
         NodeKind::MemoryRead => "MemoryRead",
         NodeKind::MemoryWrite => "MemoryWrite",
         NodeKind::FileRead => "FileRead",

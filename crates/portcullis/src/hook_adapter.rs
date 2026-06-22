@@ -147,6 +147,7 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
             SourceCategory::Trusted
         }
         NodeKind::WebContent
+        | NodeKind::McpToolResult
         | NodeKind::CachedDatum
         | NodeKind::ImageContent
         | NodeKind::AudioContent

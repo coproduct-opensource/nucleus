@@ -796,6 +796,32 @@ mod tests {
     }
 
     #[test]
+    fn mcp_tool_result_is_adversarial_and_taints() {
+        // most-paranoid #2: an upstream/untrusted MCP tool result is adversarial
+        // (like web content) and taints the session — distinct from the proxy's
+        // own ToolResponse, which is merely Untrusted and does NOT taint.
+        use crate::flow::intrinsic_label;
+        assert_eq!(
+            intrinsic_label(NodeKind::McpToolResult, 0).integrity,
+            IntegLevel::Adversarial
+        );
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::McpToolResult).unwrap();
+        assert!(
+            t.is_tainted(),
+            "an untrusted tool result must taint the session"
+        );
+
+        // The distinction that motivates the new kind: ToolResponse does NOT taint.
+        let mut clean = FlowTracker::new();
+        clean.observe(NodeKind::ToolResponse).unwrap();
+        assert!(
+            !clean.is_tainted(),
+            "trusted proxy tool output must not taint"
+        );
+    }
+
+    #[test]
     fn parent_not_found_error() {
         let mut t = FlowTracker::new();
         let err = t

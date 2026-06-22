@@ -201,6 +201,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tainted_mcp_tool_result_blocks_privileged_action() {
+        // most-paranoid #2: a tainted (adversarial) MCP tool result must block a
+        // subsequent privileged outbound action via the live egress gate.
+        use portcullis_core::flow::NodeKind;
+        use portcullis_core::ifc_api::FlowTracker;
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::McpToolResult).unwrap();
+        assert!(
+            ifc_egress_denial(&flow, Operation::GitPush, NodeKind::OutboundAction).is_some(),
+            "tainted tool result must block git push"
+        );
+        assert!(
+            ifc_egress_denial(&flow, Operation::RunBash, NodeKind::OutboundAction).is_some(),
+            "tainted tool result must block a subsequent run"
+        );
+        // Negative control (honest scoping): WebFetch is classified as a SOURCE
+        // (WebContent), not a gated sink, so taint does not block it — web egress
+        // is governed by the DNS/URL allowlist instead.
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebFetch, NodeKind::WebContent).is_none(),
+            "web_fetch is a source, not a taint-gated sink"
+        );
+    }
+
+    #[test]
     fn test_classify_operation_coverage() {
         // Every operation variant maps to something
         let ops = [
