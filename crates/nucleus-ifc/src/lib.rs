@@ -55,9 +55,35 @@ pub mod decision;
 #[cfg(feature = "decision")]
 pub use decision::{DeclaredInput, FlowDeclaration, IfcVerdict};
 
+/// Whether an egress action must be **blocked** given the chain's effective
+/// integrity (a snake_case [`IntegLevel`] token: `"trusted"` / `"untrusted"` /
+/// `"adversarial"`).
+///
+/// This is the **single source** of the egress-gate rule — imported by both the
+/// gateway gate (the producer, which rejects the call) and
+/// `nucleus_recompute::verify_ifc_flow` (the verifier, which re-derives the
+/// verdict offline). One definition shared across producer and verifier is what
+/// makes the recomputed verdict trustworthy.
+///
+/// **Fail-closed:** an unrecognized token blocks. `"untrusted"` (e.g. ordinary
+/// tool responses) is permitted to egress, matching the proxy's deployed rule;
+/// a per-tool `requires_integrity = trusted` refinement is future work.
+pub fn egress_blocked_by_integrity(effective_integrity: &str) -> bool {
+    !matches!(effective_integrity, "trusted" | "untrusted")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn egress_gate_rule_is_fail_closed() {
+        assert!(!egress_blocked_by_integrity("trusted"), "clean egress allowed");
+        assert!(!egress_blocked_by_integrity("untrusted"), "untrusted permitted (proxy parity)");
+        assert!(egress_blocked_by_integrity("adversarial"), "adversarial blocked");
+        assert!(egress_blocked_by_integrity("garbage_token"), "unknown token fail-closed blocks");
+        assert!(egress_blocked_by_integrity(""), "empty fail-closed blocks");
+    }
 
     // ── Basic flow tracking ───────────────────────────────────────────────────
 

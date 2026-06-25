@@ -151,6 +151,16 @@ pub fn canonical_edge_bytes(edge: &LineageEdge, prev_hash: Option<&[u8; 32]>) ->
         push_opt(&mut out, va.vrf_params_hash.as_deref());
         push_opt(&mut out, va.external_snapshot_root.as_deref());
         push_opt(&mut out, va.lean_spec_hash.as_deref());
+        // IFC egress-gate co-commit. ADDITIVE — do NOT use `push_opt` (which
+        // always emits a NUL): emit nothing unless this hop was an egress-gate
+        // point, so every pre-existing VA-bearing edge stays byte-identical and
+        // its signature still verifies. (Verified by the additive-compat golden
+        // test below.)
+        if let Some(integ) = va.ifc_gated_effective_integrity.as_deref() {
+            out.push(0);
+            out.extend_from_slice(integ.as_bytes());
+            out.push(0);
+        }
     }
 
     out
@@ -312,6 +322,52 @@ mod tests {
         let bytes_none = canonical_edge_bytes(&edge, None);
         let bytes_some = canonical_edge_bytes(&edge, Some(&[0xAA; 32]));
         assert_ne!(bytes_none, bytes_some);
+    }
+
+    /// Additive-compat golden for the IFC egress co-commit (THE trap this rung
+    /// exists to avoid): adding `ifc_gated_effective_integrity` must emit ZERO
+    /// bytes when `None`, so every pre-existing VA-bearing edge canonicalizes
+    /// byte-identically and its signature still verifies. We prove it by showing
+    /// the `None` encoding is a strict PREFIX of the `Some` encoding (the VA
+    /// block is the last thing emitted), and the delta is exactly the gated
+    /// field.
+    #[test]
+    fn egress_cocommit_is_purely_additive() {
+        use crate::edge::VerifierAttestation;
+        let p = pod();
+        let child = p.derive_tool("web_post", Some(b"x")).unwrap();
+        let va_base = VerifierAttestation::new().with_lean_spec_hash("deadbeef");
+        // Build ONE edge, then clone + swap only the VA's egress field — so `ts`
+        // (stamped at construction) is identical and the only difference is the
+        // co-commit field.
+        let edge_none = LineageEdge::from_parent(
+            child,
+            p,
+            EdgeKind::ToolCall {
+                tool: "web_post".to_string(),
+            },
+        )
+        .with_verifier_attestation(va_base.clone());
+        let mut edge_some = edge_none.clone();
+        edge_some.verifier_attestation =
+            Some(va_base.with_ifc_gated_effective_integrity("trusted"));
+
+        let bytes_none = canonical_edge_bytes(&edge_none, None);
+        let bytes_some = canonical_edge_bytes(&edge_some, None);
+
+        // `None` adds nothing; `Some` appends exactly `\0trusted\0`.
+        assert!(
+            bytes_some.starts_with(&bytes_none),
+            "the absent-field encoding must be a prefix => purely additive"
+        );
+        let mut expected_delta = vec![0u8];
+        expected_delta.extend_from_slice(b"trusted");
+        expected_delta.push(0);
+        assert_eq!(
+            &bytes_some[bytes_none.len()..],
+            &expected_delta[..],
+            "the only added bytes are the gated field's"
+        );
     }
 
     #[test]
