@@ -75,6 +75,19 @@ pub struct VerifierAttestation {
     /// rides in `canonical_edge_bytes`), so it cannot be altered post-signing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ifc_gated_effective_integrity: Option<String>,
+    /// The chain's **running effective integrity** as the runner attests it on a
+    /// summary edge — the *input* the egress gate evaluates (distinct from
+    /// [`Self::ifc_gated_effective_integrity`], which is the gate's *output*).
+    /// Signing it here (it rides in `canonical_edge_bytes`) makes the label
+    /// **tamper-evident + runner-attested** instead of an unsigned `attrs` entry
+    /// an attacker could downgrade. `nucleus_recompute::verify_ifc_flow_consistent`
+    /// cross-checks a child's gate-output against the parent's signed value here.
+    ///
+    /// HONEST SCOPE: this grounds *who attested the label* (non-repudiable), NOT
+    /// the label's *truth/completeness* — a compromised/under-declaring runner can
+    /// sign a false label. Grounding truth is a separate (Level-2) rung.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ifc_effective_integrity: Option<String>,
 }
 
 impl VerifierAttestation {
@@ -126,6 +139,13 @@ impl VerifierAttestation {
         self
     }
 
+    /// Builder: attest the chain's running effective integrity (the gate input).
+    /// See the field docs.
+    pub fn with_ifc_effective_integrity(mut self, integ: impl Into<String>) -> Self {
+        self.ifc_effective_integrity = Some(integ.into());
+        self
+    }
+
     /// `true` iff every field is `None`. Used by verifiers in strict mode
     /// to reject edges that claim economic semantics without attestation.
     pub fn is_empty(&self) -> bool {
@@ -136,6 +156,7 @@ impl VerifierAttestation {
             && self.external_snapshot_root.is_none()
             && self.lean_spec_hash.is_none()
             && self.ifc_gated_effective_integrity.is_none()
+            && self.ifc_effective_integrity.is_none()
     }
 }
 

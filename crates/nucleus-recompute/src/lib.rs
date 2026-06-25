@@ -751,6 +751,46 @@ pub fn verify_ifc_flow(gated_effective_integrity: Option<&str>) -> IfcFlowOutcom
     }
 }
 
+/// Cross-check a hop's gate **output** against the **input** the runner signed
+/// upstream: the child edge's `ifc_gated_effective_integrity` (the value the
+/// gateway co-committed it gated on) must equal the parent edge's signed
+/// `ifc_effective_integrity` (the running integrity the runner attested). A
+/// mismatch means the gate evaluated a *different* value than was signed upstream
+/// — e.g. someone fed the gate a downgraded label — so the hop is rejected even
+/// if it is internally allow-consistent.
+///
+/// This binds gate-input(runner-signed) to gate-output(gateway-signed) across the
+/// hop. It still does NOT ground either value's *truth* (a compromised runner can
+/// sign a consistent-but-false pair) — that is the separate Level-2 rung.
+///
+/// `child_gated == None` ⇒ [`IfcFlowOutcome::NotGated`] (not an egress hop, the
+/// cross-check is vacuous). Otherwise the egress hop must both be allow-consistent
+/// (via [`verify_ifc_flow`]) AND match the parent's signed integrity.
+pub fn verify_ifc_flow_consistent(
+    child_gated: Option<&str>,
+    parent_effective: Option<&str>,
+) -> IfcFlowOutcome {
+    match child_gated {
+        None => IfcFlowOutcome::NotGated,
+        Some(g) => {
+            // First: the gated value must itself satisfy the allow-rule.
+            match verify_ifc_flow(Some(g)) {
+                IfcFlowOutcome::Allow => {
+                    // Then: it must equal what the runner signed upstream.
+                    if parent_effective == Some(g) {
+                        IfcFlowOutcome::Allow
+                    } else {
+                        IfcFlowOutcome::Inconsistent {
+                            effective_integrity: g.to_string(),
+                        }
+                    }
+                }
+                other => other, // already Inconsistent (adversarial / unknown)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod ifc_flow_tests {
     use super::*;
@@ -799,5 +839,51 @@ mod ifc_flow_tests {
             let consistent = verify_ifc_flow(Some(tok)).is_consistent();
             assert_eq!(consistent, !blocked, "drift for token {tok:?}");
         }
+    }
+
+    // ── cross-check: gate output (child) vs runner-signed input (parent) ──
+
+    #[test]
+    fn cross_check_non_egress_child_is_not_gated() {
+        assert_eq!(
+            verify_ifc_flow_consistent(None, Some("trusted")),
+            IfcFlowOutcome::NotGated
+        );
+    }
+
+    #[test]
+    fn cross_check_matching_signed_input_is_allow() {
+        // anti-vacuity: an honest hop (gate allowed "trusted", parent signed
+        // "trusted") must be accepted.
+        assert_eq!(
+            verify_ifc_flow_consistent(Some("trusted"), Some("trusted")),
+            IfcFlowOutcome::Allow
+        );
+    }
+
+    #[test]
+    fn cross_check_rejects_input_output_mismatch() {
+        // The gate co-committed "trusted" but the runner signed "adversarial"
+        // upstream — the gate evaluated a downgraded value. Reject.
+        match verify_ifc_flow_consistent(Some("trusted"), Some("adversarial")) {
+            IfcFlowOutcome::Inconsistent {
+                effective_integrity,
+            } => {
+                assert_eq!(effective_integrity, "trusted");
+            }
+            other => panic!("expected Inconsistent, got {other:?}"),
+        }
+        // Also reject when the parent didn't sign an effective integrity at all
+        // (can't confirm the gate input).
+        assert!(!verify_ifc_flow_consistent(Some("trusted"), None).is_consistent());
+    }
+
+    #[test]
+    fn cross_check_inherits_allow_rule() {
+        // A child gated on "adversarial" is rejected by the allow-rule before the
+        // input/output comparison even matters.
+        assert!(
+            !verify_ifc_flow_consistent(Some("adversarial"), Some("adversarial")).is_consistent()
+        );
     }
 }
