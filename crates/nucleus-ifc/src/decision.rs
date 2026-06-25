@@ -246,9 +246,152 @@ impl IfcVerdict {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Proof-carrying decision — the per-decision conformance certificate.
+//
+// Proof-Carrying Code applied to ONE decision against the IFC-down-flow
+// obligation Φ. The (untrusted, possibly backdoored) model is the PROVER; it
+// emits a certificate `(spec, declaration, verdict)`. A small TRUSTED CHECKER
+// (`recheck`) re-derives the verdict — here by RECOMPUTE, since `decide` is
+// deterministic and the obligation is decidable — and admits the action only if
+// it recomputes, names this obligation, and the verdict permits it. A
+// spec-violating action has no admitting certificate, and a forged "allow" is
+// caught by recompute: that is the per-decision *bond*, enforced by logic (a
+// deterministic trigger cannot produce a proof that does not exist), not by
+// incentive.
+//
+// HONESTY BOUNDARY: this bonds the DECIDABLE IFC-down-flow fragment only. An
+// in-policy semantic defection (the in-spec sleeper) carries a *valid*
+// certificate — Φ does not see intent. The checker here is recompute; a
+// Lean-kernel-checked proof term against `IFCSemilatticeProofs` is the stronger
+// follow-on variant. Never read this as "certifies alignment".
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The alignment-spec fragment a [`ConformanceCertificate`] is denominated in.
+/// A stable id so a verifier knows exactly which obligation was checked — never
+/// the word "alignment".
+pub const SPEC_IFC_DOWNFLOW_V1: &str = "ifc-downflow/v1: declared flow is \
+     exfiltration-safe (no adversarial ancestry; no confidentiality up-flow to the sink)";
+
+/// A proof-carrying decision: the declared flow, the verdict, and the named
+/// obligation it claims to satisfy. Serializable so it folds into a signed
+/// receipt and is re-checkable offline by any third party.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceCertificate {
+    /// The obligation Φ this certificate is denominated in (see [`SPEC_IFC_DOWNFLOW_V1`]).
+    pub spec: String,
+    /// The declared data-flow surface of the decision.
+    pub declaration: FlowDeclaration,
+    /// The verdict the (untrusted) producer carried for that declaration.
+    pub verdict: IfcVerdict,
+}
+
+/// The result of independently re-checking a [`ConformanceCertificate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecheckReport {
+    /// Re-running `decide` on the declaration reproduces the carried verdict —
+    /// a forged verdict is caught here (recompute, not trust).
+    pub recomputes: bool,
+    /// The certificate names the obligation this checker actually enforces.
+    pub spec_matches: bool,
+    /// The decision is ADMISSIBLE: it recomputes, the spec matches, and the
+    /// recomputed verdict permits the action. A spec-violating action cannot be
+    /// admissible; a forged "allow" cannot be admissible.
+    pub admissible: bool,
+}
+
+impl FlowDeclaration {
+    /// Produce a proof-carrying decision for the IFC-down-flow obligation: run
+    /// the deterministic gate and bind the verdict to the named spec.
+    pub fn certify(&self) -> ConformanceCertificate {
+        ConformanceCertificate {
+            spec: SPEC_IFC_DOWNFLOW_V1.to_string(),
+            declaration: self.clone(),
+            verdict: self.decide(),
+        }
+    }
+}
+
+impl ConformanceCertificate {
+    /// Independently re-check: recompute `decide` from the declaration and
+    /// confirm it matches the carried verdict, the spec is the one this checker
+    /// enforces, and the verdict admits the action. Why-agnostic: it does not
+    /// matter whether a hostile verdict came from a jailbreak or a backdoor —
+    /// an action that violates Φ has no admitting certificate.
+    pub fn recheck(&self) -> RecheckReport {
+        let recomputed = self.declaration.decide();
+        let recomputes = recomputed == self.verdict;
+        let spec_matches = self.spec == SPEC_IFC_DOWNFLOW_V1;
+        RecheckReport {
+            recomputes,
+            spec_matches,
+            admissible: recomputes && spec_matches && recomputed.is_allow(),
+        }
+    }
+
+    /// Convenience: is this a valid admitting certificate?
+    pub fn admits(&self) -> bool {
+        self.recheck().admissible
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conformance_cert_admits_safe_decision() {
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
+        let r = cert.recheck();
+        assert!(
+            r.recomputes && r.spec_matches && r.admissible,
+            "safe decision must admit: {r:?}"
+        );
+        assert!(cert.admits());
+    }
+
+    #[test]
+    fn conformance_cert_refuses_spec_violating_decision() {
+        // secret -> public egress: decide() denies, so an HONEST cert is non-admissible.
+        let cert = FlowDeclaration::new([DeclaredInput::Secret])
+            .public_sink()
+            .certify();
+        let r = cert.recheck();
+        assert!(r.recomputes, "an honest cert still recomputes faithfully");
+        assert!(
+            !r.admissible,
+            "a spec-violating action must NOT be admitted: {r:?}"
+        );
+    }
+
+    #[test]
+    fn forged_allow_is_caught_by_recompute() {
+        // The EchoLeak exfil shape: adversarial web content into an outbound action.
+        let decl = FlowDeclaration::new([DeclaredInput::WebContent]);
+        let mut cert = decl.certify();
+        assert!(
+            !cert.verdict.is_allow(),
+            "baseline denies adversarial ancestry"
+        );
+        // Forge: claim an allow on a declaration decide() denies.
+        cert.verdict = IfcVerdict::allow(cert.verdict.declared_inputs.clone());
+        let r = cert.recheck();
+        assert!(!r.recomputes, "a forged allow must fail recompute");
+        assert!(!r.admissible, "and therefore must not be admitted: {r:?}");
+    }
+
+    #[test]
+    fn wrong_spec_is_flagged() {
+        let mut cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
+        cert.spec = "some-other-obligation".to_string();
+        let r = cert.recheck();
+        assert!(
+            !r.spec_matches,
+            "a cert for a different obligation can't admit here"
+        );
+        assert!(!r.admissible);
+    }
 
     #[test]
     fn safe_declaration_allows() {
