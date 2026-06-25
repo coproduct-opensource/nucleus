@@ -15,6 +15,11 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
+# Base (default) dep for the IFC egress-gate verdict recompute: `verify_ifc_flow`
+# re-derives the gate verdict via the SINGLE-sourced `egress_blocked_by_integrity`
+# predicate. nucleus-ifc (base, no `decision` feature) is wasm-pure (verified:
+# builds clean to wasm32), so it stays in the wasm-pure default closure.
+nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0" }
 # `envelope` feature only: lift a ClearingReceipt into nucleus-receipt's signed
 # colimit envelope (`Projection::Economic`) and narrow it back out. Optional so
 # the default build — the one the wasm-pure-crates gate compiles — keeps the

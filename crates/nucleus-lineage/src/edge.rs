@@ -65,6 +65,16 @@ pub struct VerifierAttestation {
     /// satisfies (e.g., `formal/Nucleus/Auctions/BudgetConservation.lean`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean_spec_hash: Option<String>,
+    /// Present iff this hop was an IFC egress-gate point (the invoked tool had a
+    /// non-empty `egress_allowlist`) AND the gate ALLOWED it; the value is the
+    /// chain effective integrity the gate evaluated. **Presence encodes "was
+    /// egress-gated"; absence means "not an egress hop."** A signed edge whose
+    /// value is `Some("adversarial")` (or an unrecognized token) is
+    /// self-inconsistent — the gateway would have *denied*, producing no edge —
+    /// which `nucleus_recompute::verify_ifc_flow` flags. Signature-covered (it
+    /// rides in `canonical_edge_bytes`), so it cannot be altered post-signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ifc_gated_effective_integrity: Option<String>,
 }
 
 impl VerifierAttestation {
@@ -109,6 +119,13 @@ impl VerifierAttestation {
         self
     }
 
+    /// Builder: record the IFC egress-gate co-commit (the effective integrity
+    /// the gate allowed this egress hop under). See the field docs.
+    pub fn with_ifc_gated_effective_integrity(mut self, integ: impl Into<String>) -> Self {
+        self.ifc_gated_effective_integrity = Some(integ.into());
+        self
+    }
+
     /// `true` iff every field is `None`. Used by verifiers in strict mode
     /// to reject edges that claim economic semantics without attestation.
     pub fn is_empty(&self) -> bool {
@@ -118,6 +135,7 @@ impl VerifierAttestation {
             && self.vrf_params_hash.is_none()
             && self.external_snapshot_root.is_none()
             && self.lean_spec_hash.is_none()
+            && self.ifc_gated_effective_integrity.is_none()
     }
 }
 

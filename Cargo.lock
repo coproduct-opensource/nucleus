@@ -7055,6 +7055,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-ifc",
  "nucleus-receipt",
  "serde",
  "serde_json",
