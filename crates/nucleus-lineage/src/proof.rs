@@ -161,6 +161,14 @@ pub fn canonical_edge_bytes(edge: &LineageEdge, prev_hash: Option<&[u8; 32]>) ->
             out.extend_from_slice(integ.as_bytes());
             out.push(0);
         }
+        // Runner-attested running effective integrity (the gate INPUT). Same
+        // additive discipline — emit nothing unless `Some`, appended after the
+        // gated-co-commit block — so pre-existing VA edges stay byte-identical.
+        if let Some(integ) = va.ifc_effective_integrity.as_deref() {
+            out.push(0);
+            out.extend_from_slice(integ.as_bytes());
+            out.push(0);
+        }
     }
 
     out
@@ -368,6 +376,38 @@ mod tests {
             &expected_delta[..],
             "the only added bytes are the gated field's"
         );
+    }
+
+    /// Same additive-compat guarantee for the runner-attested
+    /// `ifc_effective_integrity` (the gate-INPUT label): `None` emits zero bytes;
+    /// `Some` appends exactly the field. Guards the same signature-breaking trap.
+    #[test]
+    fn effective_integrity_is_purely_additive() {
+        use crate::edge::VerifierAttestation;
+        let p = pod();
+        let child = p.derive_tool("web_post", Some(b"x")).unwrap();
+        let va_base = VerifierAttestation::new().with_lean_spec_hash("deadbeef");
+        let edge_none = LineageEdge::from_parent(
+            child,
+            p,
+            EdgeKind::ToolCall {
+                tool: "web_post".to_string(),
+            },
+        )
+        .with_verifier_attestation(va_base.clone());
+        let mut edge_some = edge_none.clone();
+        edge_some.verifier_attestation = Some(va_base.with_ifc_effective_integrity("adversarial"));
+
+        let bytes_none = canonical_edge_bytes(&edge_none, None);
+        let bytes_some = canonical_edge_bytes(&edge_some, None);
+        assert!(
+            bytes_some.starts_with(&bytes_none),
+            "absent field => prefix => purely additive"
+        );
+        let mut expected_delta = vec![0u8];
+        expected_delta.extend_from_slice(b"adversarial");
+        expected_delta.push(0);
+        assert_eq!(&bytes_some[bytes_none.len()..], &expected_delta[..]);
     }
 
     #[test]
