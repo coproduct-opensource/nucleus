@@ -31,8 +31,10 @@ The curated functions are UNMODIFIED from Aeneas output — the bodies are byte-
 identical — but we selected which functions to include. CI verifies the Aeneas output
 hasn't drifted from the committed code.
 
-**Note:** The generated Lean code currently has 12 CapabilityLattice fields (missing
-`spawn_agent`). The Rust source has 13. A re-extraction is needed to close this gap.
+**Note:** The generated Lean code now has all 13 `CapabilityLattice` fields (the
+`spawn_agent` re-extraction has landed; committed `generated/Types.lean` and
+`generated/PortcullisCore/Types.lean` match the 13-field Rust source). The aeneas.yml
+"Verify generated Lean matches committed" step gates against any future drift.
 
 ### 2. Exposure Tracker (Lean 4 — unbounded, kernel-checked, hand-written model)
 
@@ -211,9 +213,13 @@ The `nucleus-claude-hook` binary is the user-facing product. Here's what's verif
 4. **No proof of the full `decide()` function.** The kernel calls verified lattice
    and exposure logic, but also checks time, budget, paths, commands (not verified).
 
-5. **The Aeneas-generated Lean code is stale.** The committed Types.lean has 12
-   CapabilityLattice fields; the Rust source has 13 (spawn_agent was added).
-   CI re-extracts and checks, but the committed files need updating.
+5. **Aeneas-generated Lean ⊋ the safety-critical surface (extraction coverage).** The
+   committed `CapabilityLattice` extraction is current — all 13 fields incl. `spawn_agent`,
+   gated fresh by aeneas.yml's "Verify generated Lean matches committed" step. The real
+   residual is *coverage*: `CapabilityLevel`/`CapabilityLattice` are extraction-bound, but
+   `ExposureSet`/`Operation`/`IFCLabel` remain hand-written Lean models (Aeneas can't yet
+   translate their bool-field / large-enum shapes), so ~half the safety surface is
+   model-level, not machine-extracted. Closing that is the open extraction work.
 
 6. **The flow graph in the hook is a DAG, not the full causal graph.** The
    `LeafTracker` assigns parents by source category (trusted vs adversarial).
