@@ -246,9 +246,307 @@ impl IfcVerdict {
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Proof-carrying decision — the per-decision conformance certificate.
+//
+// Proof-Carrying Code applied to ONE decision against the IFC-down-flow
+// obligation Φ. The (untrusted, possibly backdoored) model is the PROVER; it
+// emits a certificate `(spec, declaration, verdict)`. A small TRUSTED CHECKER
+// (`recheck`) re-derives the verdict — here by RECOMPUTE, since `decide` is
+// deterministic and the obligation is decidable — and admits the action only if
+// it recomputes, names this obligation, and the verdict permits it. A
+// spec-violating action has no admitting certificate, and a forged "allow" is
+// caught by recompute: that is the per-decision *bond*, enforced by logic (a
+// deterministic trigger cannot produce a proof that does not exist), not by
+// incentive.
+//
+// HONESTY BOUNDARY: this bonds the DECIDABLE IFC-down-flow fragment only. An
+// in-policy semantic defection (the in-spec sleeper) carries a *valid*
+// certificate — Φ does not see intent. The checker here is recompute; a
+// Lean-kernel-checked proof term against `IFCSemilatticeProofs` is the stronger
+// follow-on variant. Never read this as "certifies alignment".
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The alignment-spec fragment a [`ConformanceCertificate`] is denominated in.
+/// A stable id so a verifier knows exactly which obligation was checked — never
+/// the word "alignment".
+pub const SPEC_IFC_DOWNFLOW_V1: &str = "ifc-downflow/v1: declared flow is \
+     exfiltration-safe (no adversarial ancestry; no confidentiality up-flow to the sink)";
+
+/// A proof-carrying decision: the declared flow, the verdict, and the named
+/// obligation it claims to satisfy. Serializable so it folds into a signed
+/// receipt and is re-checkable offline by any third party.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConformanceCertificate {
+    /// The obligation Φ this certificate is denominated in (see [`SPEC_IFC_DOWNFLOW_V1`]).
+    pub spec: String,
+    /// The declared data-flow surface of the decision.
+    pub declaration: FlowDeclaration,
+    /// The verdict the (untrusted) producer carried for that declaration.
+    pub verdict: IfcVerdict,
+    /// The kernel-checked, CI-gated Lean theorem that *backs* the integrity leg
+    /// of Φ: it proves an allow-verdict cannot coexist with an adversarial-ancestry
+    /// → outbound-sink flow (`portcullis-core/lean` `web_tainted_never_git_pushes`
+    /// / `integrity_sink_never_admitted`, proven over Aeneas-extracted-from-Rust
+    /// code). The runtime still RECOMPUTEs; this names what kernel-proves the
+    /// allow ⇒ non-interference implication. Empty if unbacked.
+    pub backed_by_theorem: String,
+    /// The honest proof scope — carried verbatim so a verifier never over-reads
+    /// the certificate. Distinguishes the extracted-kernel integrity leg from the
+    /// hand-model confidentiality leg, and names the open residuals.
+    pub proof_scope: ProofScope,
+}
+
+/// How strongly a given axis of Φ is backed. Carried on the certificate so the
+/// guarantee is never over-stated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofStatus {
+    /// Kernel-checked in Lean over Aeneas-extracted-from-Rust code (the strongest
+    /// today): the per-step join/flows-to primitive is tied to the binary by
+    /// exhaustive parity to the production label algebra.
+    ExtractedKernelChecked,
+    /// Kernel-checked in Lean over a HAND-WRITTEN model (not extracted): real, but
+    /// the model↔binary correspondence is by structural tests, not extraction.
+    HandModelKernelChecked,
+    /// Backed only by runtime recompute — no kernel theorem.
+    RecomputeOnly,
+}
+
+/// The proof scope of a [`ConformanceCertificate`]'s Φ — honest by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofScope {
+    /// Integrity axis (no adversarial-ancestry → outbound sink).
+    pub integrity_axis: ProofStatus,
+    /// Confidentiality axis (no secret → public down-flow).
+    pub confidentiality_axis: ProofStatus,
+    /// Named open residuals this certificate does NOT cover.
+    pub open_residuals: Vec<String>,
+}
+
+/// The result of independently re-checking a [`ConformanceCertificate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecheckReport {
+    /// Re-running `decide` on the declaration reproduces the carried verdict —
+    /// a forged verdict is caught here (recompute, not trust).
+    pub recomputes: bool,
+    /// The certificate names the obligation this checker actually enforces.
+    pub spec_matches: bool,
+    /// The decision is ADMISSIBLE: it recomputes, the spec matches, and the
+    /// recomputed verdict permits the action. A spec-violating action cannot be
+    /// admissible; a forged "allow" cannot be admissible.
+    pub admissible: bool,
+}
+
+impl FlowDeclaration {
+    /// Produce a proof-carrying decision for the IFC-down-flow obligation: run
+    /// the deterministic gate and bind the verdict to the named spec.
+    pub fn certify(&self) -> ConformanceCertificate {
+        ConformanceCertificate {
+            spec: SPEC_IFC_DOWNFLOW_V1.to_string(),
+            declaration: self.clone(),
+            verdict: self.decide(),
+            backed_by_theorem: "portcullis_core::lean::IntegrityNoninterferenceExtracted::\
+                                 {integrity_sink_never_admitted, web_tainted_never_git_pushes}"
+                .to_string(),
+            proof_scope: ProofScope {
+                // The integrity leg is proven in Lean over Aeneas-extracted-from-Rust
+                // code (CI-gated, axiom set [propext, Classical.choice, Quot.sound]); the
+                // `decide_matches_extracted_integrity_model` test below ties decide()'s
+                // integrity verdict to that extracted primitive over the conf-safe inputs.
+                integrity_axis: ProofStatus::ExtractedKernelChecked,
+                // The confidentiality dual is proven only over a hand model
+                // (formal/Nucleus/HolyGrail/ConfidentialityNoninterference.lean) — real,
+                // but NOT extracted from the running Rust. Stated honestly, never unified.
+                confidentiality_axis: ProofStatus::HandModelKernelChecked,
+                open_residuals: vec![
+                    "the FlowTracker graph-fold loop is hand-written Lean (irun), not extracted".to_string(),
+                    "decide()'s composition is tied to the extracted primitive by sampled parity, not proof".to_string(),
+                    "in-policy semantic malice / the in-spec sleeper carries a valid certificate".to_string(),
+                    "covert/timing channels, label adequacy, and permitted sinks are out of scope".to_string(),
+                ],
+            },
+        }
+    }
+}
+
+impl ConformanceCertificate {
+    /// Independently re-check: recompute `decide` from the declaration and
+    /// confirm it matches the carried verdict, the spec is the one this checker
+    /// enforces, and the verdict admits the action. Why-agnostic: it does not
+    /// matter whether a hostile verdict came from a jailbreak or a backdoor —
+    /// an action that violates Φ has no admitting certificate.
+    pub fn recheck(&self) -> RecheckReport {
+        let recomputed = self.declaration.decide();
+        let recomputes = recomputed == self.verdict;
+        let spec_matches = self.spec == SPEC_IFC_DOWNFLOW_V1;
+        RecheckReport {
+            recomputes,
+            spec_matches,
+            admissible: recomputes && spec_matches && recomputed.is_allow(),
+        }
+    }
+
+    /// Convenience: is this a valid admitting certificate?
+    pub fn admits(&self) -> bool {
+        self.recheck().admissible
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conformance_cert_admits_safe_decision() {
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
+        let r = cert.recheck();
+        assert!(
+            r.recomputes && r.spec_matches && r.admissible,
+            "safe decision must admit: {r:?}"
+        );
+        assert!(cert.admits());
+    }
+
+    #[test]
+    fn conformance_cert_refuses_spec_violating_decision() {
+        // secret -> public egress: decide() denies, so an HONEST cert is non-admissible.
+        let cert = FlowDeclaration::new([DeclaredInput::Secret])
+            .public_sink()
+            .certify();
+        let r = cert.recheck();
+        assert!(r.recomputes, "an honest cert still recomputes faithfully");
+        assert!(
+            !r.admissible,
+            "a spec-violating action must NOT be admitted: {r:?}"
+        );
+    }
+
+    #[test]
+    fn forged_allow_is_caught_by_recompute() {
+        // The EchoLeak exfil shape: adversarial web content into an outbound action.
+        let decl = FlowDeclaration::new([DeclaredInput::WebContent]);
+        let mut cert = decl.certify();
+        assert!(
+            !cert.verdict.is_allow(),
+            "baseline denies adversarial ancestry"
+        );
+        // Forge: claim an allow on a declaration decide() denies.
+        cert.verdict = IfcVerdict::allow(cert.verdict.declared_inputs.clone());
+        let r = cert.recheck();
+        assert!(!r.recomputes, "a forged allow must fail recompute");
+        assert!(!r.admissible, "and therefore must not be admitted: {r:?}");
+    }
+
+    #[test]
+    fn wrong_spec_is_flagged() {
+        let mut cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
+        cert.spec = "some-other-obligation".to_string();
+        let r = cert.recheck();
+        assert!(
+            !r.spec_matches,
+            "a cert for a different obligation can't admit here"
+        );
+        assert!(!r.admissible);
+    }
+
+    #[test]
+    fn certify_carries_backing_theorem_and_honest_scope() {
+        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
+        assert!(cert
+            .backed_by_theorem
+            .contains("integrity_sink_never_admitted"));
+        assert_eq!(
+            cert.proof_scope.integrity_axis,
+            ProofStatus::ExtractedKernelChecked
+        );
+        // The confidentiality leg must be honestly marked hand-model, never unified.
+        assert_eq!(
+            cert.proof_scope.confidentiality_axis,
+            ProofStatus::HandModelKernelChecked
+        );
+        assert!(
+            !cert.proof_scope.open_residuals.is_empty(),
+            "must name its residuals"
+        );
+    }
+
+    /// The bridge that makes `backed_by_theorem` real (not ceremony): the production
+    /// `decide()` integrity verdict matches the Aeneas-extracted, Lean-kernel-proven
+    /// integrity model (`portcullis_core::extracted::ifc_integrity`), EXHAUSTIVELY over
+    /// the inputs whose intrinsic confidentiality is ≤ Internal and whose integrity is
+    /// Trusted or Adversarial. That restriction isolates the integrity axis (a non-public
+    /// sink's confidentiality conjunct never trips) and sidesteps the Untrusted tier, so
+    /// `decide().allow ⟺ no adversarial ancestry` — exactly what `integrity_sink_never_admitted`
+    /// proves.
+    #[test]
+    fn decide_matches_extracted_integrity_model() {
+        use portcullis_core::extracted::ifc_integrity as ext;
+        use portcullis_core::flow::intrinsic_label;
+        use portcullis_core::{ConfLevel, IntegLevel};
+
+        fn to_ext(i: IntegLevel) -> ext::IntegLevel {
+            match i {
+                IntegLevel::Adversarial => ext::IntegLevel::Adversarial,
+                IntegLevel::Untrusted => ext::IntegLevel::Untrusted,
+                IntegLevel::Trusted => ext::IntegLevel::Trusted,
+            }
+        }
+
+        let all = [
+            DeclaredInput::UserPrompt,
+            DeclaredInput::WebContent,
+            DeclaredInput::ToolResponse,
+            DeclaredInput::FileRead,
+            DeclaredInput::EnvVar,
+            DeclaredInput::Secret,
+            DeclaredInput::DatabaseRow,
+            DeclaredInput::MemoryRead,
+            DeclaredInput::HttpResponse,
+        ];
+        let inputs: Vec<DeclaredInput> = all
+            .into_iter()
+            .filter(|i| {
+                let l = intrinsic_label(i.node_kind(), 0);
+                l.confidentiality <= ConfLevel::Internal
+                    && matches!(l.integrity, IntegLevel::Trusted | IntegLevel::Adversarial)
+            })
+            .collect();
+        let n = inputs.len();
+        assert!(
+            n >= 2,
+            "need a mix of trusted+adversarial conf-safe inputs, got {n}"
+        );
+
+        let mut checked = 0u64;
+        for mask in 0u32..(1u32 << n) {
+            let subset: Vec<DeclaredInput> = (0..n)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| inputs[i])
+                .collect();
+            if subset.len() > 8 {
+                continue; // engine fan-in bound
+            }
+            // Extracted, kernel-proven integrity model: fold imeet from Trusted, then
+            // iflows_to the OutboundAction sink's required integrity (Trusted).
+            let mut acc = ext::IntegLevel::Trusted;
+            for &inp in &subset {
+                acc = ext::imeet(acc, to_ext(intrinsic_label(inp.node_kind(), 0).integrity));
+            }
+            let model_admits = ext::iflows_to(acc, ext::IntegLevel::Trusted);
+            // Production decide() over a non-public, no-authority sink — conf-safe by
+            // construction, so the verdict is integrity-determined.
+            let prod_allows = FlowDeclaration::new(subset.clone()).decide().is_allow();
+            assert_eq!(
+                prod_allows, model_admits,
+                "decide() integrity verdict diverged from the extracted Lean model: \
+                 subset={subset:?} prod={prod_allows} model={model_admits}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no conf-safe subsets enumerated");
+    }
 
     #[test]
     fn safe_declaration_allows() {
