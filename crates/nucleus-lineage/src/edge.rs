@@ -88,6 +88,15 @@ pub struct VerifierAttestation {
     /// sign a false label. Grounding truth is a separate (Level-2) rung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ifc_effective_integrity: Option<String>,
+    /// The chain's **running effective confidentiality** as the runner (or the
+    /// gateway, on a delegation hop) attests it — the *input* the confidentiality
+    /// ceiling check evaluates. Signing it here (it rides in `canonical_edge_bytes`)
+    /// makes it **tamper-evident + attested** instead of an unsigned `attrs` entry
+    /// an attacker could downgrade `secret`→`public`. Same honest scope as
+    /// [`Self::ifc_effective_integrity`]: grounds *who attested*, not the label's
+    /// truth/completeness (Level-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ifc_effective_confidentiality: Option<String>,
 }
 
 impl VerifierAttestation {
@@ -146,6 +155,13 @@ impl VerifierAttestation {
         self
     }
 
+    /// Builder: attest the chain's running effective confidentiality (the ceiling
+    /// check's input). See the field docs.
+    pub fn with_ifc_effective_confidentiality(mut self, conf: impl Into<String>) -> Self {
+        self.ifc_effective_confidentiality = Some(conf.into());
+        self
+    }
+
     /// `true` iff every field is `None`. Used by verifiers in strict mode
     /// to reject edges that claim economic semantics without attestation.
     pub fn is_empty(&self) -> bool {
@@ -157,6 +173,7 @@ impl VerifierAttestation {
             && self.lean_spec_hash.is_none()
             && self.ifc_gated_effective_integrity.is_none()
             && self.ifc_effective_integrity.is_none()
+            && self.ifc_effective_confidentiality.is_none()
     }
 }
 
