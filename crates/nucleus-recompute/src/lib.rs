@@ -774,7 +774,9 @@ mod ifc_flow_tests {
         // A signed edge claiming an allowed egress under adversarial integrity is
         // self-inconsistent — the gateway would have denied before signing.
         match verify_ifc_flow(Some("adversarial")) {
-            IfcFlowOutcome::Inconsistent { effective_integrity } => {
+            IfcFlowOutcome::Inconsistent {
+                effective_integrity,
+            } => {
                 assert_eq!(effective_integrity, "adversarial");
             }
             other => panic!("expected Inconsistent, got {other:?}"),

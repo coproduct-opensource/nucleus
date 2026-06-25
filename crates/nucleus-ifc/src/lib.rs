@@ -78,10 +78,22 @@ mod tests {
 
     #[test]
     fn egress_gate_rule_is_fail_closed() {
-        assert!(!egress_blocked_by_integrity("trusted"), "clean egress allowed");
-        assert!(!egress_blocked_by_integrity("untrusted"), "untrusted permitted (proxy parity)");
-        assert!(egress_blocked_by_integrity("adversarial"), "adversarial blocked");
-        assert!(egress_blocked_by_integrity("garbage_token"), "unknown token fail-closed blocks");
+        assert!(
+            !egress_blocked_by_integrity("trusted"),
+            "clean egress allowed"
+        );
+        assert!(
+            !egress_blocked_by_integrity("untrusted"),
+            "untrusted permitted (proxy parity)"
+        );
+        assert!(
+            egress_blocked_by_integrity("adversarial"),
+            "adversarial blocked"
+        );
+        assert!(
+            egress_blocked_by_integrity("garbage_token"),
+            "unknown token fail-closed blocks"
+        );
         assert!(egress_blocked_by_integrity(""), "empty fail-closed blocks");
     }
 
