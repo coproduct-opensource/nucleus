@@ -7146,6 +7146,7 @@ dependencies = [
  "opentelemetry_sdk",
  "pem",
  "portcullis",
+ "portcullis-core",
  "regex",
  "reqwest 0.13.4",
  "ring",
