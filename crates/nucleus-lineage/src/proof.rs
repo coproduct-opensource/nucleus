@@ -44,7 +44,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::edge::{EdgeKind, LineageEdge};
+use crate::edge::{AttestationMode, EdgeKind, LineageEdge};
 
 /// A cryptographic proof attached to a [`LineageEdge`].
 ///
@@ -194,6 +194,29 @@ pub fn canonical_edge_bytes(edge: &LineageEdge, prev_hash: Option<&[u8; 32]>) ->
             out.push(0);
             out.extend_from_slice(v.as_bytes());
             out.push(0);
+        }
+        // AttestationMode tag — Mediated{handler_id} vs Attested{attestor_id}.
+        // Same additive discipline (emit nothing unless `Some`, appended last).
+        // The variant discriminant is emitted before the id so the two cases can
+        // never alias, and the whole tag is signature-covered — a tool cannot
+        // self-assert `Mediated`: `verify_attestation_mode` cross-checks
+        // `handler_id == verifier_binary_hash` (the signer).
+        match va.attestation_mode.as_ref() {
+            Some(AttestationMode::Mediated { handler_id }) => {
+                out.push(0);
+                out.extend_from_slice(b"mediated");
+                out.push(0);
+                out.extend_from_slice(handler_id.as_bytes());
+                out.push(0);
+            }
+            Some(AttestationMode::Attested { attestor_id }) => {
+                out.push(0);
+                out.extend_from_slice(b"attested");
+                out.push(0);
+                out.extend_from_slice(attestor_id.as_bytes());
+                out.push(0);
+            }
+            None => {}
         }
     }
 
@@ -496,6 +519,41 @@ mod tests {
         );
         let mut expected_delta = vec![0u8];
         expected_delta.extend_from_slice(b"100");
+        expected_delta.push(0);
+        assert_eq!(&bytes_some[bytes_none.len()..], &expected_delta[..]);
+    }
+
+    #[test]
+    fn attestation_mode_is_purely_additive() {
+        use crate::edge::{AttestationMode, VerifierAttestation};
+        let p = pod();
+        let child = p.derive_tool("web_post", Some(b"x")).unwrap();
+        let va_base = VerifierAttestation::new().with_lean_spec_hash("deadbeef");
+        let edge_none = LineageEdge::from_parent(
+            child,
+            p,
+            EdgeKind::ToolCall {
+                tool: "web_post".to_string(),
+            },
+        )
+        .with_verifier_attestation(va_base.clone());
+        let mut edge_some = edge_none.clone();
+        edge_some.verifier_attestation =
+            Some(va_base.with_attestation_mode(AttestationMode::Mediated {
+                handler_id: "h".to_string(),
+            }));
+
+        let bytes_none = canonical_edge_bytes(&edge_none, None);
+        let bytes_some = canonical_edge_bytes(&edge_some, None);
+        assert!(
+            bytes_some.starts_with(&bytes_none),
+            "absent field => prefix => purely additive"
+        );
+        // variant discriminant + id, each NUL-delimited.
+        let mut expected_delta = vec![0u8];
+        expected_delta.extend_from_slice(b"mediated");
+        expected_delta.push(0);
+        expected_delta.extend_from_slice(b"h");
         expected_delta.push(0);
         assert_eq!(&bytes_some[bytes_none.len()..], &expected_delta[..]);
     }

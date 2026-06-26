@@ -118,6 +118,40 @@ pub struct VerifierAttestation {
     /// work happened (PoTE), nor that every hop is present (completeness).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_spent_so_far_micro_usd: Option<String>,
+    /// How this edge's attested claims were obtained — the [`AttestationMode`]
+    /// boundary between a kernel-OBSERVED atom (`Mediated`) and RELABELED trust
+    /// (`Attested`). Signature-covered (rides in `canonical_edge_bytes`).
+    /// `nucleus_recompute::verify_attestation_mode` rejects a `Mediated` whose
+    /// `handler_id` does not match the signer, and rejects `Attested` presented
+    /// where a grounded (observed) claim is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_mode: Option<AttestationMode>,
+}
+
+/// How a signed claim came to be — the boundary between a VERIFIED atom (the
+/// kernel observed it) and RELABELED trust (an external party asserted it).
+/// Rides in `canonical_edge_bytes` (signature-covered), so it is tamper-evident.
+///
+/// **`Mediated` is unforgeable by construction.** A sealed handler
+/// (`portcullis-effects::RealEffects`, the gateway egress chokepoint) observes
+/// the real effect and signs the edge; its identity IS the edge's
+/// `verifier_binary_hash`. `nucleus_recompute::verify_attestation_mode` accepts
+/// `Mediated { handler_id }` only when `handler_id == verifier_binary_hash` — so
+/// a tool that writes `Mediated { "RealEffects::read" }` into an edge IT signs
+/// fails the check (its signer hash is the tool, not the handler).
+///
+/// HONEST SCOPE: grounds *who observed / who asserted*, NOT the effect's truth.
+/// `Mediated` still trusts the sealed handler binary; it is not Byzantine-proof
+/// against a compromised handler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttestationMode {
+    /// OBSERVED by a sealed handler at the syscall/subprocess/egress boundary.
+    /// `handler_id` MUST equal the edge's `verifier_binary_hash`.
+    Mediated { handler_id: String },
+    /// ASSERTED by an external party the handler could not observe (web fetch,
+    /// LLM output, remote API). The signature proves *who said it*, never *that
+    /// it is true*.
+    Attested { attestor_id: String },
 }
 
 impl VerifierAttestation {
@@ -206,6 +240,13 @@ impl VerifierAttestation {
         self
     }
 
+    /// Builder: tag how this edge's claims were obtained (Mediated/Attested).
+    /// See [`AttestationMode`].
+    pub fn with_attestation_mode(mut self, mode: AttestationMode) -> Self {
+        self.attestation_mode = Some(mode);
+        self
+    }
+
     /// `true` iff every field is `None`. Used by verifiers in strict mode
     /// to reject edges that claim economic semantics without attestation.
     pub fn is_empty(&self) -> bool {
@@ -221,6 +262,7 @@ impl VerifierAttestation {
             && self.budget_charged_micro_usd.is_none()
             && self.budget_effective_remaining_micro_usd.is_none()
             && self.budget_spent_so_far_micro_usd.is_none()
+            && self.attestation_mode.is_none()
     }
 }
 
