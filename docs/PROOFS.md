@@ -12,6 +12,19 @@
 > Gap-tracking tags (`G1`–`G7`) refer to the chariot punch-list; this file is
 > updated as each gap lands.
 
+> **Counting methodology — how to read any Lean count in this repo.** All
+> first-party Lean totals come from `scripts/lean-census.sh` (run from the repo
+> root), which **excludes** vendored Mathlib/std (`.lake/`, `lake-packages/`),
+> transient git worktrees (`.claude/`), vendored libraries (`external/`,
+> `vendor/`), and codegen (`generated/`). A raw `find . -name '*.lean'` sweeps
+> `.lake/` and worktrees and will report ~an order of magnitude too many files
+> (and "thousands of sorries") — those are Mathlib's, **not ours**; never cite
+> them. Honest first-party snapshot (census, 2026-06-25): **nucleus 84 files /
+> 891 thm+lemma / 35 `sorry` (11 files) / 1 decorative**; platform 44 / 152 / 1;
+> olog 156 / 465 / 46 `sorry`. A theorem count is not a strength claim — a file
+> can be load-bearing, `sorry`-fenced research, or a `:= by trivial` stub; the
+> tiers below are what actually distinguish them.
+
 ---
 
 ## The three tiers (what the words mean)
