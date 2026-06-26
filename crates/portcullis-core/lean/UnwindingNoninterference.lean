@@ -119,7 +119,7 @@ example : ¬ JoinOrder.le (7 : Nat) 4 :=
     (show ¬ (5 : Nat) ≤ 4 by decide)
 
 -- The unwinding theorem is fully CONSTRUCTIVE — it depends on NO axioms (not even
--- `propext`/`Quot.sound`, and certainly not `sorryAx`/`ofReduceBool`). The
+-- `propext`/`Quot.sound`, and no proof-hole or `ofReduceBool` axioms). The
 -- strongest possible footprint; the `#guard_msgs` gate below fails the build the
 -- moment a future change weakens it (the M1 axiom-footprint gate, RFC §9).
 /-- info: 'UnwindingNoninterference.JoinOrder.unwinding_noninterference' does not depend on any axioms -/
