@@ -177,6 +177,24 @@ pub fn canonical_edge_bytes(edge: &LineageEdge, prev_hash: Option<&[u8; 32]>) ->
             out.extend_from_slice(conf.as_bytes());
             out.push(0);
         }
+        // Budget node — charge / effective-remaining / spent-so-far. Same additive
+        // discipline (emit nothing unless `Some`, appended last, in declared field
+        // order) so pre-existing VA edges stay byte-identical.
+        if let Some(v) = va.budget_charged_micro_usd.as_deref() {
+            out.push(0);
+            out.extend_from_slice(v.as_bytes());
+            out.push(0);
+        }
+        if let Some(v) = va.budget_effective_remaining_micro_usd.as_deref() {
+            out.push(0);
+            out.extend_from_slice(v.as_bytes());
+            out.push(0);
+        }
+        if let Some(v) = va.budget_spent_so_far_micro_usd.as_deref() {
+            out.push(0);
+            out.extend_from_slice(v.as_bytes());
+            out.push(0);
+        }
     }
 
     out
@@ -446,6 +464,38 @@ mod tests {
         );
         let mut expected_delta = vec![0u8];
         expected_delta.extend_from_slice(b"secret");
+        expected_delta.push(0);
+        assert_eq!(&bytes_some[bytes_none.len()..], &expected_delta[..]);
+    }
+
+    /// Additive-compat guarantee for the signed budget fields: `None` emits zero
+    /// bytes; `Some` appends exactly the field. (All three budget fields share the
+    /// same emit discipline; `budget_charged_micro_usd` is the representative.)
+    #[test]
+    fn budget_fields_are_purely_additive() {
+        use crate::edge::VerifierAttestation;
+        let p = pod();
+        let child = p.derive_tool("web_post", Some(b"x")).unwrap();
+        let va_base = VerifierAttestation::new().with_lean_spec_hash("deadbeef");
+        let edge_none = LineageEdge::from_parent(
+            child,
+            p,
+            EdgeKind::ToolCall {
+                tool: "web_post".to_string(),
+            },
+        )
+        .with_verifier_attestation(va_base.clone());
+        let mut edge_some = edge_none.clone();
+        edge_some.verifier_attestation = Some(va_base.with_budget_charged_micro_usd("100"));
+
+        let bytes_none = canonical_edge_bytes(&edge_none, None);
+        let bytes_some = canonical_edge_bytes(&edge_some, None);
+        assert!(
+            bytes_some.starts_with(&bytes_none),
+            "absent field => prefix => purely additive"
+        );
+        let mut expected_delta = vec![0u8];
+        expected_delta.extend_from_slice(b"100");
         expected_delta.push(0);
         assert_eq!(&bytes_some[bytes_none.len()..], &expected_delta[..]);
     }

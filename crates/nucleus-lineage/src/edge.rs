@@ -97,6 +97,27 @@ pub struct VerifierAttestation {
     /// truth/completeness (Level-2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ifc_effective_confidentiality: Option<String>,
+    /// Budget node — the per-hop **charge** (micro-USD decimal string), the gate
+    /// *output*. Signed here (rides in `canonical_edge_bytes`) so the spend ledger
+    /// is tamper-evident + gateway-attested instead of an unsigned `attrs` entry an
+    /// attacker could lower. Recompute: `verify_budget_permit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_charged_micro_usd: Option<String>,
+    /// Budget node — the **effective remaining** budget the permit check evaluated
+    /// (micro-USD), the gate *input*. A signed edge whose charge exceeds this is
+    /// self-inconsistent (the gateway would have returned `PaymentRequired`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_effective_remaining_micro_usd: Option<String>,
+    /// Budget node — the runner-attested **running total spent** at hop start
+    /// (micro-USD); the 2nd-stamper running input (mirror of
+    /// [`Self::ifc_effective_integrity`]). `verify_budget_flow_consistent`
+    /// cross-checks `child.spent == parent.spent + parent.charged`.
+    ///
+    /// HONEST SCOPE (all three): grounds the spend FIGURES as a tamper-evident,
+    /// attested, internally-consistent ledger — NOT that a charge is *fair* or the
+    /// work happened (PoTE), nor that every hop is present (completeness).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_spent_so_far_micro_usd: Option<String>,
 }
 
 impl VerifierAttestation {
@@ -162,6 +183,29 @@ impl VerifierAttestation {
         self
     }
 
+    /// Builder: stamp the per-hop budget charge (gate output). See field docs.
+    pub fn with_budget_charged_micro_usd(mut self, micro_usd: impl Into<String>) -> Self {
+        self.budget_charged_micro_usd = Some(micro_usd.into());
+        self
+    }
+
+    /// Builder: stamp the effective remaining budget the permit check evaluated
+    /// (gate input). See field docs.
+    pub fn with_budget_effective_remaining_micro_usd(
+        mut self,
+        micro_usd: impl Into<String>,
+    ) -> Self {
+        self.budget_effective_remaining_micro_usd = Some(micro_usd.into());
+        self
+    }
+
+    /// Builder: attest the running total spent at hop start (2nd-stamper input).
+    /// See field docs.
+    pub fn with_budget_spent_so_far_micro_usd(mut self, micro_usd: impl Into<String>) -> Self {
+        self.budget_spent_so_far_micro_usd = Some(micro_usd.into());
+        self
+    }
+
     /// `true` iff every field is `None`. Used by verifiers in strict mode
     /// to reject edges that claim economic semantics without attestation.
     pub fn is_empty(&self) -> bool {
@@ -174,6 +218,9 @@ impl VerifierAttestation {
             && self.ifc_gated_effective_integrity.is_none()
             && self.ifc_effective_integrity.is_none()
             && self.ifc_effective_confidentiality.is_none()
+            && self.budget_charged_micro_usd.is_none()
+            && self.budget_effective_remaining_micro_usd.is_none()
+            && self.budget_spent_so_far_micro_usd.is_none()
     }
 }
 
