@@ -897,6 +897,113 @@ pub fn verify_budget_flow_consistent(
     }
 }
 
+/// Outcome of re-deriving an `AttestationMode` tag against the signer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttestationModeOutcome {
+    /// No mode tag present — the edge makes no Mediated/Attested claim.
+    NotGrounded,
+    /// The tag is consistent with the signer and the grounding requirement.
+    Ok,
+    /// A `Mediated` tag whose `handler_id` does not match the signer, OR an
+    /// `Attested` tag presented where a grounded (observed) claim is required,
+    /// OR an unrecognized mode kind.
+    Rejected { reason: String },
+}
+
+/// Re-derive the `AttestationMode` verdict OFFLINE (plain-data, wasm-pure — does
+/// NOT depend on `nucleus-lineage`). The lineage `AttestationMode` is decomposed
+/// to plain data: `mode_kind` is `"mediated"` / `"attested"` / absent, and
+/// `mode_id` is the handler_id / attestor_id.
+///
+/// The honesty invariant: `Mediated { handler_id }` is valid ONLY when
+/// `handler_id == verifier_binary_hash` (the edge's signer) — so a tool cannot
+/// self-assert `Mediated` (its signer hash is the tool, not the sealed handler).
+/// `Attested` (relabeled trust) is REJECTED wherever `grounding_required`, so it
+/// can never masquerade as a kernel-observed atom.
+pub fn verify_attestation_mode(
+    mode_kind: Option<&str>,
+    mode_id: Option<&str>,
+    verifier_binary_hash: Option<&str>,
+    grounding_required: bool,
+) -> AttestationModeOutcome {
+    match mode_kind {
+        None => AttestationModeOutcome::NotGrounded,
+        Some("mediated") => match (mode_id, verifier_binary_hash) {
+            (Some(handler_id), Some(signer)) if handler_id == signer => AttestationModeOutcome::Ok,
+            (handler_id, signer) => AttestationModeOutcome::Rejected {
+                reason: format!("forged Mediated: handler_id {handler_id:?} != signer {signer:?}"),
+            },
+        },
+        Some("attested") if grounding_required => AttestationModeOutcome::Rejected {
+            reason: "Attested claim presented where a Mediated (observed) claim is required"
+                .to_string(),
+        },
+        Some("attested") => AttestationModeOutcome::Ok,
+        Some(other) => AttestationModeOutcome::Rejected {
+            reason: format!("unrecognized attestation mode kind {other:?}"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod attestation_mode_tests {
+    use super::*;
+
+    #[test]
+    fn mediated_matching_signer_is_ok() {
+        // A sealed handler signed the edge; its handler_id IS the signer hash.
+        assert_eq!(
+            verify_attestation_mode(
+                Some("mediated"),
+                Some("portcullis-effects@0.1.0"),
+                Some("portcullis-effects@0.1.0"),
+                true,
+            ),
+            AttestationModeOutcome::Ok,
+        );
+    }
+
+    #[test]
+    fn mediated_forged_by_tool_is_rejected() {
+        // A tool stamps `Mediated{RealEffects::read}` into an edge IT signs.
+        // Its signer hash is the tool, not the handler → forgery caught.
+        assert!(matches!(
+            verify_attestation_mode(
+                Some("mediated"),
+                Some("RealEffects::read"),
+                Some("evil-tool@0.1"),
+                true,
+            ),
+            AttestationModeOutcome::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn attested_where_grounding_required_is_rejected() {
+        // Relabeled trust can never masquerade as an observed atom.
+        assert!(matches!(
+            verify_attestation_mode(Some("attested"), Some("web-fetch"), Some("signer"), true),
+            AttestationModeOutcome::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn attested_where_grounding_not_required_is_ok() {
+        assert_eq!(
+            verify_attestation_mode(Some("attested"), Some("web-fetch"), Some("signer"), false),
+            AttestationModeOutcome::Ok,
+        );
+    }
+
+    #[test]
+    fn absent_mode_is_not_grounded() {
+        assert_eq!(
+            verify_attestation_mode(None, None, Some("signer"), true),
+            AttestationModeOutcome::NotGrounded,
+        );
+    }
+}
+
 #[cfg(test)]
 mod budget_flow_tests {
     use super::*;
