@@ -82,7 +82,7 @@ jobs:
           toolchain: stable
 
       - name: Parity tests (extracted slice == production enforcement)
-        run: cargo test -p portcullis-core --lib extracted::
+        run: cargo test -p portcullis-core --lib extracted
 
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
