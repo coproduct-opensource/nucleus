@@ -355,10 +355,16 @@ impl FlowDeclaration {
                 // `decide_matches_extracted_integrity_model` test below ties decide()'s
                 // integrity verdict to that extracted primitive over the conf-safe inputs.
                 integrity_axis: ProofStatus::ExtractedKernelChecked,
-                // The confidentiality dual is proven only over a hand model
-                // (formal/Nucleus/HolyGrail/ConfidentialityNoninterference.lean) — real,
-                // but NOT extracted from the running Rust. Stated honestly, never unified.
-                confidentiality_axis: ProofStatus::HandModelKernelChecked,
+                // The confidentiality dual is now proven OVER Aeneas-extracted Rust
+                // (ConfidentialityNoninterferenceExtracted.lean over the generated
+                // ifc_confidentiality defs; aeneas-ifc-scoped run 28269268454, axiom set
+                // [propext, Classical.choice, Quot.sound], clean-axiom gate passed) — the
+                // order-dual of the integrity leg. Remaining symmetry item (tracked): the
+                // decide()→extracted CONF tie test (dual of decide_matches_extracted_
+                // integrity_model). Until it lands, decide()'s confidentiality composition is
+                // tied to the extracted primitive by the existing sampled parity, not proof
+                // (see open_residuals) — same caveat the integrity leg's tie test closes.
+                confidentiality_axis: ProofStatus::ExtractedKernelChecked,
                 open_residuals: vec![
                     "the FlowTracker graph-fold loop is hand-written Lean (irun), not extracted".to_string(),
                     "decide()'s composition is tied to the extracted primitive by sampled parity, not proof".to_string(),

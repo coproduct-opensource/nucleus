@@ -23,6 +23,7 @@ on:
       - "crates/portcullis-core/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
   pull_request:
@@ -30,6 +31,7 @@ on:
       - "crates/portcullis-core/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
   merge_group:
@@ -45,7 +47,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "portcullis_core::extracted::ifc_integrity::iflows_to,portcullis_core::extracted::ifc_integrity::imeet,portcullis_core::extracted::ifc_integrity::irun_step"
+  EXTRACT_ROOTS: "portcullis_core::extracted::ifc_integrity::iflows_to,portcullis_core::extracted::ifc_integrity::imeet,portcullis_core::extracted::ifc_integrity::irun_step,portcullis_core::extracted::ifc_confidentiality::cflows_to,portcullis_core::extracted::ifc_confidentiality::cjoin,portcullis_core::extracted::ifc_confidentiality::crun_step"
 
 jobs:
   aeneas-ifc-scoped:
@@ -80,7 +82,7 @@ jobs:
           toolchain: stable
 
       - name: Parity tests (extracted slice == production enforcement)
-        run: cargo test -p portcullis-core --lib extracted::ifc_integrity
+        run: cargo test -p portcullis-core --lib extracted
 
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
@@ -183,6 +185,7 @@ jobs:
         run: |
           lake build PortcullisCoreIFC
           lake build IntegrityNoninterferenceExtracted 2>&1 | tee /tmp/lake-ifc.log
+          lake build ConfidentialityNoninterferenceExtracted 2>&1 | tee /tmp/lake-conf-ifc.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
