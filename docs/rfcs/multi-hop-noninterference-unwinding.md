@@ -133,7 +133,7 @@ on trace length (the unwinding theorem itself).
 
 | Abstraction | nucleus artifact |
 |---|---|
-| transition `step` | `FlowTracker` accumulate (`nucleus-ifc/src/flow.rs`) — **as a `fold`**, task #45 |
+| transition `step` | `FlowTracker` per-node label (`portcullis-core/src/ifc_api.rs`, `observe_with_parents`) — **as a `fold`**, task #45, landed PR #1904 |
 | domain `d` / `≈_d` | a `flows_to` downset over `IFCLabel`; `≈_d` = equality of the `d`-visible projection |
 | gate / admit | `flow_algebra::FlowState::flows_to(SinkClass)` + `decide_pure` |
 | single-step facts | `IFCSemilatticeProofs`, `FlowProofs`, `DecidePureProofs`, the integrity result |
@@ -219,3 +219,31 @@ does **not** make nucleus "more secure end-to-end": it is bounded by label
 adequacy, termination/timing channels, and the model↔binary ceiling, exactly as
 seL4's information-flow proof is. The win is *what becomes provable* (arbitrary
 chains), stated with its limits intact.
+
+## 12. Implementation log
+
+**Pass 1 (M0 on-ramp).** Two reality-checks against the draft, both folded back in:
+
+1. **File/location correction.** `FlowTracker` lives in
+   `portcullis-core/src/ifc_api.rs`, **not** `nucleus-ifc/src/flow.rs` (which does
+   not exist — `nucleus-ifc` is only `decision.rs` + `lib.rs`). The single-step
+   transition is `observe_with_parents` / `observe_with_label`. §5.2 corrected.
+2. **The structure is DAG-native, so the milestones reorder.** `FlowTracker` is
+   not a linear sequence with a join loop — it is a **DAG accumulator**: every
+   node stores `(kind, label, parents)` and its label is
+   `intrinsic_label(kind) ⊔ ⨆_{p∈parents} label(p)`. The per-node computation was
+   an imperative parent-join loop; PR #1904 rewrote it as a **pure fold** (#45,
+   M0), faithfully (parity + ground-truth + ifc_api tests green, no drift).
+   Consequence: the **DAG is the base case**, and a *linear trace* is its special
+   case (single-parent chain) — the inverse of the draft's §8.4 / M3 ordering.
+   The induction in M1 should therefore be **structural induction over the DAG in
+   topological order** (or, equivalently, over the fold's recursion), with the
+   linear chain as the first instance. M3 ("generalise to the DAG") collapses into
+   M1; what remains genuinely later is connecting the DAG result to the
+   *cross-node* PCD topology theorems.
+
+**Net:** M0's code prerequisite is **done** (#1904); the per-node label is now a
+fold over parents — the exact single-step transition §5.1's unwinding conditions
+quantify over. M1 (restate the existing single-step gate facts as unwinding
+conditions over that fold, then the structural-induction lemma) is the next pass,
+and is Lean/CI-bound (Mathlib builds are CI-only locally).
