@@ -791,6 +791,168 @@ pub fn verify_ifc_flow_consistent(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Budget node verdict recompute (verify_budget_*)
+//
+// The gateway enforces budget as a caveat ceiling + a running accumulator: a hop
+// is permitted iff its charge fits the effective remaining (the `after_spend`
+// deflationary invariant, Aeneas-extracted + `afterSpend_extracted_deflationary`).
+// These fns re-derive that verdict OFFLINE from the SIGNED VA figures
+// (`budget_charged` / `budget_effective_remaining` / `budget_spent_so_far`).
+//
+// HONEST SCOPE: checks the spend ledger is internally consistent + tamper-evident
+// (a signed edge whose charge exceeds the remaining it claims to have evaluated is
+// self-inconsistent). Does NOT check the charge is FAIR / the work happened (PoTE)
+// nor that every hop is present (completeness). NOTE: this is NOT greedy_pack —
+// that theorem models a closed-list auction allocation, the wrong model for an
+// open-ended sequential gate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Outcome of recomputing a budget permit / flow check from signed figures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetFlowOutcome {
+    /// Not a budget-grounded hop (the relevant figures were absent).
+    NotGrounded,
+    /// The signed figures satisfy the permit / accumulator rule.
+    Ok,
+    /// Self-inconsistent: a charge exceeds the effective remaining the gate
+    /// claimed to evaluate, or the chain spend-accumulator equation is violated.
+    Inconsistent { reason: String },
+}
+
+impl BudgetFlowOutcome {
+    /// `true` unless the figures are self-inconsistent. `NotGrounded` and `Ok`
+    /// are both acceptable (an ungrounded hop is vacuously fine).
+    pub fn is_consistent(&self) -> bool {
+        !matches!(self, BudgetFlowOutcome::Inconsistent { .. })
+    }
+}
+
+/// Re-derive the per-hop budget permit verdict: the signed charge must not exceed
+/// the signed effective-remaining the gate evaluated (the `after_spend`
+/// deflationary invariant). Plain-data wasm-pure (micro-USD decimal strings).
+pub fn verify_budget_permit(
+    effective_remaining_micro_usd: Option<&str>,
+    charged_micro_usd: Option<&str>,
+) -> BudgetFlowOutcome {
+    match (effective_remaining_micro_usd, charged_micro_usd) {
+        (None, None) => BudgetFlowOutcome::NotGrounded,
+        (Some(rem), Some(chg)) => match (rem.parse::<u128>(), chg.parse::<u128>()) {
+            (Ok(rem), Ok(chg)) if chg <= rem => BudgetFlowOutcome::Ok,
+            (Ok(rem), Ok(chg)) => BudgetFlowOutcome::Inconsistent {
+                reason: format!("charge {chg} exceeds effective remaining {rem}"),
+            },
+            _ => BudgetFlowOutcome::Inconsistent {
+                reason: format!("unparseable budget figures rem={rem:?} chg={chg:?}"),
+            },
+        },
+        _ => BudgetFlowOutcome::Inconsistent {
+            reason: "partial budget grounding (charge xor remaining present)".to_string(),
+        },
+    }
+}
+
+/// Cross-check the chain spend accumulator across a parent→child hop:
+/// `child_spent == parent_spent + parent_charged` and monotone-nondecreasing.
+/// Mirrors [`verify_ifc_flow_consistent`].
+pub fn verify_budget_flow_consistent(
+    parent_spent_micro_usd: Option<&str>,
+    parent_charged_micro_usd: Option<&str>,
+    child_spent_micro_usd: Option<&str>,
+) -> BudgetFlowOutcome {
+    match (
+        parent_spent_micro_usd,
+        parent_charged_micro_usd,
+        child_spent_micro_usd,
+    ) {
+        (None, None, None) => BudgetFlowOutcome::NotGrounded,
+        (Some(ps), Some(pc), Some(cs)) => {
+            match (ps.parse::<u128>(), pc.parse::<u128>(), cs.parse::<u128>()) {
+                (Ok(ps), Ok(pc), Ok(cs)) => {
+                    if cs < ps {
+                        return BudgetFlowOutcome::Inconsistent {
+                            reason: format!("spent went backwards: child {cs} < parent {ps}"),
+                        };
+                    }
+                    match ps.checked_add(pc) {
+                        Some(expected) if expected == cs => BudgetFlowOutcome::Ok,
+                        Some(expected) => BudgetFlowOutcome::Inconsistent {
+                            reason: format!(
+                                "accumulator mismatch: child {cs} != parent_spent {ps} + parent_charged {pc} = {expected}"
+                            ),
+                        },
+                        None => BudgetFlowOutcome::Inconsistent {
+                            reason: "spend overflow".to_string(),
+                        },
+                    }
+                }
+                _ => BudgetFlowOutcome::Inconsistent {
+                    reason: "unparseable spend figures".to_string(),
+                },
+            }
+        }
+        _ => BudgetFlowOutcome::Inconsistent {
+            reason: "partial spend grounding".to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod budget_flow_tests {
+    use super::*;
+
+    #[test]
+    fn permit_ungrounded_is_not_grounded() {
+        assert_eq!(
+            verify_budget_permit(None, None),
+            BudgetFlowOutcome::NotGrounded
+        );
+    }
+
+    #[test]
+    fn permit_charge_within_remaining_is_ok() {
+        // anti-vacuity: a legitimate charge is accepted, not rejected.
+        assert_eq!(
+            verify_budget_permit(Some("1000"), Some("100")),
+            BudgetFlowOutcome::Ok
+        );
+        assert_eq!(
+            verify_budget_permit(Some("100"), Some("100")),
+            BudgetFlowOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn permit_charge_over_remaining_is_inconsistent() {
+        assert!(!verify_budget_permit(Some("100"), Some("101")).is_consistent());
+        assert!(!verify_budget_permit(Some("abc"), Some("1")).is_consistent());
+        assert!(!verify_budget_permit(None, Some("1")).is_consistent());
+    }
+
+    #[test]
+    fn flow_accumulator_consistent() {
+        // parent spent 50, charged 100 => child spent 150.
+        assert_eq!(
+            verify_budget_flow_consistent(Some("50"), Some("100"), Some("150")),
+            BudgetFlowOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn flow_accumulator_mismatch_and_backwards_rejected() {
+        // wrong sum: 50 + 100 != 140
+        assert!(
+            !verify_budget_flow_consistent(Some("50"), Some("100"), Some("140")).is_consistent()
+        );
+        // backwards: child < parent
+        assert!(!verify_budget_flow_consistent(Some("50"), Some("0"), Some("40")).is_consistent());
+        assert_eq!(
+            verify_budget_flow_consistent(None, None, None),
+            BudgetFlowOutcome::NotGrounded
+        );
+    }
+}
+
 #[cfg(test)]
 mod ifc_flow_tests {
     use super::*;
