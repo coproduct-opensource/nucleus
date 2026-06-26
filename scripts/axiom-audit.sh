@@ -20,15 +20,17 @@ mkdir -p "$OUT_DIR"
 
 # Proven-tier libs (mirror portcullis-core-proven-lean.yml). Mathlib-free ones
 # are auto-selected below so this works without the Mathlib olean cache.
-PROVEN="ExposureProofs FlowProofs FlowGraphProofs DecidePureProofs DeclassifyProofs CompartmentProofs DelegationProofs DerivationProofs IFCSemilatticeProofs DelegationCategoryProofs GaloisConnectionProofs AttenuationProofs SemanticIFC MonoidalPermissionProofs ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary BelnapDecisionProofs RepairAlgebraProofs"
+PROVEN="PortcullisCoreBridge IntegrityNoninterferenceExtracted ExposureProofs FlowProofs FlowGraphProofs DecidePureProofs DeclassifyProofs CompartmentProofs DelegationProofs DerivationProofs IFCSemilatticeProofs DelegationCategoryProofs GaloisConnectionProofs AttenuationProofs SemanticIFC MonoidalPermissionProofs ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary BelnapDecisionProofs RepairAlgebraProofs"
 
 if [ -n "${AXIOM_AUDIT_MODULES:-}" ]; then
   MODS="$AXIOM_AUDIT_MODULES"
 else
+  # Audit the FULL proven tier. Mathlib-using libs need the olean cache (CI's
+  # `lake exe cache get`, or a warm local .lake) — `lake build` below fetches/
+  # builds it. Per-module auditing avoids cross-module name collisions.
   MODS=""
   for m in $PROVEN; do
-    [ -f "$L/$m.lean" ] || continue
-    grep -q '^import Mathlib' "$L/$m.lean" || MODS="$MODS $m"
+    [ -f "$L/$m.lean" ] && MODS="$MODS $m"
   done
 fi
 MODS="$(echo "$MODS" | xargs)"   # trim
