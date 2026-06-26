@@ -11,19 +11,26 @@
 //! it EXHAUSTIVELY — complete, not sampled, so it is ground truth not evidence.
 
 use portcullis_core::{
-    decide_pure, should_gate, CapabilityLevel, ConfLevel, ExposureSet, IFCLabel, IntegLevel,
-    Operation, PureVerdict,
+    CapabilityLevel, ConfLevel, ExposureSet, IFCLabel, IntegLevel, Operation, PureVerdict,
+    decide_pure, should_gate,
 };
 
 const CONFS: [ConfLevel; 3] = [ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
-const INTEGS: [IntegLevel; 3] =
-    [IntegLevel::Adversarial, IntegLevel::Untrusted, IntegLevel::Trusted];
+const INTEGS: [IntegLevel; 3] = [
+    IntegLevel::Adversarial,
+    IntegLevel::Untrusted,
+    IntegLevel::Trusted,
+];
 
 /// An IFCLabel varying only the (conf, integ) axes — the IFCLabel2 subspace the
 /// Lean lattice instance models; the other axes are pinned at `bottom()`, so
 /// `join`/`flows_to` reduce to the proven Biba product over conf×integ.
 fn label(c: ConfLevel, i: IntegLevel) -> IFCLabel {
-    IFCLabel { confidentiality: c, integrity: i, ..IFCLabel::bottom() }
+    IFCLabel {
+        confidentiality: c,
+        integrity: i,
+        ..IFCLabel::bottom()
+    }
 }
 fn carrier() -> Vec<IFCLabel> {
     let mut v = Vec::with_capacity(9);
