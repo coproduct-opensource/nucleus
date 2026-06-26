@@ -47,15 +47,26 @@ crates_total=$(find crates -maxdepth 2 -name Cargo.toml 2>/dev/null | wc -l | tr
 crates_lints_ws=$(grep -rlE '^\s*workspace\s*=\s*true' --include=Cargo.toml crates 2>/dev/null | xargs grep -lE '\[lints\]' 2>/dev/null | wc -l | tr -d ' ')
 
 # ── Sandboxing / hard controls ───────────────────────────────────────────────
-# complete-mediation drift: a claude-launch site that bypasses permissions but
-# omits the built-in disallow list (the gap #1 class). Should be 0.
-bypass_sites=$(grep -rlE 'dangerously-skip-permissions|bypassPermissions' "${RS[@]}" crates 2>/dev/null | wc -l | tr -d ' ')
-disallow_sites=$(grep -rlE 'DISALLOWED_BUILTIN_TOOLS|--disallowedTools' "${RS[@]}" crates 2>/dev/null | wc -l | tr -d ' ')
-mediation_drift=$(( bypass_sites > disallow_sites ? bypass_sites - disallow_sites : 0 ))
+# complete-mediation drift: a LATTICE-MODE claude-launch (bypasses permission
+# prompts AND gives the agent MCP tools via --allowedTools/--mcp-config) MUST
+# also disallow the built-in tools, or they run outside the lattice (the gap #1
+# class). EXCLUDED, because they are not lattice-mediated and adding the flag
+# would be cargo-cult: VM-mode guest launches (no MCP — the Firecracker microVM
+# is the boundary) and examples/. The metric counts lattice-mode launch FILES
+# missing the disallow list.
+mediation_drift=0; bypass_sites=0
+for f in $(grep -rlE 'dangerously-skip-permissions|bypassPermissions' "${RS[@]}" crates 2>/dev/null | grep -v '/examples/'); do
+  grep -qE 'allowedTools|mcp-config' "$f" || continue   # lattice-mode only (agent gets MCP tools)
+  bypass_sites=$((bypass_sites + 1))
+  grep -qE 'DISALLOWED_BUILTIN_TOOLS|--disallowedTools' "$f" || mediation_drift=$((mediation_drift + 1))
+done
+disallow_sites=$(( bypass_sites - mediation_drift ))
 effect_stubs=$(grep -rhcE 'NotImplemented|NotWired' "${RS[@]}" crates/portcullis-effects crates/portcullis-core 2>/dev/null | awk '{s+=$1} END{print s+0}')
 
 # ── Hygiene ──────────────────────────────────────────────────────────────────
-stale_verus=$(find . -type d -name '.verus' -not -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')
+# Count only TRACKED .verus paths (untracked local toolchain cruft — e.g. a
+# downloaded verus binary — isn't a repo gap and CI never sees it).
+stale_verus=$(git ls-files 2>/dev/null | grep -cE '(^|/)\.verus/' || true)
 
 # clean axiom footprint (from axiom-audit.sh badge if present)
 axiom_badge="badges/axiom-footprint.json"

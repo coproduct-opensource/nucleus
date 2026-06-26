@@ -12,8 +12,8 @@
     "lints_adoption_pct": 61
   },
   "sandboxing": {
-    "mediation_drift": 2, "bypass_sites": 3,
-    "disallow_sites": 1, "effect_stubs": 9
+    "mediation_drift": 0, "bypass_sites": 2,
+    "disallow_sites": 2, "effect_stubs": 9
   },
-  "hygiene": { "stale_verus_dirs": 1 }
+  "hygiene": { "stale_verus_dirs": 0 }
 }
