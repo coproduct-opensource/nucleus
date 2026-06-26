@@ -1025,6 +1025,172 @@ pub fn verify_ifc_flow_consistent(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Whole-trace IFC conformance (verify_ifc_trace) — the RUNTIME WITNESS of the
+// multi-hop unwinding theorem (D1, UnwindingNoninterference / the extracted
+// integrity leg `irun_antitone`). The per-hop / per-pair checks above bind one
+// edge; this binds the WHOLE chain: a real receipt trace must obey the property
+// the theorem proves — effective integrity is MONOTONE-NON-INCREASING in trust
+// along the chain, so taint introduced upstream can NEVER be laundered into an
+// allowed egress downstream.
+//
+// HONEST SCOPE: validates a *present, signed* chain is internally consistent with
+// the unwinding guarantee (tamper-evident: a chain whose trust *rises* could not
+// have been honestly folded). It does NOT prove the labels are true, nor that the
+// chain is complete (absence ≠ denial) — those are the same Level-2 residuals the
+// single-hop checks carry. The theorem is over the model; this is the receipt-side
+// round-trip that catches any run diverging from it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One hop of a signed IFC receipt chain: the running `ifc_effective_integrity`
+/// the runner attested, and (if it was an egress hop) the
+/// `ifc_gated_effective_integrity` the gateway co-committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfcHop {
+    /// The running effective integrity the runner signed at this hop, if present.
+    pub effective_integrity: Option<String>,
+    /// The integrity the egress gate co-committed it evaluated, if this was an
+    /// egress hop.
+    pub gated_effective_integrity: Option<String>,
+}
+
+/// Outcome of recomputing a whole IFC receipt chain against the unwinding guarantee.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceOutcome {
+    /// Every hop is allow-consistent, pairwise-bound, and the chain's trust is
+    /// monotone-non-increasing (no laundering). `hops` = number checked.
+    Consistent {
+        /// Number of hops validated.
+        hops: usize,
+    },
+    /// A hop violated consistency. `hop_index` is the 0-based offending hop.
+    Inconsistent {
+        /// The offending hop's index.
+        hop_index: usize,
+        /// Why it was rejected.
+        reason: String,
+    },
+}
+
+impl TraceOutcome {
+    /// `true` iff the whole chain conforms.
+    pub fn is_consistent(&self) -> bool {
+        matches!(self, TraceOutcome::Consistent { .. })
+    }
+}
+
+/// Trust rank for the integrity order: `trusted (2) > untrusted (1) >
+/// {adversarial, secret, unknown} (0, fail-closed)`. The join (taint) only ever
+/// LOWERS this — the unwinding theorem's `irun_antitone`. An unrecognized token
+/// folds to the bottom (fail-closed), matching `egress_blocked_by_integrity`.
+fn integrity_rank(i: &str) -> u8 {
+    match i {
+        "trusted" => 2,
+        "untrusted" => 1,
+        _ => 0,
+    }
+}
+
+/// Recompute a whole IFC receipt chain against the multi-hop unwinding guarantee.
+///
+/// Two checks, end to end: (1) each egress hop is allow-consistent and bound to
+/// its predecessor's signed integrity ([`verify_ifc_flow_consistent`]); (2) the
+/// chain's effective integrity is MONOTONE-NON-INCREASING in trust — a hop whose
+/// running integrity is *more* trusted than its predecessor's is laundering
+/// (the fold can only lower trust), so it is rejected. This is the receipt-side
+/// round-trip of the unwinding theorem: any real run that diverges from the proven
+/// monotone-fold property is caught here.
+pub fn verify_ifc_trace(hops: &[IfcHop]) -> TraceOutcome {
+    let mut prev_effective: Option<String> = None;
+    for (idx, hop) in hops.iter().enumerate() {
+        // (1) Per-hop egress allow-consistency + binding to the predecessor.
+        let pair = verify_ifc_flow_consistent(
+            hop.gated_effective_integrity.as_deref(),
+            prev_effective.as_deref(),
+        );
+        if let IfcFlowOutcome::Inconsistent {
+            effective_integrity,
+        } = pair
+        {
+            return TraceOutcome::Inconsistent {
+                hop_index: idx,
+                reason: format!(
+                    "egress hop inconsistent at effective integrity {effective_integrity:?}"
+                ),
+            };
+        }
+        // (2) Whole-chain monotonicity: trust may only ratchet DOWN (no laundering).
+        if let (Some(prev), Some(cur)) = (
+            prev_effective.as_deref(),
+            hop.effective_integrity.as_deref(),
+        ) {
+            if integrity_rank(cur) > integrity_rank(prev) {
+                return TraceOutcome::Inconsistent {
+                    hop_index: idx,
+                    reason: format!(
+                        "trust rose along the chain ({prev:?} -> {cur:?}): the IFC fold can only \
+                         lower integrity (unwinding theorem), so this is laundering"
+                    ),
+                };
+            }
+        }
+        if hop.effective_integrity.is_some() {
+            prev_effective = hop.effective_integrity.clone();
+        }
+    }
+    TraceOutcome::Consistent { hops: hops.len() }
+}
+
+#[cfg(test)]
+mod ifc_trace_tests {
+    use super::*;
+
+    fn hop(eff: &str, gated: Option<&str>) -> IfcHop {
+        IfcHop {
+            effective_integrity: Some(eff.to_string()),
+            gated_effective_integrity: gated.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn clean_descending_chain_is_consistent() {
+        // trusted -> untrusted: trust ratchets down; the egress hop gated on the
+        // parent's signed integrity ("trusted", allowed) and bound to it.
+        let chain = [hop("trusted", None), hop("untrusted", Some("trusted"))];
+        assert!(verify_ifc_trace(&chain).is_consistent());
+    }
+
+    #[test]
+    fn laundering_chain_is_rejected() {
+        // adversarial taint enters, then trust "rises" to trusted with no egress —
+        // impossible under the monotone fold. Isolates the no-laundering check.
+        let chain = [hop("adversarial", None), hop("trusted", None)];
+        match verify_ifc_trace(&chain) {
+            TraceOutcome::Inconsistent { hop_index, reason } => {
+                assert_eq!(hop_index, 1);
+                assert!(
+                    reason.contains("trust rose"),
+                    "expected laundering reason, got: {reason}"
+                );
+            }
+            other => panic!("expected laundering rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adversarial_egress_is_rejected() {
+        // An egress hop co-committing an *allowed* egress under adversarial integrity
+        // is self-inconsistent (the gate would have denied before signing).
+        let chain = [hop("adversarial", Some("adversarial"))];
+        assert!(!verify_ifc_trace(&chain).is_consistent());
+    }
+
+    #[test]
+    fn empty_chain_is_vacuously_consistent() {
+        assert_eq!(verify_ifc_trace(&[]), TraceOutcome::Consistent { hops: 0 });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Budget node verdict recompute (verify_budget_*)
 //
 // The gateway enforces budget as a caveat ceiling + a running accumulator: a hop
