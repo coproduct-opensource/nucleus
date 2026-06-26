@@ -38,6 +38,10 @@ use nucleus_econ_kernels::{
     classify, refund, route_to_commons, run_vcg, seller_gross, Clearing, CommonsAllocation,
     CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError, Verdict,
 };
+// The Aeneas-extracted integrity primitives the D1 non-interference theorem is
+// proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness
+// of that theorem, so it recomputes via these exact functions.
+use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 
 /// Domain separator for the canonical receipt bytes (versioned).
 const RECEIPT_DOMAIN: &[u8] = b"nucleus-recompute/clearing-receipt/v1\0";
@@ -1078,15 +1082,22 @@ impl TraceOutcome {
     }
 }
 
-/// Trust rank for the integrity order: `trusted (2) > untrusted (1) >
-/// {adversarial, secret, unknown} (0, fail-closed)`. The join (taint) only ever
-/// LOWERS this — the unwinding theorem's `irun_antitone`. An unrecognized token
-/// folds to the bottom (fail-closed), matching `egress_blocked_by_integrity`.
-fn integrity_rank(i: &str) -> u8 {
+/// Bridge a signed integrity token to the Aeneas-EXTRACTED 3-point integrity
+/// lattice ([`portcullis_core::extracted::ifc_integrity::IntegLevel`]) — the
+/// carrier the multi-hop non-interference (D1) theorem is proven over.
+///
+/// FAIL-CLOSED: any token outside `{trusted, untrusted}` folds to the bottom
+/// (`Adversarial`), exactly as [`nucleus_ifc::egress_blocked_by_integrity`]
+/// treats an unrecognized token as blocked. (`"adversarial"` itself also maps to
+/// the bottom; the wire only distinguishes "blocked" from the two allowed
+/// levels.) This is the seam where the wire `String` meets the proven primitives;
+/// `egress_rule_matches_extracted_iflows_to` below pins the two in agreement.
+fn parse_integrity(i: &str) -> IntegLevel {
     match i {
-        "trusted" => 2,
-        "untrusted" => 1,
-        _ => 0,
+        "trusted" => IntegLevel::Trusted,
+        "untrusted" => IntegLevel::Untrusted,
+        // adversarial + any unrecognized token: fail-closed to the lattice bottom.
+        _ => IntegLevel::Adversarial,
     }
 }
 
@@ -1118,17 +1129,25 @@ pub fn verify_ifc_trace(hops: &[IfcHop]) -> TraceOutcome {
                 ),
             };
         }
-        // (2) Whole-chain monotonicity: trust may only ratchet DOWN (no laundering).
+        // (2) Whole-chain monotonicity, recomputed via the EXTRACTED fold: the
+        // running effective integrity is `irun_step = imeet` (the exact operation
+        // the unwinding theorem folds over), so folding this hop into its
+        // predecessor can only LOWER trust. If the claimed running integrity is
+        // not the meet of itself and its predecessor — i.e. `imeet(prev, cur) !=
+        // cur`, equivalently `!iflows_to(prev, cur)` — then trust ROSE, which the
+        // theorem forbids: laundering. This binds the runtime check to the proven
+        // primitive rather than an ad-hoc local rank.
         if let (Some(prev), Some(cur)) = (
             prev_effective.as_deref(),
             hop.effective_integrity.as_deref(),
         ) {
-            if integrity_rank(cur) > integrity_rank(prev) {
+            let (prev_level, cur_level) = (parse_integrity(prev), parse_integrity(cur));
+            if imeet(prev_level, cur_level) != cur_level {
                 return TraceOutcome::Inconsistent {
                     hop_index: idx,
                     reason: format!(
-                        "trust rose along the chain ({prev:?} -> {cur:?}): the IFC fold can only \
-                         lower integrity (unwinding theorem), so this is laundering"
+                        "trust rose along the chain ({prev:?} -> {cur:?}): the IFC fold (imeet) \
+                         can only lower integrity (unwinding theorem), so this is laundering"
                     ),
                 };
             }
@@ -1187,6 +1206,66 @@ mod ifc_trace_tests {
     #[test]
     fn empty_chain_is_vacuously_consistent() {
         assert_eq!(verify_ifc_trace(&[]), TraceOutcome::Consistent { hops: 0 });
+    }
+
+    // ── The recompute-against-the-EXTRACTED-primitive leg ──────────────────────
+    // These pin the runtime trace check to the SAME functions the D1
+    // non-interference theorem is proven over, so "runtime witness of the
+    // theorem" is a literal claim, not a parallel re-implementation.
+
+    use portcullis_core::extracted::ifc_integrity::iflows_to;
+
+    /// The wire egress rule (`!egress_blocked_by_integrity`, the single source of
+    /// truth shared by gate + verifier) must equal the EXTRACTED/proven predicate
+    /// `iflows_to(parse(i), Untrusted)` on every recognized token AND on
+    /// unrecognized ones (both fail-closed). This is the load-bearing parity:
+    /// it proves the string rule and the theorem's primitive define ONE egress
+    /// rule, so recomputing via the extracted fn does not silently diverge.
+    #[test]
+    fn egress_rule_matches_extracted_iflows_to() {
+        for token in [
+            "trusted",
+            "untrusted",
+            "adversarial",
+            "secret",
+            "garbage_token",
+            "",
+        ] {
+            let wire_allows = !nucleus_ifc::egress_blocked_by_integrity(token);
+            // `iflows_to(level, Untrusted)` = `irank(level) >= 1` = level is at
+            // least Untrusted = exactly the wire's `{trusted, untrusted}` allow set.
+            let extracted_allows = iflows_to(parse_integrity(token), IntegLevel::Untrusted);
+            assert_eq!(
+                wire_allows, extracted_allows,
+                "egress rule diverged from extracted iflows_to for token {token:?}"
+            );
+        }
+    }
+
+    /// The fold-based monotonicity check is equivalent to the previous local
+    /// rank comparison on the recognized tokens — a regression guard that the
+    /// refactor to the extracted `imeet` preserved behavior. `imeet(prev, cur) !=
+    /// cur` (trust rose) must equal `rank(cur) > rank(prev)` for every pair.
+    #[test]
+    fn imeet_fold_matches_rank_monotonicity() {
+        fn legacy_rank(i: &str) -> u8 {
+            match i {
+                "trusted" => 2,
+                "untrusted" => 1,
+                _ => 0,
+            }
+        }
+        for prev in ["trusted", "untrusted", "adversarial", "unknown"] {
+            for cur in ["trusted", "untrusted", "adversarial", "unknown"] {
+                let fold_rejects =
+                    imeet(parse_integrity(prev), parse_integrity(cur)) != parse_integrity(cur);
+                let rank_rejects = legacy_rank(cur) > legacy_rank(prev);
+                assert_eq!(
+                    fold_rejects, rank_rejects,
+                    "fold vs rank monotonicity diverged for {prev:?} -> {cur:?}"
+                );
+            }
+        }
     }
 }
 

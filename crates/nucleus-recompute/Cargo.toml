@@ -20,6 +20,14 @@ nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
 # predicate. nucleus-ifc (base, no `decision` feature) is wasm-pure (verified:
 # builds clean to wasm32), so it stays in the wasm-pure default closure.
 nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0" }
+# Aeneas-EXTRACTED integrity primitives (`irank`/`imeet`/`iflows_to`/`irun_step`)
+# — the exact 3-point functions the multi-hop non-interference (D1) theorem is
+# proven over. `verify_ifc_trace` recomputes its trust-monotonicity (anti-
+# laundering) check via the extracted `imeet` fold, so the runtime witness binds
+# to the PROVEN core rather than ad-hoc string-rank logic. `default-features =
+# false` keeps it dependency-free (the Aeneas translation target), so the
+# wasm-pure default closure is unchanged.
+portcullis-core = { path = "../portcullis-core", version = "1.0.0", default-features = false }
 # `envelope` feature only: lift a ClearingReceipt into nucleus-receipt's signed
 # colimit envelope (`Projection::Economic`) and narrow it back out. Optional so
 # the default build — the one the wasm-pure-crates gate compiles — keeps the
