@@ -1,0 +1,94 @@
+name: research-lean-build
+
+# Verification path for the RESEARCH-tier Lean cluster (cohomology / alignment-tax).
+# These libs carry `sorry`s (open conjectures, allowlisted in CONJECTURES.md), so
+# they are NOT in the proven-tier sorry-ban gate. But without ANY CI build, a proof
+# attempt that breaks type-checking — or a sorry that secretly multiplies — goes
+# unnoticed, and the local build is too heavy to verify against (Mathlib closure
+# replay times out >900s). This workflow gives the keystone effort a real
+# verification path on the cloud's warm Mathlib cache:
+#   1. lake-builds the cluster libs — a proof attempt that fails to type-check
+#      FAILS here (the check the keystone loop needs).
+#   2. counts cluster `sorry`s and RATCHETS: must not exceed the committed
+#      baseline (.research-sorry-baseline). Closing a sorry lowers it (update the
+#      baseline down); a regression / new hole fails.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/portcullis-core/lean/**'
+      - '.github/workflows/research-lean-build.yml'
+  pull_request:
+    paths:
+      - 'crates/portcullis-core/lean/**'
+      - '.github/workflows/research-lean-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research-lean-build:
+    name: lake build + sorry-ratchet (research tier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake / Mathlib build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5 # zizmor: ignore[cache-poisoning]
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            ~/.elan
+            ~/.cache/mathlib
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          restore-keys: |
+            lean-aeneas-${{ runner.os }}-
+
+      - name: Fetch Mathlib cache (prebuilt oleans)
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
+
+      - name: lake build (research cluster — type-check; a broken proof FAILS here)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          lake build \
+            MatrixBridge \
+            RankNullity \
+            AlignmentTaxBridge \
+            AlignmentTaxConcrete \
+            ComparisonTheorem \
+            SimplexAcyclic \
+            HigherObstruction \
+            MultiAgentCohomology \
+            CompositionalAlignment \
+            PACVCBridge \
+            UniversalityTheorem \
+            CechCohomology
+
+      - name: Sorry ratchet (must not exceed baseline)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          # Proof-hole count: lines whose first non-space token is `sorry`/`admit`
+          # (comment lines start with `--`/`/-`, so they don't match).
+          count=$(grep -rhcE '^[[:space:]]*(sorry|admit)' --include='*.lean' \
+                    --exclude-dir=.lake . 2>/dev/null | awk '{s+=$1} END{print s+0}')
+          baseline=$(cat .research-sorry-baseline)
+          echo "research-tier sorries: $count (baseline $baseline)"
+          echo "per-file:"
+          grep -rlE '^[[:space:]]*(sorry|admit)' --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
+            | while read -r f; do echo "  $(basename "$f"): $(grep -cE '^[[:space:]]*(sorry|admit)' "$f")"; done
+          if [ "$count" -gt "$baseline" ]; then
+            echo "::error::research-tier sorry count increased ($count > baseline $baseline) — a new proof hole was introduced"
+            exit 1
+          fi
+          if [ "$count" -lt "$baseline" ]; then
+            echo "::notice::sorry count dropped to $count (< $baseline) — update .research-sorry-baseline to ratchet the win in"
+          fi
