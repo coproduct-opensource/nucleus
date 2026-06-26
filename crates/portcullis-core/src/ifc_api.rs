@@ -297,12 +297,14 @@ impl FlowTracker {
         }
 
         // Start from the caller's label (NOT intrinsic_label) and join parents.
-        let mut label = label;
-        for &pid in parents {
-            if let Some((_, parent_label, _)) = self.node_entry(pid) {
-                label = label.join(*parent_label);
-            }
-        }
+        // Pure fold over parents: label = caller_label ⊔ ⨆_{p∈parents} label(p).
+        // (D1 prep — the per-node label is a fold, the induction target.)
+        let label = parents
+            .iter()
+            .fold(label, |acc, &pid| match self.node_entry(pid) {
+                Some((_, parent_label, _)) => acc.join(*parent_label),
+                None => acc,
+            });
 
         let id = self.next_id;
         self.next_id = self
@@ -356,13 +358,18 @@ impl FlowTracker {
         // the gate in-browser with no drift).
         let now = now_unix_secs();
 
-        // Compute label: intrinsic join with parent labels.
-        let mut label = intrinsic_label(kind, now);
-        for &pid in parents {
-            if let Some((_, parent_label, _)) = self.node_entry(pid) {
-                label = label.join(*parent_label);
-            }
-        }
+        // Compute label as a pure fold over parents (Denning's lattice join):
+        //   label = intrinsic_label(kind) ⊔ ⨆_{p∈parents} label(p)
+        // This fold form is the single-step transition the D1 unwinding theorem
+        // inducts over (see docs/rfcs/multi-hop-noninterference-unwinding.md).
+        let label = parents
+            .iter()
+            .fold(intrinsic_label(kind, now), |acc, &pid| {
+                match self.node_entry(pid) {
+                    Some((_, parent_label, _)) => acc.join(*parent_label),
+                    None => acc,
+                }
+            });
 
         let id = self.next_id;
         self.next_id = self
