@@ -549,6 +549,107 @@ mod e2e_enforcement_tests {
     }
 }
 
+/// Travel an IFC decision as a signed receipt (feature `ifc-envelope`).
+///
+/// nucleus-ifc's [`ConformanceCertificate`](nucleus_ifc::decision::ConformanceCertificate)
+/// is a proof-carrying IFC-down-flow decision: the declared flow, the verdict,
+/// and the named obligation. This module lifts it into nucleus-receipt's
+/// [`Projection::Flow`] so ONE signed envelope carries BOTH guarantees:
+///
+/// 1. **Signature** (who emitted it) — `Receipt::verify`;
+/// 2. **Recompute** (the verdict re-derives from the declared inputs) —
+///    [`ConformanceCertificate::recheck`](nucleus_ifc::decision::ConformanceCertificate::recheck),
+///    which re-runs `decide()` on the declaration and rejects a forged verdict.
+///
+/// This is the IFC dual of the econ [`envelope`] module: the same lift→sign→
+/// verify→narrow→recompute round-trip, over the IFC decision instead of a
+/// clearing. The `Projection::Flow` body shape is:
+///
+/// ```json
+/// { "kind": "ifc-decision/v1", "certificate": { "spec": "...", "declaration": {...}, ... } }
+/// ```
+///
+/// HONEST SCOPE: recompute re-derives the *model-level* verdict over the
+/// *declared* inputs — coverage (undeclared inputs) is the limit, exactly as the
+/// certificate itself documents. Signing does not make the labels true.
+#[cfg(feature = "ifc-envelope")]
+pub mod ifc_flow {
+    use nucleus_ifc::decision::ConformanceCertificate;
+
+    pub use nucleus_receipt::Projection;
+
+    /// The `"kind"` discriminant inside a `Projection::Flow` body that marks it as
+    /// a proof-carrying IFC decision. Stable wire constant (versioned so other
+    /// flow records can coexist under the same projection kind).
+    pub const FLOW_IFC_DECISION_KIND: &str = "ifc-decision/v1";
+
+    /// Why a [`Projection`] could not be narrowed to a [`ConformanceCertificate`].
+    #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum IfcNarrowError {
+        /// The projection is not `Projection::Flow` at all.
+        #[error("projection kind is `{found}`, expected `flow`")]
+        NotFlow {
+            /// The wire discriminant of the projection that was supplied.
+            found: &'static str,
+        },
+        /// The flow body's `kind` is not `ifc-decision/v1`.
+        #[error("flow body kind is `{found}`, expected `{}`", FLOW_IFC_DECISION_KIND)]
+        NotIfcDecision {
+            /// The inner `kind` found, or `<missing>`.
+            found: String,
+        },
+        /// The body claimed to be an IFC decision but its `certificate` field is
+        /// absent or does not deserialize as a [`ConformanceCertificate`].
+        #[error("ifc-decision body is malformed: {0}")]
+        MalformedBody(String),
+    }
+
+    /// Lift a [`ConformanceCertificate`] into the [`Projection::Flow`] body it
+    /// travels as inside a signed [`Receipt`](nucleus_receipt::Receipt).
+    pub fn to_flow_projection(cert: &ConformanceCertificate) -> Projection {
+        Projection::Flow(serde_json::json!({
+            "kind": FLOW_IFC_DECISION_KIND,
+            "certificate": cert,
+        }))
+    }
+
+    /// Narrow a [`Projection`] back to the typed [`ConformanceCertificate`].
+    ///
+    /// Narrowing does NOT verify anything: call
+    /// [`Receipt::verify`](nucleus_receipt::Receipt::verify) on the envelope
+    /// *before* narrowing, and
+    /// [`recheck`](nucleus_ifc::decision::ConformanceCertificate::recheck) on the
+    /// narrowed certificate *after* (the recompute leg).
+    pub fn ifc_certificate_from_projection(
+        projection: &Projection,
+    ) -> Result<ConformanceCertificate, IfcNarrowError> {
+        let Projection::Flow(body) = projection else {
+            return Err(IfcNarrowError::NotFlow {
+                found: projection.kind(),
+            });
+        };
+        match body.get("kind").and_then(serde_json::Value::as_str) {
+            Some(FLOW_IFC_DECISION_KIND) => {}
+            Some(other) => {
+                return Err(IfcNarrowError::NotIfcDecision {
+                    found: other.to_string(),
+                })
+            }
+            None => {
+                return Err(IfcNarrowError::NotIfcDecision {
+                    found: "<missing>".to_string(),
+                })
+            }
+        }
+        let cert = body
+            .get("certificate")
+            .ok_or_else(|| IfcNarrowError::MalformedBody("missing `certificate` field".to_string()))?;
+        serde_json::from_value(cert.clone())
+            .map_err(|e| IfcNarrowError::MalformedBody(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1157,6 +1258,145 @@ pub fn verify_ifc_trace(hops: &[IfcHop]) -> TraceOutcome {
         }
     }
     TraceOutcome::Consistent { hops: hops.len() }
+}
+
+// Signed IFC-decision receipt round-trip (feature `ifc-envelope`): the IFC dual
+// of the econ `signed_envelope_carries_both_guarantees_end_to_end` test.
+#[cfg(all(test, feature = "ifc-envelope"))]
+mod ifc_envelope_tests {
+    use crate::ifc_flow::{
+        ifc_certificate_from_projection, to_flow_projection, IfcNarrowError, FLOW_IFC_DECISION_KIND,
+    };
+    use nucleus_ifc::decision::{DeclaredInput, FlowDeclaration, IfcVerdict};
+    use nucleus_receipt::{Projection, Receipt, ReceiptError, Session};
+
+    fn session() -> Session {
+        Session {
+            session_id: "spiffe://test/ifc-agent".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        }
+    }
+
+    /// Round-trip law: narrow ∘ lift = id (the certificate survives the wire).
+    #[test]
+    fn lift_then_narrow_is_identity() {
+        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow])
+            .certify();
+        let back = ifc_certificate_from_projection(&to_flow_projection(&cert))
+            .expect("flow projection narrows back");
+        assert_eq!(back, cert);
+    }
+
+    /// The full both-guarantees path: lift → sign → verify (signature: who
+    /// emitted it) → narrow → recompute (the verdict re-derives from the declared
+    /// inputs via `recheck()`, which re-runs `decide()`).
+    #[test]
+    fn signed_ifc_certificate_carries_both_guarantees_end_to_end() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        // A clean, admissible flow (trusted ancestry → counterparty sink).
+        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow])
+            .certify();
+        assert!(cert.admits(), "the clean flow should be admissible");
+
+        let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+
+        // Guarantee 1: the signature binds the issuer to these bytes.
+        signed.verify(&vk).expect("freshly signed envelope verifies");
+
+        // Narrow back, then Guarantee 2: the verdict recomputes from the inputs.
+        let back = ifc_certificate_from_projection(&signed.projections[0])
+            .expect("signed flow projection narrows back");
+        let report = back.recheck();
+        assert!(report.recomputes, "the verdict must re-derive from decide()");
+        assert!(report.spec_matches);
+        assert!(report.admissible);
+    }
+
+    /// A FORGED verdict (allow stamped onto a flow that `decide()` denies) is
+    /// caught by RECOMPUTE even though the signature is perfectly valid — the
+    /// attacker can sign their own bytes, but cannot make `decide()` reproduce a
+    /// verdict that doesn't exist. This is the per-decision bond.
+    #[test]
+    fn forged_allow_verdict_is_caught_by_recompute_despite_valid_signature() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        // Adversarial ancestry → decide() denies. Forge the carried verdict to allow.
+        let mut cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent])
+            .certify();
+        assert!(!cert.verdict.is_allow(), "decide() should deny this flow");
+        cert.verdict = IfcVerdict {
+            allow: true,
+            reason: "safe".to_string(),
+            declared_inputs: cert.verdict.declared_inputs.clone(),
+        };
+
+        // The attacker signs the forged cert with their own key — signature is VALID.
+        let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+        signed.verify(&vk).expect("attacker's own signature verifies");
+
+        // But recompute re-runs decide() from the declaration and refuses the forgery.
+        let back = ifc_certificate_from_projection(&signed.projections[0]).unwrap();
+        let report = back.recheck();
+        assert!(
+            !report.recomputes,
+            "recompute must catch the forged allow verdict"
+        );
+        assert!(!report.admissible, "a forged allow can never be admissible");
+    }
+
+    /// Tampering with the signed body is caught by the SIGNATURE check first —
+    /// before recompute is even consulted.
+    #[test]
+    fn tampered_body_fails_signature_before_recompute() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
+        let mut signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+
+        // Flip the verdict to allow=false inside the signed body.
+        let Projection::Flow(body) = &mut signed.projections[0] else {
+            panic!("envelope holds a flow projection");
+        };
+        body["certificate"]["verdict"]["allow"] = serde_json::json!(false);
+
+        // The envelope check fails FIRST: the re-canonicalized bytes no longer
+        // match the signed root hash.
+        assert!(matches!(
+            signed.verify(&vk),
+            Err(ReceiptError::RootHashMismatch { .. })
+        ));
+    }
+
+    /// Narrowing rejects a non-flow projection and a flow body with the wrong kind.
+    #[test]
+    fn narrowing_rejects_wrong_projection_and_kind() {
+        // Wrong projection variant.
+        let econ = Projection::Economic(serde_json::json!({"kind": "clearing"}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&econ),
+            Err(IfcNarrowError::NotFlow { found: "economic" })
+        ));
+
+        // Right variant, wrong inner kind.
+        let wrong_kind = Projection::Flow(serde_json::json!({"kind": "node-count-summary"}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&wrong_kind),
+            Err(IfcNarrowError::NotIfcDecision { .. })
+        ));
+
+        // Right kind, missing certificate body.
+        let no_cert = Projection::Flow(serde_json::json!({"kind": FLOW_IFC_DECISION_KIND}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&no_cert),
+            Err(IfcNarrowError::MalformedBody(_))
+        ));
+    }
 }
 
 #[cfg(test)]

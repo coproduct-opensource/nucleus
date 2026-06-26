@@ -44,6 +44,14 @@ nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0", optional = t
 # (and the wasm-pure default build) pay nothing for it.
 envelope = ["dep:nucleus-receipt"]
 
+# Travel an IFC decision as a signed receipt: lift a `ConformanceCertificate`
+# (nucleus-ifc's proof-carrying IFC-down-flow decision) into nucleus-receipt's
+# `Projection::Flow`, sign it, and recompute it offline via the cert's `recheck()`
+# (re-runs `decide()` from the declared inputs — a forged verdict is caught). Pulls
+# nucleus-ifc's `decision` module (wasm-pure: serde + portcullis-core only) +
+# nucleus-receipt. OFF by default so the wasm-pure recompute core pays nothing.
+ifc-envelope = ["dep:nucleus-receipt", "nucleus-ifc/decision"]
+
 [dev-dependencies]
 # Fixed-key signing in the envelope end-to-end + tamper tests.
 ed25519-dalek = { workspace = true }
