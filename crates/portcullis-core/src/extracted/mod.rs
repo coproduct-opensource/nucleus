@@ -16,4 +16,5 @@
 //! The extraction roots live here so the CI extractor can name them with
 //! `charon ... --start-from portcullis_core::extracted::ifc_integrity::<fn>`.
 
+pub mod ifc_confidentiality;
 pub mod ifc_integrity;
