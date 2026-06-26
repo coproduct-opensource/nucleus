@@ -106,8 +106,8 @@ fn attack_corpus_ab_bypass_rate() {
         corpus.vectors.len()
     );
     println!(
-        "  {:<24} {:<7} {:<6} {:<10} {}",
-        "id", "intent", "gate", "status", ""
+        "  {:<24} {:<7} {:<6} {:<10}",
+        "id", "intent", "gate", "status"
     );
     for v in &corpus.vectors {
         let got = enforced_verdict(v);
