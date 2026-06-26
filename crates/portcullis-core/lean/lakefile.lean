@@ -44,6 +44,11 @@ lean_lib «PortcullisCoreIFC» where
 lean_lib «IntegrityNoninterferenceExtracted» where
   roots := #[`IntegrityNoninterferenceExtracted]
 
+-- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
+-- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
+lean_lib «ConfidentialityNoninterferenceExtracted» where
+  roots := #[`ConfidentialityNoninterferenceExtracted]
+
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]

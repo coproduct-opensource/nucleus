@@ -358,6 +358,11 @@ impl FlowDeclaration {
                 // The confidentiality dual is proven only over a hand model
                 // (formal/Nucleus/HolyGrail/ConfidentialityNoninterference.lean) — real,
                 // but NOT extracted from the running Rust. Stated honestly, never unified.
+                // C1 IN PROGRESS: the extracted confidentiality slice + dual theorem are
+                // STAGED (portcullis-core extracted::ifc_confidentiality +
+                // ConfidentialityNoninterferenceExtracted.lean, wired into aeneas-ifc-scoped).
+                // Flip this to ExtractedKernelChecked ONLY after that job verifies the dual
+                // (the integrity leg above is the precedent) — do not flip on stage alone.
                 confidentiality_axis: ProofStatus::HandModelKernelChecked,
                 open_residuals: vec![
                     "the FlowTracker graph-fold loop is hand-written Lean (irun), not extracted".to_string(),
