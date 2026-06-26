@@ -1,0 +1,71 @@
+name: exemplar-scoreboard
+
+# The MECHANICAL layer of the "top-1% exemplar" instrument. Computes exact,
+# greppable cross-domain metrics (formal verification / Rust craft / sandboxing /
+# category theory) and RATCHETS them against a committed baseline:
+#   - lower-is-better metrics may not increase (no new permissive verify, no new
+#     vacuous Lean, no new mediation drift, ...);
+#   - higher-is-better metrics may not decrease (extraction, lints adoption);
+#   - *_GUARD metrics may not drop — the anti-Goodhart pairing (you can't cut
+#     `permissive_verify` by deleting the verifier: `verify_calls_GUARD` would
+#     fall; you can't cut `vacuous_lean` by deleting theorems: `lean_theorems_GUARD`
+#     would fall).
+# Fast (grep only, no cargo/lake build). The judgment-level gaps grep can't see
+# (real-vs-decorative, overclaim) are caught by the periodic adversarial workflow,
+# which also RECALIBRATES these metrics — grep measures, the panel re-tunes the ruler.
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
+  pull_request:
+    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scoreboard:
+    name: exemplar metrics ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Compute scoreboard
+        run: bash scripts/exemplar-scoreboard.sh scoreboard.json
+
+      - name: Ratchet against baseline (with anti-Goodhart guards)
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          cur  = json.load(open("scoreboard.json"))
+          base = json.load(open("scripts/exemplar-baseline.json"))
+          def flat(d, p=""):
+              o = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): o.update(flat(v, p+k+"."))
+                  elif isinstance(v, (int, float)) and not isinstance(v, bool): o[p+k] = v
+              return o
+          c, b = flat(cur), flat(base)
+          LOWER  = {"permissive_verify","vacuous_lean","sorry_admit","mediation_drift",
+                    "effect_stubs","unsafe_blocks","stale_verus_dirs"}
+          HIGHER = {"extracted_proofs","crates_lints_workspace","extraction_ratio_pct","lints_adoption_pct"}
+          fail, improved = [], []
+          for k, cv in c.items():
+              name, bv = k.split(".")[-1], b.get(k)
+              if bv is None: continue
+              if name in LOWER:
+                  if cv > bv: fail.append(f"{name} regressed {bv}->{cv} (lower is better)")
+                  elif cv < bv: improved.append(f"{name} {bv}->{cv}")
+              elif name in HIGHER:
+                  if cv < bv: fail.append(f"{name} regressed {bv}->{cv} (higher is better)")
+                  elif cv > bv: improved.append(f"{name} {bv}->{cv}")
+              elif name.endswith("_GUARD"):
+                  if cv < bv: fail.append(f"anti-gaming GUARD {name} dropped {bv}->{cv} (verifier/theorems deleted?)")
+          for i in improved: print(f"::notice::improved {i} — lower scripts/exemplar-baseline.json to ratchet it in")
+          if fail:
+              for f in fail: print(f"::error::{f}")
+              sys.exit(1)
+          print("exemplar scoreboard: no regressions vs baseline")
+          PY
