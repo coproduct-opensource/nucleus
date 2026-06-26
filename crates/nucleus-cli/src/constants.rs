@@ -35,7 +35,16 @@ mod tests {
         // Regression guard: the built-in effects that would bypass the lattice
         // must all be in the disallow list. If a new built-in tool appears,
         // add it here and to the constant in the same change.
-        for t in ["Bash", "Write", "Edit", "WebFetch", "WebSearch", "Read", "Glob", "Grep"] {
+        for t in [
+            "Bash",
+            "Write",
+            "Edit",
+            "WebFetch",
+            "WebSearch",
+            "Read",
+            "Glob",
+            "Grep",
+        ] {
             assert!(
                 DISALLOWED_BUILTIN_TOOLS.split(',').any(|x| x == t),
                 "built-in tool {t} must be disallowed (it bypasses the nucleus kernel)"
