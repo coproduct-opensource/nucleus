@@ -94,6 +94,10 @@ tokio-vsock = "0.7"
 [dev-dependencies]
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Direct access to the IFC gate (flow/flow_algebra/SinkClass) for the attack
+# corpus; already transitive via `portcullis`. Dev-only — production graph
+# unchanged. Used by tests/attack_corpus.rs.
+portcullis-core = { path = "../portcullis-core" }
 
 [lints]
 workspace = true
