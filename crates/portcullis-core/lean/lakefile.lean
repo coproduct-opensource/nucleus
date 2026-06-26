@@ -52,6 +52,14 @@ lean_lib «ExposureProofs» where
 lean_lib «FlowProofs» where
   roots := #[`FlowProofs]
 
+-- Multi-hop non-interference unwinding theorem (D1/M1; Mathlib-free, zero axioms)
+lean_lib «UnwindingNoninterference» where
+  roots := #[`UnwindingNoninterference]
+
+-- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
+lean_lib «UnwindingIFC» where
+  roots := #[`UnwindingIFC]
+
 -- Kernel decision logic proofs (decide_pure correctness)
 lean_lib «DecidePureProofs» where
   roots := #[`DecidePureProofs]
