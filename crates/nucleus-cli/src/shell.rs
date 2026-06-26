@@ -254,7 +254,7 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         .arg("--allowedTools")
         .arg(allowed_tools.join(","))
         .arg("--disallowedTools")
-        .arg("Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Agent")
+        .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
         .env_remove("CLAUDECODE")
         .current_dir(&work_dir);
 

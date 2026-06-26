@@ -901,21 +901,27 @@ fn run_claude_mcp(
         .arg(mcp_config_path)
         .arg("--allowedTools")
         .arg(allowed_tools.join(","))
+        // CRITICAL — complete mediation. Block the agent's BUILT-IN tools so it
+        // can act ONLY through the nucleus MCP tools, every one of which routes
+        // through the PermissionLattice. Without this, `--dangerously-skip-permissions`
+        // below lets the built-in Bash/Read/Write/WebFetch/etc. run OUTSIDE the
+        // kernel — an in-band path that skips the monitor entirely. Mirrors
+        // `shell.rs`; the two disallow lists MUST stay identical (regression-tested).
+        .arg("--disallowedTools")
+        .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS)
         .arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg(prompt)
         .current_dir(work_dir);
 
-    // Always bypass Claude's built-in permission system in local enforced mode.
-    // Security is enforced by the nucleus tool-proxy lattice, which gates every
-    // tool call through the PermissionLattice. Claude's permission system is
-    // redundant here and prevents the agent from implementing in non-interactive
-    // (--print) mode — it falls back to plan-only without human approval.
-    //
-    // The uninhabitable_state's approval obligations (e.g., bash requires human sign-off)
-    // are meaningful for interactive use, but in CI there's no human to approve.
-    // The tool-proxy's command allowlist and capability levels are the actual
-    // security boundary.
+    // Bypass Claude's built-in *interactive approval* in local enforced mode —
+    // SAFE ONLY because `--disallowedTools` above already removed every built-in
+    // tool, so the agent's only remaining tools are the nucleus MCP tools, and
+    // each of THOSE routes through the PermissionLattice. (Bypassing approval
+    // without the disallow list would let the built-in Bash/WebFetch/etc. run
+    // ungated — see the disallow comment.) Claude's interactive approval can't
+    // function in non-interactive `--print` mode anyway (it falls back to
+    // plan-only without a human), so the lattice IS the security boundary.
     cmd.arg("--dangerously-skip-permissions");
     cmd.arg("--permission-mode").arg("bypassPermissions");
 
