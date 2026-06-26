@@ -33,6 +33,9 @@ jobs:
       - name: Compute maturity probe (badges + table)
         run: bash scripts/maturity-probe.sh badges
 
+      - name: Stub probe (dangerous-stub badge + ratchet gate)
+        run: bash scripts/stub-probe.sh badges
+
       - name: Inject README block between markers
         run: |
           python3 - <<'PY'

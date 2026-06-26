@@ -7,9 +7,5 @@
     "sorry_bearing_files": 11,
     "sorries": 35,
     "decorative_stubs": 1
-  },
-  "rust": {
-    "todo_unimplemented": 207,
-    "ignored_tests": 11
   }
 }

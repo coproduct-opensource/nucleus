@@ -11,7 +11,7 @@
 [![Lean theorems](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/theorems.json)](docs/PROOFS.md)
 [![sorries](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/sorries.json)](docs/PROOFS.md)
 [![decorative stubs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/decorative.json)](docs/PROOFS.md)
-[![rust stubs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/rust-stubs.json)](docs/PROOFS.md)
+[![dangerous stubs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/dangerous-stubs.json)](docs/PROOFS.md)
 [![clean axiom footprint](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/badges/axiom-footprint.json)](docs/PROOFS.md)
 
 > Maturity badges are **computed by `scripts/maturity-probe.sh` in CI**, never hand-authored — the numbers cannot drift from reality. Counts exclude vendored Mathlib (`.lake/`) and worktrees. A theorem *count* is not a strength claim; see [PROOFS.md](docs/PROOFS.md) for the PROVEN/TESTED/ATTESTED tiers.

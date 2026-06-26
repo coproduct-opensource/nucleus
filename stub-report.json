@@ -1,0 +1,9 @@
+{
+  "dangerous_stub_count": 0,
+  "affirming_verifiers": 7,
+  "vendor_coupling": 0,
+  "help_body_mismatch": 0,
+  "silent_fake_returns": 17,
+  "raw_scaffolds_informational": 33,
+  "ignored_tests": 11
+}

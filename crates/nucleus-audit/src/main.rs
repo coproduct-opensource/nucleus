@@ -55,12 +55,17 @@ enum Command {
         #[arg(long, env = "NUCLEUS_AUDIT_SECRET")]
         secret: Option<String>,
     },
-    /// Verify a nucleus-claude-hook receipt chain (Ed25519 signatures + SHA-256 hash links).
+    /// Check a nucleus-claude-hook receipt chain's `prev_hash` pointer linkage.
     ///
-    /// Reads the JSONL receipt file produced by the hook and verifies:
+    /// Reads the JSONL receipt file produced by the hook and checks:
     /// 1. Each receipt's prev_hash matches the previous receipt's receipt_hash
     /// 2. No gaps or out-of-order entries in the chain
     /// 3. Summary of decisions (allowed/denied/asked)
+    ///
+    /// NOTE: this checks POINTER LINKAGE only. It does NOT recompute
+    /// `receipt_hash` from the entry content, nor verify the `signature` field —
+    /// so a tampered field that preserves the linkage is NOT detected. Full
+    /// content-rehash + Ed25519 signature verification is a tracked follow-up.
     VerifyReceipts {
         /// Receipt chain file (JSONL from nucleus-claude-hook).
         #[arg(long)]
@@ -1099,7 +1104,7 @@ fn verify_receipt_chain(path: &Path) -> Result<(), AuditError> {
     println!();
     if errors.is_empty() {
         println!(
-            "ok: {total} receipts verified (chain intact, {allowed} allowed, {denied} denied, {asked} asked)"
+            "ok: {total} receipts, prev_hash linkage intact ({allowed} allowed, {denied} denied, {asked} asked) [linkage only — content hashes + signatures NOT verified]"
         );
     } else {
         for err in &errors {
