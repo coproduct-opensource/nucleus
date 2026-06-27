@@ -98,6 +98,12 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 [workspace.lints.clippy]
 type_complexity = "allow"
 
+[workspace.lints.rust]
+# kani BMC harnesses are `#[cfg(kani)]`; allow the cfg for workspace-adopting
+# crates so the verified core (and others with kani modules) can use
+# `[lints] workspace = true` rather than duplicating a local allow.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
 [workspace.dependencies]
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

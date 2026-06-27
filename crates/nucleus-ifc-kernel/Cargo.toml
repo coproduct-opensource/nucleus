@@ -26,5 +26,6 @@ serde = { version = "1", features = ["derive"], optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+[lints]
+# Adopt workspace lints (incl. the cfg(kani) allow for the BMC harnesses).
+workspace = true
