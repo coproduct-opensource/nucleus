@@ -15,114 +15,138 @@ set_option maxRecDepth 2048
 
 namespace nucleus_ifc_kernel
 
-/-- [nucleus_ifc_kernel::{impl core::cmp::PartialEq<nucleus_ifc_kernel::CapabilityLevel> for nucleus_ifc_kernel::CapabilityLevel}::eq]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 162:29-162:38
+/-- [nucleus_ifc_kernel::capability_level::{impl core::cmp::PartialEq<nucleus_ifc_kernel::capability_level::CapabilityLevel> for nucleus_ifc_kernel::capability_level::CapabilityLevel}::eq]:
+    Source: 'crates/nucleus-ifc-kernel/src/capability_level.rs', lines 17:29-17:38
     Visibility: public -/
-def CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq
-  (self : CapabilityLevel) (other : CapabilityLevel) : Result Bool := do
+def capability_level.CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq
+  (self : capability_level.CapabilityLevel)
+  (other : capability_level.CapabilityLevel) :
+  Result Bool
+  := do
   let self1 := read_discriminant self
   let other1 := read_discriminant other
   ok (self1 = other1)
 
-/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::ExposureSet}::set]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1306:4-1312:5
+/-- [nucleus_ifc_kernel::exposure::{nucleus_ifc_kernel::exposure::ExposureSet}::set]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 58:4-64:5
     Visibility: public -/
-def ExposureSet.set
-  (self : ExposureSet) (label : ExposureLabel) : Result ExposureSet := do
+def exposure.ExposureSet.set
+  (self : exposure.ExposureSet) (label : exposure.ExposureLabel) :
+  Result exposure.ExposureSet
+  := do
   match label with
-  | ExposureLabel.PrivateData => ok { self with private_data := true }
-  | ExposureLabel.UntrustedContent =>
+  | exposure.ExposureLabel.PrivateData => ok { self with private_data := true }
+  | exposure.ExposureLabel.UntrustedContent =>
     ok { self with untrusted_content := true }
-  | ExposureLabel.ExfilVector => ok { self with exfil_vector := true }
+  | exposure.ExposureLabel.ExfilVector => ok { self with exfil_vector := true }
 
-/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::ExposureSet}::is_uninhabitable]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1333:4-1335:5
+/-- [nucleus_ifc_kernel::exposure::{nucleus_ifc_kernel::exposure::ExposureSet}::is_uninhabitable]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 85:4-87:5
     Visibility: public -/
-def ExposureSet.is_uninhabitable (self : ExposureSet) : Result Bool := do
+def exposure.ExposureSet.is_uninhabitable
+  (self : exposure.ExposureSet) : Result Bool := do
   if self.private_data
   then if self.untrusted_content
        then ok self.exfil_vector
        else ok false
   else ok false
 
-/-- [nucleus_ifc_kernel::classify_operation]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1351:0-1365:1
+/-- [nucleus_ifc_kernel::exposure::classify_operation]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 106:0-121:1
     Visibility: public -/
-def classify_operation (op : Operation) : Result (Option ExposureLabel) := do
+def exposure.classify_operation
+  (op : ifc_ops.Operation) : Result (Option exposure.ExposureLabel) := do
   match op with
-  | Operation.ReadFiles => ok (some ExposureLabel.PrivateData)
-  | Operation.WriteFiles => ok (some ExposureLabel.ExfilVector)
-  | Operation.EditFiles => ok (some ExposureLabel.ExfilVector)
-  | Operation.RunBash => ok (some ExposureLabel.ExfilVector)
-  | Operation.GlobSearch => ok (some ExposureLabel.PrivateData)
-  | Operation.GrepSearch => ok (some ExposureLabel.PrivateData)
-  | Operation.WebSearch => ok (some ExposureLabel.UntrustedContent)
-  | Operation.WebFetch => ok (some ExposureLabel.UntrustedContent)
-  | Operation.GitCommit => ok (some ExposureLabel.ExfilVector)
-  | Operation.GitPush => ok (some ExposureLabel.ExfilVector)
-  | Operation.CreatePr => ok (some ExposureLabel.ExfilVector)
-  | Operation.ManagePods => ok (some ExposureLabel.ExfilVector)
-  | Operation.SpawnAgent => ok (some ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.ReadFiles => ok (some exposure.ExposureLabel.PrivateData)
+  | ifc_ops.Operation.WriteFiles =>
+    ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.EditFiles => ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.RunBash => ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.GlobSearch =>
+    ok (some exposure.ExposureLabel.PrivateData)
+  | ifc_ops.Operation.GrepSearch =>
+    ok (some exposure.ExposureLabel.PrivateData)
+  | ifc_ops.Operation.WebSearch =>
+    ok (some exposure.ExposureLabel.UntrustedContent)
+  | ifc_ops.Operation.WebFetch =>
+    ok (some exposure.ExposureLabel.UntrustedContent)
+  | ifc_ops.Operation.GitCommit => ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.GitPush => ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.CreatePr => ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.ManagePods =>
+    ok (some exposure.ExposureLabel.ExfilVector)
+  | ifc_ops.Operation.SpawnAgent =>
+    ok (some exposure.ExposureLabel.ExfilVector)
 
-/-- [nucleus_ifc_kernel::project_exposure]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1368:0-1377:1
+/-- [nucleus_ifc_kernel::exposure::project_exposure]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 124:0-133:1
     Visibility: public -/
-def project_exposure
-  (current : ExposureSet) (op : Operation) : Result ExposureSet := do
-  let o ← classify_operation op
+def exposure.project_exposure
+  (current : exposure.ExposureSet) (op : ifc_ops.Operation) :
+  Result exposure.ExposureSet
+  := do
+  let o ← exposure.classify_operation op
   match o with
   | none => ok current
-  | some label => ExposureSet.set current label
+  | some label => exposure.ExposureSet.set current label
 
-/-- [nucleus_ifc_kernel::is_exfil_operation]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1385:0-1387:1
+/-- [nucleus_ifc_kernel::ifc_ops::is_exfil_operation]:
+    Source: 'crates/nucleus-ifc-kernel/src/ifc_ops.rs', lines 470:0-482:1
     Visibility: public -/
-def is_exfil_operation (op : Operation) : Result Bool := do
-  let o ← classify_operation op
-  match o with
-  | none => ok false
-  | some el =>
-    match el with
-    | ExposureLabel.PrivateData => ok false
-    | ExposureLabel.UntrustedContent => ok false
-    | ExposureLabel.ExfilVector => ok true
+def ifc_ops.is_exfil_operation (op : ifc_ops.Operation) : Result Bool := do
+  match op with
+  | ifc_ops.Operation.ReadFiles => ok false
+  | ifc_ops.Operation.WriteFiles => ok true
+  | ifc_ops.Operation.EditFiles => ok true
+  | ifc_ops.Operation.RunBash => ok true
+  | ifc_ops.Operation.GlobSearch => ok false
+  | ifc_ops.Operation.GrepSearch => ok false
+  | ifc_ops.Operation.WebSearch => ok false
+  | ifc_ops.Operation.WebFetch => ok false
+  | ifc_ops.Operation.GitCommit => ok true
+  | ifc_ops.Operation.GitPush => ok true
+  | ifc_ops.Operation.CreatePr => ok true
+  | ifc_ops.Operation.ManagePods => ok true
+  | ifc_ops.Operation.SpawnAgent => ok true
 
-/-- [nucleus_ifc_kernel::should_gate]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1394:0-1397:1
+/-- [nucleus_ifc_kernel::exposure::should_gate]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 150:0-153:1
     Visibility: public -/
-def should_gate (current : ExposureSet) (op : Operation) : Result Bool := do
-  let projected ← project_exposure current op
-  let b ← ExposureSet.is_uninhabitable current
+def exposure.should_gate
+  (current : exposure.ExposureSet) (op : ifc_ops.Operation) : Result Bool := do
+  let projected ← exposure.project_exposure current op
+  let b ← exposure.ExposureSet.is_uninhabitable current
   if b
-  then is_exfil_operation op
+  then ifc_ops.is_exfil_operation op
   else
-    let b1 ← ExposureSet.is_uninhabitable projected
+    let b1 ← exposure.ExposureSet.is_uninhabitable projected
     if b1
-    then is_exfil_operation op
+    then ifc_ops.is_exfil_operation op
     else ok false
 
-/-- [nucleus_ifc_kernel::decide_pure]:
-    Source: 'crates/portcullis-core/src/lib.rs', lines 2003:0-2020:1
+/-- [nucleus_ifc_kernel::exposure::decide_pure]:
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 209:0-226:1
     Visibility: public -/
-def decide_pure
-  (level : CapabilityLevel) (exposure : ExposureSet) (op : Operation) :
-  Result PureVerdict
+def exposure.decide_pure
+  (level : capability_level.CapabilityLevel) (exposure : exposure.ExposureSet)
+  (op : ifc_ops.Operation) :
+  Result exposure.PureVerdict
   := do
   let b ←
-    CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq level
-      CapabilityLevel.Never
+    capability_level.CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq
+      level capability_level.CapabilityLevel.Never
   if b
-  then ok PureVerdict.DenyCapability
+  then ok exposure.PureVerdict.DenyCapability
   else
     let b1 ←
-      CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq level
-        CapabilityLevel.LowRisk
+      capability_level.CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq
+        level capability_level.CapabilityLevel.LowRisk
     if b1
-    then ok PureVerdict.RequiresApproval
+    then ok exposure.PureVerdict.RequiresApproval
     else
-      let b2 ← should_gate exposure op
+      let b2 ← exposure.should_gate exposure op
       if b2
-      then ok PureVerdict.GateExfil
-      else ok PureVerdict.Allow
+      then ok exposure.PureVerdict.GateExfil
+      else ok exposure.PureVerdict.Allow
 
 end nucleus_ifc_kernel

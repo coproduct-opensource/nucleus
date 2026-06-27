@@ -14,59 +14,59 @@ set_option maxRecDepth 2048
 
 namespace nucleus_ifc_kernel
 
-/-- [nucleus_ifc_kernel::CapabilityLevel]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 166:0-174:1
+/-- [nucleus_ifc_kernel::capability_level::CapabilityLevel]
+    Source: 'crates/nucleus-ifc-kernel/src/capability_level.rs', lines 21:0-29:1
     Visibility: public -/
 @[discriminant u8]
-inductive CapabilityLevel where
-| Never : CapabilityLevel
-| LowRisk : CapabilityLevel
-| Always : CapabilityLevel
+inductive capability_level.CapabilityLevel where
+| Never : capability_level.CapabilityLevel
+| LowRisk : capability_level.CapabilityLevel
+| Always : capability_level.CapabilityLevel
 
-/-- [nucleus_ifc_kernel::Operation]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 812:0-841:1
+/-- [nucleus_ifc_kernel::exposure::ExposureLabel]
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 16:0-23:1
     Visibility: public -/
 @[discriminant u8]
-inductive Operation where
-| ReadFiles : Operation
-| WriteFiles : Operation
-| EditFiles : Operation
-| RunBash : Operation
-| GlobSearch : Operation
-| GrepSearch : Operation
-| WebSearch : Operation
-| WebFetch : Operation
-| GitCommit : Operation
-| GitPush : Operation
-| CreatePr : Operation
-| ManagePods : Operation
-| SpawnAgent : Operation
+inductive exposure.ExposureLabel where
+| PrivateData : exposure.ExposureLabel
+| UntrustedContent : exposure.ExposureLabel
+| ExfilVector : exposure.ExposureLabel
 
-/-- [nucleus_ifc_kernel::ExposureLabel]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1264:0-1271:1
+/-- [nucleus_ifc_kernel::exposure::ExposureSet]
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 38:0-42:1
     Visibility: public -/
-@[discriminant u8]
-inductive ExposureLabel where
-| PrivateData : ExposureLabel
-| UntrustedContent : ExposureLabel
-| ExfilVector : ExposureLabel
-
-/-- [nucleus_ifc_kernel::ExposureSet]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1286:0-1290:1
-    Visibility: public -/
-structure ExposureSet where
+structure exposure.ExposureSet where
   private_data : Bool
   untrusted_content : Bool
   exfil_vector : Bool
 
-/-- [nucleus_ifc_kernel::PureVerdict]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 1981:0-1990:1
+/-- [nucleus_ifc_kernel::ifc_ops::Operation]
+    Source: 'crates/nucleus-ifc-kernel/src/ifc_ops.rs', lines 23:0-52:1
+    Visibility: public -/
+@[discriminant u8]
+inductive ifc_ops.Operation where
+| ReadFiles : ifc_ops.Operation
+| WriteFiles : ifc_ops.Operation
+| EditFiles : ifc_ops.Operation
+| RunBash : ifc_ops.Operation
+| GlobSearch : ifc_ops.Operation
+| GrepSearch : ifc_ops.Operation
+| WebSearch : ifc_ops.Operation
+| WebFetch : ifc_ops.Operation
+| GitCommit : ifc_ops.Operation
+| GitPush : ifc_ops.Operation
+| CreatePr : ifc_ops.Operation
+| ManagePods : ifc_ops.Operation
+| SpawnAgent : ifc_ops.Operation
+
+/-- [nucleus_ifc_kernel::exposure::PureVerdict]
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 187:0-196:1
     Visibility: public -/
 @[discriminant isize]
-inductive PureVerdict where
-| Allow : PureVerdict
-| DenyCapability : PureVerdict
-| RequiresApproval : PureVerdict
-| GateExfil : PureVerdict
+inductive exposure.PureVerdict where
+| Allow : exposure.PureVerdict
+| DenyCapability : exposure.PureVerdict
+| RequiresApproval : exposure.PureVerdict
+| GateExfil : exposure.PureVerdict
 
 end nucleus_ifc_kernel
