@@ -16,13 +16,13 @@
   the Aeneas-generated (from real Rust) definitions instead of a hand-written
   model. The chain is:
 
-      crates/portcullis-core/src/extracted/ifc_integrity.rs   (real Rust)
-        --charon (scoped, --start-from)-->  portcullis_core.llbc
+      crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs   (real Rust)
+        --charon (scoped, --start-from)-->  nucleus_ifc_kernel.llbc
         --aeneas -backend lean -split-files-->
           generated-ifc/PortcullisCoreIFC/{Types,Funs}.lean    (THIS file's deps)
         --(this file)-->  noninterference theorem over THOSE generated defs.
 
-  The generated functions live in namespace `portcullis_core` and return the
+  The generated functions live in namespace `nucleus_ifc_kernel` and return the
   Aeneas `Result` monad. We prove every theorem in terms of THOSE functions
   (`extracted.ifc_integrity.{irank,imeet,iflows_to,irun_step}`), not a hand
   model. The only hand-written piece is the op-list fold `irun` (Aeneas does
@@ -60,18 +60,18 @@ set_option maxHeartbeats 1000000
 namespace IntegrityNoninterferenceExtracted
 
 /-- Short alias for the Aeneas-generated integrity enum (from real Rust). -/
-abbrev IL := portcullis_core.extracted.ifc_integrity.IntegLevel
+abbrev IL := nucleus_ifc_kernel.extracted.ifc_integrity.IntegLevel
 
 /-- The generated `irank`, evaluated. Each of the three points reduces to its
     `#[repr(u8)]` discriminant inside the `Result` monad. These are `rfl` (the
     generated `def` is a literal `match`), establishing the rank values we then
     reason about. -/
 theorem irank_adv :
-    portcullis_core.extracted.ifc_integrity.irank .Adversarial = ok 0#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_integrity.irank .Adversarial = ok 0#u8 := rfl
 theorem irank_unt :
-    portcullis_core.extracted.ifc_integrity.irank .Untrusted = ok 1#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_integrity.irank .Untrusted = ok 1#u8 := rfl
 theorem irank_tru :
-    portcullis_core.extracted.ifc_integrity.irank .Trusted = ok 2#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_integrity.irank .Trusted = ok 2#u8 := rfl
 
 /-- A pure-Lean rank mirroring the generated `irank`'s value (the generated
     `irank l` reduces to `ok (rankN l)#u8`, see `imeet_ok`/`iflows_to_ok`). Used
@@ -86,7 +86,7 @@ def rankN : IL → Nat
     Proved by case-splitting all 9 label pairs and reducing the generated
     `do`-block. -/
 theorem imeet_ok (a b : IL) :
-    portcullis_core.extracted.ifc_integrity.imeet a b
+    nucleus_ifc_kernel.extracted.ifc_integrity.imeet a b
       = ok (if rankN a ≤ rankN b then a else b) := by
   -- Each of the 9 concrete pairs: unfold the generated `do`-binds (`irank` →
   -- `ok n#u8`, `Result.bind (ok _)` → iota) and reduce the concrete `U8`
@@ -98,7 +98,7 @@ theorem imeet_ok (a b : IL) :
     can only lower (never raise) the running integrity rank. Order-dual of
     `le_join_left`. The result of the generated `imeet` has rank ≤ `rankN a`. -/
 theorem istep_antitone (a b : IL) :
-    ∀ r, portcullis_core.extracted.ifc_integrity.imeet a b = ok r → rankN r ≤ rankN a := by
+    ∀ r, nucleus_ifc_kernel.extracted.ifc_integrity.imeet a b = ok r → rankN r ≤ rankN a := by
   intro r h
   rw [imeet_ok] at h
   -- h : ok (if rankN a ≤ rankN b then a else b) = ok r
@@ -117,20 +117,20 @@ def irun : List IL → IL → IL
   | [], eff => eff
   | src :: rest, eff =>
       irun rest
-        (match portcullis_core.extracted.ifc_integrity.irun_step eff src with
+        (match nucleus_ifc_kernel.extracted.ifc_integrity.irun_step eff src with
          | ok r => r
          | _ => eff)
 
 /-- The generated `irun_step` reduces to the generated `imeet` result. -/
 theorem irun_step_ok (eff src : IL) :
-    portcullis_core.extracted.ifc_integrity.irun_step eff src
+    nucleus_ifc_kernel.extracted.ifc_integrity.irun_step eff src
       = ok (if rankN eff ≤ rankN src then eff else src) := by
-  unfold portcullis_core.extracted.ifc_integrity.irun_step
+  unfold nucleus_ifc_kernel.extracted.ifc_integrity.irun_step
   rw [imeet_ok]
 
 /-- One `irun` cons step lowers the rank, via the GENERATED step. -/
 theorem irun_cons_step_antitone (eff src : IL) :
-    rankN (match portcullis_core.extracted.ifc_integrity.irun_step eff src with
+    rankN (match nucleus_ifc_kernel.extracted.ifc_integrity.irun_step eff src with
            | ok r => r | _ => eff) ≤ rankN eff := by
   rw [irun_step_ok]
   -- `match ok X with | ok r => r | _ => eff` reduces (iota) to `X`; `show` forces it.
@@ -149,7 +149,7 @@ theorem irun_antitone :
   | cons src rest ih =>
       intro eff
       simp only [irun]
-      have h_tail := ih (match portcullis_core.extracted.ifc_integrity.irun_step eff src with
+      have h_tail := ih (match nucleus_ifc_kernel.extracted.ifc_integrity.irun_step eff src with
                          | ok r => r | _ => eff)
       have h_step := irun_cons_step_antitone eff src
       omega
@@ -160,7 +160,7 @@ theorem irun_antitone :
     integrity conjunct of the production gate. The generated `iflows_to` returns
     `ok true` iff `rankN eff ≥ rankN req`. -/
 theorem iflows_to_ok (a ceiling : IL) :
-    portcullis_core.extracted.ifc_integrity.iflows_to a ceiling
+    nucleus_ifc_kernel.extracted.ifc_integrity.iflows_to a ceiling
       = ok (decide (rankN ceiling ≤ rankN a)) := by
   -- As with `imeet_ok`: 9 concrete pairs, both sides reduce to the same
   -- `ok true` / `ok false` (the generated `i >= i1` Bool matches the decided
@@ -169,7 +169,7 @@ theorem iflows_to_ok (a ceiling : IL) :
 
 /-- Admission holds iff the generated `iflows_to` returns `ok true`. -/
 def iadmitted (eff req : IL) : Prop :=
-    portcullis_core.extracted.ifc_integrity.iflows_to eff req = ok true
+    nucleus_ifc_kernel.extracted.ifc_integrity.iflows_to eff req = ok true
 
 /-- **Integrity-axis noninterference (main theorem), over the GENERATED defs.**
 

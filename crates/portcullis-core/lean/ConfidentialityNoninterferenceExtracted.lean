@@ -13,8 +13,8 @@
 
   The chain (dual of integrity):
 
-      crates/portcullis-core/src/extracted/ifc_confidentiality.rs   (real Rust)
-        --charon (scoped, --start-from)-->  portcullis_core.llbc
+      crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs   (real Rust)
+        --charon (scoped, --start-from)-->  nucleus_ifc_kernel.llbc
         --aeneas -backend lean -split-files-->
           generated-ifc/PortcullisCoreIFC/{Types,Funs}.lean   (THIS file's deps)
         --(this file)-->  confidentiality noninterference over THOSE generated defs.
@@ -49,14 +49,14 @@ set_option maxHeartbeats 1000000
 namespace ConfidentialityNoninterferenceExtracted
 
 /-- Short alias for the Aeneas-generated confidentiality enum (from real Rust). -/
-abbrev CL := portcullis_core.extracted.ifc_confidentiality.ConfLevel
+abbrev CL := nucleus_ifc_kernel.extracted.ifc_confidentiality.ConfLevel
 
 theorem crank_pub :
-    portcullis_core.extracted.ifc_confidentiality.crank .Public = ok 0#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.crank .Public = ok 0#u8 := rfl
 theorem crank_int :
-    portcullis_core.extracted.ifc_confidentiality.crank .Internal = ok 1#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.crank .Internal = ok 1#u8 := rfl
 theorem crank_sec :
-    portcullis_core.extracted.ifc_confidentiality.crank .Secret = ok 2#u8 := rfl
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.crank .Secret = ok 2#u8 := rfl
 
 /-- Pure-Lean rank mirroring the generated `crank`'s value, to drive `omega`. -/
 def rankN : CL → Nat
@@ -67,7 +67,7 @@ def rankN : CL → Nat
 /-- The generated `cjoin` always succeeds and returns the argument of GREATER-or-
     equal rank (combining RAISES confidentiality) — the MAX. Dual of `imeet_ok`. -/
 theorem cjoin_ok (a b : CL) :
-    portcullis_core.extracted.ifc_confidentiality.cjoin a b
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.cjoin a b
       = ok (if rankN b ≤ rankN a then a else b) := by
   cases a <;> cases b <;> rfl
 
@@ -75,7 +75,7 @@ theorem cjoin_ok (a b : CL) :
     can only RAISE (never lower) the running confidentiality rank. Dual of
     `istep_antitone`: the result of `cjoin a b` has rank ≥ `rankN a`. -/
 theorem cstep_monotone (a b : CL) :
-    ∀ r, portcullis_core.extracted.ifc_confidentiality.cjoin a b = ok r → rankN a ≤ rankN r := by
+    ∀ r, nucleus_ifc_kernel.extracted.ifc_confidentiality.cjoin a b = ok r → rankN a ≤ rankN r := by
   intro r h
   rw [cjoin_ok] at h
   by_cases hba : rankN b ≤ rankN a
@@ -89,20 +89,20 @@ def crun : List CL → CL → CL
   | [], eff => eff
   | src :: rest, eff =>
       crun rest
-        (match portcullis_core.extracted.ifc_confidentiality.crun_step eff src with
+        (match nucleus_ifc_kernel.extracted.ifc_confidentiality.crun_step eff src with
          | ok r => r
          | _ => eff)
 
 /-- The generated `crun_step` reduces to the generated `cjoin` result. -/
 theorem crun_step_ok (eff src : CL) :
-    portcullis_core.extracted.ifc_confidentiality.crun_step eff src
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.crun_step eff src
       = ok (if rankN src ≤ rankN eff then eff else src) := by
-  unfold portcullis_core.extracted.ifc_confidentiality.crun_step
+  unfold nucleus_ifc_kernel.extracted.ifc_confidentiality.crun_step
   rw [cjoin_ok]
 
 /-- One `crun` cons step raises the rank, via the GENERATED step. -/
 theorem crun_cons_step_monotone (eff src : CL) :
-    rankN eff ≤ rankN (match portcullis_core.extracted.ifc_confidentiality.crun_step eff src with
+    rankN eff ≤ rankN (match nucleus_ifc_kernel.extracted.ifc_confidentiality.crun_step eff src with
            | ok r => r | _ => eff) := by
   rw [crun_step_ok]
   show rankN eff ≤ rankN (if rankN src ≤ rankN eff then eff else src)
@@ -119,7 +119,7 @@ theorem crun_monotone :
   | cons src rest ih =>
       intro eff
       simp only [crun]
-      have h_tail := ih (match portcullis_core.extracted.ifc_confidentiality.crun_step eff src with
+      have h_tail := ih (match nucleus_ifc_kernel.extracted.ifc_confidentiality.crun_step eff src with
                          | ok r => r | _ => eff)
       have h_step := crun_cons_step_monotone eff src
       omega
@@ -128,13 +128,13 @@ theorem crun_monotone :
     confidentiality flows to the sink's ceiling iff `rankN eff ≤ rankN ceiling`
     (BLP no-read-up). Dual of `iflows_to_ok`. -/
 theorem cflows_to_ok (a ceiling : CL) :
-    portcullis_core.extracted.ifc_confidentiality.cflows_to a ceiling
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.cflows_to a ceiling
       = ok (decide (rankN a ≤ rankN ceiling)) := by
   cases a <;> cases ceiling <;> rfl
 
 /-- Admission holds iff the generated `cflows_to` returns `ok true`. -/
 def cadmitted (eff ceiling : CL) : Prop :=
-    portcullis_core.extracted.ifc_confidentiality.cflows_to eff ceiling = ok true
+    nucleus_ifc_kernel.extracted.ifc_confidentiality.cflows_to eff ceiling = ok true
 
 /-- **Confidentiality-axis noninterference (main theorem), over the GENERATED
     defs.** If the session's effective confidentiality already dominates a

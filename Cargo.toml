@@ -21,6 +21,7 @@ members = [
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF
     "crates/ctf-mcp",                  # MCP server: lets any AI agent play The Vault CTF
+    "crates/nucleus-ifc-kernel",         # IFC admission core: dependency-free reference monitor (Aeneas target)
     "crates/portcullis-core",            # Aeneas verification target: dependency-free lattice types
     "crates/portcullis-effects",         # Sealed effect traits — I/O only through policy-enforced channels
     "crates/portcullis-wasi",            # WASI 0.3.0 world functor: capability lattice → component import world
