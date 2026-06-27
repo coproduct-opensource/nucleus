@@ -39,14 +39,12 @@ core is a near-**leaf** subgraph:
 | Kernel member | LOC | Non-kernel deps |
 |---|---|---|
 | `ifc_lattice.rs` (extracted M1: `ConfLevel`, `IntegLevel`, `AuthorityLevel`, `ProvenanceSet`, `Freshness`, `DerivationClass`, `IFCLabel`+`join`/`flows_to`/`meet`/`leq`) | 552 | none |
-| `flow.rs` (`NodeKind`, `intrinsic_label`, `FlowTracker` fold) | 1977 | `crate::Operation`, `crate::is_exfil_operation` (root residuals, still in lib.rs) |
+| `ifc_ops.rs` (extracted M1b: `Operation`+`LatticeOperation`, `SinkClass`+`required_*`, `default_sink_class`, `is_exfil_operation`) | 491 | `AuthorityLevel`/`IntegLevel` (kernel) |
+| `flow.rs` (`NodeKind`, `intrinsic_label`, `FlowTracker` fold) | 1977 | `Operation`/`is_exfil_operation` (kernel) |
 | `ifc_api.rs` (`FlowTracker` API, `SafetyCheck`, `check_exfiltration_safety`) | 1434 | `crate::discharge::DischargedBundle` (cleanse proof, intended coupling) |
-| `extracted/ifc_integrity.rs`, `extracted/ifc_confidentiality.rs`, `mod.rs` (the proven slices) | 389 | `crate::SinkClass` (root residual); `IFCLabel`/`IntegLevel` (kernel) |
-| `effect.rs` | 286 | `crate::DerivationClass` (kernel) |
-| `storage_lane.rs` | 193 | `crate::DerivationClass` (kernel) |
-
-Plus the still-in-lib.rs root residuals `Operation` / `SinkClass` /
-`is_exfil_operation` (~250 LOC), which M1b moves into a kernel module.
+| `extracted/ifc_integrity.rs`, `extracted/ifc_confidentiality.rs`, `mod.rs` (the proven slices) | 389 | `SinkClass` (kernel); `IFCLabel`/`IntegLevel` (kernel) |
+| `effect.rs` | 286 | `DerivationClass` (kernel) |
+| `storage_lane.rs` | 193 | `DerivationClass` (kernel) |
 
 **Total ≈ 5,000–5,500 LOC** — Cedar-scale (AWS Cedar's verified decision
 function is ~1.7k model / 5.7k proof / 15.7k Rust). The binding constraint is not
@@ -54,15 +52,15 @@ LOC but keeping the proven core in the Aeneas subset (primitives; no
 BTreeSet/String/dyn) — which is the same forcing function as "small enough to be
 a reference monitor."
 
-Honest correction (post-audit): the kernel is a near-leaf but **not** a zero-dep
-leaf today. `effect`/`storage_lane` depend on the kernel's own `DerivationClass`;
-`flow`/`extracted` still reach three crate-root items (`Operation`, `SinkClass`,
-`is_exfil_operation`) that live in `lib.rs` (the unfenced 3.4k-LOC root). The M0
-ratchet enumerates these as `ROOT_RESIDUALS` so they are tracked rather than
-invisible, and it now flags any *un-enumerated* crate-root reference (e.g.
-`crate::CapabilityLattice`) and any `use crate::*` wildcard — closing the
-module-only-scan blind spot. M1b moves the three residuals into a kernel module
-so the kernel stops naming `lib.rs` at all.
+Honest note (post-audit, post-M1b): the kernel's only *non-kernel* dependency is
+now the intended `discharge` coupling (below). Every other `crate::` reference a
+kernel file makes resolves to a type/fn **defined in a kernel file** (the lattice
+in `ifc_lattice`, the operation/sink vocabulary in `ifc_ops`) and re-exported at
+the crate root — so the kernel no longer names anything in the unfenced `lib.rs`
+root. The ratchet enforces this: it flags any non-kernel module, any
+*un-enumerated* crate-root reference (e.g. `crate::CapabilityLattice`), and any
+`use crate::*` wildcard. (`ROOT_RESIDUALS` is now empty; M1 left the residuals
+behind, M1b moved them.)
 
 ### The `discharge` coupling (intended, not erosion)
 
@@ -133,10 +131,15 @@ consulting it. Mediation is a **deployment** property, not a proof:
   `&DischargedBundle` coupling is **intended** (the cleanse override requires the
   policy pipeline's proof, #1358), so it stays, enumerated in `MODULE_ALLOWLIST`.
   M3 is what will turn it into an enforced boundary.
-- **M1b — move the root residuals** (`Operation`, `SinkClass`, `is_exfil_operation`)
-  out of lib.rs into a kernel module, so the kernel stops naming the unfenced root;
-  then drop them from `ROOT_RESIDUALS`. (`Operation`/`SinkClass` are shared with the
-  capability machinery, so this needs care.)
+- **M1b (done) — moved the root residuals** (`Operation`, `SinkClass`,
+  `is_exfil_operation`) out of lib.rs into a new `ifc_ops.rs` kernel module,
+  re-exported at the crate root (`pub use ifc_ops::*`) so consumer paths are
+  unchanged. `is_exfil_operation` was reimplemented as a direct match on
+  `Operation` (no longer routed through lib.rs's `classify_operation`/`ExposureLabel`
+  exposure machinery), pinned to the old definition by the exhaustive
+  `is_exfil_operation_matches_classifier` test. **`ROOT_RESIDUALS` is now empty —
+  the kernel references no crate-root item defined outside a kernel file.** No
+  behavior change (755 lib tests pass, all-features build clean).
 - **M3 — physical crate split:** new `nucleus-ifc-kernel` crate holding the member
   set; `portcullis-core` depends on it and re-exports for backward compat. This is
   what makes `MODULE_ALLOWLIST = {discharge}` an *enforced* boundary (only the
