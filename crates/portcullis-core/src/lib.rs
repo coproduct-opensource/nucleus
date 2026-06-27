@@ -14,25 +14,32 @@
 //! handler from `production_effects(policy)` and every call is policy-checked
 //! at the type boundary.
 //!
-//! This crate's types (`CapabilityLevel`, `CapabilityLattice`) remain the
-//! *verified algebraic core* — the source of truth for what the policy means.
-//! `portcullis-effects` consumes them; agent builders interact with effects.
+//! [`CapabilityLattice`] (the 13-dimension product policy) is defined here and
+//! remains the *verified algebraic core* — the source of truth for what a policy
+//! means. Its scalar [`CapabilityLevel`], the IFC label lattice, and the rest of
+//! the reference monitor were carved into the dependency-free `nucleus-ifc-kernel`
+//! crate (MVK M3) and are re-exported here, so `portcullis_core::CapabilityLevel`
+//! / `::IFCLabel` / `::flow` etc. still resolve unchanged.
+//! `portcullis-effects` consumes these; agent builders interact with effects.
 //!
 //! ## Why a separate crate?
 //!
 //! Aeneas (the Rust MIR → Lean 4 translator) requires dependency-free code.
 //! The full `portcullis` crate imports serde, BTreeMap, chrono, uuid, etc.
-//! which Aeneas cannot model. This crate extracts just the lattice core:
+//! which Aeneas cannot model. This crate (and the kernel it re-exports) extracts
+//! just the lattice core:
 //!
-//! - [`CapabilityLevel`] — the 3-element total order (Never < LowRisk < Always)
-//! - [`CapabilityLattice`] — product of 12 capability dimensions
+//! - [`CapabilityLevel`] — the 3-element total order (Never < LowRisk < Always),
+//!   defined in `nucleus-ifc-kernel`, re-exported here
+//! - [`CapabilityLattice`] — product of 13 capability dimensions, defined here
 //! - `meet`, `join`, `leq` — lattice operations (pointwise min/max/≤)
 //!
 //! ## Relationship to the production `portcullis` crate
 //!
-//! The production `portcullis` crate re-exports `CapabilityLevel` from this
-//! crate — there is ONE type, one source of truth, zero translation layers.
-//! The verified type IS the production type.
+//! The production `portcullis` crate re-exports `CapabilityLevel` (and the rest
+//! of the kernel surface) transitively from here — there is ONE definition, one
+//! source of truth, zero translation layers. The verified type IS the production
+//! type.
 //!
 //! Serde support is gated behind the optional `serde` feature flag.
 //! When `portcullis` depends on `portcullis-core` with `features = ["serde"]`,
@@ -95,16 +102,12 @@ pub mod compose;
 pub mod compose_runner;
 pub mod declassify;
 pub mod delegation;
-pub mod discharge;
-pub mod effect;
 #[cfg(feature = "serde")]
 pub mod enterprise;
 #[cfg(feature = "envelope")]
 pub mod envelope;
-pub mod flow;
 pub mod flow_algebra;
 pub mod hash_types;
-pub mod ifc_api;
 pub mod labeled;
 #[cfg(feature = "serde")]
 pub mod managed_settings;
@@ -131,7 +134,6 @@ pub mod registry;
 #[cfg(feature = "envelope")]
 pub mod replay;
 pub mod sanitize;
-pub mod storage_lane;
 pub mod structured_prompt;
 pub mod task_shield;
 #[cfg(feature = "artifact")]
@@ -145,86 +147,24 @@ pub mod witness;
 #[cfg(feature = "zkvm")]
 pub mod zkvm_receipt;
 
-/// Aeneas-extractable, subset-safe restatement of the integrity-axis IFC
-/// decision. This is the slice that the machine-checked noninterference
-/// theorem is proven OVER (after Charon→Aeneas→Lean extraction). Bound to
-/// the real `IFCLabel`/`SinkClass` enforcement by exhaustive parity tests.
-pub mod extracted;
+// ═══════════════════════════════════════════════════════════════════════════
+// IFC admission core — re-exported from `nucleus-ifc-kernel` (MVK M3)
+//
+// The reference monitor (the IFC label lattice, the operation/sink vocabulary,
+// `CapabilityLevel`, the flow tracker, the discharge pipeline, and the
+// Aeneas-extracted IFC slices) was carved into its own dependency-free crate so
+// the kernel boundary is enforced by the dependency graph. These re-exports keep
+// every existing `portcullis_core::{IFCLabel, Operation, CapabilityLevel, …}`
+// path resolving exactly as before — there is ONE definition, one source of
+// truth, zero translation layers. `CapabilityLattice` (the 13-dimension product
+// of `CapabilityLevel`) stays in this crate, below.
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Tool permission levels in lattice ordering.
-///
-/// The ordering is: `Never < LowRisk < Always`
-///
-/// This is a 3-element bounded lattice where:
-/// - `Never` is the bottom element (⊥)
-/// - `Always` is the top element (⊤)
-/// - `meet` = min, `join` = max
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-#[repr(u8)]
-pub enum CapabilityLevel {
-    /// Never allow — bottom element (⊥)
-    #[default]
-    Never = 0,
-    /// Auto-approve for low-risk operations
-    LowRisk = 1,
-    /// Always auto-approve — top element (⊤)
-    Always = 2,
-}
+// Glob: lattice/label/operation types + `CapabilityLevel` (crate-root items).
+pub use nucleus_ifc_kernel::*;
 
-// Compile-time invariant: declaration order MUST match discriminant values.
-// The Aeneas-generated Lean code uses `read_discriminant` (declaration-order index)
-// while FunsExternal.lean uses `toNat` (discriminant value). These must be equal.
-// If someone reorders the enum variants, this assertion fails the build.
-const _: () = {
-    assert!(CapabilityLevel::Never as u8 == 0);
-    assert!(CapabilityLevel::LowRisk as u8 == 1);
-    assert!(CapabilityLevel::Always as u8 == 2);
-};
-
-impl std::fmt::Display for CapabilityLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CapabilityLevel::Never => write!(f, "never"),
-            CapabilityLevel::LowRisk => write!(f, "low_risk"),
-            CapabilityLevel::Always => write!(f, "always"),
-        }
-    }
-}
-
-impl CapabilityLevel {
-    /// Meet operation (greatest lower bound): min of two levels.
-    pub fn meet(self, other: Self) -> Self {
-        if self <= other { self } else { other }
-    }
-
-    /// Join operation (least upper bound): max of two levels.
-    pub fn join(self, other: Self) -> Self {
-        if self >= other { self } else { other }
-    }
-
-    /// Heyting implication: a → b = max { c | c ∧ a ≤ b }
-    ///
-    /// For a 3-element chain: a → b = if a ≤ b then ⊤ else b
-    pub fn implies(self, other: Self) -> Self {
-        if self <= other {
-            CapabilityLevel::Always
-        } else {
-            other
-        }
-    }
-
-    /// Pseudo-complement: ¬a = a → ⊥
-    pub fn complement(self) -> Self {
-        self.implies(CapabilityLevel::Never)
-    }
-
-    /// Partial order check.
-    pub fn leq(self, other: Self) -> bool {
-        self <= other
-    }
-}
+// Module paths so `portcullis_core::flow::…` / `::extracted::…` etc. survive.
+pub use nucleus_ifc_kernel::{discharge, effect, extracted, flow, ifc_api, storage_lane};
 
 /// Capability lattice for tool permissions.
 ///
@@ -798,12 +738,6 @@ impl CapabilityLattice {
 // Operation enum — the 12 core operations (Aeneas-translatable)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Operation & sink-class vocabulary — extracted to `ifc_ops` (MVK M1b). Re-exported
-// at the crate root so `portcullis_core::{Operation, SinkClass, is_exfil_operation}`
-// resolve as before; brought under the kernel-boundary ratchet.
-mod ifc_ops;
-pub use ifc_ops::*;
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Exposure types — the uninhabitable state detector (Aeneas-translatable)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -953,12 +887,6 @@ pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
     let projected = project_exposure(current, op);
     (current.is_uninhabitable() || projected.is_uninhabitable()) && is_exfil_operation(op)
 }
-
-// Information Flow Control label lattice — extracted to `ifc_lattice` (MVK M1).
-// Re-exported at the crate root so `portcullis_core::{IFCLabel, ConfLevel, ...}`
-// resolve exactly as before; brought under the kernel-boundary ratchet.
-mod ifc_lattice;
-pub use ifc_lattice::*;
 
 /// Map an IFCLabel to the legacy ExposureSet (monotone homomorphism).
 ///

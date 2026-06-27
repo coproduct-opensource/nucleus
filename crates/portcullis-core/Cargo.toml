@@ -6,7 +6,9 @@ license = "MIT"
 description = "Core capability lattice types — dependency-free for Aeneas verification"
 repository = "https://github.com/coproduct-opensource/nucleus"
 
-# This crate is the single source of truth for CapabilityLevel.
+# This crate is the source of truth for CapabilityLattice (the 13-dimension
+# product policy). Its scalar CapabilityLevel and the IFC reference monitor were
+# carved into `nucleus-ifc-kernel` (MVK M3) and are re-exported here.
 # The verification target: Aeneas (Rust MIR → Lean 4) translates this crate
 # into pure functional Lean code, where we prove HeytingAlgebra properties
 # against Mathlib (the Lean proofs live in `lean/`).
@@ -17,7 +19,7 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 
 [features]
 default = []
-serde = ["dep:serde", "dep:toml"]
+serde = ["dep:serde", "dep:toml", "nucleus-ifc-kernel/serde"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
 c2pa-manifest = ["dep:c2pa", "artifact"]
@@ -26,6 +28,11 @@ wasm-sandbox = ["dep:wasmtime", "dep:sha2"]
 zkvm = ["dep:risc0-zkvm", "dep:serde", "dep:serde_json", "dep:sha2"]
 
 [dependencies]
+# The IFC admission core — carved out of this crate in MVK M3. Re-exported below
+# so every `portcullis_core::{IFCLabel, Operation, CapabilityLevel, flow, …}` path
+# keeps resolving. `default-features = false` keeps it dependency-free unless this
+# crate's `serde` feature forwards `nucleus-ifc-kernel/serde`.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
