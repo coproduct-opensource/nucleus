@@ -88,6 +88,28 @@ theorem not_mem_span_of_pivot_coord {m : Nat}
   rw [LinearMap.mem_ker, LinearMap.proj_apply, hv] at hvk
   exact one_ne_zero hvk
 
+/-- The other half of the rank drop: adjoining a vector outside the span lifts the
+    span's dimension by exactly one. Combined with `not_mem_span_of_pivot_coord`,
+    this gives `rowSpanRank rows = rowSpanRank eliminated + 1` at the abstract
+    (Submodule) level — the whole *mathematical* content of one Gaussian-elimination
+    step (the remaining work is List↔Matrix bookkeeping). -/
+theorem finrank_span_insert_of_not_mem {K V : Type*}
+    [Field K] [AddCommGroup V] [Module K V] [FiniteDimensional K V]
+    (s : Set V) (v : V) (hv : v ∉ Submodule.span K s) :
+    Module.finrank K (Submodule.span K (insert v s)) =
+      Module.finrank K (Submodule.span K s) + 1 := by
+  -- `v ≠ 0` since `0` is always in the span.
+  have hv0 : v ≠ 0 := fun h => hv (h ▸ Submodule.zero_mem _)
+  -- `span {v}` and `span s` are disjoint (`v ∉ span s`), so their inf is `⊥`.
+  have hdisj : Disjoint (Submodule.span K {v}) (Submodule.span K s) := by
+    rw [disjoint_comm]
+    exact Submodule.disjoint_span_singleton.mpr (fun hvs => absurd hvs hv)
+  have hsum := Submodule.finrank_sup_add_finrank_inf_eq
+    (Submodule.span K {v}) (Submodule.span K s)
+  rw [hdisj.eq_bot, finrank_bot, add_zero, finrank_span_singleton hv0] at hsum
+  rw [Submodule.span_insert]
+  omega
+
 /-! ### Bridge theorem proof skeleton
 
 The bridge `gaussRankBool M = (toMatrix M).rank` is decomposed into
