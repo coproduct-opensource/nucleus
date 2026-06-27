@@ -58,6 +58,24 @@ pub struct SessionCleanseToken {
 
 struct Seal;
 
+pub(crate) mod cleanse_seal {
+    /// Sealed supertrait of [`super::PolicyDischarged`]. `pub(crate)` so the
+    /// discharge pipeline (a sibling module) can satisfy it, while external
+    /// crates cannot name it — making the capability unforgeable outside this
+    /// crate (#1358).
+    pub trait Sealed {}
+}
+
+/// Type-level proof that the policy-discharge pipeline ran to completion.
+///
+/// The kernel defines this **contract**; the discharge pipeline (downstream)
+/// **satisfies** it (`impl PolicyDischarged for discharge::DischargedBundle` in
+/// `discharge.rs`). This inverts the former `ifc_api -> discharge` dependency so
+/// the IFC kernel names no downstream module (MVK boundary, RFC
+/// `minimum-viable-ifc-kernel.md`, M2). Sealed via [`cleanse_seal::Sealed`], so a
+/// [`SessionCleanseToken`] still cannot be forged outside this crate.
+pub trait PolicyDischarged: cleanse_seal::Sealed {}
+
 impl std::fmt::Debug for Seal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Seal")
@@ -67,15 +85,16 @@ impl std::fmt::Debug for Seal {
 impl SessionCleanseToken {
     /// Create a cleanse token with the given authorization reason.
     ///
-    /// Requires a `DischargedBundle` — proof that `preflight_action` passed
-    /// all policy obligations. This prevents downstream code from forging
-    /// cleanse tokens without going through the policy pipeline (#1358).
+    /// Requires a witness of [`PolicyDischarged`] — proof that the policy
+    /// pipeline ran (the production witness is `discharge::DischargedBundle`).
+    /// This prevents downstream code from forging cleanse tokens without going
+    /// through the policy pipeline (#1358). Taking `&impl PolicyDischarged`
+    /// rather than a concrete `&DischargedBundle` keeps the IFC kernel free of a
+    /// dependency on the `discharge` module (MVK boundary, M2) while remaining
+    /// call-compatible — `&bundle` still infers `P = DischargedBundle`.
     ///
     /// The reason is recorded for audit purposes.
-    pub fn authorize(
-        reason: impl Into<String>,
-        _proof: &crate::discharge::DischargedBundle,
-    ) -> Self {
+    pub fn authorize<P: PolicyDischarged>(reason: impl Into<String>, _proof: &P) -> Self {
         Self {
             reason: reason.into(),
             _seal: Seal,
@@ -741,6 +760,15 @@ impl Default for FlowTracker {
 mod tests {
     use super::*;
 
+    /// A test-only witness of [`PolicyDischarged`] so the kernel's own tests can
+    /// mint a [`SessionCleanseToken`] WITHOUT referencing the downstream
+    /// `discharge` module (MVK boundary — keeps `ifc_api` ratchet-clean). The
+    /// real `DischargedBundle` integration is covered from the discharge side
+    /// (`discharge::tests::discharged_bundle_authorizes_cleanse_token`).
+    struct TestDischarge;
+    impl super::cleanse_seal::Sealed for TestDischarge {}
+    impl super::PolicyDischarged for TestDischarge {}
+
     #[test]
     fn basic_observe() {
         let mut t = FlowTracker::new();
@@ -1100,9 +1128,8 @@ mod tests {
         t.observe(NodeKind::WebContent).unwrap();
         assert_eq!(t.session_taint_ceiling(), DerivationClass::OpaqueExternal);
 
-        // Explicit reset — requires a SessionCleanseToken + DischargedBundle
-        let bundle = crate::discharge::test_helpers::allowed_bundle();
-        let token = SessionCleanseToken::authorize("test: reset for verification", &bundle);
+        // Explicit reset — requires a SessionCleanseToken (PolicyDischarged witness).
+        let token = SessionCleanseToken::authorize("test: reset for verification", &TestDischarge);
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
@@ -1126,9 +1153,8 @@ mod tests {
         assert!(t.is_poisoned());
 
         // The human-authorized cleanse path is the only way to un-poison.
-        let bundle = crate::discharge::test_helpers::allowed_bundle();
         let token =
-            SessionCleanseToken::authorize("test: cleanse after dropped observation", &bundle);
+            SessionCleanseToken::authorize("test: cleanse after dropped observation", &TestDischarge);
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert!(!t.is_poisoned(), "authorized cleanse must clear poison");
     }
@@ -1141,8 +1167,7 @@ mod tests {
         t.observe(NodeKind::ModelPlan).unwrap();
         assert!(t.is_session_tainted());
 
-        let bundle = crate::discharge::test_helpers::allowed_bundle();
-        let token = SessionCleanseToken::authorize("test: reset taint status", &bundle);
+        let token = SessionCleanseToken::authorize("test: reset taint status", &TestDischarge);
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert!(!t.is_session_tainted());
     }
