@@ -1,4 +1,4 @@
--- External function implementations for Aeneas-generated portcullis_core.
+-- External function implementations for Aeneas-generated nucleus_ifc_kernel.
 --
 -- These provide concrete definitions for the axioms in FunsExternal_Template.lean.
 -- The Aeneas-generated code calls PartialOrd::le and PartialOrd::ge for
@@ -12,7 +12,7 @@ set_option linter.hashCommand false
 set_option linter.unusedVariables false
 
 set_option maxHeartbeats 1000000
-open portcullis_core
+open nucleus_ifc_kernel
 
 /-- Natural number encoding matching Rust #[repr(u8)] discriminants. -/
 private def toNat : CapabilityLevel → Nat
