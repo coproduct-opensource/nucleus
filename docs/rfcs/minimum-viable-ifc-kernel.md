@@ -93,9 +93,13 @@ consulting it. Mediation is a **deployment** property, not a proof:
   (`flow`, `ifc_api`, `effect`, `storage_lane`, `extracted/*`) gains a dependency
   on a non-kernel module (allowlist: `discharge`, to be removed in M2). Makes the
   boundary enforceable **today**, before any code moves.
-- **M1 — extract the lib.rs lattice block** into a dedicated `ifc_lattice.rs`
-  module (no behavior change), bringing it under the ratchet and isolating the
-  ~600 closure-critical lines from the other 3.4k of lib.rs.
+- **M1 (done) — extracted the lib.rs lattice block** into `ifc_lattice.rs` (552
+  LOC: `ConfLevel`/`IntegLevel`/`AuthorityLevel`/`ProvenanceSet`/`Freshness`/
+  `DerivationClass`/`IFCLabel`+`join`/`flows_to`/`meet`/`leq`), re-exported at the
+  crate root (`pub use ifc_lattice::*`) so every consumer path is unchanged, and
+  added to the ratchet's `KERNEL_FILES`. No behavior change (754 lib tests pass,
+  all-features build clean). `Operation`/`SinkClass` stay in lib.rs for now —
+  they are shared with the capability machinery and more entangled.
 - **M2 — decouple `discharge`** from `ifc_api` (move `SessionCleanseToken::authorize`
   or invert the capability so `discharge` provides it). Ratchet allowlist → empty.
 - **M3 — physical crate split:** new `nucleus-ifc-kernel` crate holding the member

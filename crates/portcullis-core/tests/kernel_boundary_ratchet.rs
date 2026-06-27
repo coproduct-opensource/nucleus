@@ -27,6 +27,7 @@ use std::path::PathBuf;
 /// The dedicated source files that make up the IFC kernel today (paths relative
 /// to the crate root). The lib.rs lattice block is tracked separately until M1.
 const KERNEL_FILES: &[&str] = &[
+    "src/ifc_lattice.rs",
     "src/flow.rs",
     "src/ifc_api.rs",
     "src/effect.rs",
