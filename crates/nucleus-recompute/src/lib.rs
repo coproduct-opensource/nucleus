@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
     classify, refund, route_to_commons, run_vcg, seller_gross, Clearing, CommonsAllocation,
-    CommonsShare, IntegerBid, IntegerProposal, Verdict,
+    CommonsError, CommonsShare, IntegerBid, IntegerProposal, Verdict, VcgError,
 };
 
 /// Domain separator for the canonical receipt bytes (versioned).
@@ -175,6 +175,62 @@ pub fn verify_receipt(receipt: &ClearingReceipt) -> RecomputeOutcome {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Producer side — "the money-path runs the proven function".
+//
+// `verify_receipt` is the VERIFIER (re-derive + compare). These `issue_*` fns are
+// the dual PRODUCER: run the SAME proven kernels on the declared inputs and emit a
+// receipt carrying both the inputs and the recomputable outputs. Honest by
+// construction, and — crucially — verifiable offline by anyone via `verify_receipt`
+// with zero trust in the issuer. Shipping these closes the e2e loop: there is now a
+// production path that emits recompute-verifiable receipts, not just a verifier of
+// hypothetical ones.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Issue a settlement receipt by running the proven settlement kernels
+/// (`classify` / `seller_gross` / `refund`) on the declared inputs. Total — the
+/// settlement kernels accept any `(price, bps)`.
+pub fn issue_settlement(price_micro: u64, delivered_bps: u64) -> ClearingReceipt {
+    ClearingReceipt::Settlement(SettlementClaim {
+        price_micro,
+        delivered_bps,
+        verdict: classify(delivered_bps),
+        seller_gross: seller_gross(price_micro, delivered_bps),
+        refund: refund(price_micro, delivered_bps),
+    })
+}
+
+/// Issue a commons-routing receipt by running the proven `route_to_commons` kernel
+/// (`Commons.lean`'s `routed_conserves`). Errors if the shares are ill-formed
+/// (bps must sum to 10_000) — a malformed input cannot produce a standing receipt.
+pub fn issue_commons(
+    pool_micro: u64,
+    shares: Vec<CommonsShare>,
+) -> Result<ClearingReceipt, CommonsError> {
+    let allocations = route_to_commons(pool_micro, &shares)?;
+    Ok(ClearingReceipt::Commons(CommonsClaim {
+        pool_micro,
+        shares,
+        allocations,
+    }))
+}
+
+/// Issue a VCG-clearing receipt by running the proven `run_vcg` kernel
+/// (truthful / individually-rational). Errors if VCG input validation fails.
+pub fn issue_vcg(
+    bids: Vec<IntegerBid>,
+    proposals: Vec<IntegerProposal>,
+    budget_micro_usd: u64,
+) -> Result<ClearingReceipt, VcgError> {
+    let clearing = run_vcg(&bids, &proposals, budget_micro_usd)?;
+    Ok(ClearingReceipt::Vcg(VcgClaim {
+        bids,
+        proposals,
+        budget_micro_usd,
+        clearing,
+    }))
+}
+
 /// Canonical, domain-tagged bytes for a receipt. Deterministic: the receipt types
 /// contain no maps, so serde's field/element order is stable. This is what a
 /// lineage edge's `content_hash_hex` commits to.
@@ -309,6 +365,180 @@ pub mod envelope {
             .ok_or_else(|| NarrowError::MalformedBody("missing `receipt` field".to_string()))?;
         serde_json::from_value(receipt.clone())
             .map_err(|e| NarrowError::MalformedBody(e.to_string()))
+    }
+
+    /// The end-to-end verifier verdict: BOTH guarantees in one value.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum SignedClearingVerdict {
+        /// The Ed25519 signature did not verify (tampered bytes or wrong key) —
+        /// checked FIRST, before any recompute.
+        BadSignature,
+        /// Signature verified, but the projection is not a narrowable clearing.
+        Malformed(NarrowError),
+        /// Signature verified + narrowed; the recompute outcome. Fully verified
+        /// iff this is [`RecomputeOutcome::Match`](crate::RecomputeOutcome::Match).
+        Recomputed(crate::RecomputeOutcome),
+    }
+
+    impl SignedClearingVerdict {
+        /// `true` iff the signature verified AND every cleared number re-derives
+        /// from the proven kernels — the only "fully verified" state.
+        pub fn is_verified(&self) -> bool {
+            matches!(
+                self,
+                SignedClearingVerdict::Recomputed(crate::RecomputeOutcome::Match)
+            )
+        }
+    }
+
+    /// The public end-to-end verifier: take a signed receipt envelope and a
+    /// verifying key, and (1) check the Ed25519 signature over the canonical bytes
+    /// (who emitted it), then (2) narrow to the typed [`ClearingReceipt`] and
+    /// RECOMPUTE every cleared number via the proven kernels (the numbers re-derive).
+    /// One call, both guarantees — this is what a relying party who never saw the
+    /// auction runs to trust a receipt without trusting its issuer.
+    pub fn verify_signed_clearing(
+        signed: &nucleus_receipt::Receipt,
+        verifying_key_bytes: &[u8; 32],
+    ) -> SignedClearingVerdict {
+        if signed.verify(verifying_key_bytes).is_err() {
+            return SignedClearingVerdict::BadSignature;
+        }
+        // A clearing travels in the first (economic) projection.
+        match signed.projections.first() {
+            Some(p) => match clearing_from_projection(p) {
+                Ok(receipt) => SignedClearingVerdict::Recomputed(crate::verify_receipt(&receipt)),
+                Err(e) => SignedClearingVerdict::Malformed(e),
+            },
+            None => SignedClearingVerdict::Malformed(NarrowError::NotEconomic { found: "none" }),
+        }
+    }
+}
+
+// The headline e2e enforcement: a real producer issues a signed clearing, a
+// relying party verifies signature + recompute in one call, and BOTH a
+// post-signing byte tamper (caught by the signature) and a dishonest-issuer
+// forged output under a VALID signature (caught by recompute) are rejected. This
+// is the test that makes "the recompute layer is shipped e2e" a mechanical claim.
+#[cfg(all(test, feature = "envelope"))]
+mod e2e_enforcement_tests {
+    use super::*;
+    use crate::envelope::{to_economic_projection, verify_signed_clearing, SignedClearingVerdict};
+    use nucleus_econ_kernels::CommonsShare;
+    use nucleus_receipt::{Projection, Receipt, Session};
+
+    fn session() -> Session {
+        Session {
+            session_id: "spiffe://test/clearing-issuer".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        }
+    }
+
+    fn shares() -> Vec<CommonsShare> {
+        vec![
+            CommonsShare {
+                destination: "commons://carbon".into(),
+                bps: 6000,
+            },
+            CommonsShare {
+                destination: "commons://research".into(),
+                bps: 4000,
+            },
+        ]
+    }
+
+    /// The full money path, for every receipt variant: issue via the proven
+    /// kernels → sign → a relying party verifies signature + recompute in ONE call
+    /// and it is fully verified.
+    #[test]
+    fn issued_clearings_verify_end_to_end() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        let receipts = [
+            issue_settlement(1_000_000, 9_500),
+            issue_commons(1_000_000, shares()).expect("well-formed shares"),
+            issue_vcg(vcg_bids(), vcg_proposals(), 5_000_000).expect("valid vcg inputs"),
+        ];
+        for r in receipts {
+            let signed = Receipt::sign(session(), vec![to_economic_projection(&r)], &sk);
+            assert!(
+                verify_signed_clearing(&signed, &vk).is_verified(),
+                "issued receipt must verify (sig + recompute) e2e: {r:?}"
+            );
+        }
+    }
+
+    /// A post-signing byte tamper is caught by the SIGNATURE, before recompute.
+    #[test]
+    fn post_sign_tamper_is_rejected_by_signature() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        let r = issue_settlement(1_000_000, 9_500);
+        let mut signed = Receipt::sign(session(), vec![to_economic_projection(&r)], &sk);
+        let Projection::Economic(body) = &mut signed.projections[0] else {
+            panic!("economic projection");
+        };
+        let claimed = body["receipt"]["seller_gross"].as_u64().unwrap();
+        body["receipt"]["seller_gross"] = serde_json::json!(claimed + 1);
+
+        assert_eq!(
+            verify_signed_clearing(&signed, &vk),
+            SignedClearingVerdict::BadSignature,
+            "a post-signing tamper must fail the signature check"
+        );
+    }
+
+    /// THE MOAT: a dishonest issuer forges an output (wrong seller_gross) and signs
+    /// it with their OWN valid key — the signature verifies, but RECOMPUTE catches
+    /// the lie. This is what a signature-only verifier cannot do.
+    #[test]
+    fn forged_output_under_valid_signature_is_caught_by_recompute() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        // Honest receipt, then forge a single cleared number.
+        let mut claim = match issue_settlement(1_000_000, 9_500) {
+            ClearingReceipt::Settlement(c) => c,
+            _ => unreachable!(),
+        };
+        claim.seller_gross += 1; // the lie
+        let forged = ClearingReceipt::Settlement(claim);
+
+        // The attacker signs their own forged bytes — signature is VALID.
+        let signed = Receipt::sign(session(), vec![to_economic_projection(&forged)], &sk);
+
+        match verify_signed_clearing(&signed, &vk) {
+            SignedClearingVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
+                assert_eq!(field, "seller_gross", "recompute must name the forged field");
+            }
+            other => panic!("recompute must catch the forged output, got {other:?}"),
+        }
+    }
+
+    fn vcg_bids() -> Vec<IntegerBid> {
+        vec![
+            IntegerBid {
+                bidder: "spiffe://a".into(),
+                proposal_id: "p1".into(),
+                effective_value_micro_usd: 3_000_000,
+            },
+            IntegerBid {
+                bidder: "spiffe://b".into(),
+                proposal_id: "p1".into(),
+                effective_value_micro_usd: 2_000_000,
+            },
+        ]
+    }
+
+    fn vcg_proposals() -> Vec<IntegerProposal> {
+        vec![IntegerProposal {
+            id: "p1".into(),
+            cost_micro_usd: 1_000_000,
+        }]
     }
 }
 
