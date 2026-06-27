@@ -100,8 +100,16 @@ consulting it. Mediation is a **deployment** property, not a proof:
   added to the ratchet's `KERNEL_FILES`. No behavior change (754 lib tests pass,
   all-features build clean). `Operation`/`SinkClass` stay in lib.rs for now —
   they are shared with the capability machinery and more entangled.
-- **M2 — decouple `discharge`** from `ifc_api` (move `SessionCleanseToken::authorize`
-  or invert the capability so `discharge` provides it). Ratchet allowlist → empty.
+- **M2 (done) — decoupled `discharge`** from `ifc_api` by **dependency inversion**:
+  the kernel now defines a sealed `PolicyDischarged` capability contract and
+  `SessionCleanseToken::authorize<P: PolicyDischarged>(reason, &P)` takes any
+  witness; `discharge.rs` satisfies it (`impl PolicyDischarged for DischargedBundle`),
+  so the dependency points downstream→kernel. Call-compatible (`&bundle` infers
+  `P = DischargedBundle`); the seal (`cleanse_seal::Sealed`, `pub(crate)`) keeps the
+  token unforgeable outside the crate (#1358). Kernel tests use a local witness;
+  the real-bundle integration is covered from the discharge side. **Ratchet
+  allowlist is now empty** — the IFC kernel names no downstream module. (755 lib
+  tests pass.)
 - **M3 — physical crate split:** new `nucleus-ifc-kernel` crate holding the member
   set; `portcullis-core` depends on it and re-exports for backward compat.
 - **M4 — LOC + dep-count + Aeneas-extractability ratchet** on the new crate (CI

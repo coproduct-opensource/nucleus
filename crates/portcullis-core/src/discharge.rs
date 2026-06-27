@@ -479,6 +479,14 @@ pub struct DischargedBundle {
     _seal: Seal,
 }
 
+// MVK boundary (RFC `minimum-viable-ifc-kernel.md`, M2): satisfy the IFC kernel's
+// `PolicyDischarged` capability contract here, so the dependency points
+// downstream→kernel (`discharge` -> `ifc_api`) rather than kernel→downstream. A
+// completed `DischargedBundle` is the canonical proof the policy pipeline ran, so
+// it is the production witness that authorizes a `SessionCleanseToken`.
+impl crate::ifc_api::cleanse_seal::Sealed for DischargedBundle {}
+impl crate::ifc_api::PolicyDischarged for DischargedBundle {}
+
 impl DischargedBundle {
     /// Private constructor — only callable from within this module.
     fn new() -> Self {
@@ -897,6 +905,19 @@ fn sink_requires_verified_derivation(sink: SinkClass) -> bool {
 mod tests {
     use super::*;
     use crate::{AuthorityLevel, ConfLevel, DerivationClass, Freshness, ProvenanceSet};
+
+    /// MVK boundary (M2): a real `DischargedBundle` witnesses the kernel's
+    /// `PolicyDischarged` contract, so it can mint a `SessionCleanseToken`. This
+    /// covers the production integration from the downstream side (the kernel's
+    /// own tests use a local witness to stay free of `discharge`).
+    #[test]
+    fn discharged_bundle_authorizes_cleanse_token() {
+        let bundle = test_helpers::allowed_bundle();
+        // Compiles iff DischargedBundle: PolicyDischarged; authorize is the only
+        // way to mint the (sealed) token, and it requires that witness.
+        let token = crate::ifc_api::SessionCleanseToken::authorize("test: real bundle", &bundle);
+        assert_eq!(token.reason(), "test: real bundle");
+    }
 
     fn trusted_label() -> IFCLabel {
         IFCLabel {

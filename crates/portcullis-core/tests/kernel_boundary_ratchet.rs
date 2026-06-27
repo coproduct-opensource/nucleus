@@ -42,8 +42,12 @@ const KERNEL_MODULES: &[&str] = &["flow", "ifc_api", "effect", "storage_lane", "
 
 /// Known, documented residual entanglements to be removed by a named rung. Each
 /// entry MUST still be referenced by the kernel (asserted below) so a completed
-/// decoupling forces its removal from this list. `discharge` → removed by M2.
-const ALLOWLISTED_RESIDUALS: &[&str] = &["discharge"];
+/// decoupling forces its removal from this list.
+///
+/// EMPTY as of M2: the lone `discharge` entanglement was inverted — the kernel
+/// now defines the `PolicyDischarged` capability contract and `discharge`
+/// satisfies it (`discharge.rs`), so the IFC kernel names no downstream module.
+const ALLOWLISTED_RESIDUALS: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
