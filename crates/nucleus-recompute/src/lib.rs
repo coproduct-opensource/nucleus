@@ -1135,8 +1135,11 @@ pub fn verify_ifc_flow_consistent(
 // integrity leg `irun_antitone`). The per-hop / per-pair checks above bind one
 // edge; this binds the WHOLE chain: a real receipt trace must obey the property
 // the theorem proves — effective integrity is MONOTONE-NON-INCREASING in trust
-// along the chain, so taint introduced upstream can NEVER be laundered into an
-// allowed egress downstream.
+// along the chain, so taint *correctly recorded in a predecessor* can never be
+// laundered into an allowed egress downstream. (This checks the SIGNED values'
+// monotonicity; it does not recompute a hop's integrity from its own sources, so
+// a compromised runner under-reporting a fresh adversarial source is the separate
+// Level-2 residual disclosed below — not caught here.)
 //
 // HONEST SCOPE: validates a *present, signed* chain is internally consistent with
 // the unwinding guarantee (tamper-evident: a chain whose trust *rises* could not

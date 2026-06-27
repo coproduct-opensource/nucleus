@@ -2,14 +2,14 @@
   Confidentiality Noninterference — proven OVER the Aeneas-EXTRACTED enforcement
   core (D1 milestone C1; order-DUAL of IntegrityNoninterferenceExtracted).
 
-  **STATUS: STAGED.** This theorem is authored against the GENERATED signatures
-  the `aeneas-ifc-scoped` job will produce once its `EXTRACT_ROOTS` include the
-  confidentiality functions (`ifc_confidentiality::{cflows_to, cjoin, crun_step}`).
-  It will not build until that extraction runs (its `import PortcullisCoreIFC.*`
-  deps must contain the `ifc_confidentiality` namespace). The proof structure is a
-  line-for-line dual of the VERIFIED integrity theorem (CI run 26847262070,
-  `[propext, Classical.choice, Quot.sound]`), so it is expected to discharge by
-  the same tactics once the generated defs exist.
+  **STATUS: VERIFIED.** The `aeneas-ifc-scoped` CI job extracts the
+  confidentiality functions (`EXTRACT_ROOTS` includes
+  `ifc_confidentiality::{cflows_to, cjoin, crun_step}`) and builds this file
+  (`lake build ConfidentialityNoninterferenceExtracted`, run 28269268454). The
+  `#print axioms` audit printed `[propext, Classical.choice, Quot.sound]` — no
+  `sorryAx`, no Aeneas `*External` opaque axiom; the clean-axiom gate passed. This
+  is the order-dual of the VERIFIED integrity theorem (CI run 26847262070) and
+  discharges by the same tactics over the Aeneas-generated defs.
 
   The chain (dual of integrity):
 

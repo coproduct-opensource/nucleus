@@ -367,7 +367,8 @@ impl FlowDeclaration {
                 confidentiality_axis: ProofStatus::ExtractedKernelChecked,
                 open_residuals: vec![
                     "the FlowTracker graph-fold loop is hand-written Lean (irun), not extracted".to_string(),
-                    "decide()'s composition is tied to the extracted primitive by sampled parity, not proof".to_string(),
+                    "integrity composition: decide() is tied to the extracted primitive EXHAUSTIVELY over the isolated subspace + by full-space soundness fuzz (decide_matches_extracted_integrity_model + decide_allow_implies_extracted_integrity_admits)".to_string(),
+                    "confidentiality composition: decide() is tied to the extracted primitive by SAMPLED parity only — the dual of the integrity tie test is not yet written".to_string(),
                     "in-policy semantic malice / the in-spec sleeper carries a valid certificate".to_string(),
                     "covert/timing channels, label adequacy, and permitted sinks are out of scope".to_string(),
                 ],
