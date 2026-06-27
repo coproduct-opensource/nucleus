@@ -172,6 +172,7 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/healthz", get(routes::healthz))
         .route("/v1/verify", post(routes::verify))
+        .route("/v1/clearing/verify", post(routes::clearing_verify))
         .route("/v1/credit", post(routes::credit))
         // Stateful credit ledger (503 unless --credit-db is set). `accrue`
         // appends an agent's recompute-verified events to its durable,

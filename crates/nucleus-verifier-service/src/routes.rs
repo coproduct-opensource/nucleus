@@ -308,6 +308,65 @@ pub struct ReportPayload {
     pub payload_binding_verified: bool,
 }
 
+/// `POST /v1/clearing/verify` request: a signed clearing-receipt envelope + the
+/// issuer's verifying key.
+#[derive(Debug, Deserialize)]
+pub struct ClearingVerifyRequest {
+    /// The signed `nucleus_receipt::Receipt` carrying an economic clearing
+    /// projection (e.g. from `nucleus_recompute::issue_*` + `Receipt::sign`).
+    pub receipt: nucleus_receipt::Receipt,
+    /// 32-byte Ed25519 verifying key of the issuer, hex-encoded (no `0x`).
+    pub verifying_key_hex: String,
+}
+
+/// `POST /v1/clearing/verify` response: BOTH guarantees collapsed to one verdict.
+#[derive(Debug, Serialize)]
+pub struct ClearingVerifyResponse {
+    /// `true` iff the signature verified AND every cleared number re-derives from
+    /// the proven kernels — the only "fully verified" state.
+    pub verified: bool,
+    /// Machine verdict: `verified` | `bad_signature` | `malformed:<e>` |
+    /// `mismatch:<field>` | `invalid:<e>`.
+    pub verdict: String,
+}
+
+/// `POST /v1/clearing/verify` — the public recompute verifier for signed clearing
+/// receipts. Checks the Ed25519 signature FIRST, then narrows and RECOMPUTES every
+/// cleared number via the proven kernels. A signature-valid receipt with a forged
+/// number is rejected (`mismatch:<field>`) — the thing a signature-only verifier
+/// cannot catch. (R2 of shipping the recompute layer e2e.)
+pub async fn clearing_verify(
+    State(_state): State<AppState>,
+    Json(req): Json<ClearingVerifyRequest>,
+) -> Result<Json<ClearingVerifyResponse>, VerifyApiError> {
+    use nucleus_recompute::envelope::{verify_signed_clearing, SignedClearingVerdict};
+    use nucleus_recompute::RecomputeOutcome;
+
+    let bytes = hex::decode(req.verifying_key_hex.trim().trim_start_matches("0x"))
+        .map_err(|e| VerifyApiError::BadRequest(format!("verifying_key_hex invalid: {e}")))?;
+    let vk: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
+        VerifyApiError::BadRequest(format!(
+            "verifying_key_hex must decode to 32 bytes, got {}",
+            b.len()
+        ))
+    })?;
+
+    let (verified, verdict) = match verify_signed_clearing(&req.receipt, &vk) {
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Match) => {
+            (true, "verified".to_string())
+        }
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
+            (false, format!("mismatch:{field}"))
+        }
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Invalid(m)) => {
+            (false, format!("invalid:{m}"))
+        }
+        SignedClearingVerdict::BadSignature => (false, "bad_signature".to_string()),
+        SignedClearingVerdict::Malformed(e) => (false, format!("malformed:{e}")),
+    };
+    Ok(Json(ClearingVerifyResponse { verified, verdict }))
+}
+
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
 /// trust anchor.
 ///
