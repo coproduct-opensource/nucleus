@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use nucleus_econ_kernels::{
     classify, refund, route_to_commons, run_vcg, seller_gross, Clearing, CommonsAllocation,
-    CommonsError, CommonsShare, IntegerBid, IntegerProposal, Verdict, VcgError,
+    CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError, Verdict,
 };
 
 /// Domain separator for the canonical receipt bytes (versioned).
@@ -513,7 +513,10 @@ mod e2e_enforcement_tests {
 
         match verify_signed_clearing(&signed, &vk) {
             SignedClearingVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
-                assert_eq!(field, "seller_gross", "recompute must name the forged field");
+                assert_eq!(
+                    field, "seller_gross",
+                    "recompute must name the forged field"
+                );
             }
             other => panic!("recompute must catch the forged output, got {other:?}"),
         }
