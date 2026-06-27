@@ -4,8 +4,8 @@
 //! `portcullis-core` (MVK M3). It is the source of truth for:
 //!
 //! - [`CapabilityLevel`] — the 3-element permission lattice scalar
-//!   (`Never < LowRisk < Always`). The product [`CapabilityLattice`] (13 of
-//!   these) lives in `portcullis-core`.
+//!   (`Never < LowRisk < Always`) — and the product [`CapabilityLattice`].
+//! - The exposure detector + the pure capability decision (`decide_pure`).
 //! - The IFC label lattice: [`IFCLabel`], [`ConfLevel`], [`IntegLevel`],
 //!   [`AuthorityLevel`], [`ProvenanceSet`], [`Freshness`], [`DerivationClass`]
 //!   with `join`/`meet`/`flows_to`/`leq`.
@@ -42,6 +42,14 @@ pub use ifc_lattice::*;
 // Operation & sink-class vocabulary (MVK M1b).
 mod ifc_ops;
 pub use ifc_ops::*;
+
+// The capability product lattice + the exposure detector / pure decision —
+// the rest of the Aeneas-verified surface (MVK M3 whole-core).
+mod capability_lattice;
+pub use capability_lattice::*;
+
+mod exposure;
+pub use exposure::*;
 
 pub mod discharge;
 pub mod effect;

@@ -2,7 +2,7 @@
 //! `CapabilityLevel`.
 //!
 //! Carved out of `portcullis-core`'s `lib.rs` in MVK M3. The product lattice
-//! [`CapabilityLattice`](../../portcullis_core/struct.CapabilityLattice.html)
+//! [`CapabilityLattice`]
 //! (13 dimensions of this type) stays in `portcullis-core`; only the scalar
 //! level lives here, in the dependency-free kernel that Aeneas translates.
 
