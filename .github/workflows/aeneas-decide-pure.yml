@@ -1,14 +1,14 @@
 name: Aeneas decide_pure (scoped extraction + auto-commit)
 
 # Scoped Charon→Aeneas extraction of the pure lattice/exposure decision
-# kernel `portcullis_core::decide_pure` and its dependency closure
+# kernel `nucleus_ifc_kernel::decide_pure` and its dependency closure
 # (should_gate, project_exposure, classify_operation, is_exfil_operation,
 #  ExposureSet::{set,is_uninhabitable}, Operation, ExposureLabel,
 #  PureVerdict, CapabilityLevel).
 #
 # WHY A SEPARATE WORKFLOW (not aeneas.yml):
 #   aeneas.yml runs `charon cargo --preset aeneas` whole-crate, then
-#   `aeneas -backend lean` over the entire portcullis_core.llbc. Whole-crate
+#   `aeneas -backend lean` over the entire nucleus_ifc_kernel.llbc. Whole-crate
 #   Aeneas translation CRASHES on unrelated alloc-heavy bodies (String/Vec/
 #   HashMap in the flow-graph / delegation / derivation modules), emitting
 #   zero output. The standard Aeneas workflow for that is to SCOPE extraction
@@ -31,12 +31,12 @@ on:
   push:
     branches: ["main", "feat/aeneas-decide-pure-extract"]
     paths:
-      - "crates/portcullis-core/src/lib.rs"
+      - "crates/nucleus-ifc-kernel/src/**"
       - "crates/portcullis-core/lean/generated-decide/**"
       - ".github/workflows/aeneas-decide-pure.yml"
   pull_request:
     paths:
-      - "crates/portcullis-core/src/lib.rs"
+      - "crates/nucleus-ifc-kernel/src/**"
       - "crates/portcullis-core/lean/generated-decide/**"
       - ".github/workflows/aeneas-decide-pure.yml"
   workflow_dispatch:
@@ -56,7 +56,7 @@ env:
   # `decide_pure` alone pulls its whole callee closure; the exposure free
   # functions are listed explicitly to document intent and harden against a
   # conservative reachability pass.
-  EXTRACT_ROOTS: "portcullis_core::decide_pure,portcullis_core::should_gate,portcullis_core::project_exposure,portcullis_core::classify_operation,portcullis_core::is_exfil_operation"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::decide_pure,nucleus_ifc_kernel::should_gate,nucleus_ifc_kernel::project_exposure,nucleus_ifc_kernel::classify_operation,nucleus_ifc_kernel::is_exfil_operation"
 
 jobs:
   aeneas-decide-pure:
@@ -80,7 +80,7 @@ jobs:
       - name: Rust / cargo cache (Charon target dir)
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
         with:
-          workspaces: crates/portcullis-core
+          workspaces: crates/nucleus-ifc-kernel
           key: charon-decide-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -116,7 +116,7 @@ jobs:
       # --start-from each root walks ONLY the reachable callees, so the
       # alloc-heavy unrelated function bodies are never translated by Aeneas.
       - name: Charon scoped MIR extraction
-        working-directory: crates/portcullis-core
+        working-directory: crates/nucleus-ifc-kernel
         run: |
           STARTS=""
           IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
@@ -130,16 +130,18 @@ jobs:
       - name: Aeneas Lean 4 translation (scoped slice)
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated-decide
-          LLBC="$(find crates/portcullis-core . -maxdepth 2 -name 'portcullis_core.llbc' -print -quit)"
+          LLBC="$(find crates/nucleus-ifc-kernel . -maxdepth 2 -name 'nucleus_ifc_kernel.llbc' -print -quit)"
           test -n "$LLBC" || { echo "ERROR: charon produced no .llbc"; exit 1; }
           aeneas -backend lean -split-files "$LLBC" \
             -dest crates/portcullis-core/lean/ci-generated-decide
 
       # --- Canonicalize into generated-decide/ with a non-colliding namespace ---
       # The fresh scoped slice IS the canonical Aeneas output of the pinned
-      # toolchain. Funs.lean imports `PortcullisCore.Types`; we retarget it to
-      # `PortcullisCoreDecide.Types` so this lib does not collide with the
-      # whole-crate «PortcullisCore» lib (same trick the IFC job uses).
+      # toolchain. Aeneas derives the Lean module name from the crate, now
+      # `NucleusIfcKernel` (the source moved to nucleus-ifc-kernel in MVK M3);
+      # we retarget it to `PortcullisCoreDecide` so this lib does not collide with
+      # the whole-crate «PortcullisCore» lib (same trick the IFC job uses). The
+      # lowercase `nucleus_ifc_kernel` namespace is kept as-is.
       - name: Canonicalize generated-decide from the fresh extraction
         run: |
           DST=crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide
@@ -150,8 +152,8 @@ jobs:
               echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
             fi
           done
-          cp "$SRC/Types.lean" "$DST/Types.lean"
-          sed 's/PortcullisCore\.Types/PortcullisCoreDecide.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          sed 's/NucleusIfcKernel/PortcullisCoreDecide/g' "$SRC/Types.lean" > "$DST/Types.lean"
+          sed 's/NucleusIfcKernel/PortcullisCoreDecide/g' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-decide/ canonicalized from the fresh extraction."
 
       - name: Dump FULL canonical generated defs (to develop the proof against)
@@ -181,7 +183,7 @@ jobs:
                   crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Funs.lean
           git commit \
             -m "chore(aeneas): regenerate decide_pure extraction (generated-decide/)" \
-            -m "Scoped Charon --start-from extraction of portcullis_core::decide_pure and its dependency closure, translated to Lean 4 by Aeneas. Auto-generated; do not hand-edit." \
+            -m "Scoped Charon --start-from extraction of nucleus_ifc_kernel::decide_pure and its dependency closure, translated to Lean 4 by Aeneas. Auto-generated; do not hand-edit." \
             -m "[skip ci]"
           # Branch protection (25 required contexts) rejects direct
           # pushes to main (GH006 — observed run 27294505318), and a

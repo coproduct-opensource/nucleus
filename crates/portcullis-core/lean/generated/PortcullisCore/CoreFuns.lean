@@ -13,9 +13,9 @@ set_option linter.hashCommand false
 set_option linter.unusedVariables false
 set_option maxHeartbeats 1000000
 
-namespace portcullis_core
+namespace nucleus_ifc_kernel
 
-/-- [portcullis_core::{portcullis_core::CapabilityLevel}::meet]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLevel}::meet]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 58:4-60:5
     Visibility: public -/
 def CapabilityLevel.meet
@@ -28,7 +28,7 @@ def CapabilityLevel.meet
   then ok self
   else ok other
 
-/-- [portcullis_core::{portcullis_core::CapabilityLevel}::join]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLevel}::join]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 63:4-65:5
     Visibility: public -/
 def CapabilityLevel.join
@@ -41,7 +41,7 @@ def CapabilityLevel.join
   then ok self
   else ok other
 
-/-- [portcullis_core::{portcullis_core::CapabilityLevel}::implies]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLevel}::implies]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 70:4-76:5
     Visibility: public -/
 def CapabilityLevel.implies
@@ -54,14 +54,14 @@ def CapabilityLevel.implies
   then ok CapabilityLevel.Always
   else ok other
 
-/-- [portcullis_core::{portcullis_core::CapabilityLevel}::complement]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLevel}::complement]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 79:4-81:5
     Visibility: public -/
 def CapabilityLevel.complement
   (self : CapabilityLevel) : Result CapabilityLevel := do
   CapabilityLevel.implies self CapabilityLevel.Never
 
-/-- [portcullis_core::{portcullis_core::CapabilityLevel}::leq]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLevel}::leq]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 84:4-86:5
     Visibility: public -/
 def CapabilityLevel.leq
@@ -73,7 +73,7 @@ def CapabilityLevel.leq
 -- Function bodies are UNMODIFIED from Aeneas output.
 -- ═══════════════════════════════════════════════════════════════════════
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::bottom]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::bottom]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 134:4-149:5
     Visibility: public -/
 def CapabilityLattice.bottom : Result CapabilityLattice := do
@@ -94,7 +94,7 @@ def CapabilityLattice.bottom : Result CapabilityLattice := do
       spawn_agent := CapabilityLevel.Never
     }
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::top]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::top]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 152:4-167:5
     Visibility: public -/
 def CapabilityLattice.top : Result CapabilityLattice := do
@@ -115,7 +115,7 @@ def CapabilityLattice.top : Result CapabilityLattice := do
       spawn_agent := CapabilityLevel.Always
     }
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::meet]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::meet]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 170:4-185:5
     Visibility: public -/
 def CapabilityLattice.meet
@@ -152,7 +152,7 @@ def CapabilityLattice.meet
       spawn_agent := cl12
     }
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::join]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::join]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 188:4-203:5
     Visibility: public -/
 def CapabilityLattice.join
@@ -189,7 +189,7 @@ def CapabilityLattice.join
       spawn_agent := cl12
     }
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::leq]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::leq]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 206:4-219:5
     Visibility: public -/
 def CapabilityLattice.leq
@@ -247,7 +247,7 @@ def CapabilityLattice.leq
     else ok false
   else ok false
 
-/-- [portcullis_core::{portcullis_core::CapabilityLattice}::implies]:
+/-- [nucleus_ifc_kernel::{nucleus_ifc_kernel::CapabilityLattice}::implies]:
     Source: 'crates/portcullis-core/src/lib.rs', lines 222:4-237:5
     Visibility: public -/
 def CapabilityLattice.implies
@@ -284,4 +284,4 @@ def CapabilityLattice.implies
       spawn_agent := cl12
     }
 
-end portcullis_core
+end nucleus_ifc_kernel
