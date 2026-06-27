@@ -268,6 +268,59 @@ pub fn verify_receipt_js(
     serde_wasm_bindgen::to_value(&verdict).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Structured result of [`verify_signed_clearing_js`].
+#[derive(serde::Serialize)]
+struct SignedClearingReport {
+    /// `true` iff the signature verified AND every cleared number re-derives from
+    /// the proven kernels — the only "fully verified" state.
+    verified: bool,
+    /// `verified` | `bad_signature` | `malformed:<e>` | `mismatch:<field>` | `invalid:<e>`.
+    verdict: String,
+}
+
+/// Core (natively testable) of [`verify_signed_clearing_js`].
+fn signed_clearing_verdict(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<SignedClearingReport, String> {
+    use nucleus_recompute::envelope::{verify_signed_clearing, SignedClearingVerdict};
+    use nucleus_recompute::RecomputeOutcome;
+
+    let receipt: nucleus_receipt::Receipt =
+        serde_json::from_str(receipt_json).map_err(|e| format!("receipt JSON: {e}"))?;
+    let vk: [u8; 32] = verifying_key_bytes
+        .try_into()
+        .map_err(|_| "verifying key must be 32 bytes".to_string())?;
+    let (verified, verdict) = match verify_signed_clearing(&receipt, &vk) {
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Match) => (true, "verified".to_string()),
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Mismatch { field, .. }) => {
+            (false, format!("mismatch:{field}"))
+        }
+        SignedClearingVerdict::Recomputed(RecomputeOutcome::Invalid(m)) => {
+            (false, format!("invalid:{m}"))
+        }
+        SignedClearingVerdict::BadSignature => (false, "bad_signature".to_string()),
+        SignedClearingVerdict::Malformed(e) => (false, format!("malformed:{e}")),
+    };
+    Ok(SignedClearingReport { verified, verdict })
+}
+
+/// Verify a SIGNED clearing receipt end-to-end IN THE BROWSER: the Ed25519
+/// signature THEN a RECOMPUTE of every cleared number via the proven kernels.
+/// Unlike [`verify_receipt_js`] (signature + root hash), this catches a FORGED
+/// output under a VALID signature — the recompute moat, now client-side. Returns
+/// `{ verified, verdict }`. (recompute-e2e R3: the public SDK surface.)
+#[wasm_bindgen(js_name = verifySignedClearing)]
+pub fn verify_signed_clearing_js(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let report =
+        signed_clearing_verdict(receipt_json, verifying_key_bytes).map_err(|e| JsError::new(&e))?;
+    serde_wasm_bindgen::to_value(&report).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ── AGENT CARD: verify the counterparty's signed identity BEFORE acting ───────
 //
 // `verifyBundle` answers WHAT happened (provenance), `verifyReceipt` answers
@@ -935,6 +988,49 @@ mod receipt_tests {
         let vk = signing_key().verifying_key().to_bytes();
         let json = serde_json::to_string(&receipt).unwrap();
         assert!(receipt_verdict(&json, &vk).is_err());
+    }
+
+    /// R3: the SDK's signed-clearing verifier does signature + RECOMPUTE. An
+    /// honest issued clearing verifies; a forged output under a VALID signature is
+    /// caught by recompute — the moat `verifyReceipt` (signature + root hash)
+    /// cannot provide.
+    #[test]
+    fn signed_clearing_verifies_and_recompute_catches_forgery() {
+        use nucleus_recompute::{
+            envelope::to_economic_projection, issue_settlement, ClearingReceipt,
+        };
+        let session = || Session {
+            session_id: "spiffe://test/clearing".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        };
+        let vk = signing_key().verifying_key().to_bytes();
+
+        // Honest issued clearing → verified (signature + recompute).
+        let honest = Receipt::sign(
+            session(),
+            vec![to_economic_projection(&issue_settlement(1_000_000, 9_500))],
+            &signing_key(),
+        );
+        let r = signed_clearing_verdict(&serde_json::to_string(&honest).unwrap(), &vk).unwrap();
+        assert!(r.verified, "honest clearing must verify, got {}", r.verdict);
+        assert_eq!(r.verdict, "verified");
+
+        // Forged seller_gross under a VALID signature → caught by recompute.
+        let mut claim = match issue_settlement(1_000_000, 9_500) {
+            ClearingReceipt::Settlement(c) => c,
+            _ => unreachable!(),
+        };
+        claim.seller_gross += 1;
+        let forged = Receipt::sign(
+            session(),
+            vec![to_economic_projection(&ClearingReceipt::Settlement(claim))],
+            &signing_key(),
+        );
+        let r = signed_clearing_verdict(&serde_json::to_string(&forged).unwrap(), &vk).unwrap();
+        assert!(!r.verified, "forged clearing must be rejected");
+        assert_eq!(r.verdict, "mismatch:seller_gross");
     }
 }
 
