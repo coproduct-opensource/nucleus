@@ -761,7 +761,7 @@ fn infer_sink_class_for_derivation(op: Operation) -> Option<SinkClass> {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    // Explicit (not `use crate::*`) so the MVK kernel-boundary ratchet can see
+    // Explicit imports (no glob) so the MVK kernel-boundary ratchet can see
     // every crate-root dependency this module takes.
     use crate::{
         AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel, IntegLevel, Operation,

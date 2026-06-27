@@ -41,6 +41,7 @@ use std::path::PathBuf;
 /// to the crate root).
 const KERNEL_FILES: &[&str] = &[
     "src/ifc_lattice.rs",
+    "src/ifc_ops.rs",
     "src/flow.rs",
     "src/ifc_api.rs",
     "src/effect.rs",
@@ -53,6 +54,7 @@ const KERNEL_FILES: &[&str] = &[
 /// Intra-crate modules the kernel is allowed to depend on — itself.
 const KERNEL_MODULES: &[&str] = &[
     "ifc_lattice",
+    "ifc_ops",
     "flow",
     "ifc_api",
     "effect",
@@ -72,10 +74,12 @@ const KERNEL_MODULES: &[&str] = &[
 ///   token-minting authority and would not survive the M3 crate split.)
 const MODULE_ALLOWLIST: &[&str] = &["discharge"];
 
-/// Crate-root items (types/fns) DEFINED in a kernel file (`ifc_lattice.rs`) and
-/// referenced by other kernel files via the crate-root re-export. These are
-/// kernel-internal, so `crate::IFCLabel` etc. are allowed.
+/// Crate-root items (types/fns) DEFINED in a kernel file (`ifc_lattice.rs` for the
+/// lattice, `ifc_ops.rs` for the operation/sink vocabulary) and referenced by
+/// other kernel files via the crate-root re-export. These are kernel-internal, so
+/// `crate::IFCLabel` / `crate::Operation` etc. are allowed.
 const KERNEL_ROOT_PRIMITIVES: &[&str] = &[
+    // ifc_lattice.rs (M1)
     "ConfLevel",
     "IntegLevel",
     "AuthorityLevel",
@@ -83,12 +87,18 @@ const KERNEL_ROOT_PRIMITIVES: &[&str] = &[
     "Freshness",
     "DerivationClass",
     "IFCLabel",
+    // ifc_ops.rs (M1b)
+    "Operation",
+    "SinkClass",
+    "is_exfil_operation",
 ];
 
 /// Crate-root items the kernel depends on that STILL live in `lib.rs` (not yet a
-/// kernel file). Enumerated so they are tracked, not invisible; slated to move
-/// into a kernel module (M1b). Each MUST still be referenced (asserted below).
-const ROOT_RESIDUALS: &[&str] = &["Operation", "SinkClass", "is_exfil_operation"];
+/// kernel file). EMPTY as of M1b: `Operation`/`SinkClass`/`is_exfil_operation`
+/// moved into the `ifc_ops` kernel module, so the kernel no longer references any
+/// crate-root item defined outside a kernel file. Each entry (if any) MUST still
+/// be referenced (asserted below).
+const ROOT_RESIDUALS: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
