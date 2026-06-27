@@ -35,6 +35,8 @@ use std::path::PathBuf;
 /// crate root). Post-split this is every non-`lib.rs` source file in the crate.
 const KERNEL_FILES: &[&str] = &[
     "src/capability_level.rs",
+    "src/capability_lattice.rs",
+    "src/exposure.rs",
     "src/ifc_lattice.rs",
     "src/ifc_ops.rs",
     "src/flow.rs",
@@ -52,6 +54,8 @@ const KERNEL_FILES: &[&str] = &[
 /// subset, so an added kernel module must be added here deliberately.)
 const KERNEL_MODULES: &[&str] = &[
     "capability_level",
+    "capability_lattice",
+    "exposure",
     "ifc_lattice",
     "ifc_ops",
     "flow",
