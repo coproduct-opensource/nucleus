@@ -467,10 +467,14 @@ mod tests {
             cert.proof_scope.integrity_axis,
             ProofStatus::ExtractedKernelChecked
         );
-        // The confidentiality leg must be honestly marked hand-model, never unified.
+        // Both legs are Aeneas-extracted + Lean-proven: #1906 flipped the
+        // confidentiality axis from hand-model to ExtractedKernelChecked (the
+        // order-dual of integrity), but this test assertion wasn't updated — it
+        // has been red on main since. The honest residuals below carry the
+        // remaining caveats.
         assert_eq!(
             cert.proof_scope.confidentiality_axis,
-            ProofStatus::HandModelKernelChecked
+            ProofStatus::ExtractedKernelChecked
         );
         assert!(
             !cert.proof_scope.open_residuals.is_empty(),
