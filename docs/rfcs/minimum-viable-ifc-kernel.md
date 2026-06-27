@@ -36,14 +36,17 @@ Reachability analysis from the kernel entry points (`IFCLabel::flows_to`,
 `intrinsic_label`, `extracted::ifc_{integrity,confidentiality}`) shows the IFC
 core is a near-**leaf** subgraph:
 
-| Kernel member | LOC | Intra-crate deps |
+| Kernel member | LOC | Non-kernel deps |
 |---|---|---|
-| lib.rs lattice block (`Operation`, `SinkClass`+`required_*`, `ConfLevel`, `IntegLevel`, `AuthorityLevel`, `ProvenanceSet`, `Freshness`, `DerivationClass`, `IFCLabel`+`join`/`flows_to`/`meet`, label ctors, `is_exfil_operation`) | ~600 (of lib.rs's 3970) | none (crate root primitives) |
-| `flow.rs` (`NodeKind`, `intrinsic_label`, `FlowTracker` fold) | 1977 | `effect`, `storage_lane`, `is_exfil_operation` |
-| `ifc_api.rs` (`FlowTracker` API, `SafetyCheck`, `check_exfiltration_safety`) | 1434 | `flow`; **`discharge` (1 fn param + 3 test helpers — the only entanglement)** |
-| `extracted/ifc_integrity.rs`, `extracted/ifc_confidentiality.rs` (the proven slices) | ~600 | `IFCLabel`/`IntegLevel` only |
-| `effect.rs` | 286 | none (leaf) |
-| `storage_lane.rs` | 193 | none (leaf) |
+| `ifc_lattice.rs` (extracted M1: `ConfLevel`, `IntegLevel`, `AuthorityLevel`, `ProvenanceSet`, `Freshness`, `DerivationClass`, `IFCLabel`+`join`/`flows_to`/`meet`/`leq`) | 552 | none |
+| `flow.rs` (`NodeKind`, `intrinsic_label`, `FlowTracker` fold) | 1977 | `crate::Operation`, `crate::is_exfil_operation` (root residuals, still in lib.rs) |
+| `ifc_api.rs` (`FlowTracker` API, `SafetyCheck`, `check_exfiltration_safety`) | 1434 | `crate::discharge::DischargedBundle` (cleanse proof, intended coupling) |
+| `extracted/ifc_integrity.rs`, `extracted/ifc_confidentiality.rs`, `mod.rs` (the proven slices) | 389 | `crate::SinkClass` (root residual); `IFCLabel`/`IntegLevel` (kernel) |
+| `effect.rs` | 286 | `crate::DerivationClass` (kernel) |
+| `storage_lane.rs` | 193 | `crate::DerivationClass` (kernel) |
+
+Plus the still-in-lib.rs root residuals `Operation` / `SinkClass` /
+`is_exfil_operation` (~250 LOC), which M1b moves into a kernel module.
 
 **Total ≈ 5,000–5,500 LOC** — Cedar-scale (AWS Cedar's verified decision
 function is ~1.7k model / 5.7k proof / 15.7k Rust). The binding constraint is not
@@ -51,15 +54,37 @@ LOC but keeping the proven core in the Aeneas subset (primitives; no
 BTreeSet/String/dyn) — which is the same forcing function as "small enough to be
 a reference monitor."
 
-### The one residual entanglement
+Honest correction (post-audit): the kernel is a near-leaf but **not** a zero-dep
+leaf today. `effect`/`storage_lane` depend on the kernel's own `DerivationClass`;
+`flow`/`extracted` still reach three crate-root items (`Operation`, `SinkClass`,
+`is_exfil_operation`) that live in `lib.rs` (the unfenced 3.4k-LOC root). The M0
+ratchet enumerates these as `ROOT_RESIDUALS` so they are tracked rather than
+invisible, and it now flags any *un-enumerated* crate-root reference (e.g.
+`crate::CapabilityLattice`) and any `use crate::*` wildcard — closing the
+module-only-scan blind spot. M1b moves the three residuals into a kernel module
+so the kernel stops naming `lib.rs` at all.
+
+### The `discharge` coupling (intended, not erosion)
 
 `ifc_api.rs::SessionCleanseToken::authorize(reason, _proof: &discharge::DischargedBundle)`
 takes a `DischargedBundle` as a **type-level capability witness** (#1358: you
-cannot forge a cleanse token without going through the policy pipeline). The
-`_proof` is otherwise unused. This is discharge-pipeline *integration*, not core
-IFC logic, so it belongs outside the kernel. It is `pub` API, so moving it is its
-own rung (M2) to avoid breaking gateway/runner callers. Until then it is the
-single allowlisted exception in the ratchet.
+cannot forge a cleanse token without going through the policy pipeline).
+
+We initially tried to *invert* this away (kernel defines a sealed
+`PolicyDischarged` trait, `discharge` satisfies it) so the kernel would name no
+downstream module. A skeptical audit rejected that: a `pub(crate)` sealed trait is
+implementable by **any** of the crate's 58 modules, so the inversion silently
+*widened* who can mint a `SessionCleanseToken` (a privileged declassification)
+from the single `discharge` module to the whole crate — and it would not survive
+the M3 crate split (the seal would have to open to a downstream `discharge`
+crate). `DischargedBundle`'s constructor is private to `discharge`, so the
+concrete coupling is the *only* form that restricts minting to the policy
+pipeline. We therefore keep the concrete `&DischargedBundle` and treat
+`discharge` as an **intended** dependency of the cleanse escape-hatch (a
+privileged override legitimately requiring the enforcement pipeline's proof),
+enumerated in the ratchet's `MODULE_ALLOWLIST` rather than as removable erosion.
+M3 (crate split) is what will let the boundary actually *enforce* this — when
+`discharge` is a separate crate, only it and the kernel can produce the witness.
 
 ## Complete mediation
 
@@ -88,30 +113,34 @@ consulting it. Mediation is a **deployment** property, not a proof:
 
 ## Rung ladder
 
-- **M0 (this RFC) — boundary + ratchet.** Define the kernel member set; add a
+- **M0 (done) — boundary + ratchet.** Define the kernel member set; add a
   mechanical **boundary-ratchet test** that fails if any dedicated kernel file
-  (`flow`, `ifc_api`, `effect`, `storage_lane`, `extracted/*`) gains a dependency
-  on a non-kernel module (allowlist: `discharge`, to be removed in M2). Makes the
-  boundary enforceable **today**, before any code moves.
+  gains a dependency on non-kernel code — a non-kernel *module* (`crate::witness::…`),
+  an un-enumerated crate-*root* item (`crate::CapabilityLattice`), or a
+  `use crate::*` wildcard. Tracked exceptions: `MODULE_ALLOWLIST` (`discharge`,
+  intended), `ROOT_RESIDUALS` (`Operation`/`SinkClass`/`is_exfil_operation`, still
+  in lib.rs, M1b). Makes the boundary enforceable **today**, before the crate split.
 - **M1 (done) — extracted the lib.rs lattice block** into `ifc_lattice.rs` (552
   LOC: `ConfLevel`/`IntegLevel`/`AuthorityLevel`/`ProvenanceSet`/`Freshness`/
   `DerivationClass`/`IFCLabel`+`join`/`flows_to`/`meet`/`leq`), re-exported at the
   crate root (`pub use ifc_lattice::*`) so every consumer path is unchanged, and
   added to the ratchet's `KERNEL_FILES`. No behavior change (754 lib tests pass,
-  all-features build clean). `Operation`/`SinkClass` stay in lib.rs for now —
-  they are shared with the capability machinery and more entangled.
-- **M2 (done) — decoupled `discharge`** from `ifc_api` by **dependency inversion**:
-  the kernel now defines a sealed `PolicyDischarged` capability contract and
-  `SessionCleanseToken::authorize<P: PolicyDischarged>(reason, &P)` takes any
-  witness; `discharge.rs` satisfies it (`impl PolicyDischarged for DischargedBundle`),
-  so the dependency points downstream→kernel. Call-compatible (`&bundle` infers
-  `P = DischargedBundle`); the seal (`cleanse_seal::Sealed`, `pub(crate)`) keeps the
-  token unforgeable outside the crate (#1358). Kernel tests use a local witness;
-  the real-bundle integration is covered from the discharge side. **Ratchet
-  allowlist is now empty** — the IFC kernel names no downstream module. (755 lib
-  tests pass.)
+  all-features build clean).
+- **M2 (done — inversion tried then reverted) — examined the `discharge` coupling.**
+  A sealed-`PolicyDischarged` inversion was implemented and then **reverted** after
+  audit: a `pub(crate)` sealed trait widened `SessionCleanseToken` minting from one
+  module to the whole crate and would not survive M3. Conclusion: the
+  `&DischargedBundle` coupling is **intended** (the cleanse override requires the
+  policy pipeline's proof, #1358), so it stays, enumerated in `MODULE_ALLOWLIST`.
+  M3 is what will turn it into an enforced boundary.
+- **M1b — move the root residuals** (`Operation`, `SinkClass`, `is_exfil_operation`)
+  out of lib.rs into a kernel module, so the kernel stops naming the unfenced root;
+  then drop them from `ROOT_RESIDUALS`. (`Operation`/`SinkClass` are shared with the
+  capability machinery, so this needs care.)
 - **M3 — physical crate split:** new `nucleus-ifc-kernel` crate holding the member
-  set; `portcullis-core` depends on it and re-exports for backward compat.
+  set; `portcullis-core` depends on it and re-exports for backward compat. This is
+  what makes `MODULE_ALLOWLIST = {discharge}` an *enforced* boundary (only the
+  kernel + discharge crate can mint a cleanse witness).
 - **M4 — LOC + dep-count + Aeneas-extractability ratchet** on the new crate (CI
   fails if the kernel grows past a cap or pulls a non-subset dep).
 - **M5 — complete-mediation gate:** only the kernel crate may construct an IFC
