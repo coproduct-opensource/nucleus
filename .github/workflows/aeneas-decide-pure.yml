@@ -56,7 +56,10 @@ env:
   # `decide_pure` alone pulls its whole callee closure; the exposure free
   # functions are listed explicitly to document intent and harden against a
   # conservative reachability pass.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::decide_pure,nucleus_ifc_kernel::should_gate,nucleus_ifc_kernel::project_exposure,nucleus_ifc_kernel::classify_operation,nucleus_ifc_kernel::is_exfil_operation"
+  # Charon resolves DEFINITION paths, not crate-root re-exports: decide_pure &
+  # the exposure fns live in the `exposure` module, is_exfil_operation in `ifc_ops`
+  # (both re-exported at the kernel root via `pub use`, but Charon needs the real path).
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::exposure::decide_pure,nucleus_ifc_kernel::exposure::should_gate,nucleus_ifc_kernel::exposure::project_exposure,nucleus_ifc_kernel::exposure::classify_operation,nucleus_ifc_kernel::ifc_ops::is_exfil_operation"
 
 jobs:
   aeneas-decide-pure:
