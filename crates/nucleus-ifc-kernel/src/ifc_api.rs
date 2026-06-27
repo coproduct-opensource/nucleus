@@ -4,7 +4,7 @@
 //! to any AI agent. Wraps the flow graph internals behind a clean API.
 //!
 //! ```rust,ignore
-//! use portcullis_core::ifc_api::{FlowTracker, NodeKind};
+//! use nucleus_ifc_kernel::ifc_api::{FlowTracker, NodeKind};
 //!
 //! let mut tracker = FlowTracker::new();
 //! let web = tracker.observe(NodeKind::WebContent)?;
@@ -12,7 +12,7 @@
 //!
 //! // Web content + model plan → write attempt: is it safe?
 //! let label = tracker.label(plan);
-//! assert_eq!(label.integrity, portcullis_core::IntegLevel::Adversarial);
+//! assert_eq!(label.integrity, nucleus_ifc_kernel::IntegLevel::Adversarial);
 //! ```
 
 use crate::flow::{NodeKind, intrinsic_label};
@@ -497,9 +497,9 @@ impl FlowTracker {
     /// # Example
     ///
     /// ```rust
-    /// use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
-    /// use portcullis_core::{DerivationClass};
-    /// use portcullis_core::flow::NodeKind;
+    /// use nucleus_ifc_kernel::ifc_api::{FlowTracker, SafetyCheck};
+    /// use nucleus_ifc_kernel::{DerivationClass};
+    /// use nucleus_ifc_kernel::flow::NodeKind;
     ///
     /// let mut t = FlowTracker::new();
     /// // Session observes web content (OpaqueExternal)
@@ -587,9 +587,9 @@ impl FlowTracker {
     /// # Example
     ///
     /// ```rust
-    /// use portcullis_core::ifc_api::FlowTracker;
-    /// use portcullis_core::ConfLevel;
-    /// use portcullis_core::flow::NodeKind;
+    /// use nucleus_ifc_kernel::ifc_api::FlowTracker;
+    /// use nucleus_ifc_kernel::ConfLevel;
+    /// use nucleus_ifc_kernel::flow::NodeKind;
     ///
     /// let mut t = FlowTracker::new();
     /// let secret = t.observe(NodeKind::EnvVar).unwrap();

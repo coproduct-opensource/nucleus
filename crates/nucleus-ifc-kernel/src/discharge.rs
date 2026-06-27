@@ -227,8 +227,8 @@ impl RepairHint {
     /// # Example
     ///
     /// ```rust
-    /// use portcullis_core::discharge::{preflight_action, ActionTerm, PreflightResult};
-    /// use portcullis_core::{Operation, SinkClass, IFCLabel, IntegLevel};
+    /// use nucleus_ifc_kernel::discharge::{preflight_action, ActionTerm, PreflightResult};
+    /// use nucleus_ifc_kernel::{Operation, SinkClass, IFCLabel, IntegLevel};
     ///
     /// let mut term = ActionTerm {
     ///     operation: Operation::WriteFiles,
@@ -455,7 +455,7 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 ///
 /// ```compile_fail
 /// // This code does NOT compile — Seal is not accessible outside this module.
-/// use portcullis_core::discharge::{DischargedBundle, IntegrityGate, Discharged};
+/// use nucleus_ifc_kernel::discharge::{DischargedBundle, IntegrityGate, Discharged};
 /// let bundle = DischargedBundle {
 ///     integrity_gate: Discharged::mint(),  // mint() is private
 ///     // ...
@@ -518,8 +518,8 @@ impl std::fmt::Debug for DischargedBundle {
 /// # Example
 ///
 /// ```rust
-/// use portcullis_core::discharge::ActionTerm;
-/// use portcullis_core::{Operation, SinkClass, IFCLabel};
+/// use nucleus_ifc_kernel::discharge::ActionTerm;
+/// use nucleus_ifc_kernel::{Operation, SinkClass, IFCLabel};
 ///
 /// let term = ActionTerm {
 ///     operation: Operation::GitCommit,
@@ -653,8 +653,8 @@ impl PreflightResult {
 /// # Example
 ///
 /// ```rust
-/// use portcullis_core::discharge::{ActionTerm, preflight_action, PreflightResult};
-/// use portcullis_core::{Operation, SinkClass, IFCLabel};
+/// use nucleus_ifc_kernel::discharge::{ActionTerm, preflight_action, PreflightResult};
+/// use nucleus_ifc_kernel::{Operation, SinkClass, IFCLabel};
 ///
 /// let term = ActionTerm {
 ///     operation: Operation::WriteFiles,
