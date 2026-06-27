@@ -64,6 +64,30 @@ def toMatrix (M : List (List Bool)) (n m : Nat) :
 def matWidth (M : List (List Bool)) : Nat :=
   (M.head?.map List.length).getD 0
 
+/-! ### Pivot independence — the linear-algebra core of the rank drop
+
+The single hard fact behind Gaussian-elimination correctness: when a pivot row
+has a `1` in the pivot column and every *eliminated* row has a `0` there, the
+pivot is linearly independent of the eliminated rows. Concretely: a vector that
+is nonzero in a coordinate where a whole set is zero cannot lie in that set's
+span (the coordinate projection is a linear functional vanishing on the span but
+not on the vector). This is the `+1` in `rowSpanRank rows = rowSpanRank eliminated + 1`. -/
+theorem not_mem_span_of_pivot_coord {m : Nat}
+    (s : Set (Fin m → ZMod 2)) (v : Fin m → ZMod 2) (c : Fin m)
+    (hv : v c = 1) (hs : ∀ w ∈ s, w c = 0) :
+    v ∉ Submodule.span (ZMod 2) s := by
+  intro hmem
+  -- The coordinate-`c` projection is a linear functional that vanishes on `s`,
+  -- hence on `span s`; but it sends `v` to `1 ≠ 0`.
+  have hsub : s ⊆ (LinearMap.ker (LinearMap.proj c : (Fin m → ZMod 2) →ₗ[ZMod 2] ZMod 2)) := by
+    intro w hw
+    simp only [SetLike.mem_coe, LinearMap.mem_ker, LinearMap.proj_apply]
+    exact hs w hw
+  have hvk : v ∈ LinearMap.ker (LinearMap.proj c : (Fin m → ZMod 2) →ₗ[ZMod 2] ZMod 2) :=
+    (Submodule.span_le.mpr hsub) hmem
+  rw [LinearMap.mem_ker, LinearMap.proj_apply, hv] at hvk
+  exact one_ne_zero hvk
+
 /-! ### Bridge theorem proof skeleton
 
 The bridge `gaussRankBool M = (toMatrix M).rank` is decomposed into
