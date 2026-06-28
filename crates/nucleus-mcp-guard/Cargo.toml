@@ -1,0 +1,28 @@
+[package]
+name = "nucleus-mcp-guard"
+description = "Trifecta Gate: an observe-only MCP proxy that taint-tracks AI-agent dataflow and flags lethal-trifecta exfiltration risk, using the proven nucleus-ifc gate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+
+[[bin]]
+name = "mcp-guard"
+path = "src/main.rs"
+
+[dependencies]
+# The engine: the model-level lethal-trifecta IFC decision (FlowDeclaration → IfcVerdict).
+nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "io-std",
+    "process",
+] }
