@@ -1,6 +1,6 @@
 /-
 ████████████████████████████████████████████████████████████████████████████
-  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 6 `sorry`)
+  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 5 `sorry`)
 
   Nothing in this file is kernel-checked or formally verified. Do NOT cite any
   result here as "proven", "verified", or "kernel-checked". This file is part of
@@ -172,25 +172,242 @@ theorem rowSpanRank_le_cols (M : List (List Bool)) (n m : Nat) :
   simp [Fintype.card_fin] at h
   exact h
 
+/-! ### List ↔ row-vector bridging
+
+The `gaussRankBool.go` recursion manipulates `List (List Bool)`; the rank lives in
+the Mathlib `Matrix`/`finrank` world. These lemmas package the positional
+correspondence between a `List Bool` row and its GF(2) coordinate vector, so the
+hard linear-algebra step (`finrank_drop_abstract`) can be stated purely over
+`Fin m → ZMod 2` and the bookkeeping kept separate. -/
+
+/-- A `List Bool` row as a GF(2) coordinate vector (positional `getD`, then coerce). -/
+def listVec (row : List Bool) (m : Nat) : Fin m → ZMod 2 :=
+  fun j => boolToZMod (row.getD j.val false)
+
+/-- The set of row-vectors of a list-encoded matrix (over its actual rows). -/
+def rowVecSet (M : List (List Bool)) (m : Nat) : Set (Fin m → ZMod 2) :=
+  (fun row => listVec row m) '' {row | row ∈ M}
+
+theorem mem_rowVecSet {m : Nat} (M : List (List Bool)) (v : Fin m → ZMod 2) :
+    v ∈ rowVecSet M m ↔ ∃ row, row ∈ M ∧ listVec row m = v := by
+  simp only [rowVecSet, Set.mem_image, Set.mem_setOf_eq]
+
+/-- Boolean XOR corresponds to addition in `ZMod 2`. -/
+@[simp] theorem boolToZMod_xor (x y : Bool) :
+    boolToZMod (x != y) = boolToZMod x + boolToZMod y := by
+  cases x <;> cases y <;> decide
+
+/-- Positional value of `xorRows` is the boolean XOR of the positional values,
+    within the common length range. -/
+theorem xorRows_getD (a b : List Bool) (k : Nat)
+    (ha : k < a.length) (hb : k < b.length) :
+    (SemanticIFCDecidable.BoundaryMaps.xorRows a b).getD k false
+      = (a.getD k false != b.getD k false) := by
+  unfold SemanticIFCDecidable.BoundaryMaps.xorRows
+  simp only [List.getD_eq_getElem?_getD, List.getElem?_zipWith,
+    List.getElem?_eq_getElem ha, List.getElem?_eq_getElem hb, Option.getD_some]
+
+/-- `listVec` is additive on `xorRows` (over equal-length rows). -/
+theorem listVec_xorRows (a b : List Bool) (m : Nat)
+    (ha : a.length = m) (hb : b.length = m) :
+    listVec (SemanticIFCDecidable.BoundaryMaps.xorRows a b) m
+      = listVec a m + listVec b m := by
+  funext j
+  show boolToZMod ((SemanticIFCDecidable.BoundaryMaps.xorRows a b).getD j.val false)
+     = boolToZMod (a.getD j.val false) + boolToZMod (b.getD j.val false)
+  rw [xorRows_getD a b j.val (by rw [ha]; exact j.isLt) (by rw [hb]; exact j.isLt),
+      boolToZMod_xor]
+
+/-- The `i`-th matrix row of `toMatrix M M.length m` is `listVec` of the `i`-th list row. -/
+theorem toMatrix_row_eq_listVec (M : List (List Bool)) (m : Nat)
+    (i : Fin M.length) :
+    (toMatrix M M.length m).row i = listVec M[i] m := by
+  funext j
+  simp only [Matrix.row_apply, toMatrix, listVec, Fin.getElem_fin,
+    List.getElem?_eq_getElem i.isLt, Option.bind_some, List.getD_eq_getElem?_getD]
+
+/-- The row-vector range of `toMatrix` equals the membership-indexed `rowVecSet`. -/
+theorem range_eq_rowVecSet (M : List (List Bool)) (m : Nat) :
+    Set.range (toMatrix M M.length m).row = rowVecSet M m := by
+  ext v
+  rw [mem_rowVecSet]
+  constructor
+  · rintro ⟨i, rfl⟩
+    exact ⟨M[i], List.getElem_mem i.isLt, (toMatrix_row_eq_listVec M m i).symm⟩
+  · rintro ⟨row, hrow, hv⟩
+    obtain ⟨i, hi, hrow_eq⟩ := List.getElem_of_mem hrow
+    refine ⟨⟨i, hi⟩, ?_⟩
+    rw [toMatrix_row_eq_listVec M m ⟨i, hi⟩]
+    show listVec M[i] m = v
+    rw [hrow_eq, hv]
+
+/-- The row-span rank of a list matrix equals the `finrank` of the span of its
+    membership-indexed row-vector set (the clean handle for the rank-drop step). -/
+theorem rowSpanRank_eq_finrank_rowVecSet (M : List (List Bool)) (m : Nat) :
+    rowSpanRank M M.length m
+      = Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (rowVecSet M m)) := by
+  rw [rowSpanRank_eq_finrank_span_row, range_eq_rowVecSet]
+
+/-! ### The abstract rank-drop (pure linear algebra, no lists)
+
+This is the whole mathematical content of one Gaussian-elimination step: if a
+pivot vector is nonzero in a coordinate where the eliminated set vanishes, lies
+in the original span, and the eliminated set is contained in the original span,
+then the eliminated span has rank exactly one less than the original. -/
+theorem finrank_drop_abstract {m : Nat} (c : Fin m)
+    (Selim Srows : Set (Fin m → ZMod 2)) (pv : Fin m → ZMod 2)
+    (hpv_col : pv c = 1)
+    (helim_col : ∀ w ∈ Selim, w c = 0)
+    (hpv_mem : pv ∈ Submodule.span (ZMod 2) Srows)
+    (helim_sub : Selim ⊆ ↑(Submodule.span (ZMod 2) Srows)) :
+    Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Selim) + 1
+      ≤ Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Srows) := by
+  have hnotmem : pv ∉ Submodule.span (ZMod 2) Selim :=
+    not_mem_span_of_pivot_coord Selim pv c hpv_col helim_col
+  have hins : Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (insert pv Selim))
+      = Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Selim) + 1 :=
+    finrank_span_insert_of_not_mem Selim pv hnotmem
+  have hsub : Submodule.span (ZMod 2) (insert pv Selim)
+      ≤ Submodule.span (ZMod 2) Srows := by
+    rw [Submodule.span_le, Set.insert_subset_iff]
+    exact ⟨hpv_mem, helim_sub⟩
+  have hmono := Submodule.finrank_mono hsub
+  omega
+
+/-! ### Per-row bookkeeping for the eliminated matrix -/
+
+/-- Each eliminated row-vector is `0` in the pivot column. -/
+theorem elim_row_col_zero
+    (col m : Nat) (pivot orig : List Bool) (hcol : col < m)
+    (hpl : pivot.length = m) (hol : orig.length = m)
+    (hpiv_col : pivot.getD col false = true) :
+    listVec (if orig.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig) m
+      ⟨col, hcol⟩ = 0 := by
+  split
+  · rename_i h
+    show boolToZMod ((SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot).getD col false) = 0
+    rw [xorRows_getD orig pivot col (by omega) (by omega), h, hpiv_col]
+    decide
+  · rename_i h
+    rw [Bool.not_eq_true] at h
+    show boolToZMod (orig.getD col false) = 0
+    rw [h]
+    decide
+
+/-- Each eliminated row-vector lies in the span of the original row-vectors. -/
+theorem elim_row_mem_span
+    (rows : List (List Bool)) (col m : Nat) (pivot orig : List Bool)
+    (hpl : pivot.length = m) (hol : orig.length = m)
+    (horig_mem : orig ∈ rows) (hpiv_mem : pivot ∈ rows) :
+    listVec (if orig.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig) m
+      ∈ Submodule.span (ZMod 2) (rowVecSet rows m) := by
+  have horig_span : listVec orig m ∈ Submodule.span (ZMod 2) (rowVecSet rows m) :=
+    Submodule.subset_span ((mem_rowVecSet _ _).mpr ⟨orig, horig_mem, rfl⟩)
+  have hpiv_span : listVec pivot m ∈ Submodule.span (ZMod 2) (rowVecSet rows m) :=
+    Submodule.subset_span ((mem_rowVecSet _ _).mpr ⟨pivot, hpiv_mem, rfl⟩)
+  split
+  · rw [listVec_xorRows orig pivot m hol hpl]
+    exact Submodule.add_mem _ horig_span hpiv_span
+  · exact horig_span
+
+/-! ### The crux rank-drop lemma (one elimination step lowers rank by ≥ 1) -/
+
+/-- One Gaussian-elimination step: after pivoting on `pivot` in column `col`, the
+    row-span rank of the eliminated matrix is at least one less than the original. -/
+theorem crux_rank_drop
+    (rows eliminated : List (List Bool)) (col m : Nat) (pivot : List Bool)
+    (h_m : ∀ row ∈ rows, row.length = m)
+    (hpiv_mem : pivot ∈ rows)
+    (hpiv_col : pivot.getD col false = true)
+    (hdef : eliminated = (rows.filter (· ≠ pivot)).map
+      (fun row => if row.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows row pivot else row)) :
+    rowSpanRank eliminated eliminated.length m + 1 ≤ rowSpanRank rows rows.length m := by
+  have hpl : pivot.length = m := h_m pivot hpiv_mem
+  have hcol : col < m := by
+    by_contra h
+    push_neg at h
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_none (by omega)] at hpiv_col
+    simp at hpiv_col
+  rw [rowSpanRank_eq_finrank_rowVecSet eliminated m, rowSpanRank_eq_finrank_rowVecSet rows m]
+  apply finrank_drop_abstract ⟨col, hcol⟩ (rowVecSet eliminated m) (rowVecSet rows m)
+      (listVec pivot m)
+  · show boolToZMod (pivot.getD col false) = 1
+    rw [hpiv_col]; decide
+  · intro w hw
+    obtain ⟨er, her_mem, rfl⟩ := (mem_rowVecSet _ _).mp hw
+    rw [hdef] at her_mem
+    obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp her_mem
+    have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+    exact elim_row_col_zero col m pivot orig hcol hpl (h_m orig horig_mem) hpiv_col
+  · exact Submodule.subset_span ((mem_rowVecSet _ _).mpr ⟨pivot, hpiv_mem, rfl⟩)
+  · intro w hw
+    obtain ⟨er, her_mem, rfl⟩ := (mem_rowVecSet _ _).mp hw
+    rw [hdef] at her_mem
+    obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp her_mem
+    have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+    exact elim_row_mem_span rows col m pivot orig hpl (h_m orig horig_mem) horig_mem hpiv_mem
+
+/-- Loop invariant with the row-count fixed to the actual list length (the form
+    that lets the induction hypothesis fire on the shrunk `eliminated` matrix). -/
+private theorem go_invariant_aux
+    (rows : List (List Bool)) (col r fuel m : Nat)
+    (h_m : ∀ row ∈ rows, row.length = m) :
+    SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r fuel ≤
+      r + rowSpanRank rows rows.length m := by
+  induction fuel generalizing rows col r with
+  | zero =>
+    have : SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 = r := rfl
+    rw [this]
+    exact Nat.le_add_right _ _
+  | succ k ih =>
+    unfold SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go
+    cases hfind : rows.find? (fun row => row.getD col false) with
+    | none =>
+      simp only
+      by_cases hlt : col + 1 < (rows.head?.map List.length |>.getD 0)
+      · rw [if_pos hlt]
+        exact ih rows (col + 1) r h_m
+      · rw [if_neg hlt]
+        exact Nat.le_add_right _ _
+    | some pivot =>
+      simp only
+      have hpiv_mem : pivot ∈ rows := List.mem_of_find?_eq_some hfind
+      have hpiv_col : pivot.getD col false = true := by
+        have h := List.find?_some hfind
+        simpa using h
+      set eliminated := (rows.filter (· ≠ pivot)).map
+        (fun row => if row.getD col false
+          then SemanticIFCDecidable.BoundaryMaps.xorRows row pivot else row) with helim
+      have h_m_elim : ∀ row ∈ eliminated, row.length = m := by
+        intro row hrow
+        rw [helim] at hrow
+        obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp hrow
+        have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+        have hol : orig.length = m := h_m orig horig_mem
+        have hpl : pivot.length = m := h_m pivot hpiv_mem
+        split
+        · unfold SemanticIFCDecidable.BoundaryMaps.xorRows
+          rw [List.length_zipWith]; omega
+        · exact hol
+      have hih := ih eliminated (col + 1) (r + 1) h_m_elim
+      have hcrux : rowSpanRank eliminated eliminated.length m + 1 ≤
+          rowSpanRank rows rows.length m :=
+        crux_rank_drop rows eliminated col m pivot h_m hpiv_mem hpiv_col helim
+      omega
+
 /-- Sub-lemma B (the loop invariant): at every recursive step of
     `gaussRankBool.go`, the rank counter is bounded by start rank plus
-    row-span dimension. The induction-on-fuel skeleton with the base case
-    proved; the successor case awaits the find?/elimination analysis. -/
+    row-span dimension. -/
 theorem gaussRankBool_go_invariant
     (rows : List (List Bool)) (col r fuel : Nat)
     (n m : Nat) (h_n : rows.length = n) (h_m : ∀ row ∈ rows, row.length = m) :
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r fuel ≤
       r + (rowSpanRank rows n m) := by
-  induction fuel generalizing rows col r with
-  | zero =>
-    -- Base: fuel = 0 returns rank counter directly.
-    show SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 ≤
-      r + rowSpanRank rows n m
-    have : SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 = r := rfl
-    rw [this]
-    exact Nat.le_add_right r _
-  | succ k ih =>
-    sorry  -- inductive: case split on find?, bound new rank via ih
+  subst h_n
+  exact go_invariant_aux rows col r fuel m h_m
 
 /-- Sub-lemma C: the converse — the loop invariant is tight at termination.
     When fuel runs out (or all columns processed), the rank counter
