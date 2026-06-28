@@ -14,6 +14,7 @@ import Mathlib.Data.Matrix.Basic
 import Mathlib.LinearAlgebra.Matrix.Rank
 import Mathlib.LinearAlgebra.Dimension.Finrank
 import Mathlib.Data.ZMod.Basic
+import Mathlib.Algebra.Field.ZMod
 import RankNullity
 
 /-! # Bridge: `gaussRankBool` ↔ `Matrix.rank`
@@ -124,6 +125,36 @@ noncomputable def rowSpanRank (M : List (List Bool)) (n m : Nat) : Nat :=
     True by definition above; included for symmetry. -/
 theorem rowSpanRank_eq_matrix_rank (M : List (List Bool)) (n m : Nat) :
     rowSpanRank M n m = (toMatrix M n m).rank := rfl
+
+/-- Generalized connector over an arbitrary field `R`. With `R` a free type
+    variable, `A.rank` and the field lemma share the *same* `Field.toCommRing`
+    instance, so this elaborates with no instance diamond and no `ZMod`
+    reduction — it is a verbatim restatement of `Matrix.rank_eq_finrank_span_row`. -/
+private theorem rank_eq_finrank_span_row' {R : Type*} [Field R] {n m : Nat}
+    (A : Matrix (Fin n) (Fin m) R) :
+    A.rank =
+      Module.finrank R (Submodule.span R (Set.range A.row)) :=
+  Matrix.rank_eq_finrank_span_row A
+
+/-- Sub-lemma A′: the row-span dimension equals the `finrank` of the row span.
+
+    The trivial term `rank_eq_finrank_span_row' (toMatrix M n m)` hits a `whnf`
+    heartbeat explosion: `rowSpanRank` bakes in the canonical `ZMod.commRing 2`,
+    while `Matrix.rank_eq_finrank_span_row` forces `Field.toCommRing`, and
+    reconciling those two `CommRing (ZMod 2)` instances makes `isDefEq` reduce
+    `ZMod`/`Fin`/`Nat` arithmetic in the `npow`/`nsmul`/`natCast` data fields
+    (≈70k `Nat.casesOn` — times out even at `maxHeartbeats 1000000`).
+
+    Fix: pin a local `Field (ZMod 2)` whose `toCommRing` projection *is* the
+    canonical `ZMod.commRing 2`. The lemma's `.rank` then uses the very instance
+    `rowSpanRank` already uses, so the defeq check is syntactic — no diamond,
+    no reduction. (The data fields are unchanged, so the field remains lawful.) -/
+theorem rowSpanRank_eq_finrank_span_row (M : List (List Bool)) (n m : Nat) :
+    rowSpanRank M n m =
+      Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (Set.range (toMatrix M n m).row)) := by
+  letI fld : Field (ZMod 2) :=
+    { (inferInstance : Field (ZMod 2)) with toCommRing := ZMod.commRing 2 }
+  exact rank_eq_finrank_span_row' (toMatrix M n m)
 
 /-- **Row-count upper bound** (Mathlib application): rank ≤ n (row count). -/
 theorem rowSpanRank_le_rows (M : List (List Bool)) (n m : Nat) :
