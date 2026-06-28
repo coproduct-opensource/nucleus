@@ -409,6 +409,273 @@ theorem gaussRankBool_go_invariant
   subst h_n
   exact go_invariant_aux rows col r fuel m h_m
 
+/-! ### Completeness direction: the pivot counter *reaches* the full rank
+
+The invariant (`≤`) shows the counter never overcounts. The converse — the
+counter is *tight* given enough fuel — needs three ingredients beyond the
+`≤` direction:
+
+* `rowSpanRank_eq_zero_of_zero_below`: once every row is zero in all columns
+  `< col` and `m ≤ col`, every row-vector is the zero vector, so the rank is 0
+  (the terminating / out-of-fuel branches).
+* `crux_rank_drop_ge`: one elimination step drops the rank by *at most* one
+  (the matching half of `crux_rank_drop`'s `+1 ≤`); together they pin the drop
+  to exactly one.
+* `go_tight_lb_aux`: the lower-bound loop invariant, threading the
+  "zero below `col`" predicate so the IH fires on the eliminated matrix. -/
+
+/-- Empty matrix has row-span rank `0`. -/
+theorem rowSpanRank_nil (m : Nat) : rowSpanRank [] 0 m = 0 := by
+  unfold rowSpanRank
+  have h := Matrix.rank_le_card_height (toMatrix ([] : List (List Bool)) 0 m)
+  rw [Fintype.card_fin] at h
+  omega
+
+/-- If every row is zero in all columns `< col` and the matrix has at most `col`
+    columns, every row-vector is the zero vector, so the row-span rank is `0`. -/
+theorem rowSpanRank_eq_zero_of_zero_below
+    (rows : List (List Bool)) (col m : Nat)
+    (h_m : ∀ row ∈ rows, row.length = m)
+    (h_zero : ∀ row ∈ rows, ∀ k, k < col → row.getD k false = false)
+    (hmcol : m ≤ col) :
+    rowSpanRank rows rows.length m = 0 := by
+  rw [rowSpanRank_eq_finrank_rowVecSet]
+  have hsub : rowVecSet rows m ⊆ {0} := by
+    intro v hv
+    obtain ⟨row, hrow, rfl⟩ := (mem_rowVecSet _ _).mp hv
+    simp only [Set.mem_singleton_iff]
+    funext j
+    have hz : row.getD j.val false = false := h_zero row hrow j.val (by omega)
+    show boolToZMod (row.getD j.val false) = (0 : Fin m → ZMod 2) j
+    rw [hz]; rfl
+  rw [show Submodule.span (ZMod 2) (rowVecSet rows m) = ⊥ from by
+        rw [Submodule.span_eq_bot]
+        intro x hx
+        simpa using hsub hx,
+      finrank_bot]
+
+/-- The eliminated row-vector is still zero in every column `k < col` (the
+    already-cleared pivot columns), because both `orig` and `pivot` are. -/
+theorem elim_row_zero_below (col m k : Nat) (pivot orig : List Bool)
+    (hk : k < col) (hcol : col ≤ m)
+    (hpl : pivot.length = m) (hol : orig.length = m)
+    (hpiv0 : pivot.getD k false = false) (horig0 : orig.getD k false = false) :
+    (if orig.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig).getD k false
+      = false := by
+  split
+  · rw [xorRows_getD orig pivot k (by omega) (by omega), horig0, hpiv0]; decide
+  · exact horig0
+
+/-- Bool-level version of `elim_row_col_zero`: the eliminated row is `false` in
+    the pivot column itself. -/
+theorem elim_row_col_zero_bool (col m : Nat) (pivot orig : List Bool) (hcol : col < m)
+    (hpl : pivot.length = m) (hol : orig.length = m)
+    (hpiv_col : pivot.getD col false = true) :
+    (if orig.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig).getD col false
+      = false := by
+  split
+  · rename_i h
+    rw [xorRows_getD orig pivot col (by omega) (by omega), h, hpiv_col]; decide
+  · rename_i h
+    rw [Bool.not_eq_true] at h
+    exact h
+
+/-- The abstract `≥`-side of the rank drop: if `pv` is nonzero in a coordinate
+    where `Selim` vanishes, and every vector of `Srows` lies in the span of
+    `insert pv Selim`, then `Srows`'s span has rank at most `finrank (span Selim) + 1`.
+    Combined with `finrank_drop_abstract` this gives exact equality. -/
+theorem finrank_drop_abstract_ge {m : Nat} (c : Fin m)
+    (Selim Srows : Set (Fin m → ZMod 2)) (pv : Fin m → ZMod 2)
+    (hpv_col : pv c = 1)
+    (helim_col : ∀ w ∈ Selim, w c = 0)
+    (hrows_sub : Srows ⊆ ↑(Submodule.span (ZMod 2) (insert pv Selim))) :
+    Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Srows)
+      ≤ Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Selim) + 1 := by
+  have hnotmem : pv ∉ Submodule.span (ZMod 2) Selim :=
+    not_mem_span_of_pivot_coord Selim pv c hpv_col helim_col
+  have hins : Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (insert pv Selim))
+      = Module.finrank (ZMod 2) (Submodule.span (ZMod 2) Selim) + 1 :=
+    finrank_span_insert_of_not_mem Selim pv hnotmem
+  have hsub : Submodule.span (ZMod 2) Srows
+      ≤ Submodule.span (ZMod 2) (insert pv Selim) :=
+    Submodule.span_le.mpr hrows_sub
+  have hmono := Submodule.finrank_mono hsub
+  omega
+
+/-- One Gaussian-elimination step lowers the rank by *at most* one. The matching
+    bound to `crux_rank_drop`'s `eliminated + 1 ≤ rows`; together they force the
+    drop to be exactly one. The key fact is that every original row-vector lies in
+    the span of `{pivot} ∪ eliminated`: untouched rows are eliminated as-is, and a
+    cleared row `orig` is recovered as `(orig ⊕ pivot) ⊕ pivot`. -/
+theorem crux_rank_drop_ge
+    (rows eliminated : List (List Bool)) (col m : Nat) (pivot : List Bool)
+    (h_m : ∀ row ∈ rows, row.length = m)
+    (hpiv_mem : pivot ∈ rows)
+    (hpiv_col : pivot.getD col false = true)
+    (hdef : eliminated = (rows.filter (· ≠ pivot)).map
+      (fun row => if row.getD col false
+        then SemanticIFCDecidable.BoundaryMaps.xorRows row pivot else row)) :
+    rowSpanRank rows rows.length m ≤ rowSpanRank eliminated eliminated.length m + 1 := by
+  have hpl : pivot.length = m := h_m pivot hpiv_mem
+  have hcol : col < m := by
+    by_contra h
+    push_neg at h
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_none (by omega)] at hpiv_col
+    simp at hpiv_col
+  rw [rowSpanRank_eq_finrank_rowVecSet eliminated m, rowSpanRank_eq_finrank_rowVecSet rows m]
+  apply finrank_drop_abstract_ge ⟨col, hcol⟩ (rowVecSet eliminated m) (rowVecSet rows m)
+      (listVec pivot m)
+  · show boolToZMod (pivot.getD col false) = 1
+    rw [hpiv_col]; decide
+  · intro w hw
+    obtain ⟨er, her_mem, rfl⟩ := (mem_rowVecSet _ _).mp hw
+    rw [hdef] at her_mem
+    obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp her_mem
+    have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+    exact elim_row_col_zero col m pivot orig hcol hpl (h_m orig horig_mem) hpiv_col
+  · intro v hv
+    obtain ⟨orig, horig_mem, rfl⟩ := (mem_rowVecSet _ _).mp hv
+    rw [SetLike.mem_coe]
+    by_cases hop : orig = pivot
+    · subst hop
+      exact Submodule.subset_span (Set.mem_insert _ _)
+    · have horig_filter : orig ∈ rows.filter (· ≠ pivot) := by
+        rw [List.mem_filter]
+        exact ⟨horig_mem, by simpa using hop⟩
+      have hol : orig.length = m := h_m orig horig_mem
+      by_cases hbit : orig.getD col false = true
+      · have helim_mem : SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot ∈ eliminated := by
+          rw [hdef, List.mem_map]
+          refine ⟨orig, horig_filter, ?_⟩
+          show (if orig.getD col false
+              then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig)
+            = SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot
+          rw [if_pos hbit]
+        have hxor_span : listVec (SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot) m
+            ∈ Submodule.span (ZMod 2) (insert (listVec pivot m) (rowVecSet eliminated m)) :=
+          Submodule.subset_span
+            (Set.mem_insert_of_mem _ ((mem_rowVecSet _ _).mpr ⟨_, helim_mem, rfl⟩))
+        have hpiv_span : listVec pivot m
+            ∈ Submodule.span (ZMod 2) (insert (listVec pivot m) (rowVecSet eliminated m)) :=
+          Submodule.subset_span (Set.mem_insert _ _)
+        have hsum := Submodule.add_mem _ hxor_span hpiv_span
+        rw [listVec_xorRows orig pivot m hol hpl] at hsum
+        have hpp : listVec pivot m + listVec pivot m = 0 := by
+          funext j
+          simp only [Pi.add_apply, Pi.zero_apply]
+          have hz : ∀ a : ZMod 2, a + a = 0 := by decide
+          exact hz _
+        have hcancel : listVec orig m + listVec pivot m + listVec pivot m = listVec orig m := by
+          rw [add_assoc, hpp, add_zero]
+        rwa [hcancel] at hsum
+      · rw [Bool.not_eq_true] at hbit
+        have helim_mem : orig ∈ eliminated := by
+          rw [hdef, List.mem_map]
+          refine ⟨orig, horig_filter, ?_⟩
+          show (if orig.getD col false
+              then SemanticIFCDecidable.BoundaryMaps.xorRows orig pivot else orig)
+            = orig
+          rw [if_neg (by rw [hbit]; exact Bool.false_ne_true)]
+        exact Submodule.subset_span
+          (Set.mem_insert_of_mem _ ((mem_rowVecSet _ _).mpr ⟨orig, helim_mem, rfl⟩))
+
+/-- Lower-bound loop invariant: with enough fuel (`m ≤ col + fuel`) and every row
+    already zero in columns `< col`, the rank counter reaches *at least* the
+    row-span rank. The dual of `go_invariant_aux`. -/
+private theorem go_tight_lb_aux
+    (rows : List (List Bool)) (col r fuel m : Nat)
+    (h_m : ∀ row ∈ rows, row.length = m)
+    (h_zero : ∀ row ∈ rows, ∀ k, k < col → row.getD k false = false)
+    (h_fuel : m ≤ col + fuel) :
+    r + rowSpanRank rows rows.length m ≤
+      SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r fuel := by
+  induction fuel generalizing rows col r with
+  | zero =>
+    have hgo : SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 = r := rfl
+    rw [hgo]
+    have hz0 : rowSpanRank rows rows.length m = 0 :=
+      rowSpanRank_eq_zero_of_zero_below rows col m h_m h_zero (by omega)
+    omega
+  | succ k ih =>
+    unfold SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go
+    cases hfind : rows.find? (fun row => row.getD col false) with
+    | none =>
+      simp only
+      have hcol_zero : ∀ row ∈ rows, row.getD col false = false := by
+        intro row hrow
+        by_contra hne
+        rw [Bool.not_eq_false] at hne
+        rw [List.find?_eq_none] at hfind
+        exact hfind row hrow hne
+      have h_zero_succ : ∀ row ∈ rows, ∀ kk, kk < col + 1 → row.getD kk false = false := by
+        intro row hrow kk hkk
+        rcases Nat.lt_or_ge kk col with h | h
+        · exact h_zero row hrow kk h
+        · have : kk = col := by omega
+          subst this
+          exact hcol_zero row hrow
+      by_cases hlt : col + 1 < (rows.head?.map List.length |>.getD 0)
+      · rw [if_pos hlt]
+        exact ih rows (col + 1) r h_m h_zero_succ (by omega)
+      · rw [if_neg hlt]
+        by_cases hnil : rows = []
+        · subst hnil
+          simp only [List.length_nil]
+          have hz0 : rowSpanRank ([] : List (List Bool)) 0 m = 0 := rowSpanRank_nil m
+          omega
+        · have hwidth : (rows.head?.map List.length |>.getD 0) = m := by
+            obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hnil
+            have hh : ((hd :: tl).head?.map List.length |>.getD 0) = hd.length := by simp
+            rw [hh]
+            exact h_m hd (by simp)
+          rw [hwidth] at hlt
+          have hz0 : rowSpanRank rows rows.length m = 0 :=
+            rowSpanRank_eq_zero_of_zero_below rows (col + 1) m h_m h_zero_succ (by omega)
+          omega
+    | some pivot =>
+      simp only
+      have hpiv_mem : pivot ∈ rows := List.mem_of_find?_eq_some hfind
+      have hpiv_col : pivot.getD col false = true := by
+        have h := List.find?_some hfind
+        simpa using h
+      set eliminated := (rows.filter (· ≠ pivot)).map
+        (fun row => if row.getD col false
+          then SemanticIFCDecidable.BoundaryMaps.xorRows row pivot else row) with helim
+      have hpl : pivot.length = m := h_m pivot hpiv_mem
+      have hcol : col < m := by
+        by_contra h
+        push_neg at h
+        rw [List.getD_eq_getElem?_getD, List.getElem?_eq_none (by omega)] at hpiv_col
+        simp at hpiv_col
+      have h_m_elim : ∀ row ∈ eliminated, row.length = m := by
+        intro row hrow
+        rw [helim] at hrow
+        obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp hrow
+        have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+        have hol : orig.length = m := h_m orig horig_mem
+        split
+        · unfold SemanticIFCDecidable.BoundaryMaps.xorRows
+          rw [List.length_zipWith]; omega
+        · exact hol
+      have h_zero_elim : ∀ row ∈ eliminated, ∀ kk, kk < col + 1 → row.getD kk false = false := by
+        intro row hrow kk hkk
+        rw [helim] at hrow
+        obtain ⟨orig, horig_filter, rfl⟩ := List.mem_map.mp hrow
+        have horig_mem : orig ∈ rows := (List.mem_filter.mp horig_filter).1
+        have hol : orig.length = m := h_m orig horig_mem
+        rcases Nat.lt_or_ge kk col with h | h
+        · exact elim_row_zero_below col m kk pivot orig h (le_of_lt hcol) hpl hol
+            (h_zero pivot hpiv_mem kk (by omega)) (h_zero orig horig_mem kk (by omega))
+        · have hkc : kk = col := by omega
+          rw [hkc]
+          exact elim_row_col_zero_bool col m pivot orig hcol hpl hol hpiv_col
+      have hih := ih eliminated (col + 1) (r + 1) h_m_elim h_zero_elim (by omega)
+      have hge : rowSpanRank rows rows.length m ≤ rowSpanRank eliminated eliminated.length m + 1 :=
+        crux_rank_drop_ge rows eliminated col m pivot h_m hpiv_mem hpiv_col helim
+      omega
+
 /-- Sub-lemma C: the converse — the loop invariant is tight at termination.
     When fuel runs out (or all columns processed), the rank counter
     *equals* the row-span dimension. -/
@@ -418,7 +685,17 @@ theorem gaussRankBool_go_tight
     (h_fuel : n + m ≤ n + m) :  -- placeholder for sufficient fuel
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows 0 0 (n + m) =
       rowSpanRank rows n m := by
-  sorry  -- combines `_invariant` (≤) and a matching ≥ argument
+  subst h_n
+  have hle : SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows 0 0 (rows.length + m)
+      ≤ rowSpanRank rows rows.length m := by
+    have h := gaussRankBool_go_invariant rows 0 0 (rows.length + m) rows.length m rfl h_m
+    simpa using h
+  have hge : rowSpanRank rows rows.length m
+      ≤ SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows 0 0 (rows.length + m) := by
+    have h := go_tight_lb_aux rows 0 0 (rows.length + m) m h_m
+      (fun row _ k hk => absurd hk (Nat.not_lt_zero k)) (by omega)
+    simpa using h
+  omega
 
 /-- **Bridge for the empty matrix**: trivially zero on both sides. -/
 theorem gaussRankBool_eq_matrix_rank_nil :
@@ -442,9 +719,27 @@ theorem gaussRankBool_eq_matrix_rank
     (h_n : M.length = n) (h_m : ∀ row ∈ M, row.length = m) :
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool M =
       (toMatrix M n m).rank := by
-  -- TODO: unfold gaussRankBool, apply gaussRankBool_go_tight, rewrite via
-  -- rowSpanRank_eq_matrix_rank.
-  sorry
+  by_cases hM : M = []
+  · subst hM
+    simp only [List.length_nil] at h_n
+    subst h_n
+    rw [show SemanticIFCDecidable.BoundaryMaps.gaussRankBool ([] : List (List Bool)) = 0 from rfl]
+    have hz : rowSpanRank ([] : List (List Bool)) 0 m = 0 := rowSpanRank_nil m
+    unfold rowSpanRank at hz
+    omega
+  · have hwidth : (M.head?.map List.length |>.getD 0) = m := by
+      obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hM
+      have hh : ((hd :: tl).head?.map List.length |>.getD 0) = hd.length := by simp
+      rw [hh]
+      exact h_m hd (by simp)
+    have hgo : SemanticIFCDecidable.BoundaryMaps.gaussRankBool M
+        = SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go M 0 0 (M.length + m) := by
+      conv_lhs => rw [show SemanticIFCDecidable.BoundaryMaps.gaussRankBool M
+        = SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go M 0 0
+          (M.length + (M.head?.map List.length |>.getD 0)) from rfl]
+      rw [hwidth]
+    rw [hgo, gaussRankBool_go_tight M M.length m rfl h_m (by omega),
+        rowSpanRank_eq_matrix_rank, h_n]
 
 /-! ## Derivations of the three structural axioms
 
