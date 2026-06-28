@@ -642,9 +642,9 @@ pub mod ifc_flow {
                 })
             }
         }
-        let cert = body
-            .get("certificate")
-            .ok_or_else(|| IfcNarrowError::MalformedBody("missing `certificate` field".to_string()))?;
+        let cert = body.get("certificate").ok_or_else(|| {
+            IfcNarrowError::MalformedBody("missing `certificate` field".to_string())
+        })?;
         serde_json::from_value(cert.clone())
             .map_err(|e| IfcNarrowError::MalformedBody(e.to_string()))
     }
@@ -1285,8 +1285,8 @@ mod ifc_envelope_tests {
     /// Round-trip law: narrow ∘ lift = id (the certificate survives the wire).
     #[test]
     fn lift_then_narrow_is_identity() {
-        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow])
-            .certify();
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
         let back = ifc_certificate_from_projection(&to_flow_projection(&cert))
             .expect("flow projection narrows back");
         assert_eq!(back, cert);
@@ -1301,20 +1301,25 @@ mod ifc_envelope_tests {
         let vk: [u8; 32] = sk.verifying_key().to_bytes();
 
         // A clean, admissible flow (trusted ancestry → counterparty sink).
-        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow])
-            .certify();
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
         assert!(cert.admits(), "the clean flow should be admissible");
 
         let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
 
         // Guarantee 1: the signature binds the issuer to these bytes.
-        signed.verify(&vk).expect("freshly signed envelope verifies");
+        signed
+            .verify(&vk)
+            .expect("freshly signed envelope verifies");
 
         // Narrow back, then Guarantee 2: the verdict recomputes from the inputs.
         let back = ifc_certificate_from_projection(&signed.projections[0])
             .expect("signed flow projection narrows back");
         let report = back.recheck();
-        assert!(report.recomputes, "the verdict must re-derive from decide()");
+        assert!(
+            report.recomputes,
+            "the verdict must re-derive from decide()"
+        );
         assert!(report.spec_matches);
         assert!(report.admissible);
     }
@@ -1329,8 +1334,8 @@ mod ifc_envelope_tests {
         let vk: [u8; 32] = sk.verifying_key().to_bytes();
 
         // Adversarial ancestry → decide() denies. Forge the carried verdict to allow.
-        let mut cert = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent])
-            .certify();
+        let mut cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent]).certify();
         assert!(!cert.verdict.is_allow(), "decide() should deny this flow");
         cert.verdict = IfcVerdict {
             allow: true,
@@ -1340,7 +1345,9 @@ mod ifc_envelope_tests {
 
         // The attacker signs the forged cert with their own key — signature is VALID.
         let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
-        signed.verify(&vk).expect("attacker's own signature verifies");
+        signed
+            .verify(&vk)
+            .expect("attacker's own signature verifies");
 
         // But recompute re-runs decide() from the declaration and refuses the forgery.
         let back = ifc_certificate_from_projection(&signed.projections[0]).unwrap();
