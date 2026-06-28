@@ -12,8 +12,10 @@ file containing a proof-hole (`sorry` / `admit`) is listed in the
 `sorry`, the gate fails — a real proof cannot regress unnoticed, and a research
 hole cannot be smuggled out of quarantine.
 
-> Last reconciled: 2026-06-21. Authoritative counts (comment-stripped):
-> **40 proof-hole `sorry` terms across exactly 11 files**, zero elsewhere in the tree.
+> Last reconciled: 2026-06-28. Authoritative counts (comment-stripped):
+> **34 proof-hole `sorry` terms across exactly 10 files**, zero elsewhere in the tree.
+> (2026-06-28: `MatrixBridge` discharged in full — 6 holes → 0 — and promoted
+> research → proven; removed from the allowlist below and added to Tier 1.)
 
 ---
 
@@ -43,6 +45,7 @@ extracted Rust core. The CI gate builds them and bans `sorry` / `admit` /
 | `ConstructiveSecurity` | Maurer constructive-crypto composition (Mathlib-free) |
 | `WasiWorldFunctor`, `WasiIfcBoundary` | capability→WASI lattice homomorphism + boundary-monitor soundness |
 | `BelnapDecisionProofs`, `RepairAlgebraProofs` | Belnap bilattice, repair algebra (newly registered build targets, verified to compile) |
+| `MatrixBridge` | `gaussRankBool` (algorithmic GF(2) Gaussian elimination) ↔ `Matrix.rank`; Gaussian-elimination correctness + GF(2) rank subadditivity (discharged 2026-06-28, `#print axioms` = propext/Classical.choice/Quot.sound) |
 
 **(†) Disclosed TCB note:** `FlowGraphProofs.lean` (lines 130/144/158),
 `CechCohomology.lean`, and the native-decide research libs below use the
@@ -66,7 +69,6 @@ carries a `CONJECTURE` banner at its head.
 |---|---:|---|
 | `SemanticIFCDecidable` | 13 | Float `BEq` lacks `LawfulBEq`; neighbor-transitivity, foldl/countP, BFS class-rep lemmas |
 | `ComparisonTheorem` | 7 | Čech ≅ Topos for finite Alexandrov posets (Laudal/Oberst; 2 are native_decide-timeout fallbacks, "Python-verified") |
-| `MatrixBridge` | 6 | `gaussRankBool` ↔ `Matrix.rank` reduce-to-Mathlib stubs |
 | `AlignmentTaxBridge` | 5 | `operationalTax = rank H¹` (the central alignment-tax conjecture) |
 | `RankNullity` | 1 | GF(2) rank subadditivity — foundation for the whole alignment-tax chain |
 | `SimplexAcyclic` | 1 | cone construction ⇒ H¹ = 0 |
@@ -75,7 +77,7 @@ carries a `CONJECTURE` banner at its head.
 | `CompositionalAlignment` | 1 | Mayer-Vietoris-analog for spec composition |
 | `UniversalityTheorem` | 2 | rank H¹ as a complete invariant |
 | `PACVCBridge` | 2 | PAC / VC-dimension equivalence |
-| **Total** | **40** | across **11** files |
+| **Total** | **34** | across **10** files |
 
 **Machine-readable allowlist** (the CI gate parses exactly the lines between the
 markers below — these are the only files permitted to contain a proof hole):
@@ -84,7 +86,6 @@ markers below — these are the only files permitted to contain a proof hole):
 ```
 SemanticIFCDecidable
 ComparisonTheorem
-MatrixBridge
 AlignmentTaxBridge
 RankNullity
 SimplexAcyclic

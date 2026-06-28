@@ -93,7 +93,11 @@ jobs:
             WasiWorldFunctor \
             WasiIfcBoundary \
             BelnapDecisionProofs \
-            RepairAlgebraProofs
+            RepairAlgebraProofs \
+            MatrixBridge
+          # MatrixBridge: the gaussRankBool ↔ Matrix.rank bridge — fully discharged
+          # (sorry-free; #print-axioms = propext/Classical.choice/Quot.sound) as of
+          # 2026-06-28; promoted research → proven, removed from the GATE-ALLOWLIST.
           # NOTE: CategoryProofs and LabeledTypeProofs are intentionally EXCLUDED
           # — they do not currently compile (Mathlib order-refactor drift /
           # unbound auto-implicits). Tracked as Tier 3 (STALE) in CONJECTURES.md.
