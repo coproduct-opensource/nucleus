@@ -82,14 +82,14 @@ theorem reaches_of_mem_foldJoin (base : α) (xs : List α) {x : α} (h : x ∈ x
     `source` along any number of flow edges, it admits `source` too. Unbounded in
     the chain length — the result enumeration cannot give. -/
 theorem unwinding_admit_propagates {source node ceiling : α}
-    (reach : Reaches source node) (admit : le node ceiling) : le source ceiling :=
-  le_trans (reaches_le reach) admit
+    (reach : Reaches source node) (hadmit : le node ceiling) : le source ceiling :=
+  le_trans (reaches_le reach) hadmit
 
 /-- NON-INTERFERENCE (the security-facing contrapositive): a `source` the sink
     would reject can never be laundered through descendants to reach that sink. -/
 theorem unwinding_noninterference {source node ceiling : α}
     (reach : Reaches source node) (blocked : ¬ le source ceiling) : ¬ le node ceiling :=
-  fun admit => blocked (unwinding_admit_propagates reach admit)
+  fun hadmit => blocked (unwinding_admit_propagates reach hadmit)
 
 end JoinOrder
 

@@ -19,7 +19,7 @@ All proofs discharge via `decide`/`simp` over the 3-element CapabilityLevel type
 No proof holes. No SMT oracle.
 -/
 
-open portcullis_core
+open nucleus_ifc_kernel
 open PortcullisCoreBridge
 
 namespace CompartmentProofs

@@ -12,9 +12,10 @@ name: Aeneas IFC (scoped extraction + noninterference)
 on:
   pull_request:
     paths-ignore:
-      - "crates/portcullis-core/src/extracted/**"
+      - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
 

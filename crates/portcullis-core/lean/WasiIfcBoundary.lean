@@ -20,7 +20,7 @@ A component reads a sequence of labeled sources. The monitor keeps a single
 *floating label* `pc` = the join of everything read (`pcAfter`). A sink with
 requirement `t` is admitted iff `flowsTo (pc) t`. We use a `Nat`-coded label —
 confidentiality covariant (join = max), integrity and authority contravariant
-(join = min, Biba) — mirroring `portcullis_core::IFCLabel`'s three lattice-
+(join = min, Biba) — mirroring `nucleus_ifc_kernel::IFCLabel`'s three lattice-
 ordered dimensions. (The Rust label also carries provenance/freshness/derivation;
 the boundary's sink requirements leave those at top, so they never bind, and the
 finite ordered core is what governs admission.)
@@ -45,7 +45,7 @@ namespace WasiIfcBoundary
 /-- A boundary label over three lattice-ordered dimensions, `Nat`-coded.
     Confidentiality is covariant (higher = more secret); integrity and authority
     are contravariant (higher = more trusted / more authorized). Mirrors the
-    ordered core of `portcullis_core::IFCLabel`. -/
+    ordered core of `nucleus_ifc_kernel::IFCLabel`. -/
 structure Label where
   conf : Nat
   integ : Nat

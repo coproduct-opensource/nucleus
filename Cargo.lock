@@ -6768,6 +6768,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-ifc-kernel"
+version = "1.0.0"
+dependencies = [
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "nucleus-lineage"
 version = "1.0.0"
 dependencies = [
@@ -8150,6 +8158,7 @@ dependencies = [
  "c2pa",
  "ck-policy",
  "ck-types",
+ "nucleus-ifc-kernel",
  "risc0-zkvm",
  "serde",
  "serde_json",

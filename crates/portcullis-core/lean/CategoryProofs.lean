@@ -23,7 +23,7 @@ These correspond 1:1 to the exhaustive property tests in
 `portcullis-core/src/category.rs`.
 -/
 
-open portcullis_core
+open nucleus_ifc_kernel
 open PortcullisCoreBridge
 
 namespace CategoryProofs

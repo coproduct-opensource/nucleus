@@ -1,0 +1,31 @@
+[package]
+name = "nucleus-ifc-kernel"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "The IFC admission core — the dependency-free reference monitor carved out of portcullis-core (MVK M3). Source of truth for CapabilityLevel, the IFC label lattice, the flow tracker, and the Aeneas-extracted IFC slices."
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+# This crate is the Aeneas verification target: it holds the minimal,
+# dependency-free types and functions that form the IFC reference monitor.
+# Charon (rustc MIR) → Aeneas (LLBC → Lean 4) translates the `extracted/`
+# slices and the lattice core into pure functional Lean, where the
+# noninterference + HeytingAlgebra theorems are proven against Mathlib.
+#
+# By default this crate is dependency-free for Aeneas translation. The
+# optional `serde` feature enables serialization for production callers
+# (Aeneas ignores feature flags).
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+# Adopt workspace lints (incl. the cfg(kani) allow for the BMC harnesses).
+workspace = true

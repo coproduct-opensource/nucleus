@@ -28,11 +28,11 @@ audited to exactly `[propext, Classical.choice, Quot.sound]`, zero `sorry`).
    (the workflow `cat`s both files to the job log). The exact monadic signatures
    and the generated namespace path are the ground truth the proof is written
    against — do NOT guess them from this plan. The names below
-   (`portcullis_core.decide_pure`, `portcullis_core.should_gate`, etc.) are the
-   **expected** Charon lowering of `portcullis_core::decide_pure`; if Aeneas
+   (`nucleus_ifc_kernel.decide_pure`, `nucleus_ifc_kernel.should_gate`, etc.) are the
+   **expected** Charon lowering of `nucleus_ifc_kernel::decide_pure`; if Aeneas
    nests them differently (e.g. an intermediate module), update every qualified
    reference in the new proof file to match the dump. This is the single most
-   common failure mode (cf. the IFC file's `portcullis_core.extracted.ifc_integrity.*`
+   common failure mode (cf. the IFC file's `nucleus_ifc_kernel.extracted.ifc_integrity.*`
    path, which was only confirmable from its own dump).
 
 If the precondition is not met, **stop** — do not author the proof against a
@@ -89,7 +89,7 @@ set_option maxHeartbeats 1000000   -- headroom for the case-split rfl reductions
 ```
 
 The generated functions return the Aeneas `Result` monad and live under the
-`portcullis_core` namespace (confirm exact path from the dump — see §0.3).
+`nucleus_ifc_kernel` namespace (confirm exact path from the dump — see §0.3).
 
 ---
 
@@ -108,10 +108,10 @@ bridge needs total, structure-preserving maps between them:
 namespace DecidePureExtractedProofs
 
 -- Aliases for the generated (from-Rust) types. Confirm exact paths from the dump.
-abbrev GLevel := portcullis_core.CapabilityLevel
-abbrev GExp   := portcullis_core.ExposureSet
-abbrev GOp    := portcullis_core.Operation
-abbrev GVerd  := portcullis_core.PureVerdict
+abbrev GLevel := nucleus_ifc_kernel.CapabilityLevel
+abbrev GExp   := nucleus_ifc_kernel.ExposureSet
+abbrev GOp    := nucleus_ifc_kernel.Operation
+abbrev GVerd  := nucleus_ifc_kernel.PureVerdict
 
 -- Total bijections generated-enum ↔ hand-model enum (one match arm per ctor).
 def toLevel : GLevel → DecidePureProofs.CapabilityLevel
@@ -138,7 +138,7 @@ The refinement theorem:
     the hand-written model: it always returns `ok`, and the carried verdict is
     exactly the model's verdict on the mapped arguments. -/
 theorem decide_pure_refines (level : GLevel) (exp : GExp) (op : GOp) :
-    portcullis_core.decide_pure level exp op
+    nucleus_ifc_kernel.decide_pure level exp op
       = ok (fromVerd (DecidePureProofs.decide_pure (toLevel level) (toExp exp) (toOp op))) := …
 ```
 
@@ -181,8 +181,8 @@ Follow the three-pillar pattern proven in the template:
    not `DecidableEq` (template lines 93–94, 167). If a particular arm does not
    close by `rfl` because Aeneas emitted a non-`do` shape (e.g. a `match` on the
    `==` Bool rather than a bind), fall back to
-   `simp only [portcullis_core.decide_pure, portcullis_core.should_gate,
-   portcullis_core.project_exposure, portcullis_core.classify_operation,
+   `simp only [nucleus_ifc_kernel.decide_pure, nucleus_ifc_kernel.should_gate,
+   nucleus_ifc_kernel.project_exposure, nucleus_ifc_kernel.classify_operation,
    Result.bind, …]` then `rfl` — model the simp set on what the dump shows.
 
    Cost note: the split is `3 × 2³ × 13 = 312` kernel-`rfl` goals. That is why
@@ -195,14 +195,14 @@ Follow the three-pillar pattern proven in the template:
 
    ```lean
    theorem classify_operation_refines (op : GOp) :
-       portcullis_core.classify_operation op = ok (DecidePureProofs.classify_exfil (toOp op)) := by
+       nucleus_ifc_kernel.classify_operation op = ok (DecidePureProofs.classify_exfil (toOp op)) := by
      cases op <;> rfl
    theorem project_exposure_refines (exp : GExp) (op : GOp) :
-       portcullis_core.project_exposure exp op
+       nucleus_ifc_kernel.project_exposure exp op
          = ok (fromExp (DecidePureProofs.project_exposure (toExp exp) (toOp op))) := by
      cases exp with | mk p u e => cases op <;> rfl
    theorem should_gate_refines (exp : GExp) (op : GOp) :
-       portcullis_core.should_gate exp op = ok (DecidePureProofs.should_gate (toExp exp) (toOp op)) := by
+       nucleus_ifc_kernel.should_gate exp op = ok (DecidePureProofs.should_gate (toExp exp) (toOp op)) := by
      -- unfold generated should_gate; rw [project_exposure_refines, classify_operation_refines];
      -- the Result-binds collapse, leaving the same Bool && on both sides.
      …
@@ -252,7 +252,7 @@ no holes) are:
 
 ### c.1 Transfer pattern (preferred): rewrite through `decide_pure_refines`
 
-Each generated-side theorem is stated over `portcullis_core.decide_pure`, then
+Each generated-side theorem is stated over `nucleus_ifc_kernel.decide_pure`, then
 discharged by `rw [decide_pure_refines]` (collapsing the generated call to
 `ok (fromVerd (DecidePureProofs.decide_pure …))`), `simp only [Result.ok.injEq]`
 to strip `ok`, and `exact`/`rw` the corresponding hand-model theorem. Example for
@@ -260,7 +260,7 @@ to strip `ok`, and `exact`/`rw` the corresponding hand-model theorem. Example fo
 
 ```lean
 theorem g_never_always_denies (exp : GExp) (op : GOp) :
-    portcullis_core.decide_pure .Never exp op = ok .DenyCapability := by
+    nucleus_ifc_kernel.decide_pure .Never exp op = ok .DenyCapability := by
   rw [decide_pure_refines]
   -- ok (fromVerd (decide_pure .Never (toExp exp) (toOp op))) = ok .DenyCapability
   simp only [Result.ok.injEq]
@@ -272,7 +272,7 @@ For the iff-shaped #3/#4, after `rw [decide_pure_refines]` and stripping `ok`
 (`Result.ok.injEq`) plus mapping `fromVerd`/`toVerd` injectivity, the goal becomes
 the model iff, closed by the model theorem (`allow_requires_always_and_no_gate` /
 `gate_exfil_iff`) — but with `should_gate` replaced by the generated
-`portcullis_core.should_gate` via `should_gate_refines` so the RHS is genuinely
+`nucleus_ifc_kernel.should_gate` via `should_gate_refines` so the RHS is genuinely
 about the generated function.
 
 For #5 monotonicity, restate using
@@ -288,7 +288,7 @@ DecidePureProofs.decide_pure_exhaustive …` and map each disjunct through `from
 
 If, after reading the dump, the generated body is simple enough that the
 case-split closes each property directly (`cases level <;> cases exp … <;> cases op
-<;> simp [portcullis_core.decide_pure, …]`), it is acceptable to **restate and
+<;> simp [nucleus_ifc_kernel.decide_pure, …]`), it is acceptable to **restate and
 re-prove directly** over the generated def WITHOUT going through
 `decide_pure_refines` — exactly as `IntegrityNoninterferenceExtracted.lean` proves
 its properties directly over the generated `imeet`/`iflows_to` rather than bridging

@@ -1,7 +1,7 @@
 {
   "formal_verification": {
-    "extracted_proofs": 3, "handmodel_proofs": 3,
-    "extraction_ratio_pct": 50,
+    "extracted_proofs": 4, "handmodel_proofs": 3,
+    "extraction_ratio_pct": 66,
     "sorry_admit": 38, "vacuous_lean": 3,
     "lean_theorems_GUARD": 891, "clean_axiom_footprint": "n/a"
   },

@@ -5,12 +5,12 @@ on:
     branches: ["main"]
     paths:
       - "crates/portcullis-core/lean/**"
-      - "crates/portcullis-core/src/lib.rs"
+      - "crates/nucleus-ifc-kernel/src/**"
       - ".github/workflows/aeneas.yml"
   pull_request:
     paths:
       - "crates/portcullis-core/lean/**"
-      - "crates/portcullis-core/src/lib.rs"
+      - "crates/nucleus-ifc-kernel/src/**"
       - ".github/workflows/aeneas.yml"
   # Weekly canary to catch Mathlib/toolchain drift
   schedule:
@@ -47,14 +47,14 @@ jobs:
           components: rustc-dev,llvm-tools-preview,rust-src
 
       # --- Cache cargo registry + target for Charon's MIR extraction ---
-      # Without this, Charon recompiles the portcullis_core crate and its
+      # Without this, Charon recompiles the nucleus_ifc_kernel crate and its
       # dependencies from scratch every run (~5-10 min).
       # Cache-poisoning ignored: this workflow only checks formal proofs and
       # publishes no artifacts (it merely also runs on `release published`).
       - name: Rust / cargo cache (Charon target dir)
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1 # zizmor: ignore[cache-poisoning]
         with:
-          workspaces: crates/portcullis-core
+          workspaces: crates/nucleus-ifc-kernel
           key: charon-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -91,18 +91,23 @@ jobs:
 
       # --- Extract + Translate ---
       - name: Charon MIR extraction
-        working-directory: crates/portcullis-core
+        working-directory: crates/nucleus-ifc-kernel
         run: charon cargo --preset aeneas
 
       - name: Aeneas Lean 4 translation
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated
+          # Charon now runs in crates/nucleus-ifc-kernel (the capability/lattice
+          # source moved out of portcullis-core in MVK M3), so locate the emitted
+          # nucleus_ifc_kernel.llbc whether it lands in the crate dir or repo root.
+          LLBC="$(find crates/nucleus-ifc-kernel . -maxdepth 2 -name 'nucleus_ifc_kernel.llbc' -print -quit)"
+          test -n "$LLBC" || { echo "ERROR: charon produced no nucleus_ifc_kernel.llbc"; exit 1; }
           # Aeneas may emit warnings/errors for types it can't translate
           # (bool-field structs, Vec, String, etc.). The lattice core types
           # translate successfully. We capture the exit code and only run
           # the diff check if translation was clean.
           AENEAS_EXIT=0
-          aeneas -backend lean -split-files portcullis_core.llbc \
+          aeneas -backend lean -split-files "$LLBC" \
             -dest crates/portcullis-core/lean/ci-generated || AENEAS_EXIT=$?
           echo "aeneas_exit=$AENEAS_EXIT" >> "$GITHUB_OUTPUT"
           if [ "$AENEAS_EXIT" -ne 0 ]; then
@@ -126,9 +131,20 @@ jobs:
               if [ ! -f "$COMMITTED" ]; then
                 COMMITTED="crates/portcullis-core/lean/generated/PortcullisCore/$f"
               fi
-              if [ -f "$COMMITTED" ] && ! diff -q "$COMMITTED" "crates/portcullis-core/lean/ci-generated/$f" > /dev/null 2>&1; then
+              # Canonicalize the fresh extraction's PascalCase module name back to
+              # the committed one before diffing. Aeneas derives the Lean module
+              # name from the crate (nucleus_ifc_kernel -> NucleusIfcKernel) since
+              # the source moved to crates/nucleus-ifc-kernel in MVK M3; the
+              # committed lib keeps the stable «PortcullisCore» module name (so it
+              # does not collide with the scoped IFC/decide libs). Only the
+              # PascalCase module references in `import` lines differ; the
+              # lowercase `nucleus_ifc_kernel` namespace + doc comments match.
+              FRESH="$(mktemp)"
+              sed 's/NucleusIfcKernel/PortcullisCore/g' \
+                "crates/portcullis-core/lean/ci-generated/$f" > "$FRESH"
+              if [ -f "$COMMITTED" ] && ! diff -q "$COMMITTED" "$FRESH" > /dev/null 2>&1; then
                 echo "MISMATCH: $f"
-                diff "$COMMITTED" "crates/portcullis-core/lean/ci-generated/$f" || true
+                diff "$COMMITTED" "$FRESH" || true
                 MISMATCH=1
               fi
             fi

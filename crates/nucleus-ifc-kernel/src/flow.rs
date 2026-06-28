@@ -95,7 +95,7 @@ pub enum NodeKind {
     /// to the most conservative label (adversarial integrity, public conf).
     ///
     /// ```rust
-    /// use portcullis_core::flow::NodeKind;
+    /// use nucleus_ifc_kernel::flow::NodeKind;
     ///
     /// let custom = NodeKind::Custom("slack_message");
     /// ```
@@ -761,7 +761,12 @@ fn infer_sink_class_for_derivation(op: Operation) -> Option<SinkClass> {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    use crate::*;
+    // Explicit imports (no glob) so the MVK kernel-boundary ratchet can see
+    // every crate-root dependency this module takes.
+    use crate::{
+        AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel, IntegLevel, Operation,
+        ProvenanceSet,
+    };
 
     /// Generate a symbolic ConfLevel.
     fn any_conf() -> ConfLevel {
@@ -1062,8 +1067,8 @@ mod kani_proofs {
 /// # Usage
 ///
 /// ```rust
-/// use portcullis_core::flow::{ZkFlowInput, FlowNode, FlowVerdict, NodeKind, MAX_PARENTS};
-/// use portcullis_core::IFCLabel;
+/// use nucleus_ifc_kernel::flow::{ZkFlowInput, FlowNode, FlowVerdict, NodeKind, MAX_PARENTS};
+/// use nucleus_ifc_kernel::IFCLabel;
 ///
 /// let node = FlowNode {
 ///     id: 1,
@@ -1128,8 +1133,8 @@ pub enum VerificationResult {
 /// (no I/O, no allocation beyond the input) and deterministic.
 ///
 /// ```rust
-/// use portcullis_core::flow::*;
-/// use portcullis_core::*;
+/// use nucleus_ifc_kernel::flow::*;
+/// use nucleus_ifc_kernel::*;
 ///
 /// let source = FlowNode {
 ///     id: 1, kind: NodeKind::FileRead,

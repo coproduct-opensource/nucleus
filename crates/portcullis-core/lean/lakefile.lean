@@ -32,10 +32,11 @@ lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]
 
 -- Aeneas-generated integrity-axis enforcement core (from real Rust:
--- crates/portcullis-core/src/extracted/ifc_integrity.rs). The function
--- bodies are UNMODIFIED Aeneas output (only the inter-module import path in
--- Funs.lean was retargeted from PortcullisCore.Types to PortcullisCoreIFC.Types
--- so this lib does not collide with the «PortcullisCore» lib).
+-- crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs — the IFC source
+-- moved out of portcullis-core in MVK M3). The function bodies are UNMODIFIED
+-- Aeneas output (only the inter-module import path in Funs.lean was retargeted
+-- from NucleusIfcKernel.Types to PortcullisCoreIFC.Types so this lib does not
+-- collide with the «PortcullisCore» lib).
 lean_lib «PortcullisCoreIFC» where
   roots := #[`PortcullisCoreIFC.Types, `PortcullisCoreIFC.Funs]
   srcDir := "generated-ifc"

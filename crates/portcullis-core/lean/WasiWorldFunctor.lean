@@ -31,7 +31,7 @@ in `portcullis-wasi`'s `tests` module.
 
 | Lean                         | Rust (`portcullis-wasi`)            |
 |------------------------------|-------------------------------------|
-| `CapabilityLevel`            | `portcullis_core::CapabilityLevel`  |
+| `CapabilityLevel`            | `nucleus_ifc_kernel::CapabilityLevel`  |
 | `WasiGrant`                  | `WasiGrant`                         |
 | `φ`                          | `impl From<CapabilityLevel> …`      |
 | `present`                    | `WasiGrant::present`                |
@@ -41,7 +41,7 @@ in `portcullis-wasi`'s `tests` module.
 namespace WasiWorldFunctor
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- CapabilityLevel — mirror of portcullis_core::CapabilityLevel (3-chain)
+-- CapabilityLevel — mirror of nucleus_ifc_kernel::CapabilityLevel (3-chain)
 -- ═══════════════════════════════════════════════════════════════════════════
 
 /-- Capability level. `never < lowRisk < always`; `meet` = min, `join` = max.
