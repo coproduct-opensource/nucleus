@@ -1,9 +1,16 @@
 /-
 ████████████████████████████████████████████████████████████████████████████
-  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 5 `sorry`)
+  SORRY-FREE as of 2026-06-27 (`lake build MatrixBridge` clean; every theorem
+  below `#print axioms`-checks to [propext, Classical.choice, Quot.sound] only).
 
-  Nothing in this file is kernel-checked or formally verified. Do NOT cite any
-  result here as "proven", "verified", or "kernel-checked". This file is part of
+  The bridge `gaussRankBool = Matrix.rank` and all three downstream derivations
+  (`gaussRankBool_append_le_via_bridge`, `fullDeclassList_realises_via_bridge`,
+  `h1_basis_realiser_exists_via_bridge`) are kernel-checked. HONEST SCOPE CAVEAT:
+  the three derivations carry an explicit uniform-row-width hypothesis
+  (`∀ row ∈ …, row.length = m`) required to invoke the bridge; the corresponding
+  axioms still stated in `RankNullity.lean` / `AlignmentTaxBridge.lean` are
+  hypothesis-free and are NOT yet rewired to consume these lemmas, so those
+  downstream files remain Tier-2 until that wiring lands. This file is part of
   the alignment-tax / Cech-cohomology / braid research cluster.
 
   Status + full manifest: crates/portcullis-core/lean/CONJECTURES.md (Tier 2).
@@ -40,10 +47,10 @@ Gaussian elimination over GF(2).
 
 ## Status
 
-The bridge theorem is sorry-stated here. Once it lands, all three
-downstream derivations become unconditional. The proof of the bridge
-itself is the algorithmic-correctness step (~300-500 lines of dedicated
-work in a follow-up). -/
+The bridge theorem is PROVEN (sorry-free), and all three downstream
+derivations are discharged through it — each modulo an explicit
+uniform-row-width hypothesis needed to apply the bridge. See the banner
+at the top of this file for the precise scope caveat. -/
 
 open Matrix
 
@@ -191,6 +198,26 @@ def rowVecSet (M : List (List Bool)) (m : Nat) : Set (Fin m → ZMod 2) :=
 theorem mem_rowVecSet {m : Nat} (M : List (List Bool)) (v : Fin m → ZMod 2) :
     v ∈ rowVecSet M m ↔ ∃ row, row ∈ M ∧ listVec row m = v := by
   simp only [rowVecSet, Set.mem_image, Set.mem_setOf_eq]
+
+/-- Convert a GF(2) coordinate vector back to a `List Bool` row of width `m`. The
+    inverse (on the nose) of `listVec`: `listVec (vecToRow v) m = v`. -/
+def vecToRow (m : Nat) (v : Fin m → ZMod 2) : List Bool :=
+  List.ofFn (fun j => decide (v j = 1))
+
+/-- On `ZMod 2`, recovering a coordinate through `decide (· = 1)` is the identity. -/
+theorem boolToZMod_decide_eq (a : ZMod 2) : boolToZMod (decide (a = 1)) = a := by
+  revert a; decide
+
+/-- `vecToRow` is a section of `listVec`: re-encoding a coordinate vector and
+    reading it back yields the original vector. -/
+theorem listVec_vecToRow (m : Nat) (v : Fin m → ZMod 2) :
+    listVec (vecToRow m v) m = v := by
+  funext j
+  show boolToZMod ((vecToRow m v).getD j.val false) = v j
+  rw [vecToRow, List.getD_eq_getElem?_getD, List.getElem?_ofFn, dif_pos j.isLt,
+      Option.getD_some]
+  simp only [Fin.eta]
+  exact boolToZMod_decide_eq (v j)
 
 /-- Boolean XOR corresponds to addition in `ZMod 2`. -/
 @[simp] theorem boolToZMod_xor (x y : Bool) :
@@ -741,6 +768,27 @@ theorem gaussRankBool_eq_matrix_rank
     rw [hgo, gaussRankBool_go_tight M M.length m rfl h_m (by omega),
         rowSpanRank_eq_matrix_rank, h_n]
 
+/-- Bridge specialised to the `finrank` of the row-span set: for a uniform-width
+    list matrix the Gaussian-elimination rank equals the dimension of the span of
+    its row-vectors. The clean handle used by all three derivations below. -/
+theorem gaussRankBool_eq_finrank_rowVecSet
+    (L : List (List Bool)) (m : Nat) (h : ∀ row ∈ L, row.length = m) :
+    SemanticIFCDecidable.BoundaryMaps.gaussRankBool L
+      = Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (rowVecSet L m)) := by
+  rw [gaussRankBool_eq_matrix_rank L L.length m rfl h]
+  show rowSpanRank L L.length m = _
+  rw [rowSpanRank_eq_finrank_rowVecSet]
+
+/-- The row-vector set of an appended matrix is the union of the row-vector sets.
+    (Rows of `M ++ N` are exactly the rows of `M` together with the rows of `N`.) -/
+theorem rowVecSet_append (M N : List (List Bool)) (m : Nat) :
+    rowVecSet (M ++ N) m = rowVecSet M m ∪ rowVecSet N m := by
+  unfold rowVecSet
+  rw [← Set.image_union]
+  congr 1
+  ext row
+  simp only [Set.mem_setOf_eq, Set.mem_union, List.mem_append]
+
 /-! ## Derivations of the three structural axioms
 
 These are the unconditional closures of the axioms introduced in
@@ -751,12 +799,26 @@ These are the unconditional closures of the axioms introduced in
 
     Standard `Matrix.rank` subadditivity: `rank (A ++ B) ≤ rank A + (rows of B)`. -/
 theorem gaussRankBool_append_le_via_bridge
-    (M N : List (List Bool)) :
+    (M N : List (List Bool)) (m : Nat)
+    (h_m : ∀ row ∈ M ++ N, row.length = m) :
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool (M ++ N) ≤
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool M + N.length := by
   -- Convert both sides via the bridge; then use Mathlib's row-append rank lemma.
-  -- Mathlib path: rank(stack A B) ≤ rank A + rank B ≤ rank A + (rows of B).
-  sorry  -- Reduces to bridge + Mathlib.Matrix.rank_le_height + Matrix.rank_add_le
+  -- Mathlib path: rank(stack A B) = finrank (span M ⊔ span N) ≤ finrank (span M) + finrank (span N)
+  --             ≤ rank M + (#rows of N).
+  have h_mM : ∀ row ∈ M, row.length = m :=
+    fun r hr => h_m r (List.mem_append.mpr (Or.inl hr))
+  rw [gaussRankBool_eq_matrix_rank (M ++ N) (M ++ N).length m rfl h_m,
+      gaussRankBool_eq_matrix_rank M M.length m rfl h_mM]
+  show rowSpanRank (M ++ N) (M ++ N).length m ≤ rowSpanRank M M.length m + N.length
+  rw [rowSpanRank_eq_finrank_rowVecSet, rowSpanRank_eq_finrank_rowVecSet,
+      rowVecSet_append, Submodule.span_union]
+  have hsup := Submodule.finrank_sup_add_finrank_inf_eq
+    (Submodule.span (ZMod 2) (rowVecSet M m)) (Submodule.span (ZMod 2) (rowVecSet N m))
+  have hN : Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (rowVecSet N m)) ≤ N.length := by
+    have h := rowSpanRank_le_rows N N.length m
+    rwa [rowSpanRank_eq_finrank_rowVecSet] at h
+  omega
 
 /-- **Axiom 2 closed (modulo bridge)**: `fullDeclassList realises`.
 
@@ -765,24 +827,116 @@ theorem gaussRankBool_append_le_via_bridge
 theorem fullDeclassList_realises_via_bridge
     (M : List (List Bool)) (n : Nat)
     (allRows : List (List Bool))
+    (h_m : ∀ row ∈ M ++ allRows, row.length = n)
     (h_basis : ∀ i : Fin n, ∃ row ∈ allRows, ∀ j : Fin n,
       (toMatrix [row] 1 n) ⟨0, Nat.one_pos⟩ j = if j = i then 1 else 0) :
     n ≤ SemanticIFCDecidable.BoundaryMaps.gaussRankBool (M ++ allRows) := by
-  -- Bridge converts to Matrix.rank, then standard-basis spans give rank ≥ n.
-  sorry  -- Reduces to bridge + Mathlib.Matrix.rank_eq_of_basis_in_rows
+  -- Bridge converts to Matrix.rank, then standard-basis spans give rank = n.
+  rw [gaussRankBool_eq_matrix_rank (M ++ allRows) (M ++ allRows).length n rfl h_m]
+  show n ≤ rowSpanRank (M ++ allRows) (M ++ allRows).length n
+  rw [rowSpanRank_eq_finrank_rowVecSet]
+  -- Each standard basis vector `e i` is a row-vector of `allRows ⊆ M ++ allRows`.
+  have hbasis_mem : ∀ i : Fin n,
+      (Pi.basisFun (ZMod 2) (Fin n)) i ∈ rowVecSet (M ++ allRows) n := by
+    intro i
+    obtain ⟨row, hrow, hrow_eq⟩ := h_basis i
+    rw [mem_rowVecSet]
+    refine ⟨row, List.mem_append.mpr (Or.inr hrow), ?_⟩
+    funext j
+    have htm : (toMatrix [row] 1 n) ⟨0, Nat.one_pos⟩ j = listVec row n j := rfl
+    have hval : listVec row n j = if j = i then (1 : ZMod 2) else 0 := by
+      rw [← htm]; exact hrow_eq j
+    rw [hval, Pi.basisFun_apply, Pi.single_apply]
+  -- The standard basis spans the whole ambient space, so the row span is `⊤`.
+  have htop : Submodule.span (ZMod 2) (rowVecSet (M ++ allRows) n) = ⊤ := by
+    rw [eq_top_iff, ← (Pi.basisFun (ZMod 2) (Fin n)).span_eq, Submodule.span_le]
+    rintro v ⟨i, rfl⟩
+    exact Submodule.subset_span (hbasis_mem i)
+  rw [htop, finrank_top, Module.finrank_fin_fun]
 
 /-- **Axiom 3 closed (modulo bridge)**: `h1_basis_realiser_exists`.
 
     Any finite-dimensional GF(2) quotient space has a basis of dimension
     equal to its rank. Each basis element gives one declassification edge. -/
 theorem h1_basis_realiser_exists_via_bridge
-    (M N : List (List Bool)) (k : Nat)
+    (M N : List (List Bool)) (k : Nat) (m : Nat)
+    (h_mMN : ∀ row ∈ M ++ N, row.length = m)
     (h_dim : SemanticIFCDecidable.BoundaryMaps.gaussRankBool (M ++ N) =
              SemanticIFCDecidable.BoundaryMaps.gaussRankBool M + k) :
     ∃ (basis : List (List Bool)), basis.length = k ∧
       SemanticIFCDecidable.BoundaryMaps.gaussRankBool (M ++ basis) =
         SemanticIFCDecidable.BoundaryMaps.gaussRankBool M + k := by
-  -- Bridge converts to Matrix.rank, extract a basis of the quotient.
-  sorry  -- Reduces to bridge + Mathlib's basis-extraction for finite quotients
+  -- Bridge converts to finrank; extract a complement basis of `span M` inside
+  -- `span (M ++ N)` and realise its `k` vectors as concrete Bool rows.
+  have h_mM : ∀ row ∈ M, row.length = m :=
+    fun r hr => h_mMN r (List.mem_append.mpr (Or.inl hr))
+  have hbM := gaussRankBool_eq_finrank_rowVecSet M m h_mM
+  have hbMN := gaussRankBool_eq_finrank_rowVecSet (M ++ N) m h_mMN
+  rw [rowVecSet_append, Submodule.span_union] at hbMN
+  -- `finrank (span M ⊔ span N) = finrank (span M) + k`
+  have hdimfr : Module.finrank (ZMod 2)
+        ↥(Submodule.span (ZMod 2) (rowVecSet M m) ⊔ Submodule.span (ZMod 2) (rowVecSet N m))
+      = Module.finrank (ZMod 2) (Submodule.span (ZMod 2) (rowVecSet M m)) + k := by
+    rw [← hbMN, ← hbM]; exact h_dim
+  -- A complement `q` of `span M` cuts out a `k`-dimensional `C := (span M ⊔ span N) ⊓ q`.
+  obtain ⟨q, hq⟩ := Submodule.exists_isCompl (Submodule.span (ZMod 2) (rowVecSet M m))
+  have hAC : Submodule.span (ZMod 2) (rowVecSet M m)
+        ⊔ ((Submodule.span (ZMod 2) (rowVecSet M m)
+            ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q)
+      = Submodule.span (ZMod 2) (rowVecSet M m) ⊔ Submodule.span (ZMod 2) (rowVecSet N m) := by
+    rw [inf_comm, ← sup_inf_assoc_of_le _ le_sup_left, hq.sup_eq_top, top_inf_eq]
+  have hAcap : Submodule.span (ZMod 2) (rowVecSet M m)
+        ⊓ ((Submodule.span (ZMod 2) (rowVecSet M m)
+            ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q)
+      = ⊥ := by
+    refine le_bot_iff.mp (le_trans (inf_le_inf_left _ inf_le_right) (le_of_eq hq.inf_eq_bot))
+  have hfrC : Module.finrank (ZMod 2)
+        ↥((Submodule.span (ZMod 2) (rowVecSet M m)
+          ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q) = k := by
+    have hsum := Submodule.finrank_sup_add_finrank_inf_eq
+      (Submodule.span (ZMod 2) (rowVecSet M m))
+      ((Submodule.span (ZMod 2) (rowVecSet M m)
+        ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q)
+    rw [hAC, hAcap, finrank_bot, add_zero, hdimfr] at hsum
+    omega
+  -- A basis of `C` indexed by `Fin k`; realise each basis vector as a Bool row.
+  let bC := Module.finBasisOfFinrankEq (ZMod 2)
+    ↥((Submodule.span (ZMod 2) (rowVecSet M m)
+      ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q) hfrC
+  refine ⟨List.ofFn (fun i : Fin k => vecToRow m ((bC i : Fin m → ZMod 2))), ?_, ?_⟩
+  · rw [List.length_ofFn]
+  set basis := List.ofFn (fun i : Fin k => vecToRow m ((bC i : Fin m → ZMod 2))) with hbasis
+  have h_mbasis : ∀ row ∈ basis, row.length = m := by
+    intro row hrow
+    rw [hbasis, List.mem_ofFn] at hrow
+    obtain ⟨i, rfl⟩ := hrow
+    unfold vecToRow; rw [List.length_ofFn]
+  have h_mMbasis : ∀ row ∈ M ++ basis, row.length = m := by
+    intro row hrow
+    rcases List.mem_append.mp hrow with h | h
+    · exact h_mM row h
+    · exact h_mbasis row h
+  -- `rowVecSet basis = C.subtype '' range bC`, so its span is `C`.
+  have hspanC : Submodule.span (ZMod 2) (rowVecSet basis m)
+      = (Submodule.span (ZMod 2) (rowVecSet M m)
+          ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q := by
+    have himg : rowVecSet basis m
+        = ⇑(((Submodule.span (ZMod 2) (rowVecSet M m)
+            ⊔ Submodule.span (ZMod 2) (rowVecSet N m)) ⊓ q).subtype) '' Set.range ⇑bC := by
+      ext v
+      rw [mem_rowVecSet]
+      constructor
+      · rintro ⟨row, hrow, rfl⟩
+        rw [hbasis, List.mem_ofFn] at hrow
+        obtain ⟨i, rfl⟩ := hrow
+        exact ⟨bC i, Set.mem_range_self i, by rw [listVec_vecToRow, Submodule.subtype_apply]⟩
+      · rintro ⟨c, ⟨i, rfl⟩, rfl⟩
+        exact ⟨vecToRow m ↑(bC i), by rw [hbasis, List.mem_ofFn]; exact ⟨i, rfl⟩,
+          listVec_vecToRow m _⟩
+    rw [himg, Submodule.span_image, bC.span_eq, Submodule.map_subtype_top]
+  -- Conclude: `gaussRankBool (M ++ basis) = finrank (span M ⊔ C) = finrank (span M) + k`.
+  have hbasiseq := gaussRankBool_eq_finrank_rowVecSet (M ++ basis) m h_mMbasis
+  rw [rowVecSet_append, Submodule.span_union, hspanC, hAC] at hbasiseq
+  rw [hbasiseq, hdimfr, ← hbM]
 
 end PortcullisCore.MatrixBridge
