@@ -22,7 +22,9 @@ nucleus-agent-card = { path = "../nucleus-agent-card" }
 # `nucleus-recompute` supplies the ClearingReceipt request type; the credit file
 # folds them (recompute each, honest builds standing, a caught lie burns it) and
 # composes the proven required_bond. Stateless + recomputable client-side.
-nucleus-recompute = { path = "../nucleus-recompute" }
+nucleus-recompute = { path = "../nucleus-recompute", features = ["envelope"] }
+# The /v1/clearing/verify wire type is a signed nucleus-receipt Receipt envelope.
+nucleus-receipt = { path = "../nucleus-receipt" }
 # `persist`: the durable, append-only credit ledger (redb-backed store) powering
 # the stateful /v1/credit/{agent_id}/accrue + GET standing endpoints. The
 # stateless POST /v1/credit and the mint bridge stay on (default features kept).
@@ -55,6 +57,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util", "limit"] }
 http-body-util = "0.1"
+# R2 e2e: mint a signed clearing receipt to POST at /v1/clearing/verify
+# (nucleus-receipt is a regular dep above; ed25519-dalek only the test needs).
+ed25519-dalek = { workspace = true }
 nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 # `sign` lets the route test mint a SignedAgentCard to seed AppState.

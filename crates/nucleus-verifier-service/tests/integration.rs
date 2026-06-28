@@ -1580,3 +1580,69 @@ async fn credit_authenticated_standing_matches_stateless_post() {
         stateless["required_bond_micro"]
     );
 }
+
+/// R2 e2e: the public recompute verifier endpoint. A real signed clearing is
+/// produced (proven kernels), POSTed to /v1/clearing/verify, and verifies
+/// (signature + recompute). A forged output under a VALID signature is rejected
+/// by RECOMPUTE — the moat a signature-only verifier can't provide.
+#[tokio::test]
+async fn clearing_verify_recomputes_and_catches_forgery_under_valid_signature() {
+    use ed25519_dalek::SigningKey;
+    use nucleus_receipt::{Receipt, Session};
+    use nucleus_recompute::{envelope::to_economic_projection, issue_settlement, ClearingReceipt};
+
+    let sk = SigningKey::from_bytes(&[7u8; 32]);
+    let vk_hex = hex::encode(sk.verifying_key().to_bytes());
+    let session = Session {
+        session_id: "spiffe://test/clearing".into(),
+        issuer_kid: "test-kid".into(),
+        issued_at_micros: 1_717_000_000_000_000,
+        parent_chain: vec![],
+    };
+
+    async fn post_clearing(receipt: &Receipt, vk_hex: &str) -> Value {
+        let resp = build_app(AppState::default())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/clearing/verify")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({"receipt": receipt, "verifying_key_hex": vk_hex}),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        read_json(resp.into_body()).await
+    }
+
+    // Honest signed clearing → verified (signature + recompute).
+    let honest = issue_settlement(1_000_000, 9_500);
+    let signed = Receipt::sign(session.clone(), vec![to_economic_projection(&honest)], &sk);
+    let body = post_clearing(&signed, &vk_hex).await;
+    assert_eq!(
+        body["verified"], true,
+        "honest clearing must verify: {body}"
+    );
+    assert_eq!(body["verdict"], "verified");
+
+    // Forged output under a VALID signature → rejected by recompute.
+    let mut claim = match issue_settlement(1_000_000, 9_500) {
+        ClearingReceipt::Settlement(c) => c,
+        _ => unreachable!(),
+    };
+    claim.seller_gross += 1; // the lie
+    let signed_forged = Receipt::sign(
+        session,
+        vec![to_economic_projection(&ClearingReceipt::Settlement(claim))],
+        &sk,
+    );
+    let body = post_clearing(&signed_forged, &vk_hex).await;
+    assert_eq!(body["verified"], false, "forged clearing must be rejected");
+    assert_eq!(body["verdict"], "mismatch:seller_gross");
+}
