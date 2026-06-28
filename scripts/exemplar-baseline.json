@@ -6,7 +6,7 @@
     "lean_theorems_GUARD": 891, "clean_axiom_footprint": "n/a"
   },
   "rust_craft": {
-    "permissive_verify": 49, "verify_calls_GUARD": 55,
+    "permissive_verify": 52, "verify_calls_GUARD": 58,
     "unsafe_blocks": 4,
     "crates_total": 67, "crates_lints_workspace": 41,
     "lints_adoption_pct": 61

@@ -367,7 +367,8 @@ impl FlowDeclaration {
                 confidentiality_axis: ProofStatus::ExtractedKernelChecked,
                 open_residuals: vec![
                     "the FlowTracker graph-fold loop is hand-written Lean (irun), not extracted".to_string(),
-                    "decide()'s composition is tied to the extracted primitive by sampled parity, not proof".to_string(),
+                    "integrity composition: decide() is tied to the extracted primitive EXHAUSTIVELY over the isolated subspace + by full-space soundness fuzz (decide_matches_extracted_integrity_model + decide_allow_implies_extracted_integrity_admits)".to_string(),
+                    "confidentiality composition: decide() is tied to the extracted primitive by SAMPLED parity only — the dual of the integrity tie test is not yet written".to_string(),
                     "in-policy semantic malice / the in-spec sleeper carries a valid certificate".to_string(),
                     "covert/timing channels, label adequacy, and permitted sinks are out of scope".to_string(),
                 ],
@@ -687,5 +688,88 @@ mod tests {
                 );
             }
         }
+
+        /// **Full-space soundness differential vs the EXTRACTED integrity model.**
+        ///
+        /// `decide_matches_extracted_integrity_model` proves the *exact* `⟺` but
+        /// only on the integrity-ISOLATED subspace (conf ≤ Internal, integrity ∈
+        /// {Trusted, Adversarial}, non-public, no authority). Here we fuzz the FULL
+        /// space — all nine inputs incl. the `Untrusted` tier, arbitrary fan-in
+        /// with repeats, both sink modes, authority on/off — where confidentiality
+        /// and authority can *also* deny. The exact `⟺` no longer holds there, but
+        /// the SOUND direction must: if production `decide()` allows, the extracted
+        /// integrity recompute must also admit. I.e. the Lean-proven integrity leg
+        /// is never *more permissive* than enforcement, on the whole surface the
+        /// gate sees. (Sink ceiling is `Untrusted`: `decide()` denies only on
+        /// `Adversarial` effective integrity — `Untrusted` egress is permitted.)
+        #[test]
+        fn decide_allow_implies_extracted_integrity_admits(
+            inputs in proptest::collection::vec(any_input(), 0..=8),
+            sink_public in any::<bool>(),
+            requires_authority in any::<bool>(),
+        ) {
+            let mut decl = FlowDeclaration::new(inputs.clone());
+            decl.requires_authority = requires_authority;
+            decl.sink_public = sink_public;
+
+            prop_assert!(
+                !decl.decide().is_allow() || extracted_integrity_admits(&inputs),
+                "decide() allowed a flow the extracted integrity model blocks: \
+                 inputs={inputs:?} sink_public={sink_public} requires_authority={requires_authority}"
+            );
+        }
+
+        /// **Non-vacuity of the blocking path.** Any declaration carrying
+        /// adversarial (`WebContent`) ancestry must be blocked by BOTH the extracted
+        /// model and `decide()`, whatever else is declared. Without this, the
+        /// soundness law above could pass vacuously (trivially true if the extracted
+        /// model admitted everything).
+        #[test]
+        fn adversarial_ancestry_is_blocked_both_sides(
+            inputs in proptest::collection::vec(any_input(), 0..=7),
+            sink_public in any::<bool>(),
+            requires_authority in any::<bool>(),
+        ) {
+            let mut with_adv = inputs.clone();
+            with_adv.push(DeclaredInput::WebContent); // force ≥1 adversarial source
+
+            let mut decl = FlowDeclaration::new(with_adv.clone());
+            decl.requires_authority = requires_authority;
+            decl.sink_public = sink_public;
+
+            prop_assert!(
+                !extracted_integrity_admits(&with_adv),
+                "extracted model admitted adversarial ancestry: {with_adv:?}"
+            );
+            prop_assert!(
+                !decl.decide().is_allow(),
+                "decide() admitted adversarial ancestry: {with_adv:?}"
+            );
+        }
+    }
+
+    /// Recompute the `OutboundAction` sink's effective integrity via the EXTRACTED
+    /// fold and return whether the integrity axis admits egress. The sink's
+    /// intrinsic integrity is `Trusted`; each declared input is folded in with
+    /// `imeet` (the `irun_step` the D1 unwinding theorem inducts over). Egress is
+    /// integrity-admitted iff the result is at least `Untrusted` (not `Adversarial`).
+    fn extracted_integrity_admits(inputs: &[DeclaredInput]) -> bool {
+        use portcullis_core::extracted::ifc_integrity as ext;
+        use portcullis_core::flow::intrinsic_label;
+        use portcullis_core::IntegLevel;
+
+        fn to_ext(i: IntegLevel) -> ext::IntegLevel {
+            match i {
+                IntegLevel::Adversarial => ext::IntegLevel::Adversarial,
+                IntegLevel::Untrusted => ext::IntegLevel::Untrusted,
+                IntegLevel::Trusted => ext::IntegLevel::Trusted,
+            }
+        }
+
+        let mut acc = ext::IntegLevel::Trusted; // OutboundAction intrinsic integrity
+        for &inp in inputs {
+            acc = ext::imeet(acc, to_ext(intrinsic_label(inp.node_kind(), 0).integrity));
+        }
+        ext::iflows_to(acc, ext::IntegLevel::Untrusted)
     }
 }

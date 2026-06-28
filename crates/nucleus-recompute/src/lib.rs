@@ -38,6 +38,10 @@ use nucleus_econ_kernels::{
     classify, refund, route_to_commons, run_vcg, seller_gross, Clearing, CommonsAllocation,
     CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError, Verdict,
 };
+// The Aeneas-extracted integrity primitives the D1 non-interference theorem is
+// proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness
+// of that theorem, so it recomputes via these exact functions.
+use portcullis_core::extracted::ifc_integrity::{imeet, IntegLevel};
 
 /// Domain separator for the canonical receipt bytes (versioned).
 const RECEIPT_DOMAIN: &[u8] = b"nucleus-recompute/clearing-receipt/v1\0";
@@ -545,6 +549,107 @@ mod e2e_enforcement_tests {
     }
 }
 
+/// Travel an IFC decision as a signed receipt (feature `ifc-envelope`).
+///
+/// nucleus-ifc's [`ConformanceCertificate`](nucleus_ifc::decision::ConformanceCertificate)
+/// is a proof-carrying IFC-down-flow decision: the declared flow, the verdict,
+/// and the named obligation. This module lifts it into nucleus-receipt's
+/// [`Projection::Flow`] so ONE signed envelope carries BOTH guarantees:
+///
+/// 1. **Signature** (who emitted it) — `Receipt::verify`;
+/// 2. **Recompute** (the verdict re-derives from the declared inputs) —
+///    [`ConformanceCertificate::recheck`](nucleus_ifc::decision::ConformanceCertificate::recheck),
+///    which re-runs `decide()` on the declaration and rejects a forged verdict.
+///
+/// This is the IFC dual of the econ [`envelope`] module: the same lift→sign→
+/// verify→narrow→recompute round-trip, over the IFC decision instead of a
+/// clearing. The `Projection::Flow` body shape is:
+///
+/// ```json
+/// { "kind": "ifc-decision/v1", "certificate": { "spec": "...", "declaration": {...}, ... } }
+/// ```
+///
+/// HONEST SCOPE: recompute re-derives the *model-level* verdict over the
+/// *declared* inputs — coverage (undeclared inputs) is the limit, exactly as the
+/// certificate itself documents. Signing does not make the labels true.
+#[cfg(feature = "ifc-envelope")]
+pub mod ifc_flow {
+    use nucleus_ifc::decision::ConformanceCertificate;
+
+    pub use nucleus_receipt::Projection;
+
+    /// The `"kind"` discriminant inside a `Projection::Flow` body that marks it as
+    /// a proof-carrying IFC decision. Stable wire constant (versioned so other
+    /// flow records can coexist under the same projection kind).
+    pub const FLOW_IFC_DECISION_KIND: &str = "ifc-decision/v1";
+
+    /// Why a [`Projection`] could not be narrowed to a [`ConformanceCertificate`].
+    #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum IfcNarrowError {
+        /// The projection is not `Projection::Flow` at all.
+        #[error("projection kind is `{found}`, expected `flow`")]
+        NotFlow {
+            /// The wire discriminant of the projection that was supplied.
+            found: &'static str,
+        },
+        /// The flow body's `kind` is not `ifc-decision/v1`.
+        #[error("flow body kind is `{found}`, expected `{}`", FLOW_IFC_DECISION_KIND)]
+        NotIfcDecision {
+            /// The inner `kind` found, or `<missing>`.
+            found: String,
+        },
+        /// The body claimed to be an IFC decision but its `certificate` field is
+        /// absent or does not deserialize as a [`ConformanceCertificate`].
+        #[error("ifc-decision body is malformed: {0}")]
+        MalformedBody(String),
+    }
+
+    /// Lift a [`ConformanceCertificate`] into the [`Projection::Flow`] body it
+    /// travels as inside a signed [`Receipt`](nucleus_receipt::Receipt).
+    pub fn to_flow_projection(cert: &ConformanceCertificate) -> Projection {
+        Projection::Flow(serde_json::json!({
+            "kind": FLOW_IFC_DECISION_KIND,
+            "certificate": cert,
+        }))
+    }
+
+    /// Narrow a [`Projection`] back to the typed [`ConformanceCertificate`].
+    ///
+    /// Narrowing does NOT verify anything: call
+    /// [`Receipt::verify`](nucleus_receipt::Receipt::verify) on the envelope
+    /// *before* narrowing, and
+    /// [`recheck`](nucleus_ifc::decision::ConformanceCertificate::recheck) on the
+    /// narrowed certificate *after* (the recompute leg).
+    pub fn ifc_certificate_from_projection(
+        projection: &Projection,
+    ) -> Result<ConformanceCertificate, IfcNarrowError> {
+        let Projection::Flow(body) = projection else {
+            return Err(IfcNarrowError::NotFlow {
+                found: projection.kind(),
+            });
+        };
+        match body.get("kind").and_then(serde_json::Value::as_str) {
+            Some(FLOW_IFC_DECISION_KIND) => {}
+            Some(other) => {
+                return Err(IfcNarrowError::NotIfcDecision {
+                    found: other.to_string(),
+                })
+            }
+            None => {
+                return Err(IfcNarrowError::NotIfcDecision {
+                    found: "<missing>".to_string(),
+                })
+            }
+        }
+        let cert = body.get("certificate").ok_or_else(|| {
+            IfcNarrowError::MalformedBody("missing `certificate` field".to_string())
+        })?;
+        serde_json::from_value(cert.clone())
+            .map_err(|e| IfcNarrowError::MalformedBody(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,6 +1124,396 @@ pub fn verify_ifc_flow_consistent(
                     }
                 }
                 other => other, // already Inconsistent (adversarial / unknown)
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Whole-trace IFC conformance (verify_ifc_trace) — the RUNTIME WITNESS of the
+// multi-hop unwinding theorem (D1, UnwindingNoninterference / the extracted
+// integrity leg `irun_antitone`). The per-hop / per-pair checks above bind one
+// edge; this binds the WHOLE chain: a real receipt trace must obey the property
+// the theorem proves — effective integrity is MONOTONE-NON-INCREASING in trust
+// along the chain, so taint *correctly recorded in a predecessor* can never be
+// laundered into an allowed egress downstream. (This checks the SIGNED values'
+// monotonicity; it does not recompute a hop's integrity from its own sources, so
+// a compromised runner under-reporting a fresh adversarial source is the separate
+// Level-2 residual disclosed below — not caught here.)
+//
+// HONEST SCOPE: validates a *present, signed* chain is internally consistent with
+// the unwinding guarantee (tamper-evident: a chain whose trust *rises* could not
+// have been honestly folded). It does NOT prove the labels are true, nor that the
+// chain is complete (absence ≠ denial) — those are the same Level-2 residuals the
+// single-hop checks carry. The theorem is over the model; this is the receipt-side
+// round-trip that catches any run diverging from it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One hop of a signed IFC receipt chain: the running `ifc_effective_integrity`
+/// the runner attested, and (if it was an egress hop) the
+/// `ifc_gated_effective_integrity` the gateway co-committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfcHop {
+    /// The running effective integrity the runner signed at this hop, if present.
+    pub effective_integrity: Option<String>,
+    /// The integrity the egress gate co-committed it evaluated, if this was an
+    /// egress hop.
+    pub gated_effective_integrity: Option<String>,
+}
+
+/// Outcome of recomputing a whole IFC receipt chain against the unwinding guarantee.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceOutcome {
+    /// Every hop is allow-consistent, pairwise-bound, and the chain's trust is
+    /// monotone-non-increasing (no laundering). `hops` = number checked.
+    Consistent {
+        /// Number of hops validated.
+        hops: usize,
+    },
+    /// A hop violated consistency. `hop_index` is the 0-based offending hop.
+    Inconsistent {
+        /// The offending hop's index.
+        hop_index: usize,
+        /// Why it was rejected.
+        reason: String,
+    },
+}
+
+impl TraceOutcome {
+    /// `true` iff the whole chain conforms.
+    pub fn is_consistent(&self) -> bool {
+        matches!(self, TraceOutcome::Consistent { .. })
+    }
+}
+
+/// Bridge a signed integrity token to the Aeneas-EXTRACTED 3-point integrity
+/// lattice ([`portcullis_core::extracted::ifc_integrity::IntegLevel`]) — the
+/// carrier the multi-hop non-interference (D1) theorem is proven over.
+///
+/// FAIL-CLOSED: any token outside `{trusted, untrusted}` folds to the bottom
+/// (`Adversarial`), exactly as [`nucleus_ifc::egress_blocked_by_integrity`]
+/// treats an unrecognized token as blocked. (`"adversarial"` itself also maps to
+/// the bottom; the wire only distinguishes "blocked" from the two allowed
+/// levels.) This is the seam where the wire `String` meets the proven primitives;
+/// `egress_rule_matches_extracted_iflows_to` below pins the two in agreement.
+fn parse_integrity(i: &str) -> IntegLevel {
+    match i {
+        "trusted" => IntegLevel::Trusted,
+        "untrusted" => IntegLevel::Untrusted,
+        // adversarial + any unrecognized token: fail-closed to the lattice bottom.
+        _ => IntegLevel::Adversarial,
+    }
+}
+
+/// Recompute a whole IFC receipt chain against the multi-hop unwinding guarantee.
+///
+/// Two checks, end to end: (1) each egress hop is allow-consistent and bound to
+/// its predecessor's signed integrity ([`verify_ifc_flow_consistent`]); (2) the
+/// chain's effective integrity is MONOTONE-NON-INCREASING in trust — a hop whose
+/// running integrity is *more* trusted than its predecessor's is laundering
+/// (the fold can only lower trust), so it is rejected. This is the receipt-side
+/// round-trip of the unwinding theorem: any real run that diverges from the proven
+/// monotone-fold property is caught here.
+pub fn verify_ifc_trace(hops: &[IfcHop]) -> TraceOutcome {
+    let mut prev_effective: Option<String> = None;
+    for (idx, hop) in hops.iter().enumerate() {
+        // (1) Per-hop egress allow-consistency + binding to the predecessor.
+        let pair = verify_ifc_flow_consistent(
+            hop.gated_effective_integrity.as_deref(),
+            prev_effective.as_deref(),
+        );
+        if let IfcFlowOutcome::Inconsistent {
+            effective_integrity,
+        } = pair
+        {
+            return TraceOutcome::Inconsistent {
+                hop_index: idx,
+                reason: format!(
+                    "egress hop inconsistent at effective integrity {effective_integrity:?}"
+                ),
+            };
+        }
+        // (2) Whole-chain monotonicity, recomputed via the EXTRACTED fold: the
+        // running effective integrity is `irun_step = imeet` (the exact operation
+        // the unwinding theorem folds over), so folding this hop into its
+        // predecessor can only LOWER trust. If the claimed running integrity is
+        // not the meet of itself and its predecessor — i.e. `imeet(prev, cur) !=
+        // cur`, equivalently `!iflows_to(prev, cur)` — then trust ROSE, which the
+        // theorem forbids: laundering. This binds the runtime check to the proven
+        // primitive rather than an ad-hoc local rank.
+        if let (Some(prev), Some(cur)) = (
+            prev_effective.as_deref(),
+            hop.effective_integrity.as_deref(),
+        ) {
+            let (prev_level, cur_level) = (parse_integrity(prev), parse_integrity(cur));
+            if imeet(prev_level, cur_level) != cur_level {
+                return TraceOutcome::Inconsistent {
+                    hop_index: idx,
+                    reason: format!(
+                        "trust rose along the chain ({prev:?} -> {cur:?}): the IFC fold (imeet) \
+                         can only lower integrity (unwinding theorem), so this is laundering"
+                    ),
+                };
+            }
+        }
+        if hop.effective_integrity.is_some() {
+            prev_effective = hop.effective_integrity.clone();
+        }
+    }
+    TraceOutcome::Consistent { hops: hops.len() }
+}
+
+// Signed IFC-decision receipt round-trip (feature `ifc-envelope`): the IFC dual
+// of the econ `signed_envelope_carries_both_guarantees_end_to_end` test.
+#[cfg(all(test, feature = "ifc-envelope"))]
+mod ifc_envelope_tests {
+    use crate::ifc_flow::{
+        ifc_certificate_from_projection, to_flow_projection, IfcNarrowError, FLOW_IFC_DECISION_KIND,
+    };
+    use nucleus_ifc::decision::{DeclaredInput, FlowDeclaration, IfcVerdict};
+    use nucleus_receipt::{Projection, Receipt, ReceiptError, Session};
+
+    fn session() -> Session {
+        Session {
+            session_id: "spiffe://test/ifc-agent".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        }
+    }
+
+    /// Round-trip law: narrow ∘ lift = id (the certificate survives the wire).
+    #[test]
+    fn lift_then_narrow_is_identity() {
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
+        let back = ifc_certificate_from_projection(&to_flow_projection(&cert))
+            .expect("flow projection narrows back");
+        assert_eq!(back, cert);
+    }
+
+    /// The full both-guarantees path: lift → sign → verify (signature: who
+    /// emitted it) → narrow → recompute (the verdict re-derives from the declared
+    /// inputs via `recheck()`, which re-runs `decide()`).
+    #[test]
+    fn signed_ifc_certificate_carries_both_guarantees_end_to_end() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        // A clean, admissible flow (trusted ancestry → counterparty sink).
+        let cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).certify();
+        assert!(cert.admits(), "the clean flow should be admissible");
+
+        let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+
+        // Guarantee 1: the signature binds the issuer to these bytes.
+        signed
+            .verify(&vk)
+            .expect("freshly signed envelope verifies");
+
+        // Narrow back, then Guarantee 2: the verdict recomputes from the inputs.
+        let back = ifc_certificate_from_projection(&signed.projections[0])
+            .expect("signed flow projection narrows back");
+        let report = back.recheck();
+        assert!(
+            report.recomputes,
+            "the verdict must re-derive from decide()"
+        );
+        assert!(report.spec_matches);
+        assert!(report.admissible);
+    }
+
+    /// A FORGED verdict (allow stamped onto a flow that `decide()` denies) is
+    /// caught by RECOMPUTE even though the signature is perfectly valid — the
+    /// attacker can sign their own bytes, but cannot make `decide()` reproduce a
+    /// verdict that doesn't exist. This is the per-decision bond.
+    #[test]
+    fn forged_allow_verdict_is_caught_by_recompute_despite_valid_signature() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        // Adversarial ancestry → decide() denies. Forge the carried verdict to allow.
+        let mut cert =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent]).certify();
+        assert!(!cert.verdict.is_allow(), "decide() should deny this flow");
+        cert.verdict = IfcVerdict {
+            allow: true,
+            reason: "safe".to_string(),
+            declared_inputs: cert.verdict.declared_inputs.clone(),
+        };
+
+        // The attacker signs the forged cert with their own key — signature is VALID.
+        let signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+        signed
+            .verify(&vk)
+            .expect("attacker's own signature verifies");
+
+        // But recompute re-runs decide() from the declaration and refuses the forgery.
+        let back = ifc_certificate_from_projection(&signed.projections[0]).unwrap();
+        let report = back.recheck();
+        assert!(
+            !report.recomputes,
+            "recompute must catch the forged allow verdict"
+        );
+        assert!(!report.admissible, "a forged allow can never be admissible");
+    }
+
+    /// Tampering with the signed body is caught by the SIGNATURE check first —
+    /// before recompute is even consulted.
+    #[test]
+    fn tampered_body_fails_signature_before_recompute() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+        let cert = FlowDeclaration::new([DeclaredInput::UserPrompt]).certify();
+        let mut signed = Receipt::sign(session(), vec![to_flow_projection(&cert)], &sk);
+
+        // Flip the verdict to allow=false inside the signed body.
+        let Projection::Flow(body) = &mut signed.projections[0] else {
+            panic!("envelope holds a flow projection");
+        };
+        body["certificate"]["verdict"]["allow"] = serde_json::json!(false);
+
+        // The envelope check fails FIRST: the re-canonicalized bytes no longer
+        // match the signed root hash.
+        assert!(matches!(
+            signed.verify(&vk),
+            Err(ReceiptError::RootHashMismatch { .. })
+        ));
+    }
+
+    /// Narrowing rejects a non-flow projection and a flow body with the wrong kind.
+    #[test]
+    fn narrowing_rejects_wrong_projection_and_kind() {
+        // Wrong projection variant.
+        let econ = Projection::Economic(serde_json::json!({"kind": "clearing"}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&econ),
+            Err(IfcNarrowError::NotFlow { found: "economic" })
+        ));
+
+        // Right variant, wrong inner kind.
+        let wrong_kind = Projection::Flow(serde_json::json!({"kind": "node-count-summary"}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&wrong_kind),
+            Err(IfcNarrowError::NotIfcDecision { .. })
+        ));
+
+        // Right kind, missing certificate body.
+        let no_cert = Projection::Flow(serde_json::json!({"kind": FLOW_IFC_DECISION_KIND}));
+        assert!(matches!(
+            ifc_certificate_from_projection(&no_cert),
+            Err(IfcNarrowError::MalformedBody(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod ifc_trace_tests {
+    use super::*;
+
+    fn hop(eff: &str, gated: Option<&str>) -> IfcHop {
+        IfcHop {
+            effective_integrity: Some(eff.to_string()),
+            gated_effective_integrity: gated.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn clean_descending_chain_is_consistent() {
+        // trusted -> untrusted: trust ratchets down; the egress hop gated on the
+        // parent's signed integrity ("trusted", allowed) and bound to it.
+        let chain = [hop("trusted", None), hop("untrusted", Some("trusted"))];
+        assert!(verify_ifc_trace(&chain).is_consistent());
+    }
+
+    #[test]
+    fn laundering_chain_is_rejected() {
+        // adversarial taint enters, then trust "rises" to trusted with no egress —
+        // impossible under the monotone fold. Isolates the no-laundering check.
+        let chain = [hop("adversarial", None), hop("trusted", None)];
+        match verify_ifc_trace(&chain) {
+            TraceOutcome::Inconsistent { hop_index, reason } => {
+                assert_eq!(hop_index, 1);
+                assert!(
+                    reason.contains("trust rose"),
+                    "expected laundering reason, got: {reason}"
+                );
+            }
+            other => panic!("expected laundering rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adversarial_egress_is_rejected() {
+        // An egress hop co-committing an *allowed* egress under adversarial integrity
+        // is self-inconsistent (the gate would have denied before signing).
+        let chain = [hop("adversarial", Some("adversarial"))];
+        assert!(!verify_ifc_trace(&chain).is_consistent());
+    }
+
+    #[test]
+    fn empty_chain_is_vacuously_consistent() {
+        assert_eq!(verify_ifc_trace(&[]), TraceOutcome::Consistent { hops: 0 });
+    }
+
+    // ── The recompute-against-the-EXTRACTED-primitive leg ──────────────────────
+    // These pin the runtime trace check to the SAME functions the D1
+    // non-interference theorem is proven over, so "runtime witness of the
+    // theorem" is a literal claim, not a parallel re-implementation.
+
+    use portcullis_core::extracted::ifc_integrity::iflows_to;
+
+    /// The wire egress rule (`!egress_blocked_by_integrity`, the single source of
+    /// truth shared by gate + verifier) must equal the EXTRACTED/proven predicate
+    /// `iflows_to(parse(i), Untrusted)` on every recognized token AND on
+    /// unrecognized ones (both fail-closed). This is the load-bearing parity:
+    /// it proves the string rule and the theorem's primitive define ONE egress
+    /// rule, so recomputing via the extracted fn does not silently diverge.
+    #[test]
+    fn egress_rule_matches_extracted_iflows_to() {
+        for token in [
+            "trusted",
+            "untrusted",
+            "adversarial",
+            "secret",
+            "garbage_token",
+            "",
+        ] {
+            let wire_allows = !nucleus_ifc::egress_blocked_by_integrity(token);
+            // `iflows_to(level, Untrusted)` = `irank(level) >= 1` = level is at
+            // least Untrusted = exactly the wire's `{trusted, untrusted}` allow set.
+            let extracted_allows = iflows_to(parse_integrity(token), IntegLevel::Untrusted);
+            assert_eq!(
+                wire_allows, extracted_allows,
+                "egress rule diverged from extracted iflows_to for token {token:?}"
+            );
+        }
+    }
+
+    /// The fold-based monotonicity check is equivalent to the previous local
+    /// rank comparison on the recognized tokens — a regression guard that the
+    /// refactor to the extracted `imeet` preserved behavior. `imeet(prev, cur) !=
+    /// cur` (trust rose) must equal `rank(cur) > rank(prev)` for every pair.
+    #[test]
+    fn imeet_fold_matches_rank_monotonicity() {
+        fn legacy_rank(i: &str) -> u8 {
+            match i {
+                "trusted" => 2,
+                "untrusted" => 1,
+                _ => 0,
+            }
+        }
+        for prev in ["trusted", "untrusted", "adversarial", "unknown"] {
+            for cur in ["trusted", "untrusted", "adversarial", "unknown"] {
+                let fold_rejects =
+                    imeet(parse_integrity(prev), parse_integrity(cur)) != parse_integrity(cur);
+                let rank_rejects = legacy_rank(cur) > legacy_rank(prev);
+                assert_eq!(
+                    fold_rejects, rank_rejects,
+                    "fold vs rank monotonicity diverged for {prev:?} -> {cur:?}"
+                );
             }
         }
     }

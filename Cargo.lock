@@ -7065,6 +7065,7 @@ dependencies = [
  "nucleus-econ-kernels",
  "nucleus-ifc",
  "nucleus-receipt",
+ "portcullis-core",
  "serde",
  "serde_json",
  "sha2 0.11.0",
