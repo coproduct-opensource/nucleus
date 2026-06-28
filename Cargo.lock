@@ -6852,6 +6852,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-mcp-guard"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "nucleus-ifc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-memory"
 version = "1.0.0"
 dependencies = [
