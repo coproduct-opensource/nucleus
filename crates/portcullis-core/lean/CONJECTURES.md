@@ -12,8 +12,8 @@ file containing a proof-hole (`sorry` / `admit`) is listed in the
 `sorry`, the gate fails — a real proof cannot regress unnoticed, and a research
 hole cannot be smuggled out of quarantine.
 
-> Last reconciled: 2026-06-21. Authoritative counts (comment-stripped):
-> **40 proof-hole `sorry` terms across exactly 11 files**, zero elsewhere in the tree.
+> Last reconciled: 2026-06-29. Authoritative counts (comment-stripped):
+> **36 proof-hole `sorry` terms across exactly 11 files**, zero elsewhere in the tree.
 
 ---
 
@@ -65,7 +65,7 @@ carries a `CONJECTURE` banner at its head.
 | Library | Open `sorry` | What is conjectured (and where the hole is) |
 |---|---:|---|
 | `SemanticIFCDecidable` | 13 | Float `BEq` lacks `LawfulBEq`; neighbor-transitivity, foldl/countP, BFS class-rep lemmas |
-| `ComparisonTheorem` | 7 | Čech ≅ Topos for finite Alexandrov posets (Laudal/Oberst; 2 are native_decide-timeout fallbacks, "Python-verified") |
+| `ComparisonTheorem` | 3 | Layer-1 structural lemmas: `uniform_implies_h1_zero` nonempty case (full-simplex Čech acyclicity, needs `SimplexAcyclic`), `c0_exceeds_globals_of_exclusive`, `exclusive_implies_h1_pos` (needs `RankNullity`). The 4 Borromean H¹/H² value holes were closed 2026-06-29 via `native_decide` (Tier-2b disclosure) |
 | `MatrixBridge` | 6 | `gaussRankBool` ↔ `Matrix.rank` reduce-to-Mathlib stubs |
 | `AlignmentTaxBridge` | 5 | `operationalTax = rank H¹` (the central alignment-tax conjecture) |
 | `RankNullity` | 1 | GF(2) rank subadditivity — foundation for the whole alignment-tax chain |
@@ -75,7 +75,7 @@ carries a `CONJECTURE` banner at its head.
 | `CompositionalAlignment` | 1 | Mayer-Vietoris-analog for spec composition |
 | `UniversalityTheorem` | 2 | rank H¹ as a complete invariant |
 | `PACVCBridge` | 2 | PAC / VC-dimension equivalence |
-| **Total** | **40** | across **11** files |
+| **Total** | **36** | across **11** files |
 
 **Machine-readable allowlist** (the CI gate parses exactly the lines between the
 markers below — these are the only files permitted to contain a proof hole):
