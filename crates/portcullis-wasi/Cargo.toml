@@ -30,5 +30,5 @@ host = ["dep:wasmtime", "dep:anyhow"]
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
 serde = { workspace = true, optional = true }
-wasmtime = { version = "45", optional = true }
+wasmtime = { version = "46", optional = true }
 anyhow = { workspace = true, optional = true }
