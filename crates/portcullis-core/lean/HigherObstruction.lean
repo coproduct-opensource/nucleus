@@ -149,6 +149,60 @@ theorem spectral_sequence_cost_bound
   have h := compositional_cost_subadditive S₁ S₂ h_model
   omega
 
+/-! ## The Euler characteristic — the spectral sequence's collapse invariant
+
+The derived tower `H⁰, H¹, H²` assembles into a single numerical invariant: the
+**Euler characteristic** of the reduced Čech complex, `χ = H⁰ − H¹ + H²`. The
+content of the spectral sequence collapsing to this number is the
+**Euler–Poincaré formula**: the rank (boundary) terms cancel, so the alternating
+sum of cohomology dimensions equals the alternating sum of *cochain* dimensions,
+
+  `H⁰ − H¹ + H²  =  |C⁰| − |C¹| + |C²|`.
+
+This is exactly the "single numerical invariant assembling the derived tower"
+the higher-obstruction program targets — and unlike the gluing placeholder
+below, it is a genuine theorem, not a degenerate restatement. -/
+
+open SemanticIFCDecidable.BoundaryMaps in
+/-- **Euler–Poincaré identity** for the reduced Čech complex (additive,
+    underflow-free form of `H⁰ − H¹ + H² = |C⁰| − |C¹| + |C²|`). The boundary
+    ranks cancel. Conditional on the two structural facts that are not yet
+    general lemmas in this tree: `rank δ⁰ ≤ |C⁰|` (rank ≤ width) and
+    `rank δ⁰ + rank δ¹ ≤ |C¹|` (the cochain-complex property `δ¹ ∘ δ⁰ = 0`).
+    Both are discharged on the concrete sites below by `native_decide`. -/
+theorem euler_poincare (P : IndexedPoset Secret) (idx : List Nat)
+    (h_cols : gf2Rank (reducedDelta0 P idx) ≤ (reducedC0 P idx).length)
+    (h_cpx  : gf2Rank (reducedDelta0 P idx) + gf2Rank (reducedDelta1 P idx)
+                ≤ (reducedC1 P idx).length) :
+    reducedCechDim P idx 0 + reducedCechDim P idx 2 + (reducedC1 P idx).length
+      = reducedCechDim P idx 1 + (reducedC0 P idx).length + (reducedC2 P idx).length := by
+  have hr1 : gf2Rank (reducedDelta1 P idx) ≤ (reducedC2 P idx).length := by
+    unfold gf2Rank reducedDelta1
+    simpa using PortcullisCore.RankNullity.gaussRankBool_le_rows
+      ((reducedC2 P idx).map _)
+  simp only [reducedCechDim]
+  omega
+
+/-- **Euler characteristic on the diamond site** (unconditional): the rank terms
+    cancel and `χ = H⁰ − H¹ + H² = 16 − 24 + 8 = 0`. The hypotheses of
+    `euler_poincare` hold here by `native_decide`. -/
+theorem euler_poincare_diamond :
+    reducedCechDim diamondSite [1, 2, 3] 0 + reducedCechDim diamondSite [1, 2, 3] 2
+        + (reducedC1 diamondSite [1, 2, 3]).length
+      = reducedCechDim diamondSite [1, 2, 3] 1 + (reducedC0 diamondSite [1, 2, 3]).length
+        + (reducedC2 diamondSite [1, 2, 3]).length := by
+  native_decide
+
+/-- **Euler characteristic on the Borromean site** (unconditional): even with the
+    rich degree-2 obstruction (`H² = 64`), the Euler–Poincaré identity holds —
+    `H⁰ + H² + |C¹| = H¹ + |C⁰| + |C²|`. -/
+theorem euler_poincare_borromean :
+    reducedCechDim borromeanSite [1, 2, 3, 4] 0 + reducedCechDim borromeanSite [1, 2, 3, 4] 2
+        + (reducedC1 borromeanSite [1, 2, 3, 4]).length
+      = reducedCechDim borromeanSite [1, 2, 3, 4] 1 + (reducedC0 borromeanSite [1, 2, 3, 4]).length
+        + (reducedC2 borromeanSite [1, 2, 3, 4]).length := by
+  native_decide
+
 /-! ## Concrete non-vacuity: h2Obstruction evaluates to real values
 
 With `h2Obstruction` wired to `reducedCechDim … 2`, we can evaluate
