@@ -3571,30 +3571,83 @@ def LayerDiagram.nonzeroCount {n : Nat} (D : LayerDiagram Secret n) : Nat :=
 
 /-! ### Key theorems -/
 
-/-- **Sum detects attacks**: if any layer has positive tax, sum is positive.
-    The general proof requires a foldl-with-accumulator lemma;
-    we state the theorem and prove it on concrete instances. -/
+/-! Structural list helpers (general `List Nat`) for the aggregation theorems.
+    All proved by direct induction — no Mathlib name dependence. -/
+
+/-- A member of a `List Nat` is `≤` its sum. -/
+private theorem nat_le_sum_of_mem {a : Nat} {l : List Nat} (h : a ∈ l) : a ≤ l.sum := by
+  induction l with
+  | nil => simp at h
+  | cons hd tl ih =>
+    rw [List.sum_cons]
+    rcases List.mem_cons.mp h with rfl | h
+    · omega
+    · have := ih h; omega
+
+/-- `foldl max` only grows the accumulator. -/
+private theorem nat_acc_le_foldl_max : ∀ (l : List Nat) (acc : Nat), acc ≤ l.foldl max acc := by
+  intro l
+  induction l with
+  | nil => intro acc; simp
+  | cons hd tl ih =>
+    intro acc
+    simp only [List.foldl_cons]
+    exact le_trans (le_max_left acc hd) (ih (max acc hd))
+
+/-- A member of a `List Nat` is `≤` its `foldl max` (for any accumulator). -/
+private theorem nat_le_foldl_max_acc :
+    ∀ (l : List Nat) (acc : Nat) {a : Nat}, a ∈ l → a ≤ l.foldl max acc := by
+  intro l
+  induction l with
+  | nil => intro acc a h; simp at h
+  | cons hd tl ih =>
+    intro acc a h
+    simp only [List.foldl_cons]
+    rcases List.mem_cons.mp h with rfl | h
+    · exact le_trans (le_max_right acc a) (nat_acc_le_foldl_max tl (max acc a))
+    · exact ih (max acc hd) h
+
+/-- A positive member forces `countP (· > 0)` to be positive. -/
+private theorem nat_countP_pos_of_mem {l : List Nat} {a : Nat} (ha : a ∈ l) (hp : 0 < a) :
+    0 < l.countP (· > 0) := by
+  induction l with
+  | nil => simp at ha
+  | cons hd tl ih =>
+    rw [List.countP_cons]
+    rcases List.mem_cons.mp ha with rfl | h
+    · rw [if_pos (by simpa using hp)]; omega
+    · have := ih h; omega
+
+/-- The tax of any layer `i` is a member of the diagram's `taxList`. -/
+private theorem perLayerTax_mem_taxList {n : Nat} (D : LayerDiagram Secret n) (i : Fin n) :
+    alignment_tax (D.levelAt i) ∈ D.taxList := by
+  unfold LayerDiagram.taxList LayerDiagram.perLayerTax
+  exact List.mem_map.mpr ⟨i, List.mem_finRange i, rfl⟩
+
+/-- **Sum detects attacks**: if any layer has positive tax, sum is positive. -/
 theorem sumTax_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.sumTax > 0 := by
-  sorry -- requires: foldl (+) l 0 > 0 when l contains a positive element
+  unfold LayerDiagram.sumTax
+  rw [← List.sum_eq_foldl]
+  exact lt_of_lt_of_le h (nat_le_sum_of_mem (perLayerTax_mem_taxList D i))
 
-/-- **Max detects attacks**: if any layer has positive tax, max is positive.
-    Proof: sumTax ≥ maxTax ≥ layer tax > 0, so maxTax > 0.
-    We use sorry for the foldl_max lemma. -/
+/-- **Max detects attacks**: if any layer has positive tax, max is positive. -/
 theorem maxTax_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.maxTax > 0 := by
-  sorry -- requires foldl max ≥ element lemma
+  unfold LayerDiagram.maxTax
+  exact lt_of_lt_of_le h (nat_le_foldl_max_acc D.taxList 0 (perLayerTax_mem_taxList D i))
 
 /-- **Nonzero count detects attacks**: positive tax → at least 1 nonzero layer. -/
 theorem nonzeroCount_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.nonzeroCount ≥ 1 := by
-  sorry -- requires List.countP membership lemma
+  unfold LayerDiagram.nonzeroCount
+  exact nat_countP_pos_of_mem (perLayerTax_mem_taxList D i) h
 
 /-! ### The detection hierarchy
 
