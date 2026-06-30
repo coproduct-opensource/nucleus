@@ -105,8 +105,15 @@ impl BackendCapability {
 /// The outcome of mapping a requested posture onto a backend: what was asked
 /// for, and what will actually be enforced. By construction `enforced` is
 /// at-least-as-strong as `requested` on **every** dimension.
+///
+/// **Construct only via [`require_isolation`]** — that is the sole path that
+/// guarantees the `enforced ≥ requested` invariant. The type is intentionally
+/// `Serialize`-only (no `Deserialize`): a deserialized value would bypass that
+/// constructor and could assert `enforced` *weaker* than `requested`, defeating
+/// the whole point. If wire round-trip is ever needed, add an owned wire type
+/// with a validating `#[serde(try_from)]` rather than re-deriving `Deserialize`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct EnforcedIsolation {
     /// What the decision asked for.
     pub requested: IsolationLattice,
