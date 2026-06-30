@@ -168,6 +168,7 @@ pub mod token_sign;
 pub mod tool_schema;
 
 pub mod enforcement;
+pub mod fabric;
 pub mod identity;
 pub mod intent;
 pub mod isolation;
