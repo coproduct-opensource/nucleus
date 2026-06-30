@@ -27,11 +27,12 @@ use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use ed25519_dalek::{Signer as _, SigningKey};
 use hmac::{digest::KeyInit, Hmac, Mac};
 use nucleus_spec::{PodSpec, PolicySpec};
+use portcullis::enforcement::{require_isolation, BackendCapability};
 use portcullis::{IsolationLattice, PermissionLattice, TrustProfile};
 
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Configuration for the trust gate.
 #[derive(Debug, Clone)]
@@ -426,10 +427,63 @@ pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut 
         );
     }
 
+    // ── Backend-enforceability gate ──────────────────────────────────────
+    // The trust profile chose a REQUIRED isolation posture (join of the pod's
+    // current isolation with the profile floor). Clamp it to what THIS node's
+    // backend can actually enforce: on Firecracker this is the full lattice (a
+    // no-op); on a host that can't enforce a level (e.g. Apple VZ exposes no
+    // host-side egress allowlist) the posture is strengthened UP — never
+    // weakened — and the gap is recorded. The sandbox is then configured from
+    // the ENFORCED posture, so a pod never runs believing it has a guarantee
+    // the platform doesn't actually deliver.
+    let backend = isolation_backend();
+    let isolation = match require_isolation(enforcement.isolation, backend) {
+        Ok(enforced) => {
+            spec.metadata.labels.insert(
+                "isolation.coproduct.one/requested".to_string(),
+                enforced.requested.to_string(),
+            );
+            spec.metadata.labels.insert(
+                "isolation.coproduct.one/enforced".to_string(),
+                enforced.enforced.to_string(),
+            );
+            spec.metadata.labels.insert(
+                "isolation.coproduct.one/backend".to_string(),
+                backend.name.to_string(),
+            );
+            if enforced.was_strengthened() {
+                warn!(
+                    agent = %verification.agent_identity,
+                    backend = backend.name,
+                    requested = %enforced.requested,
+                    enforced = %enforced.enforced,
+                    "Trust gate: isolation strengthened to the backend-enforceable posture"
+                );
+            }
+            enforced.enforced
+        }
+        Err(err) => {
+            // Unreachable for the built-in backends (their top level is always
+            // enforceable), but a misconfigured custom backend could reach here.
+            // Fail safe: keep the strongest posture available — the requested
+            // one — and surface the error rather than silently under-enforcing.
+            error!(
+                agent = %verification.agent_identity,
+                backend = backend.name,
+                error = %err,
+                "Trust gate: required isolation is unenforceable on this backend"
+            );
+            enforcement.isolation
+        }
+    };
+    let isolation_strengthened = isolation != enforcement.isolation;
+
     // In enforce mode, apply the scoped policy to the PodSpec so the runtime
-    // sees the narrowed capabilities before launching the sandbox.
+    // sees the narrowed capabilities + the backend-enforceable isolation before
+    // launching the sandbox. Rewrite whenever the profile restricted the pod OR
+    // the backend clamp strengthened the isolation posture.
     // In log-only mode we've computed the restriction for audit purposes only.
-    if verification.enforced && enforcement.was_restricted {
+    if verification.enforced && (enforcement.was_restricted || isolation_strengthened) {
         let enforced_lattice = PermissionLattice::builder()
             .description(format!(
                 "trust-scoped by {} (score={:.4})",
@@ -441,13 +495,24 @@ pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut 
             .budget(current_lattice.budget.clone())
             .commands(current_lattice.commands.clone())
             .time(current_lattice.time.clone())
-            .minimum_isolation(enforcement.isolation)
+            .minimum_isolation(isolation)
             .created_by("trust-gate")
             .build();
 
         spec.spec.policy = PolicySpec::Inline {
             lattice: Box::new(enforced_lattice),
         };
+    }
+}
+
+/// The isolation backend this node enforces with. Defaults to Firecracker
+/// (Linux/KVM — the full lattice); set `NUCLEUS_ISOLATION_BACKEND=apple-vz` on a
+/// macOS `Virtualization.framework` host so the trust gate clamps un-enforceable
+/// levels (no host egress allowlist, no namespaces tier) UP to what VZ delivers.
+fn isolation_backend() -> &'static BackendCapability {
+    match std::env::var("NUCLEUS_ISOLATION_BACKEND").as_deref() {
+        Ok("apple-vz") => &BackendCapability::APPLE_VZ,
+        _ => &BackendCapability::FIRECRACKER,
     }
 }
 
@@ -1398,6 +1463,61 @@ mod tests {
                 .map(String::as_str),
             Some("false")
         );
+    }
+
+    /// The enforcement gate is wired into the runtime: `apply_trust_enforcement`
+    /// clamps the required isolation through the node's backend and records the
+    /// requested/enforced/backend posture. On the default Firecracker backend
+    /// the full lattice is enforceable, so `enforced == requested`. (Apple-VZ
+    /// strengthening is covered by `portcullis::enforcement`'s unit tests.)
+    #[test]
+    fn test_apply_trust_enforcement_records_backend_isolation() {
+        use nucleus_spec::{PodSpecInner, PolicySpec};
+        use std::path::PathBuf;
+
+        let spec_inner = PodSpecInner {
+            work_dir: PathBuf::from("/workspace"),
+            timeout_seconds: 3600,
+            policy: PolicySpec::Profile { name: "default".to_string() },
+            budget_model: None,
+            resources: None,
+            network: None,
+            image: None,
+            vsock: None,
+            seccomp: None,
+            cgroup: None,
+            audit_sink: None,
+            credentials: None,
+        };
+        let mut spec = PodSpec::new(spec_inner);
+        let mut verification = TrustVerification {
+            agent_identity: "spiffe://nucleus/test".to_string(),
+            bracket: "A".to_string(),
+            profile_name: "trusted".to_string(),
+            was_restricted: false,
+            enforced: true,
+            continuous_score: None,
+        };
+
+        apply_trust_enforcement(&mut verification, &mut spec);
+
+        let backend = spec
+            .metadata
+            .labels
+            .get("isolation.coproduct.one/backend")
+            .cloned()
+            .expect("backend label must be written");
+        let requested = spec.metadata.labels.get("isolation.coproduct.one/requested").cloned();
+        let enforced = spec.metadata.labels.get("isolation.coproduct.one/enforced").cloned();
+        assert!(
+            requested.is_some() && enforced.is_some(),
+            "requested/enforced isolation labels must be written"
+        );
+        // Firecracker (the default, no env override) enforces the full lattice,
+        // so the enforced posture is faithful to the requested one.
+        if backend == "firecracker" {
+            assert_eq!(requested, enforced, "firecracker enforces the full lattice");
+        }
     }
 
     /// Verify apply_trust_enforcement replaces the PodSpec policy in enforce mode
