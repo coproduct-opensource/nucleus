@@ -52,20 +52,12 @@ pub fn capbot() -> CapLevel {
 /// Capability meet `a ∧ b` — the quantale product `⊗` (weakest-link): the MIN by
 /// rank. Mirrors `CapabilityLevel::meet`.
 pub fn capmeet(a: CapLevel, b: CapLevel) -> CapLevel {
-    if caprank(a) <= caprank(b) {
-        a
-    } else {
-        b
-    }
+    if caprank(a) <= caprank(b) { a } else { b }
 }
 
 /// Capability join `a ∨ b` — the MAX by rank. Mirrors `CapabilityLevel::join`.
 pub fn capjoin(a: CapLevel, b: CapLevel) -> CapLevel {
-    if caprank(a) >= caprank(b) {
-        a
-    } else {
-        b
-    }
+    if caprank(a) >= caprank(b) { a } else { b }
 }
 
 /// Capability order `a ≤ b` — `caprank(a) <= caprank(b)`. Mirrors
@@ -78,11 +70,7 @@ pub fn capleq(a: CapLevel, b: CapLevel) -> bool {
 /// implication). On a chain: `a ⊸ c = ⊤` if `a ≤ c`, else `c`. It is the
 /// greatest `b` with `a ∧ b ≤ c`, i.e. optimal attenuation under a ceiling.
 pub fn capresidual(a: CapLevel, c: CapLevel) -> CapLevel {
-    if capleq(a, c) {
-        CapLevel::Always
-    } else {
-        c
-    }
+    if capleq(a, c) { CapLevel::Always } else { c }
 }
 
 #[cfg(test)]
@@ -135,7 +123,10 @@ mod tests {
                     assert_eq!(lhs, rhs, "adjunction fails at a={a:?} b={b:?} c={c:?}");
                 }
                 // r is itself below the ceiling under a (greatest such b).
-                assert!(capleq(capmeet(a, r), c), "residual exceeds ceiling at a={a:?} c={c:?}");
+                assert!(
+                    capleq(capmeet(a, r), c),
+                    "residual exceeds ceiling at a={a:?} c={c:?}"
+                );
             }
         }
     }
