@@ -167,6 +167,7 @@ pub mod token_sign;
 /// mutations post-approval.
 pub mod tool_schema;
 
+pub mod closure;
 pub mod enforcement;
 pub mod identity;
 pub mod intent;
@@ -178,6 +179,7 @@ mod path;
 pub mod permissive;
 pub mod pipeline;
 pub mod progress;
+pub mod quantale;
 pub mod region;
 mod time;
 pub mod trust;
