@@ -169,6 +169,7 @@ pub mod tool_schema;
 
 pub mod closure;
 pub mod enforcement;
+pub mod fabric;
 pub mod identity;
 pub mod intent;
 pub mod isolation;
