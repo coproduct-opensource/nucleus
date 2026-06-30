@@ -167,6 +167,7 @@ pub mod token_sign;
 /// mutations post-approval.
 pub mod tool_schema;
 
+pub mod enforcement;
 pub mod identity;
 pub mod intent;
 pub mod isolation;
