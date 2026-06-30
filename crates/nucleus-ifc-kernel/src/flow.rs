@@ -827,7 +827,7 @@ mod kani_proofs {
         IFCLabel {
             confidentiality: any_conf(),
             integrity: any_integ(),
-            provenance: ProvenanceSet(kani::any::<u8>() & 0x3F),
+            provenance: ProvenanceSet::from_bits(kani::any::<u8>() & 0x3F),
             freshness: Freshness {
                 observed_at: kani::any(),
                 ttl_secs: kani::any(),
