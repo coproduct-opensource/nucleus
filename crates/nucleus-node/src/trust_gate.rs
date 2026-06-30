@@ -1478,7 +1478,9 @@ mod tests {
         let spec_inner = PodSpecInner {
             work_dir: PathBuf::from("/workspace"),
             timeout_seconds: 3600,
-            policy: PolicySpec::Profile { name: "default".to_string() },
+            policy: PolicySpec::Profile {
+                name: "default".to_string(),
+            },
             budget_model: None,
             resources: None,
             network: None,
@@ -1507,8 +1509,16 @@ mod tests {
             .get("isolation.coproduct.one/backend")
             .cloned()
             .expect("backend label must be written");
-        let requested = spec.metadata.labels.get("isolation.coproduct.one/requested").cloned();
-        let enforced = spec.metadata.labels.get("isolation.coproduct.one/enforced").cloned();
+        let requested = spec
+            .metadata
+            .labels
+            .get("isolation.coproduct.one/requested")
+            .cloned();
+        let enforced = spec
+            .metadata
+            .labels
+            .get("isolation.coproduct.one/enforced")
+            .cloned();
         assert!(
             requested.is_some() && enforced.is_some(),
             "requested/enforced isolation labels must be written"
