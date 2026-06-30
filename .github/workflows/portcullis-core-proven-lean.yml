@@ -94,7 +94,13 @@ jobs:
             WasiIfcBoundary \
             BelnapDecisionProofs \
             RepairAlgebraProofs \
-            MatrixBridge
+            MatrixBridge \
+            PortcullisCoreCapQuantale \
+            CapabilityResiduatedQuantaleProofs
+          # CapabilityResiduatedQuantaleProofs: the residuation adjunction
+          # (a⊗b≤c ⟺ b≤a⊸c) for capability, proven over the Aeneas-extracted
+          # capability_quantale slice — the enriching value V of the
+          # Enriched-Reflection model. sorry-free; #print-axioms below.
           # MatrixBridge: the gaussRankBool ↔ Matrix.rank bridge — fully discharged
           # (sorry-free; #print-axioms = propext/Classical.choice/Quot.sound) as of
           # 2026-06-28; promoted research → proven, removed from the GATE-ALLOWLIST.
@@ -176,8 +182,10 @@ jobs:
           import DelegationProofs
           import ExposureProofs
           import IntegrityNoninterferenceExtracted
+          import CapabilityResiduatedQuantaleProofs
           #print axioms FlowProofs.authority_confinement_left
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
+          #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
           echo "$AXIOMS"
