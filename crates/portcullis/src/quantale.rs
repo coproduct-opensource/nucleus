@@ -137,7 +137,9 @@ where
             }
             // `r` itself must satisfy a ⊗ r ≤ c (it is the greatest such b).
             if !a.tensor(&r).leq(c) {
-                bad.push(format!("residual not below ceiling: a={a:?} c={c:?} r={r:?}"));
+                bad.push(format!(
+                    "residual not below ceiling: a={a:?} c={c:?} r={r:?}"
+                ));
             }
         }
     }
@@ -148,8 +150,11 @@ where
 mod tests {
     use super::*;
 
-    const LEVELS: [CapabilityLevel; 3] =
-        [CapabilityLevel::Never, CapabilityLevel::LowRisk, CapabilityLevel::Always];
+    const LEVELS: [CapabilityLevel; 3] = [
+        CapabilityLevel::Never,
+        CapabilityLevel::LowRisk,
+        CapabilityLevel::Always,
+    ];
 
     #[test]
     fn capability_level_is_a_quantale() {

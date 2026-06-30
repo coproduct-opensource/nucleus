@@ -27,7 +27,7 @@
 
 use portcullis_core::category::Lattice;
 
-use crate::enforcement::{BackendCapability, require_isolation};
+use crate::enforcement::{require_isolation, BackendCapability};
 use crate::isolation::IsolationLattice;
 
 /// A **closure operator** on a poset `T`: monotone, inflationary (`x ≤ c(x)`),
@@ -56,7 +56,9 @@ pub struct Reflector<'a>(pub &'a BackendCapability);
 
 impl ClosureOperator<IsolationLattice> for Reflector<'_> {
     fn close(&self, x: IsolationLattice) -> IsolationLattice {
-        require_isolation(x, self.0).map(|e| e.enforced).unwrap_or(x)
+        require_isolation(x, self.0)
+            .map(|e| e.enforced)
+            .unwrap_or(x)
     }
 }
 
@@ -89,7 +91,10 @@ where
         }
         // idempotent: c(c(x)) = c(x)
         if c.close(cx.clone()) != cx {
-            bad.push(format!("not idempotent at {x:?}: c(c)={:?} ≠ c={cx:?}", c.close(cx.clone())));
+            bad.push(format!(
+                "not idempotent at {x:?}: c(c)={:?} ≠ c={cx:?}",
+                c.close(cx.clone())
+            ));
         }
     }
     for x in samples {
@@ -139,10 +144,28 @@ mod tests {
 
     fn all_isolations() -> Vec<IsolationLattice> {
         let mut out = Vec::new();
-        for &p in &[ProcessIsolation::Shared, ProcessIsolation::Namespaced, ProcessIsolation::MicroVM] {
-            for &f in &[FileIsolation::Unrestricted, FileIsolation::Sandboxed, FileIsolation::ReadOnly, FileIsolation::Ephemeral] {
-                for &n in &[NetworkIsolation::Host, NetworkIsolation::Namespaced, NetworkIsolation::Filtered, NetworkIsolation::Airgapped] {
-                    out.push(IsolationLattice { process: p, file: f, network: n });
+        for &p in &[
+            ProcessIsolation::Shared,
+            ProcessIsolation::Namespaced,
+            ProcessIsolation::MicroVM,
+        ] {
+            for &f in &[
+                FileIsolation::Unrestricted,
+                FileIsolation::Sandboxed,
+                FileIsolation::ReadOnly,
+                FileIsolation::Ephemeral,
+            ] {
+                for &n in &[
+                    NetworkIsolation::Host,
+                    NetworkIsolation::Namespaced,
+                    NetworkIsolation::Filtered,
+                    NetworkIsolation::Airgapped,
+                ] {
+                    out.push(IsolationLattice {
+                        process: p,
+                        file: f,
+                        network: n,
+                    });
                 }
             }
         }
@@ -152,7 +175,10 @@ mod tests {
     #[test]
     fn enforcement_is_a_closure_operator_on_every_backend() {
         let postures = all_isolations();
-        for backend in [&BackendCapability::FIRECRACKER, &BackendCapability::APPLE_VZ] {
+        for backend in [
+            &BackendCapability::FIRECRACKER,
+            &BackendCapability::APPLE_VZ,
+        ] {
             let violations = verify_closure_laws(&Reflector(backend), &postures);
             assert!(
                 violations.is_empty(),
@@ -164,7 +190,11 @@ mod tests {
 
     #[test]
     fn delegation_is_an_interior_operator() {
-        let caps = [CapabilityLevel::Never, CapabilityLevel::LowRisk, CapabilityLevel::Always];
+        let caps = [
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
         for &ceiling in &caps {
             let violations = verify_interior_laws(&Attenuator(ceiling), &caps);
             assert!(
@@ -181,7 +211,10 @@ mod tests {
         let firecracker = Reflector(&BackendCapability::FIRECRACKER);
         for x in all_isolations() {
             let enforced = firecracker.close(x);
-            assert!(x.at_least(&x) && enforced.at_least(&x), "enforcement must be ≥ requested");
+            assert!(
+                x.at_least(&x) && enforced.at_least(&x),
+                "enforcement must be ≥ requested"
+            );
         }
     }
 }
