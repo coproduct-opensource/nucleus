@@ -96,7 +96,14 @@ jobs:
             RepairAlgebraProofs \
             MatrixBridge \
             PortcullisCoreCapQuantale \
-            CapabilityResiduatedQuantaleProofs
+            CapabilityResiduatedQuantaleProofs \
+            GovernanceCompletenessSpike
+          # GovernanceCompletenessSpike: K4 — `governance_monotone` decides
+          # anti-self-weakening. `governance_monotone_iff` proves the finite
+          # `representativeReqs` check is SOUND AND COMPLETE over the entire
+          # (infinite) request space; sorry-free, #print-axioms = [propext,
+          # Quot.sound] below. Pinned to the shipped Rust kernel by the
+          # nucleus-policy-kernel model_parity proptest (the parity contract).
           # CapabilityResiduatedQuantaleProofs: the residuation adjunction
           # (a⊗b≤c ⟺ b≤a⊸c) for capability, proven over the Aeneas-extracted
           # capability_quantale slice — the enriching value V of the
@@ -183,9 +190,11 @@ jobs:
           import ExposureProofs
           import IntegrityNoninterferenceExtracted
           import CapabilityResiduatedQuantaleProofs
+          import GovernanceCompletenessSpike
           #print axioms FlowProofs.authority_confinement_left
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
+          #print axioms GovernanceCompletenessSpike.governance_monotone_iff
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
           echo "$AXIOMS"

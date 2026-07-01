@@ -19,9 +19,20 @@
 
   The one honest assumption is `Fresh α` (any finite exact-set has an outside
   value) — exactly what `field_representatives` relies on (mint a fresh String);
-  realizable for `String`/`Nat`/any infinite type. Next: pin this model to the
-  Rust `decide`/`representative_requests` by exhaustive parity tests, then wire
-  into the proven-tier `#print axioms` CI gate.
+  realizable for `String`/`Nat`/any infinite type.
+
+  THE PARITY CONTRACT. This proof is *about the model below*; the guarantee
+  transfers to the shipped Rust `nucleus-policy-kernel::{decide,
+  governance_monotone, representative_requests}` only insofar as the two agree.
+  That pin is the `nucleus-policy-kernel` `tests/model_parity.rs` proptest, which
+  transcribes the definitions here — `decideAux`/`decideP`, `escalates`,
+  `fieldReps`/`representativeReqs`, `monotoneOver` — declaration-for-declaration
+  into an independent Rust oracle and asserts, over random policies/requests,
+  that the shipped functions equal it (with a third, existential reading of
+  `decide` as the differential angle). Both ends are gated in CI: this file's
+  `lake build` + `#print axioms governance_monotone_iff` = `[propext, Quot.sound]`
+  in `.github/workflows/portcullis-core-proven-lean.yml`, and the parity proptest
+  under the policy-kernel's `cargo test`.
 -/
 
 namespace GovernanceCompletenessSpike
