@@ -104,6 +104,29 @@ jobs:
       - name: Run OWASP LLM Top 10 security tests
         run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
 
+  policy-kernel-parity:
+    name: Policy-kernel model↔Rust parity (K4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The model↔Rust contract, as a FIRST-CLASS named check. The K4 proof
+    # `governance_monotone_iff` (proven axiom-clean in the Portcullis-Core Proven
+    # Lean workflow) is a statement ABOUT the Lean model; it only transfers to the
+    # shipped Rust `decide`/`governance_monotone`/`representative_requests` via the
+    # `nucleus-policy-kernel` `tests/model_parity.rs` proptest, which pins the two
+    # semantics declaration-for-declaration. That parity pin already runs
+    # transitively under the whole-workspace `cargo test --all-features` above, but
+    # this dedicated job selects the crate EXPLICITLY (`-p nucleus-policy-kernel`)
+    # so the contract is a required-able status check that cannot be silently
+    # dropped if the umbrella `test` job is ever path-filtered or refactored —
+    # closing the enforcement loop the Lean-side gate already documents.
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+      - name: cargo test -p nucleus-policy-kernel (parity pin)
+        run: cargo test -p nucleus-policy-kernel
+
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
