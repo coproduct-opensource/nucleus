@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "crates/portcullis",  # Policy: quotient lattice types
+    "crates/nucleus-policy-kernel", # PCA: reference monitor (decide / governance_monotone)
+    "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)
+    "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
     "crates/nucleus-client", # Client signing utilities

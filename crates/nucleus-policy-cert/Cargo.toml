@@ -1,0 +1,74 @@
+[package]
+name = "nucleus-policy-cert"
+license.workspace = true
+version.workspace = true
+# Latest edition (compatible with the workspace MSRV 1.93). Per-crate, pending a
+# workspace-wide 2021→2024 bump.
+edition = "2024"
+rust-version.workspace = true
+authors.workspace = true
+# nucleus has no workspace `publish` default, so set it explicitly (the PCA SDK
+# core is published to crates.io).
+publish = true
+description = "Recompute-verifiable certificates for the nucleus-policy-kernel reference monitor — the R1 rung of Proof-Carrying Authorization (PCA). A Certificate binds a policy commitment, the request, and the decision (or an old→new amendment) into a self-standing, Ed25519-signed object that ANY party can check WITHOUT trusting the emitter: it re-runs the verbatim kernel (decide / governance_monotone) against the carried witness and confirms the verdict. No trusted setup, no zkVM, O(policy) verification. The commitment uses the shared canonical SHA-256 codec (nucleus-snark-codec) so it stays host==guest for the future SNARK rung. Crypto (Ed25519) is feature-gated so the data + recompute layer compiles without it (e.g. into a zkVM guest)."
+
+[lints]
+workspace = true
+
+[features]
+default = ["crypto"]
+# Pulls ed25519-dalek for signing (`Ed25519Signer`) and signature
+# verification (`verify`). Off by default leaves the certificate DATA types,
+# the policy commitment, and the recompute check (`check_recompute`)
+# always-compiled and crypto-free — the layer a zkVM guest (R2) needs.
+crypto = ["dep:ed25519-dalek"]
+# Bridges a Certificate into the Delegation Logic Calculus (DLC) proof-term
+# vocabulary: a Decision/Governance cert becomes the `issuer says φ`
+# affirmation that DLC's `Term::Sign` introduces. This places policy certs
+# inside DLC's formal model (whose T2 theorem states logical=verifiable=
+# checkable), of which our recompute `verify` is a concrete grounding for the
+# policy fragment (DLC's own says-I crypto check / `dlc-verifier` are stubs).
+# Off by default so the crate stays a leaf; enabling pulls dlc-core, itself
+# no_std + zero-dep, so the leaf/wasm property is preserved.
+dlc = ["dep:dlc-core"]
+# Bridges a verified portcullis capability **delegation** into the same unified
+# `VerifiedAuthority` a policy decision/governance amendment produces — so all
+# three authority questions (who-may / may-this-now / may-policy-change) flow
+# through one consumption type and one enforcement gate. Host-only (portcullis
+# pulls a full dep tree); off by default so the crate stays a leaf.
+portcullis = ["dep:portcullis"]
+
+[dependencies]
+# The verbatim reference monitor. `decide` / `governance_monotone` are
+# re-run at verification time — the recompute that makes the cert checkable.
+# It is itself a leaf (serde-only), which keeps THIS crate wasm/zkVM-friendly.
+nucleus-policy-kernel = { path = "../nucleus-policy-kernel" }
+# SHA-256 for the policy commitment. Pinned to the 0.10 line (NOT the
+# workspace's 0.11 pre-release) for the SAME reason `nucleus-snark-codec`
+# documents: this crate is meant to compile into the SP1 zkVM guest (R2), and
+# SP1's sha2 acceleration patch targets 0.10.8 while 0.11 panics the guest.
+# 0.10.x is already in the workspace tree, so this adds no duplicate, and the
+# 32-byte digest is identical to 0.11. NB: we deliberately do NOT depend on
+# `nucleus-snark-codec` — it pulls `nucleus-agent-market`/`-externality` (and
+# thence ed25519/getrandom), which would defeat the leaf/wasm property. The
+# canonical encoding lives here instead (pure byte-ops, one function, no drift).
+sha2 = "0.10"
+serde = { workspace = true }
+thiserror = { workspace = true }
+ed25519-dalek = { workspace = true, optional = true }
+# DLC proof-term types (Prop/Term/Signature, Principal/PrincipalId/KeyRecord)
+# for the `dlc` bridge. no_std + zero-dep (only core/alloc), the Aeneas→Lean
+# translation target carrying T1–T4 — so depending on it keeps THIS crate a
+# leaf. Git-pinned like the other cross-repo upstreams.
+dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "bc7bc35ff79226267c906a2e1f1317cae6e918bb", optional = true }
+# Portcullis capability lattice + delegation certificates, for the `portcullis`
+# bridge. `default-features = false` drops `ring`/`cedar` (we only need the
+# always-compiled data types — VerifiedPermissions / PermissionLattice). Now an
+# in-repo PATH dep (this crate moved into nucleus alongside portcullis) — no more
+# cross-repo git pin for the bridge.
+portcullis = { path = "../portcullis", default-features = false, features = ["serde"], optional = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }
