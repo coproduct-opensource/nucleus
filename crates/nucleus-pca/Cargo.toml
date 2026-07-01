@@ -15,17 +15,17 @@ workspace = true
 [dependencies]
 # The recompute-verifiable certificate envelope + verify() (crypto on) and the
 # portcullis delegation projection (portcullis bridge on).
-nucleus-policy-cert = { path = "../nucleus-policy-cert", features = ["crypto", "portcullis"] }
+nucleus-policy-cert = { path = "../nucleus-policy-cert", version = "1.0.0", features = ["crypto", "portcullis"] }
 # The reference monitor types (Policy/Request/Decision) re-exported in the prelude.
-nucleus-policy-kernel = { path = "../nucleus-policy-kernel" }
+nucleus-policy-kernel = { path = "../nucleus-policy-kernel", version = "0.2.0" }
 # Capability delegation (LatticeCertificate/verify_certificate) + the isolation
 # lattice + the enforcement gate. default-features off drops ring/cedar.
 # `crypto` (ring) is needed for verify_certificate (Ed25519 chain check). This is
 # the NATIVE facade crate, so ring is fine; the wasm façade lives elsewhere and
 # uses the crypto-free recompute path.
-portcullis = { path = "../portcullis", default-features = false, features = ["serde", "crypto"] }
+portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, features = ["serde", "crypto"] }
 # Model-level information-flow decision (FlowDeclaration → IfcVerdict).
-nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
+nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0", features = ["decision"] }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 

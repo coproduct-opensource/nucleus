@@ -42,7 +42,7 @@ portcullis = ["dep:portcullis"]
 # The verbatim reference monitor. `decide` / `governance_monotone` are
 # re-run at verification time — the recompute that makes the cert checkable.
 # It is itself a leaf (serde-only), which keeps THIS crate wasm/zkVM-friendly.
-nucleus-policy-kernel = { path = "../nucleus-policy-kernel" }
+nucleus-policy-kernel = { path = "../nucleus-policy-kernel", version = "0.2.0" }
 # SHA-256 for the policy commitment. Pinned to the 0.10 line (NOT the
 # workspace's 0.11 pre-release) for the SAME reason `nucleus-snark-codec`
 # documents: this crate is meant to compile into the SP1 zkVM guest (R2), and
@@ -66,7 +66,7 @@ dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git"
 # always-compiled data types — VerifiedPermissions / PermissionLattice). Now an
 # in-repo PATH dep (this crate moved into nucleus alongside portcullis) — no more
 # cross-repo git pin for the bridge.
-portcullis = { path = "../portcullis", default-features = false, features = ["serde"], optional = true }
+portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, features = ["serde"], optional = true }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }

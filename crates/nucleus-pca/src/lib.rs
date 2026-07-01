@@ -84,6 +84,44 @@ pub enum Verified {
     Isolation(EnforcedIsolation),
 }
 
+impl Verified {
+    /// **The gate.** The authorization signal where it is well-defined:
+    /// `Some(true)` for a positive verdict, `Some(false)` for a negative one,
+    /// `None` where the result is not a yes/no authorization on its own.
+    ///
+    /// Gate on THIS — never on `verify(..).is_ok()`. `Ok` only means "the check
+    /// ran and the subject verified", **not** "authorized": a validly-verified
+    /// `Deny` decision, and a fail-closed `Flow`, are `Ok(..)` with
+    /// `is_positive() == Some(false)`. (The arms are deliberately asymmetric:
+    /// PolicyCert/Flow carry a negative verdict *in the payload* as `Ok`, while
+    /// Delegation/Isolation surface a hard failure as `Err` — so `is_ok()` is
+    /// the wrong gate.)
+    ///
+    /// - `Decision`   → `Some(allow)`.
+    /// - `Governance` → `Some(monotone)` (the amendment is non-weakening).
+    /// - `Flow`       → `Some(allow)` (the model-level IFC verdict).
+    /// - `Delegation` → `None`: a verified chain proves the leaf holds an
+    ///   *attenuated* capability, but the effective permissions + sink scope are
+    ///   intentionally not projected into the outcome (see
+    ///   [`AuthorityOutcome::Delegation`] — `PermissionLattice` has no canonical
+    ///   digest here). Consult the raw `LatticeCertificate` to gate a specific
+    ///   action; do not treat a verified delegation as unscoped authorization.
+    /// - `Isolation`  → `None`: an enforceable posture, not a yes/no authorization.
+    pub fn is_positive(&self) -> Option<bool> {
+        match self {
+            Verified::Authority(a) => match &a.outcome {
+                AuthorityOutcome::Decision { decision, .. } => {
+                    Some(*decision == nucleus_policy_kernel::Decision::Allow)
+                }
+                AuthorityOutcome::Governance { monotone, .. } => Some(*monotone),
+                AuthorityOutcome::Delegation { .. } => None,
+            },
+            Verified::Flow(v) => Some(v.allow),
+            Verified::Isolation(_) => None,
+        }
+    }
+}
+
 /// Why a [`verify`] call failed. Wraps each subject's native error.
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -114,8 +152,13 @@ pub fn verify(token: AuthorizationToken, ctx: &VerifyCtx) -> Result<Verified, Ve
             root_pubkey,
             max_depth,
         } => {
+            // Fail CLOSED on an out-of-range timestamp: `now_unix as i64` would
+            // WRAP for now_unix > i64::MAX into a negative (1969) time that
+            // chrono accepts, silently disabling the chain's expiry checks so an
+            // expired delegation would verify. `try_from` rejects it instead.
+            let secs = i64::try_from(ctx.now_unix).map_err(|_| VerifyError::Time(ctx.now_unix))?;
             let now = Utc
-                .timestamp_opt(ctx.now_unix as i64, 0)
+                .timestamp_opt(secs, 0)
                 .single()
                 .ok_or(VerifyError::Time(ctx.now_unix))?;
             let verified = verify_certificate(&cert, &root_pubkey, now, max_depth)
@@ -233,5 +276,31 @@ mod tests {
             }
             _ => panic!("expected an Isolation result"),
         }
+    }
+
+    #[test]
+    fn a_valid_deny_verifies_ok_but_is_not_positive() {
+        // The audit trap: a Deny cert validly VERIFIES (Ok), but must NOT read as
+        // authorized. `is_positive()` is the correct gate — `is_ok()` is not.
+        let policy = Policy { rules: vec![] }; // default-deny
+        let signer = Ed25519Signer::from_seed(&[9u8; 32]);
+        let cert = issue_decision_cert(
+            &policy,
+            req(),
+            Binding::new([0u8; 32], u64::MAX, None),
+            ResidualTrust::recompute(),
+            &signer,
+        );
+        let ctx = VerifyCtx {
+            now_unix: 0,
+            expected_context_hash: None,
+        };
+        let out = verify(AuthorizationToken::PolicyCert(Box::new(cert)), &ctx)
+            .expect("a validly-signed Deny cert still VERIFIES (Ok)");
+        assert_eq!(
+            out.is_positive(),
+            Some(false),
+            "a Deny must gate to Some(false)"
+        );
     }
 }
