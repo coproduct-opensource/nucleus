@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-mcp")]
-#[command(about = "MCP server that bridges Claude Code to nucleus-tool-proxy")]
+#[command(about = "MCP server that bridges an MCP client (any AI-agent runtime) to nucleus-tool-proxy")]
 struct Args {
     /// Tool proxy base URL (ex: http://127.0.0.1:12345).
     #[arg(long, env = "NUCLEUS_MCP_PROXY_URL")]
