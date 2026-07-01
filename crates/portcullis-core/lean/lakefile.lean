@@ -290,3 +290,7 @@ lean_lib «RepairAlgebraProofs» where
 -- Tier 3 (STALE) in CONJECTURES.md — do not cite them as proven until repaired.
 -- CategoryProofs remains a lean_lib target above (pre-existing) but is excluded
 -- from the proven-tier build list in portcullis-core-proven-lean.yml.
+
+-- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
+lean_lib «GovernanceCompletenessSpike» where
+  roots := #[`GovernanceCompletenessSpike]
