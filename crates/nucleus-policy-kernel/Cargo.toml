@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-policy-kernel"
+license.workspace = true
+version.workspace = true
+# Latest edition (compatible with the workspace MSRV 1.93 — edition 2024 needs
+# only rustc ≥ 1.85). Set per-crate rather than via the (still-2021) workspace
+# default; a workspace-wide 2021→2024 bump is a separate follow-up.
+edition = "2024"
+rust-version.workspace = true
+authors.workspace = true
+# A generic, vendor-agnostic primitive published to crates.io.
+publish = true
+description = "A deterministic reference monitor for agent actions (a 'Cedar-of-agent-actions') with a DECIDABLE governance-monotonicity check — the self-proving kernel behind the PoHAW policy node. decide() is default-deny with Forbid-overrides-Permit (recompute-verifiable). The keystone is governance_monotone(old, new): it proves, exactly (over a sound finite representative domain, not by sampling), that a policy update never grants a privilege the old policy denied — the anti-self-weakening invariant a frozen verifier enforces so an autonomous system cannot escalate its own authority. Pure integer/string Rust; no SP1/zkVM toolchain in the default build."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
