@@ -1,7 +1,10 @@
 [package]
 name = "nucleus-policy-kernel"
 license.workspace = true
-version.workspace = true
+# Explicit version (not the workspace 1.0.0): this crate publishes to crates.io
+# on its own cadence. Bumped 0.1.0 → 0.2.0 for the relocation-into-nucleus
+# release (edition 2024, moved from spiffy).
+version = "0.2.0"
 # Latest edition (compatible with the workspace MSRV 1.93 — edition 2024 needs
 # only rustc ≥ 1.85). Set per-crate rather than via the (still-2021) workspace
 # default; a workspace-wide 2021→2024 bump is a separate follow-up.
