@@ -16,5 +16,6 @@
 //! The extraction roots live here so the CI extractor can name them with
 //! `charon ... --start-from nucleus_ifc_kernel::extracted::ifc_integrity::<fn>`.
 
+pub mod capability_quantale;
 pub mod ifc_confidentiality;
 pub mod ifc_integrity;

@@ -3215,6 +3215,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlc-core"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=bc7bc35ff79226267c906a2e1f1317cae6e918bb#bc7bc35ff79226267c906a2e1f1317cae6e918bb"
+
+[[package]]
 name = "dlopen2"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6994,6 +6999,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-pca"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "ed25519-dalek 3.0.0-pre.7",
+ "nucleus-ifc",
+ "nucleus-policy-cert",
+ "nucleus-policy-kernel",
+ "portcullis",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-permission-market"
 version = "1.0.0"
 dependencies = [
@@ -7001,6 +7019,30 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "nucleus-policy-cert"
+version = "1.0.0"
+dependencies = [
+ "dlc-core",
+ "ed25519-dalek 3.0.0-pre.7",
+ "nucleus-policy-kernel",
+ "portcullis",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "nucleus-policy-kernel"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -45,6 +45,20 @@ lean_lib «PortcullisCoreIFC» where
 lean_lib «IntegrityNoninterferenceExtracted» where
   roots := #[`IntegrityNoninterferenceExtracted]
 
+-- Aeneas-generated capability residuated-quantale core (from real Rust:
+-- crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs). UNMODIFIED
+-- Aeneas output (only the inter-module import in Funs.lean was retargeted from
+-- NucleusIfcKernel.Types to PortcullisCoreCapQuantale.Types so this lib does not
+-- collide with the «PortcullisCore» / «PortcullisCoreIFC» libs).
+lean_lib «PortcullisCoreCapQuantale» where
+  roots := #[`PortcullisCoreCapQuantale.Types, `PortcullisCoreCapQuantale.Funs]
+  srcDir := "generated-cap-quantale"
+
+-- The residuation adjunction (a⊗b≤c ⟺ b≤a⊸c) proven OVER the Aeneas-generated
+-- capability core above — the formal realization of the enriching value V.
+lean_lib «CapabilityResiduatedQuantaleProofs» where
+  roots := #[`CapabilityResiduatedQuantaleProofs]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where
@@ -276,3 +290,7 @@ lean_lib «RepairAlgebraProofs» where
 -- Tier 3 (STALE) in CONJECTURES.md — do not cite them as proven until repaired.
 -- CategoryProofs remains a lean_lib target above (pre-existing) but is excluded
 -- from the proven-tier build list in portcullis-core-proven-lean.yml.
+
+-- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
+lean_lib «GovernanceCompletenessSpike» where
+  roots := #[`GovernanceCompletenessSpike]
