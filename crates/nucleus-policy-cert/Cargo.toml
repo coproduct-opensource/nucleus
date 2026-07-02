@@ -52,7 +52,7 @@ nucleus-policy-kernel = { path = "../nucleus-policy-kernel", version = "0.2.0" }
 # `nucleus-snark-codec` — it pulls `nucleus-agent-market`/`-externality` (and
 # thence ed25519/getrandom), which would defeat the leaf/wasm property. The
 # canonical encoding lives here instead (pure byte-ops, one function, no drift).
-sha2 = "0.10"
+sha2 = "0.11"
 serde = { workspace = true }
 thiserror = { workspace = true }
 ed25519-dalek = { workspace = true, optional = true }
