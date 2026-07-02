@@ -46,7 +46,14 @@ mod imp {
     const RLIMIT_FSIZE_MAX: libc::rlim_t = 8 * 1024 * 1024 * 1024; // 8 GiB
     const RLIMIT_CPU_SECS: libc::rlim_t = 3600; // 1 hour of CPU time
 
-    fn set_rlimit(resource: libc::__rlimit_resource_t, limit: libc::rlim_t) -> io::Result<()> {
+    // `libc::setrlimit` takes `__rlimit_resource_t` on glibc but plain `c_int`
+    // on musl (and other non-GNU libcs), so alias the parameter type portably.
+    #[cfg(target_env = "gnu")]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(not(target_env = "gnu"))]
+    type RlimitResource = libc::c_int;
+
+    fn set_rlimit(resource: RlimitResource, limit: libc::rlim_t) -> io::Result<()> {
         let rl = libc::rlimit {
             rlim_cur: limit,
             rlim_max: limit,
