@@ -127,6 +127,27 @@ jobs:
       - name: cargo test -p nucleus-policy-kernel (parity pin)
         run: cargo test -p nucleus-policy-kernel
 
+  musl-check:
+    name: musl type-check (nucleus-node, nucleus-tool-proxy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The release pipeline builds static musl binaries, but every other job here
+    # compiles against glibc — so glibc-only code (v2.0.1: __rlimit_resource_t in
+    # hardening.rs) sails through PR CI and only explodes at release time. This
+    # job type-checks the two shipped binaries against the musl target on every
+    # PR to close that gap. musl-tools provides musl-gcc, which C-dependency
+    # build scripts (e.g. ring) need to cross-compile.
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          targets: x86_64-unknown-linux-musl
+          cache: true
+      - name: Install musl-gcc
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: cargo check (musl)
+        run: cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
+
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
