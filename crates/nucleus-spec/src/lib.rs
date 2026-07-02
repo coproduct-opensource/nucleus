@@ -311,8 +311,10 @@ impl NetworkSpec {
                 "api.github.com".into(),
                 "uploads.github.com".into(),
                 "objects.githubusercontent.com".into(),
-                // Anthropic API (for Claude CLI)
-                "api.anthropic.com".into(),
+                // NO LLM-vendor endpoints here — the package-registry default
+                // stays vendor-neutral (open-core mandate: no Anthropic/OpenAI
+                // strings). LLM API hosts are caller-supplied (the vendor-
+                // specific runner / WorkloadIdentity adds them), not baked in.
             ],
             url_allow: vec![],
             mime_allow: None,
@@ -1262,9 +1264,11 @@ spec:
             spec.dns_allow.contains(&"api.github.com".to_string()),
             "should allow GitHub API"
         );
+        // Vendor-neutrality: the default package-registry allow-list must NOT
+        // bake in any LLM-vendor endpoint — those are caller-supplied.
         assert!(
-            spec.dns_allow.contains(&"api.anthropic.com".to_string()),
-            "should allow Anthropic API"
+            !spec.dns_allow.contains(&"api.anthropic.com".to_string()),
+            "default must stay vendor-neutral — no hardcoded LLM endpoints"
         );
     }
 

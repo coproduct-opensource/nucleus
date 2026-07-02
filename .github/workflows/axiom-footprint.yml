@@ -1,0 +1,67 @@
+name: axiom-footprint
+
+# Refreshes the clean-axiom-footprint badge: runs scripts/axiom-audit.sh, which
+# `collectAxioms` over every PROVEN-tier theorem and classifies the footprint
+# (clean = pure CIC {propext, Quot.sound, funext}; sorryAx = a hole the textual
+# scan missed). The proven-lean gate spot-checks 2 theorems for sorryAx; this
+# quantifies ALL of them and publishes the count as a badge.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/portcullis-core/lean/**'
+      - 'scripts/axiom-audit.sh'
+      - '.github/workflows/axiom-footprint.yml'
+  schedule:
+    - cron: '37 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: axiom-footprint
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake / Mathlib build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            ~/.elan
+            ~/.cache/mathlib
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          restore-keys: |
+            lean-aeneas-${{ runner.os }}-
+
+      - name: Fetch Mathlib cache (prebuilt oleans)
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
+
+      - name: Axiom-footprint audit (badge + sorryAx ratchet)
+        run: bash scripts/axiom-audit.sh badges
+
+      - name: Commit badge if changed
+        run: |
+          if [ -n "$(git status --porcelain badges/axiom-footprint.json)" ]; then
+            git config user.name  'maturity-bot'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add badges/axiom-footprint.json
+            git commit -m 'chore(stats): refresh clean-axiom-footprint badge [skip ci]'
+            git push
+          else
+            echo "axiom-footprint badge unchanged"
+          fi
