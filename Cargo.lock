@@ -1714,9 +1714,9 @@ dependencies = [
 
 [[package]]
 name = "c2pa"
-version = "0.88.0"
+version = "0.89.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d79e0cbac49fecc86ba739878c1b0e16a1c77b2cdee9157de724fb534dedf9d"
+checksum = "51fa794035513d5e89b14f37ddee22d0ba545962bd0e7a3caaf68fef70674317"
 dependencies = [
  "asn1-rs",
  "async-generic",
@@ -1784,7 +1784,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "sha1 0.10.6",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "spki 0.7.3",
  "static-iref",
  "tempfile",
@@ -2953,7 +2953,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -10501,7 +10501,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
- "sha2-asm",
 ]
 
 [[package]]
@@ -10513,15 +10512,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
-]
-
-[[package]]
-name = "sha2-asm"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
-dependencies = [
- "cc",
 ]
 
 [[package]]
