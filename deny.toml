@@ -62,6 +62,12 @@ ignore = [
   # does NOT depend on it — the nucleus-witness-gossip wire codec uses the
   # maintained `postcard`. Sunset: drops when risc0-zkvm moves off bincode 1.
   "RUSTSEC-2025-0141",
+
+  # quick-xml 0.39.4 quadratic runtime on duplicate XML attribute names.
+  # Transitive via plist<-netdev<-netwatch<-iroh; no patched path exists
+  # (plist 1.9.0 pins ^0.39). Exposure is macOS network-interface plist
+  # parsing, not attacker-controlled XML. REVISIT when plist releases >1.9.0.
+  "RUSTSEC-2026-0194",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
