@@ -13,6 +13,17 @@ updates:
           - "*"
         exclude-patterns:
           - "security-framework*"
+    ignore:
+      # wasmtime 46+ requires rustc 1.94.0, but our workspace MSRV floor is
+      # pinned to Kani's toolchain (`cargo kani` has no --ignore-rust-version).
+      # The latest Kani (0.67.0, nightly-2025-11-21) and even Kani `main`
+      # (nightly-2025-12-03) are still ~rustc 1.93, so we cannot raise the
+      # floor to 1.94 without breaking verification. Hold wasmtime at major 45
+      # (the last 1.93-compatible line) until a Kani release supports 1.94+.
+      # This recurred via #1919 and #1922; remove this entry once Kani ships a
+      # >=1.94 toolchain and the workspace `rust-version` is bumped to match.
+      - dependency-name: "wasmtime"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps(rust)"
 
