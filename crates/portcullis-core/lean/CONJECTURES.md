@@ -12,8 +12,8 @@ file containing a proof-hole (`sorry` / `admit`) is listed in the
 `sorry`, the gate fails — a real proof cannot regress unnoticed, and a research
 hole cannot be smuggled out of quarantine.
 
-> Last reconciled: 2026-06-28. Authoritative counts (comment-stripped):
-> **34 proof-hole `sorry` terms across exactly 10 files**, zero elsewhere in the tree.
+> Last reconciled: 2026-06-29. Authoritative counts (comment-stripped):
+> **27 proof-hole `sorry` terms across exactly 10 files**, zero elsewhere in the tree.
 > (2026-06-28: `MatrixBridge` discharged in full — 6 holes → 0 — and promoted
 > research → proven; removed from the allowlist below and added to Tier 1.)
 
@@ -67,8 +67,8 @@ carries a `CONJECTURE` banner at its head.
 
 | Library | Open `sorry` | What is conjectured (and where the hole is) |
 |---|---:|---|
-| `SemanticIFCDecidable` | 13 | Float `BEq` lacks `LawfulBEq`; neighbor-transitivity, foldl/countP, BFS class-rep lemmas |
-| `ComparisonTheorem` | 7 | Čech ≅ Topos for finite Alexandrov posets (Laudal/Oberst; 2 are native_decide-timeout fallbacks, "Python-verified") |
+| `SemanticIFCDecidable` | 10 | Float `BEq` lacks `LawfulBEq`; neighbor-transitivity, BFS class-rep lemmas (the LayerCosheaf sum/max/countP aggregation holes were closed 2026-06-29 by induction) |
+| `ComparisonTheorem` | 3 | Layer-1 structural lemmas: `uniform_implies_h1_zero` nonempty case (full-simplex Čech acyclicity, needs `SimplexAcyclic`), `c0_exceeds_globals_of_exclusive`, `exclusive_implies_h1_pos` (needs `RankNullity`). The 4 Borromean H¹/H² value holes were closed 2026-06-29 via `native_decide` (Tier-2b disclosure) |
 | `AlignmentTaxBridge` | 5 | `operationalTax = rank H¹` (the central alignment-tax conjecture) |
 | `RankNullity` | 1 | GF(2) rank subadditivity — foundation for the whole alignment-tax chain |
 | `SimplexAcyclic` | 1 | cone construction ⇒ H¹ = 0 |
@@ -77,7 +77,7 @@ carries a `CONJECTURE` banner at its head.
 | `CompositionalAlignment` | 1 | Mayer-Vietoris-analog for spec composition |
 | `UniversalityTheorem` | 2 | rank H¹ as a complete invariant |
 | `PACVCBridge` | 2 | PAC / VC-dimension equivalence |
-| **Total** | **34** | across **10** files |
+| **Total** | **27** | across **10** files |
 
 **Machine-readable allowlist** (the CI gate parses exactly the lines between the
 markers below — these are the only files permitted to contain a proof hole):
