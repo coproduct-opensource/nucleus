@@ -24,6 +24,17 @@ updates:
       # >=1.94 toolchain and the workspace `rust-version` is bumped to match.
       - dependency-name: "wasmtime"
         update-types: ["version-update:semver-major"]
+      # rmcp 2.0 is a breaking API change (removed the `Content` type used by
+      # nucleus-tool-proxy / ctf-mcp / ctf-server); the migration is deliberate,
+      # not a dependabot auto-bump. Hold at major 1 until migrated (tracked
+      # separately). Recurred via #1940.
+      - dependency-name: "rmcp"
+        update-types: ["version-update:semver-major"]
+      # sha2 is DELIBERATELY pinned to the 0.10 line in nucleus-policy-cert: the
+      # cert layer compiles into the SP1 zkVM guest, whose sha2 acceleration
+      # patch targets 0.10.8 — 0.11 panics the guest. Never auto-bump the major.
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps(rust)"
 
