@@ -68,4 +68,18 @@ ignore = [
     # heapless 0.8+. Informational/unmaintained only — same class as the paste/
     # proc-macro-error/bincode/derivative ignores above.
     "RUSTSEC-2023-0089",
+
+    # quick-xml 0.39.4 quadratic runtime on duplicate XML attribute names
+    # (RUSTSEC-2026-0194). Transitive via plist←netdev←netwatch←iroh; no
+    # patched path exists (plist 1.9.0, the latest, pins quick-xml ^0.39).
+    # Exposure is macOS network-interface plist parsing, not
+    # attacker-controlled XML. REVISIT when plist releases >1.9.0.
+    "RUSTSEC-2026-0194",
+
+    # quick-xml 0.39.4 NsReader unbounded namespace-declaration allocation
+    # (RUSTSEC-2026-0195, memory-exhaustion DoS). Same unpatchable chain and
+    # exposure as RUSTSEC-2026-0194 above: transitive via plist 1.9.0 (pins
+    # ^0.39); local macOS plist parsing, not attacker-controlled XML.
+    # REVISIT when plist releases >1.9.0.
+    "RUSTSEC-2026-0195",
 ]
