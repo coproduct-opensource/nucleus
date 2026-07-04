@@ -116,8 +116,7 @@ pub struct IntegerBid {
 /// a `value_micro_usd` field that the welfare computation summed; that
 /// design admitted a hidden two-utility-function bug (IR could fail
 /// whenever bid ≠ proposal value, which is precisely when separate
-/// proposal values exist). The Week 6 Option A fix from
-/// `/Users/bcrisp/.claude/plans/let-s-web-search-look-modular-rivest.md`
+/// proposal values exist). The Week 6 Option A fix
 /// collapsed welfare to bid effective value, restoring theoretical
 /// honesty under `docs/ECON-PRECISION.md`'s "bid is the canonical
 /// economic primitive" principle.
