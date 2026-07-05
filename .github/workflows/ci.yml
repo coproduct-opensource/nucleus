@@ -198,12 +198,17 @@ jobs:
     # build scripts (e.g. ring) need to cross-compile.
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: x86_64-unknown-linux-musl
           cache: true
       - name: Install musl-gcc
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Ensure musl target (cache-safe)
+        # setup-rust-toolchain's `targets:` is skipped on a toolchain cache hit,
+        # so the target can be absent despite being declared → E0463. This
+        # explicit add always runs and is a no-op when already present.
+        run: rustup target add x86_64-unknown-linux-musl
       - name: cargo check (musl)
         run: cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
 
