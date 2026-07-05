@@ -38,7 +38,7 @@ jobs:
           if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "push" ]; then
             all=true
           else
-            git fetch origin "$BASE" --depth=1 || true
+            git fetch origin "$BASE" || true
             changed="$(git diff --name-only "origin/$BASE...HEAD")"
             if printf '%s\n' "$changed" | grep -qE '^Cargo\.toml$|^Cargo\.lock$|^\.github/'; then
               all=true
@@ -47,7 +47,7 @@ jobs:
 
           crates=""
           if [ -n "$changed" ]; then
-            crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' -)"
+            crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' - || true)"
           fi
 
           echo "all=$all" >> "$GITHUB_OUTPUT"
