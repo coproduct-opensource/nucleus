@@ -204,6 +204,11 @@ jobs:
           cache: true
       - name: Install musl-gcc
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Ensure musl target (cache-safe)
+        # setup-rust-toolchain's `targets:` is skipped on a toolchain cache hit,
+        # so the target can be absent despite being declared → E0463. This
+        # explicit add always runs and is a no-op when already present.
+        run: rustup target add x86_64-unknown-linux-musl
       - name: cargo check (musl)
         run: cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
 
