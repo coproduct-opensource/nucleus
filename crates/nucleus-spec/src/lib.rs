@@ -288,7 +288,7 @@ impl NetworkSpec {
         }
     }
 
-    /// Allow package registries + GitHub API — minimum for build/test work.
+    /// Allow package registries + source-host APIs — minimum for build/test work.
     ///
     /// DNS entries are resolved and pinned at pod start by the dnsmasq proxy.
     /// Used for `TrustLevel::OrgBYOK` or `NetworkIsolation::Filtered`.
@@ -306,13 +306,13 @@ impl NetworkSpec {
                 // Python
                 "pypi.org".into(),
                 "files.pythonhosted.org".into(),
-                // GitHub (API, web, uploads, LFS)
-                "github.com".into(),
-                "api.github.com".into(),
-                "uploads.github.com".into(),
-                "objects.githubusercontent.com".into(),
-                // Anthropic API (for Claude CLI)
-                "api.anthropic.com".into(),
+                // Source host (API, web, uploads, LFS)
+                "github.com".into(), // vendor-allow: load-bearing default egress host for source/VCS access
+                "api.github.com".into(), // vendor-allow: load-bearing default egress host for source/VCS API
+                "uploads.github.com".into(), // vendor-allow: load-bearing default egress host for release/artifact uploads
+                "objects.githubusercontent.com".into(), // vendor-allow: load-bearing default egress host for LFS/object fetches
+                // LLM provider API (default agent-CLI egress)
+                "api.anthropic.com".into(), // vendor-allow: load-bearing default egress host for the agent's model API
             ],
             url_allow: vec![],
             mime_allow: None,
@@ -407,8 +407,8 @@ pub struct CgroupSetting {
 ///    SPIFFE workload API or Kubernetes projected service-account tokens) fetched
 ///    at pod start and refreshed before expiry. The pod sees only a file path via
 ///    an env var; no static secret material crosses the boundary. Works with any
-///    relying party that accepts OIDC token exchange (Anthropic, OpenAI, GCP,
-///    AWS, …); nucleus only knows about the token-exchange dance.
+///    relying party that accepts OIDC token exchange (a cloud STS, an LLM
+///    provider API, …); nucleus only knows about the token-exchange dance.
 ///
 /// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret
 /// values for the `env` map. `workload_identity` entries contain no secret
@@ -496,14 +496,14 @@ impl CredentialsSpec {
 /// `audience` value for whichever relying party the workload calls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkloadIdentitySpec {
-    /// Logical name (e.g. "anthropic", "openai-prod"). Used in audit records.
+    /// Logical name (e.g. "llm-provider", "prod-sts"). Used in audit records.
     pub name: String,
 
     /// OIDC audience to request. Provider-defined; **nucleus does not yet
     /// validate** that this is a well-formed URL or coordinate against an
     /// allow-list. A typo here will silently produce a JWT no relying party
     /// accepts. Validation is tracked for the runtime PR.
-    /// Examples: `https://api.anthropic.com`, `https://api.openai.com`.
+    /// Examples: `https://oidc.example.com`, `https://sts.example.com`.
     pub audience: String,
 
     /// Environment variable the application reads to find the token file.
@@ -580,7 +580,7 @@ impl Default for IdentitySource {
 /// in addition to the local HMAC-signed JSONL log. Each entry is a separate
 /// object with `if_none_match("*")` to enforce append-only semantics.
 ///
-/// Compatible with: AWS S3, MinIO, Cloudflare R2, Tigris.
+/// Compatible with: any S3-compatible object store (e.g. AWS S3, MinIO).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditSinkSpec {
     /// S3 bucket name.
@@ -764,7 +764,7 @@ mod tests {
     fn test_credentials_spec_debug_redacts_values() {
         let creds = CredentialsSpec::new()
             .with_env("LLM_API_TOKEN", "super-secret-token-12345")
-            .with_env("GITHUB_TOKEN", "ghp_abcdefghijklmnop");
+            .with_env("REGISTRY_TOKEN", "test-registry-token-abc");
 
         let debug_output = format!("{:?}", creds);
 
@@ -775,8 +775,8 @@ mod tests {
             debug_output
         );
         assert!(
-            !debug_output.contains("ghp_abcdefghijklmnop"),
-            "Debug output must not contain GitHub token: {}",
+            !debug_output.contains("test-registry-token-abc"),
+            "Debug output must not contain registry token: {}",
             debug_output
         );
 
@@ -787,7 +787,7 @@ mod tests {
             debug_output
         );
         assert!(
-            debug_output.contains("GITHUB_TOKEN"),
+            debug_output.contains("REGISTRY_TOKEN"),
             "Debug output should show key names: {}",
             debug_output
         );
@@ -850,8 +850,8 @@ mod tests {
 
     fn sample_workload_identity() -> WorkloadIdentitySpec {
         WorkloadIdentitySpec {
-            name: "anthropic".to_string(),
-            audience: "https://api.anthropic.com".to_string(),
+            name: "example-provider".to_string(),
+            audience: "https://oidc.example.com".to_string(),
             env_var: "LLM_IDENTITY_TOKEN_FILE".to_string(),
             token_path: PathBuf::from("/var/run/secrets/llm/token"),
             refresh: RefreshPolicy::default(),
@@ -890,7 +890,7 @@ mod tests {
             "spec with workload identity must not be empty"
         );
         assert_eq!(creds.workload_identity.len(), 1);
-        assert_eq!(creds.workload_identity[0].name, "anthropic");
+        assert_eq!(creds.workload_identity[0].name, "example-provider");
     }
 
     #[test]
@@ -941,7 +941,7 @@ spec:
   credentials:
     workload_identity:
       - name: llm-provider
-        audience: https://api.anthropic.com
+        audience: https://oidc.example.com
         env_var: LLM_IDENTITY_TOKEN_FILE
         token_path: /var/run/secrets/llm/token
         source:
@@ -956,7 +956,7 @@ spec:
         assert_eq!(creds.workload_identity.len(), 1);
         let wi = &creds.workload_identity[0];
         assert_eq!(wi.name, "llm-provider");
-        assert_eq!(wi.audience, "https://api.anthropic.com");
+        assert_eq!(wi.audience, "https://oidc.example.com");
         assert_eq!(wi.env_var, "LLM_IDENTITY_TOKEN_FILE");
         assert_eq!(wi.token_path, PathBuf::from("/var/run/secrets/llm/token"));
         assert!(matches!(wi.source, IdentitySource::Spiffe { .. }));
@@ -966,7 +966,7 @@ spec:
     fn test_workload_identity_kubernetes_projected_source_parses() {
         let yaml = r#"
 name: oidc
-audience: https://api.anthropic.com
+audience: https://oidc.example.com
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -991,7 +991,7 @@ source:
     fn test_workload_identity_static_file_source_parses() {
         let yaml = r#"
 name: testing
-audience: https://api.anthropic.com
+audience: https://oidc.example.com
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -1017,8 +1017,8 @@ source:
         // test should be updated to assert redaction.
         let wi = sample_workload_identity();
         let dbg = format!("{:?}", wi);
-        assert!(dbg.contains("anthropic"));
-        assert!(dbg.contains("https://api.anthropic.com"));
+        assert!(dbg.contains("example-provider"));
+        assert!(dbg.contains("https://oidc.example.com"));
     }
 
     #[test]
@@ -1030,7 +1030,7 @@ source:
         assert!(!dbg.contains("supersecret"), "env values must be redacted");
         assert!(dbg.contains("[REDACTED]"));
         assert!(dbg.contains("workload_identity"));
-        assert!(dbg.contains("anthropic"));
+        assert!(dbg.contains("example-provider"));
     }
 
     #[test]
@@ -1049,7 +1049,7 @@ spec:
   credentials:
     env:
       LLM_API_TOKEN: "secret-token-12345"
-      GITHUB_TOKEN: "ghp_test"
+      REGISTRY_TOKEN: "test-registry-token"
 "#;
 
         let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
@@ -1061,7 +1061,10 @@ spec:
             creds.env.get("LLM_API_TOKEN"),
             Some(&"secret-token-12345".to_string())
         );
-        assert_eq!(creds.env.get("GITHUB_TOKEN"), Some(&"ghp_test".to_string()));
+        assert_eq!(
+            creds.env.get("REGISTRY_TOKEN"),
+            Some(&"test-registry-token".to_string())
+        );
     }
 
     #[test]
@@ -1100,7 +1103,7 @@ spec:
   credentials:
     env:
       LLM_API_TOKEN: "sk-secret-12345-abcdef"
-      GITHUB_TOKEN: "ghp_supersecret"
+      REGISTRY_TOKEN: "test-registry-supersecret"
 "#;
 
         let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
@@ -1115,8 +1118,8 @@ spec:
             debug_output
         );
         assert!(
-            !debug_output.contains("ghp_supersecret"),
-            "PodSpec debug must not leak GITHUB_TOKEN: {}",
+            !debug_output.contains("test-registry-supersecret"),
+            "PodSpec debug must not leak REGISTRY_TOKEN: {}",
             debug_output
         );
 
@@ -1259,12 +1262,12 @@ spec:
             "should allow pypi"
         );
         assert!(
-            spec.dns_allow.contains(&"api.github.com".to_string()),
-            "should allow GitHub API"
+            spec.dns_allow.contains(&"api.github.com".to_string()), // vendor-allow: asserts load-bearing default egress host
+            "should allow source-host API"
         );
         assert!(
-            spec.dns_allow.contains(&"api.anthropic.com".to_string()),
-            "should allow Anthropic API"
+            spec.dns_allow.contains(&"api.anthropic.com".to_string()), // vendor-allow: asserts load-bearing default egress host
+            "should allow LLM provider API"
         );
     }
 
