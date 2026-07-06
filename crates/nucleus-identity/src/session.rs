@@ -21,11 +21,11 @@
 //! use nucleus_identity::{Identity, SessionIdentity};
 //! use std::time::Duration;
 //!
-//! let parent = Identity::new("nucleus.local", "agents", "claude");
+//! let parent = Identity::new("nucleus.local", "agents", "agent");
 //! let session = SessionIdentity::new(parent, Duration::from_secs(3600));
 //!
 //! println!("Session SPIFFE URI: {}", session.to_spiffe_uri());
-//! // spiffe://nucleus.local/ns/agents/sa/claude/session/01941234-...
+//! // spiffe://nucleus.local/ns/agents/sa/agent/session/01941234-...
 //! ```
 
 use crate::identity::Identity;
@@ -387,17 +387,17 @@ mod tests {
 
     #[test]
     fn test_session_identity_spiffe_uri() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         let session = SessionIdentity::new(parent, Duration::from_secs(3600));
 
         let uri = session.to_spiffe_uri();
-        assert!(uri.starts_with("spiffe://nucleus.local/ns/agents/sa/claude/session/"));
+        assert!(uri.starts_with("spiffe://nucleus.local/ns/agents/sa/agent/session/"));
         assert!(uri.len() > 60); // Base URI + session ID
     }
 
     #[test]
     fn test_session_identity_expiry() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
 
         // Short TTL that's already expired
         let session = SessionIdentity {
@@ -418,23 +418,23 @@ mod tests {
 
     #[test]
     fn test_session_identity_to_certificate_identity() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         let session = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
 
         let cert_id = session.to_certificate_identity();
         assert_eq!(cert_id.trust_domain(), "nucleus.local");
         assert_eq!(cert_id.namespace(), "agents");
-        assert!(cert_id.service_account().starts_with("claude-"));
-        assert!(cert_id.service_account().len() > 40); // claude + hyphen + UUID
+        assert!(cert_id.service_account().starts_with("agent-"));
+        assert!(cert_id.service_account().len() > 40); // agent + hyphen + UUID
     }
 
     #[test]
     fn test_session_identity_display() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         let session = SessionIdentity::new(parent, Duration::from_secs(3600));
 
         let display = format!("{}", session);
-        assert!(display.starts_with("spiffe://nucleus.local/ns/agents/sa/claude/session/"));
+        assert!(display.starts_with("spiffe://nucleus.local/ns/agents/sa/agent/session/"));
     }
 
     #[test]
@@ -505,7 +505,7 @@ mod session_refresh_tests {
 
     #[test]
     fn validate_before_refresh_succeeds_with_sufficient_lifetime() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         let session = SessionIdentity::new(parent, Duration::from_secs(3600));
         let min_remaining = Duration::from_secs(60);
         assert!(session.validate_before_refresh(min_remaining).is_ok());
@@ -513,7 +513,7 @@ mod session_refresh_tests {
 
     #[test]
     fn validate_before_refresh_fails_when_expired() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         // Create session with 0 TTL — already expired
         let session = SessionIdentity::new(parent, Duration::from_secs(0));
         std::thread::sleep(Duration::from_millis(10));
@@ -523,7 +523,7 @@ mod session_refresh_tests {
 
     #[test]
     fn validate_before_refresh_fails_with_insufficient_lifetime() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent");
         // 2 second TTL, require 60 seconds remaining
         let session = SessionIdentity::new(parent, Duration::from_secs(2));
         let result = session.validate_before_refresh(Duration::from_secs(60));
