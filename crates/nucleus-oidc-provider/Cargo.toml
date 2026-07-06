@@ -46,8 +46,10 @@ nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap" }
 clap = { workspace = true }
 
 # Crypto — explicit zeroize feature (closes #31 GA-8: never rely on
-# transitive default-features for key-material zeroization).
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["zeroize", "rand_core", "pkcs8"] }
+# transitive default-features for key-material zeroization). Version is
+# centralized in [workspace.dependencies] (the exact `=3.0.0-pre.7` pin that
+# forces single-version resolution across the workspace); features stay local.
+ed25519-dalek = { workspace = true, features = ["zeroize", "rand_core", "pkcs8"] }
 
 # Encoding
 hex = { workspace = true }
@@ -80,8 +82,8 @@ subtle = "2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util", "limit"] }
 http-body-util = "0.1"
-tempfile = "3"
-proptest = "1"
+tempfile = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
