@@ -45,8 +45,8 @@ struct Cli {
     /// HTTP bind address (host:port).
     #[arg(long, default_value = "127.0.0.1:8080", env = "NUCLEUS_BIND")]
     bind: String,
-    /// gRPC bind address (host:port). Per workspace CLAUDE.md the
-    /// convention is `HTTP port + 1000`. Set to empty string to
+    /// gRPC bind address (host:port). Per workspace convention the
+    /// gRPC port is `HTTP port + 1000`. Set to empty string to
     /// disable the gRPC surface (default: 0.0.0.0:9080).
     #[arg(long, default_value = "0.0.0.0:9080", env = "NUCLEUS_GRPC_BIND")]
     grpc_bind: String,
@@ -195,8 +195,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Register agent drivers. Real drivers (claude-code, openhands) register
-    // themselves from downstream crates — keeping nucleus vendor-neutral. The
+    // Register agent drivers. Real drivers register themselves from downstream
+    // crates via the driver registry — keeping nucleus vendor-neutral. The
     // mock driver is dev/test only; a production registry is empty and every job
     // fails closed with "unknown agent driver" until a real driver registers.
     let runners = RunnerRegistry::new();
