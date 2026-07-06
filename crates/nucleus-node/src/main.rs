@@ -347,7 +347,7 @@ struct FirecrackerPod {
 ///
 /// The container image can be either:
 ///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
-///   - A Claude Code CLI image like `gt-executor:latest` (direct mode)
+///   - An LLM/agent CLI image like `gt-executor:latest` (direct mode)
 ///
 /// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
 #[derive(Debug)]
@@ -1528,7 +1528,7 @@ async fn spawn_container_pod(
     // regardless of the image's ENTRYPOINT/CMD. This avoids double-binary issues
     // when the image has ENTRYPOINT ["nucleus-tool-proxy", "--listen", "..."].
     // In direct mode with NUCLEUS_TASK: override entrypoint to run a shell that
-    // invokes the task via the container's CLI tools (e.g. claude).
+    // invokes the task via the orchestrator-supplied runner command.
     // In direct mode without NUCLEUS_TASK: use the image's default entrypoint/cmd.
     let has_task = env.iter().any(|e| e.starts_with("NUCLEUS_TASK="));
     let (entrypoint, cmd) = if proxy_mode {
@@ -1544,20 +1544,26 @@ async fn spawn_container_pod(
             ]),
         )
     } else if has_task {
-        // Direct task execution: run a shell that sets up credentials and invokes
-        // Claude CLI (or whichever LLM CLI is installed in the image).
-        (
-            Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
-            Some(vec![concat!(
-                "mkdir -p ~/.claude && ",
-                "echo '{\"hasCompletedOnboarding\":true}' > ~/.claude.json && ",
-                "export CLAUDE_CODE_OAUTH_TOKEN=\"${LLM_API_TOKEN}\" && ",
-                "echo \"NUCLEUS_ARTIFACT type=task_start\" && ",
-                "claude -p \"$NUCLEUS_TASK\" --dangerously-skip-permissions 2>&1 && ",
-                "echo \"NUCLEUS_ARTIFACT type=task_complete\""
-            )
-            .to_string()]),
-        )
+        // Direct task execution. The runner command — and any vendor-specific
+        // credential bootstrap it needs — is supplied by the orchestrator via
+        // the generic NUCLEUS_TASK_CMD env var, keeping nucleus vendor-agnostic:
+        // it executes an opaque operator-supplied command rather than a specific
+        // LLM CLI (see the project vendor-neutrality guidelines, "Integration
+        // Pattern"). Nucleus only wraps it in its own task_start/task_complete
+        // artifact markers. When no runner is
+        // supplied, fall through to the image's default entrypoint/cmd with
+        // NUCLEUS_TASK left in the environment for the image to consume.
+        match env.iter().find_map(|e| e.strip_prefix("NUCLEUS_TASK_CMD=")) {
+            Some(runner) => (
+                Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
+                Some(vec![format!(
+                    "echo \"NUCLEUS_ARTIFACT type=task_start\" && \
+                     {runner} 2>&1 && \
+                     echo \"NUCLEUS_ARTIFACT type=task_complete\""
+                )]),
+            ),
+            None => (None, None),
+        }
     } else {
         (None, None)
     };
