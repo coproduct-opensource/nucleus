@@ -213,7 +213,7 @@ impl DiscoveryKeyResolver {
     }
 
     fn cached(&self, kid: &str) -> Option<Arc<JwkPublicKey>> {
-        let cache = self.cache.lock().expect("key cache mutex not poisoned");
+        let cache = self.cache.lock().ok()?;
         match cache.fetched_at {
             Some(t) if t.elapsed() < self.ttl => cache.keys.get(kid).cloned(),
             _ => None,
@@ -263,7 +263,10 @@ impl DiscoveryKeyResolver {
             ));
         }
 
-        let mut cache = self.cache.lock().expect("key cache mutex not poisoned");
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| OidcError::Discovery("key cache lock poisoned".into()))?;
         cache.keys = keys;
         cache.fetched_at = Some(Instant::now());
         Ok(())
@@ -285,7 +288,7 @@ impl KeyResolver for DiscoveryKeyResolver {
         self.refresh(issuer).await?;
         self.cache
             .lock()
-            .expect("key cache mutex not poisoned")
+            .map_err(|_| OidcError::KeyNotFound(kid.to_string()))?
             .keys
             .get(kid)
             .cloned()
