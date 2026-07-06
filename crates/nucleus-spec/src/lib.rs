@@ -311,8 +311,6 @@ impl NetworkSpec {
                 "api.github.com".into(),
                 "uploads.github.com".into(),
                 "objects.githubusercontent.com".into(),
-                // Anthropic API (for Claude CLI)
-                "api.anthropic.com".into(),
             ],
             url_allow: vec![],
             mime_allow: None,
@@ -407,8 +405,8 @@ pub struct CgroupSetting {
 ///    SPIFFE workload API or Kubernetes projected service-account tokens) fetched
 ///    at pod start and refreshed before expiry. The pod sees only a file path via
 ///    an env var; no static secret material crosses the boundary. Works with any
-///    relying party that accepts OIDC token exchange (Anthropic, OpenAI, GCP,
-///    AWS, …); nucleus only knows about the token-exchange dance.
+///    relying party that accepts OIDC token exchange (major API and cloud
+///    providers); nucleus only knows about the token-exchange dance.
 ///
 /// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret
 /// values for the `env` map. `workload_identity` entries contain no secret
@@ -496,14 +494,14 @@ impl CredentialsSpec {
 /// `audience` value for whichever relying party the workload calls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkloadIdentitySpec {
-    /// Logical name (e.g. "anthropic", "openai-prod"). Used in audit records.
+    /// Logical name (e.g. "llm-provider", "api-prod"). Used in audit records.
     pub name: String,
 
     /// OIDC audience to request. Provider-defined; **nucleus does not yet
     /// validate** that this is a well-formed URL or coordinate against an
     /// allow-list. A typo here will silently produce a JWT no relying party
     /// accepts. Validation is tracked for the runtime PR.
-    /// Examples: `https://api.anthropic.com`, `https://api.openai.com`.
+    /// Examples: `https://api.llm.example`, `https://api.provider.example`.
     pub audience: String,
 
     /// Environment variable the application reads to find the token file.
@@ -850,8 +848,8 @@ mod tests {
 
     fn sample_workload_identity() -> WorkloadIdentitySpec {
         WorkloadIdentitySpec {
-            name: "anthropic".to_string(),
-            audience: "https://api.anthropic.com".to_string(),
+            name: "llm-provider".to_string(),
+            audience: "https://api.llm.example".to_string(),
             env_var: "LLM_IDENTITY_TOKEN_FILE".to_string(),
             token_path: PathBuf::from("/var/run/secrets/llm/token"),
             refresh: RefreshPolicy::default(),
@@ -890,7 +888,7 @@ mod tests {
             "spec with workload identity must not be empty"
         );
         assert_eq!(creds.workload_identity.len(), 1);
-        assert_eq!(creds.workload_identity[0].name, "anthropic");
+        assert_eq!(creds.workload_identity[0].name, "llm-provider");
     }
 
     #[test]
@@ -941,7 +939,7 @@ spec:
   credentials:
     workload_identity:
       - name: llm-provider
-        audience: https://api.anthropic.com
+        audience: https://api.llm.example
         env_var: LLM_IDENTITY_TOKEN_FILE
         token_path: /var/run/secrets/llm/token
         source:
@@ -956,7 +954,7 @@ spec:
         assert_eq!(creds.workload_identity.len(), 1);
         let wi = &creds.workload_identity[0];
         assert_eq!(wi.name, "llm-provider");
-        assert_eq!(wi.audience, "https://api.anthropic.com");
+        assert_eq!(wi.audience, "https://api.llm.example");
         assert_eq!(wi.env_var, "LLM_IDENTITY_TOKEN_FILE");
         assert_eq!(wi.token_path, PathBuf::from("/var/run/secrets/llm/token"));
         assert!(matches!(wi.source, IdentitySource::Spiffe { .. }));
@@ -966,7 +964,7 @@ spec:
     fn test_workload_identity_kubernetes_projected_source_parses() {
         let yaml = r#"
 name: oidc
-audience: https://api.anthropic.com
+audience: https://api.llm.example
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -991,7 +989,7 @@ source:
     fn test_workload_identity_static_file_source_parses() {
         let yaml = r#"
 name: testing
-audience: https://api.anthropic.com
+audience: https://api.llm.example
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -1017,8 +1015,8 @@ source:
         // test should be updated to assert redaction.
         let wi = sample_workload_identity();
         let dbg = format!("{:?}", wi);
-        assert!(dbg.contains("anthropic"));
-        assert!(dbg.contains("https://api.anthropic.com"));
+        assert!(dbg.contains("llm-provider"));
+        assert!(dbg.contains("https://api.llm.example"));
     }
 
     #[test]
@@ -1030,7 +1028,7 @@ source:
         assert!(!dbg.contains("supersecret"), "env values must be redacted");
         assert!(dbg.contains("[REDACTED]"));
         assert!(dbg.contains("workload_identity"));
-        assert!(dbg.contains("anthropic"));
+        assert!(dbg.contains("llm-provider"));
     }
 
     #[test]
@@ -1261,10 +1259,6 @@ spec:
         assert!(
             spec.dns_allow.contains(&"api.github.com".to_string()),
             "should allow GitHub API"
-        );
-        assert!(
-            spec.dns_allow.contains(&"api.anthropic.com".to_string()),
-            "should allow Anthropic API"
         );
     }
 
