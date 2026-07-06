@@ -440,7 +440,7 @@ async fn main() -> Result<(), ApiError> {
     // Install the ring crypto provider for rustls (must be done before any TLS operations)
     rustls::crypto::ring::default_provider()
         .install_default()
-        .expect("Failed to install rustls crypto provider");
+        .map_err(|_| ApiError::Driver("failed to install rustls crypto provider".to_string()))?;
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
