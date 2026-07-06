@@ -803,7 +803,7 @@ mod tests {
         // Use issue_approved_token to bypass the kernel's PathLattice check.
         // The kernel's can_access() resolves relative paths via the CWD, which
         // on macOS case-insensitive FS may canonicalize to existing files whose
-        // absolute path matches blocked patterns like `**/.claude/**` when
+        // absolute path matches blocked patterns like `**/.ssh/**` when
         // running inside a git worktree. This test exercises the *sandbox*'s
         // path policy, not the kernel's.
         let wt = kernel.issue_approved_token(Operation::WriteFiles, "test: write normal file");
