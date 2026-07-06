@@ -352,7 +352,7 @@ impl FederationStore {
     pub fn endpoint_for(&self, trust_domain: &str) -> Option<(String, Profile)> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| (d.cfg.bundle_endpoint_url.clone(), d.cfg.profile))
     }
@@ -361,7 +361,7 @@ impl FederationStore {
     pub fn refresh_period(&self, trust_domain: &str) -> Option<Duration> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| d.refresh_period)
     }
@@ -371,7 +371,7 @@ impl FederationStore {
     pub fn served_key_count(&self, trust_domain: &str) -> Option<usize> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| d.keys.len())
     }
@@ -380,7 +380,7 @@ impl FederationStore {
     pub fn last_accepted_seq(&self, trust_domain: &str) -> Option<u64> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .and_then(|d| d.last_accepted_seq)
     }
