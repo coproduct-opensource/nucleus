@@ -347,7 +347,7 @@ struct FirecrackerPod {
 ///
 /// The container image can be either:
 ///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
-///   - A Claude Code CLI image like `gt-executor:latest` (direct mode)
+///   - An AI agent CLI image like `gt-executor:latest` (direct mode)
 ///
 /// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
 #[derive(Debug)]
@@ -1528,7 +1528,7 @@ async fn spawn_container_pod(
     // regardless of the image's ENTRYPOINT/CMD. This avoids double-binary issues
     // when the image has ENTRYPOINT ["nucleus-tool-proxy", "--listen", "..."].
     // In direct mode with NUCLEUS_TASK: override entrypoint to run a shell that
-    // invokes the task via the container's CLI tools (e.g. claude).
+    // invokes the task via the orchestrator-supplied agent command.
     // In direct mode without NUCLEUS_TASK: use the image's default entrypoint/cmd.
     let has_task = env.iter().any(|e| e.starts_with("NUCLEUS_TASK="));
     let (entrypoint, cmd) = if proxy_mode {
@@ -1544,16 +1544,18 @@ async fn spawn_container_pod(
             ]),
         )
     } else if has_task {
-        // Direct task execution: run a shell that sets up credentials and invokes
-        // Claude CLI (or whichever LLM CLI is installed in the image).
+        // Direct task execution. Nucleus stays vendor-neutral: the agent CLI and
+        // any agent-specific credential bootstrap live in the orchestrator layer,
+        // which supplies the full task-invocation command via the generic
+        // `NUCLEUS_AGENT_CMD` env var. Nucleus wraps that command with its own
+        // task-lifecycle artifacts and exposes the task as `$NUCLEUS_TASK` and any
+        // credential as `$LLM_API_TOKEN` (see the generic credential/env contract).
+        // If no agent command is supplied, the wrapper is a no-op (`true`).
         (
             Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
             Some(vec![concat!(
-                "mkdir -p ~/.claude && ",
-                "echo '{\"hasCompletedOnboarding\":true}' > ~/.claude.json && ",
-                "export CLAUDE_CODE_OAUTH_TOKEN=\"${LLM_API_TOKEN}\" && ",
                 "echo \"NUCLEUS_ARTIFACT type=task_start\" && ",
-                "claude -p \"$NUCLEUS_TASK\" --dangerously-skip-permissions 2>&1 && ",
+                "eval \"${NUCLEUS_AGENT_CMD:-true}\" 2>&1 && ",
                 "echo \"NUCLEUS_ARTIFACT type=task_complete\""
             )
             .to_string()]),
