@@ -29,13 +29,13 @@ external:    mock LLM (default)
 admitted pod: spiffe://demo.nucleus.local/ns/agents/sa/lineage-demo
 step 1 ✔ Bash → spiffe://…/call/cca7fa46…/tool/Bash/sha256:b534e3bf… (25 bytes)
 step 2 ✔ Write → spiffe://…/call/bde8f048…/tool/Write/sha256:b534e3bf… (/tmp/...)
-step 3a ✔ LLM prompt → spiffe://…/call/388064f0…/llm/anthropic/prompt/sha256:b534e3bf…
+step 3a ✔ LLM prompt → spiffe://…/call/388064f0…/llm/example-llm/prompt/sha256:b534e3bf…
     mock-llm: verified JWT (self-loop), sub=spiffe://…, jti=684ee954…, exp_in=300s
-step 3b ✔ LLM response → spiffe://…/call/63b43cec…/llm/anthropic/response/sha256:2a6f4cc9… (476 bytes)
+step 3b ✔ LLM response → spiffe://…/call/63b43cec…/llm/example-llm/response/sha256:2a6f4cc9… (476 bytes)
 
 done. lineage log written to ./nucleus-lineage.jsonl
 walk it with:
-  nucleus lineage 'spiffe://…/llm/anthropic/response/sha256:2a6f4cc9…' --log ./nucleus-lineage.jsonl
+  nucleus lineage 'spiffe://…/llm/example-llm/response/sha256:2a6f4cc9…' --log ./nucleus-lineage.jsonl
 ```
 
 The "mock-llm: verified JWT" line is honest about what's verified: the JWT was minted by the `LocalIssuer` and verified using the **same in-process key** the issuer mints with. This proves JWT well-formedness, not cross-trust federation. A real relying party would fetch a JWKS from a separate trust anchor — that's roadmap.
@@ -45,9 +45,9 @@ Then walk the chain back to its source:
 ```bash
 $ nucleus lineage 'spiffe://…/sha256:2a6f4cc9…' --log ./nucleus-lineage.jsonl
 lineage ↑ to spiffe://…/sha256:2a6f4cc9…
-  [llm/anthropic/response] spiffe://…/sha256:2a6f4cc9… sha256=2a6f4cc91f3d…
-    ← spiffe://…/llm/anthropic/prompt/sha256:b534e3bf…
-  [llm/anthropic/prompt]   spiffe://…/sha256:b534e3bf… sha256=b534e3bfc97b…
+  [llm/example-llm/response] spiffe://…/sha256:2a6f4cc9… sha256=2a6f4cc91f3d…
+    ← spiffe://…/llm/example-llm/prompt/sha256:b534e3bf…
+  [llm/example-llm/prompt]   spiffe://…/sha256:b534e3bf… sha256=b534e3bfc97b…
     ← spiffe://…/tool/Write/sha256:b534e3bf…
   [tool/Write]             spiffe://…/sha256:b534e3bf… sha256=b534e3bfc97b…
     ← spiffe://…/tool/Bash/sha256:b534e3bf…
@@ -75,9 +75,9 @@ The list below is what's missing today. Most items are tracked for follow-up PRs
 - **No SPIRE-backed `IdentityFetcher`.** `nucleus-identity`'s existing `spire` feature handles X.509 SVIDs only; the JWT-SVID API surface is not yet wired in. The trait is the integration point; the impl has to be written.
 - **Edges are not signed.** `LineageEdge` carries the child/parents/kind/content_hash/ts/attrs but no `Proof { kid, alg, sig }` field. Anyone with write access to the JSONL log can fabricate parent relationships — including claiming a victim pod's SPIFFE ID as the parent of an attacker artifact. The walker (`nucleus lineage`) trusts edge-claimed parents; it does not perform structural reconciliation against `CallSpiffeId::parent()`. (Tracked: add `Proof` field; sign edges; walker verifies.)
 - **`JsonlSink` is `O_APPEND`-mode, not tamper-evident.** No hash chain (`prev_hash`), no signatures, no truncation detection. The file is process-local; concurrent multi-process writes can interleave bytes. The existing `nucleus-audit` crate has the receipt-chain pattern this crate should adopt.
-- **`--real-claude` mode does not exercise SPIFFE WIF.** It uses the long-lived `ANTHROPIC_API_KEY` for wire auth and only *records* the SPIFFE ID locally. The recorded edge attributes (`audience=https://api.anthropic.com`, `jwt_jti=...`) imply that a JWT-SVID was on the wire; the JWT was not. (Tracked: rename the recorded attrs to `wire_auth=api_key, recorded_subject=...`.)
+- **`--real-llm` mode does not exercise SPIFFE WIF.** It uses the long-lived `LLM_API_TOKEN` for wire auth and only *records* the SPIFFE ID locally. The recorded edge attributes (`audience=https://api.example-llm.local`, `jwt_jti=...`) imply that a JWT-SVID was on the wire; the JWT was not. (Tracked: rename the recorded attrs to `wire_auth=api_key, recorded_subject=...`.)
 - **`CallSpiffeId::parse` accepts malformed inputs.** Currently passes: NUL bytes, RTL Unicode overrides, double slashes, uppercase `/CALL/`, query/fragment/userinfo, and several other forms forbidden by the SPIFFE ID spec. Negative tests are not yet present. (Tracked: parser hardening + negative test suite.)
-- **Anthropic-side echo-back is unidirectional and inherent.** When a JWT-SVID is presented to the Anthropic API, the `sub` claim appears in their audit log — but the response payload does not carry a SPIFFE ID we can attach to derived data. This is a property of WIF, not a fix-it-here issue.
+- **Provider-side echo-back is unidirectional and inherent.** When a JWT-SVID is presented to the LLM provider's API, the `sub` claim appears in their audit log — but the response payload does not carry a SPIFFE ID we can attach to derived data. This is a property of WIF, not a fix-it-here issue.
 - **Process-local sink only.** Cross-process / cross-host lineage requires a remote sink — straightforward extension via the trait, not yet written.
 
 **This crate binds *who called*, not *what data was in the call*.** Prompt-body taint still requires the existing portcullis IFC machinery. SPIFFE lineage and IFC labels compose; they do not replace each other.
