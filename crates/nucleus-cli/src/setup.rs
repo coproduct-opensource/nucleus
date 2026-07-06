@@ -716,7 +716,16 @@ async fn download_artifacts_linux(artifacts_dir: &std::path::Path) -> Result<()>
 }
 
 async fn download_file(url: &str, path: &PathBuf) -> Result<()> {
-    let response = ureq::get(url)
+    // The top-level `ureq::get` helper uses a default agent with no timeouts,
+    // so an unresponsive host would hang the connect phase forever. Bound the
+    // connect (and idle read) phases while leaving overall duration unbounded —
+    // a global timeout would wrongly abort legitimately large kernel downloads.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+    let response = agent
+        .get(url)
         .call()
         .map_err(|e| anyhow!("Download failed: {}", e))?;
 

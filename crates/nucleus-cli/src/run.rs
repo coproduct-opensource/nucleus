@@ -780,7 +780,16 @@ fn create_pod_via_node(
 ) -> Result<String> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
-    let mut request = ureq::post(&url).header("content-type", "application/yaml");
+    // Bound the request: the top-level `ureq::post` helper uses a default agent
+    // with no timeout, so a hung/unresponsive node would block the CLI forever.
+    // Mirror the 30s global timeout used by node.rs::create_agent().
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    let mut request = agent
+        .post(&url)
+        .header("content-type", "application/yaml");
 
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
     for (key, value) in signed.headers {
