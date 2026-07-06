@@ -3862,11 +3862,15 @@ def toPreEquiv {n m : Nat}
   sim_symm i j h := by
     show decide _ = true
     rw [decide_eq_true_iff]
-    have : decide _ = true := h
-    rw [decide_eq_true_iff] at this
+    have hcount : decide _ = true := h
+    rw [decide_eq_true_iff] at hcount
     -- countP (fun k => w j k != w i k) = countP (fun k => w i k != w j k)
-    -- because bne is symmetric for types with lawful BEq
-    sorry -- bne symmetry for Fin m
+    -- because bne is symmetric for types with lawful BEq (Fin m)
+    have hfun : (fun k => A.weights j k != A.weights i k)
+              = (fun k => A.weights i k != A.weights j k) := by
+      funext k; exact bne_comm
+    rw [hfun]
+    exact hcount
 
 /-- At tolerance 0, the PreEquiv's sim agrees with exact row equality.
     If sim(i,j) at tolerance 0, then all weights are equal. -/
