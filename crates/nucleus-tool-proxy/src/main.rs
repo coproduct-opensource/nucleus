@@ -3189,15 +3189,9 @@ async fn web_search(
     // Web search requires a configured backend URL
     // For now, return an error indicating the backend must be configured
     // A real implementation would read NUCLEUS_WEB_SEARCH_URL from env/config
-    let search_url = std::env::var("NUCLEUS_WEB_SEARCH_URL").ok();
-
-    if search_url.is_none() {
-        return Err(ApiError::Spec(
-            "web_search requires NUCLEUS_WEB_SEARCH_URL to be configured".to_string(),
-        ));
-    }
-
-    let search_url = search_url.unwrap();
+    let search_url = std::env::var("NUCLEUS_WEB_SEARCH_URL").map_err(|_| {
+        ApiError::Spec("web_search requires NUCLEUS_WEB_SEARCH_URL to be configured".to_string())
+    })?;
 
     // Check DNS allow list
     let url = url::Url::parse(&search_url)
