@@ -23,7 +23,7 @@ pub struct JobSpec {
     /// (e.g. "codegen", "review", "report-extraction").
     pub policy_profile: String,
     /// Which agent driver to run. Indirected to keep nucleus
-    /// vendor-neutral; the actual Claude/OpenAI/etc. adapters live
+    /// vendor-neutral; the actual vendor adapters live
     /// outside this crate.
     pub agent_driver: AgentDriverRef,
 }
@@ -65,7 +65,7 @@ pub enum Destination {
 /// vendor SDKs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDriverRef {
-    /// Driver identifier (e.g. "mock", "claude-code", "openhands"). The
+    /// Driver identifier (e.g. "mock", "cli-agent", "openhands"). The
     /// orchestrator looks this up against a registry of available
     /// [`crate::runner::JobRunner`] implementations.
     pub name: String,

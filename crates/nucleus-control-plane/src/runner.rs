@@ -5,8 +5,8 @@
 //! agent does that should appear in the provenance envelope MUST be
 //! emitted as a [`LineageEdge`] through the writer.
 //!
-//! Concrete drivers (claude-code, openhands, …) live OUTSIDE this crate
-//! to keep nucleus vendor-neutral. The mock driver lives here because
+//! Concrete drivers (CLI-agent adapters, openhands, …) live OUTSIDE this
+//! crate to keep nucleus vendor-neutral. The mock driver lives here because
 //! it's part of the orchestrator's test surface, not a vendor adapter.
 
 use nucleus_lineage::{CallSpiffeId, EdgeKind, LineageEdge};
