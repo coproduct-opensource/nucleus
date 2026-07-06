@@ -1,0 +1,13 @@
+# .vendor-neutrality-allowlist
+#
+# Paths listed here are exempt from the vendor-neutrality closure. A path
+# belongs here only when its vendor reference is legitimately integration-
+# specific — an opt-in test fixture that drives a real vendor API and cannot
+# be neutralized without destroying its function. Each entry needs a one-line
+# rationale. This is a last resort; prefer rename/extract in product code.
+
+# Opt-in (feature = "red-team"), network-gated (skipped unless ANTHROPIC_API_KEY
+# is set) integration test that drives a live vendor LLM as an adversarial
+# red-team agent against Portcullis. The vendor endpoint/headers/model id ARE
+# the system under test here, so they cannot be genericized without voiding it.
+crates/nucleus-tool-proxy/tests/red_team_harness.rs
