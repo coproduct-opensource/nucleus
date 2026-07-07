@@ -4,7 +4,7 @@
 # verification report. Now also persists every result + maintains the
 # append-only transparency log (#69) and serves a signed STH (#94).
 #
-# Per workspace CLAUDE.md conventions:
+# Per workspace guidelines:
 #   - HTTPS on the edge (Fly handles TLS termination)
 #   - min_machines_running = 1 so the public endpoint is always warm
 #   - Persistent volume mounted at /data for sqlite + chain head
