@@ -21,7 +21,7 @@ default = []
 spire = ["nucleus-identity/spire"]
 # MCP server mode (stdio transport)
 mcp = ["dep:rmcp", "dep:schemars"]
-# Red-team harness: Claude vs. Portcullis (requires ANTHROPIC_API_KEY)
+# Red-team harness: adversarial LLM vs. Portcullis (requires LLM_API_KEY)
 red-team = []
 # Remote append-only audit sink (S3-compatible: AWS S3, MinIO, R2, Tigris)
 remote-audit = ["dep:aws-sdk-s3", "dep:aws-config"]

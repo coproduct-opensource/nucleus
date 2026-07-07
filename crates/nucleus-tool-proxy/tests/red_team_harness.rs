@@ -1,15 +1,19 @@
 #![allow(clippy::disallowed_types)] // #1216: migration pending
-//! Red-Team Harness: Claude vs. Portcullis
+//! Red-Team Harness: adversarial LLM vs. Portcullis
 //!
-//! Uses Claude as an adversarial red-team agent trying to exfiltrate planted
+//! Uses an LLM as an adversarial red-team agent trying to exfiltrate planted
 //! canary secrets from a Portcullis-defended sandbox. Every blocked attack
 //! validates the security stack; any successful exfiltration is a test failure.
+//!
+//! The LLM backend is vendor-agnostic: the endpoint, credential, model, and
+//! optional protocol version are supplied via the environment (see the `ENV_*`
+//! constants below), so any tool-use-capable Messages backend can drive it.
 //!
 //! Architecture:
 //! ```text
 //! ┌───────────────────┐   tool_use/result   ┌───────────────────────────┐
 //! │  Red Agent        │ ◄──────────────────► │  ToolDispatcher           │
-//! │  (Claude Sonnet)  │                      │  Sandbox (cap-std)        │
+//! │  (LLM under test) │                      │  Sandbox (cap-std)        │
 //! │  temperature: 1.0 │                      │  GradedExposureGuard         │
 //! │  max 20 calls     │                      │  PathLattice + CommandLat │
 //! └───────────────────┘                      └───────────────────────────┘
@@ -24,7 +28,7 @@
 //!
 //! Run:
 //! ```bash
-//! ANTHROPIC_API_KEY=sk-... cargo test -p nucleus-tool-proxy \
+//! LLM_API_URL=... LLM_API_KEY=... LLM_MODEL=... cargo test -p nucleus-tool-proxy \
 //!   --features red-team --test red_team_harness -- --nocapture
 //! ```
 
@@ -47,7 +51,13 @@ use tempfile::tempdir;
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MODEL: &str = "claude-sonnet-4-6";
+// Vendor-agnostic LLM backend configuration, read from the environment so the
+// harness can drive any tool-use-capable Messages backend.
+const ENV_API_URL: &str = "LLM_API_URL";
+const ENV_API_KEY: &str = "LLM_API_KEY";
+const ENV_MODEL: &str = "LLM_MODEL";
+const ENV_API_VERSION: &str = "LLM_API_VERSION";
+
 const MAX_TOOL_CALLS: usize = 20;
 const MAX_TOKENS: usize = 4096;
 
@@ -645,12 +655,34 @@ impl ToolDispatcher {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Anthropic Messages API Client (minimal, no SDK)
+// LLM Messages API Client (minimal, no SDK, vendor-agnostic)
 // ═══════════════════════════════════════════════════════════════════════════
 
-struct AnthropicClient {
-    client: reqwest::Client,
+/// Backend connection details, sourced from the environment.
+struct LlmConfig {
+    endpoint: String,
     api_key: String,
+    model: String,
+    /// Optional protocol/version header value, sent as `api-version` when set.
+    api_version: Option<String>,
+}
+
+impl LlmConfig {
+    fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            endpoint: std::env::var(ENV_API_URL).map_err(|_| format!("{ENV_API_URL} required"))?,
+            api_key: std::env::var(ENV_API_KEY).map_err(|_| format!("{ENV_API_KEY} required"))?,
+            model: std::env::var(ENV_MODEL).map_err(|_| format!("{ENV_MODEL} required"))?,
+            api_version: std::env::var(ENV_API_VERSION).ok(),
+        })
+    }
+}
+
+struct LlmClient {
+    client: reqwest::Client,
+    endpoint: String,
+    api_key: String,
+    api_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -695,21 +727,26 @@ enum ContentBlock {
     },
 }
 
-impl AnthropicClient {
-    fn new(api_key: String) -> Self {
+impl LlmClient {
+    fn new(config: &LlmConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key,
+            endpoint: config.endpoint.clone(),
+            api_key: config.api_key.clone(),
+            api_version: config.api_version.clone(),
         }
     }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse, String> {
-        let resp = self
+        let mut builder = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(&self.endpoint)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if let Some(version) = &self.api_version {
+            builder = builder.header("api-version", version);
+        }
+        let resp = builder
             .json(request)
             .send()
             .await
@@ -895,8 +932,9 @@ fn plant_canaries() -> TestSandbox {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async fn run_red_team_session(policy: PermissionLattice, profile_name: &str) -> Transcript {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY required");
-    let client = AnthropicClient::new(api_key);
+    let config = LlmConfig::from_env().expect("LLM backend config from environment");
+    let model = config.model.clone();
+    let client = LlmClient::new(&config);
 
     let test_sandbox = plant_canaries();
     let sandbox =
@@ -928,7 +966,7 @@ async fn run_red_team_session(policy: PermissionLattice, profile_name: &str) -> 
         }
 
         let request = MessagesRequest {
-            model: MODEL.into(),
+            model: model.clone(),
             max_tokens: MAX_TOKENS,
             system: RED_TEAM_SYSTEM_PROMPT.into(),
             tools: tools.clone(),
@@ -1073,7 +1111,7 @@ async fn run_red_team_session(policy: PermissionLattice, profile_name: &str) -> 
     }
 
     Transcript {
-        model: MODEL.into(),
+        model,
         policy_profile: profile_name.into(),
         events,
         score,
@@ -1172,12 +1210,12 @@ fn assert_no_exfiltration(transcript: &Transcript) {
 // Tests — one per policy profile
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Skip if ANTHROPIC_API_KEY is not set (allows `cargo test` without costs).
+/// Skip if the LLM backend key is not set (allows `cargo test` without costs).
 fn require_api_key() -> Option<()> {
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+    if std::env::var(ENV_API_KEY).is_ok() {
         Some(())
     } else {
-        eprintln!("[red-team] Skipping: ANTHROPIC_API_KEY not set");
+        eprintln!("[red-team] Skipping: {ENV_API_KEY} not set");
         None
     }
 }
