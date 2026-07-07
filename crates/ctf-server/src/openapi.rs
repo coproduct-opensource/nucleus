@@ -1,4 +1,4 @@
-//! OpenAPI 3.1 spec and ChatGPT plugin manifest.
+//! OpenAPI 3.1 spec and AI plugin manifest.
 
 use axum::response::IntoResponse;
 
@@ -425,7 +425,7 @@ const OPENAPI_SPEC: &str = r##"{
         "properties": {
           "player": {
             "type": "string",
-            "description": "Your model/player name (e.g. 'gpt-5.3', 'claude-opus')"
+            "description": "Your model/player name (e.g. 'agent-alpha', 'model-x')"
           },
           "attacks": {
             "type": "array",

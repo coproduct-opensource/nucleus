@@ -54,13 +54,13 @@
 <p style="margin: 0.5rem 0 0;">All activity is expected to remain within this sandbox and must not target unrelated systems, third-party services, or infrastructure outside this challenge environment.</p>
 </div>
 
-<p>This API lets <strong>any AI tool</strong> &mdash; ChatGPT, Gemini, Claude, Cursor, or a plain curl command &mdash; play The Vault CTF programmatically. Submit tool-call sequences, get verdicts showing which of 6 formally verified defense layers blocked your exfiltration attempts.</p>
+<p>This API lets <strong>any AI tool</strong> &mdash; any LLM chat client, coding agent, editor integration, or a plain curl command &mdash; play The Vault CTF programmatically. Submit tool-call sequences, get verdicts showing which of 6 formally verified defense layers blocked your exfiltration attempts.</p>
 
 <a href="/" class="cta">Play in Browser</a>
 <a href="/openapi.json" class="cta cta-secondary">OpenAPI Spec</a>
 
 <h2>Quick Start: Any AI Chat</h2>
-<p>Paste this into <strong>ChatGPT, Claude, Gemini, or any AI chat</strong>:</p>
+<p>Paste this into <strong>any AI chat client</strong>:</p>
 <div class="prompt-box">
   <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('prompt-text').textContent)">Copy</button>
   <p id="prompt-text">Read https://nucleus-ctf.fly.dev/api/v1/prompt then use your code interpreter to call the API and play all 7 levels. Try to beat 1100 points.</p>
@@ -188,17 +188,17 @@
   <span class="path">/mcp</span>
   <p class="desc">MCP Streamable HTTP transport. Supports <code>initialize</code>, <code>tools/list</code>, and <code>tools/call</code>. Tools: <code>list_levels</code>, <code>get_level</code>, <code>submit_attack</code>, <code>run_challenge</code>.</p>
 </div>
-<p>Connect any MCP-compatible client (ChatGPT Apps, Claude Desktop, Cursor, etc.) to <code>https://nucleus-ctf.fly.dev/mcp</code>. No auth required.</p>
+<p>Connect any MCP-compatible client (AI chat apps, coding agents, editor integrations, etc.) to <code>https://nucleus-ctf.fly.dev/mcp</code>. No auth required.</p>
 
 <h2>Platform Integration</h2>
 <table>
   <thead><tr><th>Platform</th><th>Best Method</th><th>How</th></tr></thead>
   <tbody>
-    <tr><td>ChatGPT</td><td>MCP App or code interpreter</td><td>Connect MCP at <code>/mcp</code>, or paste prompt with code interpreter</td></tr>
-    <tr><td>Claude (chat)</td><td>Analysis tool</td><td>Paste prompt — Claude uses its Python sandbox</td></tr>
-    <tr><td>Claude Code / Desktop</td><td>MCP</td><td>Add remote MCP server: <code>https://nucleus-ctf.fly.dev/mcp</code></td></tr>
-    <tr><td>Gemini</td><td>Code execution</td><td>Same prompt — Gemini uses its code execution</td></tr>
-    <tr><td>Cursor / Windsurf</td><td>MCP</td><td>Add remote MCP server URL to MCP config</td></tr>
+    <tr><td>AI chat (hosted)</td><td>MCP App or code interpreter</td><td>Connect MCP at <code>/mcp</code>, or paste prompt with code interpreter</td></tr>
+    <tr><td>AI chat (analysis tool)</td><td>Analysis tool</td><td>Paste prompt — the client uses its Python sandbox</td></tr>
+    <tr><td>Agentic coding client / desktop app</td><td>MCP</td><td>Add remote MCP server: <code>https://nucleus-ctf.fly.dev/mcp</code></td></tr>
+    <tr><td>AI chat (code execution)</td><td>Code execution</td><td>Same prompt — the client uses its code execution</td></tr>
+    <tr><td>Editor / IDE agents</td><td>MCP</td><td>Add remote MCP server URL to MCP config</td></tr>
     <tr><td>Any MCP client</td><td>MCP Streamable HTTP</td><td>POST JSON-RPC to <code>/mcp</code></td></tr>
     <tr><td>Any HTTP client</td><td>Direct REST API</td><td>curl / fetch / requests — no auth needed</td></tr>
   </tbody>

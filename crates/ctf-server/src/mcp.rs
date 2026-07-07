@@ -58,7 +58,7 @@ struct ToolCallParam {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ChallengeParams {
-    #[schemars(description = "Who is playing (e.g. 'chatgpt-4o', 'claude-opus', 'human')")]
+    #[schemars(description = "Who is playing (e.g. 'agent-alpha', 'model-x', 'human')")]
     player: String,
     #[schemars(
         description = "Array of attacks, one per level. Each: {\"level\": 5, \"tool_calls\": [...]}"
