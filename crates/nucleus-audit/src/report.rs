@@ -67,9 +67,9 @@ pub fn print_scan_report(report: &ScanReport) {
     }
     println!();
 
-    // --- Claude settings summary ---
-    if let Some(cs) = &report.claude_settings_summary {
-        println!("── Claude Code Settings ────────────────────────────────────────");
+    // --- Agent settings summary ---
+    if let Some(cs) = &report.agent_settings_summary {
+        println!("── Agent Tool Settings ─────────────────────────────────────────");
         println!("  Allow rules:       {}", cs.total_allow_rules);
         println!("  Deny rules:        {}", cs.total_deny_rules);
         println!("  Ask rules:         {}", cs.total_ask_rules);

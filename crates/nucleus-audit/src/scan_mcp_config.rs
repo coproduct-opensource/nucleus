@@ -1,6 +1,6 @@
 //! MCP server configuration security scanner.
 //!
-//! Parses `.mcp.json` or the `mcpServers` section of Claude Code settings
+//! Parses `.mcp.json` or the `mcpServers` section of an agent tool's settings
 //! and flags credential exposure, dangerous commands, and attack surface.
 
 use std::collections::HashMap;

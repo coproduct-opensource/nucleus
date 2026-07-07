@@ -14,7 +14,7 @@ Detect dangerous permission combinations before deployment:
 
 ```bash
 nucleus-audit scan --auto                              # auto-discover configs
-nucleus-audit scan --claude-settings .claude/settings.json
+nucleus-audit scan --agent-settings <tool>/settings.json
 nucleus-audit scan --mcp-config .mcp.json
 nucleus-audit scan --pod-spec agent.yaml
 ```
@@ -24,7 +24,7 @@ nucleus-audit scan --pod-spec agent.yaml
 | Format | File | What It Checks |
 |--------|------|----------------|
 | PodSpec | `*.yaml` | Uninhabitable state, credentials, network, isolation, timeout, permissions |
-| Claude Code settings | `settings.json` | Uninhabitable state via allow/deny projection, Bash propagation, exfil patterns |
+| Agent tool settings | `settings.json` | Uninhabitable state via allow/deny projection, Bash propagation, exfil patterns |
 | MCP config | `.mcp.json` | Server classification, `npx -y` supply chain risk, credentials, auth headers |
 
 ### CI Integration
@@ -57,7 +57,7 @@ nucleus-audit diff-provenance --old v1.json --new v2.json
 
 | Command | Purpose |
 |---------|---------|
-| `scan` | Static analysis of agent configs (PodSpec, Claude settings, MCP) |
+| `scan` | Static analysis of agent configs (PodSpec, agent settings, MCP) |
 | `verify` | Verify tool-proxy JSONL audit log (HMAC + hash chain) |
 | `verify-chain` | Verify portcullis permission audit log |
 | `verify-receipts` | Verify Ed25519-signed receipt chain |

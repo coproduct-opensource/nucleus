@@ -320,7 +320,7 @@ pub fn scan_pod_spec(
         findings,
         scanned_sources: Vec::new(),
         runtime_metrics,
-        claude_settings_summary: None,
+        agent_settings_summary: None,
         mcp_config_summary: None,
     })
 }

@@ -148,7 +148,7 @@ fn capabilities_from_surface(surface: &crate::finding::PermissionSurface) -> Cap
     }
     // `never` operations stay Never
 
-    // If the surface is empty (e.g., Claude settings scan), use safe defaults
+    // If the surface is empty (e.g., agent settings scan), use safe defaults
     if surface.total_capabilities == 0
         && surface.always_allowed.is_empty()
         && surface.low_risk.is_empty()
@@ -221,10 +221,10 @@ pub fn format_suggestion(profile: &ProfileSpec, findings: &[Finding]) -> String 
     out
 }
 
-/// Generate a Claude Code MCP allowlist snippet from scan findings.
+/// Generate an agent-tool MCP allowlist snippet from scan findings.
 ///
 /// When MCP servers are scanned, this produces a suggested `permissions.deny`
-/// block for Claude Code settings.json that blocks dangerous MCP tool patterns.
+/// block for an agent tool's settings.json that blocks dangerous MCP tool patterns.
 pub fn mcp_allowlist_snippet(report: &ScanReport) -> Option<String> {
     let mcp_findings: Vec<&Finding> = report
         .findings
@@ -242,8 +242,8 @@ pub fn mcp_allowlist_snippet(report: &ScanReport) -> Option<String> {
     }
 
     let mut out = String::new();
-    out.push_str("// Suggested Claude Code deny rules for MCP servers\n");
-    out.push_str("// Add to .claude/settings.json under permissions.deny\n");
+    out.push_str("// Suggested agent-tool deny rules for MCP servers\n");
+    out.push_str("// Add to your agent tool's settings.json under permissions.deny\n");
     out.push_str("{\n");
     out.push_str("  \"permissions\": {\n");
     out.push_str("    \"deny\": [\n");

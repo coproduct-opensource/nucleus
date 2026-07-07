@@ -2,7 +2,7 @@ mod discover;
 mod finding;
 mod report;
 mod sarif;
-mod scan_claude_settings;
+mod scan_agent_settings;
 mod scan_mcp_config;
 mod scan_podspec;
 mod suggest;
@@ -55,14 +55,14 @@ enum Command {
         #[arg(long, env = "NUCLEUS_AUDIT_SECRET")]
         secret: Option<String>,
     },
-    /// Verify a nucleus-claude-hook receipt chain (Ed25519 signatures + SHA-256 hash links).
+    /// Verify a nucleus receipt-hook chain (Ed25519 signatures + SHA-256 hash links).
     ///
     /// Reads the JSONL receipt file produced by the hook and verifies:
     /// 1. Each receipt's prev_hash matches the previous receipt's receipt_hash
     /// 2. No gaps or out-of-order entries in the chain
     /// 3. Summary of decisions (allowed/denied/asked)
     VerifyReceipts {
-        /// Receipt chain file (JSONL from nucleus-claude-hook).
+        /// Receipt chain file (JSONL from the nucleus receipt hook).
         #[arg(long)]
         log: PathBuf,
     },
@@ -182,7 +182,7 @@ enum Command {
     },
     /// Scan agent configurations for security posture and vulnerabilities.
     ///
-    /// Supports PodSpec YAML, Claude Code settings.json, and MCP config files.
+    /// Supports PodSpec YAML, agent tool settings.json, and MCP config files.
     /// Use --auto to discover configs in the current directory, or provide paths explicitly.
     Scan {
         /// Auto-discover config files in the current directory tree.
@@ -194,9 +194,9 @@ enum Command {
         /// Path to a PodSpec YAML/JSON file.
         #[arg(long)]
         pod_spec: Option<PathBuf>,
-        /// Path to a Claude Code settings.json file.
+        /// Path to an agent tool settings.json file (e.g. `.<tool>/settings.json`).
         #[arg(long)]
-        claude_settings: Option<PathBuf>,
+        agent_settings: Option<PathBuf>,
         /// Path to an MCP config file (.mcp.json).
         #[arg(long)]
         mcp_config: Option<PathBuf>,
@@ -357,7 +357,7 @@ fn main() -> Result<(), AuditError> {
             auto,
             dir,
             pod_spec,
-            claude_settings,
+            agent_settings,
             mcp_config,
             audit_log,
             format,
@@ -365,19 +365,19 @@ fn main() -> Result<(), AuditError> {
         } => {
             // Collect all config paths to scan
             let mut pod_specs: Vec<PathBuf> = pod_spec.into_iter().collect();
-            let mut claude_settings_paths: Vec<PathBuf> = claude_settings.into_iter().collect();
+            let mut agent_settings_paths: Vec<PathBuf> = agent_settings.into_iter().collect();
             let mut mcp_configs: Vec<PathBuf> = mcp_config.into_iter().collect();
 
             if auto {
                 let discovered = discover::discover_configs(&dir, 3);
                 if discovered.is_empty()
                     && pod_specs.is_empty()
-                    && claude_settings_paths.is_empty()
+                    && agent_settings_paths.is_empty()
                     && mcp_configs.is_empty()
                 {
                     eprintln!("No agent config files found in {}", dir.display());
                     eprintln!(
-                        "Looked for: .claude/settings.json, .mcp.json, \
+                        "Looked for: <tool>/settings.json, .mcp.json, \
                          and PodSpec YAML in examples/podspecs/"
                     );
                     std::process::exit(2);
@@ -390,8 +390,8 @@ fn main() -> Result<(), AuditError> {
                         discovered.total(),
                         if discovered.total() == 1 { "" } else { "s" }
                     );
-                    for p in &discovered.claude_settings {
-                        eprintln!("  Claude settings: {}", p.display());
+                    for p in &discovered.agent_settings {
+                        eprintln!("  Agent settings: {}", p.display());
                     }
                     for p in &discovered.mcp_configs {
                         eprintln!("  MCP config:      {}", p.display());
@@ -403,22 +403,22 @@ fn main() -> Result<(), AuditError> {
                 }
 
                 pod_specs.extend(discovered.pod_specs);
-                claude_settings_paths.extend(discovered.claude_settings);
+                agent_settings_paths.extend(discovered.agent_settings);
                 mcp_configs.extend(discovered.mcp_configs);
             }
 
-            if pod_specs.is_empty() && claude_settings_paths.is_empty() && mcp_configs.is_empty() {
+            if pod_specs.is_empty() && agent_settings_paths.is_empty() && mcp_configs.is_empty() {
                 eprintln!(
-                    "Error: at least one of --pod-spec, --claude-settings, \
+                    "Error: at least one of --pod-spec, --agent-settings, \
                      --mcp-config, or --auto is required"
                 );
                 std::process::exit(2);
             }
 
-            let total_sources = pod_specs.len() + claude_settings_paths.len() + mcp_configs.len();
+            let total_sources = pod_specs.len() + agent_settings_paths.len() + mcp_configs.len();
             let include_source_in_finding = total_sources > 1;
             let single_pod_only =
-                pod_specs.len() == 1 && claude_settings_paths.is_empty() && mcp_configs.is_empty();
+                pod_specs.len() == 1 && agent_settings_paths.is_empty() && mcp_configs.is_empty();
 
             let mut report = ScanReport::default();
             let mut aggregate_uninhabitable_rank = 0u8;
@@ -456,9 +456,9 @@ fn main() -> Result<(), AuditError> {
                 ));
             }
 
-            // Scan Claude settings
-            for cs_path in &claude_settings_paths {
-                let (findings, summary) = scan_claude_settings::scan_claude_settings(cs_path)?;
+            // Scan agent tool settings
+            for cs_path in &agent_settings_paths {
+                let (findings, summary) = scan_agent_settings::scan_agent_settings(cs_path)?;
                 report.scanned_sources.push(cs_path.display().to_string());
 
                 let has_critical_uninhabitable = findings.iter().any(|f| {
@@ -466,18 +466,18 @@ fn main() -> Result<(), AuditError> {
                 });
                 let has_partial_uninhabitable =
                     findings.iter().any(|f| f.category == "uninhabitable_state");
-                let claude_rank = if has_critical_uninhabitable {
+                let settings_rank = if has_critical_uninhabitable {
                     2
                 } else if has_partial_uninhabitable {
                     1
                 } else {
                     0
                 };
-                aggregate_uninhabitable_rank = aggregate_uninhabitable_rank.max(claude_rank);
+                aggregate_uninhabitable_rank = aggregate_uninhabitable_rank.max(settings_rank);
                 report.has_credentials |= findings.iter().any(|f| f.category == "credentials");
 
-                if claude_settings_paths.len() == 1 {
-                    report.claude_settings_summary = Some(summary);
+                if agent_settings_paths.len() == 1 {
+                    report.agent_settings_summary = Some(summary);
                 }
 
                 report.findings.extend(attach_source_to_findings(
@@ -1017,7 +1017,7 @@ fn sha256_hex(message: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Receipt chain verification (nucleus-claude-hook JSONL)
+// Receipt chain verification (nucleus receipt-hook JSONL)
 // ---------------------------------------------------------------------------
 
 /// A receipt entry from the hook's JSONL output.
