@@ -252,7 +252,7 @@ pub struct AiDerivedWitness {
     /// Allows auditors to verify what the model actually read.
     pub input_context_hash: [u8; 32],
     /// Vendor-agnostic model identifier string.
-    /// e.g., "gpt-4o-2024-05-13" or "llm-v2.1" — just a label.
+    /// e.g., "model-x-2024-05-13" or "llm-v2.1" — just a label.
     pub model_id: String,
     /// Number of independent generations used for consistency check.
     /// 1 = single generation (no consistency check performed).
