@@ -453,7 +453,7 @@ fn test_interpreter_execution_blocked() {
 }
 
 /// Attack #6: Shell metacharacters — restrictive profiles block them,
-/// permissive allows them (Claude Code routinely pipes: `cmd 2>&1 | tail`).
+/// permissive allows them (agent CLIs routinely pipe: `cmd 2>&1 | tail`).
 #[test]
 fn test_shell_metacharacters_restrictive_vs_permissive() {
     let restrictive = CommandLattice::default();

@@ -197,9 +197,13 @@ impl PathLattice {
         // This catches cases where the pattern is just a filename
         let original_str = path.to_string_lossy();
 
-        // Check blocked patterns first (takes priority)
+        // Check blocked patterns first (takes priority). Blocked matching is
+        // case-insensitive: the on-disk casing of a sensitive file (e.g.
+        // `CLAUDE.md` vs `claude.md`) is attacker-controlled, and matching
+        // without regard to case only ever ADDS blocks — it can never narrow
+        // the sandbox.
         for pattern in &self.blocked {
-            if glob_match(pattern, &path_str) || glob_match(pattern, &original_str) {
+            if glob_match_ci(pattern, &path_str) || glob_match_ci(pattern, &original_str) {
                 return false;
             }
 
@@ -246,50 +250,95 @@ impl crate::frame::Lattice for PathLattice {
     }
 }
 
+/// The UNION of known agent-instruction conventions, as an explicit data table.
+///
+/// Each entry is one ecosystem's out-of-band instruction manifest or config
+/// directory. Untrusted repositories can smuggle prompt-injection payloads
+/// through any of these, so [`PathLattice::block_sensitive`] blocks the whole
+/// union (matched case-insensitively). This is DATA, not policy logic: no single
+/// line is load-bearing, and removing any single line narrows real coverage.
+///
+/// `AGENTS.md`/`AGENT.md` is the cross-vendor open standard (<https://agents.md>);
+/// the remaining entries are per-ecosystem manifests and config directories.
+/// Append new conventions here as they appear.
+const AGENT_INSTRUCTION_GLOBS: &[&str] = &[
+    // Cross-vendor open standard — https://agents.md
+    "**/AGENTS.md",
+    "**/AGENT.md",
+    // Per-ecosystem instruction manifests and config directories
+    "**/CLAUDE.md",
+    "**/.claude/**",
+    "**/GEMINI.md",
+    "**/.cursorrules",
+    "**/.cursor/**",
+    "**/.windsurfrules",
+    "**/.github/copilot-instructions.md",
+    "**/.clinerules",
+    "**/.aider.conf.yml",
+];
+
 impl PathLattice {
     /// Create a path lattice that blocks sensitive files.
     ///
-    /// Includes agent configuration files (CLAUDE.md, .claude/) to prevent
-    /// prompt injection via untrusted repositories. See:
+    /// The blocklist spans three groups: secrets/credentials, the **union of
+    /// known agent-instruction conventions**, and nucleus policy/session state.
+    ///
+    /// ## Agent-instruction conventions (prompt-injection surface)
+    ///
+    /// Different AI coding ecosystems read different out-of-band instruction
+    /// files (agent manifests and per-tool config directories). An untrusted
+    /// repository can smuggle a prompt-injection payload through any of them, so
+    /// letting an agent read them is a documented attack vector. See:
     /// <https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation>
+    ///
+    /// We therefore block the **union** of the known conventions, matched
+    /// case-insensitively (the on-disk casing is attacker-controlled). No single
+    /// entry is load-bearing: [`AGENT_INSTRUCTION_GLOBS`] leads with the
+    /// cross-vendor open standard (`AGENTS.md`/`AGENT.md`, <https://agents.md>)
+    /// and enumerates the per-ecosystem manifests and config directories after
+    /// it. Extend that table with new conventions as they appear — do NOT
+    /// replace it with a heuristic classifier (e.g. "block every uppercase
+    /// *.md" or "block every hidden dir"), which would both over-block ordinary
+    /// docs and silently drop known coverage.
     pub fn block_sensitive() -> Self {
+        let mut blocked: HashSet<String> = [
+            // Secrets and credentials
+            ".env*",
+            "*.pem",
+            "*.key",
+            "**/secrets/**",
+            "**/.ssh/**",
+            "**/credentials*",
+            "**/.aws/**",
+            "**/.git/config",
+            "**/id_rsa*",
+            "**/id_ed25519*",
+            "**/.npmrc",
+            "**/.pypirc",
+            "**/token*",
+            "**/password*",
+            // Nucleus config files — prevent policy tampering
+            "**/.nucleus/policy.toml",
+            "**/.nucleus/trust/**",
+            "**/.nucleus/manifests/**",
+            // Nucleus session state — contains ephemeral Ed25519 signing keys (#487).
+            // A tool call like `cat ~/.local/share/nucleus/sessions/*.json`
+            // could exfiltrate the signing key, enabling receipt forgery.
+            "**/.local/share/nucleus/**",
+            "**/nucleus-hook/**",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        // Union in the known agent-instruction conventions. Held as DATA (see
+        // AGENT_INSTRUCTION_GLOBS) so that no single vendor token is load-bearing
+        // and coverage only ever grows.
+        blocked.extend(AGENT_INSTRUCTION_GLOBS.iter().map(|s| s.to_string()));
+
         Self {
             allowed: HashSet::new(),
-            blocked: [
-                // Secrets and credentials
-                ".env*",
-                "*.pem",
-                "*.key",
-                "**/secrets/**",
-                "**/.ssh/**",
-                "**/credentials*",
-                "**/.aws/**",
-                "**/.git/config",
-                "**/id_rsa*",
-                "**/id_ed25519*",
-                "**/.npmrc",
-                "**/.pypirc",
-                "**/token*",
-                "**/password*",
-                // Agent config files — untrusted repos can manipulate agent behavior
-                // via prompt injection in these files (hackerbot-claw attack vector)
-                "**/CLAUDE.md",
-                "**/.claude/**",
-                "**/.cursorrules",
-                "**/.github/copilot-instructions.md",
-                // Nucleus config files — prevent policy tampering
-                "**/.nucleus/policy.toml",
-                "**/.nucleus/trust/**",
-                "**/.nucleus/manifests/**",
-                // Nucleus session state — contains ephemeral Ed25519 signing keys (#487).
-                // A tool call like `cat ~/.local/share/nucleus/sessions/*.json`
-                // could exfiltrate the signing key, enabling receipt forgery.
-                "**/.local/share/nucleus/**",
-                "**/nucleus-hook/**",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            blocked,
             work_dir: None,
         }
     }
@@ -340,17 +389,29 @@ fn path_component_matches(path: &Path, pattern: &str) -> bool {
         return false;
     }
 
+    // Case-insensitive prefix: attacker controls on-disk casing, and matching
+    // without regard to case only ever adds blocks (consistent with can_access).
+    let needle = base_pattern.trim_end_matches('*').to_lowercase();
+
     // Check each component
     for component in path.components() {
         if let std::path::Component::Normal(name) = component {
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with(base_pattern.trim_end_matches('*')) {
+            let name_str = name.to_string_lossy().to_lowercase();
+            if name_str.starts_with(&needle) {
                 return true;
             }
         }
     }
 
     false
+}
+
+/// Case-insensitive [`glob_match`]. Used for blocked-pattern checks, where the
+/// on-disk casing of a sensitive file is attacker-controlled. Lowercasing both
+/// the pattern and the path only ever ADDS matches, so it cannot narrow the
+/// sandbox; it never touches the (case-sensitive) allow path.
+fn glob_match_ci(pattern: &str, path: &str) -> bool {
+    glob_match(&pattern.to_lowercase(), &path.to_lowercase())
 }
 
 /// Simple glob matching (supports * and ** patterns).
@@ -466,10 +527,34 @@ mod tests {
             ".claude/ must be blocked"
         );
 
-        // Other agent config files
+        // Case-insensitivity: attacker-controlled casing must not bypass the block.
+        assert!(
+            !lattice.can_access(Path::new("claude.md")),
+            "lowercase claude.md must be blocked (case-insensitive)"
+        );
+
+        // Cross-vendor open standard (https://agents.md) — part of the union.
+        assert!(
+            !lattice.can_access(Path::new("AGENTS.md")),
+            "AGENTS.md (open standard) must be blocked"
+        );
+        assert!(
+            !lattice.can_access(Path::new("AGENT.md")),
+            "AGENT.md (open standard) must be blocked"
+        );
+
+        // Other per-ecosystem agent config files/dirs in the union.
         assert!(
             !lattice.can_access(Path::new(".cursorrules")),
             ".cursorrules must be blocked"
+        );
+        assert!(
+            !lattice.can_access(Path::new(".cursor/mcp.json")),
+            ".cursor/ must be blocked"
+        );
+        assert!(
+            !lattice.can_access(Path::new(".github/copilot-instructions.md")),
+            "copilot-instructions.md must be blocked"
         );
 
         // Nucleus policy files
@@ -498,6 +583,17 @@ mod tests {
         // that match blocked patterns (e.g., **/.claude/** in worktrees).
         assert!(lattice.can_access(Path::new("allowed_file.rs")));
         assert!(lattice.can_access(Path::new("docs/guide.md")));
+
+        // An ordinary uppercase doc is NOT an agent-instruction file — the block
+        // must not over-reach into normal repository documentation.
+        assert!(
+            lattice.can_access(Path::new("ARCHITECTURE.md")),
+            "ordinary docs like ARCHITECTURE.md must stay accessible"
+        );
+        assert!(
+            lattice.can_access(Path::new("docs/DESIGN.md")),
+            "ordinary docs like DESIGN.md must stay accessible"
+        );
     }
 
     // Security: Path traversal tests

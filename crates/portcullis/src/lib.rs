@@ -50,7 +50,7 @@
 //! assert!(safe.requires_approval(Operation::GitPush));
 //! ```
 //!
-//! ## Integration with Claude Code / OpenClaw
+//! ## Integration with AI agent frameworks
 //!
 //! See the `examples/` directory for integration patterns with popular AI agent frameworks.
 //!
@@ -121,7 +121,7 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
-/// Verified hook adapter — pure decision pipeline for Claude Code hooks.
+/// Verified hook adapter — pure decision pipeline for agent tool-call hooks.
 pub mod hook_adapter;
 pub mod kernel;
 /// Manifest behavioral enforcement — detect lying manifests post-execution.
