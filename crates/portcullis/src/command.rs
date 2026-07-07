@@ -39,7 +39,7 @@ pub struct CommandLattice {
     /// Allow shell metacharacters (|, &&, >, etc.) in commands.
     /// Default false — metacharacters are blocked unless allowlisted.
     /// Set true for permissive profiles where pipes are expected
-    /// (e.g. Claude Code routinely uses `cmd 2>&1 | tail`).
+    /// (e.g. agent CLIs routinely use `cmd 2>&1 | tail`).
     #[cfg_attr(feature = "serde", serde(default))]
     pub allow_metacharacters: bool,
 }
@@ -97,7 +97,7 @@ impl CommandLattice {
     /// Create a permissive command lattice (blocks dangerous commands only).
     ///
     /// Allows shell metacharacters (`|`, `&&`, `>`, etc.) because tools
-    /// like Claude Code routinely pipe output: `cmd 2>&1 | tail -5`.
+    /// like agent CLIs routinely pipe output: `cmd 2>&1 | tail -5`.
     pub fn permissive() -> Self {
         Self {
             allowed: HashSet::new(), // Empty = all allowed (unless blocked)
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn test_permissive_allows_shell_metacharacters() {
         // Permissive profiles allow pipes, redirects, etc.
-        // Claude Code routinely uses `cmd 2>&1 | tail -5`.
+        // Agent CLIs routinely use `cmd 2>&1 | tail -5`.
         let lattice = CommandLattice::permissive();
         assert!(lattice.can_execute("echo hi | cat"));
         assert!(lattice.can_execute("echo hi > out.txt"));
