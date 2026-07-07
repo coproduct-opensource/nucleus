@@ -1,6 +1,6 @@
 //! Nucleus CLI - Run AI agents with policy-aware defaults
 //!
-//! `nucleus-cli` runs Claude with MCP + nucleus-tool-proxy for tool enforcement.
+//! `nucleus-cli` runs an agent CLI with MCP + nucleus-tool-proxy for tool enforcement.
 //! Use `nucleus-node` (Firecracker) for all execution.
 //!
 //! # Examples
@@ -78,7 +78,7 @@ enum Commands {
     /// Execute a task with enforced permissions
     Run(Box<run::RunArgs>),
 
-    /// Launch interactive Claude Code with nucleus security context
+    /// Launch an interactive agent session with nucleus security context
     Shell(shell::ShellArgs),
 
     /// Set up nucleus environment (Lima VM, artifacts, secrets)
