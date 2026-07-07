@@ -8,7 +8,7 @@ description = "MCP server that bridges an MCP client (any AI-agent runtime) to n
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/nucleus-mcp"
 readme = "README.md"
-keywords = ["mcp", "claude", "tools", "security", "sandbox"]
+keywords = ["mcp", "agent", "tools", "security", "sandbox"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
