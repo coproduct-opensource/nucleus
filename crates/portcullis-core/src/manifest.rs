@@ -598,6 +598,12 @@ mod kani_proofs {
 mod tests {
     use super::*;
 
+    /// Golden fingerprint of `canonical_bytes()` for the fixture in
+    /// `canonical_bytes_golden_is_byte_stable`. Regenerate ONLY on an INTENTIONAL format change
+    /// (and bump the `nucleus-manifest-v1` version tag when you do).
+    const GOLDEN_LEN: usize = 138;
+    const GOLDEN_FNV: u64 = 7690268250434176940;
+
     fn base_manifest() -> ToolManifest {
         ToolManifest {
             name: ToolName::new("read_file"),
@@ -805,6 +811,59 @@ mod tests {
             m1.canonical_bytes(),
             m2.canonical_bytes(),
             "signature fields must not affect canonical bytes"
+        );
+    }
+
+    /// GOLDEN byte-stability guardrail. The other `canonical_bytes_*` tests check only *relative*
+    /// properties (deterministic, changes-with-name); none pins the ABSOLUTE bytes. But
+    /// `canonical_bytes()` is what gets signed, so a refactor that silently alters the byte layout
+    /// — e.g. changing how the `#[repr(u8)]` enums are serialized (the Aeneas-extractability work
+    /// that replaces `enum as u8` casts with match-based conversions) — would invalidate every
+    /// existing signature while passing all the relative tests. This fixture exercises a spread of
+    /// variants across EVERY enum-cast field, and pins the exact serialization via a dependency-free
+    /// FNV-1a fingerprint. Any byte change trips it; a byte-preserving refactor leaves it green.
+    #[test]
+    fn canonical_bytes_golden_is_byte_stable() {
+        let m = ToolManifest {
+            name: ToolName::new("golden_fixture"),
+            capabilities: vec![
+                Operation::ReadFiles,
+                Operation::WriteFiles,
+                Operation::WebFetch,
+                Operation::GitPush,
+                Operation::SpawnAgent,
+            ],
+            remote_fetch: true,
+            instruction_sources: vec![
+                InstructionSource::Static,
+                InstructionSource::RemoteUrl,
+                InstructionSource::Unlabeled,
+            ],
+            admissible_sinks: vec![
+                SinkClass::LocalMemory,
+                SinkClass::ExternalNetwork,
+                SinkClass::HumanVisible,
+            ],
+            max_confidentiality: ConfLevel::Secret,
+            output_integrity: IntegLevel::Trusted,
+            output_authority: AuthorityLevel::Directive,
+            schema_hash: [0x5A; 32],
+            allowed_hosts: vec!["api.example.com".to_string()],
+            authority_to_instruct: true,
+            memory_behavior: MemoryBehavior::Persist,
+            allowed_compartments: vec!["research".to_string()],
+            signature: None,
+            signing_key: None,
+        };
+        let bytes = m.canonical_bytes();
+        // FNV-1a 64-bit — pure integer arithmetic, deterministic across platforms/toolchains.
+        let fnv = bytes
+            .iter()
+            .fold(0xcbf29ce4_84222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3));
+        assert_eq!(bytes.len(), GOLDEN_LEN, "canonical_bytes length changed — serialization drifted");
+        assert_eq!(
+            fnv, GOLDEN_FNV,
+            "canonical_bytes content changed — a byte-PRESERVING refactor must NOT alter this fingerprint"
         );
     }
 
