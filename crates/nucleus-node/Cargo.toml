@@ -49,10 +49,12 @@ jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 rustls = { workspace = true }
 webpki-roots = "1.0"
-base64 = "0.22"
+base64 = { workspace = true }
 # `alloc` is required (alongside `pkcs8`) for the EncodePrivateKey/DecodePrivateKey
 # (`to_pkcs8_der`/`from_pkcs8_der`) impls — dalek 3 split alloc out of `pkcs8`.
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core", "pkcs8", "alloc"] }
+# Version comes from the workspace pin (=3.0.0-pre.7); only the extra features
+# are declared here.
+ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "alloc"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 # X.509 certificate parsing for SPIFFE ID extraction

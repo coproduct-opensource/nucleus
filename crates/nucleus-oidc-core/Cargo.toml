@@ -11,9 +11,9 @@ keywords = ["oidc", "oauth", "jwks", "jwt", "federation"]
 categories = ["cryptography", "authentication"]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-ed25519-dalek = { version = "=3.0.0-pre.7", default-features = false }
+ed25519-dalek = { workspace = true, default-features = false }
 # JWT-SVID signature verification (RS/PS/ES allowlist). Workspace-pinned to
 # the same `rust_crypto` (RustCrypto) backend the rest of the workspace uses,
 # so this adds no new crypto backend to the supply chain.

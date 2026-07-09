@@ -179,7 +179,7 @@ fn draw_comparison_sidebar(f: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .title(" Model Comparison ");
 
-    // Vendor-neutral comparison (this is in nucleus, no Anthropic references)
+    // Vendor-neutral comparison — generic flat vs hierarchical models, no vendor-specific names.
     let lines = vec![
         Line::from(Span::styled(
             "╔═══════════════════╗",

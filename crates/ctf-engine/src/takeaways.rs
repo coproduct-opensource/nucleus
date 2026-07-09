@@ -18,7 +18,7 @@ pub fn build_takeaways(defenses: &[String]) -> Vec<String> {
             "Command Exfil Detection: Even with bash access, the CommandLattice performs \
              sink analysis on every command before execution. curl, wget, nc, python \
              urllib — all caught. This blocks the exact attack from CVE-2025-43563 \
-             (Claude Code prompt injection via git commit messages)."
+             (AI coding agent prompt injection via git commit messages)."
                 .into(),
         );
     }

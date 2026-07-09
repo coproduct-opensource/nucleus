@@ -226,17 +226,17 @@ mod tests {
         let issuer = LocalIssuer::random().unwrap();
         let p = pod();
         let token = issuer
-            .fetch_jwt_svid(&p, "https://api.anthropic.com")
+            .fetch_jwt_svid(&p, "https://api.example-llm.local")
             .unwrap();
         assert_eq!(token.matches('.').count(), 2);
 
         let mut validation = Validation::new(Algorithm::EdDSA);
-        validation.set_audience(&["https://api.anthropic.com"]);
+        validation.set_audience(&["https://api.example-llm.local"]);
         validation.set_issuer(&[issuer.issuer()]);
         let decoded = decode::<SvidClaims>(&token, &issuer.decoding_key(), &validation).unwrap();
 
         assert_eq!(decoded.claims.sub, p.to_string());
-        assert_eq!(decoded.claims.aud, "https://api.anthropic.com");
+        assert_eq!(decoded.claims.aud, "https://api.example-llm.local");
         assert_eq!(decoded.claims.iss, issuer.issuer());
         assert!(decoded.claims.exp > decoded.claims.iat);
         assert!(!decoded.claims.jti.is_empty());

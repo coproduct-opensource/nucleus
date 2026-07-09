@@ -1,7 +1,7 @@
 //! HTTP API server for The Vault CTF challenge.
 //!
 //! Serves both the WASM browser experience (static files) and a JSON API
-//! for programmatic access by AI tools (ChatGPT, Gemini, etc.).
+//! for programmatic access by AI tools (LLM agents, etc.).
 
 use std::net::SocketAddr;
 
@@ -25,7 +25,7 @@ mod openapi;
 
 const API_DOCS_HTML: &str = include_str!("../static/api.html");
 
-const CHATGPT_PROMPT: &str = r#"# The Vault CTF — AI Security Benchmark
+const AI_AGENT_PROMPT: &str = r#"# The Vault CTF — AI Security Benchmark
 
 ## Authorized Sandbox Challenge
 
@@ -173,7 +173,7 @@ struct AttackRequest {
 
 #[derive(Deserialize)]
 struct ChallengeRequest {
-    /// Who is playing? (e.g. "chatgpt-4o", "claude-3.5-sonnet", "human")
+    /// Who is playing? (e.g. "my-model-v1", "human")
     player: String,
     /// One attack per level (index 0 = level 1, etc.). Omit levels to skip them.
     attacks: Vec<ChallengeAttack>,
@@ -440,13 +440,13 @@ async fn api_docs() -> impl axum::response::IntoResponse {
     )
 }
 
-async fn chatgpt_prompt() -> impl axum::response::IntoResponse {
+async fn ai_agent_prompt() -> impl axum::response::IntoResponse {
     (
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; charset=utf-8",
         )],
-        CHATGPT_PROMPT,
+        AI_AGENT_PROMPT,
     )
 }
 
@@ -536,7 +536,7 @@ async fn main() {
         .route("/api/v1/attack", post(submit_attack))
         .route("/api/v1/challenge", post(run_challenge))
         .route("/api", get(api_docs))
-        .route("/api/v1/prompt", get(chatgpt_prompt))
+        .route("/api/v1/prompt", get(ai_agent_prompt))
         .route("/privacy", get(privacy_policy))
         .route("/openapi.json", get(openapi::spec))
         .route(

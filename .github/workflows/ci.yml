@@ -10,6 +10,61 @@ permissions:
   contents: read
 
 jobs:
+  changed-crates:
+    name: Detect changed crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      all: ${{ steps.detect.outputs.all }}
+      crates: ${{ steps.detect.outputs.crates }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+      - name: Determine changed crates
+        id: detect
+        # Pass event/base data via env (never interpolate ${{ }} directly into
+        # the run script — zizmor template-injection / code-injection
+        # hardening, matching ck-admit.yml).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          all=false
+          changed=""
+
+          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "push" ]; then
+            all=true
+          else
+            git fetch origin "$BASE" || true
+            changed="$(git diff --name-only "origin/$BASE...HEAD")"
+            if printf '%s\n' "$changed" | grep -qE '^Cargo\.toml$|^Cargo\.lock$|^\.github/'; then
+              all=true
+            fi
+          fi
+
+          crates=""
+          if [ -n "$changed" ]; then
+            crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' - || true)"
+          fi
+
+          echo "all=$all" >> "$GITHUB_OUTPUT"
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Changed-crate detection"
+            echo ""
+            echo "- Event: \`$EVENT_NAME\`"
+            echo "- Full run forced: \`$all\`"
+            if [ -n "$crates" ]; then
+              echo "- Changed crates: \`$crates\`"
+            else
+              echo "- Changed crates: (none)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -45,6 +100,8 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -96,6 +153,8 @@ jobs:
     name: OWASP LLM Security Gauntlet
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -139,12 +198,17 @@ jobs:
     # build scripts (e.g. ring) need to cross-compile.
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           targets: x86_64-unknown-linux-musl
           cache: true
       - name: Install musl-gcc
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Ensure musl target (cache-safe)
+        # setup-rust-toolchain's `targets:` is skipped on a toolchain cache hit,
+        # so the target can be absent despite being declared → E0463. This
+        # explicit add always runs and is a no-op when already present.
+        run: rustup target add x86_64-unknown-linux-musl
       - name: cargo check (musl)
         run: cargo check -p nucleus-node -p nucleus-tool-proxy --target x86_64-unknown-linux-musl
 
@@ -152,6 +216,8 @@ jobs:
     name: Fuzz
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
