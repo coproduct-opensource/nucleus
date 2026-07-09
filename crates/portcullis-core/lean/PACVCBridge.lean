@@ -1,6 +1,6 @@
 /-
 ████████████████████████████████████████████████████████████████████████████
-  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 2 `sorry`)
+  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 1 `sorry`)
 
   Nothing in this file is kernel-checked or formally verified. Do NOT cite any
   result here as "proven", "verified", or "kernel-checked". This file is part of
@@ -100,13 +100,30 @@ noncomputable def vcDim (P : IndexedPoset Secret) (indices : List Nat) : Nat :=
   (indices.sublists.filter (fun S => decide (Shatters P indices S))).foldl
     (fun acc S => max acc S.length) 0
 
+/-- Generic bound: folding `max acc S.length` over a list of lists, starting
+    from an accumulator that is already `≤ n`, stays `≤ n` provided every
+    element list has length `≤ n`. Pure `List` fact, no cohomology. -/
+private theorem foldl_max_length_le {α : Type*} {n : Nat} :
+    ∀ (l : List (List α)) (init : Nat),
+      init ≤ n → (∀ S ∈ l, S.length ≤ n) →
+      l.foldl (fun acc S => max acc S.length) init ≤ n
+  | [], _init, hinit, _ => hinit
+  | hd :: tl, init, hinit, hall =>
+      foldl_max_length_le tl (max init hd.length)
+        (max_le hinit (hall hd (List.mem_cons.mpr (Or.inl rfl))))
+        (fun S hS => hall S (List.mem_cons.mpr (Or.inr hS)))
+
 /-- **Trivial upper bound**: `vcDim ≤ |indices|`. Every shattered
     subset is a sublist of `indices`, hence its length is bounded
     by the length of `indices`. -/
 theorem vcDim_le_indices_length
     (P : IndexedPoset Secret) (indices : List Nat) :
     vcDim P indices ≤ indices.length := by
-  sorry
+  unfold vcDim
+  refine foldl_max_length_le _ 0 (Nat.zero_le _) ?_
+  intro S hS
+  have hmem : S ∈ indices.sublists := (List.mem_filter.mp hS).1
+  exact (List.mem_sublists.mp hmem).length_le
 
 /-- **Main conjecture (VC ≤ H¹)**: the VC dimension of the alignment
     concept class is bounded above by `rank H¹` of the attention sheaf.
