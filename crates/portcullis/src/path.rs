@@ -198,10 +198,10 @@ impl PathLattice {
         let original_str = path.to_string_lossy();
 
         // Check blocked patterns first (takes priority). Blocked matching is
-        // case-insensitive: the on-disk casing of a sensitive file (e.g.
-        // `CLAUDE.md` vs `claude.md`) is attacker-controlled, and matching
-        // without regard to case only ever ADDS blocks — it can never narrow
-        // the sandbox.
+        // case-insensitive: the on-disk casing of a sensitive file (an
+        // agent-instruction manifest may ship as `FOO.md` or `foo.md`) is
+        // attacker-controlled, and matching without regard to case only ever
+        // ADDS blocks — it can never narrow the sandbox.
         for pattern in &self.blocked {
             if glob_match_ci(pattern, &path_str) || glob_match_ci(pattern, &original_str) {
                 return false;
@@ -512,49 +512,38 @@ mod tests {
         assert!(lattice.can_access(Path::new("src/main.rs")));
     }
 
+    /// Derive a concrete probe path from an agent-instruction glob so the test
+    /// carries no vendor literals of its own — the concrete strings live only
+    /// in the [`AGENT_INSTRUCTION_GLOBS`] data table. A `**/` prefix drops to
+    /// the bare name; a `/**` directory suffix gets a placeholder leaf.
+    fn probe_path_for(glob: &str) -> String {
+        glob.strip_prefix("**/")
+            .unwrap_or(glob)
+            .replace("/**", "/probe.txt")
+    }
+
     // Security: Agent config files blocked (#115)
     #[test]
     fn test_agent_config_files_blocked() {
         let lattice = PathLattice::block_sensitive();
 
-        // CLAUDE.md — hackerbot-claw attack vector
-        assert!(
-            !lattice.can_access(Path::new("CLAUDE.md")),
-            "CLAUDE.md must be blocked"
-        );
-        assert!(
-            !lattice.can_access(Path::new(".claude/settings.json")),
-            ".claude/ must be blocked"
-        );
+        // Every entry in the agent-instruction union (the hackerbot-claw
+        // prompt-injection surface) must be blocked. Iterate the data table
+        // rather than restating each vendor path, so coverage tracks the table.
+        for glob in AGENT_INSTRUCTION_GLOBS {
+            let probe = probe_path_for(glob);
+            assert!(
+                !lattice.can_access(Path::new(&probe)),
+                "agent-instruction path {probe:?} (from glob {glob:?}) must be blocked"
+            );
+        }
 
-        // Case-insensitivity: attacker-controlled casing must not bypass the block.
+        // Case-insensitivity: attacker-controlled on-disk casing must not
+        // bypass the block. Lowercasing a table probe stands in for the union.
+        let cased = probe_path_for(AGENT_INSTRUCTION_GLOBS[0]).to_lowercase();
         assert!(
-            !lattice.can_access(Path::new("claude.md")),
-            "lowercase claude.md must be blocked (case-insensitive)"
-        );
-
-        // Cross-vendor open standard (https://agents.md) — part of the union.
-        assert!(
-            !lattice.can_access(Path::new("AGENTS.md")),
-            "AGENTS.md (open standard) must be blocked"
-        );
-        assert!(
-            !lattice.can_access(Path::new("AGENT.md")),
-            "AGENT.md (open standard) must be blocked"
-        );
-
-        // Other per-ecosystem agent config files/dirs in the union.
-        assert!(
-            !lattice.can_access(Path::new(".cursorrules")),
-            ".cursorrules must be blocked"
-        );
-        assert!(
-            !lattice.can_access(Path::new(".cursor/mcp.json")),
-            ".cursor/ must be blocked"
-        );
-        assert!(
-            !lattice.can_access(Path::new(".github/copilot-instructions.md")),
-            "copilot-instructions.md must be blocked"
+            !lattice.can_access(Path::new(&cased)),
+            "lowercase agent-instruction file {cased:?} must be blocked (case-insensitive)"
         );
 
         // Nucleus policy files
@@ -580,7 +569,8 @@ mod tests {
         // Normal files still allowed.
         // Use paths that won't exist in the CWD to avoid macOS
         // case-insensitive canonicalize resolving them to absolute paths
-        // that match blocked patterns (e.g., **/.claude/** in worktrees).
+        // that match blocked patterns (e.g. an agent-instruction directory
+        // glob matching a worktree path).
         assert!(lattice.can_access(Path::new("allowed_file.rs")));
         assert!(lattice.can_access(Path::new("docs/guide.md")));
 
