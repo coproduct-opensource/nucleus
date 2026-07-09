@@ -857,10 +857,14 @@ mod tests {
         };
         let bytes = m.canonical_bytes();
         // FNV-1a 64-bit — pure integer arithmetic, deterministic across platforms/toolchains.
-        let fnv = bytes
-            .iter()
-            .fold(0xcbf29ce4_84222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3));
-        assert_eq!(bytes.len(), GOLDEN_LEN, "canonical_bytes length changed — serialization drifted");
+        let fnv = bytes.iter().fold(0xcbf29ce4_84222325u64, |h, &b| {
+            (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        assert_eq!(
+            bytes.len(),
+            GOLDEN_LEN,
+            "canonical_bytes length changed — serialization drifted"
+        );
         assert_eq!(
             fnv, GOLDEN_FNV,
             "canonical_bytes content changed — a byte-PRESERVING refactor must NOT alter this fingerprint"
