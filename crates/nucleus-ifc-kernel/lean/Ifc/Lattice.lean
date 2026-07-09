@@ -231,7 +231,7 @@ theorem join_mono_left {a a' : ConfLevel} (b : ConfLevel) (h : le a a') :
   cases a <;> cases a' <;> cases b <;>
     first
       | decide
-      | simp_all [le, join, rank]
+      | simp_all [le, rank]
       | (revert h; decide)
 
 /-- Join is monotone in its right argument. -/
@@ -240,7 +240,7 @@ theorem join_mono_right (a : ConfLevel) {b b' : ConfLevel} (h : le b b') :
   cases a <;> cases b <;> cases b' <;>
     first
       | decide
-      | simp_all [le, join, rank]
+      | simp_all [le, rank]
       | (revert h; decide)
 
 end ConfLevel
