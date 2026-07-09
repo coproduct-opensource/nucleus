@@ -113,8 +113,8 @@ pub fn canonical_externality_bytes(p: &ExternalityProfile) -> Vec<u8> {
     out.extend_from_slice(PROFILE_DOMAIN);
     let n = p.dimensions.len() as u32;
     out.extend_from_slice(&n.to_be_bytes());
-    // BTreeMap's iter is in `Ord` order, which is deterministic.
-    for (_dim, claim) in p.dimensions.iter() {
+    // BTreeMap's values() is in key-`Ord` order, which is deterministic.
+    for claim in p.dimensions.values() {
         out.extend_from_slice(&canonical_claim_bytes(claim));
     }
     out
