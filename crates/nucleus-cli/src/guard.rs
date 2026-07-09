@@ -12,6 +12,22 @@ use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// On-disk MCP config locations the scanner probes, in probe order.
+///
+/// Intrinsic interop: real, non-neutralizable config paths written by external
+/// agent/editor tooling (e.g. `.claude/settings.json`,
+/// `claude_desktop_config.json`). These are detection targets the scanner must
+/// match verbatim, not nucleus-owned names. Single source of truth so the
+/// `guard audit` scan and its "not found" help output can never drift apart.
+const MCP_CONFIG_CANDIDATES: &[&str] = &[
+    ".claude/settings.json",
+    ".mcp.json",
+    "mcp.json",
+    ".vscode/mcp.json",
+    ".cursor/mcp.json",
+    "claude_desktop_config.json",
+];
+
 /// Secure your MCP servers in one command.
 #[derive(Args, Debug)]
 pub struct GuardArgs {
@@ -66,11 +82,9 @@ fn audit(dir: &str) -> Result<()> {
         println!("No MCP configurations found in {}", dir.display());
         println!();
         println!("Looked for:");
-        println!("  .claude/settings.json");
-        println!("  .mcp.json");
-        println!("  mcp.json");
-        println!("  .vscode/mcp.json");
-        println!("  .cursor/mcp.json");
+        for candidate in MCP_CONFIG_CANDIDATES {
+            println!("  {candidate}");
+        }
         return Ok(());
     }
 
@@ -140,20 +154,7 @@ enum Risk {
 }
 
 fn find_mcp_configs(dir: &Path) -> Vec<PathBuf> {
-    // Intrinsic interop: real, non-neutralizable on-disk config paths written by
-    // external agent/editor tooling (e.g. `.claude/settings.json`,
-    // `claude_desktop_config.json`). These are detection targets the scanner must
-    // match verbatim, not nucleus-owned names.
-    let candidates = [
-        ".claude/settings.json",
-        ".mcp.json",
-        "mcp.json",
-        ".vscode/mcp.json",
-        ".cursor/mcp.json",
-        "claude_desktop_config.json",
-    ];
-
-    candidates
+    MCP_CONFIG_CANDIDATES
         .iter()
         .map(|c| dir.join(c))
         .filter(|p| p.exists())
