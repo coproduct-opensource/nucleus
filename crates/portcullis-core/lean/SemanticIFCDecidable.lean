@@ -3767,12 +3767,34 @@ def transClosureBool {n : Nat} (pe : PreEquiv (Fin n)) (a b : Fin n) : Bool :=
   let final := (List.range n).foldl (fun acc _ => step acc) [a]
   final.contains b
 
+/-- The BFS `step` only appends, so any element already reached stays
+    reached across the whole `List.range n` fold. This is the structural
+    fact behind reflexivity of the transitive closure. -/
+theorem transClosureBool_self {n : Nat} (pe : PreEquiv (Fin n)) (a : Fin n) :
+    transClosureBool pe a a = true := by
+  -- The fold's step is inflationary: `acc ⊆ acc ++ filter …`, so `a ∈ [a]`
+  -- is preserved through every iteration.
+  have hmem : ∀ (l : List Nat) (init : List (Fin n)), a ∈ init →
+      a ∈ l.foldl (fun acc _ =>
+        acc ++ ((List.finRange n).filter fun x =>
+          !acc.contains x && acc.any (pe.sim x))) init := by
+    intro l
+    induction l with
+    | nil => intro init hx; simpa using hx
+    | cons _ tl ih =>
+        intro init hx
+        simp only [List.foldl_cons]
+        exact ih _ (List.mem_append.mpr (Or.inl hx))
+  show ((List.range n).foldl (fun acc _ =>
+      acc ++ ((List.finRange n).filter fun x =>
+        !acc.contains x && acc.any (pe.sim x))) [a]).contains a = true
+  have h := hmem (List.range n) [a] (by simp)
+  simpa using h
+
 /-- The transitive closure gives a valid DObsLevel on `Fin n`. -/
 def PreEquiv.toDObsLevel {n : Nat} (pe : PreEquiv (Fin n)) : DObsLevel (Fin n) where
   rel := transClosureBool pe
-  refl a := by
-    -- a ∈ [a], so after 0 steps, final.contains a = true
-    sorry -- BFS always contains the start
+  refl a := transClosureBool_self pe a
   symm a b h := by
     -- sim is symmetric → BFS reachability is symmetric
     sorry -- BFS symmetry for symmetric relations
