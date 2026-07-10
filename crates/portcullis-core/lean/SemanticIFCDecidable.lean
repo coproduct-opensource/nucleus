@@ -3879,7 +3879,20 @@ theorem zero_tolerance_exact {n m : Nat}
     (i j : Fin n)
     (h : (toPreEquiv A 0).sim i j = true) :
     (A.toDObsLevel).rel i j = true := by
-  sorry -- requires: countP (!=) ≤ 0 → countP (!=) = 0 → all (==)
+  -- `sim` at tolerance 0 unfolds to `decide (countP (≠) ≤ 0)`; peel the decide
+  -- exactly as `sim_symm` does just above.
+  have hcount : decide _ = true := h
+  rw [decide_eq_true_iff] at hcount
+  -- `≤ 0` on `Nat` forces the mismatch count to be exactly `0`.
+  have hall := List.countP_eq_zero.mp (Nat.le_zero.mp hcount)
+  -- Zero mismatches ⇒ every column agrees ⇒ the two rows are equal.
+  simp only [Faithfulness.DiscretePattern.toDObsLevel, Faithfulness.DiscretePattern.rowsEq]
+  refine List.all_eq_true.mpr ?_
+  intro k hk
+  have hk' := hall k hk
+  simp only [bne_iff_ne, ne_eq, not_not] at hk'
+  simp only [beq_iff_eq]
+  exact hk'
 
 end ApproxEquiv
 
