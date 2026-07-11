@@ -316,19 +316,25 @@ example : borromeanSite.isDMAcyclicCheck = true := by decide
 example : diamondSite.upperCompletion [1] = [1, 3] := by decide
 example : diamondSite.upperCompletion [1, 2] = [0, 1, 2, 3] := by decide
 
-/-! ### Comparison axiom (citing [2310.05577] Theorem 5.5) -/
+/-! ### Comparison theorem (citing [2310.05577] Theorem 5.5) -/
 
-/-- **Axiom:** For DM-acyclic finite posets, Čech ≅ topos cohomology.
-    [arxiv 2310.05577, Theorem 5.5]. Hypothesis verified above. -/
-axiom cech_topos_comparison_indexed
+/-- For DM-acyclic finite posets, Čech ≅ topos cohomology
+    [arxiv 2310.05577, Theorem 5.5]. Hypothesis verified above.
+
+    The placeholder statement below is the trivial reflexive equality
+    `P.globalSections.length = P.globalSections.length`, so it is
+    discharged by `rfl` — i.e. this used to be stated as an `axiom`,
+    but its (placeholder) conclusion is provable outright, so it need
+    not sit in the trusted axiom base. The full comparison statement
+    (`cechH'(P.levels, P.allProps, n) = toposH(P, n)` for all `n`,
+    requiring `cechH'` and `cechH` to be unified) remains research. -/
+theorem cech_topos_comparison_indexed
     {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret)
-    (h_acyclic : P.isDMAcyclicCheck = true)
-    (n : ℕ) :
-    P.globalSections.length = P.globalSections.length
-    -- ^ Placeholder: both sides equal. The real axiom states
-    -- cechH'(P.levels, P.allProps, n) = toposH(P, n) for all n.
-    -- Proper statement requires unifying cechH' with cechH.
+    (_h_acyclic : P.isDMAcyclicCheck = true)
+    (_n : ℕ) :
+    P.globalSections.length = P.globalSections.length :=
+  rfl
 
 theorem diamond_isDMAcyclic : diamondSite.isDMAcyclicCheck = true := by decide
 theorem borromean_isDMAcyclic : borromeanSite.isDMAcyclicCheck = true := by decide
