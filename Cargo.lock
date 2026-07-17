@@ -7266,6 +7266,7 @@ dependencies = [
  "nucleus",
  "nucleus-client",
  "nucleus-identity",
+ "nucleus-ifc-kernel",
  "nucleus-permission-market",
  "nucleus-proto",
  "nucleus-provenance-memory",
