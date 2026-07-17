@@ -20,7 +20,7 @@
 //! `DischargedBundle` is **sealed** — its constructor is private to this
 //! module. The only code path that produces one is a successful
 //! `preflight_action` call. Receiving a `DischargedBundle` is a compile-time
-//! proof that all five obligations passed.
+//! proof that all seven obligations passed.
 //!
 //! ## Obligations checked
 //!
@@ -31,6 +31,26 @@
 //! | `Discharged<DerivationClear>` | Derivation class is compatible with this sink |
 //! | `Discharged<NoAdversarialAncestry>` | No source label has `Adversarial` integrity |
 //! | `Discharged<BudgetNotExceeded>` | Estimated cost is within budget |
+//! | `Discharged<WithinDelegationCeiling>` | Requested capability ≤ policy ceiling for the op |
+//! | `Discharged<InScopeWithTask>` | Operation is within the verified task token's scope |
+//!
+//! ## Seam notes (cross-layer obligation correspondence)
+//!
+//! These document how the discharge vocabulary lines up with the upstream
+//! `portcullis::action_term` obligation set — no code, just the mapping a
+//! reviewer needs:
+//!
+//! - **`VerifiedSinkCompatible`** (upstream) is witnessed here by
+//!   `Discharged<DerivationClear>`: the discharge `DerivationClear` check
+//!   (`sink_requires_verified_derivation` ∧ `StorageLane::Verified.accepts`)
+//!   is the canonical form of "a verified sink only accepts Deterministic /
+//!   HumanPromoted derivation". There is deliberately **no** separate
+//!   `VerifiedSinkCompatible` field — it would be redundant with
+//!   `DerivationClear`.
+//! - **`NoAdversarialAncestry`** canonical semantics = the discharge
+//!   source-label check (`no source label carries `IntegLevel::Adversarial``).
+//!   Upstream keys off input `DerivationClass`; the discharge layer keys off
+//!   the propagated IFC integrity label, which is the source of truth.
 //!
 //! ## Sealing
 //!
@@ -113,6 +133,15 @@ pub enum RepairHint {
         /// The policy ceiling for this dimension.
         ceiling: CapabilityLevel,
     },
+    /// The operation is outside the verified task token's scope (or no
+    /// verified scope was supplied). Either narrow the operation to one the
+    /// task authorizes, or obtain a task token whose scope covers it.
+    OutOfTaskScope {
+        /// The operation that fell outside scope.
+        operation: Operation,
+        /// The subject that submitted the action.
+        subject: String,
+    },
 }
 
 impl std::fmt::Display for RepairHint {
@@ -155,6 +184,11 @@ impl std::fmt::Display for RepairHint {
             Self::ReduceCapabilityRequest { requested, ceiling } => write!(
                 f,
                 "reduce capability request from {requested:?} to at most {ceiling:?}"
+            ),
+            Self::OutOfTaskScope { operation, subject } => write!(
+                f,
+                "operation {operation:?} by '{subject}' is outside the verified task scope — \
+                 narrow the operation or obtain a task token that authorizes it"
             ),
         }
     }
@@ -237,6 +271,9 @@ impl RepairHint {
     ///     artifact_label: IFCLabel::default(),
     ///     subject: "agent".to_string(),
     ///     estimated_cost_micro_usd: 500, // non-zero cost, no budget gate
+    ///     capability_ceiling: None,
+    ///     requested_capability: None,
+    ///     verified_scope: None,
     /// };
     ///
     /// let result = preflight_action(&term);
@@ -335,6 +372,19 @@ impl RepairHint {
                     ),
                 })
             }
+
+            // OutOfTaskScope: structural — the operation is not authorized by
+            // the verified task token. There is no automatic rewrite (we cannot
+            // widen a token from here — that would be exactly the forgery the
+            // token system prevents). The caller must obtain a broader token.
+            Self::OutOfTaskScope { operation, .. } => Some(Repair::NeedsApproval {
+                term: repaired,
+                gate: format!(
+                    "task token change required: obtain a verified task token whose \
+                     scope authorizes operation {:?}",
+                    operation
+                ),
+            }),
         }
     }
 }
@@ -409,6 +459,60 @@ pub struct BudgetNotExceeded;
 impl obligation_sealed::ObligationSealed for BudgetNotExceeded {}
 impl ProofObligation for BudgetNotExceeded {}
 
+/// Obligation: the requested capability level is within the policy ceiling for
+/// this operation.
+///
+/// Lifts the upstream `WithinDelegationCeiling` check
+/// (`portcullis::action_term`): a requested authority must not exceed the level
+/// the capability lattice grants for the operation. Fail-closed — if
+/// either the ceiling or the requested level is absent, the obligation is
+/// **denied**, never minted (see [`preflight_action`]).
+pub struct WithinDelegationCeiling;
+impl obligation_sealed::ObligationSealed for WithinDelegationCeiling {}
+impl ProofObligation for WithinDelegationCeiling {}
+
+/// Obligation: the operation is within the verified task token's scope.
+///
+/// Lifts the upstream `InScopeWithTask` check (`portcullis::action_term`): the
+/// operation must be a member of the verified token's `allowed_operations`.
+/// Fail-closed — if no [`VerifiedScope`] is present (no verified token), the
+/// obligation is **denied**, never minted (the NO-VACUOUS-WITNESS guard). See
+/// [`preflight_action`].
+pub struct InScopeWithTask;
+impl obligation_sealed::ObligationSealed for InScopeWithTask {}
+impl ProofObligation for InScopeWithTask {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VerifiedScope — dependency-free carrier for the verified task-token scope
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The verified effective scope of a task capability token, mirrored locally.
+///
+/// This is a **fallback carrier** for the shape of
+/// `nucleus_provenance_memory::taskref_token::TokenScope`
+/// (`allowed_operations` + `allowed_paths`). The canonical `TokenScope` lives in
+/// `nucleus-provenance-memory`, which depends on `portcullis-core`, which
+/// re-exports **this** crate — so `nucleus-ifc-kernel` cannot depend on
+/// `nucleus-provenance-memory` without forming the cycle
+/// `nucleus-ifc-kernel → nucleus-provenance-memory → portcullis-core →
+/// nucleus-ifc-kernel`. The dependency-free Aeneas kernel must stay acyclic, so
+/// the scope is carried in this local struct and `portcullis-effects` converts
+/// `TokenScope → VerifiedScope` at the term-building seam (`build_term_scoped`).
+///
+/// Only the `allowed_operations` dimension is enforced by
+/// [`InScopeWithTask`] today: the discharge [`ActionTerm`] carries no path, so
+/// `allowed_paths` is retained for completeness/audit but not checked here (this
+/// mirrors upstream's behavior when `action_path()` is `None`). A follow-up that
+/// adds a path to the discharge term can lift the path dimension too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedScope {
+    /// Operations the verified token authorizes (allowlist; empty = none).
+    pub allowed_operations: Vec<Operation>,
+    /// Path patterns the token authorizes. Retained for audit; not enforced by
+    /// `InScopeWithTask` because the discharge `ActionTerm` carries no path.
+    pub allowed_paths: Vec<String>,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Discharged<O> — zero-sized proof token
 // ═══════════════════════════════════════════════════════════════════════════
@@ -447,18 +551,33 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 
 /// The result of a successful [`preflight_action`] call.
 ///
-/// Holds typed discharge witnesses for all five policy obligations. Effect
+/// Holds typed discharge witnesses for all seven policy obligations. Effect
 /// functions require a `&DischargedBundle` to proceed; there is **no other
 /// way to construct one** — the `_seal` field is private to this module.
 ///
 /// # Sealing guarantee
 ///
+/// The `_seal` field is unnameable outside this module, so **no**
+/// `DischargedBundle` struct literal compiles externally — even one that names
+/// every one of the seven public obligation fields (the missing `_seal` alone
+/// is fatal, and `Discharged::mint()` is private too):
+///
 /// ```compile_fail
-/// // This code does NOT compile — Seal is not accessible outside this module.
-/// use nucleus_ifc_kernel::discharge::{DischargedBundle, IntegrityGate, Discharged};
+/// // This code does NOT compile — neither Seal nor mint() is accessible.
+/// use nucleus_ifc_kernel::discharge::{
+///     DischargedBundle, Discharged, IntegrityGate, PathAllowed, DerivationClear,
+///     NoAdversarialAncestry, BudgetNotExceeded, WithinDelegationCeiling, InScopeWithTask,
+/// };
 /// let bundle = DischargedBundle {
-///     integrity_gate: Discharged::mint(),  // mint() is private
-///     // ...
+///     integrity_gate: Discharged::<IntegrityGate>::mint(),  // mint() is private
+///     path_allowed: Discharged::<PathAllowed>::mint(),
+///     derivation_clear: Discharged::<DerivationClear>::mint(),
+///     no_adversarial_ancestry: Discharged::<NoAdversarialAncestry>::mint(),
+///     budget_not_exceeded: Discharged::<BudgetNotExceeded>::mint(),
+///     within_delegation_ceiling: Discharged::<WithinDelegationCeiling>::mint(),
+///     in_scope_with_task: Discharged::<InScopeWithTask>::mint(),
+///     // no `_seal`: the field is private — and even with all seven fields
+///     // above this literal cannot be completed outside the module.
 /// };
 /// ```
 ///
@@ -476,6 +595,10 @@ pub struct DischargedBundle {
     pub no_adversarial_ancestry: Discharged<NoAdversarialAncestry>,
     /// Estimated cost fits within the budget gate.
     pub budget_not_exceeded: Discharged<BudgetNotExceeded>,
+    /// Requested capability ≤ policy ceiling for the operation.
+    pub within_delegation_ceiling: Discharged<WithinDelegationCeiling>,
+    /// Operation is within the verified task token's scope.
+    pub in_scope_with_task: Discharged<InScopeWithTask>,
     _seal: Seal,
 }
 
@@ -488,6 +611,8 @@ impl DischargedBundle {
             derivation_clear: Discharged::mint(),
             no_adversarial_ancestry: Discharged::mint(),
             budget_not_exceeded: Discharged::mint(),
+            within_delegation_ceiling: Discharged::mint(),
+            in_scope_with_task: Discharged::mint(),
             _seal: Seal,
         }
     }
@@ -501,6 +626,8 @@ impl std::fmt::Debug for DischargedBundle {
             .field("derivation_clear", &self.derivation_clear)
             .field("no_adversarial_ancestry", &self.no_adversarial_ancestry)
             .field("budget_not_exceeded", &self.budget_not_exceeded)
+            .field("within_delegation_ceiling", &self.within_delegation_ceiling)
+            .field("in_scope_with_task", &self.in_scope_with_task)
             .finish()
     }
 }
@@ -528,6 +655,9 @@ impl std::fmt::Debug for DischargedBundle {
 ///     artifact_label: IFCLabel::default(),
 ///     subject: "spiffe://nucleus/agent/ci-bot".to_string(),
 ///     estimated_cost_micro_usd: 0,
+///     capability_ceiling: None,
+///     requested_capability: None,
+///     verified_scope: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -553,6 +683,20 @@ pub struct ActionTerm {
     /// structurally sound but operationally dormant until a cost estimator
     /// is integrated (e.g., LLM token pricing, API call metering).
     pub estimated_cost_micro_usd: u64,
+    /// The policy ceiling: the capability level the capability lattice
+    /// grants for `operation`. `None` when unknown — which **denies**
+    /// [`WithinDelegationCeiling`] fail-closed (never mints a vacuous witness).
+    pub capability_ceiling: Option<CapabilityLevel>,
+    /// The capability level this action requests for `operation`. `None` denies
+    /// [`WithinDelegationCeiling`] fail-closed. Callers building real terms set
+    /// this to the operation's inherent floor (see `build_term` in
+    /// `portcullis-effects`); the ceiling check is `requested ≤ ceiling`.
+    pub requested_capability: Option<CapabilityLevel>,
+    /// The verified effective scope of the session's task capability token, if
+    /// any. `None` denies [`InScopeWithTask`] fail-closed — the
+    /// NO-VACUOUS-WITNESS guard: an action with no verified scope can never mint
+    /// `Discharged<InScopeWithTask>`.
+    pub verified_scope: Option<VerifiedScope>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -646,6 +790,10 @@ impl PreflightResult {
 /// 3. **DerivationClear** — derivation class is compatible with this sink
 /// 4. **NoAdversarialAncestry** — no source label carries `Adversarial` integrity
 /// 5. **BudgetNotExceeded** — zero-cost always passes; non-zero requires budget gate
+/// 6. **WithinDelegationCeiling** — requested capability ≤ policy ceiling for the op;
+///    fail-closed if either level is absent
+/// 7. **InScopeWithTask** — operation is within the verified task token's scope;
+///    fail-closed if no verified scope is present (NO-VACUOUS-WITNESS guard)
 ///
 /// Checks short-circuit on the first denial for latency. All non-denial
 /// states are fully evaluated before the bundle is minted.
@@ -653,8 +801,8 @@ impl PreflightResult {
 /// # Example
 ///
 /// ```rust
-/// use nucleus_ifc_kernel::discharge::{ActionTerm, preflight_action, PreflightResult};
-/// use nucleus_ifc_kernel::{Operation, SinkClass, IFCLabel};
+/// use nucleus_ifc_kernel::discharge::{ActionTerm, VerifiedScope, preflight_action, PreflightResult};
+/// use nucleus_ifc_kernel::{CapabilityLevel, Operation, SinkClass, IFCLabel};
 ///
 /// let term = ActionTerm {
 ///     operation: Operation::WriteFiles,
@@ -663,6 +811,14 @@ impl PreflightResult {
 ///     artifact_label: IFCLabel::default(),
 ///     subject: "spiffe://nucleus/agent/test".to_string(),
 ///     estimated_cost_micro_usd: 0,
+///     // Fail-closed inputs for the two new obligations: without these the
+///     // action is denied (WithinDelegationCeiling / InScopeWithTask).
+///     capability_ceiling: Some(CapabilityLevel::LowRisk),
+///     requested_capability: Some(CapabilityLevel::LowRisk),
+///     verified_scope: Some(VerifiedScope {
+///         allowed_operations: vec![Operation::WriteFiles],
+///         allowed_paths: vec![],
+///     }),
 /// };
 ///
 /// match preflight_action(&term) {
@@ -702,6 +858,14 @@ pub mod test_helpers {
             },
             subject: "test-helper".to_string(),
             estimated_cost_micro_usd: 0,
+            // Happy-path inputs for the two new obligations (widen 5 → 7):
+            // the op is granted at LowRisk and is in the verified token scope.
+            capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
+            requested_capability: Some(crate::CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![Operation::WriteFiles],
+                allowed_paths: vec![],
+            }),
         };
         match preflight_action(&term) {
             PreflightResult::Allowed(bundle) => bundle,
@@ -786,6 +950,68 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
                 cost_micro_usd: term.estimated_cost_micro_usd,
             },
         };
+    }
+
+    // 6. WithinDelegationCeiling: the requested capability must not exceed the
+    //    policy ceiling for this operation. FAIL-CLOSED — if either the ceiling
+    //    or the requested level is absent, DENY (never mint a vacuous witness).
+    //    Mirrors `portcullis::action_term`'s `requested_level > available` gate
+    //    (level_for(op) is the ceiling); with the runtime's inherent per-op
+    //    floor for `requested`, this denies exactly the operations the policy
+    //    forbids (ceiling == Never).
+    match (term.capability_ceiling, term.requested_capability) {
+        (Some(ceiling), Some(requested)) => {
+            if requested > ceiling {
+                return PreflightResult::Denied {
+                    reason: format!(
+                        "WithinDelegationCeiling: requested capability {requested:?} exceeds \
+                         policy ceiling {ceiling:?} for operation {:?}",
+                        term.operation
+                    ),
+                    hint: RepairHint::ReduceCapabilityRequest { requested, ceiling },
+                };
+            }
+        }
+        _ => {
+            return PreflightResult::Denied {
+                reason: format!(
+                    "WithinDelegationCeiling: missing capability ceiling/request for \
+                     operation {:?} — denied fail-closed (no vacuous witness)",
+                    term.operation
+                ),
+                hint: RepairHint::ReduceCapabilityRequest {
+                    // No known request/ceiling: surface the strictest hint (Never
+                    // ceiling) so any non-Never request is flagged.
+                    requested: term.requested_capability.unwrap_or(CapabilityLevel::Always),
+                    ceiling: term.capability_ceiling.unwrap_or(CapabilityLevel::Never),
+                },
+            };
+        }
+    }
+
+    // 7. InScopeWithTask: the operation must be within the verified task token's
+    //    scope. FAIL-CLOSED — if no VerifiedScope is present (no verified token),
+    //    DENY and never mint (the NO-VACUOUS-WITNESS guard). Mirrors
+    //    `portcullis::action_term`'s `InScopeWithTask`: op ∈ allowed_operations.
+    //    (The discharge ActionTerm carries no path, so the allowed_paths
+    //    dimension is not enforced here — see `VerifiedScope`.)
+    match &term.verified_scope {
+        Some(scope) if scope.allowed_operations.contains(&term.operation) => {
+            // in scope — fall through to mint.
+        }
+        _ => {
+            return PreflightResult::Denied {
+                reason: format!(
+                    "InScopeWithTask: operation {:?} is not within the verified task scope \
+                     (or no verified scope present) for subject '{}'",
+                    term.operation, term.subject
+                ),
+                hint: RepairHint::OutOfTaskScope {
+                    operation: term.operation,
+                    subject: term.subject.clone(),
+                },
+            };
+        }
     }
 
     PreflightResult::Allowed(DischargedBundle::new())
@@ -955,6 +1181,22 @@ mod tests {
             artifact_label: trusted_label(),
             subject: "spiffe://nucleus/agent/test".to_string(),
             estimated_cost_micro_usd: 0,
+            // Happy-path inputs for the two widen-added obligations. The base
+            // scope authorizes every operation the happy-path tests exercise;
+            // denial tests override `operation`/labels to trip an *earlier*
+            // check (integrity/path/derivation/ancestry/budget), which
+            // short-circuits before the ceiling/scope checks.
+            capability_ceiling: Some(CapabilityLevel::LowRisk),
+            requested_capability: Some(CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![
+                    Operation::WriteFiles,
+                    Operation::GitCommit,
+                    Operation::GitPush,
+                    Operation::CreatePr,
+                ],
+                allowed_paths: vec![],
+            }),
         }
     }
 
@@ -1544,5 +1786,172 @@ mod tests {
         // After approval, the repaired term passes preflight
         let retry = preflight_action(repair.term());
         assert!(retry.is_allowed());
+    }
+
+    // ── Widen 5 → 7: WithinDelegationCeiling + InScopeWithTask ──────────────
+    //
+    // These are the soundness guards for PR-B. The central property is the
+    // NO-VACUOUS-WITNESS rule: a term that is MISSING an input required by one
+    // of the two new obligations must be DENIED — a witness is never minted
+    // from absent evidence.
+
+    #[test]
+    fn happy_path_mints_full_seven_field_bundle() {
+        // All inputs present + in-scope + within ceiling → Allowed with a bundle
+        // whose Debug shows all seven obligation witnesses.
+        let bundle = preflight_action(&workspace_write_term()).unwrap_bundle();
+        let dbg = format!("{bundle:?}");
+        for needle in [
+            "IntegrityGate",
+            "PathAllowed",
+            "DerivationClear",
+            "NoAdversarialAncestry",
+            "BudgetNotExceeded",
+            "WithinDelegationCeiling",
+            "InScopeWithTask",
+        ] {
+            assert!(dbg.contains(needle), "bundle debug missing {needle}: {dbg}");
+        }
+    }
+
+    // ── NO-VACUOUS-WITNESS: InScopeWithTask ────────────────────────────────
+
+    #[test]
+    fn missing_verified_scope_denies_in_scope_with_task() {
+        // verified_scope: None → must DENY (never mint InScopeWithTask).
+        let term = ActionTerm {
+            verified_scope: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(
+            result.is_denied(),
+            "absent verified scope must deny fail-closed"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial should name InScopeWithTask, got: {:?}",
+            result.denial_reason()
+        );
+        assert!(matches!(
+            result.repair_hint().unwrap(),
+            RepairHint::OutOfTaskScope { .. }
+        ));
+    }
+
+    #[test]
+    fn operation_outside_scope_denies_in_scope_with_task() {
+        // scope present but does NOT authorize the operation → DENY.
+        let term = ActionTerm {
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![Operation::ReadFiles], // not WriteFiles
+                allowed_paths: vec![],
+            }),
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(result.is_denied());
+        assert!(result.denial_reason().unwrap().contains("InScopeWithTask"));
+    }
+
+    #[test]
+    fn empty_scope_denies_in_scope_with_task_fail_closed() {
+        // Empty allowed_operations = nothing authorized (TokenScope allowlist
+        // semantics) → DENY. This is STRICTER than upstream's empty=allow-all
+        // TaskRef guard, on purpose: a VerifiedScope is a capability-token scope.
+        let term = ActionTerm {
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![],
+                allowed_paths: vec![],
+            }),
+            ..workspace_write_term()
+        };
+        assert!(preflight_action(&term).is_denied());
+    }
+
+    // ── NO-VACUOUS-WITNESS: WithinDelegationCeiling ────────────────────────
+
+    #[test]
+    fn missing_capability_ceiling_denies_within_delegation_ceiling() {
+        let term = ActionTerm {
+            capability_ceiling: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(
+            result.is_denied(),
+            "absent capability ceiling must deny fail-closed"
+        );
+        assert!(
+            result
+                .denial_reason()
+                .unwrap()
+                .contains("WithinDelegationCeiling")
+        );
+    }
+
+    #[test]
+    fn missing_requested_capability_denies_within_delegation_ceiling() {
+        let term = ActionTerm {
+            requested_capability: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(result.is_denied());
+        assert!(
+            result
+                .denial_reason()
+                .unwrap()
+                .contains("WithinDelegationCeiling")
+        );
+    }
+
+    #[test]
+    fn requested_above_ceiling_denies_within_delegation_ceiling() {
+        // requested Always > ceiling LowRisk → DENY with ReduceCapabilityRequest.
+        let term = ActionTerm {
+            capability_ceiling: Some(CapabilityLevel::LowRisk),
+            requested_capability: Some(CapabilityLevel::Always),
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(result.is_denied());
+        assert!(matches!(
+            result.repair_hint().unwrap(),
+            RepairHint::ReduceCapabilityRequest {
+                requested: CapabilityLevel::Always,
+                ceiling: CapabilityLevel::LowRisk,
+            }
+        ));
+    }
+
+    #[test]
+    fn never_ceiling_denies_forbidden_operation() {
+        // The meaningful lift: an operation the policy forbids (ceiling == Never)
+        // is denied because requested LowRisk > Never. Not vacuous.
+        let term = ActionTerm {
+            capability_ceiling: Some(CapabilityLevel::Never),
+            requested_capability: Some(CapabilityLevel::LowRisk),
+            ..workspace_write_term()
+        };
+        assert!(preflight_action(&term).is_denied());
+    }
+
+    #[test]
+    fn ceiling_check_precedes_scope_check() {
+        // Both new inputs bad: ceiling fires (check 6) before scope (check 7).
+        let term = ActionTerm {
+            capability_ceiling: None,
+            verified_scope: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(
+            result
+                .denial_reason()
+                .unwrap()
+                .contains("WithinDelegationCeiling"),
+            "ceiling (check 6) should fire before scope (check 7)"
+        );
     }
 }

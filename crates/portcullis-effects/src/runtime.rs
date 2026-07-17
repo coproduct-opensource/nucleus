@@ -29,7 +29,9 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
-use portcullis_core::discharge::{preflight_action, ActionTerm, DischargedBundle, PreflightResult};
+use portcullis_core::discharge::{
+    preflight_action, ActionTerm, DischargedBundle, PreflightResult, VerifiedScope,
+};
 use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
 use portcullis_core::labeled::{self, Labeled};
@@ -620,9 +622,22 @@ impl NucleusRuntime {
     /// ```rust
     /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
     /// use portcullis_effects::FileEffect;
+    /// use nucleus_provenance_memory::{SignedTaskRef, TokenScope};
+    /// use ed25519_dalek::SigningKey;
+    /// use portcullis_core::Operation;
+    ///
+    /// // PR-B: discharge now requires a verified task token whose scope
+    /// // authorizes the operation (`InScopeWithTask`, fail-closed).
+    /// let root = SigningKey::from_bytes(&[9u8; 32]);
+    /// let root_vk = root.verifying_key().to_bytes();
+    /// let nonce = [0u8; 16];
+    /// let scope = TokenScope::new(vec![Operation::WebFetch], vec!["/**".to_string()]);
+    /// let signed = SignedTaskRef::issue("task", scope, nonce, 1_000, 1_000_000, &root);
     ///
     /// let (builder, token) = NucleusRuntime::builder()
     ///     .profile(PolicyProfile::Codegen)
+    ///     .task_token(signed, root_vk, 1_001, nonce)
+    ///     .expect("token verifies")
     ///     .allow_unmediated_access();
     /// let mut rt = builder.build();
     ///
@@ -856,6 +871,22 @@ impl NucleusRuntime {
                 .fold(source_labels[0], |acc, l| acc.join(*l))
         };
 
+        // PR2: read the verified effective scope (allowed_operations /
+        // allowed_paths). `None` preserves the legacy no-token behavior.
+        let verified_scope = self.task_token.as_ref().map(|t| t.scope().clone());
+
+        // PR-B: convert the verified `TokenScope` into the kernel's local
+        // `VerifiedScope` carrier so `preflight_action` can mint
+        // `Discharged<InScopeWithTask>`. The kernel is the dependency-free
+        // Aeneas target and cannot depend on `nucleus-provenance-memory` (that
+        // would cycle back through `portcullis-core`), so the scope is copied
+        // field-for-field here at the seam. `None` → `InScopeWithTask` is
+        // denied fail-closed by `preflight_action` (NO-VACUOUS-WITNESS).
+        let term_scope = verified_scope.as_ref().map(|s| VerifiedScope {
+            allowed_operations: s.allowed_operations.clone(),
+            allowed_paths: s.allowed_paths.clone(),
+        });
+
         let term = ActionTerm {
             operation,
             sink_class,
@@ -863,14 +894,50 @@ impl NucleusRuntime {
             artifact_label,
             subject: self.task.clone(),
             estimated_cost_micro_usd: 0,
+            // PR-B: WithinDelegationCeiling inputs. Both the ceiling and the
+            // request are `level_for(op)`: the runtime is an honest caller that
+            // requests exactly the authority the policy grants for the op and
+            // never over-claims, so `requested ≤ ceiling` holds by construction
+            // (a truthful, non-vacuous witness minted from the *present* policy
+            // level — not from absent evidence). The obligation still bites on
+            // any term that over-claims (`requested > ceiling` → DENY, exercised
+            // by the kernel guard tests) and is fail-closed on `None`; like
+            // `BudgetNotExceeded` it is sound-but-dormant on runtime-built terms.
+            // Actual per-op capability enforcement remains the PolicyEnforced
+            // effect layer's job (unchanged). Mirrors upstream's
+            // `requested_level > available → deny` with the runtime's honest
+            // no-escalation claim.
+            capability_ceiling: Some(self.level_for(operation)),
+            requested_capability: Some(self.level_for(operation)),
+            verified_scope: term_scope,
         };
 
-        // PR2: read the verified effective scope (allowed_operations /
-        // allowed_paths) and hand it back alongside the term so a later PR can
-        // consult it. `None` preserves today's behavior exactly.
-        let verified_scope = self.task_token.as_ref().map(|t| t.scope().clone());
-
         (term, verified_scope)
+    }
+
+    /// The capability level the session policy grants for `op`.
+    ///
+    /// Mirrors `portcullis::CapabilityLattice::level_for` over
+    /// `portcullis_core::CapabilityLattice` (the kernel lattice, which exposes
+    /// the per-dimension fields but not `level_for`). Used to source the
+    /// `WithinDelegationCeiling` ceiling in [`build_term_scoped`].
+    fn level_for(&self, op: Operation) -> CapabilityLevel {
+        let p = &self.policy;
+        match op {
+            Operation::ReadFiles => p.read_files,
+            Operation::WriteFiles => p.write_files,
+            Operation::EditFiles => p.edit_files,
+            Operation::RunBash => p.run_bash,
+            Operation::GlobSearch => p.glob_search,
+            Operation::GrepSearch => p.grep_search,
+            Operation::WebSearch => p.web_search,
+            Operation::WebFetch => p.web_fetch,
+            Operation::GitCommit => p.git_commit,
+            Operation::GitPush => p.git_push,
+            Operation::CreatePr => p.create_pr,
+            Operation::ManagePods => p.manage_pods,
+            Operation::SpawnAgent => p.spawn_agent,
+        }
     }
 
     /// Run `preflight_action` and return the `DischargedBundle` on success.
@@ -1367,6 +1434,59 @@ impl NucleusRuntimeBuilder {
 mod tests {
     use super::*;
 
+    // ── PR-B token helpers ──────────────────────────────────────────────
+    //
+    // Widening the bundle to 7 obligations makes `InScopeWithTask` mandatory:
+    // `preflight_action` denies fail-closed unless the session carries a
+    // verified task token whose scope authorizes the operation. These helpers
+    // mint a broad-scope verified token so the capability/flow/effect tests
+    // below exercise the SAME behavior they did before PR-B (coverage preserved:
+    // the token supplies the now-required in-scope evidence, nothing is
+    // asserted-away). Token semantics themselves are covered by the dedicated
+    // `task_token` submodule.
+
+    /// A verified full-scope task token: (signed, root_vk, now, nonce).
+    /// Scope authorizes every core operation; paths are unconstrained (the
+    /// discharge term carries no path, so `allowed_paths` is not enforced).
+    fn full_scope_token() -> (SignedTaskRef, [u8; 32], u64, [u8; 16]) {
+        let root = SigningKey::from_bytes(&[9u8; 32]);
+        let root_vk = root.verifying_key().to_bytes();
+        let nonce = [0u8; 16];
+        let issued_at = 1_000;
+        let ttl = 1_000_000;
+        let now = 1_001;
+        let scope = TokenScope::new(
+            vec![
+                Operation::ReadFiles,
+                Operation::WriteFiles,
+                Operation::EditFiles,
+                Operation::RunBash,
+                Operation::GlobSearch,
+                Operation::GrepSearch,
+                Operation::WebSearch,
+                Operation::WebFetch,
+                Operation::GitCommit,
+                Operation::GitPush,
+                Operation::CreatePr,
+                Operation::ManagePods,
+                Operation::SpawnAgent,
+            ],
+            vec!["/**".to_string()],
+        );
+        let token = SignedTaskRef::issue("test-task", scope, nonce, issued_at, ttl, &root);
+        (token, root_vk, now, nonce)
+    }
+
+    /// A runtime for `profile` carrying a verified full-scope task token.
+    fn rt_tok(profile: PolicyProfile) -> NucleusRuntime {
+        let (token, root_vk, now, nonce) = full_scope_token();
+        NucleusRuntime::builder()
+            .profile(profile)
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build()
+    }
+
     #[test]
     fn builder_defaults_to_strict() {
         let rt = NucleusRuntime::builder().build();
@@ -1518,8 +1638,11 @@ mod tests {
     fn effects_respect_policy() {
         use crate::FileEffect;
 
+        let (task_token, root_vk, now, nonce) = full_scope_token();
         let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
+            .task_token(task_token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
             .allow_unmediated_access();
         let mut rt = builder.build();
         let proof = rt.preflight_unmediated().unwrap();
@@ -1536,8 +1659,11 @@ mod tests {
     /// the bundle was handed out with no IFC trace — `node_count` stayed 0.
     #[test]
     fn unmediated_effects_advances_flow_tracker() {
+        let (task_token, root_vk, now, nonce) = full_scope_token();
         let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
+            .task_token(task_token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
             .allow_unmediated_access();
         let mut rt = builder.build();
         assert_eq!(rt.flow_tracker().node_count(), 0);
@@ -1596,8 +1722,11 @@ mod tests {
                 PolicyProfile::Permissive,
             ][profile_idx];
 
+            let (task_token, root_vk, now, nonce) = full_scope_token();
             let (builder, token) = NucleusRuntime::builder()
                 .profile(profile)
+                .task_token(task_token, root_vk, now, nonce)
+                .expect("full-scope test token verifies")
                 .allow_unmediated_access();
             let mut rt = builder.build();
 
@@ -1666,9 +1795,7 @@ mod tests {
 
     #[test]
     fn write_file_denied_by_read_only_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::ReadOnly)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::ReadOnly);
         let result = {
             let p = rt
                 .preflight_write(std::path::Path::new("/tmp/test.txt"))
@@ -1697,9 +1824,7 @@ mod tests {
     #[test]
     fn write_file_empty_allowlist_permits_any_path() {
         // Empty allowlist = no path restriction (only policy governs)
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         // This will fail on discharge (IFCLabel default is Untrusted integrity)
         // or on the actual I/O, but NOT on path checking
         let result = {
@@ -1716,9 +1841,7 @@ mod tests {
 
     #[test]
     fn read_file_updates_flow_tracker() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
         // Read a file that exists
@@ -1746,9 +1869,7 @@ mod tests {
 
     #[test]
     fn fetch_url_updates_flow_tracker_with_adversarial() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Research)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Research);
 
         // fetch will fail (stub) but we can test that it gets past discharge
         let result = {
@@ -1773,9 +1894,7 @@ mod tests {
 
     #[test]
     fn run_shell_denied_by_research_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Research)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Research);
         let result = {
             let p = rt.preflight_shell().unwrap();
             rt.run_shell("echo hello", p)
@@ -1786,9 +1905,7 @@ mod tests {
 
     #[test]
     fn git_push_denied_by_codegen_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_push().unwrap();
             rt.git_push("origin", "main", p)
@@ -1799,9 +1916,7 @@ mod tests {
 
     #[test]
     fn denied_error_mentions_capability() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::ReadOnly)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::ReadOnly);
         let result = {
             let p = rt.preflight_shell().unwrap();
             rt.run_shell("echo hello", p)
@@ -1923,9 +2038,7 @@ mod tests {
     #[test]
     fn git_push_denied_by_codegen_profile_via_discharge() {
         // Codegen has git_commit but NOT git_push
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_push().unwrap();
             rt.git_push("origin", "main", p)
@@ -1935,9 +2048,7 @@ mod tests {
 
     #[test]
     fn git_commit_allowed_by_codegen_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         // git_commit may fail on I/O (no repo) but should NOT fail on policy
         let result = {
             let p = rt.preflight_commit().unwrap();
@@ -1950,9 +2061,7 @@ mod tests {
 
     #[test]
     fn run_shell_allowed_by_codegen_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         // run_shell may fail on I/O but should NOT fail on policy
         let result = {
             let p = rt.preflight_shell().unwrap();
@@ -1965,9 +2074,7 @@ mod tests {
 
     #[test]
     fn read_file_returns_labeled_with_correct_tags() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_read().unwrap();
             rt.read_file(std::path::Path::new("Cargo.toml"), p)
@@ -1986,9 +2093,7 @@ mod tests {
 
     #[test]
     fn session_tracks_taint_after_operations() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         assert!(!rt.is_tainted());
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
