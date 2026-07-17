@@ -16,7 +16,7 @@
 //! ```
 
 use crate::flow::{NodeKind, intrinsic_label};
-use crate::{AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel};
+use crate::{AuthorityLevel, ConfLevel, ContentHash, DerivationClass, IFCLabel, IntegLevel};
 
 /// Unix seconds, wasm-safe. `wasm32-unknown-unknown` has no clock, so it returns
 /// 0 there; this only feeds the label's freshness metadata (not the
@@ -108,8 +108,15 @@ impl SessionCleanseToken {
 /// [`check_action_safety_with_ceiling`] if the session has previously observed
 /// `OpaqueExternal` content through *any* path.
 pub struct FlowTracker {
-    /// Node storage: (kind, label, parents).
-    nodes: Vec<(NodeKind, IFCLabel, Vec<u64>)>,
+    /// Node storage: (kind, label, parents, content_hash).
+    ///
+    /// The 4th element is the optional [`ContentHash`] of the bytes this node
+    /// observed (InputsAuthorized brick 1). It is `None` for every node created
+    /// via [`observe`](Self::observe)/[`observe_with_parents`](Self::observe_with_parents)/[`observe_with_label`](Self::observe_with_label);
+    /// only [`observe_with_content_hash`](Self::observe_with_content_hash) sets
+    /// it. Purely additive — nothing in the kernel reads it yet, so it does not
+    /// affect any label, ceiling, or safety decision.
+    nodes: Vec<(NodeKind, IFCLabel, Vec<u64>, Option<ContentHash>)>,
     next_id: u64,
     /// Monotonically non-decreasing session-level taint ceiling.
     ///
@@ -302,7 +309,7 @@ impl FlowTracker {
         let label = parents
             .iter()
             .fold(label, |acc, &pid| match self.node_entry(pid) {
-                Some((_, parent_label, _)) => acc.join(*parent_label),
+                Some((_, parent_label, _, _)) => acc.join(*parent_label),
                 None => acc,
             });
 
@@ -316,7 +323,8 @@ impl FlowTracker {
         if label.confidentiality > self.session_conf_ceiling {
             self.session_conf_ceiling = label.confidentiality;
         }
-        self.nodes.push((kind, label, parents.to_vec()));
+        // Brick 1: caller-labelled observations carry no content hash.
+        self.nodes.push((kind, label, parents.to_vec(), None));
         Ok(id)
     }
 
@@ -328,6 +336,38 @@ impl FlowTracker {
         &mut self,
         kind: NodeKind,
         parents: &[u64],
+    ) -> Result<u64, FlowError> {
+        // Existing behavior unchanged: no content hash attached.
+        self.observe_with_parents_and_hash(kind, parents, None)
+    }
+
+    /// Observe a new data source, tagging it with the [`ContentHash`] of the
+    /// bytes it carried (InputsAuthorized brick 1).
+    ///
+    /// Identical to [`observe`](Self::observe) — a parent-less ingest whose
+    /// label is `intrinsic_label(kind)` — except the node also records
+    /// `Some(hash)`, retrievable via [`content_hash`](Self::content_hash).
+    ///
+    /// Purely additive: the hash is stored, not consulted. Session ceilings and
+    /// the label are computed exactly as for [`observe`](Self::observe), so the
+    /// flow/safety verdict is unchanged by supplying a hash.
+    pub fn observe_with_content_hash(
+        &mut self,
+        kind: NodeKind,
+        hash: ContentHash,
+    ) -> Result<u64, FlowError> {
+        self.observe_with_parents_and_hash(kind, &[], Some(hash))
+    }
+
+    /// Shared implementation of [`observe_with_parents`](Self::observe_with_parents)
+    /// and [`observe_with_content_hash`](Self::observe_with_content_hash): the
+    /// intrinsic-label parent fold, ceiling ratchet, and node push, threading an
+    /// optional content hash into node storage. Existing callers pass `None`.
+    fn observe_with_parents_and_hash(
+        &mut self,
+        kind: NodeKind,
+        parents: &[u64],
+        content_hash: Option<ContentHash>,
     ) -> Result<u64, FlowError> {
         if parents.len() > 8 {
             return Err(FlowError::TooManyParents(parents.len()));
@@ -341,7 +381,7 @@ impl FlowTracker {
         // DeterministicBind invariant (#1230): parents must be non-AI nodes.
         if kind == NodeKind::DeterministicBind {
             for &pid in parents {
-                if let Some((parent_kind, _, _)) = self.node_entry(pid)
+                if let Some((parent_kind, _, _, _)) = self.node_entry(pid)
                     && parent_kind.is_ai_derived()
                 {
                     return Err(FlowError::NonDeterministicParent {
@@ -366,7 +406,7 @@ impl FlowTracker {
             .iter()
             .fold(intrinsic_label(kind, now), |acc, &pid| {
                 match self.node_entry(pid) {
-                    Some((_, parent_label, _)) => acc.join(*parent_label),
+                    Some((_, parent_label, _, _)) => acc.join(*parent_label),
                     None => acc,
                 }
             });
@@ -382,7 +422,8 @@ impl FlowTracker {
         if label.confidentiality > self.session_conf_ceiling {
             self.session_conf_ceiling = label.confidentiality;
         }
-        self.nodes.push((kind, label, parents.to_vec()));
+        self.nodes
+            .push((kind, label, parents.to_vec(), content_hash));
         Ok(id)
     }
 
@@ -390,14 +431,28 @@ impl FlowTracker {
     ///
     /// Returns `None` for unknown or sentinel (0) IDs without panicking (#1203).
     pub fn label(&self, node_id: u64) -> Option<&IFCLabel> {
-        self.node_entry(node_id).map(|(_, l, _)| l)
+        self.node_entry(node_id).map(|(_, l, _, _)| l)
+    }
+
+    /// Get the [`ContentHash`] recorded for a node, if one was supplied via
+    /// [`observe_with_content_hash`](Self::observe_with_content_hash)
+    /// (InputsAuthorized brick 1).
+    ///
+    /// Returns `None` for a node observed without a hash, and `None` for an
+    /// unknown or sentinel (0) ID — the same not-found convention as
+    /// [`label`](Self::label). Read-only; does not affect any flow decision.
+    pub fn content_hash(&self, node_id: u64) -> Option<ContentHash> {
+        self.node_entry(node_id).and_then(|(_, _, _, h)| *h)
     }
 
     /// Internal helper: look up a node entry by ID, guarding the sentinel.
     ///
     /// Node IDs are 1-based; ID 0 is reserved as a sentinel and must not be
     /// used in arithmetic without first checking for zero (#1203).
-    fn node_entry(&self, node_id: u64) -> Option<&(NodeKind, IFCLabel, Vec<u64>)> {
+    fn node_entry(
+        &self,
+        node_id: u64,
+    ) -> Option<&(NodeKind, IFCLabel, Vec<u64>, Option<ContentHash>)> {
         // Use try_from to avoid silent truncation on 32-bit targets (#1212).
         let idx = usize::try_from(node_id.checked_sub(1)?).ok()?;
         self.nodes.get(idx)
@@ -419,7 +474,7 @@ impl FlowTracker {
     /// assert!(tracker.check_action_safety(plan, true).is_denied());
     /// ```
     pub fn check_action_safety(&self, node_id: u64, requires_authority: bool) -> SafetyCheck {
-        let Some((_, label, _)) = self.node_entry(node_id) else {
+        let Some((_, label, _, _)) = self.node_entry(node_id) else {
             // Unknown or sentinel node — fail-closed (#1198, #1203).
             return SafetyCheck::UnknownNode { node_id };
         };
@@ -461,7 +516,7 @@ impl FlowTracker {
                     // Fail closed: unknown or sentinel IDs are unsafe (#1180, #1203).
                     return SafetyCheck::UnknownNode { node_id: pid };
                 }
-                Some((_, label, _)) => {
+                Some((_, label, _, _)) => {
                     if label.integrity == IntegLevel::Adversarial {
                         return SafetyCheck::AdversarialAncestry { tainted_node: pid };
                     }
@@ -604,7 +659,7 @@ impl FlowTracker {
         node_id: u64,
         sink_max_conf: ConfLevel,
     ) -> SafetyCheck {
-        let Some((_, label, _)) = self.node_entry(node_id) else {
+        let Some((_, label, _, _)) = self.node_entry(node_id) else {
             return SafetyCheck::UnknownNode { node_id };
         };
         if label.confidentiality > sink_max_conf {
@@ -716,14 +771,14 @@ impl FlowTracker {
     pub fn is_tainted(&self) -> bool {
         self.nodes
             .iter()
-            .any(|(_, l, _)| l.integrity == IntegLevel::Adversarial)
+            .any(|(_, l, _, _)| l.integrity == IntegLevel::Adversarial)
     }
 
     /// Check if any node has AI-derived derivation.
     pub fn has_ai_derived(&self) -> bool {
         self.nodes
             .iter()
-            .any(|(_, l, _)| l.derivation == DerivationClass::AIDerived)
+            .any(|(_, l, _, _)| l.derivation == DerivationClass::AIDerived)
     }
 }
 
@@ -747,6 +802,44 @@ mod tests {
         let id = t.observe(NodeKind::FileRead).unwrap();
         assert_eq!(id, 1);
         assert_eq!(t.node_count(), 1);
+    }
+
+    // ── Optional content hash (InputsAuthorized brick 1) ─────────────────
+
+    #[test]
+    fn observe_with_content_hash_round_trips_digest() {
+        let mut t = FlowTracker::new();
+        let digest = ContentHash::from_bytes([0xAB; 32]);
+        let id = t
+            .observe_with_content_hash(NodeKind::FileRead, digest)
+            .unwrap();
+
+        // The digest round-trips via the reader.
+        assert_eq!(t.content_hash(id), Some(digest));
+
+        // Purely additive: the hash does not perturb the node's label/flow — a
+        // hashed FileRead is identical to a plain one apart from the stored hash.
+        let plain = t.observe(NodeKind::FileRead).unwrap();
+        assert_eq!(t.label(id), t.label(plain));
+    }
+
+    #[test]
+    fn plain_observe_has_no_content_hash() {
+        let mut t = FlowTracker::new();
+        let id = t.observe(NodeKind::FileRead).unwrap();
+        assert_eq!(t.content_hash(id), None);
+
+        // The other existing constructors also default the hash to None.
+        let with_parents = t.observe_with_parents(NodeKind::ModelPlan, &[id]).unwrap();
+        assert_eq!(t.content_hash(with_parents), None);
+        let with_label = t
+            .observe_with_label(NodeKind::MemoryRead, *t.label(id).unwrap(), &[])
+            .unwrap();
+        assert_eq!(t.content_hash(with_label), None);
+
+        // Unknown / sentinel IDs report None (same not-found convention as label).
+        assert_eq!(t.content_hash(0), None);
+        assert_eq!(t.content_hash(9999), None);
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub use capability_lattice::*;
 mod exposure;
 pub use exposure::*;
 
+// Content-address newtype for tagging flow nodes (InputsAuthorized brick 1).
+mod hash_types;
+pub use hash_types::ContentHash;
+
 pub mod discharge;
 pub mod effect;
 pub mod extracted;
