@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use tracing::warn;
 
-use nucleus::portcullis::{CapabilityLevel, Operation};
+use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation};
 use nucleus::{BudgetModel, NucleusError};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
@@ -67,6 +67,41 @@ fn check_manage_pods(state: &AppState) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Information-flow egress gate for sub-pod spawning (audit C-1 / #1207).
+///
+/// `create_sub_pod` spawns a child compartment and injects orchestrator
+/// credentials into it. A fresh child `FlowTracker` starts clean, so if the
+/// parent session has ingested adversarial/web content (integrity-tainted), is
+/// poisoned (an observation was dropped), or carries confidentiality above what
+/// the spawn may emit, then allowing the spawn would *launder* the parent's
+/// accumulated taint across the sub-pod boundary — the confused-deputy
+/// subagent-spawn vector. `ManagePods` is an `OutboundAction`
+/// (see `Kernel::node_kind_for`), so we consult the SAME egress gate the kernel
+/// uses on its in-process path (`portcullis::kernel::ifc`), failing CLOSED here.
+/// This makes non-interference hold across the sub-pod boundary, not only within
+/// the single-process kernel path.
+///
+/// Kept as a small private helper so its logic is unit-tested directly and so the
+/// call from `create_sub_pod` cannot be silently dropped (an unused private fn
+/// fails the warnings-denied build).
+fn sub_pod_ifc_gate(flow: &FlowTracker) -> Result<(), ApiError> {
+    if flow.is_poisoned() {
+        return Err(ApiError::IfcDenied(
+            "session poisoned: an information-flow observation was dropped; \
+             refusing to spawn a credential-injected sub-pod (fail-closed)"
+                .to_string(),
+        ));
+    }
+    if let Some(detail) = portcullis::exposure_core::ifc_egress_denial(
+        flow,
+        Operation::ManagePods,
+        NodeKind::OutboundAction,
+    ) {
+        return Err(ApiError::IfcDenied(detail));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -83,6 +118,17 @@ pub(crate) async fn create_sub_pod(
 
     // 1. Check manage_pods capability
     check_manage_pods(&state)?;
+
+    // 1b. IFC egress gate (audit C-1 / #1207): a parent session that has ingested
+    //     adversarial/web content — or is poisoned, or over its confidentiality
+    //     ceiling — may NOT spawn a credential-injected sub-pod. Fail closed HERE,
+    //     before credential injection (step 5) and any node call (step 6): a fresh
+    //     child FlowTracker starts clean and would otherwise launder the parent's
+    //     accumulated taint across the sub-pod boundary (confused-deputy spawn).
+    {
+        let flow = state.flow_tracker.lock().await;
+        sub_pod_ifc_gate(&flow)?;
+    }
 
     // 2. Parse requested PodSpec
     let mut spec: PodSpec = serde_yaml::from_str(&req.spec_yaml)
@@ -402,5 +448,50 @@ impl axum::serve::Listener for VsockAxumListener {
 
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
         self.inner.local_addr()
+    }
+}
+
+#[cfg(test)]
+mod ifc_gate_tests {
+    //! Regression guard for audit finding C-1 / #1207: a tainted or poisoned
+    //! parent session must not be able to spawn a credential-injected sub-pod.
+    //! These test the security decision directly; the handler wiring is guarded
+    //! by `sub_pod_ifc_gate` being a private fn called only from `create_sub_pod`
+    //! (dropping the call makes it dead code → warnings-denied build fails).
+    use super::sub_pod_ifc_gate;
+    use crate::ApiError;
+    use nucleus::portcullis::{FlowTracker, NodeKind};
+
+    #[test]
+    fn tainted_parent_is_denied_sub_pod() {
+        let mut tainted = FlowTracker::new();
+        tainted
+            .observe(NodeKind::WebContent)
+            .expect("observe web content");
+        assert!(tainted.is_tainted());
+        assert!(
+            matches!(sub_pod_ifc_gate(&tainted), Err(ApiError::IfcDenied(_))),
+            "a web-tainted parent must be denied sub-pod spawn (audit C-1)"
+        );
+    }
+
+    #[test]
+    fn poisoned_parent_is_denied_sub_pod() {
+        let mut poisoned = FlowTracker::new();
+        poisoned.poison();
+        assert!(poisoned.is_poisoned());
+        assert!(
+            matches!(sub_pod_ifc_gate(&poisoned), Err(ApiError::IfcDenied(_))),
+            "a poisoned parent must be denied sub-pod spawn (fail-closed)"
+        );
+    }
+
+    #[test]
+    fn clean_parent_passes_the_gate() {
+        let clean = FlowTracker::new();
+        assert!(
+            sub_pod_ifc_gate(&clean).is_ok(),
+            "a clean parent must pass the IFC gate (no over-denial)"
+        );
     }
 }
