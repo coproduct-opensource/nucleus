@@ -983,12 +983,12 @@ impl NucleusMcpServer {
                 .unwrap_or("");
             crate::web_fetch_policy::check_mime_type(content_type)?;
 
-            let bytes = resp
-                .bytes()
+            // Bounded streaming read: never allocate the whole upstream body, so a
+            // malicious page cannot OOM-kill the enforcement process (audit H-1).
+            let (bytes, truncated) = crate::read_body_capped(resp, max_bytes)
                 .await
                 .map_err(|e| format!("body read failed: {e}"))?;
-            let truncated = bytes.len() > max_bytes;
-            let body = String::from_utf8_lossy(&bytes[..std::cmp::min(bytes.len(), max_bytes)]);
+            let body = String::from_utf8_lossy(&bytes);
             let suffix = if truncated { "\n(truncated)" } else { "" };
             Ok(format!("HTTP {status}\n\n{body}{suffix}"))
         }

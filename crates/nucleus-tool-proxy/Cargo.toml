@@ -94,6 +94,9 @@ tokio-vsock = "0.7"
 [dev-dependencies]
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# HTTP mock upstream for the H-1 bounded-body-read regression test
+# (read_body_capped). Dev-only; production graph unchanged.
+wiremock = "0.6"
 # Direct access to the IFC gate (flow/flow_algebra/SinkClass) for the attack
 # corpus; already transitive via `portcullis`. Dev-only — production graph
 # unchanged. Used by tests/attack_corpus.rs.
