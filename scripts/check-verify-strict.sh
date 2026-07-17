@@ -76,13 +76,19 @@ BEGIN { skip=0; brace=0; pending=0 }
         if (brace <= 0) { skip=0; brace=0 }
         next
     }
-    if (line ~ /#\[cfg\(test\)\]/) { pending=1 }
-    if (pending==1 && no>0) {
-        skip=1
-        brace = no - nc
-        pending=0
-        if (brace <= 0) { skip=0; brace=0 }
-        next
+    if (line ~ /#\[cfg\(test\)\]/) { pending=1; next }
+    if (pending==1) {
+        if (no>0) {                       # block body starts on this line
+            skip=1
+            brace = no - nc
+            pending=0
+            if (brace <= 0) { skip=0; brace=0 }
+            next
+        }
+        # cfg(test) on a non-block item (`mod tests;`, `use ...;`): no block to
+        # skip — clear pending so it does not swallow the next braced item
+        # (latent false-NEGATIVE; fix shared with scripts/check-mediation.sh).
+        if (line ~ /;/) { pending=0 }
     }
     # Skip comment lines (`//`, `///`, `//!`) — doc/example prose, not code.
     stripped=line; sub(/^[[:space:]]+/,"",stripped)
