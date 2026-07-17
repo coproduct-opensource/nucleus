@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use portcullis_core::memory::{MemoryAuthority, MemoryLabel};
 use portcullis_core::{DerivationClass, IntegLevel};
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ pub fn declassify(
         let Ok(sig) = Signature::from_slice(sig_bytes) else {
             continue;
         };
-        if vk.verify(&msg, &sig).is_ok() {
+        if vk.verify_strict(&msg, &sig).is_ok() {
             verified.insert(*pk_bytes);
         }
     }
@@ -255,6 +255,50 @@ mod tests {
         // Promoted to informing (Untrusted), but ancestry preserved (not Deterministic).
         assert_eq!(label.integ_level(), IntegLevel::Untrusted);
         assert_ne!(label.derivation, DerivationClass::Deterministic);
+    }
+
+    /// M-3 strong-binding regression (site: `declassify`, the
+    /// `vk.verify_strict(&msg, &sig)` cosignature check). The Ed25519
+    /// identity/neutral key (`[1, 0, ..., 0]`) with the identity-triple
+    /// signature (R = identity encoding, s = 0) satisfies the COFACTORED
+    /// verification equation for every message, so non-strict `verify()`
+    /// ACCEPTS it — a forged threshold cosignature. `verify_strict()`
+    /// rejects the small-order key. If the site is reverted to non-strict
+    /// `vk.verify(...)`, assertion (ii) counts the forged key and the
+    /// adversarial record is (wrongly) PROMOTED.
+    #[test]
+    fn small_order_key_is_rejected_by_verify_strict() {
+        // (i) No regression: an honest 2-of-2 quorum still promotes.
+        let rec = web_record();
+        let honest_trusted = [
+            key(1).verifying_key().to_bytes(),
+            key(2).verifying_key().to_bytes(),
+        ];
+        let honest = SignedDeclassify::new(human_witness(&rec))
+            .cosign(&key(1))
+            .cosign(&key(2));
+        declassify(&rec, &honest, &honest_trusted, 2)
+            .expect("honest quorum must still promote through verify_strict");
+
+        // (ii) Strong binding: the small-order identity key with the
+        // identity-triple signature must NOT count as a valid witness.
+        let mut id = [0u8; 32];
+        id[0] = 1; // identity/neutral point encoding — a small-order key
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[..32].copy_from_slice(&id); // R = identity, s = 0
+        let mut forged = SignedDeclassify::new(human_witness(&rec));
+        forged.signatures.push((id, sig_bytes.to_vec()));
+        // Trust the identity key and require just one witness: the only way
+        // to reach the threshold is for the forged cosignature to verify.
+        assert!(
+            matches!(
+                declassify(&rec, &forged, &[id], 1),
+                Err(DeclassifyError::InsufficientWitnesses { got: 0, need: 1 })
+            ),
+            "small-order identity key must be REJECTED by verify_strict; a \
+             revert to non-strict verify() would COUNT this forged cosignature \
+             and promote an adversarial record"
+        );
     }
 
     #[test]

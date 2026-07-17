@@ -54,7 +54,7 @@
 //!   axioms `[propext, Quot.sound]`-only) — see [`FORK_COST_THEOREM_MODELED`].
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -197,7 +197,7 @@ fn verify_bytes(vk: &VerifyingKey, msg: &[u8], sig_b64: &str) -> Result<(), Bond
     }
     let mut buf = [0u8; 64];
     buf.copy_from_slice(&sig_bytes);
-    vk.verify(msg, &Signature::from_bytes(&buf))
+    vk.verify_strict(msg, &Signature::from_bytes(&buf))
         .map_err(|e| BondError::SignatureInvalid(e.to_string()))
 }
 

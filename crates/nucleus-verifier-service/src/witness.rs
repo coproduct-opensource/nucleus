@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use tokio::sync::RwLock;
 
 /// How many recent peer cosignatures the in-memory ring retains.
@@ -159,7 +159,7 @@ impl WitnessFederation {
             .try_into()
             .map_err(|_| WitnessError::BadSignature)?;
         let signature = Signature::from_bytes(&sig_array);
-        vk.verify(sth_json.as_bytes(), &signature)
+        vk.verify_strict(sth_json.as_bytes(), &signature)
             .map_err(|_| WitnessError::BadSignature)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
