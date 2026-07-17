@@ -1145,8 +1145,8 @@ mod tests {
         let obs = term.derive_obligations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
-            "ReadFiles should derive PathAllowed"
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::FsPathAllowed)),
+            "ReadFiles should derive FsPathAllowed"
         );
     }
 
@@ -1156,8 +1156,8 @@ mod tests {
         let obs = term.derive_obligations();
         assert!(
             !obs.iter()
-                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
-            "WebFetch should NOT derive PathAllowed"
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::FsPathAllowed)),
+            "WebFetch should NOT derive FsPathAllowed"
         );
     }
 
