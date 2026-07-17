@@ -42,6 +42,7 @@ mod node_client;
 mod pod_mgmt;
 mod policy;
 mod sandbox_proof;
+mod session_token;
 mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
@@ -245,6 +246,26 @@ struct Args {
     #[arg(long, env = "NUCLEUS_CERT_ROOT_PUBKEY")]
     cert_root_pubkey: Option<String>,
 
+    // === Live-Path Session Task Token (PR-2, present-not-consumed) ===
+    // Host-minted session capability token injected on the SAME host-controlled
+    // boot channel that provisions credentials (the pod boot environment set by
+    // the node — see nucleus-node's pod launch). NEVER read from an agent-supplied
+    // field (`spec_yaml`, tool args). Verified once at startup and held privately
+    // in `AppState`; a later PR consumes it to gate RunBash. Fail-closed: absent
+    // or invalid ⇒ the later gate DENIES.
+    /// Serialized (JSON) host-minted session task token (`SignedTaskRef`).
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN")]
+    task_token: Option<String>,
+    /// Hex-encoded 16-byte expected effective nonce for the session task token.
+    /// Host-controlled out-of-band value (never agent-readable) — the token
+    /// chain's truncation defense.
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN_NONCE")]
+    task_token_nonce: Option<String>,
+    /// Hex-encoded 32-byte Ed25519 root issuer public key the session task token
+    /// is pinned to.
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN_ISSUER")]
+    task_token_issuer: Option<String>,
+
     // === Approval Bundle Configuration ===
     /// Require a signed approval bundle at startup.
     /// When set, the tool-proxy refuses to start without a valid JWS bundle
@@ -332,6 +353,12 @@ pub(crate) struct AppState {
     /// `NUCLEUS_DECLASSIFY_THRESHOLD` (default 1); with empty trusted keys this
     /// is unsatisfiable, so declassification is fail-closed until configured.
     pub(crate) declassify_threshold: usize,
+    /// Host-minted session capability token, verified once at startup (PR-2,
+    /// present-not-consumed). Private to the tool-proxy session — NOT
+    /// agent-reachable. Fail-closed: `Missing`/`Invalid` MUST cause the later
+    /// RunBash-gating PR to DENY. Consumed by that later PR, hence unused today.
+    #[allow(dead_code)]
+    pub(crate) session_task_token: session_token::SessionTaskToken,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -1306,6 +1333,27 @@ async fn main() -> Result<(), ApiError> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1);
 
+    // Live-path session task token (PR-2, present-not-consumed). Read the
+    // host-injected token/nonce/issuer off the boot channel and verify ONCE.
+    // Fail-closed: an unreadable clock, an absent token, or a verification
+    // failure all yield a non-`Verified` state so the later RunBash-gating PR
+    // denies. `now` is derived from the wall clock here (production) but passed
+    // explicitly into the pure resolver (tests supply a fixed `now`).
+    let session_task_token = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => session_token::resolve_session_task_token(
+            args.task_token.as_deref(),
+            args.task_token_nonce.as_deref(),
+            args.task_token_issuer.as_deref(),
+            elapsed.as_secs(),
+        ),
+        // Clock before the epoch ⇒ cannot evaluate freshness ⇒ fail closed.
+        Err(_) => session_token::SessionTaskToken::Invalid,
+    };
+    info!(
+        "live-path session task token: {}",
+        session_task_token.state_label()
+    );
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1342,6 +1390,7 @@ async fn main() -> Result<(), ApiError> {
         memory_transforms,
         declassify_trusted_keys,
         declassify_threshold,
+        session_task_token,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
