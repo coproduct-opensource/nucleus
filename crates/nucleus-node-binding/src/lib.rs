@@ -58,7 +58,7 @@
 //! verify_binding(&binding, &passport_pk).expect("binding verifies");
 //! ```
 
-use ed25519_dalek::{Signer, Verifier};
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
 /// Domain-separation prefix for the signed binding message.
@@ -145,7 +145,7 @@ pub fn verify_binding(
     let vk = ed25519_dalek::VerifyingKey::from_bytes(trusted_passport_pubkey)
         .map_err(|e| BindingError::InvalidKey(e.to_string()))?;
     let sig = ed25519_dalek::Signature::from_bytes(&binding.sig);
-    vk.verify(&msg, &sig)
+    vk.verify_strict(&msg, &sig)
         .map_err(|e| BindingError::SignatureMismatch(e.to_string()))?;
     Ok(())
 }

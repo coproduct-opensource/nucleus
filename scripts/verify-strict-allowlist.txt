@@ -1,0 +1,17 @@
+# Allowlist for scripts/check-verify-strict.sh (audit finding M-3).
+#
+# Each non-comment line below is an EXACT (whitespace-trimmed) source line
+# that is permitted to contain a `.verify(msg, &sig)`-shaped call inside a
+# file that also imports `ed25519_dalek`, even though it is NOT a non-strict
+# dalek trust-path re-verify. Precede every entry with a comment giving the
+# file and the reason it is safe.
+#
+# Add an entry ONLY when the call provably does not reach
+# `ed25519_dalek::VerifyingKey::verify` (e.g. a `ring`/`p256` call that lives
+# beside dalek code, or a same-named wrapper on a different type). When in
+# doubt, convert the site to `verify_strict` instead of allowlisting it.
+#
+# There are currently no allowlisted entries: every dalek trust-path verify
+# uses `verify_strict`, and the wrapper `.verify(...)` methods
+# (`Receipt::verify(&vk)`, `SignedTreeHead::verify(&witness)`, ...) are
+# single-argument and do not match the gate's two-argument pattern.

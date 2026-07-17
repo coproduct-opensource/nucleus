@@ -78,6 +78,15 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
+  verify-strict:
+    name: Ed25519 verify_strict gate (M-3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Forbid non-strict dalek .verify(...) on trust paths
+        run: scripts/check-verify-strict.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

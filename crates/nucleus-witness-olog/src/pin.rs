@@ -36,7 +36,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ct_merkle::{ConsistencyProof, InclusionProof, RootHash};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::digest::Output;
 use sha2::Sha256;
@@ -136,7 +136,7 @@ fn verify_checkpoint_sig(c: &SignedCheckpoint, vk: &VerifyingKey) -> Result<(), 
     }
     let mut buf = [0u8; 64];
     buf.copy_from_slice(&sig_bytes);
-    vk.verify(&canonical_checkpoint_bytes(c), &Signature::from_bytes(&buf))
+    vk.verify_strict(&canonical_checkpoint_bytes(c), &Signature::from_bytes(&buf))
         .map_err(|e| TrustRejection::BadCheckpointSig(e.to_string()))
 }
 

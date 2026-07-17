@@ -266,3 +266,61 @@ Strong-binding rationale + tests
 
 Status
 - [DONE] All three sites use `verify_strict`; new + existing suites pass (`cargo test -p nucleus-receipt -p nucleus-verifier-service -p nucleus-witness`), `cargo fmt` clean, `cargo clippy` on the three crates has no new warnings.
+- SUBSUMED by item 15 (audit M-3), which completes the whole class (every remaining dalek trust-path re-verify) and adds a CI grep-gate so the property cannot silently regress. The three M-2 sites and their tests are unchanged and remain covered by the gate.
+
+## 15) Ed25519 non-strict `verify()` — remainder of the class + CI ratchet (audit M-3)
+
+Deficiency
+- Beyond the three M-2 sites, the rest of the codebase still had `ed25519_dalek::VerifyingKey::verify(msg, &sig)` (non-strict, cofactored) on production trust paths. Non-strict verification accepts small-order / non-canonical public keys and `R` points, so the Ed25519 identity/neutral key with an "identity-triple" signature verifies under any message → key-substitution / weak signature-to-identity binding. M-3 finishes the class (converts every remaining dalek site to `verify_strict`) and installs a durable CI gate.
+
+TODO — conversions (all [DONE])
+- Swapped `vk.verify(msg, &sig)` → `vk.verify_strict(msg, &sig)` at every production dalek trust-path re-verify below, and removed the now-unused `ed25519_dalek::Verifier` trait import from each module (`verify_strict` is an inherent method, so the deny-warnings build stays clean). `verify_strict` is strictly stronger — it additionally rejects small-order/non-canonical `A` and `R`.
+  - `crates/nucleus-verifier-service/src/witness.rs:162` (peer STH cosignature verify)
+  - `crates/nucleus-witness/src/server.rs:249` (trusted-key STH signature verify)
+  - `crates/nucleus-oidc-provider/src/token.rs:237` (subject_token / JWT-SVID — identity trust root)
+  - `crates/nucleus-provenance/src/lib.rs:230` (DSSE attestation signature verify)
+  - `crates/nucleus-node-binding/src/lib.rs:148` (node↔principal passport binding verify)
+  - `crates/nucleus-provenance-memory/src/declassify.rs:172` (threshold human-auth declassify cosignature — HIGH value)
+  - `crates/nucleus-control-plane-server/src/auth.rs:259` (control-plane JWT-SVID auth — identity trust root; found by workspace sweep, not in the original M-3 list)
+  - `crates/nucleus-externality/src/claim.rs:137` (oracle claim signature verify; found by sweep)
+  - `crates/nucleus-witness-gossip/src/lib.rs:119` (`verify_head` cosignature/v1 verify; found by sweep)
+  - `crates/nucleus-witness-olog/src/pin.rs:139` (pinned-log checkpoint signature verify; found by sweep)
+  - `crates/nucleus-witness-olog/src/manifest.rs:140` (accumulation-manifest signature verify; found by sweep)
+  - `crates/nucleus-witness-olog/src/bond.rs:200` (bond evidence signature verify; found by sweep)
+
+Wrapper `.verify(...)` methods traced to their inner dalek call — already strict, no change:
+- `nucleus-receipt::Receipt::verify` (`lib.rs:187`, from M-2), reached via `nucleus-recompute::verify_signed_clearing` and `nucleus-agent-card` e2e — inner call is `verify_strict`.
+- `nucleus-lineage::SignedTreeHead::verify` → `Ed25519Witness::verify_canonical` (`checkpoint.rs:273,308`) — `verify_strict`. Reached via `nucleus-lineage::merkle::verify_log` and `nucleus-envelope::verify.rs:904`.
+
+SKIPs (with justification)
+- Every `portcullis` verify site — `certificate.rs` (authority/block/PoP ~923/949/983), `token_sign.rs:50`, `receipt_sign.rs:72`, `manifest_registry.rs:99/141` — and `nucleus-identity::approval_bundle.rs:425` (reached via `nucleus-tool-proxy/src/main.rs:583`): these verify with **`ring` (`UnparsedPublicKey` + `signature::ED25519`), not `ed25519-dalek`**. `ring` exposes no `verify_strict`, so the M-3 mechanism does not apply. NOTE: these are NOT already safe — see the sibling finding below.
+- `crates/nucleus-agent-card/src/jwk.rs:134`: **P-256 ECDSA (ES256)** via `p256::ecdsa` (`VerifyingKey::from_sec1_bytes`), not Ed25519.
+- `portcullis` `galois.rs` / `intent.rs` `connection.verify(l, r)` / `bridge.verify(...)`: Galois-connection lattice check, not a signature verify.
+- `portcullis` `escalation.rs` / `receipt_chain.rs` / `token.rs` `chain.verify()` / `token.verify(now, depth)`: hash-chain + ring signature wrappers, no dalek path.
+- Test-only dalek `.verify(...)`: `nucleus-oidc-provider` `issuer.rs:686`, `keystore/memory.rs:238/275`, `keystore/rotator.rs:240`; `nucleus-lineage/src/file_signer.rs:145`; and all `crates/*/tests/` integration tests. `#[cfg(test)]` / test-dir only — not a production trust path.
+- Signing (not verifying) calls (`.sign(...)`): out of scope by definition.
+
+CI grep-gate (the durable ratchet) — [DONE]
+- `scripts/check-verify-strict.sh` (+ commented allowlist `scripts/verify-strict-allowlist.txt`), wired into `.github/workflows/ci.yml` as job `verify-strict` ("Ed25519 verify_strict gate (M-3)"). It scans only files importing `ed25519_dalek`, strips `#[cfg(test)]` blocks and `tests/`/`benches/` dirs and comment lines, and FAILS (exit 1) on any two-argument `.verify(_, &sig)` that is not `verify_strict` and not in the allowlist. Prefers `rg`, falls back to POSIX `grep`.
+- PROVEN TO BITE: planting `.verify(&canonical_claim_bytes(claim), &sig)` back into `nucleus-externality/src/claim.rs` made the gate exit 1 and print the offending `file:line`; removing the plant returned it to exit 0 / PASSED.
+
+Regression tests (identity-triple, `[1,0,…,0]` key + `R=identity‖s=0`) — [DONE]
+- Three crown-jewel dalek paths, each driven through the site's REAL public function, each with (i) honest signature still verifies and (ii) identity-triple REFUSED; each FAILS if its site is reverted to non-strict (verified by temporary revert → assertion panic):
+  - `crates/nucleus-oidc-provider/src/token.rs` → `token::tests::small_order_key_is_rejected_by_verify_strict` (full token-exchange handler; forged token otherwise valid → 400 invalid_grant under strict, would be 200 under non-strict).
+  - `crates/nucleus-provenance-memory/src/declassify.rs` → `declassify::tests::small_order_key_is_rejected_by_verify_strict` (threshold declassify; forged cosignature must not reach the quorum).
+  - `crates/nucleus-control-plane-server/src/auth.rs` → `auth::tests::small_order_key_is_rejected_by_verify_strict` (JWT-SVID auth; forged principal must be rejected). NOTE: substituted for the originally-suggested "portcullis certificate verify", which is a `ring` path (see sibling finding) with no `verify_strict` to guard.
+
+Status
+- [DONE] All 12 dalek sites use `verify_strict`; CI-gated by `scripts/check-verify-strict.sh`. `cargo test` green on all touched crates (`nucleus-node-binding`, `nucleus-verifier-service`, `nucleus-provenance`, `nucleus-oidc-provider`, `nucleus-provenance-memory`, `nucleus-witness`, `nucleus-witness-gossip`, `nucleus-witness-olog`, `nucleus-control-plane-server`, `nucleus-externality`); `cargo fmt --all --check` clean; `cargo clippy --all-targets -- -D warnings` clean on all touched crates.
+
+## 16) [SIBLING of M-3, NEW — needs owner triage] `ring` Ed25519 trust-path verifies accept small-order/identity-triple signatures
+
+Deficiency
+- The `ring`-backed Ed25519 verifies (portcullis `certificate.rs`, `token_sign.rs`, `receipt_sign.rs`, `manifest_registry.rs`; `nucleus-identity::approval_bundle.rs`) have the SAME weak-binding weakness M-3 fixes for dalek, and it is NOT fixable with `verify_strict` (ring has no such API). Empirically confirmed under the repo's pinned `ring`: `UnparsedPublicKey::new(&signature::ED25519, [1,0,…,0]).verify(b"any message", &identity_triple)` returns `Ok` (`RING_DIRECT_IDENTITY_TRIPLE_ACCEPTED = true`), and `verify_certificate` with the identity root key passed the authority-signature check (it only later failed proof-of-possession because mutating the signature changed the block hash). So a delegation chain whose in-band `next_key` is set to the identity key can have the next hop "signed" by nobody, and any trust anchor pinned to the identity key is forgeable.
+- Exploitability varies by site: certificate DELEGATION `next_key` travels in-band (attacker-influenced) → highest concern; `verify_certificate` root key, `TrustStore`, and token/receipt keys are caller-pinned (lower, but still weak-binding).
+
+TODO
+- [ ] Owner decision required — not fixed here (out of M-3's stated dalek/`verify_strict` scope; it is a load-bearing crypto change). Options: (a) add an explicit small-order/canonical-encoding rejection of the public key and `R` around each ring verify; or (b) migrate these trust-path verifies to `ed25519-dalek::verify_strict`. Either way, extend `scripts/check-verify-strict.sh` to cover the ring paths once a canonical form is chosen.
+
+Status
+- [OPEN] Reported by the M-3 sweep; deliberately left unfixed pending owner triage.

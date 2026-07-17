@@ -28,7 +28,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use ct_merkle::{digest::Output, ConsistencyProof, RootHash};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use nucleus_lineage::{checkpoint_signed_bytes, ed25519_key_id, SIG_TYPE_ED25519};
 use sha2::Sha256;
 
@@ -246,7 +246,7 @@ fn check_trusted_signature(checkpoint: &Checkpoint, record: &OriginRecord) -> Re
                 }
             };
             let signature = Signature::from_bytes(&sig_arr);
-            if vk.verify(&signed_body, &signature).is_ok() {
+            if vk.verify_strict(&signed_body, &signature).is_ok() {
                 return Ok(()); // a trusted key validly signed.
             }
             saw_matching_key_bad_sig = true;
