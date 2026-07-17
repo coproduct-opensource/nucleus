@@ -123,6 +123,36 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
 
+    // Live-path session capability token (optional). The node injects it on the
+    // kernel cmdline as `nucleus.task_token_hex` (hex of the token JSON — the
+    // cmdline is whitespace-delimited and quote-sensitive, so raw JSON is unsafe)
+    // plus hex nonce/issuer. We decode the token back to the exact JSON string
+    // the tool-proxy verify half expects and forward all three as env vars. If
+    // the token is absent or the hex is malformed we simply do not set them —
+    // the tool-proxy then records Missing/Invalid and fails closed.
+    if let Some(token_hex) = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex") {
+        match hex::decode(&token_hex)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+        {
+            Some(token_json) => {
+                std::env::set_var("NUCLEUS_TASK_TOKEN", token_json);
+                if let Some(nonce) = parse_cmdline_secret(&cmdline, "nucleus.task_token_nonce") {
+                    std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", nonce);
+                }
+                if let Some(issuer) = parse_cmdline_secret(&cmdline, "nucleus.task_token_issuer") {
+                    std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", issuer);
+                }
+            }
+            None => {
+                eprintln!(
+                    "nucleus-guest-init: nucleus.task_token_hex is not valid hex/UTF-8; \
+                     skipping session token (tool-proxy will fail closed)"
+                );
+            }
+        }
+    }
+
     // S3 audit sink config (optional, passed via kernel args from nucleus-node)
     for (arg, env_var) in [
         (
@@ -388,5 +418,39 @@ mod tests {
     fn parse_sandbox_token_empty_value() {
         let cmdline = "nucleus.sandbox_token=";
         assert_eq!(parse_cmdline_secret(cmdline, "nucleus.sandbox_token"), None);
+    }
+
+    /// The live-path token rides the cmdline hex-encoded; decoding it back must
+    /// reproduce the EXACT JSON string the tool-proxy verify half parses. JSON
+    /// contains `{`, `"`, `:`, `,` — all cmdline-hostile — which is why it is
+    /// hex-wrapped; this asserts the wrapper round-trips losslessly and that the
+    /// hex token is a single whitespace-delimited cmdline argument.
+    #[test]
+    fn task_token_hex_roundtrips_to_exact_json() {
+        let token_json = r#"{"task_id":"pod-1","blocks":[{"claim":{"nonce":[1,2,3]}}]}"#;
+        let token_hex = hex::encode(token_json.as_bytes());
+        let nonce_hex = hex::encode([7u8; 16]);
+        let issuer_hex = hex::encode([9u8; 32]);
+        let cmdline = format!(
+            "console=ttyS0 nucleus.auth_secret=a nucleus.task_token_hex={token_hex} \
+             nucleus.task_token_nonce={nonce_hex} nucleus.task_token_issuer={issuer_hex}"
+        );
+
+        let parsed_hex = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex")
+            .expect("hex token must parse as a single cmdline arg");
+        let decoded = String::from_utf8(hex::decode(&parsed_hex).unwrap()).unwrap();
+        assert_eq!(
+            decoded, token_json,
+            "hex must decode back to the exact JSON"
+        );
+
+        assert_eq!(
+            parse_cmdline_secret(&cmdline, "nucleus.task_token_nonce"),
+            Some(nonce_hex)
+        );
+        assert_eq!(
+            parse_cmdline_secret(&cmdline, "nucleus.task_token_issuer"),
+            Some(issuer_hex)
+        );
     }
 }

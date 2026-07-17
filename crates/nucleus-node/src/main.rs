@@ -38,6 +38,7 @@ mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
 mod net;
+mod session_mint;
 mod signed_proxy;
 mod trust_gate;
 mod vsock_bridge;
@@ -1220,6 +1221,64 @@ impl ContainerPod {
     }
 }
 
+/// Resolve the pod's policy and mint a fresh live-path session capability
+/// token scoped to its granted operations.
+///
+/// Returns `None` (with a warning) if the policy cannot be resolved, the clock
+/// is unavailable, or the token cannot be serialized. That is fail-closed: the
+/// pod still spawns, but with NO token, so the tool-proxy's startup verify half
+/// records `Missing`/`Invalid` and later token-gated operations are denied.
+///
+/// The signing key is the node's dedicated task-issuer key (role-separated from
+/// the executor key); only its public half is injected downstream.
+#[cfg_attr(
+    not(any(feature = "local-driver", target_os = "linux")),
+    allow(dead_code)
+)]
+fn mint_task_token_for_spec(
+    state: &NodeState,
+    spec: &PodSpec,
+    id: Uuid,
+) -> Option<session_mint::MintedTaskToken> {
+    let policy = match spec.spec.resolve_policy() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                pod = %id,
+                error = %e,
+                "live-path mint: policy resolution failed; no session token injected (fail-closed at verify)"
+            );
+            return None;
+        }
+    };
+    let now_unix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => {
+            tracing::warn!(pod = %id, "live-path mint: clock before epoch; no session token injected");
+            return None;
+        }
+    };
+    // TTL = the pod/session lifetime (the spec's own timeout bound, in seconds).
+    let ttl_secs = spec.spec.timeout_seconds;
+    match session_mint::mint_session_task_token(
+        &id.to_string(),
+        &policy,
+        ttl_secs,
+        now_unix,
+        state.trust_gate.task_issuer_signing_key.as_ref(),
+    ) {
+        Ok(minted) => Some(minted),
+        Err(e) => {
+            tracing::warn!(
+                pod = %id,
+                error = %e,
+                "live-path mint: token serialization failed; no session token injected"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
@@ -1309,6 +1368,17 @@ async fn spawn_local_pod(
         &spec_yaml_hash,
     );
     command.env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token);
+
+    // Live-path: mint + inject the session capability token scoped to exactly
+    // the pod policy's granted operations. The tool-proxy verifies it once at
+    // startup (fail-closed). Injected on the same host-controlled env channel as
+    // the secrets above; the token itself is a scoped capability + PUBLIC issuer
+    // key (not a secret). Names match the tool-proxy verify half exactly.
+    if let Some(minted) = mint_task_token_for_spec(state, spec, id) {
+        command.env("NUCLEUS_TASK_TOKEN", &minted.token_json);
+        command.env("NUCLEUS_TASK_TOKEN_NONCE", &minted.nonce_hex);
+        command.env("NUCLEUS_TASK_TOKEN_ISSUER", &minted.issuer_hex);
+    }
 
     // Detect orchestrator pod: inject pod management env vars
     let enable_pod_mgmt = spec
@@ -1469,6 +1539,14 @@ async fn spawn_container_pod(
                     env.push(format!("{key}={val}"));
                 }
             }
+        }
+
+        // Live-path session capability token (see spawn_local_pod). Injected in
+        // proxy mode — the only container mode that runs the tool-proxy sidecar.
+        if let Some(minted) = mint_task_token_for_spec(state, spec, id) {
+            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
+            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
+            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
         }
     }
 
@@ -1852,6 +1930,9 @@ async fn spawn_firecracker_pod(
             .identity_manager
             .as_ref()
             .map(|_| state.identity_vsock_port);
+        // Live-path: mint the session capability token; from_spec injects it on
+        // the kernel cmdline for guest-init to forward into the in-VM tool-proxy.
+        let task_token = mint_task_token_for_spec(state, spec, id);
         let config = firecracker_config::FirecrackerConfig::from_spec(
             spec,
             &log_path,
@@ -1861,6 +1942,7 @@ async fn spawn_firecracker_pod(
             &state.proxy_auth_secret,
             &state.proxy_approval_secret,
             workload_api_port,
+            task_token.as_ref(),
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,

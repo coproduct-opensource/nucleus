@@ -111,6 +111,7 @@ impl FirecrackerConfig {
         auth_secret: &str,
         approval_secret: &str,
         workload_api_port: Option<u32>,
+        task_token: Option<&crate::session_mint::MintedTaskToken>,
     ) -> Self {
         let vcpu_count = spec
             .spec
@@ -221,6 +222,34 @@ impl FirecrackerConfig {
             boot_args = match boot_args.take() {
                 Some(args) => Some(format!("{args} nucleus.sandbox_token={sandbox_token}")),
                 None => Some(format!("nucleus.sandbox_token={sandbox_token}")),
+            };
+        }
+
+        // Inject the live-path session capability token via the kernel cmdline,
+        // for nucleus-guest-init to forward to the in-VM tool-proxy as
+        // NUCLEUS_TASK_TOKEN{,_NONCE,_ISSUER}.
+        //
+        // The token JSON is **hex-encoded** here (`nucleus.task_token_hex`)
+        // because the kernel cmdline is whitespace-delimited and quote-sensitive;
+        // raw JSON (braces/quotes) is unsafe to embed. guest-init hex-decodes it
+        // back to the exact JSON the tool-proxy verify half expects. Nonce and
+        // issuer are already hex. This is a scoped capability + PUBLIC issuer key
+        // — NOT a secret — so riding the world-readable cmdline (M-4 caveat,
+        // same channel as nucleus.auth_secret) is acceptable; the anti-replay /
+        // anti-truncation defense rests on the host-pinned nonce, not secrecy.
+        if let Some(tok) = task_token {
+            let token_hex = hex::encode(tok.token_json.as_bytes());
+            boot_args = match boot_args.take() {
+                Some(args) => Some(format!(
+                    "{args} nucleus.task_token_hex={token_hex} \
+                     nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
+                    tok.nonce_hex, tok.issuer_hex
+                )),
+                None => Some(format!(
+                    "nucleus.task_token_hex={token_hex} \
+                     nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
+                    tok.nonce_hex, tok.issuer_hex
+                )),
             };
         }
 

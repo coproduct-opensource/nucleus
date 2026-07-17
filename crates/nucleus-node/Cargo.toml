@@ -68,6 +68,7 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }
 
 uuid = { workspace = true, features = ["serde"] }
