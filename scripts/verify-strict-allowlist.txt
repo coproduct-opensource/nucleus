@@ -11,7 +11,15 @@
 # beside dalek code, or a same-named wrapper on a different type). When in
 # doubt, convert the site to `verify_strict` instead of allowlisting it.
 #
-# There are currently no allowlisted entries: every dalek trust-path verify
-# uses `verify_strict`, and the wrapper `.verify(...)` methods
-# (`Receipt::verify(&vk)`, `SignedTreeHead::verify(&witness)`, ...) are
-# single-argument and do not match the gate's two-argument pattern.
+# Most wrapper `.verify(...)` methods (`Receipt::verify(&vk)`,
+# `SignedTreeHead::verify(&witness)`, ...) are single-argument and do not match
+# the gate's two-argument pattern. The one exception below is a THREE-argument
+# wrapper whose final argument is a `&nonce`, which happens to match `, &`.
+#
+# crates/portcullis-effects/src/runtime.rs (PR2, #2032):
+# `SignedTaskRef::verify(&self, root_issuer, now, expected_nonce)` is a wrapper
+# on the `SignedTaskRef` type (nucleus-provenance-memory), NOT a dalek leaf
+# call. Its implementation performs the actual dalek re-verify with
+# `VerifyingKey::verify_strict` (see taskref_token.rs). This line is in scope
+# only because runtime.rs now imports `ed25519_dalek::SigningKey`. Safe.
+let scope = signed.verify(&root_issuer, now, &expected_nonce)?.clone();

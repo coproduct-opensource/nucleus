@@ -8294,6 +8294,8 @@ dependencies = [
 name = "portcullis-effects"
 version = "1.0.0"
 dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
+ "nucleus-provenance-memory",
  "portcullis-core",
  "proptest",
  "regex",
