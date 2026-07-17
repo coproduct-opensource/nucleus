@@ -28,7 +28,7 @@
 //! no-op), not replay-PREVENTED. Signature freshness (a signed `issued_at` /
 //! nonce) is a future extension and out of scope for closing the identity gap.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::error::VerifyApiError;
 
@@ -83,7 +83,7 @@ pub fn verify_detached_ed25519(
 
     // The integrity check: the signature must verify over the EXACT bytes the
     // handler will parse. A single flipped body byte fails here.
-    vk.verify(msg, &signature).map_err(|_| {
+    vk.verify_strict(msg, &signature).map_err(|_| {
         VerifyApiError::Unauthorized("signature did not verify over the request body".into())
     })?;
     Ok(vk)
@@ -164,6 +164,40 @@ mod tests {
             verify_detached_ed25519(&attacker_pk, &sig, msg),
             Err(VerifyApiError::Unauthorized(_))
         ));
+    }
+
+    /// M-2 strong-binding regression (site: `verify_detached_ed25519`,
+    /// the `vk.verify_strict` call). The Ed25519 identity/neutral key
+    /// (`[1, 0, ..., 0]`) with the identity-triple signature
+    /// (R = identity encoding, s = 0) satisfies the cofactored
+    /// verification equation for EVERY message, so non-strict `verify()`
+    /// ACCEPTS it — a key-substitution forgery. `verify_strict()` rejects
+    /// small-order keys. If line 86 is reverted to `vk.verify(...)`,
+    /// assertion (ii) below fails.
+    #[test]
+    fn small_order_key_is_rejected_by_verify_strict() {
+        // (i) No regression: an honest detached signature still verifies.
+        let sk = key(7);
+        let msg = b"the exact bytes that were signed";
+        let (pk, sig) = sign(&sk, msg);
+        verify_detached_ed25519(&pk, &sig, msg)
+            .expect("honest signature must still verify through verify_strict");
+
+        // (ii) Strong binding: identity key + identity-triple signature.
+        let mut id = [0u8; 32];
+        id[0] = 1; // identity/neutral point encoding, a small-order key
+        let identity_pk_hex = hex::encode(id);
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[..32].copy_from_slice(&id); // R = identity, s = 0
+        let identity_sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig_bytes);
+        assert!(
+            matches!(
+                verify_detached_ed25519(&identity_pk_hex, &identity_sig_b64, b"any body"),
+                Err(VerifyApiError::Unauthorized(_))
+            ),
+            "small-order identity key must be REJECTED by verify_strict; \
+             a revert to non-strict verify() would ACCEPT this forgery"
+        );
     }
 
     #[test]

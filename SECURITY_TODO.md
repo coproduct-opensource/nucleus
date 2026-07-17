@@ -205,7 +205,7 @@ Impact
 
 TODO
 - [DONE] Gate `create_sub_pod` on the parent `FlowTracker` via the same egress gate the kernel uses (`portcullis::exposure_core::ifc_egress_denial`, `ManagePods` → `OutboundAction`), failing closed before credential injection or any node call.
-- [OPEN] Intra-process fresh-tracker leg: `mcp.rs:171` constructs a new `FlowTracker` per MCP server; audit whether any path resets/replaces the long-lived tracker mid-session.
+- [WON'T-FIX / not-live] Intra-process fresh-tracker leg: `mcp.rs:171` constructs a new `FlowTracker` per MCP server. Audited: this is NOT a live laundering seam because the MCP-stdio and HTTP front-ends are MUTUALLY EXCLUSIVE within one process. `--mcp` is documented as mutually exclusive with the HTTP server (`crates/nucleus-tool-proxy/src/main.rs:256-260`) and, when set, `main.rs:1427` does `return mcp::run_mcp_server(...)` — an early return that exits `main` before the axum HTTP `Router` (and its long-lived per-session `FlowTracker`) is ever constructed. The two `FlowTracker`s are therefore never co-live in one process; there is no intra-process path that resets/replaces a long-lived HTTP tracker with the MCP one mid-session, so there is no taint-laundering boundary to gate. (If a future change makes both front-ends co-live in one process, this leg must be re-opened.)
 - [OPEN] Defense in depth: consult `session_taint_ceiling` / `check_action_safety_with_ceiling` in the live integrity gate so per-node `is_tainted()` is not the only check.
 
 DoD (guarantees)
@@ -213,7 +213,7 @@ DoD (guarantees)
 - [OPEN] E2E adversarial-corpus test: over HTTP, taint a session (web_fetch) then attempt `create_sub_pod` and assert deny + no node call + no credential forwarding.
 
 Status
-- Partial: the spawn-call-site bypass is closed and regression-tested; the intra-process fresh-tracker leg and the ceiling-wiring defense-in-depth remain open. The "complete mediation now holds" claim is intentionally NOT asserted in README/FORMAL_METHODS until those legs close.
+- Partial: the spawn-call-site bypass is closed and regression-tested; the intra-process fresh-tracker leg is closed as WON'T-FIX / not-live (MCP-stdio and HTTP front-ends are mutually exclusive per process — see the leg above), leaving only the ceiling-wiring defense-in-depth open. The "complete mediation now holds" claim is intentionally NOT asserted in README/FORMAL_METHODS until that leg closes.
 ## 12) Tool-proxy could be OOM-killed by an attacker-controlled response body (audit H-1)
 
 Deficiency
@@ -244,3 +244,25 @@ Refs: `crates/nucleus-trust-registry/src/federation.rs:25-48`, `tlog.rs` (`verif
 
 Status
 - DEFERRED by owner decision (2026-07-17). Enforcement establishes a NEW TRUST ROOT (which pinned witness cosigner(s), out-of-band key distribution) and a BREAKING CHANGE (deployments lacking a `SealedLog` must be rejected). Both the witness model (single vs k-of-n) and the rollout (hard fail-closed vs warn-then-enforce) are open owner decisions; do not wire enforcement until decided. Kept as the top open critical.
+
+## 14) Ed25519 re-verify used non-strict `verify()` on three trust-path sites (audit M-2)
+
+Deficiency
+- Three Ed25519 re-verify sites on the trust path called non-strict `vk.verify(...)` instead of `vk.verify_strict(...)`. Non-strict verification uses the cofactored equation and does not reject small-order / non-canonical public keys, so a single signature can verify under multiple identities (key-substitution / weak binding). The core already used `verify_strict`; these three were the inconsistency.
+Refs: `crates/nucleus-receipt/src/lib.rs:187` (`Receipt::verify`), `crates/nucleus-verifier-service/src/auth.rs:86` (`verify_detached_ed25519`), `crates/nucleus-witness/src/cosign.rs:134` (`verify_cosign_line`).
+
+Impact
+- On the receipt colimit-identity path, the detached-signature agent-auth path, and the witness cosignature path, an attacker presenting the Ed25519 identity/neutral key could get a crafted "identity-triple" signature to verify, breaking strong binding of signature → identity.
+
+TODO
+- [DONE] Swapped all three sites from `vk.verify(msg, &sig)` to `vk.verify_strict(msg, &sig)` (each `vk` is an `ed25519_dalek::VerifyingKey`; same call signature, strictly stronger — rejects small-order/non-canonical A and R). Removed the now-unused `ed25519_dalek::Verifier` trait import from each of the three modules (`verify_strict` is an inherent method).
+
+Strong-binding rationale + tests
+- [DONE] Regression tests prove strong binding at EACH site (one per crate), each with two assertions: (i) an honest dalek keypair still verifies through the site's public path (no regression); (ii) a signature presented against the SMALL-ORDER Ed25519 identity/neutral verifying key (`[1, 0, …, 0]`) with the identity-triple signature (`R` = identity encoding, `s` = 0) is REJECTED. That triple satisfies the cofactored verification equation for every message, so non-strict `verify()` ACCEPTS it while `verify_strict()` rejects it — empirically confirmed under the pinned `ed25519-dalek =3.0.0-pre.7` (a standalone run showed `verify().is_ok() == true` AND `verify_strict().is_err() == true` for the identity triple). Each site test FAILS if the site is reverted to non-strict `verify()` (verified by temporarily reverting `nucleus-receipt`, whose test then panicked on assertion (ii)).
+  - `crates/nucleus-receipt/src/lib.rs` → `tests::small_order_key_is_rejected_by_verify_strict`
+  - `crates/nucleus-verifier-service/src/auth.rs` → `auth::tests::small_order_key_is_rejected_by_verify_strict`
+  - `crates/nucleus-witness/src/cosign.rs` → `cosign::tests::small_order_key_is_rejected_by_verify_strict`
+- Note: the three crates have no dedicated adversarial/small-order corpus module to extend; the small-order case is carried by the per-site unit tests above.
+
+Status
+- [DONE] All three sites use `verify_strict`; new + existing suites pass (`cargo test -p nucleus-receipt -p nucleus-verifier-service -p nucleus-witness`), `cargo fmt` clean, `cargo clippy` on the three crates has no new warnings.
