@@ -7300,6 +7300,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "whoami 2.1.2",
+ "wiremock",
  "x509-parser",
 ]
 

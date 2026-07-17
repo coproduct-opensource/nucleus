@@ -2717,21 +2717,14 @@ async fn web_fetch(
         response_headers.insert("x-nucleus-source-domain".to_string(), host);
     }
 
-    // Read body with size limit
-    let bytes = response
-        .bytes()
+    // Read body with a HARD allocation cap: stream and stop at the limit so a
+    // malicious upstream body cannot OOM-kill the enforcement process, which
+    // would run the agent unmonitored (fail-open). Audit H-1.
+    let (bytes, was_truncated) = read_body_capped(response, state.web_fetch_max_bytes)
         .await
         .map_err(|e| ApiError::WebFetch(format!("failed to read response: {e}")))?;
-
-    let (body, truncated) = if bytes.len() > state.web_fetch_max_bytes {
-        let truncated_bytes = &bytes[..state.web_fetch_max_bytes];
-        (
-            String::from_utf8_lossy(truncated_bytes).to_string(),
-            Some(true),
-        )
-    } else {
-        (String::from_utf8_lossy(&bytes).to_string(), None)
-    };
+    let body = String::from_utf8_lossy(&bytes).to_string();
+    let truncated = if was_truncated { Some(true) } else { None };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -3232,9 +3225,10 @@ async fn web_search(
 
     // Parse response - this is a generic JSON structure
     // Real implementations would adapt to specific search APIs
-    let body = response
-        .json::<serde_json::Value>()
+    let (search_bytes, _truncated) = read_body_capped(response, state.web_fetch_max_bytes)
         .await
+        .map_err(|e| ApiError::WebFetch(format!("failed to read search response: {e}")))?;
+    let body: serde_json::Value = serde_json::from_slice(&search_bytes)
         .map_err(|e| ApiError::WebFetch(format!("failed to parse search response: {e}")))?;
 
     // Try to extract results from common formats
@@ -4121,6 +4115,93 @@ fn load_last_hash(path: &Path) -> Option<String> {
         return None;
     }
     Some(entry.hash)
+}
+
+/// Read an HTTP response body while STRICTLY bounding peak retained allocation to
+/// `max_bytes` (+ at most one upstream chunk), independent of the upstream's
+/// Content-Length or true size. Streams via `chunk()` and STOPS at the cap, so a
+/// malicious upstream cannot OOM-kill the tool-proxy (the enforcement point) —
+/// the untrusted-content fail-open of audit H-1. Returns `(body, truncated)`;
+/// `truncated` is true iff the upstream had more than `max_bytes` (the surplus is
+/// never accumulated).
+pub(crate) async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max_bytes {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let remaining = max_bytes - buf.len();
+                if chunk.len() > remaining {
+                    buf.extend_from_slice(&chunk[..remaining]);
+                    return Ok((buf, true)); // hit the cap mid-chunk; stop reading
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            None => return Ok((buf, false)), // upstream ended within the cap
+        }
+    }
+    // Exactly at the cap: peek one more chunk to set the truncation flag. The
+    // surplus chunk is read into reqwest's buffer and immediately dropped — peak
+    // retained allocation stays at `max_bytes`.
+    let truncated = resp.chunk().await?.is_some();
+    Ok((buf, truncated))
+}
+
+#[cfg(test)]
+mod read_body_capped_tests {
+    //! Regression guard for audit H-1: the tool-proxy must not buffer an entire
+    //! attacker-controlled upstream body. `read_body_capped` must stop at the cap
+    //! regardless of upstream size. Fails if reverted to whole-body buffering.
+    use super::read_body_capped;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn stops_at_cap_on_oversize_body() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cap = 64 * 1024;
+        let server = MockServer::start().await;
+        // Upstream body two orders of magnitude larger than the cap.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; 4 * 1024 * 1024]))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let (body, truncated) = read_body_capped(resp, cap).await.expect("read");
+        assert_eq!(
+            body.len(),
+            cap,
+            "must retain at most the cap, not the 4 MiB body"
+        );
+        assert!(
+            truncated,
+            "an oversize upstream body must be flagged truncated"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_full_small_body_untruncated() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello".to_vec()))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let (body, truncated) = read_body_capped(resp, 64 * 1024).await.expect("read");
+        assert_eq!(body, b"hello");
+        assert!(!truncated);
+    }
 }
 
 #[cfg(test)]

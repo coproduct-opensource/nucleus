@@ -214,3 +214,27 @@ DoD (guarantees)
 
 Status
 - Partial: the spawn-call-site bypass is closed and regression-tested; the intra-process fresh-tracker leg and the ceiling-wiring defense-in-depth remain open. The "complete mediation now holds" claim is intentionally NOT asserted in README/FORMAL_METHODS until those legs close.
+## 12) Tool-proxy could be OOM-killed by an attacker-controlled response body (audit H-1)
+
+Deficiency
+- `web_fetch`, the MCP fetch path, and `web_search` buffered the ENTIRE upstream body (`response.bytes()/.json()`) before applying `web_fetch_max_bytes`, which only truncated what was already allocated. A malicious upstream (the untrusted-content leg of the lethal-trifecta threat model) streaming a huge/Content-Length-lying body caused unbounded allocation → OOM-kill of the tool-proxy. Because the tool-proxy IS the enforcement point, its death runs the agent unmonitored (fail-open).
+Refs: `crates/nucleus-tool-proxy/src/main.rs` (`read_body_capped`, web_fetch, web_search), `crates/nucleus-tool-proxy/src/mcp.rs`
+
+TODO
+- [DONE] Stream every attacker-influenced body through `read_body_capped`, which stops at `web_fetch_max_bytes` and never retains more than the cap (+ one chunk) regardless of upstream size / Content-Length.
+- [OPEN] H-3 panic/poison leg: add a `CatchPanicLayer` (fail-closed) on the tool-proxy + verifier routers and replace `.expect("...poisoned")` on enforcement locks with `unwrap_or_else(|e| e.into_inner())`. (OOM is not catchable by `catch_unwind`; that leg is bounded allocation, done here.)
+
+DoD (guarantees)
+- [DONE] `read_body_capped_tests` (wiremock): a 4 MiB upstream body against a 64 KiB cap yields exactly the cap with `truncated=true`; a small body round-trips untruncated. Fails if reverted to whole-body buffering.
+
+Status
+- Partial: the OOM/allocation leg is closed and regression-tested; the panic/poison (H-3) leg remains open. Does NOT claim "monitor is un-killable".
+
+## 13) Transparency-log cosignature not enforced on the production trust path (audit C-3) — ESCALATED, DEFERRED
+
+Deficiency
+- `verify_binding_in_log` (witness-cosigned STH + inclusion proof) is called only in tests; the production `federation.rs` path (`apply_to_store`) authenticates inbound JWT-SVIDs directly from the on-disk `FederationSet` with no cosignature check. Anyone who can write the registry tree gets keys served for identity verification (forged foreign identities authenticate). This is the highest-severity remaining finding.
+Refs: `crates/nucleus-trust-registry/src/federation.rs:25-48`, `tlog.rs` (`verify_binding_in_log`)
+
+Status
+- DEFERRED by owner decision (2026-07-17). Enforcement establishes a NEW TRUST ROOT (which pinned witness cosigner(s), out-of-band key distribution) and a BREAKING CHANGE (deployments lacking a `SealedLog` must be rejected). Both the witness model (single vs k-of-n) and the rollout (hard fail-closed vs warn-then-enforce) are open owner decisions; do not wire enforcement until decided. Kept as the top open critical.
