@@ -8,6 +8,7 @@
 //! the policy check.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -300,6 +301,64 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// The single, mediated choke point through which every *synchronous* spawn
+    /// is built and executed.
+    ///
+    /// All process hardening that is invariant across the synchronous call sites
+    /// lives here exactly once: environment isolation (`env_clear` +
+    /// `envs(allowed_env)`), stdout/stderr capture, and — under
+    /// [`ContainmentMode::HostHardened`] — `HostSandbox::harden_std`. Callers
+    /// supply only what legitimately differs between sites:
+    ///
+    /// * `program` / `args` — the argv (never a shell string; no shell is ever
+    ///   involved, preserving the "argv-not-shell" injection defense),
+    /// * `cwd` — the already-validated working directory,
+    /// * `stdin_data` — `Some` to feed the child stdin over a pipe, `None` to
+    ///   close it with `Stdio::null()`.
+    ///
+    /// This is deliberately the *only* `Command::new` on the synchronous paths.
+    /// Keeping all three public methods routed through this one function means
+    /// PR-2 can add a `_proof: &DischargedBundle` as the final parameter here to
+    /// type-enforce that no synchronous spawn occurs without a discharged bundle,
+    /// with minimal churn at the call sites.
+    fn spawn_checked(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        stdin_data: Option<&str>,
+    ) -> io::Result<Output> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(cwd)
+            .env_clear() // Security: prevent secret leakage from parent
+            .envs(&self.allowed_env) // Only explicitly allowed vars
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Stdin: pipe it when the caller has data to write, otherwise close it.
+        if stdin_data.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_std(&mut cmd);
+        }
+
+        if let Some(input) = stdin_data {
+            let mut child = cmd.spawn()?;
+            if let Some(ref mut stdin_pipe) = child.stdin {
+                use std::io::Write;
+                stdin_pipe.write_all(input.as_bytes())?;
+            }
+            child.wait_with_output()
+        } else {
+            cmd.output()
+        }
+    }
+
     /// Execute a command and return its output.
     ///
     /// The command string is parsed, validated against policy, and then executed
@@ -348,18 +407,7 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut cmd = Command::new(program);
-        cmd.args(program_args)
-            .current_dir(self.sandbox.root_path())
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env) // Only explicitly allowed vars
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_std(&mut cmd);
-        }
-        let output = cmd.output()?;
+        let output = self.spawn_checked(program, program_args, self.sandbox.root_path(), None)?;
 
         Ok(output)
     }
@@ -448,11 +496,6 @@ impl<'a> Executor<'a> {
         // Build the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut cmd = Command::new(program);
-        cmd.args(program_args)
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env); // Only explicitly allowed vars
-
         // Set working directory
         let work_dir = if let Some(dir) = directory {
             // Reject absolute paths immediately
@@ -481,32 +524,9 @@ impl<'a> Executor<'a> {
         } else {
             self.sandbox.root_path().to_path_buf()
         };
-        cmd.current_dir(&work_dir);
 
-        // Handle stdin
-        if stdin_data.is_some() {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_std(&mut cmd);
-        }
-
-        // Spawn and handle stdin if needed
-        if let Some(input) = stdin_data {
-            let mut child = cmd.spawn()?;
-            if let Some(ref mut stdin_pipe) = child.stdin {
-                use std::io::Write;
-                stdin_pipe.write_all(input.as_bytes())?;
-            }
-            child.wait_with_output().map_err(Into::into)
-        } else {
-            cmd.output().map_err(Into::into)
-        }
+        self.spawn_checked(program, program_args, &work_dir, stdin_data)
+            .map_err(Into::into)
     }
 
     /// Execute a command with an approval token for approval-gated operations.
@@ -558,18 +578,7 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut cmd = Command::new(program);
-        cmd.args(program_args)
-            .current_dir(self.sandbox.root_path())
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env) // Only explicitly allowed vars
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_std(&mut cmd);
-        }
-        let output = cmd.output()?;
+        let output = self.spawn_checked(program, program_args, self.sandbox.root_path(), None)?;
 
         Ok(output)
     }
