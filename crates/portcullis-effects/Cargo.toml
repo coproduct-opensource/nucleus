@@ -12,6 +12,8 @@ categories = ["development-tools", "authentication"]
 
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+ed25519-dalek = { workspace = true }
 shell-words = { workspace = true }
 regex = { workspace = true }
 
