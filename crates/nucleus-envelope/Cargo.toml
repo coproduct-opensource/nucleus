@@ -28,7 +28,7 @@ hex = { workspace = true }
 # the lean dep tree is preserved for callers who don't need EU AI Act
 # Article 50 interop. `rust_native_crypto` swaps OpenSSL for pure-Rust
 # signing to keep our supply chain consistent with the rest of nucleus.
-c2pa = { version = "0.89", default-features = false, features = ["rust_native_crypto"], optional = true }
+c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"], optional = true }
 
 [features]
 default = []
