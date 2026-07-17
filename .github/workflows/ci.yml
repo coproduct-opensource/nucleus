@@ -87,6 +87,15 @@ jobs:
       - name: Forbid non-strict dalek .verify(...) on trust paths
         run: scripts/check-verify-strict.sh
 
+  mediation-gate:
+    name: Mediation backstop gate (North Star)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Forbid raw agent-path effect primitives outside the discharge-gated API
+        run: scripts/check-mediation.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

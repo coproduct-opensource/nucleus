@@ -1,0 +1,20 @@
+# North Star mediation gate — process-spawn baseline (brick 0).
+#
+# Each entry below is an un-migrated AGENT-PATH raw process spawn: BASELINE DEBT
+# to be DELETED as the site moves behind the discharge-gated effect API
+# (preflight_action -> DischargedBundle, via portcullis-effects). The gate
+# forbids any NEW un-allowlisted agent-path spawn, so this list only shrinks.
+#
+# Format: exact TRIMMED source line (leading/trailing whitespace removed).
+#
+# nucleus::Executor synchronous spawn (command.rs :351, :451, :561)
+#   -> migrate behind ShellEffect / production_effects(policy)
+let mut cmd = Command::new(program);
+#
+# nucleus::Executor async spawn (command.rs :627, :700)
+#   -> migrate behind ShellEffect / production_effects(policy)
+let mut cmd = tokio::process::Command::new(program);
+#
+# nucleus-mcp-guard downstream MCP-server child (proxy.rs:25)
+#   -> migrate behind AgentSpawnEffect / production_effects(policy)
+let mut child = Command::new(cmd)
