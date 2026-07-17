@@ -41,6 +41,7 @@ mod mtls;
 mod node_client;
 mod pod_mgmt;
 mod policy;
+mod run_gate;
 mod sandbox_proof;
 mod session_token;
 mod telemetry;
@@ -2559,7 +2560,68 @@ async fn run_command(
     let stdin = req.stdin.as_deref();
     let directory = req.directory.as_deref();
 
-    let output = match executor.run_args(&req.args, stdin, directory, &decision_token) {
+    // ─── Executor-proof gate (PR-2, parity with the MCP RunBash handler) ──────
+    // Mint the sealed 7-witness `DischargedBundle` — the type-level precondition
+    // that lets `run_args`/`run_args_with_approval` even be typed. Reuses the exact
+    // `preflight_runbash` the MCP path uses (no re-mint, no forged bundle). Fail
+    // closed on Denied/RequiresApproval: a Missing/Invalid session task token gives
+    // `verified_scope == None` ⇒ `InScopeWithTask` denies — never a permissive
+    // default. Without a bundle here this HTTP spawn would not compile.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let run_bash_ceiling = state.runtime.policy().capabilities.run_bash;
+        let flow = state.flow_tracker.lock().await;
+        let result =
+            run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: display_command.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+            PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: display_command.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge requires approval: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!(
+                    "discharge requires approval: {reason}"
+                )));
+            }
+        }
+    };
+    // Durable audit witness of the sealed 7-witness proof (parity with the MCP
+    // handler's `discharge_bundle` verdict extension).
+    let discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    let output = match executor.run_args(
+        &req.args,
+        stdin,
+        directory,
+        &decision_token,
+        &discharge_bundle,
+    ) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -2583,6 +2645,8 @@ async fn run_command(
                     directory,
                     &approved_dt,
                     &approval,
+                    // Same sealed bundle minted above authorizes the approved retry.
+                    &discharge_bundle,
                 )?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -2611,7 +2675,10 @@ async fn run_command(
                 },
                 actor,
                 policy_rule: None,
-                extensions: BTreeMap::new(),
+                extensions: BTreeMap::from([(
+                    "discharge_bundle".to_string(),
+                    discharge_note.clone(),
+                )]),
             }) {
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
@@ -2625,7 +2692,7 @@ async fn run_command(
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
-        extensions: BTreeMap::new(),
+        extensions: BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }

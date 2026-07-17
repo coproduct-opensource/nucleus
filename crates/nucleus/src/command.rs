@@ -18,6 +18,7 @@ use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
+use nucleus_ifc_kernel::discharge::DischargedBundle;
 use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, IsolationLattice, Obligations, Operation,
@@ -317,16 +318,21 @@ impl<'a> Executor<'a> {
     ///   close it with `Stdio::null()`.
     ///
     /// This is deliberately the *only* `Command::new` on the synchronous paths.
-    /// Keeping all three public methods routed through this one function means
-    /// PR-2 can add a `_proof: &DischargedBundle` as the final parameter here to
-    /// type-enforce that no synchronous spawn occurs without a discharged bundle,
-    /// with minimal churn at the call sites.
+    /// Keeping all three public methods routed through this one function lets the
+    /// executor-proof gate require a `_proof: &DischargedBundle` as the final
+    /// parameter here (and on every public method that reaches it): a synchronous
+    /// spawn cannot even be *named* without a discharged bundle in hand, so an
+    /// un-preflighted spawn is a compile error rather than a runtime check. The
+    /// proof is a sealed 7-witness bundle that only `preflight_action` can mint;
+    /// it is required by type but otherwise unused here (`_proof`) — its presence
+    /// in the signature is the enforcement.
     fn spawn_checked(
         &self,
         program: &str,
         args: &[String],
         cwd: &std::path::Path,
         stdin_data: Option<&str>,
+        _proof: &DischargedBundle,
     ) -> io::Result<Output> {
         let mut cmd = Command::new(program);
         cmd.args(args)
@@ -362,8 +368,15 @@ impl<'a> Executor<'a> {
     /// Execute a command and return its output.
     ///
     /// The command string is parsed, validated against policy, and then executed
-    /// in the sandbox directory. Requires a `DecisionToken` from `Kernel::decide()`.
-    pub fn run(&self, command: &str, decision: &DecisionToken) -> Result<Output> {
+    /// in the sandbox directory. Requires a `DecisionToken` from `Kernel::decide()`
+    /// and a `&DischargedBundle` proof (mint via `preflight_action`) — the
+    /// executor-proof gate: no spawn without a discharged bundle.
+    pub fn run(
+        &self,
+        command: &str,
+        decision: &DecisionToken,
+        proof: &DischargedBundle,
+    ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
             Operation::RunBash,
@@ -407,14 +420,20 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output = self.spawn_checked(program, program_args, self.sandbox.root_path(), None)?;
+        let output =
+            self.spawn_checked(program, program_args, self.sandbox.root_path(), None, proof)?;
 
         Ok(output)
     }
 
     /// Execute a command and return just the exit status.
-    pub fn status(&self, command: &str, decision: &DecisionToken) -> Result<ExitStatus> {
-        let output = self.run(command, decision)?;
+    pub fn status(
+        &self,
+        command: &str,
+        decision: &DecisionToken,
+        proof: &DischargedBundle,
+    ) -> Result<ExitStatus> {
+        let output = self.run(command, decision, proof)?;
         Ok(output.status)
     }
 
@@ -422,19 +441,37 @@ impl<'a> Executor<'a> {
     ///
     /// This is the preferred method for MCP tool calls as it prevents shell injection
     /// by bypassing shell interpretation entirely.
+    ///
+    /// Requires a `&DischargedBundle` proof (mint via `preflight_action`). This is
+    /// the executor-proof gate: an un-preflighted spawn is a *compile* error, not a
+    /// runtime check. The following omits the proof and does **not** compile
+    /// (mirrors the sealed-bundle `compile_fail` doctest in
+    /// `nucleus_ifc_kernel::discharge`):
+    ///
+    /// ```compile_fail
+    /// use nucleus::Executor;
+    /// use nucleus::portcullis::kernel::DecisionToken;
+    ///
+    /// fn un_preflighted_spawn(executor: &Executor, args: &[String], dt: &DecisionToken) {
+    ///     // No trailing `&DischargedBundle` — the sealed proof is missing, so
+    ///     // this call cannot be typed. There is no way to spawn without one.
+    ///     let _ = executor.run_args(args, None, None, dt);
+    /// }
+    /// ```
     pub fn run_args(
         &self,
         args: &[String],
         stdin: Option<&str>,
         directory: Option<&str>,
         decision: &DecisionToken,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
-        self.run_args_internal(args, stdin, directory, None)
+        self.run_args_internal(args, stdin, directory, None, proof)
     }
 
     /// Execute a pre-parsed command array with an approval token.
@@ -445,13 +482,14 @@ impl<'a> Executor<'a> {
         directory: Option<&str>,
         decision: &DecisionToken,
         approval: &ApprovalToken,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
-        self.run_args_internal(args, stdin, directory, Some(approval))
+        self.run_args_internal(args, stdin, directory, Some(approval), proof)
     }
 
     /// Internal implementation for array-based command execution.
@@ -461,6 +499,7 @@ impl<'a> Executor<'a> {
         stdin_data: Option<&str>,
         directory: Option<&str>,
         approval: Option<&ApprovalToken>,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         // Fail-closed isolation gate (most-paranoid #2).
         self.enforce_isolation()?;
@@ -525,7 +564,7 @@ impl<'a> Executor<'a> {
             self.sandbox.root_path().to_path_buf()
         };
 
-        self.spawn_checked(program, program_args, &work_dir, stdin_data)
+        self.spawn_checked(program, program_args, &work_dir, stdin_data, proof)
             .map_err(Into::into)
     }
 
@@ -535,6 +574,7 @@ impl<'a> Executor<'a> {
         command: &str,
         decision: &DecisionToken,
         approval: &ApprovalToken,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
@@ -578,7 +618,8 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output = self.spawn_checked(program, program_args, self.sandbox.root_path(), None)?;
+        let output =
+            self.spawn_checked(program, program_args, self.sandbox.root_path(), None, proof)?;
 
         Ok(output)
     }
@@ -817,6 +858,10 @@ mod tests {
     use super::*;
     use crate::budget::AtomicBudget;
     use crate::sandbox::Sandbox;
+    // Sanctioned cross-crate test-only bundle: runs a real `preflight_action` on a
+    // known-good term. This is the only supported way for out-of-module tests to
+    // obtain a sealed `DischargedBundle` (the constructor is private to discharge).
+    use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
     use portcullis::kernel::Kernel;
     use portcullis::BudgetLattice;
     use rust_decimal::Decimal;
@@ -873,7 +918,7 @@ mod tests {
             .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
-        let output = executor.run("echo hello", &dt).unwrap();
+        let output = executor.run("echo hello", &dt, &allowed_bundle()).unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
@@ -893,7 +938,7 @@ mod tests {
             .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
-        let result = executor.run("echo hello", &dt);
+        let result = executor.run("echo hello", &dt, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
     }
 
@@ -918,7 +963,7 @@ mod tests {
             Operation::RunBash,
             "test: bypass kernel for executor blocklist test",
         );
-        let result = executor.run("rm -rf /", &dt);
+        let result = executor.run("rm -rf /", &dt, &allowed_bundle());
         assert!(result.is_err());
     }
 
@@ -943,7 +988,7 @@ mod tests {
         assert!(tok.is_none(), "kernel should deny Never capability");
 
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
-        let result = executor.run("echo hello", &forced);
+        let result = executor.run("echo hello", &forced, &allowed_bundle());
         assert!(matches!(
             result,
             Err(NucleusError::InsufficientCapability { .. })
@@ -967,7 +1012,7 @@ mod tests {
 
         // Kernel requires approval — force a token via issue_approved_token to test executor layer
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
-        let result = executor.run("echo hello", &forced);
+        let result = executor.run("echo hello", &forced, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -992,7 +1037,7 @@ mod tests {
         let dt = run_token(&mut kernel, "echo hello");
 
         let approval = executor.request_approval("echo hello").unwrap();
-        let result = executor.run_with_approval("echo hello", &dt, &approval);
+        let result = executor.run_with_approval("echo hello", &dt, &approval, &allowed_bundle());
         assert!(result.is_ok());
     }
 
@@ -1019,7 +1064,7 @@ mod tests {
         // curl is an exfiltration vector, uninhabitable_state should require approval
         // Force a token to test the executor-level check
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force for exfil check");
-        let result = executor.run("curl http://example.com", &forced);
+        let result = executor.run("curl http://example.com", &forced, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -1044,7 +1089,7 @@ mod tests {
 
         let forced =
             kernel.issue_approved_token(Operation::RunBash, "test: force for interpreter check");
-        let result = executor.run("bash -c \"echo hi\"", &forced);
+        let result = executor.run("bash -c \"echo hi\"", &forced, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -1064,7 +1109,9 @@ mod tests {
 
         let args = vec!["echo".to_string(), "hello".to_string(), "world".to_string()];
         let dt = run_token(&mut kernel, "echo hello world");
-        let output = executor.run_args(&args, None, None, &dt).unwrap();
+        let output = executor
+            .run_args(&args, None, None, &dt, &allowed_bundle())
+            .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello world"));
     }
@@ -1086,7 +1133,9 @@ mod tests {
         // With array form, shell metacharacters are passed literally
         let args = vec!["echo".to_string(), "$(whoami)".to_string()];
         let dt = run_token(&mut kernel, "echo $(whoami)");
-        let output = executor.run_args(&args, None, None, &dt).unwrap();
+        let output = executor
+            .run_args(&args, None, None, &dt, &allowed_bundle())
+            .unwrap();
         // Should print the literal string, not execute whoami
         assert!(String::from_utf8_lossy(&output.stdout).contains("$(whoami)"));
     }
@@ -1108,7 +1157,13 @@ mod tests {
         let args = vec!["cat".to_string()];
         let dt = run_token(&mut kernel, "cat");
         let output = executor
-            .run_args(&args, Some("hello from stdin"), None, &dt)
+            .run_args(
+                &args,
+                Some("hello from stdin"),
+                None,
+                &dt,
+                &allowed_bundle(),
+            )
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello from stdin"));
@@ -1131,7 +1186,7 @@ mod tests {
         let args: Vec<String> = vec![];
         // Kernel also blocks empty commands, so force a token to test executor layer
         let dt = kernel.issue_approved_token(Operation::RunBash, "test: empty command");
-        let result = executor.run_args(&args, None, None, &dt);
+        let result = executor.run_args(&args, None, None, &dt, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::CommandDenied { .. })));
     }
 
@@ -1152,7 +1207,7 @@ mod tests {
         let args = vec!["pwd".to_string()];
         let dt = run_token(&mut kernel, "pwd");
         // Attempt to escape sandbox using absolute path
-        let result = executor.run_args(&args, None, Some("/etc"), &dt);
+        let result = executor.run_args(&args, None, Some("/etc"), &dt, &allowed_bundle());
         assert!(matches!(result, Err(NucleusError::SandboxEscape { .. })));
     }
 
@@ -1175,7 +1230,9 @@ mod tests {
 
         // Try to access the parent env var - should NOT be visible
         let dt = run_token(&mut kernel, "printenv TEST_PARENT_SECRET");
-        let output = executor.run("printenv TEST_PARENT_SECRET", &dt).unwrap();
+        let output = executor
+            .run("printenv TEST_PARENT_SECRET", &dt, &allowed_bundle())
+            .unwrap();
 
         // Command should succeed but output should be empty (var not found)
         // printenv returns exit code 1 when var is not found
@@ -1204,7 +1261,9 @@ mod tests {
 
         // The allowed var should be visible
         let dt = run_token(&mut kernel, "printenv ALLOWED_TOKEN");
-        let output = executor.run("printenv ALLOWED_TOKEN", &dt).unwrap();
+        let output = executor
+            .run("printenv ALLOWED_TOKEN", &dt, &allowed_bundle())
+            .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("test-value-123"));
     }
@@ -1231,12 +1290,16 @@ mod tests {
 
         // Both vars should be visible
         let dt_a = run_token(&mut kernel, "printenv VAR_A");
-        let output_a = executor.run("printenv VAR_A", &dt_a).unwrap();
+        let output_a = executor
+            .run("printenv VAR_A", &dt_a, &allowed_bundle())
+            .unwrap();
         assert!(output_a.status.success());
         assert!(String::from_utf8_lossy(&output_a.stdout).contains("value_a"));
 
         let dt_b = run_token(&mut kernel, "printenv VAR_B");
-        let output_b = executor.run("printenv VAR_B", &dt_b).unwrap();
+        let output_b = executor
+            .run("printenv VAR_B", &dt_b, &allowed_bundle())
+            .unwrap();
         assert!(output_b.status.success());
         assert!(String::from_utf8_lossy(&output_b.stdout).contains("value_b"));
     }
@@ -1262,7 +1325,9 @@ mod tests {
         // Parent env should not be visible
         let args = vec!["printenv".to_string(), "TEST_RUN_ARGS_SECRET".to_string()];
         let dt1 = run_token(&mut kernel, "printenv TEST_RUN_ARGS_SECRET");
-        let output = executor.run_args(&args, None, None, &dt1).unwrap();
+        let output = executor
+            .run_args(&args, None, None, &dt1, &allowed_bundle())
+            .unwrap();
         assert!(
             !output.status.success(),
             "parent env should not be accessible"
@@ -1271,7 +1336,9 @@ mod tests {
         // But allowed env should be visible
         let args = vec!["printenv".to_string(), "ALLOWED_VAR".to_string()];
         let dt2 = run_token(&mut kernel, "printenv ALLOWED_VAR");
-        let output = executor.run_args(&args, None, None, &dt2).unwrap();
+        let output = executor
+            .run_args(&args, None, None, &dt2, &allowed_bundle())
+            .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("allowed-value"));
 
@@ -1299,7 +1366,7 @@ mod tests {
             let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt).unwrap_err();
+            let err = executor.run("echo hi", &dt, &allowed_bundle()).unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
                 "expected IsolationNotConfigured, got {err:?}"
@@ -1319,7 +1386,9 @@ mod tests {
 
             let args = vec!["echo".to_string(), "hi".to_string()];
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run_args(&args, None, None, &dt).unwrap_err();
+            let err = executor
+                .run_args(&args, None, None, &dt, &allowed_bundle())
+                .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
                 "got {err:?}"
@@ -1341,7 +1410,7 @@ mod tests {
                 .allow_unsandboxed_local();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let output = executor.run("echo hi", &dt).unwrap();
+            let output = executor.run("echo hi", &dt, &allowed_bundle()).unwrap();
             assert!(output.status.success());
         }
 
@@ -1364,7 +1433,7 @@ mod tests {
                 .allow_unsandboxed_local();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt).unwrap_err();
+            let err = executor.run("echo hi", &dt, &allowed_bundle()).unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationInsufficient { .. }),
                 "expected IsolationInsufficient, got {err:?}"
@@ -1386,7 +1455,7 @@ mod tests {
                 .in_microvm();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let output = executor.run("echo hi", &dt).unwrap();
+            let output = executor.run("echo hi", &dt, &allowed_bundle()).unwrap();
             assert!(output.status.success());
         }
 
@@ -1407,7 +1476,7 @@ mod tests {
                 .with_host_hardening();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt).unwrap_err();
+            let err = executor.run("echo hi", &dt, &allowed_bundle()).unwrap_err();
             assert!(
                 matches!(err, NucleusError::HardeningUnavailable { .. }),
                 "expected HardeningUnavailable off-Linux, got {err:?}"
@@ -1431,7 +1500,9 @@ mod tests {
                 .with_host_hardening();
 
             let dt = run_token(&mut kernel, "cat /proc/self/status");
-            let output = executor.run("cat /proc/self/status", &dt).unwrap();
+            let output = executor
+                .run("cat /proc/self/status", &dt, &allowed_bundle())
+                .unwrap();
             let status = String::from_utf8_lossy(&output.stdout);
             assert!(
                 status

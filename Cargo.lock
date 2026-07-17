@@ -6474,6 +6474,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "libc",
+ "nucleus-ifc-kernel",
  "nucleus-provenance",
  "parking_lot",
  "portcullis",

@@ -19,14 +19,10 @@ use portcullis::{
     CapabilityLevel, FlowTracker, GradedExposureGuard, NodeKind, Operation, ToolCallGuard,
 };
 // Sealed discharge preflight (#2038): the live RunBash path must mint a
-// `DischargedBundle` before it may spawn. `discharge::ActionTerm` is a distinct
-// type from `portcullis::action_term::ActionTerm` above — always name it through
-// the `discharge::` path to avoid the collision.
-use nucleus_ifc_kernel::discharge::{
-    self, preflight_action, DischargedBundle, PreflightResult, VerifiedScope,
-};
-use nucleus_ifc_kernel::{IFCLabel, SinkClass};
-use nucleus_provenance_memory::TokenScope;
+// `DischargedBundle` before it may spawn. The bundle-minting itself
+// (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
+// handler); here we only need the result/bundle types it returns.
+use nucleus_ifc_kernel::discharge::PreflightResult;
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -491,7 +487,7 @@ impl NucleusMcpServer {
         // them). The `DischargedBundle` can only be built by `preflight_action`,
         // so reaching `run_args` past the `Allowed` arm is a compile-time-checked
         // authorization proof.
-        let discharge_note = {
+        let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
             let run_bash_ceiling = self.state.runtime.policy().capabilities.run_bash;
             let flow = self.flow_tracker.lock().await;
@@ -499,9 +495,13 @@ impl NucleusMcpServer {
             drop(flow);
             match result {
                 PreflightResult::Allowed(bundle) => {
-                    // Consume the bundle (satisfies its `#[must_use]`) into the
-                    // audit record so the sealed proof is durable, not dead.
-                    discharge_witness(&bundle)
+                    // Keep the sealed bundle ALIVE: it is now the type-level proof
+                    // required by `run_args` (executor-proof gate), and its
+                    // `#[must_use]` is satisfied by both the audit witness and the
+                    // spawn call below. Record the durable witness, then hand the
+                    // bundle down to the spawn.
+                    let note = discharge_witness(&bundle);
+                    (note, bundle)
                 }
                 PreflightResult::Denied { reason, .. } => {
                     warn!(
@@ -543,6 +543,11 @@ impl NucleusMcpServer {
                     params.stdin.as_deref(),
                     params.directory.as_deref(),
                     &decision_token,
+                    // Executor-proof gate (#2038 → PR-2): the sealed bundle minted
+                    // by `preflight_runbash` above is the type-level authorization.
+                    // Reaching this spawn requires it, so no un-preflighted spawn
+                    // can compile.
+                    &discharge_bundle,
                 )
             })
         }) {
@@ -1141,96 +1146,12 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
     ActionTerm::from_operation(operation, subject)
 }
 
-/// The sealed discharge preflight for the live RunBash path (#2038).
-///
-/// Builds the discharge [`ActionTerm`](discharge::ActionTerm) for
-/// `RunBash`/`BashExec` and runs [`preflight_action`]. Returning
-/// [`PreflightResult::Allowed`] hands back a [`DischargedBundle`] — the sealed
-/// 7-witness proof that the operation is authorized. There is no other way to
-/// construct that bundle, so a caller that reaches `run_args` only past an
-/// `Allowed` arm is a compile-time-checked precondition.
-///
-/// Fail-closed / no-vacuous-witness:
-/// - `verified_scope == None` (session token `Missing`/`Invalid`) ⇒
-///   `InScopeWithTask` DENIES. We pass `None` straight through — never a
-///   permissive default.
-/// - `RunBash ∉ scope.allowed_operations` ⇒ `InScopeWithTask` DENIES.
-///
-/// HONESTY (what actually bites, #2038): for the `BashExec` sink the five
-/// original discharge obligations are structurally satisfied by the honest
-/// inputs below and do not add enforcement here:
-/// - IntegrityGate: `sink_min_integrity(BashExec)` is `Adversarial` (the floor),
-///   so any integrity passes;
-/// - PathAllowed: the fixed `RunBash`/`BashExec` pair is always structurally OK;
-/// - DerivationClear: `BashExec` is not a verified-lane sink, so it is skipped;
-/// - NoAdversarialAncestry: passes whenever the session carries no
-///   adversarial-integrity source label (with an empty [`FlowTracker`], vacuous);
-/// - BudgetNotExceeded: cost is 0 (no cost estimator wired, #1362);
-/// - WithinDelegationCeiling: `requested == ceiling == level_for(RunBash)`, the
-///   runtime's honest no-escalation claim, so `requested ≤ ceiling` holds by
-///   construction (sound-but-dormant, mirrors `build_term_scoped`).
-///
-/// So the real added enforcement of this brick is **`InScopeWithTask`** (gated by
-/// the verified session task token) plus the fail-closed ceiling. The IFC labels
-/// ARE fed honestly from the session's real [`FlowTracker`] (not `default()`), so
-/// `NoAdversarialAncestry`/`IntegrityGate` bite for real once web/adversarial
-/// content is in the session — they are simply vacuous on a clean session.
-fn preflight_runbash(
-    verified_scope: Option<&TokenScope>,
-    run_bash_ceiling: CapabilityLevel,
-    subject: &str,
-    flow: &FlowTracker,
-) -> PreflightResult {
-    // Real source labels from the session flow tracker (#1633 taint state) —
-    // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
-    let mut source_labels = Vec::new();
-    for node_id in 1..=flow.node_count() as u64 {
-        if let Some(label) = flow.label(node_id) {
-            source_labels.push(*label);
-        }
-    }
-    // Artifact label: join of all source labels (most restrictive composite); an
-    // empty (clean) session yields the default label.
-    let artifact_label = if source_labels.is_empty() {
-        IFCLabel::default()
-    } else {
-        source_labels
-            .iter()
-            .skip(1)
-            .fold(source_labels[0], |acc, l| acc.join(*l))
-    };
-
-    // Convert the verified `TokenScope` into the kernel's local `VerifiedScope`
-    // carrier field-for-field (the kernel is dependency-free and cannot name
-    // `TokenScope`). `None` ⇒ `InScopeWithTask` denied fail-closed.
-    let term_scope = verified_scope.map(|s| VerifiedScope {
-        allowed_operations: s.allowed_operations.clone(),
-        allowed_paths: s.allowed_paths.clone(),
-    });
-
-    let term = discharge::ActionTerm {
-        operation: Operation::RunBash,
-        sink_class: SinkClass::BashExec,
-        source_labels,
-        artifact_label,
-        subject: subject.to_string(),
-        estimated_cost_micro_usd: 0,
-        // Honest no-escalation: request exactly what the policy grants for the op.
-        capability_ceiling: Some(run_bash_ceiling),
-        requested_capability: Some(run_bash_ceiling),
-        verified_scope: term_scope,
-    };
-
-    preflight_action(&term)
-}
-
-/// Consume a [`DischargedBundle`] into an audit-record string.
-///
-/// Satisfies the bundle's `#[must_use]` by reading it, and threads the sealed
-/// 7-witness proof into the verdict record so it is not dead.
-fn discharge_witness(bundle: &DischargedBundle) -> String {
-    format!("{bundle:?}")
-}
+// The sealed discharge preflight (`preflight_runbash`) and its audit-witness
+// helper (`discharge_witness`) now live in the always-compiled `crate::run_gate`
+// module, so the non-feature-gated HTTP `/v1/run` handler can share them with
+// this feature-gated MCP handler. Re-imported here so the local call sites and
+// the `#[cfg(test)]` module below resolve them unchanged.
+use crate::run_gate::{discharge_witness, preflight_runbash};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests — enforcement boundary coverage (#1295)
@@ -1239,6 +1160,9 @@ fn discharge_witness(bundle: &DischargedBundle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The `preflight_runbash` scope tests build `TokenScope`s directly; its home
+    // crate import is test-only now that the mint helper moved to `run_gate`.
+    use nucleus_provenance_memory::TokenScope;
 
     // ── build_action_term coverage ──────────────────────────────────────
 

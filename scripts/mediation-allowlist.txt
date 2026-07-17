@@ -7,11 +7,18 @@
 #
 # Format: exact TRIMMED source line (leading/trailing whitespace removed).
 #
-# nucleus::Executor synchronous spawn (command.rs :351, :451, :561)
-#   -> migrate behind ShellEffect / production_effects(policy)
+# nucleus::Executor SEALED synchronous spawn home (command.rs :337, in
+# `Executor::spawn_checked`). This is the single sync `Command::new` choke point
+# and it is now gated by a required `_proof: &DischargedBundle` final parameter:
+# every path that reaches it (`run` / `run_args` / `run_with_approval` and the
+# internal hops) must thread a sealed bundle that ONLY `preflight_action` can
+# mint, so this line is reachable only PAST a minted discharge bundle — an
+# un-preflighted spawn is a compile error, not a runtime check. RETAINED (not
+# deleted): the raw spawn still lives here in gate scope; deleting the entry needs
+# the later ShellEffect-relocation brick that moves the spawn behind the effect API.
 let mut cmd = Command::new(program);
 #
-# nucleus::Executor async spawn (command.rs :627, :700)
+# nucleus::Executor async spawn (command.rs :677, :750)
 #   -> migrate behind ShellEffect / production_effects(policy)
 let mut cmd = tokio::process::Command::new(program);
 #

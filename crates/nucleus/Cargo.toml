@@ -20,6 +20,13 @@ async = ["tokio"]
 nucleus-provenance = { path = "../nucleus-provenance" }
 # Policy layer - the quotient lattice
 portcullis = { path = "../portcullis" }
+# Sealed discharge proof: the `DischargedBundle` type is named in the Executor
+# spawn signature (`spawn_checked`/`run`/`run_args`/…) so no synchronous spawn can
+# compile without a minted preflight bundle. Additive — discharge is already
+# trusted (defined in this crate, re-exported through portcullis-core → portcullis,
+# hence already a transitive dependency; it is dependency-free so no cycle). This
+# adds no new TCB, only names the existing proof type.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 
 # Atomic budget tracking
 parking_lot = "0.12"
