@@ -30,6 +30,9 @@ otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", 
 
 [dependencies]
 axum = { workspace = true }
+# Panic net: CatchPanicLayer converts a stray panic (e.g. a poisoned lock's
+# `.expect()`) into a fail-closed HTTP 500 instead of dropping the connection.
+tower-http = { version = "0.7", features = ["catch-panic"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -94,6 +97,9 @@ tokio-vsock = "0.7"
 [dev-dependencies]
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# In-process router driving for the H-3 panic-net regression test
+# (ServiceExt::oneshot). Dev-only; production graph unchanged.
+tower = { version = "0.5", features = ["util"] }
 # HTTP mock upstream for the H-1 bounded-body-read regression test
 # (read_body_capped). Dev-only; production graph unchanged.
 wiremock = "0.6"

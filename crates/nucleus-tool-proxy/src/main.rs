@@ -1458,7 +1458,15 @@ async fn main() -> Result<(), ApiError> {
 
     let app = app
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state, auth_middleware));
+        .layer(middleware::from_fn_with_state(state, auth_middleware))
+        // OUTERMOST layer (last `.layer()` wins — it receives the request first,
+        // wrapping every inner layer and handler). A stray panic anywhere inside
+        // — e.g. a poisoned enforcement lock's `.expect()` — is caught here and
+        // converted to a fail-closed HTTP 500 DENY, never a reset/allow, so the
+        // proxy can neither crash nor fail-open. See `fail_closed_panic_response`.
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            fail_closed_panic_response,
+        ));
 
     if let Some(vsock) = pod_mgmt::resolve_vsock(&args, &spec)? {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
@@ -1507,6 +1515,33 @@ async fn main() -> Result<(), ApiError> {
     write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
 
     Ok(())
+}
+
+/// Fail-closed panic handler for [`tower_http::catch_panic::CatchPanicLayer`].
+///
+/// Any panic that unwinds through the router — a poisoned enforcement lock's
+/// `.expect()`, an `unwrap()` on unexpected input, an arithmetic overflow — is
+/// converted into an HTTP 500 DENY. It NEVER resets the connection and NEVER
+/// returns success/allow: the request is refused, fail-closed. This is the
+/// process-level backstop that keeps a stray panic from either crashing the
+/// proxy or letting a request through unchecked.
+fn fail_closed_panic_response(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    let detail = if let Some(s) = err.downcast_ref::<String>() {
+        s.as_str()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        s
+    } else {
+        "unknown panic"
+    };
+    warn!(
+        panic = %detail,
+        "request handler panicked; failing CLOSED with HTTP 500 DENY"
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "denied: internal enforcement error (fail-closed)",
+    )
+        .into_response()
 }
 
 /// Write the exit report on shutdown (including verified exposure data).
@@ -4201,6 +4236,63 @@ mod read_body_capped_tests {
         let (body, truncated) = read_body_capped(resp, 64 * 1024).await.expect("read");
         assert_eq!(body, b"hello");
         assert!(!truncated);
+    }
+}
+
+#[cfg(test)]
+mod panic_net_tests {
+    //! Audit H-3 — router panic net. A stray panic anywhere under the proxy
+    //! router (e.g. a poisoned enforcement lock's `.expect()`) must become a
+    //! fail-closed HTTP 500, never a connection reset or an allow, and the router
+    //! must keep serving afterwards. Exercises the real `fail_closed_panic_response`
+    //! handler behind the same OUTERMOST `CatchPanicLayer` wiring as the server.
+    use super::fail_closed_panic_response;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+    use tower_http::catch_panic::CatchPanicLayer;
+
+    async fn panicking_handler() -> &'static str {
+        panic!("boom in handler (H-3 test)")
+    }
+
+    fn panic_net_router() -> Router {
+        Router::new()
+            .route("/panic", get(panicking_handler))
+            .route("/ok", get(|| async { "ok" }))
+            // Same OUTERMOST wiring as the production server.
+            .layer(CatchPanicLayer::custom(fail_closed_panic_response))
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_returns_fail_closed_500_and_keeps_serving() {
+        let app = panic_net_router();
+
+        // 1. A panicking handler ⇒ fail-closed 500 (not a reset, not an allow).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/panic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router must return a response, not drop the connection");
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a panicking handler must fail closed with HTTP 500"
+        );
+
+        // 2. The router still serves a subsequent normal request.
+        let resp2 = app
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .expect("router must keep serving after a caught panic");
+        assert_eq!(resp2.status(), StatusCode::OK);
     }
 }
 
