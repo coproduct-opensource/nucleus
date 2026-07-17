@@ -294,6 +294,44 @@ impl FlowTracker {
         label: IFCLabel,
         parents: &[u64],
     ) -> Result<u64, FlowError> {
+        // Existing behavior unchanged: caller-labelled node with no content hash.
+        self.observe_with_label_and_content_hash_inner(kind, label, parents, None)
+    }
+
+    /// Observe a **caller-labelled** node — exactly like
+    /// [`observe_with_label`](Self::observe_with_label) — but also tag it with the
+    /// [`ContentHash`] of the bytes it observed (InputsAuthorized brick 3).
+    ///
+    /// This is the label-preserving counterpart of
+    /// [`observe_with_content_hash`](Self::observe_with_content_hash): the recalled
+    /// provenance-memory path must keep the record's declassified/recomputed label
+    /// (never the fixed `intrinsic_label(MemoryRead)`, which would LAUNDER an
+    /// adversarial record) *and* content-address the recalled bytes. Purely
+    /// additive: the label, parent join, and session ceilings are computed exactly
+    /// as for [`observe_with_label`](Self::observe_with_label); only the stored
+    /// hash differs.
+    pub fn observe_with_label_and_content_hash(
+        &mut self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[u64],
+        hash: ContentHash,
+    ) -> Result<u64, FlowError> {
+        self.observe_with_label_and_content_hash_inner(kind, label, parents, Some(hash))
+    }
+
+    /// Shared implementation of [`observe_with_label`](Self::observe_with_label)
+    /// and [`observe_with_label_and_content_hash`](Self::observe_with_label_and_content_hash):
+    /// the caller-supplied-label parent fold, ceiling ratchet, and node push,
+    /// threading an optional content hash into node storage. Existing callers pass
+    /// `None`.
+    fn observe_with_label_and_content_hash_inner(
+        &mut self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[u64],
+        content_hash: Option<ContentHash>,
+    ) -> Result<u64, FlowError> {
         if parents.len() > 8 {
             return Err(FlowError::TooManyParents(parents.len()));
         }
@@ -323,8 +361,8 @@ impl FlowTracker {
         if label.confidentiality > self.session_conf_ceiling {
             self.session_conf_ceiling = label.confidentiality;
         }
-        // Brick 1: caller-labelled observations carry no content hash.
-        self.nodes.push((kind, label, parents.to_vec(), None));
+        self.nodes
+            .push((kind, label, parents.to_vec(), content_hash));
         Ok(id)
     }
 
@@ -821,6 +859,38 @@ mod tests {
         // hashed FileRead is identical to a plain one apart from the stored hash.
         let plain = t.observe(NodeKind::FileRead).unwrap();
         assert_eq!(t.label(id), t.label(plain));
+    }
+
+    #[test]
+    fn observe_with_label_and_content_hash_preserves_label_and_stores_hash() {
+        // InputsAuthorized brick 3: the recalled-memory path must keep the
+        // caller-supplied (declassified) label AND content-address the bytes.
+        let mut t = FlowTracker::new();
+        // A distinctive caller label that is NOT intrinsic_label(MemoryRead).
+        let web = t.observe(NodeKind::WebContent).unwrap();
+        let adversarial_label = *t.label(web).unwrap();
+        let digest = ContentHash::from_bytes([0x5Au8; 32]);
+
+        let id = t
+            .observe_with_label_and_content_hash(
+                NodeKind::MemoryRead,
+                adversarial_label,
+                &[],
+                digest,
+            )
+            .unwrap();
+
+        // The hash round-trips.
+        assert_eq!(t.content_hash(id), Some(digest));
+        // The caller-supplied label is preserved verbatim (no laundering to the
+        // fixed intrinsic MemoryRead label).
+        assert_eq!(t.label(id), Some(&adversarial_label));
+        // Behaviour matches the no-hash variant apart from the stored hash.
+        let plain = t
+            .observe_with_label(NodeKind::MemoryRead, adversarial_label, &[])
+            .unwrap();
+        assert_eq!(t.label(id), t.label(plain));
+        assert_eq!(t.content_hash(plain), None);
     }
 
     #[test]
