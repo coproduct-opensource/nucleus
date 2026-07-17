@@ -18,6 +18,15 @@ use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, Ve
 use portcullis::{
     CapabilityLevel, FlowTracker, GradedExposureGuard, NodeKind, Operation, ToolCallGuard,
 };
+// Sealed discharge preflight (#2038): the live RunBash path must mint a
+// `DischargedBundle` before it may spawn. `discharge::ActionTerm` is a distinct
+// type from `portcullis::action_term::ActionTerm` above — always name it through
+// the `discharge::` path to avoid the collision.
+use nucleus_ifc_kernel::discharge::{
+    self, preflight_action, DischargedBundle, PreflightResult, VerifiedScope,
+};
+use nucleus_ifc_kernel::{IFCLabel, SinkClass};
+use nucleus_provenance_memory::TokenScope;
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -257,13 +266,28 @@ impl NucleusMcpServer {
     /// in telemetry. Previously errors were silently discarded with `let _ =`,
     /// making audit backend failures invisible (Trail of Bits finding #3).
     fn record_verdict(&self, operation: Operation, subject: &str, outcome: VerdictOutcome) {
+        self.record_verdict_ext(operation, subject, outcome, BTreeMap::new());
+    }
+
+    /// Record a verdict with domain-specific `extensions` metadata.
+    ///
+    /// Used by the live RunBash gate (#2038) to thread the sealed
+    /// `DischargedBundle` witness into the audit record so the bundle is consumed
+    /// (not dead) and the discharge proof is durable in telemetry.
+    fn record_verdict_ext(
+        &self,
+        operation: Operation,
+        subject: &str,
+        outcome: VerdictOutcome,
+        extensions: BTreeMap<String, String>,
+    ) {
         if let Err(e) = self.sink.record(VerdictContext {
             operation,
             subject: subject.to_string(),
             outcome,
             actor: ActorIdentity::StdioGuest,
             policy_rule: None,
-            extensions: BTreeMap::new(),
+            extensions,
         }) {
             warn!(error = %e, ?operation, subject, "verdict recording failed — audit gap");
         }
@@ -459,6 +483,59 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (#2038, F8/F9/F6 dual-stack) ──────────────
+        // PRECONDITION for `run_args`: mint the sealed 7-witness `DischargedBundle`.
+        // Fail-closed on a Missing/Invalid session task token (verified_scope
+        // None ⇒ InScopeWithTask denies) — never substitutes a permissive scope.
+        // This runs ALONGSIDE the sink/kernel/guard checks above (not instead of
+        // them). The `DischargedBundle` can only be built by `preflight_action`,
+        // so reaching `run_args` past the `Allowed` arm is a compile-time-checked
+        // authorization proof.
+        let discharge_note = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let run_bash_ceiling = self.state.runtime.policy().capabilities.run_bash;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => {
+                    // Consume the bundle (satisfies its `#[must_use]`) into the
+                    // audit record so the sealed proof is durable, not dead.
+                    discharge_witness(&bundle)
+                }
+                PreflightResult::Denied { reason, .. } => {
+                    warn!(
+                        subject = %subject,
+                        %reason,
+                        "discharge preflight DENIED RunBash — no run_args"
+                    );
+                    self.record_verdict(
+                        Operation::RunBash,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+                PreflightResult::RequiresApproval { reason } => {
+                    warn!(
+                        subject = %subject,
+                        %reason,
+                        "discharge preflight requires approval for RunBash — no run_args"
+                    );
+                    self.record_verdict(
+                        Operation::RunBash,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge requires approval: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge requires approval: {reason}")));
+                }
+            }
+        };
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.executor().run_args(
@@ -470,7 +547,12 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(output) => {
-                self.record_verdict(Operation::RunBash, &subject, VerdictOutcome::Allow);
+                self.record_verdict_ext(
+                    Operation::RunBash,
+                    &subject,
+                    VerdictOutcome::Allow,
+                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
+                );
                 // Most-paranoid #2: command output may carry injected instructions;
                 // taint it (opt-in) so it can't drive a later privileged action.
                 self.observe_tool_result().await;
@@ -483,12 +565,13 @@ impl NucleusMcpServer {
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
-                self.record_verdict(
+                self.record_verdict_ext(
                     Operation::RunBash,
                     &subject,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
+                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
                 );
                 Ok(err_result(e))
             }
@@ -1058,6 +1141,97 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
     ActionTerm::from_operation(operation, subject)
 }
 
+/// The sealed discharge preflight for the live RunBash path (#2038).
+///
+/// Builds the discharge [`ActionTerm`](discharge::ActionTerm) for
+/// `RunBash`/`BashExec` and runs [`preflight_action`]. Returning
+/// [`PreflightResult::Allowed`] hands back a [`DischargedBundle`] — the sealed
+/// 7-witness proof that the operation is authorized. There is no other way to
+/// construct that bundle, so a caller that reaches `run_args` only past an
+/// `Allowed` arm is a compile-time-checked precondition.
+///
+/// Fail-closed / no-vacuous-witness:
+/// - `verified_scope == None` (session token `Missing`/`Invalid`) ⇒
+///   `InScopeWithTask` DENIES. We pass `None` straight through — never a
+///   permissive default.
+/// - `RunBash ∉ scope.allowed_operations` ⇒ `InScopeWithTask` DENIES.
+///
+/// HONESTY (what actually bites, #2038): for the `BashExec` sink the five
+/// original discharge obligations are structurally satisfied by the honest
+/// inputs below and do not add enforcement here:
+/// - IntegrityGate: `sink_min_integrity(BashExec)` is `Adversarial` (the floor),
+///   so any integrity passes;
+/// - PathAllowed: the fixed `RunBash`/`BashExec` pair is always structurally OK;
+/// - DerivationClear: `BashExec` is not a verified-lane sink, so it is skipped;
+/// - NoAdversarialAncestry: passes whenever the session carries no
+///   adversarial-integrity source label (with an empty [`FlowTracker`], vacuous);
+/// - BudgetNotExceeded: cost is 0 (no cost estimator wired, #1362);
+/// - WithinDelegationCeiling: `requested == ceiling == level_for(RunBash)`, the
+///   runtime's honest no-escalation claim, so `requested ≤ ceiling` holds by
+///   construction (sound-but-dormant, mirrors `build_term_scoped`).
+///
+/// So the real added enforcement of this brick is **`InScopeWithTask`** (gated by
+/// the verified session task token) plus the fail-closed ceiling. The IFC labels
+/// ARE fed honestly from the session's real [`FlowTracker`] (not `default()`), so
+/// `NoAdversarialAncestry`/`IntegrityGate` bite for real once web/adversarial
+/// content is in the session — they are simply vacuous on a clean session.
+fn preflight_runbash(
+    verified_scope: Option<&TokenScope>,
+    run_bash_ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
+    // Real source labels from the session flow tracker (#1633 taint state) —
+    // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
+    let mut source_labels = Vec::new();
+    for node_id in 1..=flow.node_count() as u64 {
+        if let Some(label) = flow.label(node_id) {
+            source_labels.push(*label);
+        }
+    }
+    // Artifact label: join of all source labels (most restrictive composite); an
+    // empty (clean) session yields the default label.
+    let artifact_label = if source_labels.is_empty() {
+        IFCLabel::default()
+    } else {
+        source_labels
+            .iter()
+            .skip(1)
+            .fold(source_labels[0], |acc, l| acc.join(*l))
+    };
+
+    // Convert the verified `TokenScope` into the kernel's local `VerifiedScope`
+    // carrier field-for-field (the kernel is dependency-free and cannot name
+    // `TokenScope`). `None` ⇒ `InScopeWithTask` denied fail-closed.
+    let term_scope = verified_scope.map(|s| VerifiedScope {
+        allowed_operations: s.allowed_operations.clone(),
+        allowed_paths: s.allowed_paths.clone(),
+    });
+
+    let term = discharge::ActionTerm {
+        operation: Operation::RunBash,
+        sink_class: SinkClass::BashExec,
+        source_labels,
+        artifact_label,
+        subject: subject.to_string(),
+        estimated_cost_micro_usd: 0,
+        // Honest no-escalation: request exactly what the policy grants for the op.
+        capability_ceiling: Some(run_bash_ceiling),
+        requested_capability: Some(run_bash_ceiling),
+        verified_scope: term_scope,
+    };
+
+    preflight_action(&term)
+}
+
+/// Consume a [`DischargedBundle`] into an audit-record string.
+///
+/// Satisfies the bundle's `#[must_use]` by reading it, and threads the sealed
+/// 7-witness proof into the verdict record so it is not dead.
+fn discharge_witness(bundle: &DischargedBundle) -> String {
+    format!("{bundle:?}")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests — enforcement boundary coverage (#1295)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1187,5 +1361,83 @@ mod tests {
                 "{op:?} should derive WithinDelegationCeiling"
             );
         }
+    }
+
+    // ── Live RunBash discharge gate (#2038) ─────────────────────────────────
+    //
+    // `preflight_runbash` is the sole precondition standing between a RunBash
+    // request and `Executor::run_args`: the handler only spawns past its
+    // `Allowed` arm. Anything other than `Allowed` means the handler returns
+    // early and NEVER calls `run_args` (no process is spawned). These tests
+    // exercise that decision directly at all three cases. A clean session
+    // (`FlowTracker::new()`) is used so the five original obligations are
+    // vacuously satisfied and `InScopeWithTask` is the discriminating gate.
+
+    /// The RunBash policy ceiling supplied by the handler; its exact value is
+    /// immaterial to these tests because `requested == ceiling` (honest
+    /// no-escalation) makes `WithinDelegationCeiling` pass for any level.
+    const RUN_BASH_CEILING: CapabilityLevel = CapabilityLevel::LowRisk;
+
+    // (a) Missing/Invalid session token ⇒ verified_scope() is None ⇒ the gate
+    //     DENIES fail-closed (no-vacuous-witness) ⇒ run_args is never reached.
+    #[test]
+    fn runbash_denies_when_session_token_missing_or_invalid() {
+        let flow = FlowTracker::new();
+        // `SessionTaskToken::Missing` and `::Invalid` both return `None` from
+        // `verified_scope()` (see session_token.rs) — modeled here as `None`.
+        let result = preflight_runbash(None, RUN_BASH_CEILING, "rm -rf /", &flow);
+        assert!(
+            result.is_denied(),
+            "no verified scope must DENY RunBash (fail-closed), got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be the InScopeWithTask no-vacuous-witness guard: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no run_args");
+    }
+
+    // (b) A verified token whose scope does NOT include RunBash ⇒ InScopeWithTask
+    //     DENIES ⇒ run_args is never reached.
+    #[test]
+    fn runbash_denies_when_out_of_token_scope() {
+        let flow = FlowTracker::new();
+        // Verified, but RunBash ∉ allowed_operations.
+        let scope = TokenScope::new(
+            vec![Operation::ReadFiles, Operation::GlobSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        assert!(
+            result.is_denied(),
+            "RunBash out of token scope must DENY, got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be InScopeWithTask: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no run_args");
+    }
+
+    // (c) A verified, in-scope token ⇒ the gate ALLOWS and mints the sealed
+    //     `DischargedBundle` ⇒ the handler proceeds to run_args.
+    #[test]
+    fn runbash_succeeds_with_valid_in_scope_token() {
+        let flow = FlowTracker::new();
+        let scope = TokenScope::new(
+            vec![Operation::RunBash, Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        assert!(
+            result.is_allowed(),
+            "valid in-scope token must ALLOW RunBash (reach run_args), got {result:?}"
+        );
+        // The Allowed bundle is the sealed 7-witness proof the handler consumes.
+        let bundle = result.unwrap_bundle();
+        assert!(
+            discharge_witness(&bundle).contains("in_scope_with_task"),
+            "bundle must carry the InScopeWithTask witness"
+        );
     }
 }

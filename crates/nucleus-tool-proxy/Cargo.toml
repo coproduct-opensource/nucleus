@@ -57,6 +57,11 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
+# The dependency-free IFC reference monitor. Used directly for the sealed
+# `DischargedBundle` preflight that gates the live RunBash path (#2038). Discharge
+# is already trusted (re-exported through `portcullis-core`); this is an additive
+# path to the same types, adding no new TCB.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 
