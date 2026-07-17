@@ -308,7 +308,7 @@ impl InMemoryMetrics {
 
     /// Get counters for an identity.
     fn get_counters(&self, identity: &str) -> IdentityCounters {
-        let counters = self.counters.read().expect("lock poisoned");
+        let counters = self.counters.read().unwrap_or_else(|e| e.into_inner());
         counters.get(identity).cloned().unwrap_or_default()
     }
 }
@@ -355,7 +355,7 @@ impl ReputationMetrics for InMemoryMetrics {
 
 impl MetricsCollector for InMemoryMetrics {
     fn record(&self, identity: &str, event: MetricEvent) {
-        let mut counters = self.counters.write().expect("lock poisoned");
+        let mut counters = self.counters.write().unwrap_or_else(|e| e.into_inner());
         let entry = counters.entry(identity.to_string()).or_default();
 
         match event {
@@ -391,12 +391,12 @@ impl MetricsCollector for InMemoryMetrics {
     }
 
     fn reset(&self, identity: &str) {
-        let mut counters = self.counters.write().expect("lock poisoned");
+        let mut counters = self.counters.write().unwrap_or_else(|e| e.into_inner());
         counters.remove(identity);
     }
 
     fn reset_all(&self) {
-        let mut counters = self.counters.write().expect("lock poisoned");
+        let mut counters = self.counters.write().unwrap_or_else(|e| e.into_inner());
         counters.clear();
     }
 }
