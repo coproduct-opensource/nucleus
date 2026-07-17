@@ -24,7 +24,7 @@
 //! [c2sp.org/tlog-cosignature]: https://c2sp.org/tlog-cosignature
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use nucleus_lineage::{ed25519_key_id, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE};
 
 /// A witness signing identity: an Ed25519 key plus its C2SP name.
@@ -131,7 +131,7 @@ pub fn verify_cosign_line(
     let signature = Signature::from_bytes(&sig_bytes);
     let vk = VerifyingKey::from_bytes(pubkey).map_err(|_| CosignVerifyError::BadKey)?;
     let msg = WitnessKey::cosignature_message(timestamp, note_body);
-    vk.verify(&msg, &signature)
+    vk.verify_strict(&msg, &signature)
         .map_err(|_| CosignVerifyError::SignatureInvalid)?;
     Ok((timestamp, parsed.key_name))
 }
@@ -187,6 +187,49 @@ mod tests {
         let line = wk.cosign_line(b"body\n", 1234);
         let err = verify_cosign_line(&line, b"body\n", &other.verifying_key_bytes()).unwrap_err();
         assert_eq!(err, CosignVerifyError::SignatureInvalid);
+    }
+
+    /// M-2 strong-binding regression (site: `verify_cosign_line`, the
+    /// `vk.verify_strict` call). Crafts a cosignature line whose payload
+    /// carries the identity-triple signature (R = identity encoding,
+    /// s = 0) and verifies it against the Ed25519 identity/neutral key
+    /// (`[1, 0, ..., 0]`). That triple satisfies the cofactored
+    /// verification equation for EVERY message, so non-strict `verify()`
+    /// ACCEPTS it — a key-substitution forgery — while `verify_strict()`
+    /// rejects small-order keys. If line 134 is reverted to
+    /// `vk.verify(...)`, assertion (ii) below fails.
+    #[test]
+    fn small_order_key_is_rejected_by_verify_strict() {
+        // (i) No regression: an honest cosignature still verifies.
+        let wk = WitnessKey::from_seed([42u8; 32], "nucleus.witness/honest");
+        let note_body = b"nucleus.example/log\n5\ncm9vdA==\n";
+        let honest_line = wk.cosign_line(note_body, 1_700_000_000);
+        verify_cosign_line(&honest_line, note_body, &wk.verifying_key_bytes())
+            .expect("honest cosignature must still verify through verify_strict");
+
+        // (ii) Strong binding: craft a line embedding the identity-triple
+        // signature. `verify_cosign_line` uses the passed pubkey (not the
+        // key_id), so the 4 key_id bytes are arbitrary. Payload layout is
+        // keyID(4) || timestamp(8, big-endian) || sig(64).
+        let mut id = [0u8; 32];
+        id[0] = 1; // identity/neutral point encoding, a small-order key
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[..32].copy_from_slice(&id); // R = identity, s = 0
+        let timestamp: u64 = 1_700_000_000;
+        let mut payload = Vec::with_capacity(4 + 8 + 64);
+        payload.extend_from_slice(&[0u8; 4]); // arbitrary key_id
+        payload.extend_from_slice(&timestamp.to_be_bytes());
+        payload.extend_from_slice(&sig_bytes);
+        let forged_line = format!(
+            "{SIG_LINE_PREFIX}nucleus.witness/honest {}",
+            B64.encode(&payload)
+        );
+        assert_eq!(
+            verify_cosign_line(&forged_line, note_body, &id).unwrap_err(),
+            CosignVerifyError::SignatureInvalid,
+            "small-order identity key must be REJECTED by verify_strict; \
+             a revert to non-strict verify() would ACCEPT this forgery"
+        );
     }
 
     #[test]
