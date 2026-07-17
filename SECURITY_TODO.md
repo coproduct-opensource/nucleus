@@ -193,3 +193,24 @@ DoD (guarantees)
 - No crashes, no false-allow for known forbidden patterns.
 Status
 - Done (CI-gated): 3 fuzz targets (command_can_execute, path_can_access, permission_serde) run in CI with 30s time budget each. Fuzz is a required merge check on main. See `fuzz/`, `.github/workflows/ci.yml`.
+
+## 11) Sub-pod spawn was unmediated by the information-flow monitor (audit C-1 / #1207)
+
+Deficiency
+- `create_sub_pod` spawned a child compartment and injected orchestrator credentials without consulting the session `FlowTracker`. A fresh child tracker starts clean, so a parent that had ingested adversarial/web content could launder its accumulated taint across the sub-pod boundary (confused-deputy subagent spawn). The monotonic `session_taint_ceiling` (#1207) and `check_action_safety_with_ceiling` had no production caller on this path.
+Refs: `crates/nucleus-tool-proxy/src/pod_mgmt.rs` (`create_sub_pod`, `sub_pod_ifc_gate`)
+
+Impact
+- Integrity/confidentiality non-interference held only within the single-process kernel path, not across the sub-pod boundary — a live bypass of "complete mediation".
+
+TODO
+- [DONE] Gate `create_sub_pod` on the parent `FlowTracker` via the same egress gate the kernel uses (`portcullis::exposure_core::ifc_egress_denial`, `ManagePods` → `OutboundAction`), failing closed before credential injection or any node call.
+- [OPEN] Intra-process fresh-tracker leg: `mcp.rs:171` constructs a new `FlowTracker` per MCP server; audit whether any path resets/replaces the long-lived tracker mid-session.
+- [OPEN] Defense in depth: consult `session_taint_ceiling` / `check_action_safety_with_ceiling` in the live integrity gate so per-node `is_tainted()` is not the only check.
+
+DoD (guarantees)
+- [DONE] Unit tests (`pod_mgmt::ifc_gate_tests`): a web-tainted parent and a poisoned parent are both denied `IfcDenied`; a clean parent passes. The gate is a private fn called only from `create_sub_pod`, so dropping the call fails the warnings-denied build.
+- [OPEN] E2E adversarial-corpus test: over HTTP, taint a session (web_fetch) then attempt `create_sub_pod` and assert deny + no node call + no credential forwarding.
+
+Status
+- Partial: the spawn-call-site bypass is closed and regression-tested; the intra-process fresh-tracker leg and the ceiling-wiring defense-in-depth remain open. The "complete mediation now holds" claim is intentionally NOT asserted in README/FORMAL_METHODS until those legs close.
