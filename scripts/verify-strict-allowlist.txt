@@ -23,3 +23,13 @@
 # `VerifyingKey::verify_strict` (see taskref_token.rs). This line is in scope
 # only because runtime.rs now imports `ed25519_dalek::SigningKey`. Safe.
 let scope = signed.verify(&root_issuer, now, &expected_nonce)?.clone();
+#
+# crates/nucleus-tool-proxy/src/session_token.rs (live-path PR-2):
+# The startup session-token verify is the SAME `SignedTaskRef::verify(root_issuer,
+# now, expected_nonce)` wrapper on the `SignedTaskRef` type
+# (nucleus-provenance-memory), NOT a dalek leaf call. Its implementation performs
+# the actual dalek re-verify with `VerifyingKey::verify_strict` (taskref_token.rs).
+# rustfmt splits the call across lines, so the matched line is the `.verify(...)`
+# fragment below. This file is in scope only because its tests import
+# `ed25519_dalek::SigningKey`. Safe.
+.verify(&root_issuer, now_unix, &expected_nonce)
