@@ -25,6 +25,14 @@
 # `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
 # primitive, one fewer allowlist entry (the metric win).
 #
-# nucleus-mcp-guard downstream MCP-server child (proxy.rs:25)
-#   -> migrate behind AgentSpawnEffect / production_effects(policy)
-let mut child = Command::new(cmd)
+# nucleus-mcp-guard downstream MCP-server child (proxy.rs:25) — RECLASSIFIED as
+# INFRA (brick B4), not agent-path debt. The spawned `cmd` is the downstream MCP
+# server named on the operator's guard CLI (operator/CLI-provided, never
+# agent-controlled), so it is not an agent effect. `crates/nucleus-mcp-guard/src`
+# is removed from the gate's SCOPE_DIRS (see check-mediation.sh) and this entry
+# is DELETED.
+#
+# The agent-path spawn allowlist is now EMPTY: every agent-path process-spawn
+# primitive has been relocated behind the discharge-gated sealed effect API
+# (`preflight_action` -> `DischargedBundle`, via portcullis-effects). A NEW raw
+# spawn on the agent path now fails the build with nothing to allowlist it.

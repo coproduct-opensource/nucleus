@@ -28,8 +28,16 @@ ALLOWLIST="scripts/mediation-allowlist.txt"
 
 # In-scope = the agent effect path. Effects here MUST go through
 # `preflight_action` -> `DischargedBundle`, never a raw primitive.
+#
+# nucleus-mcp-guard is DELIBERATELY EXCLUDED (brick B4): it is an operator-run
+# CLI guard whose one process spawn (proxy.rs `run_stdio_proxy`) launches the
+# downstream MCP server named on the guard's OWN command line — `cmd` is
+# operator/CLI-provided, never agent-controlled — so it is infra, not an agent
+# effect, and has no agent session/token to mint a `DischargedBundle` against.
+# RE-SCOPE IT (add the dir back here) if mcp-guard ever spawns a process from an
+# agent-controlled value.
 SCOPE_DIRS=(crates/nucleus/src crates/nucleus-tool-proxy/src \
-            crates/nucleus-mcp/src crates/nucleus-mcp-guard/src)
+            crates/nucleus-mcp/src)
 
 # Raw process-spawn primitive (brick 0). Later bricks add net/fs patterns.
 PATTERN='Command::new'
