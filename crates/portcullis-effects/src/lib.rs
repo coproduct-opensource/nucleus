@@ -172,16 +172,30 @@ pub trait ShellEffect {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         _proof: &DischargedBundle,
     ) -> io::Result<Output>;
+}
 
-    /// Async (tokio) variant of [`run_argv`](ShellEffect::run_argv).
-    ///
-    /// Mirrors the synchronous spawn but on `tokio::process`, with
-    /// `kill_on_drop(true)` and an optional `timeout`. When `timeout` is
-    /// `Some`, the wait is wrapped in `tokio::time::timeout` and a timeout maps
-    /// to an [`io::ErrorKind::TimedOut`] error; when `None`, the child is
-    /// awaited to completion. Gated behind the `async` feature so the default
-    /// crate stays free of the tokio dependency.
-    #[cfg(feature = "async")]
+/// Async (tokio) structured argv spawn.
+///
+/// This lives in its own trait, **separate from [`ShellEffect`]**, so that
+/// `ShellEffect` stays free of any `async fn` and therefore remains
+/// dyn-compatible (`Arc<dyn ShellEffect>` must build a vtable — an `async fn`
+/// in the trait would break that with `E0038`). Callers that need the async
+/// spawn depend on this trait explicitly; the sync `Arc<dyn ShellEffect>`
+/// consumers are unaffected.
+///
+/// The method mirrors [`ShellEffect::run_argv`] but on `tokio::process`, with
+/// `kill_on_drop(true)` and an optional `timeout`. When `timeout` is `Some`,
+/// the wait is wrapped in `tokio::time::timeout` and a timeout maps to an
+/// [`io::ErrorKind::TimedOut`] error; when `None`, the child is awaited to
+/// completion. Gated behind the `async` feature so the default crate stays free
+/// of the tokio dependency.
+///
+/// (Distinct from [`async_traits::AsyncShellEffect`](crate::async_traits::AsyncShellEffect),
+/// which is the sync→async *mirror* of `ShellEffect::run`; this trait is the
+/// async home of the structured `run_argv` spawn.)
+#[cfg(feature = "async")]
+pub trait AsyncShellSpawnEffect {
+    /// Async (tokio) variant of [`ShellEffect::run_argv`].
     #[allow(clippy::too_many_arguments, async_fn_in_trait)]
     async fn run_argv_async(
         &self,
@@ -389,8 +403,10 @@ impl ShellEffect for RealEffects {
             cmd.output()
         }
     }
+}
 
-    #[cfg(feature = "async")]
+#[cfg(feature = "async")]
+impl AsyncShellSpawnEffect for RealEffects {
     async fn run_argv_async(
         &self,
         program: &str,
@@ -582,8 +598,10 @@ impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
         self.inner
             .run_argv(program, args, cwd, stdin, allowed_env, harden, proof)
     }
+}
 
-    #[cfg(feature = "async")]
+#[cfg(feature = "async")]
+impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
     async fn run_argv_async(
         &self,
         program: &str,
@@ -805,8 +823,10 @@ impl ShellEffect for RecordingEffects {
         );
         Ok(empty_success_output())
     }
+}
 
-    #[cfg(feature = "async")]
+#[cfg(feature = "async")]
+impl AsyncShellSpawnEffect for RecordingEffects {
     async fn run_argv_async(
         &self,
         program: &str,
@@ -912,8 +932,10 @@ impl ShellEffect for DenyAllEffects {
             format!("shell denied: {program}"),
         ))
     }
+}
 
-    #[cfg(feature = "async")]
+#[cfg(feature = "async")]
+impl AsyncShellSpawnEffect for DenyAllEffects {
     async fn run_argv_async(
         &self,
         program: &str,
