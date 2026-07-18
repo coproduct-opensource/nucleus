@@ -210,6 +210,61 @@ pub trait AsyncShellSpawnEffect {
     ) -> io::Result<Output>;
 }
 
+/// Which net capability governs an egress, so the [`PolicyEnforced`] gate can
+/// pick the matching policy field (`web_fetch` vs `web_search`) for a
+/// [`NetEffect::fetch`] call — the net analogue of the single `run_bash` field
+/// that gates the structured spawn.
+#[cfg(feature = "net")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetCapability {
+    /// Governed by `policy.web_fetch`.
+    WebFetch,
+    /// Governed by `policy.web_search`.
+    WebSearch,
+}
+
+/// Sealed agent net-egress (the real reqwest HTTP send) — the net analogue of
+/// [`AsyncShellSpawnEffect`] for process spawn (B5).
+///
+/// This is the sealed home for AGENT egress (`web_fetch` / `web_search`): the
+/// only place a raw `reqwest …send()` may live on the effect path. The
+/// tool-proxy handlers relocate their raw `state.web_client…send()` here and
+/// reach it only past a minted [`DischargedBundle`], so an un-preflighted agent
+/// egress is a type error exactly as an un-preflighted spawn is.
+///
+/// Like [`AsyncShellSpawnEffect`] this lives in its own trait (an `async fn`
+/// would make [`WebEffect`] non-dyn-compatible) and is behind a cargo feature
+/// (`net`) so the default crate and the async-spawn consumers do not pull the
+/// reqwest HTTP stack.
+///
+/// The caller supplies the already-configured [`reqwest::Client`] (the
+/// tool-proxy's shared `web_client`, built with its timeout/user-agent) plus the
+/// request pieces the handlers already have — method, fully-formed URL (query
+/// params folded in by the caller), header pairs, optional body, optional
+/// per-request timeout. The full [`reqwest::Response`] is handed back so the
+/// caller keeps doing its post-send security processing (redirect-target
+/// recheck, MIME gating, header collection, capped body read) unchanged.
+///
+/// Requires a `&DischargedBundle` — the sealed home only sends past a discharged
+/// obligation bundle (minted by `preflight_action`). It is required by type but
+/// otherwise unused (`_proof`); its presence is the enforcement.
+#[cfg(feature = "net")]
+pub trait NetEffect {
+    /// Perform the sealed agent HTTP egress and return the raw response.
+    #[allow(clippy::too_many_arguments, async_fn_in_trait)]
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        cap: NetCapability,
+        method: reqwest::Method,
+        url: reqwest::Url,
+        headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+        timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> Result<reqwest::Response, EffectError>;
+}
+
 /// Git operations.
 pub trait GitEffect {
     /// Create a git commit with the given message.
@@ -466,6 +521,40 @@ impl AsyncShellSpawnEffect for RealEffects {
     }
 }
 
+#[cfg(feature = "net")]
+impl NetEffect for RealEffects {
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        _cap: NetCapability,
+        method: reqwest::Method,
+        url: reqwest::Url,
+        headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+        timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> Result<reqwest::Response, EffectError> {
+        // The relocated agent-egress send: build the request from the caller's
+        // pieces on the caller's configured client, then perform the one raw
+        // `reqwest …send()` that used to live in the tool-proxy handlers. This
+        // is the only place that raw send may exist on the effect path.
+        let mut request = client.request(method, url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        if let Some(dur) = timeout {
+            request = request.timeout(dur);
+        }
+        request
+            .send()
+            .await
+            .map_err(|e| EffectError::Io(format!("request failed: {e}")))
+    }
+}
+
 impl GitEffect for RealEffects {
     fn commit(&self, message: &str) -> Result<String, EffectError> {
         // Stage all tracked modifications and commit.
@@ -632,6 +721,32 @@ impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
                 timeout,
                 proof,
             )
+            .await
+    }
+}
+
+#[cfg(feature = "net")]
+impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        cap: NetCapability,
+        method: reqwest::Method,
+        url: reqwest::Url,
+        headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+        timeout: Option<std::time::Duration>,
+        proof: &DischargedBundle,
+    ) -> Result<reqwest::Response, EffectError> {
+        // Preserve the sealed policy gate for the egress too — mirror of the
+        // `run_bash` gate on the structured spawn. The governing capability
+        // depends on which agent net op this is (web_fetch vs web_search).
+        match cap {
+            NetCapability::WebFetch => self.require(self.policy.web_fetch, "web_fetch")?,
+            NetCapability::WebSearch => self.require(self.policy.web_search, "web_search")?,
+        }
+        self.inner
+            .fetch(client, cap, method, url, headers, body, timeout, proof)
             .await
     }
 }
@@ -1577,5 +1692,47 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    // ── Sealed net egress (NetEffect::fetch) — the sealed home (B5) ───────
+    //
+    // The PolicyEnforced gate must reject the egress when the governing net
+    // capability is `Never` in policy, BEFORE any network send occurs — the
+    // net analogue of `run_argv_denied_when_policy_never`. `bottom()` has both
+    // `web_fetch` and `web_search` == Never, so both discriminants short-circuit
+    // to `PolicyDenied` without touching the wire (no runtime I/O in this test).
+    #[cfg(feature = "net")]
+    #[tokio::test]
+    async fn net_fetch_denied_when_policy_never() {
+        use portcullis_core::discharge::test_helpers::allowed_bundle;
+
+        // The workspace reqwest uses `rustls-no-provider`; install a provider so
+        // `Client::new()` can build (idempotent — ignore the already-set Err).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let fx = production_effects_concrete(CapabilityLattice::bottom());
+        let bundle = allowed_bundle();
+        let client = reqwest::Client::new();
+        let url: reqwest::Url = "https://example.com/".parse().unwrap();
+
+        for cap in [NetCapability::WebFetch, NetCapability::WebSearch] {
+            // Disambiguate: `PolicyEnforced` also impls `WebEffect::fetch(&str)`.
+            let err = NetEffect::fetch(
+                &fx,
+                &client,
+                cap,
+                reqwest::Method::GET,
+                url.clone(),
+                &[],
+                None,
+                None,
+                &bundle,
+            )
+            .await
+            .expect_err("Never-policy egress must be denied before any send");
+            assert!(
+                matches!(err, EffectError::PolicyDenied(_)),
+                "{cap:?} egress under a Never policy must be PolicyDenied, got {err:?}"
+            );
+        }
     }
 }

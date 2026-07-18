@@ -1,30 +1,40 @@
 #!/usr/bin/env bash
-# North Star mediation gate — BACKSTOP (brick 0: process spawn).
+# North Star mediation gate — BACKSTOP (brick 0: process spawn; brick B5: net egress).
 #
 # The nucleus effect boundary is proof-carrying admission: a consequential agent
 # effect is obtained through `portcullis_core::discharge` (`preflight_action` ->
 # `DischargedBundle`) and enforced at the type level in `portcullis-effects`
 # (an un-preflighted effect is a compile error). This gate is the BACKSTOP for
 # the raw-primitive escape: it FAILS the build if an AGENT-PATH crate constructs
-# a raw process-spawn primitive (`Command::new` / `tokio::process::Command::new`)
-# that bypasses the discharge-gated effect API, unless the exact call is listed
-# in scripts/mediation-allowlist.txt.
+# a raw effect primitive that bypasses the discharge-gated effect API, unless the
+# exact call is allowlisted.
 #
-# The allowlist is BASELINE DEBT that only shrinks: every entry is an un-migrated
-# agent-path spawn to be moved behind the discharge-gated effect API. The gate
-# forbids any NEW un-allowlisted agent-path spawn, so the count can only ratchet
-# down as sites migrate.
+# TWO patterns are enforced:
+#   * SPAWN — `Command::new` / `tokio::process::Command::new`. Allowlist:
+#     scripts/mediation-allowlist.txt (BASELINE DEBT that only shrinks; every
+#     entry is an un-migrated agent-path spawn to move behind the effect API).
+#   * NET   — a raw reqwest agent egress (`.send()`). An agent web_fetch /
+#     web_search must go through the sealed `NetEffect::fetch` in
+#     portcullis-effects (minted `DischargedBundle`), never a raw
+#     `web_client…send()`. Allowlist: scripts/mediation-net-allowlist.txt
+#     (INFRA egress by-file / by-line — operator/host authority, no agent
+#     session/token — NOT shrinking debt). Because infra and agent reqwest both
+#     use reqwest, the NET allowlist is a by-file (node_client.rs) plus by-line
+#     (audit S3 / webhook) exemption; after relocation the only `.send()` left on
+#     the agent path is infra.
 #
 # Scope = the agent effect path ONLY. NOT host/operator/infra crates
 # (nucleus-cli, -node, -guest-init, xtask, -sdk, -client — operator/host
 # authority, outside the agent threat model) and NOT portcullis-effects (the
-# sealed home). `#[cfg(test)]` blocks and comment lines are stripped.
+# sealed home — where the relocated raw `Command::new` / reqwest `.send()` now
+# legitimately live). `#[cfg(test)]` blocks and comment lines are stripped.
 #
 # Usage: scripts/check-mediation.sh
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
-ALLOWLIST="scripts/mediation-allowlist.txt"
+SPAWN_ALLOWLIST="scripts/mediation-allowlist.txt"
+NET_ALLOWLIST="scripts/mediation-net-allowlist.txt"
 
 # In-scope = the agent effect path. Effects here MUST go through
 # `preflight_action` -> `DischargedBundle`, never a raw primitive.
@@ -39,24 +49,9 @@ ALLOWLIST="scripts/mediation-allowlist.txt"
 SCOPE_DIRS=(crates/nucleus/src crates/nucleus-tool-proxy/src \
             crates/nucleus-mcp/src)
 
-# Raw process-spawn primitive (brick 0). Later bricks add net/fs patterns.
-PATTERN='Command::new'
-
-# Load allowlist: non-empty, non-comment lines are literal TRIMMED code snippets
-# permitted to construct a raw spawn (baseline debt to migrate).
-allow_snippets=()
-if [[ -f "$ALLOWLIST" ]]; then
-    while IFS= read -r line; do
-        trimmed="${line#"${line%%[![:space:]]*}"}"
-        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-        [[ -z "$trimmed" ]] && continue
-        [[ "$trimmed" == \#* ]] && continue
-        allow_snippets+=("$trimmed")
-    done < "$ALLOWLIST"
-fi
-
 # AWK: emit `path:lineno:code` for each production line (outside any #[cfg(test)]
-# block) that matches PATTERN. Brace-balanced cfg(test) stripping; skip comments.
+# block) that contains the literal PAT. Brace-balanced cfg(test) stripping; skip
+# comment lines. Literal (index-based) match so PAT needs no regex escaping.
 read -r -d '' AWK_PROG <<'AWK' || true
 BEGIN { skip=0; brace=0; pending=0 }
 {
@@ -77,45 +72,98 @@ BEGIN { skip=0; brace=0; pending=0 }
     }
     stripped=line; sub(/^[[:space:]]+/,"",stripped)
     if (stripped ~ /^\/\//) { next }
-    if (line ~ PAT) { printf "%s:%d:%s\n", FILENAME, FNR, line }
+    if (index(line, PAT) > 0) { printf "%s:%d:%s\n", FILENAME, FNR, line }
 }
 AWK
 
+# Loaded per-pattern by load_allowlist:
+allow_snippets=()   # exact TRIMMED-line snippets permitted to carry the primitive
+allow_files=()      # whole-file exemptions (repo-relative paths)
+
+load_allowlist() {
+    local f="$1" line trimmed
+    allow_snippets=()
+    allow_files=()
+    [[ -f "$f" ]] || return 0
+    while IFS= read -r line; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        [[ -z "$trimmed" ]] && continue
+        [[ "$trimmed" == \#* ]] && continue
+        if [[ "$trimmed" == file:* ]]; then
+            allow_files+=("${trimmed#file:}")
+        else
+            allow_snippets+=("$trimmed")
+        fi
+    done < "$f"
+}
+
+# List in-scope .rs files containing the literal PAT, excluding tests/benches
+# directories (never the agent runtime path).
 list_files() {
+    local pat="$1"
     if command -v rg >/dev/null 2>&1; then
-        rg -l --glob '*.rs' "$PATTERN" "${SCOPE_DIRS[@]}"
+        rg -l -F --glob '*.rs' "$pat" "${SCOPE_DIRS[@]}"
     else
-        grep -rl --include='*.rs' "$PATTERN" "${SCOPE_DIRS[@]}"
+        grep -rlF --include='*.rs' "$pat" "${SCOPE_DIRS[@]}"
     fi | grep -vE '/(tests|benches)/' || true
 }
 
-hits=()
-while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    while IFS= read -r rec; do
-        [[ -z "$rec" ]] && continue
-        code="${rec#*:*:}"
-        trimmed="${code#"${code%%[![:space:]]*}"}"
-        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+# Run one pattern; sets the global FAILED on any un-allowlisted hit.
+run_pattern() {
+    local pat="$1" label="$2" allowfile="$3"
+    load_allowlist "$allowfile"
+
+    local hits=() f rec code trimmed snip af allowed
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        # Whole-file infra exemption.
         allowed=0
-        if [[ "${#allow_snippets[@]}" -gt 0 ]]; then
-            for snip in "${allow_snippets[@]}"; do
+        for af in "${allow_files[@]:-}"; do
+            [[ -z "$af" ]] && continue
+            if [[ "$f" == "$af" || "$f" == */"$af" ]]; then allowed=1; break; fi
+        done
+        [[ "$allowed" -eq 1 ]] && continue
+
+        while IFS= read -r rec; do
+            [[ -z "$rec" ]] && continue
+            code="${rec#*:*:}"
+            trimmed="${code#"${code%%[![:space:]]*}"}"
+            trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+            allowed=0
+            for snip in "${allow_snippets[@]:-}"; do
+                [[ -z "$snip" ]] && continue
                 [[ "$trimmed" == "$snip" ]] && { allowed=1; break; }
             done
-        fi
-        [[ "$allowed" -eq 1 ]] && continue
-        hits+=("$rec")
-    done < <(awk -v PAT="$PATTERN" "$AWK_PROG" "$f")
-done < <(list_files)
+            [[ "$allowed" -eq 1 ]] && continue
+            hits+=("$rec")
+        done < <(awk -v PAT="$pat" "$AWK_PROG" "$f")
+    done < <(list_files "$pat")
 
-if [[ "${#hits[@]}" -gt 0 ]]; then
-    echo "mediation gate FAILED: raw process spawn on the agent path, outside the discharge-gated effect API:" >&2
-    printf '  %s\n' "${hits[@]}" >&2
+    if [[ "${#hits[@]}" -gt 0 ]]; then
+        echo "mediation gate FAILED ($label): raw effect primitive on the agent path, outside the discharge-gated effect API:" >&2
+        printf '  %s\n' "${hits[@]}" >&2
+        echo >&2
+        FAILED=1
+        return 0
+    fi
+    echo "mediation gate PASSED ($label): no un-allowlisted hit on the agent path."
+}
+
+FAILED=0
+run_pattern 'Command::new' 'spawn' "$SPAWN_ALLOWLIST"
+# `.send()` with EMPTY parens is the reqwest `RequestBuilder::send()` egress
+# signature; channel/other sends carry a message argument (`.send(msg)`) and are
+# not matched, so the net pattern isolates HTTP egress without false positives.
+run_pattern '.send()' 'net' "$NET_ALLOWLIST"
+
+if [[ "$FAILED" -ne 0 ]]; then
     echo >&2
     echo "Fix: obtain the effect through portcullis_core::discharge (preflight_action -> DischargedBundle)" >&2
-    echo "via portcullis-effects, not a raw Command::new. If this is legitimate un-migrated baseline debt," >&2
-    echo "add the exact trimmed line to $ALLOWLIST (which only shrinks as sites migrate)." >&2
+    echo "via portcullis-effects (spawn -> ShellEffect::run_argv[_async]; net -> NetEffect::fetch), not a" >&2
+    echo "raw Command::new / reqwest .send(. If this is legitimate un-migrated baseline debt (spawn) or an" >&2
+    echo "infra sink (net), add it to the matching allowlist (spawn debt only shrinks; net infra is by-file/by-line)." >&2
     exit 1
 fi
 
-echo "mediation gate PASSED: no un-allowlisted raw process spawn on the agent path."
+echo "mediation gate PASSED: no un-allowlisted raw effect primitive on the agent path (spawn + net)."

@@ -61,6 +61,76 @@ pub(crate) fn preflight_runbash(
     subject: &str,
     flow: &FlowTracker,
 ) -> PreflightResult {
+    preflight_scoped(
+        Operation::RunBash,
+        SinkClass::BashExec,
+        verified_scope,
+        run_bash_ceiling,
+        subject,
+        flow,
+    )
+}
+
+/// The sealed discharge preflight for the live agent NET-EGRESS path
+/// (`web_fetch` / `web_search`, B5).
+///
+/// The net analogue of [`preflight_runbash`]: builds the discharge
+/// [`ActionTerm`](discharge::ActionTerm) for the given net `operation`
+/// ([`Operation::WebFetch`] or [`Operation::WebSearch`]) at the
+/// [`SinkClass::HTTPEgress`] sink and runs [`preflight_action`]. Returning
+/// [`PreflightResult::Allowed`] hands back the sealed [`DischargedBundle`] the
+/// handler must present to the sealed [`NetEffect::fetch`](portcullis_effects) —
+/// there is no other way to construct that bundle, so an un-preflighted agent
+/// egress is a compile-time-checked impossibility.
+///
+/// Fail-closed / no-vacuous-witness — identical structure to the RunBash gate:
+/// - `verified_scope == None` (session token `Missing`/`Invalid`) ⇒
+///   `InScopeWithTask` DENIES (we pass `None` straight through);
+/// - net op ∉ `scope.allowed_operations` ⇒ `InScopeWithTask` DENIES.
+///
+/// STRONGER than the RunBash gate on the integrity axis: `HTTPEgress` has a
+/// `sink_min_integrity` of `Untrusted` (vs `BashExec`'s `Adversarial` floor), so
+/// once web/adversarial content taints the session the honest `artifact_label`
+/// (joined from the real [`FlowTracker`] source labels) drops to `Adversarial`
+/// and both `IntegrityGate` and `NoAdversarialAncestry` DENY the egress — the
+/// lethal-trifecta guard biting for real. On a clean session the default label
+/// is `Untrusted`, which meets the floor, so a valid in-scope token ALLOWS.
+pub(crate) fn preflight_web(
+    operation: Operation,
+    verified_scope: Option<&TokenScope>,
+    web_ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
+    debug_assert!(
+        matches!(operation, Operation::WebFetch | Operation::WebSearch),
+        "preflight_web is only for the net-egress operations",
+    );
+    preflight_scoped(
+        operation,
+        SinkClass::HTTPEgress,
+        verified_scope,
+        web_ceiling,
+        subject,
+        flow,
+    )
+}
+
+/// Shared term-builder + preflight for the sealed live paths (RunBash spawn and
+/// net egress). Feeds the discharge [`ActionTerm`](discharge::ActionTerm) the
+/// session's REAL IFC labels + content hashes (never fabricated defaults) and
+/// the honest no-escalation ceiling (`requested == ceiling`), then runs
+/// [`preflight_action`]. `operation`/`sink_class` select which effect class the
+/// obligations are minted for; everything else is identical across the two
+/// callers so the fail-closed guarantees cannot drift between them.
+fn preflight_scoped(
+    operation: Operation,
+    sink_class: SinkClass,
+    verified_scope: Option<&TokenScope>,
+    ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
     // Real source labels from the session flow tracker (#1633 taint state) —
     // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
     // In the same pass, collect the per-node content hash (InputsAuthorized
@@ -98,15 +168,15 @@ pub(crate) fn preflight_runbash(
     });
 
     let term = discharge::ActionTerm {
-        operation: Operation::RunBash,
-        sink_class: SinkClass::BashExec,
+        operation,
+        sink_class,
         source_labels,
         artifact_label,
         subject: subject.to_string(),
         estimated_cost_micro_usd: 0,
         // Honest no-escalation: request exactly what the policy grants for the op.
-        capability_ceiling: Some(run_bash_ceiling),
-        requested_capability: Some(run_bash_ceiling),
+        capability_ceiling: Some(ceiling),
+        requested_capability: Some(ceiling),
         verified_scope: term_scope,
         // Plumbed inputs channel → InputsAuthorized minted (empty on a clean
         // session = vacuously authorized). Never a `None` default.
@@ -122,4 +192,90 @@ pub(crate) fn preflight_runbash(
 /// 8-witness proof into the verdict record so it is not dead.
 pub(crate) fn discharge_witness(bundle: &DischargedBundle) -> String {
     format!("{bundle:?}")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests — the live NET-EGRESS discharge gate (B5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nucleus_provenance_memory::TokenScope;
+
+    // `preflight_web` is the sole precondition standing between a web_fetch /
+    // web_search request and the sealed `NetEffect::fetch`: the handler only
+    // reaches the send past its `Allowed` arm. Anything else means the handler
+    // returns its error early and NEVER fetches. A clean session
+    // (`FlowTracker::new()`) is used so the integrity/ancestry obligations are
+    // met (default label = Untrusted, meeting the HTTPEgress floor) and
+    // `InScopeWithTask` is the discriminating gate. Exact ceiling is immaterial
+    // (`requested == ceiling`).
+    const WEB_CEILING: CapabilityLevel = CapabilityLevel::LowRisk;
+
+    // (a) Missing/Invalid session token ⇒ verified_scope() is None ⇒ DENY
+    //     fail-closed (no-vacuous-witness) ⇒ no fetch. Both net ops.
+    #[test]
+    fn web_denies_when_session_token_missing_or_invalid() {
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let flow = FlowTracker::new();
+            let result = preflight_web(op, None, WEB_CEILING, "https://evil.example", &flow);
+            assert!(
+                result.is_denied(),
+                "no verified scope must DENY {op:?} (fail-closed), got {result:?}"
+            );
+            assert!(
+                result.denial_reason().unwrap().contains("InScopeWithTask"),
+                "denial must be the InScopeWithTask no-vacuous-witness guard: {result:?}"
+            );
+            assert!(!result.is_allowed(), "must not mint a bundle ⇒ no fetch");
+        }
+    }
+
+    // (b) A verified token whose scope does NOT include the net op ⇒
+    //     InScopeWithTask DENIES ⇒ no fetch.
+    #[test]
+    fn web_denies_when_out_of_token_scope() {
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let flow = FlowTracker::new();
+            // Verified, but the net op ∉ allowed_operations.
+            let scope = TokenScope::new(
+                vec![Operation::ReadFiles, Operation::RunBash],
+                vec!["/workspace/**".to_string()],
+            );
+            let result = preflight_web(op, Some(&scope), WEB_CEILING, "https://api.example", &flow);
+            assert!(
+                result.is_denied(),
+                "{op:?} out of token scope must DENY, got {result:?}"
+            );
+            assert!(
+                result.denial_reason().unwrap().contains("InScopeWithTask"),
+                "denial must be InScopeWithTask: {result:?}"
+            );
+            assert!(!result.is_allowed(), "must not mint a bundle ⇒ no fetch");
+        }
+    }
+
+    // (c) A verified, in-scope token on a clean session ⇒ ALLOW and mint the
+    //     sealed `DischargedBundle` ⇒ the handler proceeds to the sealed fetch.
+    #[test]
+    fn web_succeeds_with_valid_in_scope_token() {
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let flow = FlowTracker::new();
+            let scope = TokenScope::new(
+                vec![Operation::WebFetch, Operation::WebSearch],
+                vec!["/workspace/**".to_string()],
+            );
+            let result = preflight_web(op, Some(&scope), WEB_CEILING, "https://api.example", &flow);
+            assert!(
+                result.is_allowed(),
+                "valid in-scope token must ALLOW {op:?} (reach fetch), got {result:?}"
+            );
+            let bundle = result.unwrap_bundle();
+            assert!(
+                discharge_witness(&bundle).contains("in_scope_with_task"),
+                "bundle must carry the InScopeWithTask witness"
+            );
+        }
+    }
 }

@@ -23,6 +23,9 @@ use portcullis::{
 // (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
 // handler); here we only need the result/bundle types it returns.
 use nucleus_ifc_kernel::discharge::PreflightResult;
+// Sealed net-egress effect home (B5): the `.fetch()` trait method that performs
+// the one raw reqwest send lives behind this trait in `portcullis-effects`.
+use portcullis_effects::NetEffect;
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1040,13 +1043,11 @@ impl NucleusMcpServer {
         }
 
         let method = params.method.as_deref().unwrap_or("GET");
-        let client = &self.state.web_client;
-
-        let request = match method.to_uppercase().as_str() {
-            "GET" => client.get(&params.url),
-            "POST" => client.post(&params.url),
-            "PUT" => client.put(&params.url),
-            "DELETE" => client.delete(&params.url),
+        let req_method = match method.to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
             _ => {
                 let msg = format!("unsupported method: {method}");
                 self.record_verdict(
@@ -1060,6 +1061,42 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (B5, parity with the MCP RunBash handler) ──
+        // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed
+        // 8-witness `DischargedBundle` via `preflight_web`. Fail closed — a
+        // Missing/Invalid session task token gives `verified_scope == None` ⇒
+        // `InScopeWithTask` denies; an out-of-scope op denies. No bundle ⇒ the
+        // handler returns its error and NEVER fetches (no wire egress).
+        let discharge_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let web_ceiling = self.state.runtime.policy().capabilities.web_fetch;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_web(
+                Operation::WebFetch,
+                verified_scope,
+                web_ceiling,
+                &subject,
+                &flow,
+            );
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(subject = %subject, %reason, "discharge preflight DENIED web_fetch — no fetch");
+                    self.record_verdict(
+                        Operation::WebFetch,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let _discharge_note = discharge_witness(&discharge_bundle);
+
         // Perform async fetch with full security controls.
         // NOTE: The fetch happens before execute_and_record() intentionally.
         // execute_and_record's purpose is TOCTOU detection (checking if exposure
@@ -1068,9 +1105,24 @@ impl NucleusMcpServer {
         let max_bytes = self.state.web_fetch_max_bytes;
         let dns_allow = self.state.dns_allow.clone();
         let url_allow = self.state.url_allow.clone();
+        // The raw reqwest send now lives in the sealed home (`NetEffect::fetch`);
+        // the bundle minted above is the type-level authorization, and
+        // `PolicyEnforced` re-checks `web_fetch` inside it.
+        let effects = portcullis_effects::production_effects_concrete(crate::core_capabilities(
+            &self.state.runtime.policy().capabilities,
+        ));
         let fetch_result: Result<String, String> = async {
-            let resp = request
-                .send()
+            let resp = effects
+                .fetch(
+                    &self.state.web_client,
+                    portcullis_effects::NetCapability::WebFetch,
+                    req_method,
+                    parsed_url,
+                    &[],
+                    None,
+                    None,
+                    &discharge_bundle,
+                )
                 .await
                 .map_err(|e| format!("fetch failed: {e}"))?;
             let status = resp.status().as_u16();
@@ -1170,7 +1222,7 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
 // module, so the non-feature-gated HTTP `/v1/run` handler can share them with
 // this feature-gated MCP handler. Re-imported here so the local call sites and
 // the `#[cfg(test)]` module below resolve them unchanged.
-use crate::run_gate::{discharge_witness, preflight_runbash};
+use crate::run_gate::{discharge_witness, preflight_runbash, preflight_web};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests — enforcement boundary coverage (#1295)
