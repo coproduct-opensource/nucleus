@@ -14,6 +14,10 @@
 //! Closes: #102, #103
 
 use nucleus::Sandbox;
+// Sanctioned test-only sealed bundle for the `_proof`-gated `Sandbox::write`
+// (B6): the constructor is private to discharge, so tests earn a bundle via a
+// real `preflight_action` on a known-good WriteFiles/WorkspaceWrite term.
+use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
 use portcullis::kernel::{DecisionToken, Kernel};
 use portcullis::{
     CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation, PermissionLattice,
@@ -160,7 +164,12 @@ fn test_symlink_write_blocked() {
     // Write via symlink should fail (kernel may gate via obligations, so force token
     // to test sandbox-level cap-std symlink defense)
     let tok = kernel.issue_approved_token(Operation::WriteFiles, "test: symlink write");
-    let result = sandbox.write("write_escape.txt", b"OVERWRITTEN_BY_ATTACKER", &tok);
+    let result = sandbox.write(
+        "write_escape.txt",
+        b"OVERWRITTEN_BY_ATTACKER",
+        &tok,
+        &allowed_bundle(),
+    );
     assert!(
         result.is_err(),
         "symlink write should be blocked: {:?}",
