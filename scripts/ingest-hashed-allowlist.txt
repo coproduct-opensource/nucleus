@@ -1,0 +1,41 @@
+# InputsAuthorized ingest-hash gate — NON-INGEST observe allowlist (brick 4).
+#
+# Each entry is a NON-hashing FlowTracker/Kernel observe that the gate would
+# otherwise flag, but that is NOT an agent-INPUT ingest — it observes no incoming
+# external bytes, so there is nothing to content-address. (Contrast the ingest
+# sites, which Brick 3 (#2042) moved onto observe_with_content_hash /
+# observe_with_label_and_content_hash / the hashing chokepoints.) F13
+# classification. This list only shrinks; a NEW un-allowlisted bare observe on
+# the agent path fails the build.
+#
+# Format: exact TRIMMED source line (leading/trailing whitespace removed).
+#
+# ── nucleus-mcp: kernel operation-causal marker (main.rs :1021) ──
+# NodeKind = operation_to_node_kind(op) for an operation the Kernel ALREADY
+# admitted via decide_with_parents (Verdict::Allow). This is the Kernel 2-arg
+# observe(kind, &parents) that records the allowed OPERATION in the causal DAG
+# for audit — not an ingest of tool-result/file/web bytes. The standalone
+# MCP-server decision path, not the tool-proxy McpToolResult laundering channel.
+if let Ok(node_id) = kernel.observe(obs_kind, &obs_parents) {
+#
+# ── portcullis-effects NucleusRuntime: type-level discharge path (runtime.rs) ──
+# On this path the enforcement is the compile-time Labeled<T, Integrity, Conf>
+# return type + the DischargedBundle proof, NOT the FlowTracker content hash. The
+# observe records the discharged effect in the causal DAG; the bytes are already
+# provenance-bound by their Labeled<> type at the boundary.
+#
+#   :667 unmediated_effects — OutboundAction: records the unmediated-access GRANT
+#   (an egress/authority marker), not incoming bytes.
+.observe(NodeKind::OutboundAction)
+#   :705 read_file — FileRead: returns Labeled<Vec<u8>, Trusted, Internal>; the
+#   Labeled type carries provenance, the observe marks the discharged read op.
+.observe(NodeKind::FileRead)
+#   :759 fetch_url — WebContent: returns Labeled<Vec<u8>, Adversarial, Public>;
+#   the Labeled type carries the adversarial taint, the observe marks the op.
+.observe(NodeKind::WebContent)
+#
+# ── portcullis-effects: child-ceiling propagation sentinel (runtime.rs :1091) ──
+# WebContent used purely as a SENTINEL to raise a freshly-built child runtime's
+# taint/conf ceilings to the parent's (the FlowTracker API only raises ceilings
+# via observation). No bytes are ingested — it is a ceiling-init, not an input.
+.observe(portcullis_core::flow::NodeKind::WebContent);
