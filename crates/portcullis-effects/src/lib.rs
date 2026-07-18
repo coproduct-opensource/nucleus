@@ -50,9 +50,13 @@
 pub mod async_traits;
 pub mod runtime;
 
+use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 
+use portcullis_core::discharge::DischargedBundle;
 use portcullis_core::{CapabilityLattice, CapabilityLevel};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -133,6 +137,63 @@ pub trait ShellEffect {
     ///
     /// `cmd` is parsed via `shell-words` to prevent injection.
     fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError>;
+
+    /// Structured argv spawn — the sealed home for a mediated process spawn (B1).
+    ///
+    /// Unlike [`run`](ShellEffect::run), this takes an already-split argv
+    /// (`program` + `args`, never a shell string, preserving the
+    /// "argv-not-shell" injection defense) plus everything a hardened spawn
+    /// needs, so a caller such as the nucleus `Executor` can relocate its raw
+    /// `Command::new` into this sealed home without losing any behavior:
+    ///
+    /// * `program` / `args` — the argv; no shell is ever involved.
+    /// * `cwd` — the already-validated working directory (`current_dir`).
+    /// * `stdin` — `Some(bytes)` to feed the child stdin over a pipe, `None` to
+    ///   close it with `Stdio::null()`.
+    /// * `allowed_env` — the environment allowlist; the child is spawned with
+    ///   `env_clear()` then `envs(allowed_env)`, so no parent variable leaks.
+    /// * `harden` — an optional hook applied to the built [`Command`] just
+    ///   before spawn (e.g. the caller's host-sandbox `harden_std`). Injected as
+    ///   a callback because the concrete hardening lives in the caller's crate,
+    ///   not here; passing `None` reproduces the un-hardened spawn.
+    ///
+    /// Requires a `&DischargedBundle` — the sealed home only spawns past a
+    /// discharged obligation bundle (minted by `preflight_action`). It is
+    /// required by type but otherwise unused (`_proof`); its presence is the
+    /// enforcement.
+    #[allow(clippy::too_many_arguments)]
+    fn run_argv(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output>;
+
+    /// Async (tokio) variant of [`run_argv`](ShellEffect::run_argv).
+    ///
+    /// Mirrors the synchronous spawn but on `tokio::process`, with
+    /// `kill_on_drop(true)` and an optional `timeout`. When `timeout` is
+    /// `Some`, the wait is wrapped in `tokio::time::timeout` and a timeout maps
+    /// to an [`io::ErrorKind::TimedOut`] error; when `None`, the child is
+    /// awaited to completion. Gated behind the `async` feature so the default
+    /// crate stays free of the tokio dependency.
+    #[cfg(feature = "async")]
+    #[allow(clippy::too_many_arguments, async_fn_in_trait)]
+    async fn run_argv_async(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
+        timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output>;
 }
 
 /// Git operations.
@@ -281,6 +342,106 @@ impl ShellEffect for RealEffects {
             stderr: output.stderr,
         })
     }
+
+    fn run_argv(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
+        // relocate here losslessly: env_clear + envs(allowlist), piped
+        // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
+        // hook, and stdin-fed vs plain output.
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(cwd)
+            .env_clear() // Security: prevent secret leakage from parent
+            .envs(allowed_env) // Only explicitly allowed vars
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Stdin: pipe it when the caller has data to write, otherwise close it.
+        if stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+
+        // Host-hardening hook (e.g. `HostSandbox::harden_std`), applied just
+        // before spawn. `None` reproduces the un-hardened spawn.
+        if let Some(harden) = harden {
+            harden(&mut cmd);
+        }
+
+        if let Some(input) = stdin {
+            let mut child = cmd.spawn()?;
+            if let Some(ref mut stdin_pipe) = child.stdin {
+                use std::io::Write as _;
+                stdin_pipe.write_all(input)?;
+            }
+            child.wait_with_output()
+        } else {
+            cmd.output()
+        }
+    }
+
+    #[cfg(feature = "async")]
+    async fn run_argv_async(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
+        timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        // Mirrors `Executor::run_with_timeout`'s tokio spawn.
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .current_dir(cwd)
+            .env_clear() // Security: prevent secret leakage from parent
+            .envs(allowed_env) // Only explicitly allowed vars
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        if stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+
+        if let Some(harden) = harden {
+            harden(&mut cmd);
+        }
+
+        let mut child = cmd.spawn()?;
+        if let Some(input) = stdin {
+            if let Some(mut stdin_pipe) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt as _;
+                stdin_pipe.write_all(input).await?;
+                stdin_pipe.shutdown().await?;
+            }
+        }
+
+        match timeout {
+            Some(dur) => match tokio::time::timeout(dur, child.wait_with_output()).await {
+                Ok(result) => result,
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("command timed out after {dur:?}"),
+                )),
+            },
+            None => child.wait_with_output().await,
+        }
+    }
 }
 
 impl GitEffect for RealEffects {
@@ -403,6 +564,51 @@ impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
     fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
         self.require(self.policy.run_bash, "run_bash")?;
         self.inner.run(cmd)
+    }
+
+    fn run_argv(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
+        proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        // Preserve the sealed policy gate for the structured spawn too.
+        self.require(self.policy.run_bash, "run_bash")
+            .map_err(policy_denied_io)?;
+        self.inner
+            .run_argv(program, args, cwd, stdin, allowed_env, harden, proof)
+    }
+
+    #[cfg(feature = "async")]
+    async fn run_argv_async(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        stdin: Option<&[u8]>,
+        allowed_env: &BTreeMap<String, String>,
+        harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
+        timeout: Option<std::time::Duration>,
+        proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        self.require(self.policy.run_bash, "run_bash")
+            .map_err(policy_denied_io)?;
+        self.inner
+            .run_argv_async(
+                program,
+                args,
+                cwd,
+                stdin,
+                allowed_env,
+                harden,
+                timeout,
+                proof,
+            )
+            .await
     }
 }
 
@@ -582,6 +788,42 @@ impl ShellEffect for RecordingEffects {
             exit_code: 0,
         })
     }
+
+    fn run_argv(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        _stdin: Option<&[u8]>,
+        _allowed_env: &BTreeMap<String, String>,
+        _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        self.record(
+            "run_argv",
+            format!("{program} {args:?} @ {}", cwd.display()),
+        );
+        Ok(empty_success_output())
+    }
+
+    #[cfg(feature = "async")]
+    async fn run_argv_async(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        _stdin: Option<&[u8]>,
+        _allowed_env: &BTreeMap<String, String>,
+        _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
+        _timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        self.record(
+            "run_argv_async",
+            format!("{program} {args:?} @ {}", cwd.display()),
+        );
+        Ok(empty_success_output())
+    }
 }
 
 impl GitEffect for RecordingEffects {
@@ -653,6 +895,40 @@ impl WebEffect for DenyAllEffects {
 impl ShellEffect for DenyAllEffects {
     fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
         Err(EffectError::PolicyDenied(format!("shell denied: {cmd}")))
+    }
+
+    fn run_argv(
+        &self,
+        program: &str,
+        _args: &[String],
+        _cwd: &Path,
+        _stdin: Option<&[u8]>,
+        _allowed_env: &BTreeMap<String, String>,
+        _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("shell denied: {program}"),
+        ))
+    }
+
+    #[cfg(feature = "async")]
+    async fn run_argv_async(
+        &self,
+        program: &str,
+        _args: &[String],
+        _cwd: &Path,
+        _stdin: Option<&[u8]>,
+        _allowed_env: &BTreeMap<String, String>,
+        _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
+        _timeout: Option<std::time::Duration>,
+        _proof: &DischargedBundle,
+    ) -> io::Result<Output> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("shell denied: {program}"),
+        ))
     }
 }
 
@@ -785,6 +1061,38 @@ impl WebEffect for AllowListEffects {
     fn search(&self, _query: &str) -> Result<Vec<SearchResult>, EffectError> {
         Ok(Vec::new())
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Internal spawn helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map a policy-denial [`EffectError`] onto the `io::Error` surface used by the
+/// structured spawn methods (`run_argv` / `run_argv_async` return `io::Result`).
+fn policy_denied_io(err: EffectError) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, err.to_string())
+}
+
+/// A synthetic successful [`Output`] with empty streams — used by the mock
+/// [`ShellEffect`] impls that record but do not spawn a real process.
+fn empty_success_output() -> Output {
+    Output {
+        status: exit_status_zero(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }
+}
+
+#[cfg(unix)]
+fn exit_status_zero() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt as _;
+    std::process::ExitStatus::from_raw(0)
+}
+
+#[cfg(windows)]
+fn exit_status_zero() -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt as _;
+    std::process::ExitStatus::from_raw(0)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1134,5 +1442,104 @@ mod tests {
         let out = fx.run("echo nucleus").unwrap();
         assert!(out.success());
         assert!(out.stdout_str().contains("nucleus"));
+    }
+
+    // ── Structured argv spawn (run_argv) — the sealed home (B1) ───────────
+    //
+    // Mirrors the nucleus `Executor` spawn behavior tests: a real command runs
+    // from an argv, its output is captured, `cwd` is honored, and the child
+    // environment is isolated (env_clear + only the allowlist). Requires a
+    // real `DischargedBundle` (minted by `preflight_action` via the sealed test
+    // helper) — the structured spawn only proceeds past a discharged bundle.
+    #[cfg(unix)]
+    #[test]
+    fn real_run_argv_captures_output_cwd_and_env_isolation() {
+        use portcullis_core::discharge::test_helpers::allowed_bundle;
+
+        let mut policy = CapabilityLattice::bottom();
+        policy.run_bash = CapabilityLevel::Always;
+        let fx = production_effects(policy);
+        let bundle = allowed_bundle();
+
+        let dir = tempfile::tempdir().unwrap();
+        let want_cwd = dir.path().canonicalize().unwrap();
+
+        let mut allowed_env = BTreeMap::new();
+        allowed_env.insert("ALLOWED_TOKEN".to_string(), "argv-value-123".to_string());
+
+        // (1) `pwd` proves `current_dir` was honored. The program name is
+        //     resolved via the parent PATH even though the child env is cleared.
+        let pwd_out = fx
+            .run_argv("pwd", &[], dir.path(), None, &allowed_env, None, &bundle)
+            .expect("run_argv spawns pwd");
+        assert!(pwd_out.status.success());
+        let printed_cwd = String::from_utf8_lossy(&pwd_out.stdout);
+        assert_eq!(
+            Path::new(printed_cwd.trim()).canonicalize().unwrap(),
+            want_cwd,
+            "run_argv must honor cwd",
+        );
+
+        // (2) `printenv` proves the env allowlist passed through AND that parent
+        //     variables were cleared (PATH is set in the test parent; it must
+        //     not appear in the child's environment after env_clear).
+        let env_out = fx
+            .run_argv(
+                "printenv",
+                &[],
+                dir.path(),
+                None,
+                &allowed_env,
+                None,
+                &bundle,
+            )
+            .expect("run_argv spawns printenv");
+        assert!(env_out.status.success());
+        let printed_env = String::from_utf8_lossy(&env_out.stdout);
+        assert!(
+            printed_env.contains("ALLOWED_TOKEN=argv-value-123"),
+            "allowlisted env var must reach the child: {printed_env:?}",
+        );
+        assert!(
+            !printed_env.lines().any(|l| l.starts_with("PATH=")),
+            "parent PATH must not leak into the child (env isolation): {printed_env:?}",
+        );
+
+        // (3) stdin plumbing: bytes fed on stdin are delivered to the child.
+        let cat_out = fx
+            .run_argv(
+                "cat",
+                &[],
+                dir.path(),
+                Some(b"piped-stdin"),
+                &allowed_env,
+                None,
+                &bundle,
+            )
+            .expect("run_argv spawns cat with stdin");
+        assert!(cat_out.status.success());
+        assert_eq!(&cat_out.stdout, b"piped-stdin");
+    }
+
+    #[test]
+    fn run_argv_denied_when_policy_never() {
+        use portcullis_core::discharge::test_helpers::allowed_bundle;
+
+        // run_bash is Never in bottom() — the sealed policy gate must reject the
+        // structured spawn just as it rejects `run`.
+        let fx = production_effects(CapabilityLattice::bottom());
+        let bundle = allowed_bundle();
+        let err = fx
+            .run_argv(
+                "echo",
+                &["hi".to_string()],
+                Path::new("."),
+                None,
+                &BTreeMap::new(),
+                None,
+                &bundle,
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 }

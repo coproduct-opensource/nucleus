@@ -10,12 +10,19 @@ readme = "README.md"
 keywords = ["ai", "security", "effects", "permissions", "agents"]
 categories = ["development-tools", "authentication"]
 
+[features]
+default = []
+# Enable the tokio-based async spawn (`ShellEffect::run_argv_async`). Keeps the
+# default crate free of the tokio dependency.
+async = ["dep:tokio"]
+
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 ed25519-dalek = { workspace = true }
 shell-words = { workspace = true }
 regex = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
