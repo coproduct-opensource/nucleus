@@ -96,6 +96,15 @@ jobs:
       - name: Forbid raw agent-path effect primitives outside the discharge-gated API
         run: scripts/check-mediation.sh
 
+  ingest-hash-gate:
+    name: No-unwitnessed-ingest gate (InputsAuthorized)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Forbid non-hashing agent-path ingest observes (content-address every input)
+        run: scripts/check-ingest-hashed.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
