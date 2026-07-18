@@ -21,7 +21,7 @@ use nucleus_provenance_memory::TokenScope;
 /// Builds the discharge [`ActionTerm`](discharge::ActionTerm) for
 /// `RunBash`/`BashExec` and runs [`preflight_action`]. Returning
 /// [`PreflightResult::Allowed`] hands back a [`DischargedBundle`] — the sealed
-/// 7-witness proof that the operation is authorized. There is no other way to
+/// 8-witness proof that the operation is authorized. There is no other way to
 /// construct that bundle, so a caller that reaches `run_args` only past an
 /// `Allowed` arm is a compile-time-checked precondition.
 ///
@@ -44,6 +44,11 @@ use nucleus_provenance_memory::TokenScope;
 /// - WithinDelegationCeiling: `requested == ceiling == level_for(RunBash)`, the
 ///   runtime's honest no-escalation claim, so `requested ≤ ceiling` holds by
 ///   construction (sound-but-dormant, mirrors `build_term_scoped`).
+/// - InputsAuthorized: the content-addressed inputs channel is plumbed from the
+///   session [`FlowTracker`] (`Some(..)`, never a `None` default), so the
+///   obligation is minted — vacuously on a clean session with no
+///   content-addressed inputs (empty vec), and for real once bricks 1+3 record
+///   digests on the session's source nodes.
 ///
 /// So the real added enforcement of this brick is **`InScopeWithTask`** (gated by
 /// the verified session task token) plus the fail-closed ceiling. The IFC labels
@@ -58,10 +63,19 @@ pub(crate) fn preflight_runbash(
 ) -> PreflightResult {
     // Real source labels from the session flow tracker (#1633 taint state) —
     // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
+    // In the same pass, collect the per-node content hash (InputsAuthorized
+    // bricks 1+3): one `ContentHash` per node that carries a recorded digest. The
+    // channel is `Some(..)` (plumbed) here, so `InputsAuthorized` is minted — an
+    // empty vec (clean session with no content-addressed inputs) is vacuously
+    // authorized. `None` (fail-closed deny) is reserved for un-plumbed callers.
     let mut source_labels = Vec::new();
+    let mut content_addressed_inputs = Vec::new();
     for node_id in 1..=flow.node_count() as u64 {
         if let Some(label) = flow.label(node_id) {
             source_labels.push(*label);
+        }
+        if let Some(hash) = flow.content_hash(node_id) {
+            content_addressed_inputs.push(hash);
         }
     }
     // Artifact label: join of all source labels (most restrictive composite); an
@@ -94,6 +108,9 @@ pub(crate) fn preflight_runbash(
         capability_ceiling: Some(run_bash_ceiling),
         requested_capability: Some(run_bash_ceiling),
         verified_scope: term_scope,
+        // Plumbed inputs channel → InputsAuthorized minted (empty on a clean
+        // session = vacuously authorized). Never a `None` default.
+        content_addressed_inputs: Some(content_addressed_inputs),
     };
 
     preflight_action(&term)
@@ -102,7 +119,7 @@ pub(crate) fn preflight_runbash(
 /// Consume a [`DischargedBundle`] into an audit-record string.
 ///
 /// Satisfies the bundle's `#[must_use]` by reading it, and threads the sealed
-/// 7-witness proof into the verdict record so it is not dead.
+/// 8-witness proof into the verdict record so it is not dead.
 pub(crate) fn discharge_witness(bundle: &DischargedBundle) -> String {
     format!("{bundle:?}")
 }

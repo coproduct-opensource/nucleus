@@ -608,7 +608,7 @@ impl NucleusRuntime {
     ///
     /// 1. an [`UnmediatedAccess`] token (builder opt-in, auditable),
     /// 2. a [`DischargedBundle`] from [`preflight_unmediated`] — proof that all
-    ///    five policy obligations passed for the strictest egress sink, and
+    ///    eight policy obligations passed for the strictest egress sink, and
     /// 3. a FlowTracker observation: the grant is recorded as an
     ///    [`NodeKind::OutboundAction`] node, so the IFC graph reflects that an
     ///    unmediated bundle was issued (`flow_tracker().node_count()` advances).
@@ -853,11 +853,21 @@ impl NucleusRuntime {
         operation: Operation,
         sink_class: SinkClass,
     ) -> (ActionTerm, Option<TokenScope>) {
-        // Collect source labels from all tracked nodes
+        // Collect source labels from all tracked nodes. In the same pass, collect
+        // the per-node content hash (InputsAuthorized bricks 1+3): one
+        // `ContentHash` per source node that carries a recorded digest. The
+        // channel is always `Some(..)` here — a real runtime-built term is always
+        // plumbed — so `InputsAuthorized` is minted (nodes without a recorded
+        // hash are simply omitted; an empty vec = no inputs = vacuously
+        // authorized). `None` (deny) is reserved for un-plumbed callers only.
         let mut source_labels = Vec::new();
+        let mut content_addressed_inputs = Vec::new();
         for node_id in 1..=self.flow_tracker.node_count() as u64 {
             if let Some(label) = self.flow_tracker.label(node_id) {
                 source_labels.push(*label);
+            }
+            if let Some(hash) = self.flow_tracker.content_hash(node_id) {
+                content_addressed_inputs.push(hash);
             }
         }
 
@@ -910,6 +920,11 @@ impl NucleusRuntime {
             capability_ceiling: Some(self.level_for(operation)),
             requested_capability: Some(self.level_for(operation)),
             verified_scope: term_scope,
+            // PR-5: InputsAuthorized inputs. Always `Some(..)` on a runtime-built
+            // term (the channel is plumbed from the FlowTracker), so the
+            // obligation is minted; `None` (fail-closed deny) is reserved for
+            // un-plumbed callers. Sound-but-dormant like `WithinDelegationCeiling`.
+            content_addressed_inputs: Some(content_addressed_inputs),
         };
 
         (term, verified_scope)
@@ -942,7 +957,7 @@ impl NucleusRuntime {
 
     /// Run `preflight_action` and return the `DischargedBundle` on success.
     ///
-    /// The bundle is proof that all 5 obligations passed. Callers should
+    /// The bundle is proof that all 8 obligations passed. Callers should
     /// thread it to effect functions rather than discarding (#1360).
     fn discharge(&self, term: &ActionTerm) -> Result<DischargedBundle, RuntimeError> {
         match preflight_action(term) {
@@ -1436,7 +1451,7 @@ mod tests {
 
     // ── PR-B token helpers ──────────────────────────────────────────────
     //
-    // Widening the bundle to 7 obligations makes `InScopeWithTask` mandatory:
+    // Widening the bundle to 8 obligations makes `InScopeWithTask` mandatory:
     // `preflight_action` denies fail-closed unless the session carries a
     // verified task token whose scope authorizes the operation. These helpers
     // mint a broad-scope verified token so the capability/flow/effect tests
