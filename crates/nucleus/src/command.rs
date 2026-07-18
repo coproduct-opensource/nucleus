@@ -9,7 +9,11 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Output};
+// `Stdio` is only used by the async (tokio) spawn paths now that the sync
+// builder has been relocated into the sealed `ShellEffect::run_argv` home (B2).
+#[cfg(feature = "async")]
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,11 +23,16 @@ use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
 use nucleus_ifc_kernel::discharge::DischargedBundle;
+// The sealed effects home (B1). `portcullis_core::CapabilityLattice` — the type
+// `production_effects` requires — is a re-export of `nucleus_ifc_kernel`'s
+// lattice (already a nucleus dependency), so no new dep is needed to name it.
+use nucleus_ifc_kernel::CapabilityLattice as CoreCapabilityLattice;
 use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, IsolationLattice, Obligations, Operation,
     PermissionLattice,
 };
+use portcullis_effects::{production_effects, ShellEffect};
 
 use crate::hardening::HostSandbox;
 
@@ -114,6 +123,13 @@ pub struct Executor<'a> {
     required_isolation: IsolationLattice,
     /// The declared containment posture. Default fails closed.
     containment: ContainmentMode,
+    /// The sealed effects home (B1) the synchronous spawn delegates to. Obtained
+    /// from [`production_effects`], so it is a `PolicyEnforced<RealEffects>`: the
+    /// only raw `Command::new` on the sync path now lives inside
+    /// `ShellEffect::run_argv`, reached only past the policy gate and a
+    /// `DischargedBundle`. Held as a trait object because the concrete effect
+    /// type is intentionally opaque outside `portcullis-effects`.
+    effects: Arc<dyn ShellEffect + Send + Sync>,
 }
 
 impl<'a> Executor<'a> {
@@ -130,6 +146,14 @@ impl<'a> Executor<'a> {
         // The required isolation is the policy's declared minimum; absent any
         // requirement it resolves to the weakest level (localhost = "no requirement").
         let required_isolation = normalized.effective_minimum_isolation();
+        // Build the sealed effects home from this Executor's own capabilities.
+        // `production_effects` wraps `RealEffects` in `PolicyEnforced`, so the
+        // spawn keeps the crate's policy gate; the Executor's own capability
+        // checks (`check_capability`) remain the primary authorization and run
+        // first, so behavior on the bash path is unchanged.
+        let effects: Arc<dyn ShellEffect + Send + Sync> = Arc::new(production_effects(
+            core_capabilities(&normalized.capabilities),
+        ));
         Self {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
@@ -142,6 +166,7 @@ impl<'a> Executor<'a> {
             allowed_env: BTreeMap::new(),
             required_isolation,
             containment: ContainmentMode::Unconfigured,
+            effects,
         }
     }
 
@@ -305,11 +330,12 @@ impl<'a> Executor<'a> {
     /// The single, mediated choke point through which every *synchronous* spawn
     /// is built and executed.
     ///
-    /// All process hardening that is invariant across the synchronous call sites
-    /// lives here exactly once: environment isolation (`env_clear` +
-    /// `envs(allowed_env)`), stdout/stderr capture, and — under
-    /// [`ContainmentMode::HostHardened`] — `HostSandbox::harden_std`. Callers
-    /// supply only what legitimately differs between sites:
+    /// The raw `Command::new` no longer lives here: this now DELEGATES to the
+    /// sealed effects home [`ShellEffect::run_argv`] (brick B1), which reproduces
+    /// the previous inline builder byte-for-byte — environment isolation
+    /// (`env_clear` + `envs(allowed_env)`), stdout/stderr capture, stdin
+    /// pipe-vs-null, and the host-hardening hook. Callers supply only what
+    /// legitimately differs between sites:
     ///
     /// * `program` / `args` — the argv (never a shell string; no shell is ever
     ///   involved, preserving the "argv-not-shell" injection defense),
@@ -317,52 +343,45 @@ impl<'a> Executor<'a> {
     /// * `stdin_data` — `Some` to feed the child stdin over a pipe, `None` to
     ///   close it with `Stdio::null()`.
     ///
-    /// This is deliberately the *only* `Command::new` on the synchronous paths.
+    /// The invariant hardening is threaded through `run_argv`: the environment
+    /// allowlist as `&self.allowed_env`, and — under
+    /// [`ContainmentMode::HostHardened`] — `HostSandbox::harden_std` as the
+    /// injected `harden` hook (`None` reproduces the un-hardened spawn).
+    ///
     /// Keeping all three public methods routed through this one function lets the
-    /// executor-proof gate require a `_proof: &DischargedBundle` as the final
-    /// parameter here (and on every public method that reaches it): a synchronous
-    /// spawn cannot even be *named* without a discharged bundle in hand, so an
+    /// executor-proof gate require a `&DischargedBundle` as the final parameter
+    /// here (and on every public method that reaches it): a synchronous spawn
+    /// cannot even be *named* without a discharged bundle in hand, so an
     /// un-preflighted spawn is a compile error rather than a runtime check. The
-    /// proof is a sealed 7-witness bundle that only `preflight_action` can mint;
-    /// it is required by type but otherwise unused here (`_proof`) — its presence
-    /// in the signature is the enforcement.
+    /// bundle is a sealed 7-witness proof that only `preflight_action` can mint;
+    /// it is now threaded on into `run_argv` (the sealed home requires it too).
     fn spawn_checked(
         &self,
         program: &str,
         args: &[String],
         cwd: &std::path::Path,
         stdin_data: Option<&str>,
-        _proof: &DischargedBundle,
+        proof: &DischargedBundle,
     ) -> io::Result<Output> {
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(cwd)
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env) // Only explicitly allowed vars
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // Under HostHardened, hand the sealed home `HostSandbox::harden_std` as
+        // the pre-spawn hook; otherwise `None` (un-hardened spawn). The concrete
+        // hardening lives in this crate, so it is injected as a callback.
+        let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = (self.containment
+            == ContainmentMode::HostHardened)
+            .then_some(&HostSandbox::harden_std as &(dyn Fn(&mut Command) + Send + Sync));
 
-        // Stdin: pipe it when the caller has data to write, otherwise close it.
-        if stdin_data.is_some() {
-            cmd.stdin(Stdio::piped());
-        } else {
-            cmd.stdin(Stdio::null());
-        }
-
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_std(&mut cmd);
-        }
-
-        if let Some(input) = stdin_data {
-            let mut child = cmd.spawn()?;
-            if let Some(ref mut stdin_pipe) = child.stdin {
-                use std::io::Write;
-                stdin_pipe.write_all(input.as_bytes())?;
-            }
-            child.wait_with_output()
-        } else {
-            cmd.output()
-        }
+        // Delegate to the sealed home. `stdin_data` (an `Option<&str>`) becomes
+        // `Option<&[u8]>` via `str::as_bytes` — the child receives the exact same
+        // bytes the previous inline `write_all(input.as_bytes())` wrote.
+        self.effects.run_argv(
+            program,
+            args,
+            cwd,
+            stdin_data.map(str::as_bytes),
+            &self.allowed_env,
+            harden,
+            proof,
+        )
     }
 
     /// Execute a command and return its output.
@@ -835,6 +854,32 @@ impl<'a> Executor<'a> {
             cost += duration.as_secs_f64() * self.budget_model.cost_per_second_usd;
         }
         self.budget.charge_usd(cost)
+    }
+}
+
+/// Convert the Executor's `portcullis::CapabilityLattice` into the
+/// `portcullis_core` lattice `production_effects` expects.
+///
+/// The two lattices carry the identical 13 named dimensions and share the same
+/// `CapabilityLevel` enum (both re-exported from `portcullis_core`), so this is
+/// a straight field-for-field copy; the `portcullis` lattice's extension
+/// dimensions have no `portcullis_core` counterpart and are not spawn-relevant,
+/// so they are dropped.
+fn core_capabilities(caps: &CapabilityLattice) -> CoreCapabilityLattice {
+    CoreCapabilityLattice {
+        read_files: caps.read_files,
+        write_files: caps.write_files,
+        edit_files: caps.edit_files,
+        run_bash: caps.run_bash,
+        glob_search: caps.glob_search,
+        grep_search: caps.grep_search,
+        web_search: caps.web_search,
+        web_fetch: caps.web_fetch,
+        git_commit: caps.git_commit,
+        git_push: caps.git_push,
+        create_pr: caps.create_pr,
+        manage_pods: caps.manage_pods,
+        spawn_agent: caps.spawn_agent,
     }
 }
 

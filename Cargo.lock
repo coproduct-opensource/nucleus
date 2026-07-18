@@ -6478,6 +6478,7 @@ dependencies = [
  "nucleus-provenance",
  "parking_lot",
  "portcullis",
+ "portcullis-effects",
  "quanta",
  "rust_decimal",
  "sha2 0.11.0",

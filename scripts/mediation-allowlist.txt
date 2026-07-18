@@ -7,16 +7,13 @@
 #
 # Format: exact TRIMMED source line (leading/trailing whitespace removed).
 #
-# nucleus::Executor SEALED synchronous spawn home (command.rs :337, in
-# `Executor::spawn_checked`). This is the single sync `Command::new` choke point
-# and it is now gated by a required `_proof: &DischargedBundle` final parameter:
-# every path that reaches it (`run` / `run_args` / `run_with_approval` and the
-# internal hops) must thread a sealed bundle that ONLY `preflight_action` can
-# mint, so this line is reachable only PAST a minted discharge bundle — an
-# un-preflighted spawn is a compile error, not a runtime check. RETAINED (not
-# deleted): the raw spawn still lives here in gate scope; deleting the entry needs
-# the later ShellEffect-relocation brick that moves the spawn behind the effect API.
-let mut cmd = Command::new(program);
+# nucleus::Executor SEALED synchronous spawn — RELOCATED (brick B2). The sync
+# `Command::new` that used to live in `Executor::spawn_checked` has moved behind
+# the discharge-gated effect API: `spawn_checked` now delegates to the sealed
+# home `ShellEffect::run_argv` (portcullis-effects), reached only PAST a minted
+# `DischargedBundle` and the `PolicyEnforced` gate. No raw sync spawn remains in
+# `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
+# primitive, one fewer allowlist entry (the metric win).
 #
 # nucleus::Executor async spawn (command.rs :677, :750)
 #   -> migrate behind ShellEffect / production_effects(policy)
