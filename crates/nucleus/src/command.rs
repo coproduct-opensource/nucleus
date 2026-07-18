@@ -10,10 +10,6 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::process::{Command, ExitStatus, Output};
-// `Stdio` is only used by the async (tokio) spawn paths now that the sync
-// builder has been relocated into the sealed `ShellEffect::run_argv` home (B2).
-#[cfg(feature = "async")]
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +28,15 @@ use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, IsolationLattice, Obligations, Operation,
     PermissionLattice,
 };
-use portcullis_effects::{production_effects, ShellEffect};
+// The Executor holds a CONCRETE `PolicyEnforced<RealEffects>` (not a trait
+// object) so it can reach the async spawn home: `AsyncShellSpawnEffect` has an
+// `async fn` and is not dyn-compatible, so `Arc<dyn AsyncShellSpawnEffect>`
+// would be `E0038`. `ShellEffect` (sync) is still needed in scope for the
+// `spawn_checked` call. Under `feature = "async"`, `AsyncShellSpawnEffect` must
+// also be in scope to name `run_argv_async` on the concrete handle.
+#[cfg(feature = "async")]
+use portcullis_effects::AsyncShellSpawnEffect;
+use portcullis_effects::{production_effects_concrete, PolicyEnforced, RealEffects, ShellEffect};
 
 use crate::hardening::HostSandbox;
 
@@ -123,13 +127,19 @@ pub struct Executor<'a> {
     required_isolation: IsolationLattice,
     /// The declared containment posture. Default fails closed.
     containment: ContainmentMode,
-    /// The sealed effects home (B1) the synchronous spawn delegates to. Obtained
-    /// from [`production_effects`], so it is a `PolicyEnforced<RealEffects>`: the
-    /// only raw `Command::new` on the sync path now lives inside
-    /// `ShellEffect::run_argv`, reached only past the policy gate and a
-    /// `DischargedBundle`. Held as a trait object because the concrete effect
-    /// type is intentionally opaque outside `portcullis-effects`.
-    effects: Arc<dyn ShellEffect + Send + Sync>,
+    /// The sealed effects home (B1) that *both* the synchronous and the async
+    /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
+    /// (from [`production_effects_concrete`]), not a trait object, for one
+    /// reason: the async home [`AsyncShellSpawnEffect::run_argv_async`] has an
+    /// `async fn`, so its trait is not dyn-compatible and `Arc<dyn
+    /// AsyncShellSpawnEffect>` is a compile error (`E0038`). The concrete handle
+    /// impls both `ShellEffect` (sync — reached by `spawn_checked`) and, under
+    /// `feature = "async"`, `AsyncShellSpawnEffect` (async — reached by
+    /// `run_with_timeout*`), so one value serves both paths. Every call still
+    /// passes through the `PolicyEnforced` capability gate, and the only raw
+    /// `Command::new` / `tokio::process::Command::new` now lives inside the
+    /// sealed home, reached solely past that gate and a `DischargedBundle`.
+    effects: Arc<PolicyEnforced<RealEffects>>,
 }
 
 impl<'a> Executor<'a> {
@@ -147,13 +157,14 @@ impl<'a> Executor<'a> {
         // requirement it resolves to the weakest level (localhost = "no requirement").
         let required_isolation = normalized.effective_minimum_isolation();
         // Build the sealed effects home from this Executor's own capabilities.
-        // `production_effects` wraps `RealEffects` in `PolicyEnforced`, so the
-        // spawn keeps the crate's policy gate; the Executor's own capability
-        // checks (`check_capability`) remain the primary authorization and run
-        // first, so behavior on the bash path is unchanged.
-        let effects: Arc<dyn ShellEffect + Send + Sync> = Arc::new(production_effects(
-            core_capabilities(&normalized.capabilities),
-        ));
+        // `production_effects_concrete` wraps `RealEffects` in `PolicyEnforced`
+        // (concrete, so the async spawn is reachable — see the `effects` field),
+        // so the spawn keeps the crate's policy gate; the Executor's own
+        // capability checks (`check_capability`) remain the primary
+        // authorization and run first, so behavior on the bash path is unchanged.
+        let effects = Arc::new(production_effects_concrete(core_capabilities(
+            &normalized.capabilities,
+        )));
         Self {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
@@ -644,12 +655,20 @@ impl<'a> Executor<'a> {
     }
 
     /// Execute a command with a timeout.
+    ///
+    /// Requires a `&DischargedBundle` proof (mint via `preflight_action`): the
+    /// async spawn is behind the same executor-proof gate as the synchronous
+    /// paths, so it cannot be *named* without a discharged bundle. (This
+    /// parameter was added when the raw `tokio::process::Command::new` was
+    /// relocated into the sealed async home; the previous inline spawn predated
+    /// the gate and did not require one — see the delegation below.)
     #[cfg(feature = "async")]
     pub async fn run_with_timeout(
         &self,
         command: &str,
         timeout: Duration,
         decision: &DecisionToken,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
@@ -693,29 +712,13 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.args(program_args)
-            .current_dir(self.sandbox.root_path())
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env) // Only explicitly allowed vars
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_tokio(&mut cmd);
-        }
-        let child = cmd.spawn()?;
-
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(Into::into),
-            Err(_) => Err(NucleusError::TimeViolation {
-                reason: format!("command timed out after {:?}", timeout),
-            }),
-        }
+        self.spawn_with_timeout(program, program_args, timeout, proof)
+            .await
     }
 
     /// Execute a command with a timeout and an approval token.
+    ///
+    /// Requires a `&DischargedBundle` proof, like [`Self::run_with_timeout`].
     #[cfg(feature = "async")]
     pub async fn run_with_timeout_approved(
         &self,
@@ -723,6 +726,7 @@ impl<'a> Executor<'a> {
         timeout: Duration,
         decision: &DecisionToken,
         approval: &ApprovalToken,
+        proof: &DischargedBundle,
     ) -> Result<Output> {
         debug_assert_eq!(
             decision.operation(),
@@ -766,26 +770,69 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.args(program_args)
-            .current_dir(self.sandbox.root_path())
-            .env_clear() // Security: prevent secret leakage from parent
-            .envs(&self.allowed_env) // Only explicitly allowed vars
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if self.containment == ContainmentMode::HostHardened {
-            HostSandbox::harden_tokio(&mut cmd);
-        }
-        let child = cmd.spawn()?;
+        self.spawn_with_timeout(program, program_args, timeout, proof)
+            .await
+    }
 
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(result) => result.map_err(Into::into),
-            Err(_) => Err(NucleusError::TimeViolation {
-                reason: format!("command timed out after {:?}", timeout),
-            }),
-        }
+    /// The single async spawn choke point, shared by `run_with_timeout` and
+    /// `run_with_timeout_approved`.
+    ///
+    /// The raw `tokio::process::Command::new` no longer lives here: this
+    /// DELEGATES to the sealed async home
+    /// [`AsyncShellSpawnEffect::run_argv_async`] (brick B1), reached through the
+    /// concrete `PolicyEnforced<RealEffects>` handle (a trait object is
+    /// impossible — the trait is not dyn-compatible). The sealed home reproduces
+    /// the previous inline builder exactly: `env_clear` + `envs(allowed_env)`,
+    /// piped stdout/stderr, `Stdio::null()` stdin (the timeout paths never feed
+    /// stdin, so `None` is passed), `kill_on_drop(true)`, the host-hardening hook
+    /// under [`ContainmentMode::HostHardened`], and `tokio::time::timeout` around
+    /// the wait.
+    ///
+    /// Behavior is preserved byte-for-byte, including the error mapping: the
+    /// sealed home surfaces a timeout as `io::ErrorKind::TimedOut`, which is
+    /// mapped back to [`NucleusError::TimeViolation`] with the identical message;
+    /// every other `io::Error` maps through `From` to [`NucleusError::Io`] — the
+    /// same result the previous `result.map_err(Into::into)` / `?` produced.
+    #[cfg(feature = "async")]
+    async fn spawn_with_timeout(
+        &self,
+        program: &str,
+        program_args: &[String],
+        timeout: Duration,
+        proof: &DischargedBundle,
+    ) -> Result<Output> {
+        // Under HostHardened, hand the sealed home `HostSandbox::harden_tokio` as
+        // the pre-spawn hook; otherwise `None` (un-hardened spawn). Mirrors the
+        // synchronous `spawn_checked` harden-injection, on `tokio::process`.
+        let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> =
+            (self.containment == ContainmentMode::HostHardened).then_some(
+                &HostSandbox::harden_tokio as &(dyn Fn(&mut tokio::process::Command) + Send + Sync),
+            );
+
+        // The previous inline spawn used `Stdio::null()` for stdin (no input), so
+        // pass `None`. `Some(timeout)` asks the sealed home to wrap the wait in
+        // `tokio::time::timeout`.
+        self.effects
+            .run_argv_async(
+                program,
+                program_args,
+                self.sandbox.root_path(),
+                None,
+                &self.allowed_env,
+                harden,
+                Some(timeout),
+                proof,
+            )
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::TimedOut {
+                    NucleusError::TimeViolation {
+                        reason: format!("command timed out after {:?}", timeout),
+                    }
+                } else {
+                    NucleusError::from(e)
+                }
+            })
     }
 
     /// Check if the command requires a certain capability level.
@@ -1555,6 +1602,118 @@ mod tests {
                     .any(|l| l.starts_with("NoNewPrivs:") && l.contains('1')),
                 "hardened child should have NoNewPrivs:1, got:\n{status}"
             );
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Async timeout spawn (B3): `run_with_timeout*` now DELEGATE to the sealed
+    // async home `AsyncShellSpawnEffect::run_argv_async`. These exercise the
+    // delegated path end-to-end to prove behavior is preserved: a fast command
+    // succeeds, a slow command hits the timeout and maps to `TimeViolation`
+    // (kill_on_drop reaps the child), and env isolation still holds.
+    // ───────────────────────────────────────────────────────────────────────
+    #[cfg(feature = "async")]
+    mod async_timeout {
+        use super::*;
+
+        /// A command that finishes inside the timeout returns its output — the
+        /// happy path through the delegated `run_argv_async`.
+        #[tokio::test]
+        async fn run_with_timeout_returns_output() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .allow_unsandboxed_local();
+
+            let dt = run_token(&mut kernel, "echo hello");
+            let output = executor
+                .run_with_timeout("echo hello", Duration::from_secs(5), &dt, &allowed_bundle())
+                .await
+                .unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+        }
+
+        /// A command that outlives the timeout maps to `TimeViolation` (the
+        /// child is killed on drop), preserving the pre-relocation error.
+        #[tokio::test]
+        async fn run_with_timeout_times_out() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .allow_unsandboxed_local();
+
+            let dt = run_token(&mut kernel, "sleep 30");
+            let err = executor
+                .run_with_timeout(
+                    "sleep 30",
+                    Duration::from_millis(100),
+                    &dt,
+                    &allowed_bundle(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, NucleusError::TimeViolation { .. }),
+                "expected TimeViolation, got {err:?}"
+            );
+        }
+
+        /// Env isolation still holds on the async path: the parent environment
+        /// is cleared, and only explicitly-allowed vars reach the child.
+        #[tokio::test]
+        async fn run_with_timeout_isolates_env() {
+            std::env::set_var("TEST_ASYNC_PARENT_SECRET", "leaked");
+
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .with_env_var("ALLOWED_ASYNC_VAR", "async-allowed")
+                .allow_unsandboxed_local();
+
+            // Parent secret must NOT be visible (printenv exits non-zero).
+            let dt1 = run_token(&mut kernel, "printenv TEST_ASYNC_PARENT_SECRET");
+            let secret = executor
+                .run_with_timeout(
+                    "printenv TEST_ASYNC_PARENT_SECRET",
+                    Duration::from_secs(5),
+                    &dt1,
+                    &allowed_bundle(),
+                )
+                .await
+                .unwrap();
+            assert!(!secret.status.success(), "parent env leaked to async child");
+
+            // Allowed var must be visible.
+            let dt2 = run_token(&mut kernel, "printenv ALLOWED_ASYNC_VAR");
+            let allowed = executor
+                .run_with_timeout(
+                    "printenv ALLOWED_ASYNC_VAR",
+                    Duration::from_secs(5),
+                    &dt2,
+                    &allowed_bundle(),
+                )
+                .await
+                .unwrap();
+            assert!(allowed.status.success());
+            assert!(String::from_utf8_lossy(&allowed.stdout).contains("async-allowed"));
+
+            std::env::remove_var("TEST_ASYNC_PARENT_SECRET");
         }
     }
 }

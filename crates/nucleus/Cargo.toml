@@ -13,8 +13,10 @@ categories = ["os", "filesystem", "command-line-utilities"]
 
 [features]
 default = []
-# Enable async runtime support
-async = ["tokio"]
+# Enable async runtime support. Pulls in the sealed async spawn home
+# (`AsyncShellSpawnEffect::run_argv_async`) by enabling portcullis-effects' own
+# `async` feature, so the Executor's `run_with_timeout*` can delegate to it.
+async = ["tokio", "portcullis-effects/async"]
 
 [dependencies]
 nucleus-provenance = { path = "../nucleus-provenance" }
@@ -69,3 +71,8 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 rust_decimal = { workspace = true }
+# Test-only: a runtime + `#[tokio::test]` for the async `run_with_timeout*`
+# behavior-preservation tests (gated behind the `async` feature at the test
+# site). Feature-unioned with the optional `tokio` dependency above under
+# `--all-features`; harmless when `async` is off (the tests don't compile).
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
