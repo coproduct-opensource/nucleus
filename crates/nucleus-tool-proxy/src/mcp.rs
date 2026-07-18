@@ -493,7 +493,7 @@ impl NucleusMcpServer {
         };
 
         // ─── Sealed discharge gate (#2038, F8/F9/F6 dual-stack) ──────────────
-        // PRECONDITION for `run_args`: mint the sealed 7-witness `DischargedBundle`.
+        // PRECONDITION for `run_args`: mint the sealed 8-witness `DischargedBundle`.
         // Fail-closed on a Missing/Invalid session task token (verified_scope
         // None ⇒ InScopeWithTask denies) — never substitutes a permissive scope.
         // This runs ALONGSIDE the sink/kernel/guard checks above (not instead of
@@ -1376,7 +1376,7 @@ mod tests {
             result.is_allowed(),
             "valid in-scope token must ALLOW RunBash (reach run_args), got {result:?}"
         );
-        // The Allowed bundle is the sealed 7-witness proof the handler consumes.
+        // The Allowed bundle is the sealed 8-witness proof the handler consumes.
         let bundle = result.unwrap_bundle();
         assert!(
             discharge_witness(&bundle).contains("in_scope_with_task"),

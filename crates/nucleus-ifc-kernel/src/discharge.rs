@@ -20,7 +20,7 @@
 //! `DischargedBundle` is **sealed** — its constructor is private to this
 //! module. The only code path that produces one is a successful
 //! `preflight_action` call. Receiving a `DischargedBundle` is a compile-time
-//! proof that all seven obligations passed.
+//! proof that all eight obligations passed.
 //!
 //! ## Obligations checked
 //!
@@ -33,6 +33,7 @@
 //! | `Discharged<BudgetNotExceeded>` | Estimated cost is within budget |
 //! | `Discharged<WithinDelegationCeiling>` | Requested capability ≤ policy ceiling for the op |
 //! | `Discharged<InScopeWithTask>` | Operation is within the verified task token's scope |
+//! | `Discharged<InputsAuthorized>` | Every action input is content-addressed (present) |
 //!
 //! ## Seam notes (cross-layer obligation correspondence)
 //!
@@ -51,6 +52,16 @@
 //!   source-label check (`no source label carries `IntegLevel::Adversarial``).
 //!   Upstream keys off input `DerivationClass`; the discharge layer keys off
 //!   the propagated IFC integrity label, which is the source of truth.
+//! - **`InputsAuthorized`** (upstream) fails if any input's `source_hash` is
+//!   empty (`term.inputs.any(|i| i.source_hash.trim().is_empty())`). The
+//!   discharge layer attests the same property structurally: a kernel
+//!   [`ContentHash`] is a 32-byte recomputed digest **by construction** (bricks
+//!   3+4 recompute ingest hashes from bytes), so there is no "empty hash" state
+//!   to check per-element — the discharge obligation attests *presence*. A
+//!   `content_addressed_inputs` of `None` is the un-plumbed state and is
+//!   **denied** fail-closed; `Some(inputs)` mints the witness (an empty vec = an
+//!   action with no inputs = vacuously authorized, matching upstream's
+//!   `!any(empty_hash)` returning satisfied for zero inputs).
 //!
 //! ## Sealing
 //!
@@ -61,7 +72,9 @@
 use std::marker::PhantomData;
 
 use crate::storage_lane::StorageLane;
-use crate::{CapabilityLevel, DerivationClass, IFCLabel, IntegLevel, Operation, SinkClass};
+use crate::{
+    CapabilityLevel, ContentHash, DerivationClass, IFCLabel, IntegLevel, Operation, SinkClass,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RepairHint — structured self-repair targets (#1189)
@@ -142,6 +155,14 @@ pub enum RepairHint {
         /// The subject that submitted the action.
         subject: String,
     },
+    /// The action's inputs are not content-addressed (the `content_addressed_inputs`
+    /// channel is un-plumbed, `None`). Plumb the FlowTracker content hashes onto
+    /// the term (`Some(..)`) before retrying — the discharge layer will not mint
+    /// `Discharged<InputsAuthorized>` from an absent inputs channel.
+    ProvideContentAddressedInputs {
+        /// The subject that submitted the action.
+        subject: String,
+    },
 }
 
 impl std::fmt::Display for RepairHint {
@@ -189,6 +210,11 @@ impl std::fmt::Display for RepairHint {
                 f,
                 "operation {operation:?} by '{subject}' is outside the verified task scope — \
                  narrow the operation or obtain a task token that authorizes it"
+            ),
+            Self::ProvideContentAddressedInputs { subject } => write!(
+                f,
+                "action by '{subject}' has un-plumbed inputs — populate \
+                 content_addressed_inputs from the FlowTracker before retrying"
             ),
         }
     }
@@ -274,6 +300,7 @@ impl RepairHint {
     ///     capability_ceiling: None,
     ///     requested_capability: None,
     ///     verified_scope: None,
+    ///     content_addressed_inputs: Some(vec![]),
     /// };
     ///
     /// let result = preflight_action(&term);
@@ -385,6 +412,14 @@ impl RepairHint {
                     operation
                 ),
             }),
+
+            // InputsAuthorized: the inputs channel is un-plumbed (`None`). This is
+            // a wiring defect, not a policy decision — we cannot fabricate the
+            // FlowTracker content hashes here (that would be exactly the vacuous
+            // witness the fail-closed check exists to prevent). No automatic
+            // rewrite; the caller must populate `content_addressed_inputs` from the
+            // term-building seam. Structural, like `CorrectOperationSinkPair`.
+            Self::ProvideContentAddressedInputs { .. } => None,
         }
     }
 }
@@ -482,6 +517,24 @@ pub struct InScopeWithTask;
 impl obligation_sealed::ObligationSealed for InScopeWithTask {}
 impl ProofObligation for InScopeWithTask {}
 
+/// Obligation: every input feeding this action is content-addressed.
+///
+/// Lifts the upstream `InputsAuthorized` check (`portcullis::action_term`),
+/// which fails when any input carries an empty `source_hash`. The discharge
+/// layer attests the same property *structurally*: the content-addressed inputs
+/// flow onto the [`ActionTerm`] as kernel [`ContentHash`]es, and a `ContentHash`
+/// is a 32-byte recomputed digest **by construction** (bricks 3+4 recompute
+/// ingest hashes from bytes) — so there is no empty-hash state to reject
+/// per-element; the obligation attests *presence*. Fail-closed — if the
+/// [`ActionTerm`]'s `content_addressed_inputs` is `None` (the un-plumbed state),
+/// the obligation is **denied**, never minted (the NO-VACUOUS-WITNESS guard). A
+/// `Some(vec![])` (an action with no inputs) mints vacuously, matching upstream's
+/// `!inputs.any(empty_hash)` returning satisfied for zero inputs. See
+/// [`preflight_action`].
+pub struct InputsAuthorized;
+impl obligation_sealed::ObligationSealed for InputsAuthorized {}
+impl ProofObligation for InputsAuthorized {}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // VerifiedScope — dependency-free carrier for the verified task-token scope
 // ═══════════════════════════════════════════════════════════════════════════
@@ -551,7 +604,7 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 
 /// The result of a successful [`preflight_action`] call.
 ///
-/// Holds typed discharge witnesses for all seven policy obligations. Effect
+/// Holds typed discharge witnesses for all eight policy obligations. Effect
 /// functions require a `&DischargedBundle` to proceed; there is **no other
 /// way to construct one** — the `_seal` field is private to this module.
 ///
@@ -559,7 +612,7 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 ///
 /// The `_seal` field is unnameable outside this module, so **no**
 /// `DischargedBundle` struct literal compiles externally — even one that names
-/// every one of the seven public obligation fields (the missing `_seal` alone
+/// every one of the eight public obligation fields (the missing `_seal` alone
 /// is fatal, and `Discharged::mint()` is private too):
 ///
 /// ```compile_fail
@@ -567,6 +620,7 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 /// use nucleus_ifc_kernel::discharge::{
 ///     DischargedBundle, Discharged, IntegrityGate, PathAllowed, DerivationClear,
 ///     NoAdversarialAncestry, BudgetNotExceeded, WithinDelegationCeiling, InScopeWithTask,
+///     InputsAuthorized,
 /// };
 /// let bundle = DischargedBundle {
 ///     integrity_gate: Discharged::<IntegrityGate>::mint(),  // mint() is private
@@ -576,7 +630,8 @@ impl<O: ProofObligation> std::fmt::Debug for Discharged<O> {
 ///     budget_not_exceeded: Discharged::<BudgetNotExceeded>::mint(),
 ///     within_delegation_ceiling: Discharged::<WithinDelegationCeiling>::mint(),
 ///     in_scope_with_task: Discharged::<InScopeWithTask>::mint(),
-///     // no `_seal`: the field is private — and even with all seven fields
+///     inputs_authorized: Discharged::<InputsAuthorized>::mint(),
+///     // no `_seal`: the field is private — and even with all eight fields
 ///     // above this literal cannot be completed outside the module.
 /// };
 /// ```
@@ -599,6 +654,8 @@ pub struct DischargedBundle {
     pub within_delegation_ceiling: Discharged<WithinDelegationCeiling>,
     /// Operation is within the verified task token's scope.
     pub in_scope_with_task: Discharged<InScopeWithTask>,
+    /// Every action input is content-addressed (present on the term).
+    pub inputs_authorized: Discharged<InputsAuthorized>,
     _seal: Seal,
 }
 
@@ -613,6 +670,7 @@ impl DischargedBundle {
             budget_not_exceeded: Discharged::mint(),
             within_delegation_ceiling: Discharged::mint(),
             in_scope_with_task: Discharged::mint(),
+            inputs_authorized: Discharged::mint(),
             _seal: Seal,
         }
     }
@@ -628,6 +686,7 @@ impl std::fmt::Debug for DischargedBundle {
             .field("budget_not_exceeded", &self.budget_not_exceeded)
             .field("within_delegation_ceiling", &self.within_delegation_ceiling)
             .field("in_scope_with_task", &self.in_scope_with_task)
+            .field("inputs_authorized", &self.inputs_authorized)
             .finish()
     }
 }
@@ -658,6 +717,7 @@ impl std::fmt::Debug for DischargedBundle {
 ///     capability_ceiling: None,
 ///     requested_capability: None,
 ///     verified_scope: None,
+///     content_addressed_inputs: Some(vec![]),
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -697,6 +757,18 @@ pub struct ActionTerm {
     /// NO-VACUOUS-WITNESS guard: an action with no verified scope can never mint
     /// `Discharged<InScopeWithTask>`.
     pub verified_scope: Option<VerifiedScope>,
+    /// The content-addressed inputs feeding this action, one [`ContentHash`] per
+    /// source node that carries a recorded digest (InputsAuthorized bricks 1+3).
+    ///
+    /// `None` is the **un-plumbed** state and denies [`InputsAuthorized`]
+    /// fail-closed (the NO-VACUOUS-WITNESS guard: no witness is minted from an
+    /// absent inputs channel). `Some(inputs)` mints the witness — every
+    /// `ContentHash` is a 32-byte recomputed digest by construction, so the
+    /// discharge layer attests *presence*, not per-element validity. A
+    /// `Some(vec![])` (an action with no inputs) mints vacuously. Callers building
+    /// real terms collect these from the FlowTracker (see `build_term_scoped` in
+    /// `portcullis-effects`).
+    pub content_addressed_inputs: Option<Vec<ContentHash>>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -794,6 +866,8 @@ impl PreflightResult {
 ///    fail-closed if either level is absent
 /// 7. **InScopeWithTask** — operation is within the verified task token's scope;
 ///    fail-closed if no verified scope is present (NO-VACUOUS-WITNESS guard)
+/// 8. **InputsAuthorized** — every action input is content-addressed (present);
+///    fail-closed if the inputs channel is un-plumbed (`None`) — NO-VACUOUS-WITNESS
 ///
 /// Checks short-circuit on the first denial for latency. All non-denial
 /// states are fully evaluated before the bundle is minted.
@@ -819,6 +893,8 @@ impl PreflightResult {
 ///         allowed_operations: vec![Operation::WriteFiles],
 ///         allowed_paths: vec![],
 ///     }),
+///     // Inputs channel plumbed (no inputs → vacuously authorized).
+///     content_addressed_inputs: Some(vec![]),
 /// };
 ///
 /// match preflight_action(&term) {
@@ -866,6 +942,9 @@ pub mod test_helpers {
                 allowed_operations: vec![Operation::WriteFiles],
                 allowed_paths: vec![],
             }),
+            // Happy-path input for the widen 7 → 8 obligation (InputsAuthorized):
+            // the inputs channel is plumbed (no inputs → vacuously authorized).
+            content_addressed_inputs: Some(vec![]),
         };
         match preflight_action(&term) {
             PreflightResult::Allowed(bundle) => bundle,
@@ -1012,6 +1091,29 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
                 },
             };
         }
+    }
+
+    // 8. InputsAuthorized: every input feeding this action must be
+    //    content-addressed. FAIL-CLOSED — if `content_addressed_inputs` is `None`
+    //    (the un-plumbed state), DENY and never mint (the NO-VACUOUS-WITNESS
+    //    guard). `Some(inputs)` mints: each `ContentHash` is a 32-byte recomputed
+    //    digest by construction (bricks 3+4 recompute ingest hashes from bytes),
+    //    so the discharge layer attests PRESENCE — there is no empty-hash state to
+    //    reject per-element. An empty vec = an action with no inputs = vacuously
+    //    authorized = mint, matching `portcullis::action_term`'s
+    //    `!inputs.any(|i| i.source_hash.is_empty())` returning satisfied for zero
+    //    inputs.
+    if term.content_addressed_inputs.is_none() {
+        return PreflightResult::Denied {
+            reason: format!(
+                "InputsAuthorized: content-addressed inputs channel is un-plumbed (None) \
+                 for operation {:?} by subject '{}' — denied fail-closed (no vacuous witness)",
+                term.operation, term.subject
+            ),
+            hint: RepairHint::ProvideContentAddressedInputs {
+                subject: term.subject.clone(),
+            },
+        };
     }
 
     PreflightResult::Allowed(DischargedBundle::new())
@@ -1197,6 +1299,11 @@ mod tests {
                 ],
                 allowed_paths: vec![],
             }),
+            // Happy-path input for the widen 7 → 8 obligation (InputsAuthorized).
+            // The channel is plumbed; denial tests that must trip InputsAuthorized
+            // override this to `None`. Denial tests for *earlier* checks
+            // short-circuit before check 8, so they inherit the happy-path value.
+            content_addressed_inputs: Some(vec![]),
         }
     }
 
@@ -1796,9 +1903,9 @@ mod tests {
     // from absent evidence.
 
     #[test]
-    fn happy_path_mints_full_seven_field_bundle() {
-        // All inputs present + in-scope + within ceiling → Allowed with a bundle
-        // whose Debug shows all seven obligation witnesses.
+    fn happy_path_mints_full_eight_field_bundle() {
+        // All inputs present + in-scope + within ceiling + inputs plumbed →
+        // Allowed with a bundle whose Debug shows all eight obligation witnesses.
         let bundle = preflight_action(&workspace_write_term()).unwrap_bundle();
         let dbg = format!("{bundle:?}");
         for needle in [
@@ -1809,9 +1916,93 @@ mod tests {
             "BudgetNotExceeded",
             "WithinDelegationCeiling",
             "InScopeWithTask",
+            "InputsAuthorized",
         ] {
             assert!(dbg.contains(needle), "bundle debug missing {needle}: {dbg}");
         }
+    }
+
+    // ── NO-VACUOUS-WITNESS: InputsAuthorized (widen 7 → 8) ─────────────────
+
+    #[test]
+    fn missing_content_addressed_inputs_denies_inputs_authorized() {
+        // content_addressed_inputs: None (un-plumbed) → must DENY (never mint
+        // InputsAuthorized from an absent inputs channel).
+        let term = ActionTerm {
+            content_addressed_inputs: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(
+            result.is_denied(),
+            "absent content-addressed inputs channel must deny fail-closed"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InputsAuthorized"),
+            "denial should name InputsAuthorized, got: {:?}",
+            result.denial_reason()
+        );
+        assert!(matches!(
+            result.repair_hint().unwrap(),
+            RepairHint::ProvideContentAddressedInputs { .. }
+        ));
+    }
+
+    #[test]
+    fn empty_inputs_vec_mints_inputs_authorized_vacuously() {
+        // Some(vec![]) = an action with no inputs = vacuously authorized → Allowed.
+        // Mirrors upstream `!inputs.any(empty_hash)` returning satisfied for zero
+        // inputs. This is the deliberate empty-vec-vs-None asymmetry.
+        let term = ActionTerm {
+            content_addressed_inputs: Some(vec![]),
+            ..workspace_write_term()
+        };
+        assert!(preflight_action(&term).is_allowed());
+    }
+
+    #[test]
+    fn present_content_hashes_mint_inputs_authorized() {
+        // Some(non-empty) with real 32-byte digests → Allowed (presence attested).
+        let term = ActionTerm {
+            content_addressed_inputs: Some(vec![
+                ContentHash::from_bytes([0x11; 32]),
+                ContentHash::from_bytes([0x22; 32]),
+            ]),
+            ..workspace_write_term()
+        };
+        assert!(preflight_action(&term).is_allowed());
+    }
+
+    #[test]
+    fn scope_check_precedes_inputs_check() {
+        // Both scope and inputs un-plumbed: scope (check 7) fires before inputs
+        // (check 8), confirming ordering and short-circuit.
+        let term = ActionTerm {
+            verified_scope: None,
+            content_addressed_inputs: None,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "scope (check 7) should fire before inputs (check 8)"
+        );
+    }
+
+    #[test]
+    fn provide_inputs_hint_has_no_automatic_repair() {
+        // The un-plumbed inputs state is a wiring defect, not a policy decision —
+        // try_repair returns None (we cannot fabricate content hashes).
+        let term = ActionTerm {
+            content_addressed_inputs: None,
+            ..workspace_write_term()
+        };
+        let hint = preflight_action(&term).repair_hint().unwrap().clone();
+        assert!(matches!(
+            hint,
+            RepairHint::ProvideContentAddressedInputs { .. }
+        ));
+        assert!(hint.try_repair(&term).is_none());
     }
 
     // ── NO-VACUOUS-WITNESS: InScopeWithTask ────────────────────────────────

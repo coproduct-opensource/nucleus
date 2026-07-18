@@ -1,6 +1,6 @@
 //! Cross-layer consistency guard (PR-B regression guard (a)).
 //!
-//! The discharge layer (`portcullis_core::discharge`, the sealed 7-obligation
+//! The discharge layer (`portcullis_core::discharge`, the sealed 8-obligation
 //! vocabulary in `nucleus-ifc-kernel`) LIFTS two obligations from the upstream
 //! `portcullis::action_term` checker: `WithinDelegationCeiling` and
 //! `InScopeWithTask`. This test pins the two layers together: for a corpus of
@@ -101,6 +101,10 @@ fn discharge_allowed(allowed_ops: &[Operation], git_commit_ceiling: CapabilityLe
             allowed_operations: allowed_ops.to_vec(),
             allowed_paths: vec![],
         }),
+        // No inputs (matches the upstream scenario) → InputsAuthorized minted
+        // vacuously. Plumbed `Some(vec![])`, never `None`, so this obligation
+        // never decides the verdict — only the two lifted obligations do.
+        content_addressed_inputs: Some(vec![]),
     };
     discharge_preflight(&term).is_allowed()
 }

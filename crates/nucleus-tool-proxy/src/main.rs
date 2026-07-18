@@ -2583,7 +2583,7 @@ async fn run_command(
     let directory = req.directory.as_deref();
 
     // ─── Executor-proof gate (PR-2, parity with the MCP RunBash handler) ──────
-    // Mint the sealed 7-witness `DischargedBundle` — the type-level precondition
+    // Mint the sealed 8-witness `DischargedBundle` — the type-level precondition
     // that lets `run_args`/`run_args_with_approval` even be typed. Reuses the exact
     // `preflight_runbash` the MCP path uses (no re-mint, no forged bundle). Fail
     // closed on Denied/RequiresApproval: a Missing/Invalid session task token gives
@@ -2633,7 +2633,7 @@ async fn run_command(
             }
         }
     };
-    // Durable audit witness of the sealed 7-witness proof (parity with the MCP
+    // Durable audit witness of the sealed 8-witness proof (parity with the MCP
     // handler's `discharge_bundle` verdict extension).
     let discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
