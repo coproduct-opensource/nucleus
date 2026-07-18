@@ -20,6 +20,11 @@ async = ["tokio"]
 nucleus-provenance = { path = "../nucleus-provenance" }
 # Policy layer - the quotient lattice
 portcullis = { path = "../portcullis" }
+# Sealed effects home (brick B1's `ShellEffect::run_argv`). The Executor's
+# synchronous spawn is relocated behind this discharge-gated effect API (B2), so
+# the raw `Command::new` leaves `command.rs`. No cycle: portcullis-effects does
+# not depend on nucleus.
+portcullis-effects = { path = "../portcullis-effects" }
 # Sealed discharge proof: the `DischargedBundle` type is named in the Executor
 # spawn signature (`spawn_checked`/`run`/`run_args`/…) so no synchronous spawn can
 # compile without a minted preflight bundle. Additive — discharge is already
