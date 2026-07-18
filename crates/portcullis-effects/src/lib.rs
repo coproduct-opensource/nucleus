@@ -264,9 +264,15 @@ pub struct SearchResult {
 
 /// Real I/O implementation. Unconstructible outside this crate.
 ///
-/// The only way to obtain a `RealEffects` is through [`production_effects`],
-/// which wraps it in `PolicyEnforced` and requires a policy at construction time.
-pub(crate) struct RealEffects {
+/// The type is `pub` so a policy-enforced handle can be *named* by consumers
+/// (e.g. nucleus's `Executor` holds `Arc<PolicyEnforced<RealEffects>>` to reach
+/// the async spawn through a concrete type — `AsyncShellSpawnEffect` has an
+/// `async fn` and is not dyn-compatible, so a trait object is impossible). It
+/// stays *unconstructible* outside this crate: its only field is private and
+/// its constructor [`RealEffects::new`] is crate-private, so the sole way to
+/// obtain one is through [`production_effects`] / [`production_effects_concrete`],
+/// which always wrap it in `PolicyEnforced` and require a policy.
+pub struct RealEffects {
     _private: (),
 }
 
@@ -684,10 +690,18 @@ pub fn production_effects(
     production_effects_concrete(policy)
 }
 
-/// Crate-internal: returns the concrete type so NucleusRuntime can store it.
-pub(crate) fn production_effects_concrete(
-    policy: CapabilityLattice,
-) -> PolicyEnforced<RealEffects> {
+/// Returns the **concrete** `PolicyEnforced<RealEffects>` handle (rather than the
+/// opaque `impl Trait` of [`production_effects`]).
+///
+/// Consumers that must reach the async spawn ([`AsyncShellSpawnEffect::run_argv_async`],
+/// behind `feature = "async"`) need a concrete type: that trait has an `async fn`
+/// and so is **not** dyn-compatible (`Arc<dyn AsyncShellSpawnEffect>` is `E0038`).
+/// The concrete handle impls *both* `ShellEffect` (sync) and, under the `async`
+/// feature, `AsyncShellSpawnEffect` — one value serves both spawn paths while
+/// preserving the `PolicyEnforced` capability gate on every call. `RealEffects`
+/// remains unconstructible outside this crate, so policy enforcement cannot be
+/// bypassed.
+pub fn production_effects_concrete(policy: CapabilityLattice) -> PolicyEnforced<RealEffects> {
     PolicyEnforced {
         inner: RealEffects::new(),
         policy,

@@ -15,9 +15,15 @@
 # `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
 # primitive, one fewer allowlist entry (the metric win).
 #
-# nucleus::Executor async spawn (command.rs :677, :750)
-#   -> migrate behind ShellEffect / production_effects(policy)
-let mut cmd = tokio::process::Command::new(program);
+# nucleus::Executor SEALED async spawn — RELOCATED (brick B3). The async
+# `tokio::process::Command::new` that used to live in `Executor::run_with_timeout*`
+# has moved behind the discharge-gated effect API: `run_with_timeout*` now
+# delegate to the sealed async home `AsyncShellSpawnEffect::run_argv_async`
+# (portcullis-effects), reached only PAST a minted `DischargedBundle` and the
+# `PolicyEnforced` gate, via the concrete `PolicyEnforced<RealEffects>` handle
+# (the trait is not dyn-compatible). No raw async spawn remains in
+# `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
+# primitive, one fewer allowlist entry (the metric win).
 #
 # nucleus-mcp-guard downstream MCP-server child (proxy.rs:25)
 #   -> migrate behind AgentSpawnEffect / production_effects(policy)
