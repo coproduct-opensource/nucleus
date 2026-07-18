@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::error::{NucleusError, Result};
+use nucleus_ifc_kernel::discharge::DischargedBundle;
 use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, Obligations, Operation, PathLattice, PermissionLattice,
@@ -328,11 +329,39 @@ impl Sandbox {
     }
 
     /// Write bytes to a file (creates if needed, truncates if exists).
+    ///
+    /// Requires a `&DischargedBundle` proof (mint via
+    /// [`preflight_action`](nucleus_ifc_kernel::discharge::preflight_action),
+    /// e.g. the tool-proxy's `run_gate::preflight_fs`). This makes the
+    /// FILESYSTEM-WRITE effect class a *compile*-checked precondition — parity
+    /// with the spawn executor-proof gate ([`Executor::run_args`](crate::Executor)
+    /// and the net [`NetEffect::fetch`]) — so an un-preflighted fs write cannot be
+    /// typed. The existing `DecisionToken` and cap-std root confinement are
+    /// retained (dual-stack, additive): the proof does not replace them. The
+    /// bundle is a sealed 8-witness proof that only `preflight_action` can mint;
+    /// there is no other constructor, so a caller that reaches this method has
+    /// necessarily passed the fail-closed discharge preflight.
+    ///
+    /// The following omits the proof and does **not** compile (mirrors the
+    /// sealed-bundle `compile_fail` doctest in `nucleus_ifc_kernel::discharge`
+    /// and the spawn gate in `command.rs`):
+    ///
+    /// ```compile_fail
+    /// use nucleus::Sandbox;
+    /// use nucleus::portcullis::kernel::DecisionToken;
+    ///
+    /// fn un_preflighted_write(sandbox: &Sandbox, dt: &DecisionToken) {
+    ///     // No trailing `&DischargedBundle` — the sealed proof is missing, so
+    ///     // this call cannot be typed. There is no way to write without one.
+    ///     let _ = sandbox.write("out.txt", b"data", dt);
+    /// }
+    /// ```
     pub fn write(
         &self,
         path: impl AsRef<Path>,
         contents: impl AsRef<[u8]>,
         decision: &DecisionToken,
+        _proof: &DischargedBundle,
     ) -> Result<()> {
         debug_assert_eq!(
             decision.operation(),
@@ -343,12 +372,18 @@ impl Sandbox {
     }
 
     /// Write bytes to a file with an approval token.
+    ///
+    /// The approval-elevated sibling of [`Self::write`]; it is behind the same
+    /// FILESYSTEM-WRITE effect gate and requires a `&DischargedBundle` proof in
+    /// addition to the `ApprovalToken` (parity with
+    /// [`Executor::run_args_with_approval`](crate::Executor)).
     pub fn write_approved(
         &self,
         path: impl AsRef<Path>,
         contents: impl AsRef<[u8]>,
         decision: &DecisionToken,
         approval: &ApprovalToken,
+        _proof: &DischargedBundle,
     ) -> Result<()> {
         debug_assert_eq!(
             decision.operation(),
@@ -746,6 +781,10 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Sanctioned test-only sealed bundle (WriteFiles/WorkspaceWrite term) — the
+    // only supported way for a test to obtain a `DischargedBundle` for the
+    // `_proof`-gated write path (the constructor is private to discharge).
+    use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
     use portcullis::kernel::Kernel;
     use tempfile::tempdir;
 
@@ -785,7 +824,9 @@ mod tests {
 
         // Write a file
         let wt = token(&mut kernel, Operation::WriteFiles, "test.txt");
-        sandbox.write("test.txt", b"hello world", &wt).unwrap();
+        sandbox
+            .write("test.txt", b"hello world", &wt, &allowed_bundle())
+            .unwrap();
 
         // Read it back
         let rt = token(&mut kernel, Operation::ReadFiles, "test.txt");
@@ -807,13 +848,15 @@ mod tests {
         // running inside a git worktree. This test exercises the *sandbox*'s
         // path policy, not the kernel's.
         let wt = kernel.issue_approved_token(Operation::WriteFiles, "test: write normal file");
-        sandbox.write("normal_file.txt", b"# Hello", &wt).unwrap();
+        sandbox
+            .write("normal_file.txt", b"# Hello", &wt, &allowed_bundle())
+            .unwrap();
 
         // Should block .env files (sandbox policy blocks it; kernel also blocks via PathLattice)
         // Force a token to test the sandbox's own path policy enforcement
         let wt2 =
             kernel.issue_approved_token(Operation::WriteFiles, "test: .env blocked by sandbox");
-        let result = sandbox.write(".env", b"SECRET=foo", &wt2);
+        let result = sandbox.write(".env", b"SECRET=foo", &wt2, &allowed_bundle());
         assert!(result.is_err());
     }
 
@@ -898,7 +941,9 @@ mod tests {
         sandbox.create_dir("subdir", &wt1).unwrap();
 
         let wt2 = token(&mut kernel, Operation::WriteFiles, "subdir/file.txt");
-        sandbox.write("subdir/file.txt", b"nested", &wt2).unwrap();
+        sandbox
+            .write("subdir/file.txt", b"nested", &wt2, &allowed_bundle())
+            .unwrap();
 
         // Open as sub-sandbox
         let rt1 = token(&mut kernel, Operation::ReadFiles, "subdir");

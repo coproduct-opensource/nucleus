@@ -415,12 +415,49 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (B6, parity with the MCP RunBash/web handlers)
+        // PRECONDITION for the `_proof`-gated `Sandbox::write`: mint the sealed
+        // 8-witness `DischargedBundle` via `preflight_fs`. Fail closed — a
+        // Missing/Invalid session task token gives `verified_scope == None` ⇒
+        // `InScopeWithTask` denies; an out-of-scope op denies. No bundle ⇒ the
+        // handler returns its error and NEVER writes (cap-std is never reached).
+        let discharge_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let fs_ceiling = self.state.runtime.policy().capabilities.write_files;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_fs(
+                Operation::WriteFiles,
+                verified_scope,
+                fs_ceiling,
+                &params.path,
+                &flow,
+            );
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(path = %params.path, %reason, "discharge preflight DENIED write — no write");
+                    self.record_verdict(
+                        Operation::WriteFiles,
+                        &params.path,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let _discharge_note = discharge_witness(&discharge_bundle);
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().write(
                     &params.path,
                     params.contents.as_bytes(),
                     &decision_token,
+                    &discharge_bundle,
                 )
             })
         }) {
@@ -1222,7 +1259,7 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
 // module, so the non-feature-gated HTTP `/v1/run` handler can share them with
 // this feature-gated MCP handler. Re-imported here so the local call sites and
 // the `#[cfg(test)]` module below resolve them unchanged.
-use crate::run_gate::{discharge_witness, preflight_runbash, preflight_web};
+use crate::run_gate::{discharge_witness, preflight_fs, preflight_runbash, preflight_web};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests — enforcement boundary coverage (#1295)

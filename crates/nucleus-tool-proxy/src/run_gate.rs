@@ -116,13 +116,60 @@ pub(crate) fn preflight_web(
     )
 }
 
-/// Shared term-builder + preflight for the sealed live paths (RunBash spawn and
-/// net egress). Feeds the discharge [`ActionTerm`](discharge::ActionTerm) the
-/// session's REAL IFC labels + content hashes (never fabricated defaults) and
-/// the honest no-escalation ceiling (`requested == ceiling`), then runs
-/// [`preflight_action`]. `operation`/`sink_class` select which effect class the
-/// obligations are minted for; everything else is identical across the two
-/// callers so the fail-closed guarantees cannot drift between them.
+/// The sealed discharge preflight for the live agent FILESYSTEM-WRITE path
+/// (`write_file`, B6).
+///
+/// The fs analogue of [`preflight_runbash`]/[`preflight_web`]: builds the
+/// discharge [`ActionTerm`](discharge::ActionTerm) for the given fs-write
+/// `operation` ([`Operation::WriteFiles`] or [`Operation::EditFiles`]) at the
+/// [`SinkClass::WorkspaceWrite`] sink and runs [`preflight_action`]. Returning
+/// [`PreflightResult::Allowed`] hands back the sealed [`DischargedBundle`] the
+/// handler must present to the `_proof`-gated
+/// [`Sandbox::write`](nucleus::Sandbox) — there is no other way to construct
+/// that bundle, so an un-preflighted agent fs write is a compile-time-checked
+/// impossibility, closing the last agent effect class (spawn ✓, net ✓, fs ✓).
+///
+/// Fail-closed / no-vacuous-witness — identical structure to the RunBash and net
+/// gates:
+/// - `verified_scope == None` (session token `Missing`/`Invalid`) ⇒
+///   `InScopeWithTask` DENIES (we pass `None` straight through);
+/// - fs op ∉ `scope.allowed_operations` ⇒ `InScopeWithTask` DENIES.
+///
+/// On the integrity axis `WorkspaceWrite` has a `sink_min_integrity` of
+/// `Adversarial` (the floor, like `BashExec`), so any session integrity passes
+/// and `InScopeWithTask` is the discriminating gate — this brick is
+/// class-coverage for the fs-write effect, not a new integrity constraint. The
+/// cap-std root confinement enforced inside `Sandbox::write` is retained and
+/// unchanged (dual-stack).
+pub(crate) fn preflight_fs(
+    operation: Operation,
+    verified_scope: Option<&TokenScope>,
+    fs_ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
+    debug_assert!(
+        matches!(operation, Operation::WriteFiles | Operation::EditFiles),
+        "preflight_fs is only for the filesystem-write operations",
+    );
+    preflight_scoped(
+        operation,
+        SinkClass::WorkspaceWrite,
+        verified_scope,
+        fs_ceiling,
+        subject,
+        flow,
+    )
+}
+
+/// Shared term-builder + preflight for the sealed live paths (RunBash spawn, net
+/// egress, and filesystem write). Feeds the discharge
+/// [`ActionTerm`](discharge::ActionTerm) the session's REAL IFC labels + content
+/// hashes (never fabricated defaults) and the honest no-escalation ceiling
+/// (`requested == ceiling`), then runs [`preflight_action`].
+/// `operation`/`sink_class` select which effect class the obligations are minted
+/// for; everything else is identical across the three callers so the fail-closed
+/// guarantees cannot drift between them.
 fn preflight_scoped(
     operation: Operation,
     sink_class: SinkClass,
@@ -277,5 +324,96 @@ mod tests {
                 "bundle must carry the InScopeWithTask witness"
             );
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Tests — the live FILESYSTEM-WRITE discharge gate (B6)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // `preflight_fs` is the sole precondition standing between a write_file
+    // request and the `_proof`-gated `Sandbox::write`: the handler only reaches
+    // the write past its `Allowed` arm. Anything else means the handler returns
+    // its error early and NEVER writes. A clean session (`FlowTracker::new()`) is
+    // used so `WorkspaceWrite`'s Adversarial-floor integrity is met and
+    // `InScopeWithTask` is the discriminating gate. Exact ceiling is immaterial
+    // (`requested == ceiling`).
+    const FS_CEILING: CapabilityLevel = CapabilityLevel::LowRisk;
+
+    // (a) Missing/Invalid session token ⇒ verified_scope() is None ⇒ DENY
+    //     fail-closed (no-vacuous-witness) ⇒ no write.
+    #[test]
+    fn fs_denies_when_session_token_missing_or_invalid() {
+        let flow = FlowTracker::new();
+        let result = preflight_fs(
+            Operation::WriteFiles,
+            None,
+            FS_CEILING,
+            "/workspace/out.txt",
+            &flow,
+        );
+        assert!(
+            result.is_denied(),
+            "no verified scope must DENY WriteFiles (fail-closed), got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be the InScopeWithTask no-vacuous-witness guard: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no write");
+    }
+
+    // (b) A verified token whose scope does NOT include WriteFiles ⇒
+    //     InScopeWithTask DENIES ⇒ no write.
+    #[test]
+    fn fs_denies_when_out_of_token_scope() {
+        let flow = FlowTracker::new();
+        // Verified, but WriteFiles ∉ allowed_operations.
+        let scope = TokenScope::new(
+            vec![Operation::ReadFiles, Operation::RunBash],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_fs(
+            Operation::WriteFiles,
+            Some(&scope),
+            FS_CEILING,
+            "/workspace/out.txt",
+            &flow,
+        );
+        assert!(
+            result.is_denied(),
+            "WriteFiles out of token scope must DENY, got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be InScopeWithTask: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no write");
+    }
+
+    // (c) A verified, in-scope token on a clean session ⇒ ALLOW and mint the
+    //     sealed `DischargedBundle` ⇒ the handler proceeds to the sealed write.
+    #[test]
+    fn fs_succeeds_with_valid_in_scope_token() {
+        let flow = FlowTracker::new();
+        let scope = TokenScope::new(
+            vec![Operation::WriteFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_fs(
+            Operation::WriteFiles,
+            Some(&scope),
+            FS_CEILING,
+            "/workspace/out.txt",
+            &flow,
+        );
+        assert!(
+            result.is_allowed(),
+            "valid in-scope token must ALLOW WriteFiles (reach write), got {result:?}"
+        );
+        let bundle = result.unwrap_bundle();
+        assert!(
+            discharge_witness(&bundle).contains("in_scope_with_task"),
+            "bundle must carry the InScopeWithTask witness"
+        );
     }
 }

@@ -2466,11 +2466,56 @@ async fn write_file(
     let path = req.path.clone();
     let contents = req.contents.clone();
 
-    match state
-        .runtime
-        .sandbox()
-        .write(&path, contents.as_bytes(), &decision_token)
-    {
+    // ─── Sealed discharge gate (B6, parity with the RunBash executor-proof gate
+    // and the B5 net-egress gate). PRECONDITION for the `_proof`-gated
+    // `Sandbox::write`: mint the sealed 8-witness `DischargedBundle` via
+    // `preflight_fs`. Fail closed — a Missing/Invalid session task token gives
+    // `verified_scope == None` ⇒ `InScopeWithTask` denies (no vacuous witness);
+    // an out-of-scope op denies. Without the bundle the `_proof`-gated write
+    // cannot be typed, so no un-preflighted agent fs write can reach cap-std.
+    // The cap-std root confinement inside `Sandbox::write` is retained
+    // (dual-stack): this bundle is additive, not a relocation.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let fs_ceiling = state.runtime.policy().capabilities.write_files;
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_fs(
+            Operation::WriteFiles,
+            verified_scope,
+            fs_ceiling,
+            &path,
+            &flow,
+        );
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: path.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    match state.runtime.sandbox().write(
+        &path,
+        contents.as_bytes(),
+        &decision_token,
+        &discharge_bundle,
+    ) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -2487,6 +2532,7 @@ async fn write_file(
                     contents.as_bytes(),
                     &approved_dt,
                     &approval,
+                    &discharge_bundle,
                 )?;
             } else {
                 if let Err(e) = sink.record(VerdictContext {
