@@ -8305,6 +8305,7 @@ dependencies = [
  "regex",
  "shell-words",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
