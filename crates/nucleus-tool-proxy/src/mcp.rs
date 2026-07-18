@@ -185,9 +185,15 @@ impl NucleusMcpServer {
     /// fails, the data-ingest node would be silently dropped — leaving taint
     /// untracked — so we poison the session instead, causing every subsequent
     /// kernel decision to deny until a human-authorized cleanse.
-    async fn observe_flow(&self, kind: NodeKind) {
+    ///
+    /// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*.
+    /// Their SHA-256 is recomputed here (never read from an agent field) and
+    /// recorded on the node via `observe_with_content_hash`. Label/taint behaviour
+    /// is identical to the old bare `observe` — only the content hash is added.
+    async fn observe_flow(&self, kind: NodeKind, bytes: &[u8]) {
+        let hash = crate::ingest_content_hash(bytes);
         let mut flow = self.flow_tracker.lock().await;
-        if let Err(e) = flow.observe(kind) {
+        if let Err(e) = flow.observe_with_content_hash(kind, hash) {
             flow.poison();
             warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
         }
@@ -203,12 +209,17 @@ impl NucleusMcpServer {
     /// "one privileged action then locked" (run-tests → can't commit) — a policy
     /// choice an operator should make deliberately. The human-authorized
     /// `cleanse` path clears the taint when on.
-    async fn observe_tool_result(&self) {
+    ///
+    /// Brick 3: `result_bytes` are the *actual tool-result bytes* ingested into
+    /// the session; their SHA-256 is content-addressed onto the `McpToolResult`
+    /// node (recomputed from the real bytes, never an agent field).
+    async fn observe_tool_result(&self, result_bytes: &[u8]) {
         let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if paranoid {
-            self.observe_flow(NodeKind::McpToolResult).await;
+            self.observe_flow(NodeKind::McpToolResult, result_bytes)
+                .await;
         }
     }
 
@@ -341,7 +352,9 @@ impl NucleusMcpServer {
                 // IFC: a file read brings data into the session (Trusted
                 // integrity — does not by itself taint, but contributes to the
                 // confidentiality ceiling). (#1633)
-                self.observe_flow(NodeKind::FileRead).await;
+                // Brick 3: content-address the exact bytes read.
+                self.observe_flow(NodeKind::FileRead, contents.as_bytes())
+                    .await;
                 Ok(CallToolResult::success(vec![Content::text(contents)]))
             }
             Err(e) => {
@@ -558,15 +571,16 @@ impl NucleusMcpServer {
                     VerdictOutcome::Allow,
                     BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
                 );
-                // Most-paranoid #2: command output may carry injected instructions;
-                // taint it (opt-in) so it can't drive a later privileged action.
-                self.observe_tool_result().await;
                 let run_result = RunResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                 };
                 let json = serde_json::to_string_pretty(&run_result).unwrap_or_default();
+                // Most-paranoid #2: command output may carry injected instructions;
+                // taint it (opt-in) so it can't drive a later privileged action.
+                // Brick 3: content-address the exact tool-result bytes ingested.
+                self.observe_tool_result(json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
@@ -689,10 +703,11 @@ impl NucleusMcpServer {
         }) {
             Ok(paths) => {
                 self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
-                self.observe_flow(NodeKind::FileRead).await; // (#1633)
-                Ok(CallToolResult::success(vec![Content::text(
-                    paths.join("\n"),
-                )]))
+                // Brick 3: content-address the exact match listing ingested.
+                let listing = paths.join("\n");
+                self.observe_flow(NodeKind::FileRead, listing.as_bytes())
+                    .await; // (#1633)
+                Ok(CallToolResult::success(vec![Content::text(listing)]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -877,7 +892,9 @@ impl NucleusMcpServer {
         }) {
             Ok(matches) => {
                 self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
-                self.observe_flow(NodeKind::FileRead).await; // (#1633)
+                // Brick 3: content-address the exact grep output ingested.
+                self.observe_flow(NodeKind::FileRead, matches.as_bytes())
+                    .await; // (#1633)
                 Ok(CallToolResult::success(vec![Content::text(matches)]))
             }
             Err(e) => {
@@ -1088,7 +1105,9 @@ impl NucleusMcpServer {
                 // IFC: web content is adversarial-integrity — observing it
                 // taints the session, so subsequent outbound actions are denied
                 // with `IfcUnsafe` (lethal-trifecta guard). (#1633)
-                self.observe_flow(NodeKind::WebContent).await;
+                // Brick 3: content-address the exact fetched response ingested.
+                self.observe_flow(NodeKind::WebContent, response.as_bytes())
+                    .await;
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
             Err(e) => {

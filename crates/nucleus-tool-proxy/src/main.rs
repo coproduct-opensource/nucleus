@@ -2266,13 +2266,34 @@ async fn http_kernel_decide(
     decide_with_flow_mapped(&mut kernel, &flow, operation, subject)
 }
 
+/// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
+/// brick 3). Recomputes the SHA-256 of the real bytes in hand at the ingest site
+/// and wraps the digest in the kernel [`ContentHash`] the FlowTracker node API
+/// expects. The hash is NEVER read from an agent-supplied field — it is always
+/// recomputed here from the bytes we actually observed.
+///
+/// [`ContentHash`]: nucleus_ifc_kernel::ContentHash
+pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHash {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+    nucleus_ifc_kernel::ContentHash::from_bytes(digest)
+}
+
 /// Observe a data-ingest node in the session flow tracker after a *successful*
 /// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial
 /// taint source; `FileRead` contributes to the confidentiality ceiling. Must be
 /// called only on success paths so a denied/failed op never leaks taint.
-async fn http_observe_flow(state: &AppState, kind: NodeKind) {
+///
+/// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*, whose
+/// recomputed SHA-256 is recorded on the node via `observe_with_content_hash`.
+/// Label/taint behaviour is identical to the old bare `observe` — only the hash
+/// is added.
+async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
+    let hash = ingest_content_hash(bytes);
     let mut flow = state.flow_tracker.lock().await;
-    if let Err(e) = flow.observe(kind) {
+    if let Err(e) = flow.observe_with_content_hash(kind, hash) {
         warn!(?kind, error = %e, "flow-tracker observe failed");
     }
 }
@@ -2376,7 +2397,8 @@ async fn read_file(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful file read brings data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact bytes read.
+    http_observe_flow(&state, NodeKind::FileRead, contents.as_bytes()).await;
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2889,7 +2911,8 @@ async fn web_fetch(
     }
     // IFC: web content is an adversarial taint source — taint the session so
     // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
-    http_observe_flow(&state, NodeKind::WebContent).await;
+    // Brick 3: content-address the exact fetched body bytes.
+    http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -3044,7 +3067,9 @@ async fn glob_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful glob brings file data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact match listing ingested.
+    let listing = matches.join("\n");
+    http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3255,7 +3280,10 @@ async fn grep_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful grep brings file data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact match set ingested (deterministic
+    // serialization of the real matched bytes).
+    let match_bytes = serde_json::to_vec(&matches).unwrap_or_default();
+    http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3413,7 +3441,8 @@ async fn web_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: web search results are an adversarial taint source (#1633).
-    http_observe_flow(&state, NodeKind::WebContent).await;
+    // Brick 3: content-address the exact search-backend response bytes.
+    http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
     Ok(Json(WebSearchResponse { results }))
 }
 
