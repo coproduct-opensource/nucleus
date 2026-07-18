@@ -64,6 +64,12 @@ portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+# Sealed effect home (B5): the agent NET-EGRESS effect (`NetEffect::fetch`, the
+# real reqwest HTTP send) lives here behind the `_proof`-gated, PolicyEnforced
+# API. `net` pulls the reqwest HTTP stack into the sealed home; the tool-proxy
+# hands its configured `web_client` to it and reaches it only past a minted
+# `DischargedBundle`, so no raw agent `…send()` survives on the handler path.
+portcullis-effects = { path = "../portcullis-effects", features = ["net"] }
 
 tonic = { workspace = true }
 tokio-stream = "0.1"

@@ -15,6 +15,11 @@ default = []
 # Enable the tokio-based async spawn (`ShellEffect::run_argv_async`). Keeps the
 # default crate free of the tokio dependency.
 async = ["dep:tokio"]
+# Enable the sealed agent net-egress effect (`NetEffect::fetch`, the real
+# reqwest HTTP send behind the `_proof`-gated, PolicyEnforced API — B5). Kept
+# behind its own feature so the default crate and the async-spawn consumers
+# (nucleus core) do not pull the reqwest HTTP stack.
+net = ["dep:reqwest"]
 
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
@@ -23,10 +28,16 @@ ed25519-dalek = { workspace = true }
 shell-words = { workspace = true }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time"], optional = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+# Test-only: install a rustls crypto provider before building a reqwest Client
+# in the `net` policy-gate test (the workspace reqwest uses `rustls-no-provider`
+# under feature unification, so a provider must be installed first).
+rustls = { workspace = true }
 
 [lints]
 workspace = true

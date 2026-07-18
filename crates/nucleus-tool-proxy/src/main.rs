@@ -373,6 +373,34 @@ fn is_locked(state: &AppState) -> bool {
             .load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// Convert the runtime's `portcullis::CapabilityLattice` into the
+/// `portcullis_core` / `nucleus_ifc_kernel` lattice that
+/// [`portcullis_effects::production_effects_concrete`] expects — the lattice the
+/// sealed net effect's `PolicyEnforced` gate reads (B5). Both carry the identical
+/// 13 named dimensions over the same `CapabilityLevel`, so this is a straight
+/// field-for-field copy; the `portcullis` lattice's extension dimensions have no
+/// `portcullis_core` counterpart and are dropped (net-irrelevant). Mirrors
+/// nucleus core's `command::core_capabilities`.
+pub(crate) fn core_capabilities(
+    caps: &portcullis::CapabilityLattice,
+) -> nucleus_ifc_kernel::CapabilityLattice {
+    nucleus_ifc_kernel::CapabilityLattice {
+        read_files: caps.read_files,
+        write_files: caps.write_files,
+        edit_files: caps.edit_files,
+        run_bash: caps.run_bash,
+        glob_search: caps.glob_search,
+        grep_search: caps.grep_search,
+        web_search: caps.web_search,
+        web_fetch: caps.web_fetch,
+        git_commit: caps.git_commit,
+        git_push: caps.git_push,
+        create_pr: caps.create_pr,
+        manage_pods: caps.manage_pods,
+        spawn_agent: caps.spawn_agent,
+    }
+}
+
 /// Extract an ActorIdentity from the auth context for verdict recording.
 fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
     if let Some(ctx) = auth {
@@ -2825,28 +2853,67 @@ async fn web_fetch(
     web_fetch_policy::check_url_allowlist(&state.url_allow, url.as_str())
         .map_err(ApiError::WebFetch)?;
 
-    // Build the request
+    // Build the request pieces (method / headers / body) the sealed net effect
+    // needs. The raw reqwest send itself now lives in `portcullis-effects`
+    // (`NetEffect::fetch`) — this handler no longer performs it.
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
+    let headers: Vec<(String, String)> = req.headers.unwrap_or_default().into_iter().collect();
+    let body: Option<Vec<u8>> = req.body.map(|b| b.into_bytes());
 
-    let mut request = state.web_client.request(method, url);
-
-    // Add custom headers
-    if let Some(hdrs) = req.headers {
-        for (key, value) in hdrs {
-            request = request.header(&key, &value);
+    // ─── Sealed discharge gate (B5, parity with the RunBash executor-proof gate)
+    // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed 8-witness
+    // `DischargedBundle` via `preflight_web`. Fail closed — a Missing/Invalid
+    // session task token gives `verified_scope == None` ⇒ `InScopeWithTask`
+    // denies (no vacuous witness); an out-of-scope op denies. Without the bundle
+    // the sealed fetch cannot be typed, so no un-preflighted agent egress can
+    // reach the wire.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_web(operation, verified_scope, level, &url_str, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: url_str.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
         }
-    }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    // Add body if present
-    if let Some(body) = req.body {
-        request = request.body(body);
-    }
-
-    // Execute request
-    let response = request
-        .send()
+    // Execute the request through the sealed, `_proof`-gated net effect. Passing
+    // the bundle is the type-level authorization; `PolicyEnforced` re-checks the
+    // `web_fetch` capability inside the sealed home.
+    use portcullis_effects::{NetCapability, NetEffect};
+    let effects =
+        portcullis_effects::production_effects_concrete(core_capabilities(&policy.capabilities));
+    let response = effects
+        .fetch(
+            &state.web_client,
+            NetCapability::WebFetch,
+            method,
+            url,
+            &headers,
+            body,
+            None,
+            &discharge_bundle,
+        )
         .await
         .map_err(|e| ApiError::WebFetch(format!("request failed: {e}")))?;
 
@@ -3385,13 +3452,63 @@ async fn web_search(
         }
     }
 
-    // Perform search request
+    // Perform search request. Fold the query params into the URL here so the
+    // sealed net effect stays a plain method+url+headers+body send; the raw
+    // reqwest send itself lives in `portcullis-effects` (`NetEffect::fetch`).
     let max_results = req.max_results.unwrap_or(10);
-    let response = state
-        .web_client
-        .get(&search_url)
-        .query(&[("q", &req.query), ("num", &max_results.to_string())])
-        .send()
+    let mut fetch_url = url.clone();
+    fetch_url
+        .query_pairs_mut()
+        .append_pair("q", &req.query)
+        .append_pair("num", &max_results.to_string());
+
+    // ─── Sealed discharge gate (B5) ─────────────────────────────────────────
+    // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed 8-witness
+    // `DischargedBundle` via `preflight_web` (WebSearch/HTTPEgress). Fail closed
+    // — Missing/Invalid token ⇒ `verified_scope == None` ⇒ `InScopeWithTask`
+    // denies; out-of-scope op denies. No bundle ⇒ no fetch (no wire egress).
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_web(operation, verified_scope, level, &req.query, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: req.query.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    use portcullis_effects::{NetCapability, NetEffect};
+    let effects =
+        portcullis_effects::production_effects_concrete(core_capabilities(&policy.capabilities));
+    let response = effects
+        .fetch(
+            &state.web_client,
+            NetCapability::WebSearch,
+            reqwest::Method::GET,
+            fetch_url,
+            &[],
+            None,
+            None,
+            &discharge_bundle,
+        )
         .await
         .map_err(|e| ApiError::WebFetch(format!("search request failed: {e}")))?;
 
@@ -4147,7 +4264,7 @@ impl S3Sink {
             .body(line.as_bytes().to_vec().into())
             .content_type("application/jsonl")
             .if_none_match("*")
-            .send()
+            .send() // net-infra: audit S3 append (aws_sdk_s3, operator sink — not agent egress)
             .await;
 
         if let Err(e) = result {
@@ -4227,7 +4344,7 @@ impl AuditLog {
                     .header("Content-Type", "application/json")
                     .header("X-Nucleus-Signature", &sig)
                     .body(body)
-                    .send()
+                    .send() // net-infra: audit webhook (operator-configured URL — not agent egress)
                     .await;
 
                 if let Err(e) = result {
