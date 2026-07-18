@@ -105,6 +105,15 @@ jobs:
       - name: Forbid non-hashing agent-path ingest observes (content-address every input)
         run: scripts/check-ingest-hashed.sh
 
+  sealed-home-gate:
+    name: Sealed-home integrity gate (North Star)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Forbid raw effect primitives outside the sealed RealEffects home
+        run: scripts/check-sealed-home.sh
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
