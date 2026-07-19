@@ -206,15 +206,75 @@ opaque Leak : Trace → Prop
 def IsaRobustNI (Q : IsaProg) : Prop :=
   ∀ (C : IsaCtx) (t : Trace), tgtBehav Q C t → ¬ Leak t
 
-/-- **SECOMP/StkTokens robust NI-preservation — the faithfully-typed boundary
-    axiom** (replaces the bare `Preserves`). A source ocap effect carrying a
-    COMPLETE mediation token (`OcapNI`) compiles to an ISA program that, against
-    every adversarial context, exhibits no leaking trace (`IsaRobustNI`) — the RSC
-    robust-hypersafety-preservation shape, the statement SECOMP proves by
-    back-translation. Undischarged (ISA model/compiler not yet in-tree); its TYPE
-    now encodes the real theorem rather than a bare implication. -/
-axiom secomp_robust_preservation :
-    ∀ (P : OcapProg), OcapNI P → IsaRobustNI (γ_secomp P)
+/-! ## Token semantic adequacy — the discharge token BUYS noninterference (PROVEN).
+
+    The structural obligation (`OcapNI`: a complete sealed token) and the trace
+    hyperproperty (`*RobustNI`: no adversary induces a leaking trace) were distinct
+    notions. This connects them at the ocap layer WITHOUT a new axiom: a complete
+    token structurally forbids any emitted effect from carrying an
+    adversarial-integrity source to a sink. This is reference-monitor soundness — a
+    *static* discharge check soundly enforcing the *dynamic* NI hyperproperty (cf.
+    "Dynamic IFC Theorems for Free", parametricity ⇒ NI; verified IFC
+    architectures). The sealed token is unforgeable, so an adversarial context
+    cannot mint a fresh (incomplete) discharge. -/
+
+/-- Ocap-layer adversarial linking contexts. -/
+inductive OcapCtx where
+  | ctx : Nat → OcapCtx
+
+/-- One observable ocap-layer step: an emitted effect, tagged with the token it was
+    minted from. The effect fn (`portcullis-effects`) REQUIRES a `DischargedBundle`,
+    so every emitted effect carries a token. -/
+structure OcapEvent where
+  token : Obligation → Bool
+
+/-- An ocap-layer trace: the effects a run emits. -/
+abbrev OcapTrace := List OcapEvent
+
+/-- Ocap-layer NI violation: some emitted effect carried a FALSE
+    `noAdversarialAncestry` obligation — an adversarial-integrity source reached a
+    sink. (Conservative: reality never EMITS such an effect — the gate denies it —
+    so counting it as a leak only strengthens what we must satisfy.) -/
+def OcapLeak (t : OcapTrace) : Prop :=
+  ∃ e ∈ t, e.token Obligation.noAdversarialAncestry = false
+
+/-- Ocap-layer behaviour: the sealed token is UNFORGEABLE, so whatever adversarial
+    context `P` is linked with, every emitted effect carries `P`'s token — the
+    adversary cannot fabricate a different (incomplete) discharge. -/
+def ocapBehav (P : OcapProg) (_C : OcapCtx) (t : OcapTrace) : Prop :=
+  ∀ e ∈ t, e.token = P.token
+
+/-- **Ocap-layer robust noninterference** — the SAME trace-hyperproperty notion as
+    `IsaRobustNI`, one layer up: no adversarial context induces a leak trace. -/
+def OcapRobustNI (P : OcapProg) : Prop :=
+  ∀ (C : OcapCtx) (t : OcapTrace), ocapBehav P C t → ¬ OcapLeak t
+
+/-- **TOKEN SEMANTIC ADEQUACY (PROVEN, no axiom).** A complete discharge token BUYS
+    noninterference: `OcapNI P` (every obligation discharged) implies `OcapRobustNI
+    P` (no adversary induces a leak). The discharged `noAdversarialAncestry`
+    obligation structurally forbids the leak; the token's unforgeability bounds the
+    adversary. The load-bearing claim that the token is not mere bookkeeping but
+    actually enforces the hyperproperty. -/
+theorem token_adequacy (P : OcapProg) (h : OcapNI P) : OcapRobustNI P := by
+  intro _C t hb hleak
+  obtain ⟨e, hmem, hbit⟩ := hleak
+  have heq : e.token = P.token := hb e hmem
+  rw [heq, h Obligation.noAdversarialAncestry] at hbit
+  exact Bool.noConfusion hbit
+
+/-- **Pure SECOMP/StkTokens compiler robust preservation — the boundary axiom, now
+    DECONFLATED.** Trace-hyperproperty in, trace-hyperproperty out: a source ocap
+    program that robustly satisfies NI compiles to an ISA program that robustly
+    satisfies NI. EXACTLY RSC — no token bookkeeping mixed in — the statement SECOMP
+    proves by back-translation. Undischarged (ISA model/compiler not in-tree). -/
+axiom compiler_robust_preservation :
+    ∀ (P : OcapProg), OcapRobustNI P → IsaRobustNI (γ_secomp P)
+
+/-- Structural token ⇒ ISA robust NI, now a THEOREM (was the conflated axiom):
+    token adequacy (PROVEN) composed with pure compiler preservation (axiom). -/
+theorem secomp_robust_preservation (P : OcapProg) (h : OcapNI P) :
+    IsaRobustNI (γ_secomp P) :=
+  compiler_robust_preservation P (token_adequacy P h)
 
 /-- Policy-layer admission: requested authority within the delegation ceiling. -/
 def PolicyPre (p : PolicyProg) : Prop := p.authority ≤ capCeiling
@@ -283,6 +343,8 @@ theorem end_to_end :
 #print axioms preserves_seq
 #print axioms bridge_policy_ocap
 #print axioms interface_policy_ocap
+#print axioms token_adequacy
+#print axioms compiler_robust_preservation
 #print axioms secomp_robust_preservation
 #print axioms bridge_ocap_isa
 #print axioms end_to_end
