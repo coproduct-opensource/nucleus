@@ -162,13 +162,59 @@ abbrev IsaProg    : Type := Unit
 abbrev KernelProg : Type := Unit
 abbrev HwProg     : Type := Unit
 
-opaque IsaNI    : IsaProg    → Prop
 opaque KernelNI : KernelProg → Prop
 opaque HwNI     : HwProg     → Prop
 
 opaque γ_secomp : OcapProg   → IsaProg
 opaque γ_kernel : IsaProg    → KernelProg
 opaque γ_cheri  : KernelProg → HwProg
+
+/-! ## GAP 2 — ocap ⇝ ISA, faithfully typed on SECOMP/StkTokens robust preservation.
+
+    The bare `Preserves L_ocap L_isa γ_secomp` hid WHAT is preserved and against
+    WHOM. RSC/SECOMP (Patrignani-Garg, TOPLAS'21; Abate-Thibault-Blanco et al.,
+    CCS'24) prove ROBUST preservation: a compiler attains RSC when every source
+    program that robustly satisfies a (hyper)safety property — against ALL
+    adversarial contexts — compiles to one that robustly satisfies it too, by
+    inserting defensive checks so no target-level adversary can mount an attack no
+    source adversary could (proof technique: trace back-translation). We type the
+    boundary axiom in exactly that shape — quantified over ISA adversarial contexts
+    and observable traces, with `Leak` the trace-level NI violation — so the ISA
+    layer's NI becomes a genuine trace hyperproperty (`IsaRobustNI`) instead of an
+    opaque predicate. Still ONE boundary axiom (the ISA operational model and the
+    compiler are not yet in-tree), but its SHAPE now states the real theorem. -/
+
+/-- Observable execution traces (genuine, Nonempty; the `Nat` payload is a
+    placeholder for the real trace algebra). -/
+inductive Trace where
+  | tr : Nat → Trace
+
+/-- ISA-level adversarial linking contexts. -/
+inductive IsaCtx where
+  | ctx : Nat → IsaCtx
+
+/-- Behaviour relation: `tgtBehav Q C t` — the compiled ISA program `Q` linked with
+    adversarial context `C` can exhibit observable trace `t`. -/
+opaque tgtBehav : IsaProg → IsaCtx → Trace → Prop
+
+/-- A trace exhibiting a noninterference violation (the hypersafety refutation). -/
+opaque Leak : Trace → Prop
+
+/-- **ISA-layer robust noninterference** — a genuine subset-closed trace
+    hyperproperty: against EVERY adversarial context, the program exhibits no
+    leaking trace. The target of SECOMP's robust-preservation theorem. -/
+def IsaRobustNI (Q : IsaProg) : Prop :=
+  ∀ (C : IsaCtx) (t : Trace), tgtBehav Q C t → ¬ Leak t
+
+/-- **SECOMP/StkTokens robust NI-preservation — the faithfully-typed boundary
+    axiom** (replaces the bare `Preserves`). A source ocap effect carrying a
+    COMPLETE mediation token (`OcapNI`) compiles to an ISA program that, against
+    every adversarial context, exhibits no leaking trace (`IsaRobustNI`) — the RSC
+    robust-hypersafety-preservation shape, the statement SECOMP proves by
+    back-translation. Undischarged (ISA model/compiler not yet in-tree); its TYPE
+    now encodes the real theorem rather than a bare implication. -/
+axiom secomp_robust_preservation :
+    ∀ (P : OcapProg), OcapNI P → IsaRobustNI (γ_secomp P)
 
 /-- Policy-layer admission: requested authority within the delegation ceiling. -/
 def PolicyPre (p : PolicyProg) : Prop := p.authority ≤ capCeiling
@@ -179,7 +225,7 @@ def OcapPre (e : OcapProg) : Prop := e.authority ≤ capCeiling
 
 def L_policy : Layer := ⟨PolicyProg, PolicyNI, PolicyPre⟩
 def L_ocap   : Layer := ⟨OcapProg,   OcapNI,   OcapPre⟩
-def L_isa    : Layer := ⟨IsaProg,    IsaNI,    fun _ => True⟩
+def L_isa    : Layer := ⟨IsaProg,    IsaRobustNI, fun _ => True⟩
 def L_kernel : Layer := ⟨KernelProg, KernelNI, fun _ => True⟩
 def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
 
@@ -201,9 +247,12 @@ theorem interface_policy_ocap :
   intro p hPre _
   exact Nat.le_trans (γ_ocap_no_escalation p) hPre
 
-/-- GAP 2 — ocap ⇝ machine/ISA via a noninterference-preserving compiler
-    (SECOMP / StkTokens linear capabilities). Artifacts exist upstream; UNWIRED here. -/
-axiom bridge_ocap_isa : Preserves L_ocap L_isa γ_secomp
+/-- **GAP 2 bridge — now DERIVED** (was a bare axiom) from the faithfully-typed
+    robust-preservation statement `secomp_robust_preservation`. A complete-token
+    source effect compiles to an ISA program that robustly satisfies NI. -/
+theorem bridge_ocap_isa : Preserves L_ocap L_isa γ_secomp := by
+  intro P _ hNI
+  exact secomp_robust_preservation P hNI
 
 /-- GAP 3 — ISA ⇝ verified kernel/hypervisor (seL4-class). UNWIRED. -/
 axiom bridge_isa_kernel : Preserves L_isa L_kernel γ_kernel
@@ -234,6 +283,8 @@ theorem end_to_end :
 #print axioms preserves_seq
 #print axioms bridge_policy_ocap
 #print axioms interface_policy_ocap
+#print axioms secomp_robust_preservation
+#print axioms bridge_ocap_isa
 #print axioms end_to_end
 
 end Nucleus.UniformPrimitive

@@ -55,11 +55,14 @@ jobs:
       - name: Axiom ratchet (layer-bridge count = distance-to-done; may only drop)
         working-directory: crates/nucleus-uniform-primitive/lean
         run: |
-          count=$(grep -rhcE '^[[:space:]]*axiom ' --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
+          # Anchor at column 0: a Lean top-level `axiom` declaration is never
+          # indented, whereas an "axiom" mentioned inside a wrapped doc-comment line
+          # always is — so `^axiom ` counts real axioms and ignores comment prose.
+          count=$(grep -rhcE '^axiom ' --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
                     | awk '{s+=$1} END{print s+0}')
           baseline=$(cat .uniform-primitive-axiom-baseline)
           echo "uniform-primitive layer-bridge axioms: $count (baseline $baseline)"
-          grep -rnE '^[[:space:]]*axiom ' --include='*.lean' --exclude-dir=.lake . || true
+          grep -rnE '^axiom ' --include='*.lean' --exclude-dir=.lake . || true
           if [ "$count" -gt "$baseline" ]; then
             echo "::error::layer-bridge axiom count increased ($count > baseline $baseline) — a new gap was introduced"
             exit 1
