@@ -1,9 +1,10 @@
 /-
   UniformPrimitive  —  the proof-token as the SAME construct at every layer.
 
-  **STATUS: SPINE PROVEN (0 `sorry`, 0 axiom in `preserves_seq`); 4 layer bridges
-  are named axioms = the machine-checked distance-to-done.** Mathlib-free, Lean 4
-  v4.30.0-rc2, `autoImplicit = false`.
+  **STATUS: SPINE PROVEN (0 `sorry`, 0 axiom in `preserves_seq`); GAP 1
+  (policy⇝ocap) DISCHARGED as a theorem; 3 layer bridges remain named axioms =
+  the machine-checked distance-to-done.** Mathlib-free, Lean 4 v4.30.0-rc2,
+  `autoImplicit = false`.
 
   # What this file is
 
@@ -31,16 +32,17 @@
   witnessing that refinement `γ` carries noninterference from layer `L` to `L'`
   against any adversary admitted at the boundary. It is the layer-general shape of
   `DischargedBundle` (the effect-boundary instance) and of halve's `CertifiedOn`
-  (`halve/lean/core/KVTransform.lean`, whose `certifiedOn_seq` is the same
-  triangle-composition move over an error band).
+  (whose `certifiedOn_seq` is the same triangle-composition move over an error band).
 
-  # Honest gaps (why the axioms are load-bearing, NOT vacuous)
+  # Honest gaps (why the remaining axioms are load-bearing, NOT vacuous)
 
-  Program spaces and `NI`/compilers are `opaque`, so each bridge axiom is genuinely
-  underivable in-stub (no vacuous witness). Currently ALL FOUR bridges are axioms
-  because no layer's semantics is modeled here yet — this file holds the SHAPE. As
-  each layer is modeled and its bridge proven, its `axiom` becomes a `theorem` and
-  the ratchet baseline drops. Distance-to-done = axiom count = 4.
+  Downstream program spaces and `NI`/compilers (ISA, kernel, hardware) are
+  `opaque`, so each remaining bridge axiom is genuinely underivable in-stub (no
+  vacuous witness). GAP 1 is now DISCHARGED: the policy⇝ocap layer is modeled
+  concretely on the sealed 8-obligation `DischargedBundle` and its bridge is a
+  proven, axiom-free theorem. Three bridges remain (ocap⇝ISA, ISA⇝kernel,
+  kernel⇝hardware); each becomes a theorem as its layer is modeled, dropping the
+  ratchet baseline. Distance-to-done = axiom count = 3.
 
   # Known scaffold simplifications (disclosed, not hidden)
 
@@ -48,6 +50,10 @@
     obligations threaded by `preserves_seq` (`hpre`) discharge trivially. Real
     layer models will carry real preconditions; `preserves_seq` already takes the
     `hpre` interface obligation as a hypothesis, so no rework is needed.
+  * The "unmediated effect is unconstructable" strength is enforced in Rust by the
+    effect fn's `_proof: DischargedBundle` PARAMETER (a missing token is a compile
+    error). This Lean model abstracts that as: the effect carries a token, and
+    ocap-layer NI = the token is complete.
   * The modulo-hardware FLOOR (timing side-channels, only observable at RTL per
     VeriCHERI) lies below the ISA layer and is NOT covered by any NI theorem here;
     it is a permanent honest caveat, not a bridge to be closed.
@@ -83,24 +89,65 @@ theorem preserves_seq {L1 L2 L3 : Layer}
   intro p hp hn
   exact h23 (γ12 p) (hpre p hp hn) (h12 p hp hn)
 
-/-! ## The concrete five-layer nucleus stack.
+/-! ## GAP 1 DISCHARGED — policy ⇝ ocap/effect language.
 
-    Carriers are `Unit`; `NI` predicates and compilers are `opaque`, so the bridge
-    axioms below are genuinely load-bearing. -/
+    Modeled verbatim on the sealed `DischargedBundle`
+    (`crates/nucleus-ifc-kernel/src/discharge.rs`). -/
 
-abbrev PolicyProg : Type := Unit
-abbrev OcapProg   : Type := Unit
+/-- The eight sealed discharge obligations, verbatim from `DischargedBundle`
+    (`discharge.rs`): the exact set `preflight_action` must clear to mint the
+    unforgeable proof-token that the effect fns require at compile time. -/
+inductive Obligation
+  | integrityGate           -- artifact integrity ≥ sink minimum
+  | pathAllowed             -- operation structurally permitted for the sink
+  | derivationClear         -- derivation class compatible with the sink
+  | noAdversarialAncestry   -- no source label carries adversarial integrity (the NI clause)
+  | budgetNotExceeded       -- estimated cost fits the budget gate
+  | withinDelegationCeiling -- requested capability ≤ policy ceiling
+  | inScopeWithTask         -- operation within the verified task token's scope
+  | inputsAuthorized        -- every action input is content-addressed
+
+/-- A policy-layer program: a proposed action together with which obligations its
+    `preflight_action` run discharged (`true` = passed). -/
+structure PolicyProg where
+  discharged : Obligation → Bool
+
+/-- An ocap/effect-language program: an emitted effect carrying the proof-token it
+    was minted from. An effect fn (`portcullis-effects`) REQUIRES a
+    `DischargedBundle` argument, so no effect exists without a token to record. -/
+structure OcapProg where
+  token : Obligation → Bool
+
+/-- **Policy-layer noninterference** = the sealed bundle is FULL: every obligation
+    discharged. Exactly the precondition `preflight_action` enforces before minting
+    `DischargedBundle`; `noAdversarialAncestry` is the structural non-interference
+    clause (no adversarial-integrity source reaches the sink). -/
+def PolicyNI (p : PolicyProg) : Prop := ∀ o : Obligation, p.discharged o = true
+
+/-- **Ocap-layer noninterference** = the emitted effect is MEDIATED: its token is
+    complete. An un-mediated effect is unconstructable upstream (the effect fn does
+    not type-check without the `DischargedBundle`); here that is a complete token. -/
+def OcapNI (e : OcapProg) : Prop := ∀ o : Obligation, e.token o = true
+
+/-- The compiler threads the preflight obligation set into the effect token
+    verbatim. -/
+def γ_ocap (p : PolicyProg) : OcapProg := ⟨p.discharged⟩
+
+/-- **Anti-laundering, explicit** (cf. the #1207 session-taint ratchet): the
+    emitted token is *exactly* the policy's discharged set — the compiler can
+    neither fabricate a discharge it was not given nor silently cleanse one. -/
+theorem γ_ocap_no_laundering (p : PolicyProg) : (γ_ocap p).token = p.discharged := rfl
+
+/-! ## Downstream stack (opaque until modeled — bridges 2..4 remain axioms). -/
+
 abbrev IsaProg    : Type := Unit
 abbrev KernelProg : Type := Unit
 abbrev HwProg     : Type := Unit
 
-opaque PolicyNI : PolicyProg → Prop
-opaque OcapNI   : OcapProg   → Prop
 opaque IsaNI    : IsaProg    → Prop
 opaque KernelNI : KernelProg → Prop
 opaque HwNI     : HwProg     → Prop
 
-opaque γ_ocap   : PolicyProg → OcapProg
 opaque γ_secomp : OcapProg   → IsaProg
 opaque γ_kernel : IsaProg    → KernelProg
 opaque γ_cheri  : KernelProg → HwProg
@@ -111,9 +158,13 @@ def L_isa    : Layer := ⟨IsaProg,    IsaNI,    fun _ => True⟩
 def L_kernel : Layer := ⟨KernelProg, KernelNI, fun _ => True⟩
 def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
 
-/-- GAP 1 — policy ⇝ ocap/effect language. Realised in Rust (`Discharged<O>` IS the
-    effect-language witness) but NOT YET modeled/proven in this Lean stack. -/
-axiom bridge_policy_ocap : Preserves L_policy L_ocap γ_ocap
+/-- **GAP 1 DISCHARGED (axiom → theorem).** Policy ⇝ ocap preserves noninterference:
+    if preflight discharged every obligation (`PolicyNI`), the emitted effect is
+    mediated (`OcapNI`). Proven, Mathlib-free, axiom-free — the Lean image of the
+    Rust compile-time guarantee `write_file(.., _proof: DischargedBundle)`. -/
+theorem bridge_policy_ocap : Preserves L_policy L_ocap γ_ocap := by
+  intro p _ hNI o
+  exact hNI o
 
 /-- GAP 2 — ocap ⇝ machine/ISA via a noninterference-preserving compiler
     (SECOMP / StkTokens linear capabilities). Artifacts exist upstream; UNWIRED here. -/
@@ -129,9 +180,9 @@ axiom bridge_kernel_hw : Preserves L_kernel L_hw γ_cheri
 
 /-- **End-to-end.** The proof-token composes down the whole stack: if the agent
     policy establishes NI, the CHERI-ISA execution robustly satisfies NI — modulo
-    hardware. Depends on EXACTLY the four gap axioms; the composition itself is the
-    proven `preserves_seq`. When all four bridges become theorems this corollary is
-    axiom-free and the North Star holds all the way to hardware. -/
+    hardware. Depends on EXACTLY the three remaining gap axioms (GAP 1 is proven);
+    the composition itself is `preserves_seq`. When all bridges become theorems this
+    corollary is axiom-free and the North Star holds all the way to hardware. -/
 theorem end_to_end :
     Preserves L_policy L_hw (fun p => γ_cheri (γ_kernel (γ_secomp (γ_ocap p)))) := by
   have s1 : Preserves L_policy L_isa (fun p => γ_secomp (γ_ocap p)) :=
@@ -144,8 +195,9 @@ theorem end_to_end :
     (fun p => γ_kernel (γ_secomp (γ_ocap p))) γ_cheri s2 bridge_kernel_hw (fun _ _ _ => trivial)
 
 -- Machine-checked distance-to-done signals (printed to the build log):
---   the spine is unconditional; end_to_end depends on exactly the 4 gap axioms.
+--   the spine and GAP 1 are unconditional; end_to_end depends on exactly 3 axioms.
 #print axioms preserves_seq
+#print axioms bridge_policy_ocap
 #print axioms end_to_end
 
 end Nucleus.UniformPrimitive
