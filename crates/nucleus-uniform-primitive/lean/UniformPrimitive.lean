@@ -46,10 +46,10 @@
 
   # Known scaffold simplifications (disclosed, not hidden)
 
-  * Entry preconditions `Pre` are trivialised to `True`, so the interface
-    obligations threaded by `preserves_seq` (`hpre`) discharge trivially. Real
-    layer models will carry real preconditions; `preserves_seq` already takes the
-    `hpre` interface obligation as a hypothesis, so no rework is needed.
+  * The discharged policy⇝ocap boundary now carries its REAL interface obligation —
+    monotonic-attenuation / non-amplification (`interface_policy_ocap`), proven
+    axiom-free. Downstream `Pre` (ISA/kernel/hw) remain `True` pending their layer
+    models; `preserves_seq` takes each `hpre` as a hypothesis, so no rework is needed.
   * The "unmediated effect is unconstructable" strength is enforced in Rust by the
     effect fn's `_proof: DischargedBundle` PARAMETER (a missing token is a compile
     error). This Lean model abstracts that as: the effect carries a token, and
@@ -107,16 +107,27 @@ inductive Obligation
   | inScopeWithTask         -- operation within the verified task token's scope
   | inputsAuthorized        -- every action input is content-addressed
 
+/-- A requested capability level (0 = least authority). POLA: an action should
+    request exactly what it needs and no more. -/
+abbrev CapLevel := Nat
+
+/-- The policy delegation ceiling — the ordered content of the
+    `withinDelegationCeiling` obligation: the max authority an admitted action may
+    request. -/
+def capCeiling : CapLevel := 3
+
 /-- A policy-layer program: a proposed action together with which obligations its
-    `preflight_action` run discharged (`true` = passed). -/
+    `preflight_action` run discharged (`true` = passed), and the authority requested. -/
 structure PolicyProg where
   discharged : Obligation → Bool
+  authority  : CapLevel
 
 /-- An ocap/effect-language program: an emitted effect carrying the proof-token it
     was minted from. An effect fn (`portcullis-effects`) REQUIRES a
     `DischargedBundle` argument, so no effect exists without a token to record. -/
 structure OcapProg where
-  token : Obligation → Bool
+  token     : Obligation → Bool
+  authority : CapLevel
 
 /-- **Policy-layer noninterference** = the sealed bundle is FULL: every obligation
     discharged. Exactly the precondition `preflight_action` enforces before minting
@@ -129,9 +140,16 @@ def PolicyNI (p : PolicyProg) : Prop := ∀ o : Obligation, p.discharged o = tru
     not type-check without the `DischargedBundle`); here that is a complete token. -/
 def OcapNI (e : OcapProg) : Prop := ∀ o : Obligation, e.token o = true
 
-/-- The compiler threads the preflight obligation set into the effect token
-    verbatim. -/
-def γ_ocap (p : PolicyProg) : OcapProg := ⟨p.discharged⟩
+/-- The compiler threads the preflight obligation set into the effect token, and
+    does NOT escalate authority. -/
+def γ_ocap (p : PolicyProg) : OcapProg := ⟨p.discharged, p.authority⟩
+
+/-- **Monotonic attenuation / non-amplification** ("authority only tightens"; cf.
+    ChainCaps monotonic capability attenuation, non-amplification Thm 3.1): the
+    compiled effect never requests more capability than its source action. The
+    compilation step is monotonically non-expanding on authority. -/
+theorem γ_ocap_no_escalation (p : PolicyProg) : (γ_ocap p).authority ≤ p.authority :=
+  Nat.le_refl p.authority
 
 /-- **Anti-laundering, explicit** (cf. the #1207 session-taint ratchet): the
     emitted token is *exactly* the policy's discharged set — the compiler can
@@ -152,8 +170,15 @@ opaque γ_secomp : OcapProg   → IsaProg
 opaque γ_kernel : IsaProg    → KernelProg
 opaque γ_cheri  : KernelProg → HwProg
 
-def L_policy : Layer := ⟨PolicyProg, PolicyNI, fun _ => True⟩
-def L_ocap   : Layer := ⟨OcapProg,   OcapNI,   fun _ => True⟩
+/-- Policy-layer admission: requested authority within the delegation ceiling. -/
+def PolicyPre (p : PolicyProg) : Prop := p.authority ≤ capCeiling
+
+/-- Ocap-layer admission: the emitted effect's authority within the ceiling — an
+    over-authorised effect is inadmissible at the effect boundary. -/
+def OcapPre (e : OcapProg) : Prop := e.authority ≤ capCeiling
+
+def L_policy : Layer := ⟨PolicyProg, PolicyNI, PolicyPre⟩
+def L_ocap   : Layer := ⟨OcapProg,   OcapNI,   OcapPre⟩
 def L_isa    : Layer := ⟨IsaProg,    IsaNI,    fun _ => True⟩
 def L_kernel : Layer := ⟨KernelProg, KernelNI, fun _ => True⟩
 def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
@@ -165,6 +190,16 @@ def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
 theorem bridge_policy_ocap : Preserves L_policy L_ocap γ_ocap := by
   intro p _ hNI o
   exact hNI o
+
+/-- **The honest policy⇝ocap interface obligation, PROVEN** — replaces the
+    `hpre := trivial` scaffold on the one discharged boundary. An admitted policy
+    program (authority ≤ ceiling) compiles to an admitted ocap effect, because the
+    compilation step does not escalate authority (monotonic attenuation). This is
+    the exact boundary continuity `preserves_seq` requires — now a theorem. -/
+theorem interface_policy_ocap :
+    ∀ p : PolicyProg, L_policy.Pre p → L_policy.NI p → L_ocap.Pre (γ_ocap p) := by
+  intro p hPre _
+  exact Nat.le_trans (γ_ocap_no_escalation p) hPre
 
 /-- GAP 2 — ocap ⇝ machine/ISA via a noninterference-preserving compiler
     (SECOMP / StkTokens linear capabilities). Artifacts exist upstream; UNWIRED here. -/
@@ -187,7 +222,7 @@ theorem end_to_end :
     Preserves L_policy L_hw (fun p => γ_cheri (γ_kernel (γ_secomp (γ_ocap p)))) := by
   have s1 : Preserves L_policy L_isa (fun p => γ_secomp (γ_ocap p)) :=
     preserves_seq (L1 := L_policy) (L2 := L_ocap) (L3 := L_isa)
-      γ_ocap γ_secomp bridge_policy_ocap bridge_ocap_isa (fun _ _ _ => trivial)
+      γ_ocap γ_secomp bridge_policy_ocap bridge_ocap_isa interface_policy_ocap
   have s2 : Preserves L_policy L_kernel (fun p => γ_kernel (γ_secomp (γ_ocap p))) :=
     preserves_seq (L1 := L_policy) (L2 := L_isa) (L3 := L_kernel)
       (fun p => γ_secomp (γ_ocap p)) γ_kernel s1 bridge_isa_kernel (fun _ _ _ => trivial)
@@ -198,6 +233,7 @@ theorem end_to_end :
 --   the spine and GAP 1 are unconditional; end_to_end depends on exactly 3 axioms.
 #print axioms preserves_seq
 #print axioms bridge_policy_ocap
+#print axioms interface_policy_ocap
 #print axioms end_to_end
 
 end Nucleus.UniformPrimitive
