@@ -162,8 +162,6 @@ abbrev IsaProg    : Type := Unit
 abbrev KernelProg : Type := Unit
 abbrev HwProg     : Type := Unit
 
-opaque HwNI     : HwProg     → Prop
-
 opaque γ_secomp : OcapProg   → IsaProg
 opaque γ_kernel : IsaProg    → KernelProg
 opaque γ_cheri  : KernelProg → HwProg
@@ -317,6 +315,65 @@ def KernelConfined (Q : KernelProg) : Prop :=
 axiom kernel_authority_confinement :
     ∀ (Q : IsaProg), IsaRobustNI Q → KernelConfined (γ_kernel Q)
 
+/-! ## GAP 4 — kernel ⇝ CHERI hardware, typed on reachable capability monotonicity.
+
+    The CHERI ISA (Sail model; Nienhuis et al. "Rigorous engineering…", S&P'20;
+    VeriCHERI at the RTL) proves REACHABLE CAPABILITY MONOTONICITY: software cannot
+    escalate privilege by forging capabilities unreachable from the start state —
+    reachable capabilities are monotonically non-increasing in normal execution.
+    Three ISA properties underpin it: PROVENANCE (capabilities arise only by valid
+    derivation from other capabilities), INTEGRITY (the unforgeable tag bit — any
+    non-capability write clears it — so corrupted capabilities cannot be
+    dereferenced), MONOTONICITY (rights are non-increasing; only controlled
+    domain-transition mechanisms are non-monotonic). This is the hardware-layer
+    instance of the NI hyperproperty; we upgrade `HwNI` opaque → a
+    capability-monotonicity hyperproperty. -/
+
+/-- Hardware-layer adversarial contexts (co-resident code holding its own caps). -/
+inductive HwCtx where
+  | ctx : Nat → HwCtx
+
+/-- Behaviour relation at the CHERI-ISA layer. -/
+opaque hwBehav : HwProg → HwCtx → Trace → Prop
+
+/-- A capability FORGE/AMPLIFY event: a step obtained a capability not reachable from
+    the start state, or grew a capability's bounds/permissions (the negation of
+    reachable capability monotonicity + provenance). -/
+opaque HwForge : Trace → Prop
+
+/-- **Hardware-layer capability monotonicity** — the hardware instance of robust NI:
+    against every adversarial context, no trace forges or amplifies a capability.
+    CHERI's reachable-capability-monotonicity theorem, as a hyperproperty. -/
+def HwCapMonotone (Q : HwProg) : Prop :=
+  ∀ (C : HwCtx) (t : Trace), hwBehav Q C t → ¬ HwForge t
+
+/-- **CHERI reachable capability monotonicity — the faithfully-typed boundary axiom
+    (the stack's hardware floor).** A kernel component confined to its authority,
+    lowered onto CHERI hardware, cannot forge or amplify a capability against any
+    adversary. Typed in CHERI's provenance/monotonicity shape. Undischarged (the
+    CHERI Sail ISA model is not in-tree); this IS the "modulo hardware" ISA-model
+    assumption — the honest bottom of the trust chain. -/
+axiom cheri_capability_monotonicity :
+    ∀ (Q : KernelProg), KernelConfined Q → HwCapMonotone (γ_cheri Q)
+
+/-! ### The modulo-hardware FLOOR — a documented caveat, NOT a bridge to discharge.
+
+    Everything above is stated at the granularity of the CHERI ISA *model*. Two
+    things live strictly below it and are covered by NO theorem here, by
+    construction:
+
+      * TIMING / MICROARCHITECTURAL SIDE-CHANNELS — the ISA model is
+        functional/architectural; timing leaks are observable only at the RTL and
+        below. VeriCHERI (arXiv:2407.18679) finds side-channel classes visible ONLY
+        at the timing-accurate RTL, not at the ISA model. `HwForge`/`Trace` are
+        architectural traces; a timing channel is not an `HwForge` event.
+      * ISA-MODEL ↔ SILICON FIDELITY — the Sail model abstracts a physical chip;
+        fabrication / fault / glitch attacks are out of scope.
+
+    Permanent and non-closable at this layer: the end-to-end guarantee is "robust NI
+    down to the CHERI ISA model, MODULO hardware timing and silicon fidelity." This
+    caveat is load-bearing honesty, not a TODO. -/
+
 /-- Policy-layer admission: requested authority within the delegation ceiling. -/
 def PolicyPre (p : PolicyProg) : Prop := p.authority ≤ capCeiling
 
@@ -328,7 +385,7 @@ def L_policy : Layer := ⟨PolicyProg, PolicyNI, PolicyPre⟩
 def L_ocap   : Layer := ⟨OcapProg,   OcapNI,   OcapPre⟩
 def L_isa    : Layer := ⟨IsaProg,    IsaRobustNI, fun _ => True⟩
 def L_kernel : Layer := ⟨KernelProg, KernelConfined, fun _ => True⟩
-def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
+def L_hw     : Layer := ⟨HwProg,     HwCapMonotone, fun _ => True⟩
 
 /-- **GAP 1 DISCHARGED (axiom → theorem).** Policy ⇝ ocap preserves noninterference:
     if preflight discharged every obligation (`PolicyNI`), the emitted effect is
@@ -362,10 +419,11 @@ theorem bridge_isa_kernel : Preserves L_isa L_kernel γ_kernel := by
   intro Q _ hNI
   exact kernel_authority_confinement Q hNI
 
-/-- GAP 4 — kernel ⇝ CHERI hardware (ISA-model capability monotonicity; VeriCHERI
-    at RTL). UNWIRED. Below this line is the modulo-hardware floor (timing
-    side-channels), which no NI theorem here covers. -/
-axiom bridge_kernel_hw : Preserves L_kernel L_hw γ_cheri
+/-- **GAP 4 bridge — now DERIVED** (was a bare axiom) from CHERI capability
+    monotonicity. This closes the layer chain to the hardware floor. -/
+theorem bridge_kernel_hw : Preserves L_kernel L_hw γ_cheri := by
+  intro Q _ hNI
+  exact cheri_capability_monotonicity Q hNI
 
 /-- **End-to-end.** The proof-token composes down the whole stack: if the agent
     policy establishes NI, the CHERI-ISA execution robustly satisfies NI — modulo
@@ -394,6 +452,8 @@ theorem end_to_end :
 #print axioms bridge_ocap_isa
 #print axioms kernel_authority_confinement
 #print axioms bridge_isa_kernel
+#print axioms cheri_capability_monotonicity
+#print axioms bridge_kernel_hw
 #print axioms end_to_end
 
 end Nucleus.UniformPrimitive
