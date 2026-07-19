@@ -1,0 +1,69 @@
+name: uniform-primitive-lean
+
+# Verification path for the uniform-primitive composition SPINE (research tier,
+# Mathlib-free — builds in seconds, no warm cache needed).
+#   1. lake-builds the lib: a broken proof FAILS here.
+#   2. bans `sorry`/`admit` (the SPINE must stay sorry-free).
+#   3. counts named layer-bridge `axiom`s and RATCHETS against
+#      `.uniform-primitive-axiom-baseline` — the axiom count is the
+#      machine-checked distance-to-done and may only go DOWN. Proving a bridge
+#      (axiom -> theorem) lowers it; a new gap fails the gate.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/nucleus-uniform-primitive/lean/**'
+      - '.github/workflows/uniform-primitive-lean.yml'
+  pull_request:
+    paths:
+      - 'crates/nucleus-uniform-primitive/lean/**'
+      - '.github/workflows/uniform-primitive-lean.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  uniform-primitive-lean:
+    name: lake build + sorry-ban + axiom-ratchet (uniform-primitive spine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: lake build (a broken proof FAILS here)
+        working-directory: crates/nucleus-uniform-primitive/lean
+        run: lake build UniformPrimitive
+
+      - name: Reject sorry / admit (the spine must stay sorry-free)
+        working-directory: crates/nucleus-uniform-primitive/lean
+        run: |
+          if grep -rnE '^[[:space:]]*(sorry|admit)' --include='*.lean' --exclude-dir=.lake .; then
+            echo "::error::uniform-primitive spine contains sorry/admit — the composition spine must be proof-complete"
+            exit 1
+          fi
+          echo "No sorry/admit — spine is proof-complete."
+
+      - name: Axiom ratchet (layer-bridge count = distance-to-done; may only drop)
+        working-directory: crates/nucleus-uniform-primitive/lean
+        run: |
+          count=$(grep -rhcE '^[[:space:]]*axiom ' --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
+                    | awk '{s+=$1} END{print s+0}')
+          baseline=$(cat .uniform-primitive-axiom-baseline)
+          echo "uniform-primitive layer-bridge axioms: $count (baseline $baseline)"
+          grep -rnE '^[[:space:]]*axiom ' --include='*.lean' --exclude-dir=.lake . || true
+          if [ "$count" -gt "$baseline" ]; then
+            echo "::error::layer-bridge axiom count increased ($count > baseline $baseline) — a new gap was introduced"
+            exit 1
+          fi
+          if [ "$count" -lt "$baseline" ]; then
+            echo "::notice::axiom count dropped to $count (< $baseline) — a layer bridge was PROVEN; ratchet the baseline down"
+          fi
