@@ -162,7 +162,6 @@ abbrev IsaProg    : Type := Unit
 abbrev KernelProg : Type := Unit
 abbrev HwProg     : Type := Unit
 
-opaque KernelNI : KernelProg → Prop
 opaque HwNI     : HwProg     → Prop
 
 opaque γ_secomp : OcapProg   → IsaProg
@@ -276,6 +275,48 @@ theorem secomp_robust_preservation (P : OcapProg) (h : OcapNI P) :
     IsaRobustNI (γ_secomp P) :=
   compiler_robust_preservation P (token_adequacy P h)
 
+/-! ## GAP 3 — ISA ⇝ kernel, faithfully typed on seL4 integrity / authority confinement.
+
+    seL4 (Sewell-Winwood-Gammie-Murray-Andronick-Klein, ITP'11; infoflow: Murray et
+    al., S&P'13) machine-proves two access-control properties, holding via refinement
+    to the C/binary: INTEGRITY — an upper bound on writes: data cannot be modified
+    without an appropriate write capability; and AUTHORITY CONFINEMENT — an upper
+    bound on how authority changes: authority propagates only in accordance with
+    capabilities. With its intransitive-noninterference proof, these are the
+    kernel-layer instance of the NI hyperproperty: a compromised component cannot
+    affect state outside its capability set. We type the boundary axiom in that shape
+    and upgrade `KernelNI` from opaque to a concrete confinement hyperproperty. -/
+
+/-- Kernel-layer adversarial contexts (co-resident, possibly compromised components). -/
+inductive KernelCtx where
+  | ctx : Nat → KernelCtx
+
+/-- Behaviour relation: `kernelBehav Q C t` — the kernel running component `Q`
+    alongside adversary `C` can exhibit trace `t`. -/
+opaque kernelBehav : KernelProg → KernelCtx → Trace → Prop
+
+/-- An authority-confinement / integrity BREACH: a step modified state without the
+    write capability for it, or propagated authority not sanctioned by a capability
+    (the negation of seL4 integrity + authority confinement). -/
+opaque Breach : Trace → Prop
+
+/-- **Kernel-layer confinement** — the kernel-layer instance of robust NI: against
+    every co-resident (possibly compromised) component, no trace breaches authority.
+    seL4's integrity + authority-confinement theorems, as a hyperproperty. -/
+def KernelConfined (Q : KernelProg) : Prop :=
+  ∀ (C : KernelCtx) (t : Trace), kernelBehav Q C t → ¬ Breach t
+
+/-- **seL4-style authority confinement — the faithfully-typed boundary axiom.** An
+    ISA program that robustly satisfies NI, placed under the verified kernel, is
+    confined to its authority: no co-resident adversary induces a breach. Typed in
+    seL4's integrity/authority-confinement shape. Undischarged (the seL4 Isabelle
+    proofs are not in-tree). NOTE: seL4 integrity is in fact UNCONDITIONAL — it holds
+    for arbitrary, even compromised, components given the capability configuration —
+    so the `IsaRobustNI` hypothesis is stronger than seL4 itself requires; kept only
+    to thread the uniform NI-preservation chain. -/
+axiom kernel_authority_confinement :
+    ∀ (Q : IsaProg), IsaRobustNI Q → KernelConfined (γ_kernel Q)
+
 /-- Policy-layer admission: requested authority within the delegation ceiling. -/
 def PolicyPre (p : PolicyProg) : Prop := p.authority ≤ capCeiling
 
@@ -286,7 +327,7 @@ def OcapPre (e : OcapProg) : Prop := e.authority ≤ capCeiling
 def L_policy : Layer := ⟨PolicyProg, PolicyNI, PolicyPre⟩
 def L_ocap   : Layer := ⟨OcapProg,   OcapNI,   OcapPre⟩
 def L_isa    : Layer := ⟨IsaProg,    IsaRobustNI, fun _ => True⟩
-def L_kernel : Layer := ⟨KernelProg, KernelNI, fun _ => True⟩
+def L_kernel : Layer := ⟨KernelProg, KernelConfined, fun _ => True⟩
 def L_hw     : Layer := ⟨HwProg,     HwNI,     fun _ => True⟩
 
 /-- **GAP 1 DISCHARGED (axiom → theorem).** Policy ⇝ ocap preserves noninterference:
@@ -314,8 +355,12 @@ theorem bridge_ocap_isa : Preserves L_ocap L_isa γ_secomp := by
   intro P _ hNI
   exact secomp_robust_preservation P hNI
 
-/-- GAP 3 — ISA ⇝ verified kernel/hypervisor (seL4-class). UNWIRED. -/
-axiom bridge_isa_kernel : Preserves L_isa L_kernel γ_kernel
+/-- **GAP 3 bridge — now DERIVED** (was a bare axiom) from the seL4-shaped
+    authority-confinement statement `kernel_authority_confinement`. An ISA program
+    that robustly satisfies NI is, under the verified kernel, confined to its authority. -/
+theorem bridge_isa_kernel : Preserves L_isa L_kernel γ_kernel := by
+  intro Q _ hNI
+  exact kernel_authority_confinement Q hNI
 
 /-- GAP 4 — kernel ⇝ CHERI hardware (ISA-model capability monotonicity; VeriCHERI
     at RTL). UNWIRED. Below this line is the modulo-hardware floor (timing
@@ -347,6 +392,8 @@ theorem end_to_end :
 #print axioms compiler_robust_preservation
 #print axioms secomp_robust_preservation
 #print axioms bridge_ocap_isa
+#print axioms kernel_authority_confinement
+#print axioms bridge_isa_kernel
 #print axioms end_to_end
 
 end Nucleus.UniformPrimitive
