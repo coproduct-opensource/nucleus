@@ -824,17 +824,29 @@ impl Kernel {
         // apply_declassification_token() instead, which verifies Ed25519
         // signatures before applying label changes.
         if !self.declassification_rules.is_empty() {
+            // FAIL-CLOSED (#C-2): under the SECURE posture (trusted keys configured),
+            // unsigned rules must NOT silently endorse attacker-tainted data
+            // (RaiseIntegrity Adversarial→Untrusted/Trusted) on the live observe()
+            // path — that voids the non-interference guarantee (an unauthenticated
+            // endorsement the Lean proofs never cover). Refuse to apply them; the
+            // signed, artifact-scoped apply_declassification_token() is the only path
+            // that may declassify under a security posture. Leaving the node at its
+            // true integrity keeps an un-endorsed adversarial node unable to reach a
+            // privileged sink, preserving the NI precondition. The permissive default
+            // (no trusted keys / no `crypto` feature) is byte-for-byte unchanged.
             #[cfg(feature = "crypto")]
-            if !self.trusted_public_keys.is_empty() {
-                tracing::warn!(
+            let secure_posture = !self.trusted_public_keys.is_empty();
+            #[cfg(not(feature = "crypto"))]
+            let secure_posture = false;
+
+            if secure_posture {
+                tracing::error!(
                     node_id = node_id,
                     rule_count = self.declassification_rules.len(),
-                    "applying unsigned declassification rules during observe() while trusted \
-                     keys are configured — use apply_declassification_token() for verified \
-                     declassification"
+                    "REFUSED unsigned declassification rules during observe() while trusted \
+                     keys are configured — use apply_declassification_token() (fail-closed, #C-2)"
                 );
-            }
-            if let Some(node) = graph.get(node_id) {
+            } else if let Some(node) = graph.get(node_id) {
                 let mut label = node.label;
                 for rule in &self.declassification_rules {
                     let result = rule.apply(label);
