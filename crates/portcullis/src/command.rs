@@ -216,11 +216,23 @@ impl CommandLattice {
 
         let program = &words[0];
 
-        // Structured blocked rules take precedence
+        // Structured blocked rules take precedence. Match against the program's
+        // BASENAME so a path-qualified interpreter (`/bin/bash -c …`,
+        // `/usr/bin/python3 -c …`) cannot bypass a bare-name block rule
+        // (SECURITY_TODO #4). Applied to BLOCKING only — never widens the
+        // allowlist. Interpreter rules only match on their dangerous arg-patterns
+        // (`-c`/`-e`/`-Command`/`-r`), so honest path-qualified programs are
+        // unaffected.
+        let words_basename: Vec<String> = {
+            let mut w = words.clone();
+            let base = w[0].rsplit('/').next().unwrap_or(w[0].as_str()).to_string();
+            w[0] = base;
+            w
+        };
         if self
             .blocked_rules
             .iter()
-            .any(|rule| rule_matches(rule, &words))
+            .any(|rule| rule_matches(rule, &words_basename))
         {
             return false;
         }
@@ -756,6 +768,32 @@ mod tests {
         assert!(lattice.can_execute("npm test"));
         assert!(lattice.can_execute("python script.py"));
         assert!(!lattice.can_execute("sudo rm -rf /")); // But blocks dangerous
+    }
+
+    /// SECURITY_TODO #4: a path-qualified interpreter must not bypass a bare-name
+    /// interpreter block rule. Before the basename-normalization fix, the three
+    /// path-qualified asserts RED (rule_matches compares exact program name, so
+    /// `/bin/bash` != `bash`) — a direct exfiltration-sink bypass.
+    #[test]
+    fn path_qualified_interpreter_cannot_bypass_block() {
+        let lattice = CommandLattice::permissive();
+        // Baseline: the bare interpreter form is blocked.
+        assert!(!lattice.can_execute("bash -c 'echo hi'"));
+        // The path-qualified forms MUST be blocked too (RED pre-fix).
+        assert!(
+            !lattice.can_execute("/bin/bash -c 'echo hi'"),
+            "path-qualified /bin/bash -c must NOT bypass the bash -c block"
+        );
+        assert!(
+            !lattice.can_execute("/usr/bin/python3 -c 'print(1)'"),
+            "path-qualified python3 -c must NOT bypass"
+        );
+        assert!(
+            !lattice.can_execute("/usr/local/bin/node -e 'x'"),
+            "path-qualified node -e must NOT bypass"
+        );
+        // No over-block: an honest path-qualified non-interpreter is still allowed.
+        assert!(lattice.can_execute("/usr/bin/git status"));
     }
 
     #[test]
