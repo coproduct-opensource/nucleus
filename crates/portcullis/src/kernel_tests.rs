@@ -1728,6 +1728,46 @@ fn dag_declassification_authority_upgrade() {
     );
 }
 
+/// #C-2: Under the SECURE posture (trusted keys configured), an UNSIGNED
+/// declassification rule must NOT endorse attacker-tainted data on the live
+/// `observe()` path. Before the fail-closed fix this REDs (integrity becomes
+/// Trusted — the endorsement escape hatch fired with only a `warn!`); after it,
+/// the node keeps its true Adversarial integrity (rule refused), preserving the
+/// non-interference guarantee. The signed `apply_declassification_token()` path
+/// remains the only way to declassify under a security posture.
+#[cfg(feature = "crypto")]
+#[test]
+fn unsigned_declassify_refused_under_trusted_keys() {
+    use portcullis_core::declassify::{DeclassificationRule, DeclassifyAction};
+    use portcullis_core::IntegLevel;
+
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+
+    // Worst-case unsigned endorsement: Adversarial → Trusted.
+    kernel.add_declassification_rule(DeclassificationRule {
+        action: DeclassifyAction::RaiseIntegrity {
+            from: IntegLevel::Adversarial,
+            to: IntegLevel::Trusted,
+        },
+        justification: "adversarial endorsement — must be refused under trusted keys",
+    });
+
+    // Secure posture: operator opted into VERIFIED declassification.
+    kernel.set_trusted_keys(vec![[0u8; 32]]);
+
+    // Observe attacker-tainted web content (Adversarial integrity).
+    let web = kernel
+        .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+        .unwrap();
+
+    let integ = kernel.flow_graph().get(web).unwrap().label.integrity;
+    assert_eq!(
+        integ,
+        IntegLevel::Adversarial,
+        "unsigned declassify must NOT endorse adversarial data under trusted keys (#C-2)"
+    );
+}
+
 // ── Egress policy integration tests → tests/kernel_egress.rs (#825) ──
 
 // ── #654: Causal decide — flow graph supersedes flat label in decide() ──
