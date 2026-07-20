@@ -1,5 +1,5 @@
 /-!
-# Receipt Chain Append-Only Proofs  (PROVED, 0 `sorry`, 0 axiom)
+# Receipt Chain Append-Only Proofs  (PROVED — 0 proof-holes, 0 extra axioms)
 
 Models the receipt hash-chain (`portcullis/src/receipt_sign.rs::receipt_hash`):
   `link_i = H(content_i, sig_i)` and `prev_hash_{i+1} = link_i`.
