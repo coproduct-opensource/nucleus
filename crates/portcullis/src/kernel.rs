@@ -702,13 +702,22 @@ impl Kernel {
         &mut self,
         rule: portcullis_core::declassify::DeclassificationRule,
     ) {
+        // FAIL-CLOSED / defense-in-depth (#C-2 B2): under the secure posture
+        // (trusted keys configured) REFUSE to register an unsigned rule — do not
+        // warn-and-add. Together with the observe() refusal (#C-2), the endorsement
+        // escape hatch is rejected at BOTH registration and application, so a
+        // compromised caller cannot pre-seed a laundering rule. Unsigned rules
+        // endorse by label-class; the artifact-scoped, sink-restricted, signed
+        // apply_declassification_token() is the only admissible path under security.
+        // Permissive default (no trusted keys / no `crypto`) is unchanged.
         #[cfg(feature = "crypto")]
         if !self.trusted_public_keys.is_empty() {
-            tracing::warn!(
+            tracing::error!(
                 justification = %rule.justification,
-                "unsigned declassification rule added while trusted keys are configured — \
-                 use apply_declassification_token() for verified declassification"
+                "REFUSED unsigned declassification rule while trusted keys are configured — \
+                 use apply_declassification_token() (fail-closed, #C-2 B2)"
             );
+            return;
         }
         self.declassification_rules.push(rule);
     }
