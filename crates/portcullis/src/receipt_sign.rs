@@ -8,7 +8,7 @@
 //! distributed to verifiers.
 
 #[cfg(feature = "crypto")]
-use ring::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
+use ring::signature::Ed25519KeyPair;
 
 use portcullis_core::receipt::{receipt_canonical_bytes, FlowReceipt, SignatureError};
 
@@ -66,10 +66,22 @@ pub fn verify_receipt(
     }
 
     let content = receipt_content_bytes(receipt);
-    let public_key = UnparsedPublicKey::new(&signature::ED25519, public_key_bytes);
 
-    public_key
-        .verify(&content, receipt.signature_bytes())
+    // verify_strict (ed25519-dalek), NOT ring's cofactored verify. Ring's verify
+    // ACCEPTS a small-order identity-key forgery (see
+    // small_order_key_rejected_by_verify_strict); verify_strict rejects small-order
+    // public keys and non-canonical R/A/S (RFC 8032, s < ℓ). This closes that on the
+    // receipt cert chain (#16), unifies the trust path on the strict semantics the
+    // rest of the attest stack already uses, removes `ring` from the verify TCB, and
+    // makes this verify WASM-capable. Signing stays on `ring`. Honest receipts remain
+    // valid — verify_strict accepts every canonical signature.
+    let vk_bytes: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| SignatureError::InvalidSignature)?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes)
+        .map_err(|_| SignatureError::InvalidSignature)?;
+    let sig = ed25519_dalek::Signature::from_bytes(receipt.signature_bytes());
+    vk.verify_strict(&content, &sig)
         .map_err(|_| SignatureError::InvalidSignature)
 }
 
@@ -102,6 +114,52 @@ mod tests {
             sink_class: None,
             effect_kind: None,
         }
+    }
+
+    /// Ed25519 small-order (identity) public-key encoding: y = 1, x = 0.
+    fn identity_vk_bytes() -> [u8; 32] {
+        let mut id = [0u8; 32];
+        id[0] = 1;
+        id
+    }
+
+    /// The "identity triple" signature: R = identity encoding, s = 0. Under the
+    /// identity key A = R, the cofactored equation `[s]B == R + [k]A` reduces to
+    /// `identity == identity` for EVERY message — a small-order key-substitution
+    /// forgery that cofactored `verify` accepts but `verify_strict` rejects.
+    fn identity_sig_bytes() -> [u8; 64] {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&identity_vk_bytes());
+        sig
+    }
+
+    /// #16: the receipt cert-chain verify must reject a small-order-key forgery
+    /// that ring's cofactored `verify` may accept. Honest receipts still verify.
+    #[test]
+    fn small_order_key_rejected_by_verify_strict() {
+        let key = test_key();
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            IFCLabel::user_prompt(1000),
+            Some(Operation::WriteFiles),
+        );
+
+        // (i) No regression: an honest signed receipt still verifies.
+        let mut honest = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        sign_receipt(&mut honest, &key);
+        verify_receipt(&honest, key.public_key().as_ref())
+            .expect("honest receipt must still verify");
+
+        // (ii) Strong binding: a well-formed receipt with the identity-triple
+        // signature, verified against the small-order identity key, must be
+        // REJECTED. verify_strict rejects it; cofactored verify would accept it.
+        let mut forged = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        forged.set_signature(identity_sig_bytes());
+        assert!(
+            verify_receipt(&forged, &identity_vk_bytes()).is_err(),
+            "small-order identity-key forgery must be REJECTED by the receipt verify (#16)"
+        );
     }
 
     #[test]
