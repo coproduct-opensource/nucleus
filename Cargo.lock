@@ -8258,6 +8258,7 @@ dependencies = [
  "cedar-policy",
  "cel-interpreter",
  "chrono",
+ "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "hmac 0.13.0",
  "kani",
