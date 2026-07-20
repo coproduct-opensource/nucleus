@@ -833,16 +833,11 @@ impl Kernel {
         // apply_declassification_token() instead, which verifies Ed25519
         // signatures before applying label changes.
         if !self.declassification_rules.is_empty() {
-            // FAIL-CLOSED (#C-2): under the SECURE posture (trusted keys configured),
-            // unsigned rules must NOT silently endorse attacker-tainted data
-            // (RaiseIntegrity Adversarial→Untrusted/Trusted) on the live observe()
-            // path — that voids the non-interference guarantee (an unauthenticated
-            // endorsement the Lean proofs never cover). Refuse to apply them; the
-            // signed, artifact-scoped apply_declassification_token() is the only path
-            // that may declassify under a security posture. Leaving the node at its
-            // true integrity keeps an un-endorsed adversarial node unable to reach a
-            // privileged sink, preserving the NI precondition. The permissive default
-            // (no trusted keys / no `crypto` feature) is byte-for-byte unchanged.
+            // FAIL-CLOSED (#C-2): under the secure posture (trusted keys set), refuse
+            // to apply unsigned rules — silently endorsing attacker-tainted data on the
+            // live path voids the NI guarantee. The signed apply_declassification_token()
+            // is the only path that may declassify; leaving the node at its true integrity
+            // preserves the NI precondition. Permissive default (no keys) unchanged.
             #[cfg(feature = "crypto")]
             let secure_posture = !self.trusted_public_keys.is_empty();
             #[cfg(not(feature = "crypto"))]
