@@ -237,6 +237,22 @@ impl CommandLattice {
             return false;
         }
 
+        // Unwrap a leading `env [flags] [NAME=VALUE]...` wrapper and re-check the
+        // block rules against the REAL wrapped program (basename-normalized), so
+        // `env bash -c …`, `env FOO=bar bash -c …`, `/usr/bin/env python3 -c …`,
+        // and `env -S 'bash -c …'` cannot bypass interpreter blocks (SECURITY_TODO
+        // #4). Documented bypass class (OpenClaw GHSA env -S/--split-string
+        // interpretation mismatch): skip all flags conservatively; re-split -S.
+        if let Some(unwrapped) = unwrap_env_prefix(&words) {
+            if let Some(first) = unwrapped.first() {
+                let mut u = unwrapped.clone();
+                u[0] = first.rsplit('/').next().unwrap_or(first.as_str()).to_string();
+                if self.blocked_rules.iter().any(|rule| rule_matches(rule, &u)) {
+                    return false;
+                }
+            }
+        }
+
         // Check blocked patterns against:
         // 1. The full command string
         // 2. The program name
@@ -556,6 +572,66 @@ fn default_blocked_rules() -> Vec<CommandPattern> {
     rules
 }
 
+/// True if `tok` is a shell `NAME=VALUE` environment assignment.
+fn is_env_assignment(tok: &str) -> bool {
+    match tok.find('=') {
+        Some(eq) if eq > 0 => {
+            let name = &tok[..eq];
+            name.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// If `words` is an `env`-wrapped invocation, return the effective command (real
+/// program + its args) after stripping `env`, its option flags, and `NAME=VALUE`
+/// assignments; `None` otherwise. `-S`/`--split-string` re-splits the smuggled
+/// command string. All other `-`-flags are skipped conservatively so an unknown
+/// flag cannot hide the wrapped interpreter.
+fn unwrap_env_prefix(words: &[String]) -> Option<Vec<String>> {
+    let prog = words.first()?;
+    if prog.rsplit('/').next().unwrap_or(prog.as_str()) != "env" {
+        return None;
+    }
+    let mut i = 1;
+    while i < words.len() {
+        let tok = words[i].as_str();
+        if tok == "-S" || tok == "--split-string" {
+            let val = words.get(i + 1)?;
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 2..]);
+            return Some(split);
+        }
+        if let Some(val) = tok.strip_prefix("--split-string=") {
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 1..]);
+            return Some(split);
+        }
+        if let Some(val) = tok.strip_prefix("-S") {
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 1..]);
+            return Some(split);
+        }
+        if matches!(tok, "-u" | "--unset" | "-C" | "--chdir") {
+            i += 2; // flag consumes its value
+            continue;
+        }
+        if tok.starts_with('-') {
+            i += 1; // any other flag (-i, -0, -P, --null, unknown)
+            continue;
+        }
+        if is_env_assignment(tok) {
+            i += 1;
+            continue;
+        }
+        return Some(words[i..].to_vec()); // first real program onward
+    }
+    None
+}
+
 fn rule_matches(rule: &CommandPattern, words: &[String]) -> bool {
     if words.is_empty() {
         return false;
@@ -794,6 +870,38 @@ mod tests {
         );
         // No over-block: an honest path-qualified non-interpreter is still allowed.
         assert!(lattice.can_execute("/usr/bin/git status"));
+    }
+
+    /// SECURITY_TODO #4: an `env` wrapper must not smuggle a blocked interpreter
+    /// past the block rules. `env bash -c …` has words[0]="env", so neither the
+    /// exact nor the basename match reaches the wrapped interpreter. Documented
+    /// bypass class (OpenClaw GHSA env -S/--split-string). REDs pre-fix.
+    #[test]
+    fn env_wrapper_cannot_bypass_interpreter_block() {
+        let lattice = CommandLattice::permissive();
+        assert!(
+            !lattice.can_execute("env bash -c 'echo hi'"),
+            "env bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env FOO=bar bash -c 'echo hi'"),
+            "env NAME=VALUE bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env -i bash -c 'echo hi'"),
+            "env -i bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("/usr/bin/env python3 -c 'print(1)'"),
+            "path-qualified env python3 -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env -S 'bash -c \"echo hi\"'"),
+            "env -S split-string must not smuggle bash -c"
+        );
+        // No over-block: honest env usage still allowed.
+        assert!(lattice.can_execute("env FOO=bar make test"));
+        assert!(lattice.can_execute("env python3 script.py"));
     }
 
     #[test]
