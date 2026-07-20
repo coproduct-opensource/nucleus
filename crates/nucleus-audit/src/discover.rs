@@ -1,43 +1,49 @@
 //! Auto-discovery of agent configuration files.
 //!
-//! Walks the directory tree to find Claude Code settings, MCP configs,
+//! Walks the directory tree to find agent tool settings, MCP configs,
 //! and PodSpec files. Zero-config entry point for `nucleus-audit scan --auto`.
 
 use std::path::{Path, PathBuf};
 
-/// Known config file patterns to discover.
-const CLAUDE_SETTINGS_NAMES: &[&str] = &[".claude/settings.json", ".claude/settings.local.json"];
+/// Filenames that agent tools conventionally use to store tool-permission
+/// settings, placed inside a per-tool hidden config directory (`.<tool>/`).
+///
+/// Detection keys off these filenames inside *any* hidden config directory
+/// rather than a single vendor's directory name, so coverage is a superset
+/// of any one tool's layout (`.<tool>/settings.json`, `.<tool>/settings.local.json`).
+const AGENT_SETTINGS_FILENAMES: &[&str] = &["settings.json", "settings.local.json"];
 
 const MCP_CONFIG_NAMES: &[&str] = &[".mcp.json", "mcp.json", ".cursor/mcp.json"];
 
 /// Result of auto-discovery scan.
 #[derive(Debug, Default)]
 pub struct DiscoveredConfigs {
-    pub claude_settings: Vec<PathBuf>,
+    pub agent_settings: Vec<PathBuf>,
     pub mcp_configs: Vec<PathBuf>,
     pub pod_specs: Vec<PathBuf>,
 }
 
 impl DiscoveredConfigs {
     pub fn is_empty(&self) -> bool {
-        self.claude_settings.is_empty() && self.mcp_configs.is_empty() && self.pod_specs.is_empty()
+        self.agent_settings.is_empty() && self.mcp_configs.is_empty() && self.pod_specs.is_empty()
     }
 
     pub fn total(&self) -> usize {
-        self.claude_settings.len() + self.mcp_configs.len() + self.pod_specs.len()
+        self.agent_settings.len() + self.mcp_configs.len() + self.pod_specs.len()
     }
 }
 
 /// Discover agent config files starting from `root`.
 ///
 /// Walks the directory tree up to `max_depth` levels deep, skipping
-/// hidden directories (except `.claude` and `.cursor`), `node_modules`,
-/// `target`, and `.git`.
+/// build/VCS noise directories (`node_modules`, `target`, `.git`, ...).
+/// Any hidden per-tool config directory is probed for conventional
+/// settings files.
 pub fn discover_configs(root: &Path, max_depth: usize) -> DiscoveredConfigs {
     let mut result = DiscoveredConfigs::default();
     walk_dir(root, 0, max_depth, &mut result);
     // Sort for deterministic output
-    result.claude_settings.sort();
+    result.agent_settings.sort();
     result.mcp_configs.sort();
     result.pod_specs.sort();
     result
@@ -46,14 +52,6 @@ pub fn discover_configs(root: &Path, max_depth: usize) -> DiscoveredConfigs {
 fn walk_dir(dir: &Path, depth: usize, max_depth: usize, result: &mut DiscoveredConfigs) {
     if depth > max_depth {
         return;
-    }
-
-    // Check for known config files at this level
-    for name in CLAUDE_SETTINGS_NAMES {
-        let path = dir.join(name);
-        if path.is_file() {
-            result.claude_settings.push(path);
-        }
     }
 
     for name in MCP_CONFIG_NAMES {
@@ -91,9 +89,22 @@ fn walk_dir(dir: &Path, depth: usize, max_depth: usize, result: &mut DiscoveredC
             None => continue,
         };
 
-        // Skip irrelevant directories
+        // Skip build/VCS noise directories.
         if should_skip_dir(name) {
             continue;
+        }
+
+        // Any hidden directory may be an agent tool's per-tool config dir
+        // (`.<tool>/`). Probe it for conventional settings files regardless
+        // of whether we recurse further, so coverage is a superset across
+        // tools rather than pinned to one vendor's directory name.
+        if name.starts_with('.') {
+            for fname in AGENT_SETTINGS_FILENAMES {
+                let settings_path = path.join(fname);
+                if settings_path.is_file() {
+                    result.agent_settings.push(settings_path);
+                }
+            }
         }
 
         walk_dir(&path, depth + 1, max_depth, result);
@@ -104,6 +115,8 @@ fn should_skip_dir(name: &str) -> bool {
     matches!(
         name,
         ".git"
+            | ".hg"
+            | ".svn"
             | "node_modules"
             | "target"
             | "__pycache__"
@@ -112,7 +125,7 @@ fn should_skip_dir(name: &str) -> bool {
             | ".tox"
             | "dist"
             | "build"
-    ) || (name.starts_with('.') && name != ".claude" && name != ".cursor" && name != ".nucleus")
+    )
 }
 
 fn scan_podspec_dir(dir: &Path, result: &mut DiscoveredConfigs) {
@@ -144,15 +157,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_discover_claude_settings() {
+    fn test_discover_agent_settings() {
+        // A per-tool hidden config dir with a conventional settings file is
+        // detected generically — this covers any `.<tool>/settings.json`
+        // (the common `.<agent>/settings.json` layout), not one vendor.
         let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        std::fs::write(claude_dir.join("settings.json"), "{}").unwrap();
+        let tool_dir = dir.path().join(".acme");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("settings.json"), "{}").unwrap();
 
         let result = discover_configs(dir.path(), 3);
-        assert_eq!(result.claude_settings.len(), 1);
-        assert!(result.claude_settings[0].ends_with(".claude/settings.json"));
+        assert_eq!(result.agent_settings.len(), 1);
+        assert!(result.agent_settings[0].ends_with(".acme/settings.json"));
+    }
+
+    #[test]
+    fn test_discover_agent_settings_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool_dir = dir.path().join(".acme");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("settings.local.json"), "{}").unwrap();
+
+        let result = discover_configs(dir.path(), 3);
+        assert_eq!(result.agent_settings.len(), 1);
+        assert!(result.agent_settings[0].ends_with(".acme/settings.local.json"));
     }
 
     #[test]
@@ -189,11 +217,11 @@ mod tests {
     #[test]
     fn test_skip_node_modules() {
         let dir = tempfile::tempdir().unwrap();
-        let nm_dir = dir.path().join("node_modules/.claude");
+        let nm_dir = dir.path().join("node_modules/.acme");
         std::fs::create_dir_all(&nm_dir).unwrap();
         std::fs::write(nm_dir.join("settings.json"), "{}").unwrap();
 
         let result = discover_configs(dir.path(), 3);
-        assert!(result.claude_settings.is_empty());
+        assert!(result.agent_settings.is_empty());
     }
 }

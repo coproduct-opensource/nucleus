@@ -48,7 +48,7 @@ pub struct ScanReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_metrics: Option<RuntimeMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_settings_summary: Option<ClaudeSettingsSummary>,
+    pub agent_settings_summary: Option<AgentSettingsSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_config_summary: Option<McpConfigSummary>,
 }
@@ -67,7 +67,7 @@ impl Default for ScanReport {
             findings: Vec::new(),
             scanned_sources: Vec::new(),
             runtime_metrics: None,
-            claude_settings_summary: None,
+            agent_settings_summary: None,
             mcp_config_summary: None,
         }
     }
@@ -93,7 +93,7 @@ pub struct RuntimeMetrics {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct ClaudeSettingsSummary {
+pub struct AgentSettingsSummary {
     pub total_allow_rules: usize,
     pub total_deny_rules: usize,
     pub total_ask_rules: usize,

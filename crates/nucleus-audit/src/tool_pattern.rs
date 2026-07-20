@@ -1,6 +1,6 @@
-//! Parser for Claude Code tool permission patterns like `Bash(curl *)` or `mcp__server__tool`.
+//! Parser for agent tool permission patterns like `Bash(curl *)` or `mcp__server__tool`.
 
-/// A parsed tool permission from Claude Code settings.json.
+/// A parsed tool permission from an agent tool's settings.json.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolPermission {
     pub tool: ToolKind,
@@ -321,7 +321,10 @@ pub fn mcp_implied_capabilities(server: &str, tool: &str) -> McpImpliedCapabilit
 
 /// Check if a read pattern targets known sensitive paths.
 pub fn is_sensitive_path_pattern(pattern: &str) -> bool {
-    let sensitive = [
+    let lower = pattern.to_lowercase();
+
+    // Explicit secret-bearing dotfiles and credential markers.
+    const SENSITIVE_MARKERS: &[&str] = &[
         ".env",
         ".aws",
         ".ssh",
@@ -330,10 +333,28 @@ pub fn is_sensitive_path_pattern(pattern: &str) -> bool {
         "secret",
         "private_key",
         "id_rsa",
-        ".claude",
     ];
-    let lower = pattern.to_lowercase();
-    sensitive.iter().any(|s| lower.contains(s))
+    if SENSITIVE_MARKERS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+
+    // Agent tools keep their permission settings (and sometimes credential
+    // helpers) inside a per-tool hidden config directory, e.g. `.<tool>/`.
+    // Read access to any such directory exposes the agent's own permission
+    // surface, so treat it as sensitive. Matching any hidden config directory
+    // is vendor-neutral and a superset of any single tool's directory name.
+    references_hidden_config_dir(&lower)
+}
+
+/// True if the (lowercased) path references a hidden per-tool config directory:
+/// a path segment starting with `.` that is not a version-control or
+/// build-cache directory.
+fn references_hidden_config_dir(lower_path: &str) -> bool {
+    const NON_CONFIG_DOTDIRS: &[&str] = &[".git", ".hg", ".svn", ".cache"];
+    lower_path
+        .split(['/', '\\'])
+        .filter(|seg| seg.len() > 1 && seg.starts_with('.') && *seg != "..")
+        .any(|seg| !NON_CONFIG_DOTDIRS.contains(&seg))
 }
 
 #[cfg(test)]
@@ -406,6 +427,12 @@ mod tests {
         assert!(is_sensitive_path_pattern("~/.aws/**"));
         assert!(is_sensitive_path_pattern("~/.ssh/id_rsa"));
         assert!(!is_sensitive_path_pattern("/workspaces/**"));
+        // Any hidden per-tool agent config directory (`.<tool>/settings.json`)
+        // is sensitive — a superset of any single tool's directory name.
+        assert!(is_sensitive_path_pattern(".acme/settings.json"));
+        assert!(is_sensitive_path_pattern("~/.acme/**"));
+        // Version-control / build-cache dotdirs are not, by themselves, sensitive.
+        assert!(!is_sensitive_path_pattern(".git/config"));
     }
 
     #[test]
