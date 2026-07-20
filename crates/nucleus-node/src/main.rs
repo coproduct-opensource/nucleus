@@ -1437,6 +1437,24 @@ async fn spawn_local_pod(
     Ok((DriverState::Local(Box::new(handle)), proxy_addr, log_path))
 }
 
+/// Fail-closed parity with `spawn_local_pod` (which rejects) and firecracker's
+/// `reject_unsupported_policy` (which enforces or rejects): the container driver
+/// sets only a coarse docker `network_mode` and CANNOT enforce a structured
+/// network egress policy (`spec.spec.network`). Silently ignoring one fails OPEN
+/// — the pod would run with unrestricted egress while believing its policy is in
+/// force — so reject it instead. Network policy requires the firecracker driver.
+fn container_driver_reject_unsupported_network_policy(spec: &PodSpec) -> Result<(), ApiError> {
+    if spec.spec.network.is_some() {
+        return Err(ApiError::Driver(
+            "network policy requires the firecracker driver — the container driver cannot enforce \
+             a structured egress policy (it would run with unrestricted egress); \
+             run with --driver firecracker"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn spawn_container_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1444,6 +1462,11 @@ async fn spawn_container_pod(
     id: Uuid,
     raw_yaml: Option<&str>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    // Fail-closed: reject a network egress policy the container driver cannot
+    // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
+    // — checked before acquiring the docker client so it rejects even without docker.
+    container_driver_reject_unsupported_network_policy(spec)?;
+
     let docker = state
         .docker
         .as_ref()
