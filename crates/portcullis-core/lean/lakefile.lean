@@ -91,6 +91,9 @@ lean_lib «DeclassifyProofs» where
 lean_lib «SessionCeilingProofs» where
   roots := #[`SessionCeilingProofs]
 
+lean_lib «ReceiptChainProofs» where
+  roots := #[`ReceiptChainProofs]
+
 -- FlowGraph causal DAG proofs (label monotonicity, taint preservation)
 lean_lib «FlowGraphProofs» where
   roots := #[`FlowGraphProofs]

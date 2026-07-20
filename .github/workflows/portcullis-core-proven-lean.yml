@@ -84,6 +84,7 @@ jobs:
             DelegationProofs \
             DerivationProofs \
             SessionCeilingProofs \
+            ReceiptChainProofs \
             IFCSemilatticeProofs \
             DelegationCategoryProofs \
             GaloisConnectionProofs \
@@ -179,6 +180,7 @@ jobs:
           import FlowProofs
           import DeclassifyProofs
           import SessionCeilingProofs
+          import ReceiptChainProofs
           import DecidePureProofs
           import CompartmentProofs
           import DelegationProofs
