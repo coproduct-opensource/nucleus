@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 mod attestation;
 mod auth;
@@ -1111,6 +1111,42 @@ async fn main() -> Result<(), ApiError> {
     }
 
     let args = Args::parse();
+
+    // === Auth-secret sanity (fail-closed on a world-known key) ===
+    // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
+    // while being a world-known HMAC key — an empty key makes sandbox tokens and
+    // signed requests trivially forgeable (an attacker computes HMAC(∅, msg)).
+    // Refuse to start rather than authenticate against it. Legit deployments
+    // always provide a real secret, so this never affects them.
+    // `.trim().is_empty()` (matching nucleus-node) also rejects a whitespace-only
+    // secret, which is effectively unset.
+    if args.auth_secret.trim().is_empty() {
+        error!(
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
+             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
+        );
+        std::process::exit(1);
+    }
+    if args.auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
+        warn!(
+            secret_len = args.auth_secret.len(),
+            min = nucleus_client::MIN_AUTH_SECRET_LEN,
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
+        );
+    }
+    // The node-auth secret defaults to `auth_secret` when unset, but an explicitly
+    // provided EMPTY `--node-auth-secret` would be a world-known key for node
+    // requests — refuse it too (fail-closed).
+    if let Some(ref node_secret) = args.node_auth_secret {
+        if node_secret.trim().is_empty() {
+            error!(
+                "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET is empty — refusing to start: an empty HMAC \
+                 key makes node request auth forgeable (fail-closed). Unset it to inherit \
+                 the main auth secret instead."
+            );
+            std::process::exit(1);
+        }
+    }
 
     // === Sandbox Proof Gate ===
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.

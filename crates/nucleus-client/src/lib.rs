@@ -224,6 +224,10 @@ pub fn verify_drand_signature(
     body: &[u8],
     signature: &str,
 ) -> bool {
+    // Fail-closed: never authenticate against a world-known (empty) key.
+    if !auth_secret_is_usable(secret) {
+        return false;
+    }
     let actor_value = actor.unwrap_or("");
     let message = build_drand_message(drand_round, timestamp, actor_value, body);
     let expected = sign_message(secret, &message);
@@ -240,6 +244,10 @@ pub fn verify_signature(
     body: &[u8],
     signature: &str,
 ) -> bool {
+    // Fail-closed: never authenticate against a world-known (empty) key.
+    if !auth_secret_is_usable(secret) {
+        return false;
+    }
     let actor_value = actor.unwrap_or("");
     let message = build_message(timestamp, actor_value, body);
     let expected = sign_message(secret, &message);
@@ -283,6 +291,24 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
+/// Minimum recommended HMAC auth-secret length, in bytes. Shorter-but-nonempty
+/// secrets are weak (warned about at startup) but not world-known; an EMPTY
+/// secret is world-known and is rejected outright (see [`auth_secret_is_usable`]).
+pub const MIN_AUTH_SECRET_LEN: usize = 16;
+
+/// Fail-closed usability check for an HMAC auth secret.
+///
+/// `Hmac::<Sha256>::new_from_slice` accepts a key of ANY length, including the
+/// empty key — so an empty `auth_secret` is a *world-known* key: an attacker can
+/// compute `HMAC(∅, msg)` themselves and forge any signature or sandbox token.
+/// Every verifier consults this first and refuses to authenticate against an
+/// empty key, so a mis-provisioned (empty) secret fails closed instead of
+/// silently accepting forgeries.
+#[must_use]
+pub fn auth_secret_is_usable(secret: &[u8]) -> bool {
+    !secret.is_empty()
+}
+
 /// Maximum age of a sandbox token before it's considered expired.
 const MAX_TOKEN_AGE_SECS: u64 = 300;
 
@@ -313,6 +339,13 @@ pub fn generate_sandbox_token(secret: &[u8], pod_id: &str, spec_hash: &str) -> S
 /// Returns the verified payload (pod_id, spec_hash) on success,
 /// or an error string on failure.
 pub fn verify_sandbox_token(secret: &[u8], token: &str) -> Result<SandboxTokenPayload, String> {
+    // Fail-closed: an empty secret is a world-known key, so an attacker could
+    // forge a token by signing with the empty key. Refuse verification outright.
+    if !auth_secret_is_usable(secret) {
+        return Err("empty auth secret: refusing HMAC verification against a \
+                    world-known key (fail-closed)"
+            .to_string());
+    }
     if token.is_empty() {
         return Err("empty token".to_string());
     }
@@ -387,6 +420,58 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_secret_never_verifies_sandbox_token() {
+        // World-known empty key: an attacker forges a token by signing with b"".
+        let forged = generate_sandbox_token(b"", "pod1", "hashX");
+        // RED on main: empty secret verifies the empty-key-forged token.
+        assert!(
+            verify_sandbox_token(b"", &forged).is_err(),
+            "empty auth secret must never verify a token (world-known key, fail-closed)"
+        );
+        // No regression: a real secret still round-trips.
+        let real: &[u8] = b"a-real-16byte-secret!!";
+        let good = generate_sandbox_token(real, "pod1", "hashX");
+        assert!(verify_sandbox_token(real, &good).is_ok());
+    }
+
+    #[test]
+    fn empty_secret_never_verifies_request_signature() {
+        let ts = now_unix();
+        let body = b"payload";
+        // World-known empty-key signature over the exact message the verifier builds.
+        let forged = sign_message(b"", &build_message(ts, "", body));
+        assert!(
+            !verify_signature(b"", ts, None, body, &forged),
+            "empty auth secret must never verify a request signature (fail-closed)"
+        );
+        // No regression: a real secret verifies.
+        let real: &[u8] = b"a-real-16byte-secret!!";
+        let sig = sign_message(real, &build_message(ts, "", body));
+        assert!(verify_signature(real, ts, None, body, &sig));
+    }
+
+    #[test]
+    fn empty_secret_never_verifies_drand_signature() {
+        let ts = now_unix();
+        let body = b"payload";
+        let forged = sign_message(b"", &build_drand_message(7, ts, "", body));
+        assert!(
+            !verify_drand_signature(b"", 7, ts, None, body, &forged),
+            "empty auth secret must never verify a drand signature (fail-closed)"
+        );
+        let real: &[u8] = b"a-real-16byte-secret!!";
+        let sig = sign_message(real, &build_drand_message(7, ts, "", body));
+        assert!(verify_drand_signature(real, 7, ts, None, body, &sig));
+    }
+
+    #[test]
+    fn auth_secret_usable_rejects_only_empty() {
+        assert!(!auth_secret_is_usable(b""));
+        assert!(auth_secret_is_usable(b"x"));
+        assert!(auth_secret_is_usable(&[0u8; MIN_AUTH_SECRET_LEN]));
+    }
 
     #[test]
     fn test_sign_http_headers() {
