@@ -64,3 +64,40 @@ fn label_selector_empty_value() {
     let labels = BTreeMap::from([("tag".into(), "".into())]);
     assert!(matches_label_selector(&labels, "tag="));
 }
+
+/// Fail-closed parity: the container driver cannot enforce a structured network
+/// egress policy, so it must REJECT one rather than silently ignore it (which
+/// would run the pod with unrestricted egress). RED on main — `spawn_container_pod`
+/// had no such rejection at all.
+#[test]
+fn container_driver_rejects_network_policy_fail_closed() {
+    use nucleus_spec::{PodSpecInner, PolicySpec};
+    use std::path::PathBuf;
+    let mk = |network| {
+        PodSpec::new(PodSpecInner {
+            work_dir: PathBuf::from("/workspace"),
+            timeout_seconds: 3600,
+            policy: PolicySpec::Profile {
+                name: "default".to_string(),
+            },
+            budget_model: None,
+            resources: None,
+            network,
+            image: None,
+            vsock: None,
+            seccomp: None,
+            cgroup: None,
+            audit_sink: None,
+            credentials: None,
+        })
+    };
+    let with_policy = mk(Some(
+        serde_json::from_str::<nucleus_spec::NetworkSpec>("{}").unwrap(),
+    ));
+    assert!(
+        container_driver_reject_unsupported_network_policy(&with_policy).is_err(),
+        "container driver must reject a network egress policy it cannot enforce (fail-closed parity)"
+    );
+    let without = mk(None);
+    assert!(container_driver_reject_unsupported_network_policy(&without).is_ok());
+}
