@@ -963,7 +963,10 @@ mod tests {
     #[test]
     fn path_qualified_git_ops_are_classified() {
         assert!(is_git_push_command(&["/usr/bin/git".into(), "push".into()]));
-        assert!(is_git_commit_command(&["/usr/bin/git".into(), "commit".into()]));
+        assert!(is_git_commit_command(&[
+            "/usr/bin/git".into(),
+            "commit".into()
+        ]));
         assert!(is_pr_command(&[
             "/usr/local/bin/gh".into(),
             "pr".into(),
