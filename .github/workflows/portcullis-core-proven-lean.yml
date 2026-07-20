@@ -83,6 +83,7 @@ jobs:
             CompartmentProofs \
             DelegationProofs \
             DerivationProofs \
+            SessionCeilingProofs \
             IFCSemilatticeProofs \
             DelegationCategoryProofs \
             GaloisConnectionProofs \
@@ -177,6 +178,7 @@ jobs:
           cat > PrintAxioms.lean <<'EOF'
           import FlowProofs
           import DeclassifyProofs
+          import SessionCeilingProofs
           import DecidePureProofs
           import CompartmentProofs
           import DelegationProofs

@@ -198,11 +198,12 @@ jobs:
           lake build DerivationProofs
           lake build UnwindingNoninterference
           lake build UnwindingIFC
+          lake build SessionCeilingProofs
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
         run: |
-          if grep -rn 'sorry' PortcullisCoreBridge.lean ExposureProofs.lean DecidePureProofs.lean DeclassifyProofs.lean FlowProofs.lean FlowGraphProofs.lean CompartmentProofs.lean DelegationProofs.lean DerivationProofs.lean UnwindingNoninterference.lean UnwindingIFC.lean generated/PortcullisCore/FunsExternal.lean generated/PortcullisCore/CoreFuns.lean; then
+          if grep -rn 'sorry' PortcullisCoreBridge.lean ExposureProofs.lean DecidePureProofs.lean DeclassifyProofs.lean FlowProofs.lean FlowGraphProofs.lean CompartmentProofs.lean DelegationProofs.lean DerivationProofs.lean UnwindingNoninterference.lean UnwindingIFC.lean SessionCeilingProofs.lean generated/PortcullisCore/FunsExternal.lean generated/PortcullisCore/CoreFuns.lean; then
             echo "ERROR: Lean proofs contain 'sorry' — proof has holes."
             exit 1
           fi
