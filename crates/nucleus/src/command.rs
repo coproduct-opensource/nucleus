@@ -930,24 +930,50 @@ fn core_capabilities(caps: &CapabilityLattice) -> CoreCapabilityLattice {
     }
 }
 
+/// Program basename, so a path-qualified binary (`/usr/bin/git`) classifies by
+/// its real operation instead of slipping into the broad `run_bash` bucket and
+/// bypassing a per-operation capability (e.g. `git_push = Never`).
+fn program_basename(prog: &str) -> &str {
+    prog.rsplit('/').next().unwrap_or(prog)
+}
+
 /// Check if the command is a git push operation.
 fn is_git_push_command(args: &[String]) -> bool {
-    args.len() >= 2 && args[0] == "git" && args[1] == "push"
+    args.len() >= 2 && program_basename(&args[0]) == "git" && args[1] == "push"
 }
 
 /// Check if the command is a git commit operation.
 fn is_git_commit_command(args: &[String]) -> bool {
-    args.len() >= 2 && args[0] == "git" && args[1] == "commit"
+    args.len() >= 2 && program_basename(&args[0]) == "git" && args[1] == "commit"
 }
 
 /// Check if the command is a PR creation operation (gh pr create).
 fn is_pr_command(args: &[String]) -> bool {
-    args.len() >= 3 && args[0] == "gh" && args[1] == "pr" && args[2] == "create"
+    args.len() >= 3 && program_basename(&args[0]) == "gh" && args[1] == "pr" && args[2] == "create"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Path-qualified git/gh must classify by operation, not slip into `run_bash`.
+    /// Before the basename fix the three path-qualified asserts RED (`/usr/bin/git
+    /// push` has args[0]="/usr/bin/git" != "git"), so a `git_push=Never` policy with
+    /// `run_bash` open is bypassed by path-qualifying the binary.
+    #[test]
+    fn path_qualified_git_ops_are_classified() {
+        assert!(is_git_push_command(&["/usr/bin/git".into(), "push".into()]));
+        assert!(is_git_commit_command(&["/usr/bin/git".into(), "commit".into()]));
+        assert!(is_pr_command(&[
+            "/usr/local/bin/gh".into(),
+            "pr".into(),
+            "create".into()
+        ]));
+        // Baseline unchanged.
+        assert!(is_git_push_command(&["git".into(), "push".into()]));
+        // No false positive: a different program whose basename isn't `git`.
+        assert!(!is_git_push_command(&["mygit".into(), "push".into()]));
+    }
     use crate::budget::AtomicBudget;
     use crate::sandbox::Sandbox;
     // Sanctioned cross-crate test-only bundle: runs a real `preflight_action` on a
