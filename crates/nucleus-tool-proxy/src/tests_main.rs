@@ -179,7 +179,7 @@ fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
 
 #[test]
 fn test_approval_bundle_populates_registry() {
-    let (pkcs8, _jwk) = make_test_key();
+    let (pkcs8, jwk) = make_test_key();
     let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .";
     let manifest_hash = compute_manifest_hash(spec.as_bytes());
 
@@ -193,7 +193,7 @@ fn test_approval_bundle_populates_registry() {
             .unwrap();
 
     let registry = ApprovalRegistry::default();
-    let result = verify_and_load_approval_bundle(&jws, spec, &registry);
+    let result = verify_and_load_approval_bundle(&jws, spec, &registry, std::slice::from_ref(&jwk));
 
     assert!(result.is_ok(), "verify_and_load failed: {:?}", result);
     assert!(
@@ -209,7 +209,7 @@ fn test_approval_bundle_populates_registry() {
 
 #[test]
 fn test_approval_bundle_wrong_manifest() {
-    let (pkcs8, _jwk) = make_test_key();
+    let (pkcs8, jwk) = make_test_key();
     let manifest_hash = compute_manifest_hash(b"different-manifest");
 
     let jws =
@@ -221,13 +221,18 @@ fn test_approval_bundle_wrong_manifest() {
             .unwrap();
 
     let registry = ApprovalRegistry::default();
-    let result = verify_and_load_approval_bundle(&jws, "actual-manifest-content", &registry);
+    let result = verify_and_load_approval_bundle(
+        &jws,
+        "actual-manifest-content",
+        &registry,
+        std::slice::from_ref(&jwk),
+    );
     assert!(result.is_err(), "should fail with manifest hash mismatch");
 }
 
 #[test]
 fn test_approval_bundle_max_uses() {
-    let (pkcs8, _jwk) = make_test_key();
+    let (pkcs8, jwk) = make_test_key();
     let spec = "spec: limited-use";
     let manifest_hash = compute_manifest_hash(spec.as_bytes());
 
@@ -241,7 +246,7 @@ fn test_approval_bundle_max_uses() {
             .unwrap();
 
     let registry = ApprovalRegistry::default();
-    verify_and_load_approval_bundle(&jws, spec, &registry).unwrap();
+    verify_and_load_approval_bundle(&jws, spec, &registry, std::slice::from_ref(&jwk)).unwrap();
 
     // Should only allow 2 uses
     assert!(registry.consume("write_files"));
@@ -254,8 +259,16 @@ fn test_approval_bundle_max_uses() {
 
 #[test]
 fn test_approval_bundle_invalid_jws() {
+    let (_pkcs8, jwk) = make_test_key();
     let registry = ApprovalRegistry::default();
-    let result = verify_and_load_approval_bundle("not.a.valid.jws", "spec", &registry);
+    // A trusted key IS configured, so this exercises the invalid-JWS rejection
+    // (not the fail-closed-empty path).
+    let result = verify_and_load_approval_bundle(
+        "not.a.valid.jws",
+        "spec",
+        &registry,
+        std::slice::from_ref(&jwk),
+    );
     assert!(result.is_err());
 }
 
@@ -539,4 +552,65 @@ mod ingest_content_address {
             plain.session_taint_ceiling()
         );
     }
+}
+
+/// SECURITY (approval-gate bypass): the approval bundle must be verified against a
+/// PINNED trusted approver key, never the key embedded in the JWS header. Old code
+/// passed `&header.jwk` (attacker-controlled) as the expected key → any
+/// self-signed bundle verified → the human-approval gate was bypassable. RED on
+/// that code; GREEN now (pinned-key + fail-closed).
+#[test]
+fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
+    use nucleus_identity::approval_bundle::{compute_manifest_hash, ApprovalBundleBuilder};
+
+    let spec = "pod: spec yaml";
+    let manifest_hash = compute_manifest_hash(spec.as_bytes());
+
+    // Attacker signs a bundle approving a dangerous op with THEIR OWN key.
+    let (attacker_key, attacker_jwk) = make_test_key();
+    let jws = ApprovalBundleBuilder::new("spiffe://attacker/evil")
+        .approve_operation("run_bash")
+        .manifest_hash(&manifest_hash)
+        .ttl_seconds(3600)
+        .build(&attacker_key)
+        .unwrap();
+
+    // (1) Fail-closed: no trusted approver key configured ⇒ refuse.
+    let approvals = ApprovalRegistry::default();
+    let err = verify_and_load_approval_bundle(&jws, spec, &approvals, &[]).unwrap_err();
+    assert!(
+        format!("{err}").contains("no trusted approver keys"),
+        "empty trusted set must refuse fail-closed, got: {err}"
+    );
+
+    // (2) THE FIX: attacker's self-signed bundle REJECTED when the pinned trusted
+    // approver is a DIFFERENT (legit) key. Old self-trust code ACCEPTED it.
+    let (_legit_key, legit_jwk) = make_test_key();
+    let approvals = ApprovalRegistry::default();
+    assert!(
+        verify_and_load_approval_bundle(&jws, spec, &approvals, std::slice::from_ref(&legit_jwk))
+            .is_err(),
+        "a bundle signed by a non-trusted key must be rejected (no header self-trust)"
+    );
+    assert!(
+        !approvals.consume("run_bash"),
+        "the attacker's operation must NOT be registered"
+    );
+
+    // (3) No false-negative: a bundle whose signer IS the pinned trusted approver verifies.
+    let approvals = ApprovalRegistry::default();
+    assert!(
+        verify_and_load_approval_bundle(
+            &jws,
+            spec,
+            &approvals,
+            std::slice::from_ref(&attacker_jwk)
+        )
+        .is_ok(),
+        "a bundle from the configured trusted approver must verify"
+    );
+    assert!(
+        approvals.consume("run_bash"),
+        "the trusted-signed operation must be registered"
+    );
 }

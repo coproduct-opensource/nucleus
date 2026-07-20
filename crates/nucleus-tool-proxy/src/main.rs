@@ -608,36 +608,74 @@ fn load_approval_bundle(
         }
     };
 
-    verify_and_load_approval_bundle(&jws, spec_contents, approvals)
+    let trusted_keys = parse_approval_trusted_keys();
+    verify_and_load_approval_bundle(&jws, spec_contents, approvals, &trusted_keys)
 }
 
-/// Verify a JWS approval bundle and populate the ApprovalRegistry.
+/// Parse the pinned trusted approver keys from `NUCLEUS_APPROVAL_TRUSTED_KEYS`
+/// (a JSON array of JWKs). Unset / empty / parse-error ⇒ empty set ⇒ approval
+/// bundles are refused fail-closed. Mirrors the `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`
+/// pinned-trust-anchor pattern.
+fn parse_approval_trusted_keys() -> Vec<nucleus_identity::did::JsonWebKey> {
+    match std::env::var("NUCLEUS_APPROVAL_TRUSTED_KEYS") {
+        Ok(val) if !val.trim().is_empty() => {
+            match serde_json::from_str::<Vec<nucleus_identity::did::JsonWebKey>>(&val) {
+                Ok(keys) => keys,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "NUCLEUS_APPROVAL_TRUSTED_KEYS is set but is not a valid JSON array of \
+                         JWKs — treating as empty (approval bundles will be refused fail-closed)"
+                    );
+                    Vec::new()
+                }
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Verify a JWS approval bundle against a PINNED set of trusted approver keys and
+/// populate the ApprovalRegistry.
+///
+/// SECURITY: the bundle is verified against `trusted_keys` (the pinned approver
+/// trust anchors), NOT against the key embedded in the JWS header. Trusting the
+/// header's own JWK would be vacuous — an attacker could sign a bundle with their
+/// own key, embed that key in the header, and self-verify, bypassing the
+/// human-in-the-loop approval gate. Fail-closed: if no trusted approver key is
+/// configured, the bundle is refused.
 fn verify_and_load_approval_bundle(
     jws: &str,
     spec_contents: &str,
     approvals: &ApprovalRegistry,
+    trusted_keys: &[nucleus_identity::did::JsonWebKey],
 ) -> Result<(), ApiError> {
     let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
 
-    // Extract the embedded JWK from the JWS header for self-trust verification.
-    // In production, the expected key would come from a pinned trust store.
-    let header = {
-        let header_b64 = jws.split('.').next().ok_or_else(|| {
-            ApiError::Spec("approval bundle is not a valid JWS (no header)".to_string())
-        })?;
-        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(header_b64)
-            .map_err(|e| ApiError::Spec(format!("approval bundle header decode error: {e}")))?;
-        let header: nucleus_identity::approval_bundle::ApprovalBundleHeader =
-            serde_json::from_slice(&header_bytes)
-                .map_err(|e| ApiError::Spec(format!("approval bundle header parse error: {e}")))?;
-        header
-    };
+    // Fail-closed: never self-trust the bundle's embedded key. Without a pinned
+    // trusted approver key there is no authority to check against, so refuse.
+    if trusted_keys.is_empty() {
+        return Err(ApiError::Spec(
+            "no trusted approver keys configured (set NUCLEUS_APPROVAL_TRUSTED_KEYS) — refusing \
+             to load an approval bundle fail-closed (the embedded JWS key is never self-trusted)"
+                .to_string(),
+        ));
+    }
 
     let verifier = ApprovalBundleVerifier::new();
-    let claims = verifier
-        .verify(jws, &header.jwk, &manifest_hash)
-        .map_err(|e| ApiError::Spec(format!("approval bundle verification failed: {e}")))?;
+    // Verify against each PINNED trusted approver key; accept the first that the
+    // bundle validly matches (correct key + valid signature + manifest binding).
+    // A bundle signed by any non-trusted key is rejected.
+    let claims = trusted_keys
+        .iter()
+        .find_map(|tk| verifier.verify(jws, tk, &manifest_hash).ok())
+        .ok_or_else(|| {
+            ApiError::Spec(
+                "approval bundle signer is not a trusted approver key (or the signature / \
+                 manifest binding is invalid)"
+                    .to_string(),
+            )
+        })?;
 
     // Populate the ApprovalRegistry with the approved operations
     let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
