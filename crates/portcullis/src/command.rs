@@ -246,7 +246,11 @@ impl CommandLattice {
         if let Some(unwrapped) = unwrap_env_prefix(&words) {
             if let Some(first) = unwrapped.first() {
                 let mut u = unwrapped.clone();
-                u[0] = first.rsplit('/').next().unwrap_or(first.as_str()).to_string();
+                u[0] = first
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(first.as_str())
+                    .to_string();
                 if self.blocked_rules.iter().any(|rule| rule_matches(rule, &u)) {
                     return false;
                 }
