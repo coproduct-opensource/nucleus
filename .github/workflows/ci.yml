@@ -87,6 +87,15 @@ jobs:
       - name: Forbid non-strict dalek .verify(...) on trust paths
         run: scripts/check-verify-strict.sh
 
+  sandbox-trusted-base-gate:
+    name: Sandbox trusted-base gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Every pin names a real test; the unpinned set may only shrink
+        run: scripts/check-sandbox-trusted-base.sh
+
   failclosed-verifier-gate:
     name: Fail-closed verifier gate
     runs-on: ubuntu-latest

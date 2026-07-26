@@ -1,0 +1,53 @@
+# sandbox-trusted-base.txt — everything a nucleus pod's isolation boundary rests on.
+#
+# WHY THIS FILE EXISTS
+#
+# The 2026 sandbox-escape literature can report "94.4% of agents are vulnerable"
+# because almost nobody can enumerate what their sandbox trusts. A TCB is only
+# meaningful if it is written down: the classical definition says components
+# belong in it only if they are *specifically designed* to govern security, and
+# that judgement cannot be made about a set nobody has listed.
+#
+# Each line is one component of the guest-to-host boundary, and each carries
+# either the test that pins it or an explicit UNPINNED with a reason.
+# `scripts/check-sandbox-trusted-base.sh` verifies that every named test ACTUALLY
+# EXISTS in the tree — a manifest whose references are not checked is prose — and
+# ratchets the UNPINNED count so the unpinned set can only shrink.
+#
+# FORMAT
+#   <component> | pinned_by:<test fn name>
+#   <component> | UNPINNED:<why, and what would pin it>
+#   <component> | EXTERNAL:<trusted third party we do not and cannot pin>
+#
+# ADDING A LINE IS ADDING TO THE TRUSTED BASE. That is sometimes right, and it is
+# never free — the same accounting as `programmeTrustedBase` in the olog corpus,
+# where adding a gate raises the number rather than lowering it.
+
+# ── The WASI model layer: what guest code can import ────────────────────────
+host-function surface is exactly six                | pinned_by:host_surface_is_exactly_pinned
+declassify is reachable from the empty world        | pinned_by:the_empty_world_still_exposes_declassify
+
+# ── The microVM: what the guest can see of the host ─────────────────────────
+guest-visible device surface (serialized config)    | pinned_by:firecracker_device_surface_is_exactly_pinned
+absent vsock grant attaches no vsock device         | pinned_by:absent_vsock_lowers_to_no_vsock
+guest CIDs are distinct across pods                 | pinned_by:lowering_preserves_distinct_cids
+no net plan attaches zero interfaces                | pinned_by:no_net_plan_lowers_to_zero_network_interfaces
+a net plan attaches exactly one bound tap           | pinned_by:net_plan_lowers_to_exactly_one_bound_tap
+rootfs is read-only under a readonly policy         | pinned_by:readonly_policy_lowers_to_readonly_rootfs
+
+# ── Kernel-enforced confinement ─────────────────────────────────────────────
+seccomp is never silently disabled                  | pinned_by:seccomp_never_silently_disabled
+seccomp default/absent keeps the filter active      | pinned_by:seccomp_default_and_absent_keep_filter_active
+a custom seccomp filter path is pinned              | pinned_by:seccomp_custom_pins_filter_path
+seccomp verification fails closed when it cannot check | pinned_by:seccomp_verifier_fails_closed_when_it_cannot_verify
+netns plan never omits the netns or default-deny    | pinned_by:netns_plan_never_omits_netns_or_default_deny
+
+# ── Not yet pinned. This is the honest part of the file. ────────────────────
+vsock workload API request surface                  | UNPINNED:the guest-to-host channel is the classic escape vector and its method set is not enumerated anywhere. N1.3. Would be pinned by a test enumerating the served request variants, the way the WASI surface is pinned from the linker.
+guest-init mount set and umask                      | UNPINNED:nucleus-guest-init performs mounts and sets umask inside the guest; nothing asserts which mounts exist. Would be pinned by a test over the mount table it constructs.
+cgroup placement is applied before workload start   | UNPINNED:apply_cgroup fails closed off Linux, but nothing asserts ordering relative to workload start on Linux.
+
+# ── Trusted third parties. We depend on these and cannot pin them here. ─────
+Firecracker VMM device emulation                    | EXTERNAL:AWS Firecracker. Five emulated devices by design; CVEs in its virtio implementations are outside our control and inside our boundary.
+KVM / host kernel                                   | EXTERNAL:hardware virtualization is the isolation primitive; a KVM escape defeats everything above.
+the seccomp filter file contents                    | EXTERNAL:the BPF program shipped at the filter path is trusted as written; we pin THAT it is applied, not WHAT it permits.
