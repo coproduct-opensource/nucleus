@@ -400,6 +400,40 @@ impl WebEffect for RealEffects {
     }
 }
 
+/// **The check the effect functions never made.**
+///
+/// A `DischargedBundle` was taken as `_proof` — an unused type-level token — so
+/// it established that "a preflight ran somewhere", never that "a preflight ran
+/// for THIS action". A bundle legitimately earned for a workspace write was
+/// structurally usable to authorise a shell spawn: the confused deputy in its
+/// authorisation form.
+///
+/// Each effect knows which operation IT is, so it checks the bundle's scope
+/// without the `ActionTerm` being threaded through its signature. This is the
+/// binding the 2026 confused-deputy guidance recommends — approved operation,
+/// approved scope — and the runtime form of a macaroon request-hash caveat.
+///
+/// The COMPILE-TIME form would make the bundle generic in the operation
+/// (`DischargedBundle<RunBash>`) so a mismatch could not be written at all. That
+/// is a refactor through every signature and caller; this closes the hole now.
+fn require_scope(
+    proof: &DischargedBundle,
+    op: portcullis_core::Operation,
+    sink: portcullis_core::SinkClass,
+) -> Result<(), String> {
+    if proof.authorizes(op, sink) {
+        Ok(())
+    } else {
+        Err(format!(
+            "discharge scope mismatch: bundle authorises {:?}/{:?}, this effect is {:?}/{:?}",
+            proof.operation(),
+            proof.sink_class(),
+            op,
+            sink
+        ))
+    }
+}
+
 impl ShellEffect for RealEffects {
     fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
         let words = shell_words::split(cmd)
@@ -426,8 +460,14 @@ impl ShellEffect for RealEffects {
         stdin: Option<&[u8]>,
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _proof: &DischargedBundle,
+        proof: &DischargedBundle,
     ) -> io::Result<Output> {
+        require_scope(
+            proof,
+            portcullis_core::Operation::RunBash,
+            portcullis_core::SinkClass::BashExec,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
         // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
         // relocate here losslessly: env_clear + envs(allowlist), piped
         // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
@@ -1605,12 +1645,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn real_run_argv_captures_output_cwd_and_env_isolation() {
-        use portcullis_core::discharge::test_helpers::allowed_bundle;
+        // A shell spawn needs a SHELL-scoped bundle. This test used
+        // `allowed_bundle()` — a WriteFiles/WorkspaceWrite bundle — to authorise
+        // `run_argv`, which is the confused deputy sitting in the test suite:
+        // authority earned for one action presented for another. It passed only
+        // because the bundle was an unused `_proof` token.
+        use portcullis_core::discharge::test_helpers::bundle_for;
+        use portcullis_core::{Operation, SinkClass};
 
         let mut policy = CapabilityLattice::bottom();
         policy.run_bash = CapabilityLevel::Always;
         let fx = production_effects(policy);
-        let bundle = allowed_bundle();
+        let bundle = bundle_for(Operation::RunBash, SinkClass::BashExec);
 
         let dir = tempfile::tempdir().unwrap();
         let want_cwd = dir.path().canonicalize().unwrap();

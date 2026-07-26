@@ -963,6 +963,44 @@ pub mod test_helpers {
         ProvenanceSet, SinkClass,
     };
 
+    /// Produce a bundle scoped to a SPECIFIC operation and sink.
+    ///
+    /// `allowed_bundle` mints a WriteFiles/WorkspaceWrite bundle, and tests were
+    /// using it to authorise shell spawns — the confused deputy, sitting in the
+    /// test suite. Now that a bundle is bound to what it was earned for, a test
+    /// that needs to authorise a shell spawn must mint a shell-scoped bundle.
+    pub fn bundle_for(operation: Operation, sink_class: SinkClass) -> DischargedBundle {
+        let term = ActionTerm {
+            operation,
+            sink_class,
+            source_labels: vec![],
+            artifact_label: crate::IFCLabel {
+                confidentiality: ConfLevel::Internal,
+                integrity: IntegLevel::Trusted,
+                authority: AuthorityLevel::Directive,
+                provenance: ProvenanceSet::SYSTEM,
+                freshness: Freshness {
+                    observed_at: 1000,
+                    ttl_secs: 0,
+                },
+                derivation: DerivationClass::Deterministic,
+            },
+            subject: "test-helper".to_string(),
+            estimated_cost_micro_usd: 0,
+            capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
+            requested_capability: Some(crate::CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![operation],
+                allowed_paths: vec![],
+            }),
+            content_addressed_inputs: Some(vec![]),
+        };
+        match preflight_action(&term) {
+            PreflightResult::Allowed(bundle) => bundle,
+            other => panic!("test_helpers::bundle_for: expected Allowed, got {other:?}"),
+        }
+    }
+
     /// Produce a `DischargedBundle` by running preflight on a known-good term.
     pub fn allowed_bundle() -> DischargedBundle {
         let term = ActionTerm {
