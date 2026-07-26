@@ -285,6 +285,68 @@ mod tests {
     use crate::world_of;
     use portcullis_core::{CapabilityLattice, CapabilityLevel};
 
+    // ── THE HOST SURFACE PIN ────────────────────────────────────────────────
+    //
+    // The complete set of host functions a guest can import. This is the
+    // sandbox's attack surface: everything a guest can reach that is not pure
+    // computation. Nothing asserted it before, so a new `func_wrap` was
+    // invisible — the same shape as an undeclared build target, and the reason
+    // the 2026 escape literature can say "94.4% of agents are vulnerable"
+    // without anyone being able to enumerate what their sandbox trusts.
+    //
+    // Enumerated from the LINKER, not from the source text: a grep for
+    // `func_wrap` would be a second implementation that can disagree with the
+    // thing it describes, and could not see a function linked by any other
+    // route.
+    //
+    // If you are here because this test failed, you added or removed a host
+    // function. That is a change to the sandbox's attack surface. Update the
+    // list deliberately, and say why in the commit.
+    fn linked_surface(world: &WasiWorld) -> std::collections::BTreeSet<String> {
+        let engine = Engine::default();
+        let mut linker: Linker<HostState> = Linker::new(&engine);
+        link_world(&mut linker, world).expect("link_world");
+        let mut store = Store::new(&engine, HostState::new(world.clone()));
+        linker
+            .iter(&mut store)
+            .map(|(module, name, _)| format!("{module}::{name}"))
+            .collect()
+    }
+
+    #[test]
+    fn host_surface_is_exactly_pinned() {
+        let got = linked_surface(&WasiWorld::top());
+        let want: std::collections::BTreeSet<String> = [
+            "host::declassify",
+            "host::exec_run",
+            "host::fs_read",
+            "host::fs_write",
+            "host::http_fetch",
+            "host::http_post",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(got, want, "the guest-reachable host surface changed");
+    }
+
+    #[test]
+    fn the_empty_world_still_exposes_declassify() {
+        // Five of the six host functions are gated on a `WasiGrant` being
+        // present. `declassify` is NOT: it is linked unconditionally, so a guest
+        // granted nothing at all can still call the IFC escape hatch.
+        //
+        // That is defensible — `declassify` only succeeds when a matching
+        // approved rule exists, so the gate is at the rule level rather than the
+        // link level — but it is an asymmetry, and an asymmetry nobody wrote
+        // down is one nobody is deciding to keep. Pinned here so that removing
+        // the gate from another function, or gating this one, is a visible diff.
+        let got = linked_surface(&WasiWorld::bottom());
+        let want: std::collections::BTreeSet<String> =
+            ["host::declassify"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, want, "the ungated host surface changed");
+    }
+
     // Filesystem-only guest (capability tests).
     const FS_GUEST: &str = r#"
         (module

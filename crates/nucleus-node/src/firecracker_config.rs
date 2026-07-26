@@ -409,11 +409,25 @@ pub(crate) fn verify_seccomp_active(pid: u32) -> Result<(), String> {
     Ok(())
 }
 
+// FAIL-CLOSED, corrected 2026-07-26. This returned `Ok(())` — "seccomp is
+// Linux-only; skip verification on other platforms" — which made a VERIFIER
+// report success on a platform where it cannot verify anything.
+//
+// That silently defeated its own caller. main.rs kills the process and aborts
+// the launch when seccomp cannot be confirmed, and its comment says so
+// explicitly: "The previous behavior only logged a warning and continued
+// (fail-open)." The cfg stub reintroduced precisely that, for any non-Linux
+// build, one layer down.
+//
+// THE RULE, worth stating because it generalises: an ENFORCER may refuse when it
+// cannot act, but a VERIFIER may never SUCCEED when it cannot check. "I was
+// unable to look" and "I looked and it was fine" are different answers, and only
+// one of them is safe to return from a function whose caller kills a process on
+// Err.
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
-    // Seccomp is Linux-only; skip verification on other platforms.
-    Ok(())
+    Err("seccomp verification requires Linux; cannot confirm a filter is active".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -609,5 +623,21 @@ mod tests {
             // FAIL here.
             prop_assert_eq!(has_disable, disable);
         }
+    }
+
+    // ── the fail-closed verifier rule ───────────────────────────────────────
+    //
+    // Runs only off Linux, which is exactly where the bug lived: on Linux the
+    // real implementation reads /proc and this stub does not exist. A dev
+    // machine is where a vacuously-successful verifier would have been trusted.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn seccomp_verifier_fails_closed_when_it_cannot_verify() {
+        let r = super::verify_seccomp_active(1);
+        assert!(
+            r.is_err(),
+            "a verifier that cannot check must not report success — its caller \
+             kills the process on Err and continues on Ok"
+        );
     }
 }
