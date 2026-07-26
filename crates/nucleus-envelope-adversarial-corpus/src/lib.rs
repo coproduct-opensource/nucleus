@@ -122,6 +122,19 @@ pub fn corpus() -> Vec<AdversarialCase> {
             expected_kind_substr: "SessionRootNotPod",
             build: cases::c08_session_root_not_pod,
         },
+        AdversarialCase {
+            name: "C09_sibling_graft_confused_deputy",
+            summary: "A peer's edge grafted onto another's chain: the Write edge \
+                      is rewritten to claim the sibling Read call as its parent. \
+                      Every id is INSIDE the session root, so OutsideRoot does not \
+                      fire — this is the confused-deputy class the 2026 multi-agent \
+                      literature reports at 82.4%. Must reject because the parent \
+                      set is covered by the edge's canonical bytes, binding \
+                      delegation to the actual delegator rather than to session \
+                      membership.",
+            expected_kind_substr: "Chain",
+            build: cases::c09_sibling_graft_confused_deputy,
+        },
     ]
 }
 
