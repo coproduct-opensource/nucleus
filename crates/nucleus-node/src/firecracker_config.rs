@@ -30,7 +30,7 @@ use crate::ApiError;
 // Config structs
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Serialize)]
 pub(crate) struct FirecrackerConfig {
     #[serde(rename = "boot-source")]
@@ -46,7 +46,7 @@ pub(crate) struct FirecrackerConfig {
     logger: Option<LoggerConfig>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Serialize)]
 struct BootSource {
     kernel_image_path: String,
@@ -63,7 +63,7 @@ struct DriveConfig {
     is_read_only: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Serialize)]
 struct MachineConfig {
     vcpu_count: i64,
@@ -79,7 +79,7 @@ struct NetworkInterface {
     guest_mac: String,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Serialize)]
 struct LoggerConfig {
     log_path: String,
@@ -638,6 +638,85 @@ mod tests {
             r.is_err(),
             "a verifier that cannot check must not report success — its caller \
              kills the process on Err and continues on Ok"
+        );
+    }
+
+    // ── THE GUEST-VISIBLE DEVICE SURFACE ────────────────────────────────────
+    //
+    // Firecracker deliberately emulates only five devices — virtio-net,
+    // virtio-block, virtio-vsock, a serial console and a minimal keyboard
+    // controller — on the principle that every feature not implemented is
+    // attack surface that does not exist. This test pins which of them WE
+    // attach, because that is the guest-to-host boundary of a nucleus pod.
+    //
+    // Nothing asserted it before. Firecracker's 2026 releases added developer-
+    // preview hotplug for PCI virtio block/pmem/net devices; a future config
+    // field enabling any of those would widen the guest's reach into the host
+    // and, without this test, would land as an ordinary struct change.
+    //
+    // Pinned on the SERIALIZED form — that is what Firecracker actually
+    // consumes — so a field renamed or newly serialized is caught, and a field
+    // that exists in Rust but is never serialized correctly is not counted.
+    #[test]
+    fn firecracker_device_surface_is_exactly_pinned() {
+        // A maximal pod: every optional device present, so nothing is missed by
+        // being skip_serializing_if'd away.
+        let cfg = FirecrackerConfig {
+            boot_source: BootSource {
+                kernel_image_path: "/k".to_string(),
+                boot_args: Some("console=ttyS0".to_string()),
+            },
+            drives: vec![DriveConfig {
+                drive_id: "rootfs".to_string(),
+                path_on_host: "/rootfs.ext4".to_string(),
+                is_root_device: true,
+                is_read_only: true,
+            }],
+            machine_config: MachineConfig {
+                vcpu_count: 1,
+                mem_size_mib: 128,
+                smt: false,
+            },
+            network_interfaces: vec![NetworkInterface {
+                iface_id: "eth0".to_string(),
+                host_dev_name: "tap0".to_string(),
+                guest_mac: "AA:BB:CC:DD:EE:01".to_string(),
+            }],
+            vsock: Some(VsockConfig {
+                guest_cid: 3,
+                uds_path: "/v.sock".to_string(),
+            }),
+            logger: Some(LoggerConfig {
+                log_path: "/log".to_string(),
+                level: "Info".to_string(),
+                show_level: false,
+                show_log_origin: false,
+            }),
+        };
+
+        let value = serde_json::to_value(&cfg).expect("serialize");
+        let got: std::collections::BTreeSet<String> = value
+            .as_object()
+            .expect("config is a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        let want: std::collections::BTreeSet<String> = [
+            "boot-source",
+            "drives",
+            "logger",
+            "machine-config",
+            "network-interfaces",
+            "vsock",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert_eq!(
+            got, want,
+            "the guest-visible device surface changed — a device class was \
+             added to or removed from what Firecracker is told to attach"
         );
     }
 }
