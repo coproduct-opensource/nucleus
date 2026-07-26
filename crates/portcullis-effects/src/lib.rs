@@ -50,6 +50,8 @@
 pub mod async_traits;
 pub mod runtime;
 
+pub mod authority;
+
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -416,7 +418,7 @@ impl WebEffect for RealEffects {
 /// The COMPILE-TIME form would make the bundle generic in the operation
 /// (`DischargedBundle<RunBash>`) so a mismatch could not be written at all. That
 /// is a refactor through every signature and caller; this closes the hole now.
-fn require_scope(
+pub(crate) fn require_scope(
     proof: &DischargedBundle,
     op: portcullis_core::Operation,
     sink: portcullis_core::SinkClass,
