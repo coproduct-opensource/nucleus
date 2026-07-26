@@ -31,6 +31,7 @@ tokio = { workspace = true, features = ["process", "io-util", "time"], optional 
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }

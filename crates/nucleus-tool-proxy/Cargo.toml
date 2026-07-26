@@ -117,7 +117,7 @@ wiremock = "0.6"
 # Direct access to the IFC gate (flow/flow_algebra/SinkClass) for the attack
 # corpus; already transitive via `portcullis`. Dev-only — production graph
 # unchanged. Used by tests/attack_corpus.rs.
-portcullis-core = { path = "../portcullis-core" }
+portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
 
 [lints]
 workspace = true

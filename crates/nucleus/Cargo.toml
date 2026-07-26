@@ -69,6 +69,10 @@ shell-words = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+# test-helpers: `discharge::test_helpers` can obtain a DischargedBundle without
+# discharging it, so it is feature-gated and enabled here only, never in the
+# production dependency above.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", features = ["test-helpers"] }
 tempfile = { workspace = true }
 rust_decimal = { workspace = true }
 # Test-only: a runtime + `#[tokio::test]` for the async `run_with_timeout*`

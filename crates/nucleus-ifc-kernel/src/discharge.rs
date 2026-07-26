@@ -905,9 +905,18 @@ impl PreflightResult {
 /// ```
 /// Test helpers for producing `DischargedBundle`s in tests.
 ///
-/// These run a real `preflight_action` on a known-good term.
-/// Only use in tests — production code must earn its bundle.
+/// These run a real `preflight_action` on a known-good term, so they mint
+/// nothing that was not earned — but a production build has no business being
+/// able to obtain a bundle it did not discharge itself, and "only use in tests"
+/// in a doc comment is a convention, not an enforcement.
+///
+/// GATED behind `test-helpers` (2026-07-26). `#[cfg(test)]` alone cannot work
+/// here: three crates consume this ACROSS the crate boundary, where `cfg(test)`
+/// is false because the kernel is compiled as a dependency rather than as the
+/// crate under test. A feature is the only gate that reaches them, and it keeps
+/// the helper out of any build that does not ask for it by name.
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers {
     use super::*;
     use crate::{

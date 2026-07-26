@@ -19,6 +19,9 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 [features]
 default = []
 serde = ["dep:serde"]
+# Exposes `discharge::test_helpers`, which can obtain a DischargedBundle without
+# the caller discharging it. Enable ONLY in dev-dependencies.
+test-helpers = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
