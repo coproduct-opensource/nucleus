@@ -26,6 +26,7 @@
 # ── The WASI model layer: what guest code can import ────────────────────────
 host-function surface is exactly six                | pinned_by:host_surface_is_exactly_pinned
 declassify is reachable from the empty world        | pinned_by:the_empty_world_still_exposes_declassify
+command output is a LABELLED source                 | pinned_by:exec_output_label_decides_whether_it_can_egress
 
 # ── The microVM: what the guest can see of the host ─────────────────────────
 guest-visible device surface (serialized config)    | pinned_by:firecracker_device_surface_is_exactly_pinned
