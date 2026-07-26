@@ -200,7 +200,7 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
     }
 
-    remount_root_ro();
+    remount_root_ro()?;
 
     exec_proxy(&spec_path);
     Ok(())
@@ -318,19 +318,38 @@ fn mount_fs(source: &str, target: &str, fstype: &str, flags: MsFlags, data: Opti
     }
 }
 
-fn remount_root_ro() {
+/// Remount the guest root read-only, and FAIL THE BOOT if it does not take.
+///
+/// This logged the failure and carried on, so a guest whose rootfs did not go
+/// read-only booted anyway — silently losing the read-only-rootfs posture that
+/// the whole image is built around, with nothing above it any the wiser.
+///
+/// The repo already states the rule for the analogous case one layer up, in
+/// nucleus-node's seccomp verification: "a process whose seccomp filter cannot
+/// be confirmed active is killed and the launch is aborted rather than left
+/// running unconfined. The previous behavior only logged a warning and continued
+/// (fail-open)." The same applies here. The Linux kernel itself panics rather
+/// than continue when it cannot mount root.
+///
+/// Returning `Result` rather than panicking so the caller aborts BEFORE
+/// `exec_proxy` — a controlled refusal with a legible message, not a panic
+/// midway through boot.
+fn remount_root_ro() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        if let Err(err) = mount::<str, str, str, str>(
+        mount::<str, str, str, str>(
             None,
             "/",
             None,
             MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
             None,
-        ) {
-            eprintln!("remount / ro failed: {err}");
-        }
+        )
+        .map_err(|err| {
+            format!("remount / read-only failed: {err} — refusing to start the \
+                     workload rather than run it on a writable rootfs")
+        })?;
     }
+    Ok(())
 }
 
 fn resolve_pod_spec() -> Result<String, String> {
