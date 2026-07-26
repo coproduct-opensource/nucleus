@@ -306,7 +306,7 @@ mod tests {
         let engine = Engine::default();
         let mut linker: Linker<HostState> = Linker::new(&engine);
         link_world(&mut linker, world).expect("link_world");
-        let mut store = Store::new(&engine, HostState::new(world.clone()));
+        let mut store = Store::new(&engine, HostState::new(*world));
         linker
             .iter(&mut store)
             .map(|(module, name, _)| format!("{module}::{name}"))
