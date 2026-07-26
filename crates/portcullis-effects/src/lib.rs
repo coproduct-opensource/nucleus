@@ -517,8 +517,14 @@ impl AsyncShellSpawnEffect for RealEffects {
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        proof: &DischargedBundle,
     ) -> io::Result<Output> {
+        require_scope(
+            proof,
+            portcullis_core::Operation::RunBash,
+            portcullis_core::SinkClass::BashExec,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
         // Mirrors `Executor::run_with_timeout`'s tokio spawn.
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args)
@@ -572,8 +578,14 @@ impl NetEffect for RealEffects {
         headers: &[(String, String)],
         body: Option<Vec<u8>>,
         timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        proof: &DischargedBundle,
     ) -> Result<reqwest::Response, EffectError> {
+        require_scope(
+            proof,
+            portcullis_core::Operation::WebFetch,
+            portcullis_core::SinkClass::HTTPEgress,
+        )
+        .map_err(EffectError::Io)?;
         // The relocated agent-egress send: build the request from the caller's
         // pieces on the caller's configured client, then perform the one raw
         // `reqwest …send()` that used to live in the tool-proxy handlers. This
@@ -1747,6 +1759,41 @@ mod tests {
     // net analogue of `run_argv_denied_when_policy_never`. `bottom()` has both
     // `web_fetch` and `web_search` == Never, so both discriminants short-circuit
     // to `PolicyDenied` without touching the wire (no runtime I/O in this test).
+    /// `require_scope` refuses a bundle earned for a different action.
+    ///
+    /// The wiring at each effect is a one-liner mirroring the shell spawn, whose
+    /// rejection is bite-verified end to end. This covers the decision itself
+    /// for every operation currently enforced, including the paths a unit test
+    /// cannot reach: `NetEffect::fetch` on `RealEffects` sits behind the policy
+    /// wrapper, which short-circuits before delegating, so exercising it would
+    /// need a permissive policy and a live request.
+    ///
+    /// arXiv 2606.28679, "Capability Gates Are Not Authorization", names this
+    /// exact failure: holding a capability is not the same as being authorised
+    /// for the action at hand, and an unbound token is how an adversary steers
+    /// an agent's egress at a target the principal never approved.
+    #[test]
+    fn require_scope_refuses_a_bundle_earned_for_another_action() {
+        use portcullis_core::discharge::test_helpers::bundle_for;
+        use portcullis_core::{Operation, SinkClass};
+
+        let shell = bundle_for(Operation::RunBash, SinkClass::BashExec);
+        let egress = bundle_for(Operation::WebFetch, SinkClass::HTTPEgress);
+
+        // Each bundle authorises its own action.
+        assert!(require_scope(&shell, Operation::RunBash, SinkClass::BashExec).is_ok());
+        assert!(require_scope(&egress, Operation::WebFetch, SinkClass::HTTPEgress).is_ok());
+
+        // Neither authorises the other's — the confused deputy, refused.
+        let err = require_scope(&shell, Operation::WebFetch, SinkClass::HTTPEgress)
+            .expect_err("a shell bundle must not authorise http egress");
+        assert!(err.contains("scope mismatch"), "unexpected error: {err}");
+
+        let err = require_scope(&egress, Operation::RunBash, SinkClass::BashExec)
+            .expect_err("an egress bundle must not authorise a shell spawn");
+        assert!(err.contains("scope mismatch"), "unexpected error: {err}");
+    }
+
     #[cfg(feature = "net")]
     #[tokio::test]
     async fn net_fetch_denied_when_policy_never() {
