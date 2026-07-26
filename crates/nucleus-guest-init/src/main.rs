@@ -345,8 +345,10 @@ fn remount_root_ro() -> Result<(), String> {
             None,
         )
         .map_err(|err| {
-            format!("remount / read-only failed: {err} — refusing to start the \
-                     workload rather than run it on a writable rootfs")
+            format!(
+                "remount / read-only failed: {err} — refusing to start the \
+                     workload rather than run it on a writable rootfs"
+            )
         })?;
     }
     Ok(())

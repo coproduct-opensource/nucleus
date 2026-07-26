@@ -982,7 +982,20 @@ mod tests {
     // Sanctioned cross-crate test-only bundle: runs a real `preflight_action` on a
     // known-good term. This is the only supported way for out-of-module tests to
     // obtain a sealed `DischargedBundle` (the constructor is private to discharge).
-    use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
+    use nucleus_ifc_kernel::discharge::test_helpers::bundle_for;
+    use nucleus_ifc_kernel::{Operation, SinkClass};
+
+    /// Every test in this module drives the SHELL executor, so its bundle must be
+    /// one earned for running a shell — not the generic write-scoped helper.
+    ///
+    /// This is the point of the scope check rather than an obstacle to it: a
+    /// bundle discharged for WriteFiles/WorkspaceWrite does not authorise
+    /// RunBash/BashExec, and `require_scope` refuses it. Before the check existed
+    /// these tests passed with a bundle earned for a different action entirely,
+    /// which is exactly the confused-deputy shape the check closes.
+    fn allowed_bundle() -> nucleus_ifc_kernel::discharge::DischargedBundle {
+        bundle_for(Operation::RunBash, SinkClass::BashExec)
+    }
     use portcullis::kernel::Kernel;
     use portcullis::BudgetLattice;
     use rust_decimal::Decimal;

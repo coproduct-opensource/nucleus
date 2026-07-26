@@ -49,7 +49,14 @@ vsock request surface cannot grow silently          | pinned_by:guest_request_su
 guest command frames are length-bounded             | pinned_by:oversized_frame_rejected_before_utf8_decode
 an unknown guest command is rejected, not executed  | pinned_by:unknown_command_is_rejected_not_executed
 guest pseudo-filesystems are nosuid/nodev/noexec    | pinned_by:guest_mounts_are_hardened
-cgroup placement is applied before workload start   | UNPINNED:STILL NOT, but the fix is now half-built. Firecracker is spawned with `--config-file`, which boots the VM immediately, and `apply_cgroup` runs afterwards against the resulting pid — the guest executes for a window before its limits exist. `jailer_args` now lowers the jailer argv that closes this by construction (cgroup created and pid written BEFORE exec), with the ordering invariant pinned by jailer_applies_every_cgroup_limit_before_exec. What remains is the CUTOVER: every path in the config is a host absolute path and must move inside the chroot. That needs a Linux host running real Firecracker, so it is not pinned here.
+cgroup placement is applied before workload start   | UNPINNED:The CUTOVER IS DONE — the launch path now spawns the jailer (`--firecracker-jailer`, default true), which creates the cgroup and writes its pid into it BEFORE exec, and the post-spawn `apply_cgroup` is skipped when jailed. Every piece is unit-tested on Linux: the argv (jailer_applies_every_cgroup_limit_before_exec), the in-jail path rewriting (every_jailed_config_path_is_brought_into_the_jail), and the jail's real contents on a real filesystem (prepare_jail_creates_every_path_the_jailed_config_names). It stays UNPINNED because NOTHING IN-TREE RUNS A REAL FIRECRACKER: no test observes a booted guest confined by a cgroup that existed before it. Pinning needs an integration test on a Linux host with KVM. Until then this is a construction argument, not a measurement — and a construction argument is exactly what this column is not for.
+
+# ── The jail. Added to the trusted base BY the cutover above ────────────────
+writable jail resources are linked, never copied    | pinned_by:a_drive_the_guest_can_write_is_never_copyable
+every path a jailed config names is in the jail     | pinned_by:prepare_jail_creates_every_path_the_jailed_config_names
+in-jail names never resolve outside the jail root   | pinned_by:host_path_never_escapes_the_jail_root
+the jail layout matches the jailer's own convention | pinned_by:jail_layout_matches_the_jailers_own_convention
+waiting for seccomp never becomes succeeding        | pinned_by:waiting_for_seccomp_still_fails_closed
 
 # ── Trusted third parties. We depend on these and cannot pin them here. ─────
 Firecracker VMM device emulation                    | EXTERNAL:AWS Firecracker. Five emulated devices by design; CVEs in its virtio implementations are outside our control and inside our boundary.
