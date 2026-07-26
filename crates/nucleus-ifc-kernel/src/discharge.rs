@@ -656,12 +656,24 @@ pub struct DischargedBundle {
     pub in_scope_with_task: Discharged<InScopeWithTask>,
     /// Every action input is content-addressed (present on the term).
     pub inputs_authorized: Discharged<InputsAuthorized>,
+    /// The operation this bundle was discharged FOR.
+    ///
+    /// Without this the bundle proved only "a preflight ran somewhere", never
+    /// "a preflight ran for THIS action" — the effect functions take it as
+    /// `_proof`, an unused type-level token, so a bundle earned for a workspace
+    /// write was structurally usable to authorise a shell spawn. That is the
+    /// confused deputy, and the standard remedy is to bind the token to the
+    /// approved operation and scope (the macaroon "request-hash caveat"
+    /// pattern).
+    operation: Operation,
+    /// The sink class this bundle was discharged FOR.
+    sink_class: SinkClass,
     _seal: Seal,
 }
 
 impl DischargedBundle {
     /// Private constructor — only callable from within this module.
-    fn new() -> Self {
+    fn new(operation: Operation, sink_class: SinkClass) -> Self {
         Self {
             integrity_gate: Discharged::mint(),
             path_allowed: Discharged::mint(),
@@ -671,8 +683,35 @@ impl DischargedBundle {
             within_delegation_ceiling: Discharged::mint(),
             in_scope_with_task: Discharged::mint(),
             inputs_authorized: Discharged::mint(),
+            operation,
+            sink_class,
             _seal: Seal,
         }
+    }
+
+    /// The operation this bundle authorises. Read-only: the scope is fixed at
+    /// discharge and cannot be widened afterwards.
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    /// The sink class this bundle authorises.
+    pub fn sink_class(&self) -> SinkClass {
+        self.sink_class
+    }
+
+    /// **Does this bundle authorise `op` at `sink`?**
+    ///
+    /// The check the effect functions never made. Each effect knows which
+    /// operation IT is, so it can ask this without needing the original
+    /// `ActionTerm` threaded through its signature — the reason the binding is
+    /// on (operation, sink_class) rather than a full term hash. It is the
+    /// binding the 2026 confused-deputy guidance recommends: bind the token to
+    /// the approved operation and scope, so a bundle earned for one action
+    /// cannot be presented for another.
+    #[must_use]
+    pub fn authorizes(&self, op: Operation, sink: SinkClass) -> bool {
+        self.operation == op && self.sink_class == sink
     }
 }
 
@@ -1125,7 +1164,7 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
         };
     }
 
-    PreflightResult::Allowed(DischargedBundle::new())
+    PreflightResult::Allowed(DischargedBundle::new(term.operation, term.sink_class))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1232,6 +1271,70 @@ fn sink_requires_verified_derivation(sink: SinkClass) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A bundle earned for one action does not authorise another.**
+    ///
+    /// This is the confused deputy in its authorisation form. The effect
+    /// functions in `portcullis-effects` take the bundle as `_proof` — an
+    /// UNUSED type-level token — so before this the bundle proved only that
+    /// "a preflight ran somewhere", never that "a preflight ran for THIS
+    /// action". A bundle legitimately earned for a workspace write was
+    /// structurally usable to authorise a shell spawn.
+    ///
+    /// The 2026 guidance on confused-deputy prevention is to bind the token to
+    /// the approved operation and scope — the macaroon "request-hash caveat"
+    /// pattern — so that authority cannot be exercised for an action the
+    /// principal never approved.
+    #[test]
+    fn a_bundle_does_not_authorise_a_different_action() {
+        let term = ActionTerm {
+            operation: Operation::WriteFiles,
+            sink_class: SinkClass::WorkspaceWrite,
+            source_labels: vec![],
+            artifact_label: crate::IFCLabel {
+                confidentiality: ConfLevel::Internal,
+                integrity: IntegLevel::Trusted,
+                authority: AuthorityLevel::Directive,
+                provenance: ProvenanceSet::SYSTEM,
+                freshness: Freshness {
+                    observed_at: 1000,
+                    ttl_secs: 0,
+                },
+                derivation: DerivationClass::Deterministic,
+            },
+            subject: "scope-binding-test".to_string(),
+            estimated_cost_micro_usd: 0,
+            capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
+            requested_capability: Some(crate::CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![Operation::WriteFiles],
+                allowed_paths: vec![],
+            }),
+            content_addressed_inputs: Some(vec![]),
+        };
+        let bundle = match preflight_action(&term) {
+            PreflightResult::Allowed(b) => b,
+            other => panic!("expected Allowed, got {other:?}"),
+        };
+
+        // It authorises what it was earned for.
+        assert!(
+            bundle.authorizes(Operation::WriteFiles, SinkClass::WorkspaceWrite),
+            "a bundle must authorise the action it was discharged for"
+        );
+
+        // It does NOT authorise a different operation at a different sink —
+        // the escalation a confused deputy performs.
+        assert!(
+            !bundle.authorizes(Operation::RunBash, SinkClass::WorkspaceWrite),
+            "a workspace-write bundle must not authorise a shell spawn"
+        );
+        assert!(
+            !bundle.authorizes(Operation::WriteFiles, SinkClass::HTTPEgress),
+            "a workspace-write bundle must not authorise http egress"
+        );
+    }
+
     use super::*;
     use crate::{AuthorityLevel, ConfLevel, DerivationClass, Freshness, ProvenanceSet};
 
