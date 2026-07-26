@@ -96,6 +96,108 @@ struct VsockConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Jailer lowering (pure seam — see the module note on why this is not gated)
+// ---------------------------------------------------------------------------
+
+/// Build the `jailer` argv that launches Firecracker under cgroups, a chroot and
+/// a dropped uid/gid.
+///
+/// WHY THE JAILER AT ALL. Today Firecracker is spawned directly with
+/// `--config-file`, which boots the VM IMMEDIATELY, and `apply_cgroup` then runs
+/// against the resulting pid. The guest therefore executes for a window before
+/// its cpu/memory limits exist. The jailer closes that by construction: it
+/// creates the cgroup, writes its own pid into it, sets up the chroot and mount
+/// namespace, drops privileges, and only THEN `exec()`s Firecracker. Cgroups
+/// cannot be late if they are established before the VMM exists.
+///
+/// It also buys three things we do not have: a chroot with `pivot_root` into a
+/// fresh mount namespace, an unprivileged VMM process, and — because the jailer
+/// copies the exec-file into the jail — no shared memory between Firecracker
+/// processes.
+///
+/// THIS FUNCTION IS THE ARGV ONLY, AND THAT IS DELIBERATE. The cutover is a
+/// launch-path change for every pod and cannot be exercised without a Linux host
+/// running real Firecracker, which is not available where this was written. The
+/// argv is the part that is easy to get subtly wrong and easy to test, so it
+/// lands first with its invariants pinned; flipping the spawn to use it is a
+/// separate, reviewable change that needs an integration test behind it.
+///
+/// STILL OWED BY THAT CUTOVER, listed so the remaining work is not a surprise:
+/// every path in `FirecrackerConfig` is a HOST absolute path — `kernel_image_path`,
+/// each drive's `path_on_host`, the vsock `uds_path` — and under a chroot they
+/// must be relative to the jail, with the kernel and rootfs hard-linked or
+/// bind-mounted in and the vsock socket created inside. `--netns` also replaces
+/// the current `ip netns exec` wrapper, so the netns plumbing moves too.
+/// Everything the jailer needs, as one value. A struct rather than eight
+/// parameters because the ordering of eight strings is exactly the kind of thing
+/// a caller gets wrong silently.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct JailerPlan<'a> {
+    /// The Firecracker binary the jailer copies into the jail and execs.
+    pub firecracker_path: &'a str,
+    /// Pod id — becomes the jail directory and the cgroup leaf.
+    pub pod_id: &'a str,
+    /// Base under which the jailer builds `<base>/<exec>/<id>/root`.
+    pub chroot_base: &'a str,
+    /// Unprivileged uid the VMM drops to.
+    pub uid: u32,
+    /// Unprivileged gid the VMM drops to.
+    pub gid: u32,
+    /// Network namespace path, replacing the `ip netns exec` wrapper.
+    pub netns: Option<&'a str>,
+    /// Limits applied BEFORE exec — the whole reason for the jailer.
+    pub cgroup: Option<&'a nucleus_spec::CgroupSpec>,
+    /// Config path as seen from INSIDE the jail.
+    pub config_file_in_jail: &'a str,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
+    let JailerPlan {
+        firecracker_path,
+        pod_id,
+        chroot_base,
+        uid,
+        gid,
+        netns,
+        cgroup,
+        config_file_in_jail,
+    } = *plan;
+    let mut args: Vec<String> = vec![
+        "--id".to_string(),
+        pod_id.to_string(),
+        "--exec-file".to_string(),
+        firecracker_path.to_string(),
+        "--chroot-base-dir".to_string(),
+        chroot_base.to_string(),
+        "--uid".to_string(),
+        uid.to_string(),
+        "--gid".to_string(),
+        gid.to_string(),
+    ];
+
+    if let Some(ns) = netns {
+        args.push("--netns".to_string());
+        args.push(ns.to_string());
+    }
+
+    // Each setting becomes a `--cgroup file=value`, which the jailer applies
+    // BEFORE exec. This is the whole point: the limit exists before the guest.
+    if let Some(spec) = cgroup {
+        for setting in &spec.settings {
+            args.push("--cgroup".to_string());
+            args.push(format!("{}={}", setting.file, setting.value));
+        }
+    }
+
+    // Everything after the separator is Firecracker's own argv.
+    args.push("--".to_string());
+    args.push("--config-file".to_string());
+    args.push(config_file_in_jail.to_string());
+    args
+}
+
+// ---------------------------------------------------------------------------
 // FirecrackerConfig construction
 // ---------------------------------------------------------------------------
 
@@ -657,6 +759,124 @@ mod tests {
     // Pinned on the SERIALIZED form — that is what Firecracker actually
     // consumes — so a field renamed or newly serialized is caught, and a field
     // that exists in Rust but is never serialized correctly is not counted.
+    // ── Jailer argv invariants ───────────────────────────────────────────────
+    //
+    // The reason the jailer is worth adopting is an ORDERING property: cgroups
+    // are established before the VMM exists, so the guest cannot run unlimited.
+    // These pin the argv that delivers it.
+
+    fn sample_cgroup() -> nucleus_spec::CgroupSpec {
+        nucleus_spec::CgroupSpec {
+            path: std::path::PathBuf::from("/sys/fs/cgroup/nucleus/pod-1"),
+            settings: vec![
+                nucleus_spec::CgroupSetting {
+                    file: "cpu.max".to_string(),
+                    value: "50000 100000".to_string(),
+                },
+                nucleus_spec::CgroupSetting {
+                    file: "memory.max".to_string(),
+                    value: "268435456".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn jailer_applies_every_cgroup_limit_before_exec() {
+        let cg = sample_cgroup();
+        let args = jailer_args(&JailerPlan {
+            firecracker_path: "/usr/bin/firecracker",
+            pod_id: "pod-1",
+            chroot_base: "/srv/jail",
+            uid: 1000,
+            gid: 1000,
+            netns: Some("/var/run/netns/ns-pod-1"),
+            cgroup: Some(&cg),
+            config_file_in_jail: "/config.json",
+        });
+
+        // Every declared limit reaches the jailer as a --cgroup pair.
+        for setting in &cg.settings {
+            let expected = format!("{}={}", setting.file, setting.value);
+            assert!(
+                args.contains(&expected),
+                "cgroup limit {expected} missing from jailer argv: {args:?}"
+            );
+        }
+
+        // And every --cgroup appears BEFORE the `--` separator, which is what
+        // makes it apply prior to exec rather than after boot.
+        let sep = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("separator present");
+        for (i, a) in args.iter().enumerate() {
+            if a == "--cgroup" {
+                assert!(i < sep, "a --cgroup landed after the separator: {args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn jailer_drops_privileges_and_passes_the_netns() {
+        let args = jailer_args(&JailerPlan {
+            firecracker_path: "/usr/bin/firecracker",
+            pod_id: "pod-1",
+            chroot_base: "/srv/jail",
+            uid: 1000,
+            gid: 1000,
+            netns: Some("/var/run/netns/ns-pod-1"),
+            cgroup: None,
+            config_file_in_jail: "/config.json",
+        });
+        let pair = |flag: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        assert_eq!(pair("--exec-file").as_deref(), Some("/usr/bin/firecracker"));
+        assert_eq!(pair("--id").as_deref(), Some("pod-1"));
+        assert_eq!(pair("--netns").as_deref(), Some("/var/run/netns/ns-pod-1"));
+
+        // A jailed VMM must not run as root. Asserted rather than assumed: the
+        // privilege drop is one of the three things the jailer buys us.
+        assert_eq!(pair("--uid").as_deref(), Some("1000"));
+        assert_eq!(pair("--gid").as_deref(), Some("1000"));
+        assert_ne!(
+            pair("--uid").as_deref(),
+            Some("0"),
+            "the VMM must not run as root"
+        );
+    }
+
+    #[test]
+    fn firecracker_argv_stays_behind_the_separator() {
+        let args = jailer_args(&JailerPlan {
+            firecracker_path: "/usr/bin/firecracker",
+            pod_id: "pod-1",
+            chroot_base: "/srv/jail",
+            uid: 1000,
+            gid: 1000,
+            netns: None,
+            cgroup: Some(&sample_cgroup()),
+            config_file_in_jail: "/config.json",
+        });
+        let sep = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("separator present");
+        // The config file is Firecracker's argument, not the jailer's — passing
+        // it before the separator would make the jailer reject it.
+        let cfg = args
+            .iter()
+            .position(|a| a == "--config-file")
+            .expect("config-file present");
+        assert!(
+            cfg > sep,
+            "--config-file must follow the separator: {args:?}"
+        );
+    }
+
     #[test]
     fn firecracker_device_surface_is_exactly_pinned() {
         // A maximal pod: every optional device present, so nothing is missed by
