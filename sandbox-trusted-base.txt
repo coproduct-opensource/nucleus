@@ -48,7 +48,7 @@ vsock workload API request surface                  | pinned_by:guest_request_su
 vsock request surface cannot grow silently          | pinned_by:guest_request_surface_is_exhaustive
 guest command frames are length-bounded             | pinned_by:oversized_frame_rejected_before_utf8_decode
 an unknown guest command is rejected, not executed  | pinned_by:unknown_command_is_rejected_not_executed
-guest-init mount set and umask                      | UNPINNED:nucleus-guest-init performs mounts and sets umask inside the guest; nothing asserts which mounts exist. Would be pinned by a test over the mount table it constructs.
+guest pseudo-filesystems are nosuid/nodev/noexec    | pinned_by:guest_mounts_are_hardened
 cgroup placement is applied before workload start   | UNPINNED:apply_cgroup fails closed off Linux, but nothing asserts ordering relative to workload start on Linux.
 
 # ── Trusted third parties. We depend on these and cannot pin them here. ─────
