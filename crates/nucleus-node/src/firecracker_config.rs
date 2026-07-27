@@ -415,8 +415,32 @@ pub(crate) struct JailerPlan<'a> {
     pub netns: Option<&'a str>,
     /// Limits applied BEFORE exec — the whole reason for the jailer.
     pub cgroup: Option<&'a nucleus_spec::CgroupSpec>,
+    /// Which cgroup hierarchy the host uses. See `detect_cgroup_version`.
+    pub cgroup_version: u8,
     /// Config path as seen from INSIDE the jail.
     pub config_file_in_jail: &'a str,
+}
+
+/// Which cgroup hierarchy this host presents: `2` for the unified v2 tree, else `1`.
+///
+/// `/sys/fs/cgroup/cgroup.controllers` exists if and only if the unified v2
+/// hierarchy is mounted there — it is the file the kernel documents for exactly
+/// this test, and it is cheaper and more direct than parsing `/proc/mounts`.
+///
+/// Defaults to 2 when the path cannot be read at all. That is the deliberate
+/// direction: v2 is the modern default, and being wrong toward v2 fails loudly
+/// at launch (the jailer refuses) rather than silently placing a workload in a
+/// hierarchy nobody is enforcing.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn detect_cgroup_version() -> u8 {
+    if std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
+        return 2;
+    }
+    // A v1 host has per-controller directories and no unified controllers file.
+    if std::path::Path::new("/sys/fs/cgroup/cpu").is_dir() {
+        return 1;
+    }
+    2
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -429,6 +453,7 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
         gid,
         netns,
         cgroup,
+        cgroup_version,
         config_file_in_jail,
     } = *plan;
     let mut args: Vec<String> = vec![
@@ -447,6 +472,26 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
     if let Some(ns) = netns {
         args.push("--netns".to_string());
         args.push(ns.to_string());
+    }
+
+    // THE JAILER DEFAULTS TO CGROUP V1, AND MODERN LINUX IS V2-ONLY.
+    //
+    // Found by driving the real jailer (v1.16.1) with this exact argv against a
+    // `cgroup2fs` host: it refuses outright with
+    //
+    //     Error: CgroupHierarchyMissing("No hierarchy found for this cgroup version.")
+    //
+    // and no VM is launched. `--cgroup-version` is documented as
+    // `[default: "1"]`, the unified v2 hierarchy has been the distro default
+    // since ~2021, and nothing in the cutover passed this flag — so every pod
+    // carrying a cgroup spec would have failed to start on any current host.
+    //
+    // Emitted only alongside `--cgroup`, because that is the only path the
+    // jailer needs a hierarchy for: with no cgroup settings it launches fine on
+    // a v2 host regardless (verified the same way).
+    if cgroup.is_some() {
+        args.push("--cgroup-version".to_string());
+        args.push(cgroup_version.to_string());
     }
 
     // Each setting becomes a `--cgroup file=value`, which the jailer applies
@@ -1512,6 +1557,70 @@ mod tests {
         }
     }
 
+    /// THE FLAG THAT WAS MISSING, and what it cost.
+    ///
+    /// The jailer's `--cgroup-version` is documented `[default: "1"]`, and the
+    /// unified v2 hierarchy has been the Linux default since ~2021. The cutover
+    /// never passed it. Driving the REAL jailer (v1.16.1) with the argv this
+    /// function emits, against a `cgroup2fs` host, produced:
+    ///
+    ///     Error: CgroupHierarchyMissing("No hierarchy found for this cgroup version.")
+    ///
+    /// and no VM launched. Every pod carrying a cgroup spec would have failed to
+    /// start on any current host — the exact "untested launch path" risk the
+    /// cutover was shipped with. Adding `--cgroup-version 2` made the same run
+    /// succeed, with the pod cgroup created and populated before exec.
+    #[test]
+    fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
+        let spec: nucleus_spec::CgroupSpec = serde_json::from_str(
+            r#"{"path":"/sys/fs/cgroup/nucleus","settings":[{"file":"cpu.weight","value":"42"}]}"#,
+        )
+        .expect("cgroup spec");
+        let args = jailer_args(&JailerPlan {
+            firecracker_path: "/usr/bin/firecracker",
+            pod_id: "pod-1",
+            chroot_base: "/srv/jailer",
+            uid: 123,
+            gid: 100,
+            netns: None,
+            cgroup: Some(&spec),
+            cgroup_version: 2,
+            config_file_in_jail: "/config.json",
+        });
+        let vpos = args.iter().position(|a| a == "--cgroup-version").expect(
+            "a cgroup request must declare the hierarchy version; the \
+                     jailer defaults to v1 and refuses on a v2 host",
+        );
+        assert_eq!(args[vpos + 1], "2");
+        let cpos = args.iter().position(|a| a == "--cgroup").expect("--cgroup");
+        assert!(
+            vpos < cpos,
+            "the version must be declared before the settings it applies to"
+        );
+        let sep = args.iter().position(|a| a == "--").expect("separator");
+        assert!(cpos < sep, "cgroup args belong to the JAILER, before `--`");
+    }
+
+    /// With no cgroup spec there is no hierarchy to find, and the jailer launches
+    /// on a v2 host without the flag — verified against the real binary. So the
+    /// flag is emitted only where it is needed, and its absence here is a
+    /// decision rather than an oversight.
+    #[test]
+    fn no_cgroup_request_means_no_version_flag() {
+        let args = jailer_args(&JailerPlan {
+            firecracker_path: "/usr/bin/firecracker",
+            pod_id: "pod-1",
+            chroot_base: "/srv/jailer",
+            uid: 123,
+            gid: 100,
+            netns: None,
+            cgroup: None,
+            cgroup_version: 2,
+            config_file_in_jail: "/config.json",
+        });
+        assert!(!args.iter().any(|a| a == "--cgroup-version"));
+    }
+
     #[test]
     fn jailer_applies_every_cgroup_limit_before_exec() {
         let cg = sample_cgroup();
@@ -1523,6 +1632,7 @@ mod tests {
             gid: 1000,
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: Some(&cg),
+            cgroup_version: 2,
             config_file_in_jail: "/config.json",
         });
 
@@ -1558,6 +1668,7 @@ mod tests {
             gid: 1000,
             netns: Some("/var/run/netns/ns-pod-1"),
             cgroup: None,
+            cgroup_version: 2,
             config_file_in_jail: "/config.json",
         });
         let pair = |flag: &str| -> Option<String> {
@@ -1590,6 +1701,7 @@ mod tests {
             gid: 1000,
             netns: None,
             cgroup: Some(&sample_cgroup()),
+            cgroup_version: 2,
             config_file_in_jail: "/config.json",
         });
         let sep = args

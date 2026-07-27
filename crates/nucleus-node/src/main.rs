@@ -2155,6 +2155,7 @@ async fn spawn_firecracker_pod(
                 gid: state.jailer_gid,
                 netns: netns_path.as_deref(),
                 cgroup: spec.spec.cgroup.as_ref(),
+                cgroup_version: firecracker_config::detect_cgroup_version(),
                 config_file_in_jail: firecracker_config::in_jail::CONFIG,
             };
             let mut cmd = Command::new(&state.jailer_path);
