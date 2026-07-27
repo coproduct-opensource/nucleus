@@ -46,8 +46,8 @@ const WASM_JS_SHIM: &str = include_str!("../../../sdks/verifier-js/pkg/nucleus_v
 const WASM_BINARY: &[u8] =
     include_bytes!("../../../sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm");
 
-/// Strict CSP for the landing page. No `unsafe-inline` per project
-/// CLAUDE.md — only same-origin resources, no remote scripts/styles,
+/// Strict CSP for the landing page. No `unsafe-inline` per the project
+/// guidelines — only same-origin resources, no remote scripts/styles,
 /// no inline JS.
 const LANDING_CSP: &str = "default-src 'self'; \
                            script-src 'self'; \

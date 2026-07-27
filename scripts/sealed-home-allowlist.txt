@@ -1,0 +1,53 @@
+# North Star sealed-home INTEGRITY allowlist (terminal-push B7).
+#
+# The exact TRIMMED source lines where a raw effect primitive (`Command::new`,
+# reqwest `.send()`) legitimately lives inside the sealed home — every one is a
+# method of `RealEffects` in crates/portcullis-effects/src/lib.rs, the crate's
+# SOLE I/O-capable type (unconstructable outside the crate; only ever handed out
+# wrapped in `PolicyEnforced`, which checks the capability policy on every call).
+# check-sealed-home.sh FAILS on any `Command::new` / `.send()` in
+# portcullis-effects that is NOT one of these lines — i.e. a new helper, a new
+# fn, or a second sink that would bypass the sealed `_proof` gate.
+#
+# Format: exact TRIMMED source line (leading/trailing whitespace removed).
+# `file:<path>` whole-file exemptions are supported by the gate but intentionally
+# UNUSED here — the sealed home is scanned in full.
+#
+# ── THE _proof-GATED SEALED-FN SITES (the relocated agent effect path) ─────────
+# These three fns take a trailing `_proof: &DischargedBundle`: they are reached
+# ONLY past a minted 8-witness bundle (`preflight_action`) and the PolicyEnforced
+# gate. They ARE the sealed home the migration built (bricks B1/B2/B3/B5).
+#
+# ShellEffect::run_argv for RealEffects — the relocated SYNC agent spawn (B1/B2).
+# (was Executor::spawn_checked's raw std::process::Command::new).
+let mut cmd = Command::new(program);
+#
+# AsyncShellSpawnEffect::run_argv_async for RealEffects — the relocated ASYNC
+# agent spawn (B1/B3) (was Executor::run_with_timeout*'s raw tokio spawn).
+let mut cmd = tokio::process::Command::new(program);
+#
+# NetEffect::fetch for RealEffects — the relocated agent NET egress (B5): the one
+# raw reqwest `RequestBuilder::send()` on the effect path (was the tool-proxy
+# web_fetch/web_search handlers' raw send). This is the ONLY `.send()` permitted
+# anywhere in the sealed home.
+.send()
+#
+# ── LEGACY POLICY-GATED RealEffects METHODS (pre-existing sealed-home lines) ───
+# Also methods of RealEffects, so also inside the sealed home and behind the
+# PolicyEnforced capability gate — but NOT part of the relocated `_proof`-gated
+# agent path. They are the crate's convenience `ShellEffect::run` (raw-string
+# bash) and `GitEffect` impls, present on main before B7. Allowlisted as the
+# floor so the gate is green at the sealed home as it stands; the gate still
+# BITES any NEW raw primitive added outside these exact lines.
+#
+# ShellEffect::run for RealEffects — raw-string bash convenience spawn.
+let output = std::process::Command::new(&words[0])
+#
+# GitEffect::commit for RealEffects — `git add -u`.
+let add = std::process::Command::new("git")
+#
+# GitEffect::commit for RealEffects — `git commit -m`.
+let commit = std::process::Command::new("git")
+#
+# GitEffect::push for RealEffects — `git push <remote> <branch>`.
+let output = std::process::Command::new("git")

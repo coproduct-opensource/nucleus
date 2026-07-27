@@ -400,7 +400,7 @@ impl std::error::Error for MonotoneViolation {}
 /// [`portcullis_core::discharge::preflight_action`] instead. The Kernel
 /// is a legacy decision engine superseded by the Flow Algebra primitives
 /// (`join` + `flows_to`). It remains for backward compatibility with
-/// `nucleus-claude-hook` but will be removed in a future release.
+/// the legacy agent hook binary but will be removed in a future release.
 ///
 /// Maintains monotone session state and provides complete mediation
 /// for all agent operations. Every side effect must pass through
@@ -702,13 +702,22 @@ impl Kernel {
         &mut self,
         rule: portcullis_core::declassify::DeclassificationRule,
     ) {
+        // FAIL-CLOSED / defense-in-depth (#C-2 B2): under the secure posture
+        // (trusted keys configured) REFUSE to register an unsigned rule — do not
+        // warn-and-add. Together with the observe() refusal (#C-2), the endorsement
+        // escape hatch is rejected at BOTH registration and application, so a
+        // compromised caller cannot pre-seed a laundering rule. Unsigned rules
+        // endorse by label-class; the artifact-scoped, sink-restricted, signed
+        // apply_declassification_token() is the only admissible path under security.
+        // Permissive default (no trusted keys / no `crypto`) is unchanged.
         #[cfg(feature = "crypto")]
         if !self.trusted_public_keys.is_empty() {
-            tracing::warn!(
+            tracing::error!(
                 justification = %rule.justification,
-                "unsigned declassification rule added while trusted keys are configured — \
-                 use apply_declassification_token() for verified declassification"
+                "REFUSED unsigned declassification rule while trusted keys are configured — \
+                 use apply_declassification_token() (fail-closed, #C-2 B2)"
             );
+            return;
         }
         self.declassification_rules.push(rule);
     }
@@ -824,17 +833,24 @@ impl Kernel {
         // apply_declassification_token() instead, which verifies Ed25519
         // signatures before applying label changes.
         if !self.declassification_rules.is_empty() {
+            // FAIL-CLOSED (#C-2): under the secure posture (trusted keys set), refuse
+            // to apply unsigned rules — silently endorsing attacker-tainted data on the
+            // live path voids the NI guarantee. The signed apply_declassification_token()
+            // is the only path that may declassify; leaving the node at its true integrity
+            // preserves the NI precondition. Permissive default (no keys) unchanged.
             #[cfg(feature = "crypto")]
-            if !self.trusted_public_keys.is_empty() {
-                tracing::warn!(
+            let secure_posture = !self.trusted_public_keys.is_empty();
+            #[cfg(not(feature = "crypto"))]
+            let secure_posture = false;
+
+            if secure_posture {
+                tracing::error!(
                     node_id = node_id,
                     rule_count = self.declassification_rules.len(),
-                    "applying unsigned declassification rules during observe() while trusted \
-                     keys are configured — use apply_declassification_token() for verified \
-                     declassification"
+                    "REFUSED unsigned declassification rules during observe() while trusted \
+                     keys are configured — use apply_declassification_token() (fail-closed, #C-2)"
                 );
-            }
-            if let Some(node) = graph.get(node_id) {
+            } else if let Some(node) = graph.get(node_id) {
                 let mut label = node.label;
                 for rule in &self.declassification_rules {
                     let result = rule.apply(label);

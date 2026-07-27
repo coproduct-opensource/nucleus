@@ -54,7 +54,7 @@ jobs:
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
@@ -72,7 +72,7 @@ jobs:
       # charset, and pin the lossy-collapse SPIFFE-id COLLISION. They close the
       # production↔extracted gap the Lean theorems then build on.
       - name: Stable toolchain (for cargo test)
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: stable
 
@@ -82,7 +82,7 @@ jobs:
       # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
       - name: Cache Aeneas binary
         id: cache-aeneas-bin
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/aeneas-bin
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}

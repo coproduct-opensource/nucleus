@@ -137,7 +137,9 @@ pub struct RunArgs {
     #[arg(long, default_value = "3600")]
     pub timeout: u64,
 
-    /// Claude model to use
+    /// Model identifier to pass to the agent CLI.
+    // Intrinsic interop: the default is a real, non-neutralizable model id
+    // consumed verbatim by the external agent binary's `--model` flag.
     #[arg(long, default_value = "claude-sonnet-4-20250514")]
     pub model: String,
 
@@ -154,8 +156,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub local: bool,
 
-    /// Run with Claude Code hook enforcement (lightest weight).
-    /// Uses nucleus-claude-hook as a PreToolUse hook — no tool-proxy or MCP
+    /// Run with agent-hook enforcement (lightest weight).
+    /// Uses the sibling hook binary as a PreToolUse hook — no tool-proxy or MCP
     /// server needed. Provides IFC flow labels, exposure tracking, and
     /// capability gating with zero infrastructure.
     #[arg(long)]
@@ -382,10 +384,10 @@ impl Drop for TmpDirGuard {
     }
 }
 
-/// Run with Claude Code hook enforcement (lightest weight).
+/// Run with agent-hook enforcement (lightest weight).
 ///
-/// Writes a temporary settings.json that registers nucleus-claude-hook as
-/// the PreToolUse hook, then runs claude with that config. No tool-proxy
+/// Writes a temporary settings.json that registers the sibling hook binary as
+/// the PreToolUse hook, then runs the agent CLI with that config. No tool-proxy
 /// or MCP server needed — the hook intercepts every tool call and runs it
 /// through the portcullis kernel with IFC flow labels.
 async fn run_hook(
@@ -400,11 +402,11 @@ async fn run_hook(
     let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
     // Resolve hook binary
-    let hook_bin = resolve_binary_path("nucleus-claude-hook")?;
+    let hook_bin = resolve_binary_path(crate::constants::HOOK_BINARY_NAME)?;
     if !hook_bin.exists() {
         bail!(
-            "nucleus-claude-hook not found at {:?}. Install with: cargo install --path crates/nucleus-claude-hook",
-            hook_bin
+            "{name} not found at {hook_bin:?}. Install with: cargo install --path crates/{name}",
+            name = crate::constants::HOOK_BINARY_NAME,
         );
     }
 
@@ -424,12 +426,12 @@ async fn run_hook(
     info!(
         hook_bin = %hook_bin.display(),
         profile = %profile_name,
-        "Running Claude with nucleus-claude-hook enforcement"
+        "Running agent CLI under nucleus hook enforcement"
     );
 
     let start = Instant::now();
 
-    let mut cmd = Command::new("claude");
+    let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
     cmd.arg("--print")
         .arg("--model")
         .arg(&args.model)
@@ -441,7 +443,9 @@ async fn run_hook(
         .current_dir(work_dir)
         .env("NUCLEUS_PROFILE", profile_name);
 
-    let output = cmd.output().context("failed to spawn claude")?;
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))?;
     let duration = start.elapsed();
 
     render_output(&output, duration, args.output.as_str())
@@ -522,7 +526,7 @@ async fn run_local(
 
     info!(proxy_url = %proxy_url, "Tool-proxy ready");
 
-    // Build MCP config and spawn Claude
+    // Build MCP config and spawn the agent CLI
     let mcp_config_path = tmp_dir.join("mcp.json");
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
@@ -561,11 +565,11 @@ async fn run_local(
     info!(
         allowed_tools = %allowed_tools.join(","),
         model = %args.model,
-        "Spawning Claude Code (local enforced mode)"
+        "Spawning agent CLI (local enforced mode)"
     );
 
     let start = Instant::now();
-    let output = run_claude_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir)?;
+    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir)?;
     let duration = start.elapsed();
 
     // Kill tool-proxy
@@ -709,11 +713,11 @@ async fn run_enforced(
     info!(
         allowed_tools = %allowed_tools.join(","),
         model = %args.model,
-        "Spawning Claude Code (enforced MCP mode)"
+        "Spawning agent CLI (enforced MCP mode)"
     );
 
     let start = Instant::now();
-    let output = match run_claude_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
+    let output = match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
         Ok(output) => output,
         Err(err) => return Err(err),
     };
@@ -894,7 +898,7 @@ const NUCLEUS_MCP_TOOL_PREFIX: &str = "mcp__nucleus__";
 /// Capability token proving the *complete-mediation* confinement guard that
 /// makes launching the agent with the approval bypass safe.
 ///
-/// `run_claude_mcp` spawns the agent with `--dangerously-skip-permissions` /
+/// `run_agent_mcp` spawns the agent with `--dangerously-skip-permissions` /
 /// `bypassPermissions`. That is safe ONLY under complete mediation: the agent's
 /// built-in tools are disallowed (`DISALLOWED_BUILTIN_TOOLS`) and every tool it
 /// is *allowed* to use is a nucleus MCP tool routed through the
@@ -903,9 +907,9 @@ const NUCLEUS_MCP_TOOL_PREFIX: &str = "mcp__nucleus__";
 /// [`MediationGuard::establish`], re-verifies the invariant at the call edge and
 /// refuses to mint a token otherwise.
 ///
-/// `run_claude_mcp` takes a `&MediationGuard` and reads the agent's allowed-tool
+/// `run_agent_mcp` takes a `&MediationGuard` and reads the agent's allowed-tool
 /// set *from the token* (never from an unvetted argument), so the guard is
-/// **closed under the call**: no caller can reach `run_claude_mcp` without first
+/// **closed under the call**: no caller can reach `run_agent_mcp` without first
 /// proving mediation. The confinement flows across the call edge as a real
 /// value rather than an implicit precondition.
 pub struct MediationGuard {
@@ -920,7 +924,7 @@ impl MediationGuard {
     /// Returns `None` — refusing to mint the capability — unless there is at
     /// least one allowed tool and *every* allowed tool routes through the
     /// nucleus MCP server. A `None` means the caller CANNOT obtain the token,
-    /// and therefore CANNOT reach `run_claude_mcp`, so the agent is never
+    /// and therefore CANNOT reach `run_agent_mcp`, so the agent is never
     /// launched with the approval bypass while a non-mediated (built-in) tool
     /// is reachable.
     pub fn establish(allowed_tools: &[String]) -> Option<Self> {
@@ -944,7 +948,7 @@ impl MediationGuard {
     }
 }
 
-fn run_claude_mcp(
+fn run_agent_mcp(
     args: &RunArgs,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
@@ -952,7 +956,7 @@ fn run_claude_mcp(
     prompt: &str,
     work_dir: &Path,
 ) -> Result<std::process::Output> {
-    let mut cmd = Command::new("claude");
+    let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
     cmd.arg("--print")
         .arg("--model")
         .arg(&args.model)
@@ -976,18 +980,19 @@ fn run_claude_mcp(
         .arg(prompt)
         .current_dir(work_dir);
 
-    // Bypass Claude's built-in *interactive approval* in local enforced mode —
-    // SAFE ONLY because `--disallowedTools` above already removed every built-in
-    // tool, so the agent's only remaining tools are the nucleus MCP tools, and
-    // each of THOSE routes through the PermissionLattice. (Bypassing approval
-    // without the disallow list would let the built-in Bash/WebFetch/etc. run
-    // ungated — see the disallow comment.) Claude's interactive approval can't
-    // function in non-interactive `--print` mode anyway (it falls back to
-    // plan-only without a human), so the lattice IS the security boundary.
+    // Bypass the agent's built-in *interactive approval* in local enforced mode
+    // — SAFE ONLY because `--disallowedTools` above already removed every
+    // built-in tool, so the agent's only remaining tools are the nucleus MCP
+    // tools, and each of THOSE routes through the PermissionLattice. (Bypassing
+    // approval without the disallow list would let the built-in Bash/WebFetch/
+    // etc. run ungated — see the disallow comment.) The agent's interactive
+    // approval can't function in non-interactive `--print` mode anyway (it falls
+    // back to plan-only without a human), so the lattice IS the security boundary.
     cmd.arg("--dangerously-skip-permissions");
     cmd.arg("--permission-mode").arg("bypassPermissions");
 
-    cmd.output().context("failed to spawn claude")
+    cmd.output()
+        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))
 }
 
 pub fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
@@ -1065,14 +1070,14 @@ mod tests {
     use super::*;
 
     // Confinement-guard tests: exercise the REAL invariant that
-    // `run_claude_mcp` depends on — the agent may be launched with the approval
+    // `run_agent_mcp` depends on — the agent may be launched with the approval
     // bypass only when every tool it can reach routes through the lattice.
 
     #[test]
     fn guard_established_for_a_real_policy_tool_set() {
         // A permissive policy resolves to a set of nucleus MCP tools; because
         // they are all lattice-mediated, the confinement guard is established
-        // and carries exactly that vetted set into `run_claude_mcp`.
+        // and carries exactly that vetted set into `run_agent_mcp`.
         let policy = PermissionLattice::permissive();
         let allowed = build_mcp_allowed_tools(&policy);
         assert!(
@@ -1093,7 +1098,7 @@ mod tests {
     fn guard_refuses_when_a_builtin_tool_is_reachable() {
         // If mediation were incomplete — a built-in (non-MCP) tool alongside
         // the MCP tools — the agent could act OUTSIDE the kernel. The guard
-        // must refuse to mint a token, making `run_claude_mcp` unreachable so
+        // must refuse to mint a token, making `run_agent_mcp` unreachable so
         // the agent is never launched with the approval bypass off-guard.
         let mut tools = build_mcp_allowed_tools(&PermissionLattice::permissive());
         tools.push("Bash".to_string()); // a built-in, lattice-bypassing tool

@@ -3767,12 +3767,34 @@ def transClosureBool {n : Nat} (pe : PreEquiv (Fin n)) (a b : Fin n) : Bool :=
   let final := (List.range n).foldl (fun acc _ => step acc) [a]
   final.contains b
 
+/-- The BFS `step` only appends, so any element already reached stays
+    reached across the whole `List.range n` fold. This is the structural
+    fact behind reflexivity of the transitive closure. -/
+theorem transClosureBool_self {n : Nat} (pe : PreEquiv (Fin n)) (a : Fin n) :
+    transClosureBool pe a a = true := by
+  -- The fold's step is inflationary: `acc ⊆ acc ++ filter …`, so `a ∈ [a]`
+  -- is preserved through every iteration.
+  have hmem : ∀ (l : List Nat) (init : List (Fin n)), a ∈ init →
+      a ∈ l.foldl (fun acc _ =>
+        acc ++ ((List.finRange n).filter fun x =>
+          !acc.contains x && acc.any (pe.sim x))) init := by
+    intro l
+    induction l with
+    | nil => intro init hx; simpa using hx
+    | cons _ tl ih =>
+        intro init hx
+        simp only [List.foldl_cons]
+        exact ih _ (List.mem_append.mpr (Or.inl hx))
+  show ((List.range n).foldl (fun acc _ =>
+      acc ++ ((List.finRange n).filter fun x =>
+        !acc.contains x && acc.any (pe.sim x))) [a]).contains a = true
+  have h := hmem (List.range n) [a] (by simp)
+  simpa using h
+
 /-- The transitive closure gives a valid DObsLevel on `Fin n`. -/
 def PreEquiv.toDObsLevel {n : Nat} (pe : PreEquiv (Fin n)) : DObsLevel (Fin n) where
   rel := transClosureBool pe
-  refl a := by
-    -- a ∈ [a], so after 0 steps, final.contains a = true
-    sorry -- BFS always contains the start
+  refl a := transClosureBool_self pe a
   symm a b h := by
     -- sim is symmetric → BFS reachability is symmetric
     sorry -- BFS symmetry for symmetric relations
@@ -3862,11 +3884,15 @@ def toPreEquiv {n m : Nat}
   sim_symm i j h := by
     show decide _ = true
     rw [decide_eq_true_iff]
-    have : decide _ = true := h
-    rw [decide_eq_true_iff] at this
+    have hcount : decide _ = true := h
+    rw [decide_eq_true_iff] at hcount
     -- countP (fun k => w j k != w i k) = countP (fun k => w i k != w j k)
-    -- because bne is symmetric for types with lawful BEq
-    sorry -- bne symmetry for Fin m
+    -- because bne is symmetric for types with lawful BEq (Fin m)
+    have hfun : (fun k => A.weights j k != A.weights i k)
+              = (fun k => A.weights i k != A.weights j k) := by
+      funext k; exact bne_comm
+    rw [hfun]
+    exact hcount
 
 /-- At tolerance 0, the PreEquiv's sim agrees with exact row equality.
     If sim(i,j) at tolerance 0, then all weights are equal. -/
@@ -3875,7 +3901,20 @@ theorem zero_tolerance_exact {n m : Nat}
     (i j : Fin n)
     (h : (toPreEquiv A 0).sim i j = true) :
     (A.toDObsLevel).rel i j = true := by
-  sorry -- requires: countP (!=) ≤ 0 → countP (!=) = 0 → all (==)
+  -- `sim` at tolerance 0 unfolds to `decide (countP (≠) ≤ 0)`; peel the decide
+  -- exactly as `sim_symm` does just above.
+  have hcount : decide _ = true := h
+  rw [decide_eq_true_iff] at hcount
+  -- `≤ 0` on `Nat` forces the mismatch count to be exactly `0`.
+  have hall := List.countP_eq_zero.mp (Nat.le_zero.mp hcount)
+  -- Zero mismatches ⇒ every column agrees ⇒ the two rows are equal.
+  simp only [Faithfulness.DiscretePattern.toDObsLevel, Faithfulness.DiscretePattern.rowsEq]
+  refine List.all_eq_true.mpr ?_
+  intro k hk
+  have hk' := hall k hk
+  simp only [bne_iff_ne, ne_eq, not_not] at hk'
+  simp only [beq_iff_eq]
+  exact hk'
 
 end ApproxEquiv
 

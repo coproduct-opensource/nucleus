@@ -32,7 +32,7 @@ nucleus-creditworthiness = { path = "../nucleus-creditworthiness", features = ["
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util", "limit"] }
-tower-http = { version = "0.7", features = ["trace", "timeout", "cors", "limit"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "cors", "limit", "catch-panic"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

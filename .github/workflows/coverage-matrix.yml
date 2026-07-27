@@ -11,11 +11,72 @@ permissions:
   contents: read
 
 jobs:
+  # Detects which crates changed so the heavy coverage/mutation/proof jobs
+  # below can skip on PRs with no crate-relevant changes (docs-only, etc).
+  # A skipped required job reports "skipped", which GitHub treats as a
+  # passing status check.
+  changed-crates:
+    name: Detect Changed Crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      all: ${{ steps.detect.outputs.all }}
+      crates: ${{ steps.detect.outputs.crates }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+      - name: Detect changed crates
+        id: detect
+        # Pass event name / base ref via env (never interpolate ${{ }} into a
+        # run script — zizmor template-injection / code-injection hardening,
+        # as in ck-admit.yml).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          all=false
+          changed=""
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # Unshallowed fetch of the base ref: a shallow base would leave
+            # the three-dot merge-base unreachable for `git diff`.
+            git fetch origin "$BASE" || true
+            changed="$(git diff --name-only "origin/$BASE...HEAD")"
+          else
+            # merge_group / push / workflow_dispatch: run everything.
+            all=true
+          fi
+
+          if [ "$all" != "true" ] && printf '%s\n' "$changed" | grep -qE '^(Cargo\.toml|Cargo\.lock)$|^\.github/'; then
+            all=true
+          fi
+
+          # `|| true` tolerates no crates/ match (e.g. a docs-only PR), which
+          # under `set -euo pipefail` would otherwise crash this job instead
+          # of correctly skipping the heavy jobs below.
+          crates="$(printf '%s\n' "$changed" | grep -oE '^crates/[^/]+' | sed 's#^crates/##' | sort -u | paste -sd' ' - || true)"
+
+          echo "all=$all" >> "$GITHUB_OUTPUT"
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Changed Crates Detection"
+            echo ""
+            echo "- event: \`$EVENT_NAME\`"
+            echo "- full run forced: \`$all\`"
+            echo "- changed crates: \`${crates:-none}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Layer 1: LLVM source-based code coverage with threshold enforcement
   llvm-cov:
     name: Code Coverage (llvm-cov)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -62,6 +123,8 @@ jobs:
     name: Mutation Testing
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
@@ -106,6 +169,8 @@ jobs:
     name: Proof Count Ratchet
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - name: Count Kani proofs

@@ -51,7 +51,10 @@ impl NetworkAllocator {
     pub fn allocate(&self, pod_id: Uuid, netns: String) -> Result<NetPlan, ApiError> {
         // Try to reuse a released index first
         let index = {
-            let mut available = self.available.lock().unwrap();
+            let mut available = self
+                .available
+                .lock()
+                .map_err(|_| ApiError::Driver("network allocator lock poisoned".to_string()))?;
             if let Some(idx) = available.pop() {
                 idx
             } else {

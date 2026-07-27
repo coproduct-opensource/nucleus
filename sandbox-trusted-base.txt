@@ -1,0 +1,64 @@
+# sandbox-trusted-base.txt — everything a nucleus pod's isolation boundary rests on.
+#
+# WHY THIS FILE EXISTS
+#
+# The 2026 sandbox-escape literature can report "94.4% of agents are vulnerable"
+# because almost nobody can enumerate what their sandbox trusts. A TCB is only
+# meaningful if it is written down: the classical definition says components
+# belong in it only if they are *specifically designed* to govern security, and
+# that judgement cannot be made about a set nobody has listed.
+#
+# Each line is one component of the guest-to-host boundary, and each carries
+# either the test that pins it or an explicit UNPINNED with a reason.
+# `scripts/check-sandbox-trusted-base.sh` verifies that every named test ACTUALLY
+# EXISTS in the tree — a manifest whose references are not checked is prose — and
+# ratchets the UNPINNED count so the unpinned set can only shrink.
+#
+# FORMAT
+#   <component> | pinned_by:<test fn name>
+#   <component> | UNPINNED:<why, and what would pin it>
+#   <component> | EXTERNAL:<trusted third party we do not and cannot pin>
+#
+# ADDING A LINE IS ADDING TO THE TRUSTED BASE. That is sometimes right, and it is
+# never free — the same accounting as `programmeTrustedBase` in the olog corpus,
+# where adding a gate raises the number rather than lowering it.
+
+# ── The WASI model layer: what guest code can import ────────────────────────
+host-function surface is exactly six                | pinned_by:host_surface_is_exactly_pinned
+declassify is reachable from the empty world        | pinned_by:the_empty_world_still_exposes_declassify
+command output is a LABELLED source                 | pinned_by:exec_output_label_decides_whether_it_can_egress
+
+# ── The microVM: what the guest can see of the host ─────────────────────────
+guest-visible device surface (serialized config)    | pinned_by:firecracker_device_surface_is_exactly_pinned
+absent vsock grant attaches no vsock device         | pinned_by:absent_vsock_lowers_to_no_vsock
+guest CIDs are distinct across pods                 | pinned_by:lowering_preserves_distinct_cids
+no net plan attaches zero interfaces                | pinned_by:no_net_plan_lowers_to_zero_network_interfaces
+a net plan attaches exactly one bound tap           | pinned_by:net_plan_lowers_to_exactly_one_bound_tap
+rootfs is read-only under a readonly policy         | pinned_by:readonly_policy_lowers_to_readonly_rootfs
+
+# ── Kernel-enforced confinement ─────────────────────────────────────────────
+seccomp is never silently disabled                  | pinned_by:seccomp_never_silently_disabled
+seccomp default/absent keeps the filter active      | pinned_by:seccomp_default_and_absent_keep_filter_active
+a custom seccomp filter path is pinned              | pinned_by:seccomp_custom_pins_filter_path
+seccomp verification fails closed when it cannot check | pinned_by:seccomp_verifier_fails_closed_when_it_cannot_verify
+netns plan never omits the netns or default-deny    | pinned_by:netns_plan_never_omits_netns_or_default_deny
+
+# ── Not yet pinned. This is the honest part of the file. ────────────────────
+vsock workload API request surface                  | pinned_by:guest_request_surface_is_exactly_three
+vsock request surface cannot grow silently          | pinned_by:guest_request_surface_is_exhaustive
+guest command frames are length-bounded             | pinned_by:oversized_frame_rejected_before_utf8_decode
+an unknown guest command is rejected, not executed  | pinned_by:unknown_command_is_rejected_not_executed
+guest pseudo-filesystems are nosuid/nodev/noexec    | pinned_by:guest_mounts_are_hardened
+cgroup placement is applied before workload start   | UNPINNED:VERIFIED AGAINST THE REAL JAILER (v1.16.1, 2026-07-27), and it found a launch-blocking defect. Driving the jailer with the argv `jailer_args` emits, against a jail `prepare_jail` built, on a cgroup2fs host: chroot happens, privileges drop to the unprivileged uid/gid BEFORE exec, every in-jail path (/kernel, /rootfs.ext4, /config.json, /firecracker.log) is present after chroot, and the pod cgroup exists with OUR value (cpu.weight=42) containing the exec'd pid — i.e. the cgroup preceded exec, which is the whole claim. THE DEFECT: the jailer's --cgroup-version defaults to "1" and modern Linux is v2-only; the cutover never passed it, so the jailer refused with CgroupHierarchyMissing and NO pod carrying a cgroup spec would have started on any current host. Fixed by detect_cgroup_version() + --cgroup-version, pinned by the_cgroup_version_is_declared_whenever_cgroups_are_requested. STILL UNPINNED because no in-tree test boots a guest: KVM is unavailable on the development host (no /dev/kvm in any container or VM), so Firecracker parsing the config and running a workload remains unverified. The pre-exec half is now evidence; the boot half is still a construction argument.
+
+# ── The jail. Added to the trusted base BY the cutover above ────────────────
+writable jail resources are linked, never copied    | pinned_by:a_drive_the_guest_can_write_is_never_copyable
+every path a jailed config names is in the jail     | pinned_by:prepare_jail_creates_every_path_the_jailed_config_names
+in-jail names never resolve outside the jail root   | pinned_by:host_path_never_escapes_the_jail_root
+the jail layout matches the jailer's own convention | pinned_by:jail_layout_matches_the_jailers_own_convention
+waiting for seccomp never becomes succeeding        | pinned_by:waiting_for_seccomp_still_fails_closed
+
+# ── Trusted third parties. We depend on these and cannot pin them here. ─────
+Firecracker VMM device emulation                    | EXTERNAL:AWS Firecracker. Five emulated devices by design; CVEs in its virtio implementations are outside our control and inside our boundary.
+KVM / host kernel                                   | EXTERNAL:hardware virtualization is the isolation primitive; a KVM escape defeats everything above.
+the seccomp filter file contents                    | EXTERNAL:the BPF program shipped at the filter path is trusted as written; we pin THAT it is applied, not WHAT it permits.

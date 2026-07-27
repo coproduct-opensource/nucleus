@@ -8,8 +8,8 @@
 //!
 //! # Vendor neutrality
 //!
-//! `JobRunner` is a trait — every concrete agent integration (Claude
-//! Code, OpenHands, Goose, …) lives outside this crate as a separate
+//! `JobRunner` is a trait — every concrete agent integration (an
+//! agent CLI, OpenHands, Goose, …) lives outside this crate as a separate
 //! implementation. The orchestrator core knows only: "run agent X,
 //! collect lineage Y, package result Z." It does not know which LLM
 //! is doing the work, what its API costs, or how its credentials are

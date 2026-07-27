@@ -21,7 +21,7 @@ default = ["serde", "crypto", "cedar"]
 serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "uuid/serde"]
 
 # Ed25519 signing (ring) — disable for WASM targets where ring can't compile
-crypto = ["dep:ring"]
+crypto = ["dep:ring", "dep:ed25519-dalek"]
 
 # CEL-based policy constraints
 cel = ["dep:cel-interpreter"]
@@ -58,6 +58,10 @@ serde_json = { workspace = true, optional = true }
 
 # Ed25519 signatures for attested delegation certificates (optional for WASM)
 ring = { workspace = true, optional = true }
+# Ed25519 VERIFY on the cert chain uses verify_strict (rejects small-order keys /
+# non-canonical S) — unifies the trust path with the rest of the attest stack and
+# is WASM-capable (ring is not). Signing stays on ring. (#16)
+ed25519-dalek = { workspace = true, optional = true }
 
 # Base64 encoding for compact token transport
 base64 = { workspace = true }

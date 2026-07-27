@@ -16,6 +16,7 @@ use crate::merkle::SharedMerkleLog;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
+    catch_panic::CatchPanicLayer,
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
     timeout::TimeoutLayer,
@@ -213,7 +214,42 @@ pub fn build_app(state: AppState) -> Router {
             Duration::from_secs(30),
         ))
         .layer(cors)
+        // OUTERMOST layer (last `.layer()` wins — it receives the request first
+        // and thus wraps every inner layer + handler). A stray panic anywhere
+        // inside is caught here and converted to a fail-closed 500 DENY, so a
+        // poisoned lock or unexpected panic can never crash the process or
+        // fail-open. See `fail_closed_panic_response`.
+        .layer(CatchPanicLayer::custom(fail_closed_panic_response))
         .with_state(state)
+}
+
+/// Fail-closed panic handler for [`CatchPanicLayer`].
+///
+/// Any panic that unwinds through the router (a poisoned lock's `.expect()`, an
+/// arithmetic overflow, an `unwrap()` on unexpected input, …) is converted into
+/// an HTTP 500 DENY. It NEVER resets the connection or returns a success/allow —
+/// the request is refused, fail-closed.
+fn fail_closed_panic_response(
+    err: Box<dyn std::any::Any + Send + 'static>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let detail = if let Some(s) = err.downcast_ref::<String>() {
+        s.as_str()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        s
+    } else {
+        "unknown panic"
+    };
+    tracing::error!(
+        panic = %detail,
+        "request handler panicked; failing CLOSED with HTTP 500 DENY"
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "denied: internal enforcement error (fail-closed)",
+    )
+        .into_response()
 }
 
 /// Wrap a router with per-IP rate limiting. Call this from production
@@ -236,4 +272,61 @@ pub fn with_rate_limit(router: Router) -> Router {
             .expect("governor config validation passed at build time"),
     );
     router.layer(GovernorLayer::new(governor_conf))
+}
+
+#[cfg(test)]
+mod panic_net_tests {
+    //! Audit H-3 — router panic net. A stray panic anywhere under the router
+    //! (e.g. a poisoned enforcement lock's `.expect()`) must become a fail-closed
+    //! HTTP 500, never a connection reset or an allow, and the router must keep
+    //! serving afterwards. This exercises the real `fail_closed_panic_response`
+    //! handler behind the same OUTERMOST `CatchPanicLayer` wiring as `build_app`.
+    use super::fail_closed_panic_response;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+    use tower_http::catch_panic::CatchPanicLayer;
+
+    async fn panicking_handler() -> &'static str {
+        panic!("boom in handler (H-3 test)")
+    }
+
+    fn panic_net_router() -> Router {
+        Router::new()
+            .route("/panic", get(panicking_handler))
+            .route("/ok", get(|| async { "ok" }))
+            // Same OUTERMOST wiring as `build_app`.
+            .layer(CatchPanicLayer::custom(fail_closed_panic_response))
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_returns_fail_closed_500_and_keeps_serving() {
+        let app = panic_net_router();
+
+        // 1. A panicking handler ⇒ fail-closed 500 (not a reset, not an allow).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/panic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router must return a response, not drop the connection");
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a panicking handler must fail closed with HTTP 500"
+        );
+
+        // 2. The router still serves a subsequent normal request.
+        let resp2 = app
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .expect("router must keep serving after a caught panic");
+        assert_eq!(resp2.status(), StatusCode::OK);
+    }
 }

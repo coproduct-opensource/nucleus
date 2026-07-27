@@ -1,0 +1,1 @@
+crates/ctf-server/src/openapi.rs — retains the `x-openai-isConsequential` plugin-manifest extension field, a load-bearing OpenAI plugin protocol key (inside a JSON literal, cannot be renamed without breaking the CTF fixture's plugin manifest).

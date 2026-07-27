@@ -21,7 +21,7 @@ default = []
 spire = ["nucleus-identity/spire"]
 # MCP server mode (stdio transport)
 mcp = ["dep:rmcp", "dep:schemars"]
-# Red-team harness: Claude vs. Portcullis (requires ANTHROPIC_API_KEY)
+# Red-team harness: adversarial LLM vs. Portcullis (requires LLM_API_KEY)
 red-team = []
 # Remote append-only audit sink (S3-compatible: AWS S3, MinIO, R2, Tigris)
 remote-audit = ["dep:aws-sdk-s3", "dep:aws-config"]
@@ -30,6 +30,9 @@ otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", 
 
 [dependencies]
 axum = { workspace = true }
+# Panic net: CatchPanicLayer converts a stray panic (e.g. a poisoned lock's
+# `.expect()`) into a fail-closed HTTP 500 instead of dropping the connection.
+tower-http = { version = "0.7", features = ["catch-panic"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -54,8 +57,19 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
+# The dependency-free IFC reference monitor. Used directly for the sealed
+# `DischargedBundle` preflight that gates the live RunBash path (#2038). Discharge
+# is already trusted (re-exported through `portcullis-core`); this is an additive
+# path to the same types, adding no new TCB.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+# Sealed effect home (B5): the agent NET-EGRESS effect (`NetEffect::fetch`, the
+# real reqwest HTTP send) lives here behind the `_proof`-gated, PolicyEnforced
+# API. `net` pulls the reqwest HTTP stack into the sealed home; the tool-proxy
+# hands its configured `web_client` to it and reaches it only past a minted
+# `DischargedBundle`, so no raw agent `…send()` survives on the handler path.
+portcullis-effects = { path = "../portcullis-effects", features = ["net"] }
 
 tonic = { workspace = true }
 tokio-stream = "0.1"
@@ -94,10 +108,16 @@ tokio-vsock = "0.7"
 [dev-dependencies]
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# In-process router driving for the H-3 panic-net regression test
+# (ServiceExt::oneshot). Dev-only; production graph unchanged.
+tower = { version = "0.5", features = ["util"] }
+# HTTP mock upstream for the H-1 bounded-body-read regression test
+# (read_body_capped). Dev-only; production graph unchanged.
+wiremock = "0.6"
 # Direct access to the IFC gate (flow/flow_algebra/SinkClass) for the attack
 # corpus; already transitive via `portcullis`. Dev-only — production graph
 # unchanged. Used by tests/attack_corpus.rs.
-portcullis-core = { path = "../portcullis-core" }
+portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
 
 [lints]
 workspace = true

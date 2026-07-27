@@ -246,4 +246,76 @@ mod tests {
             }
         }
     }
+
+    // ── THE GUEST-TO-HOST REQUEST SURFACE ───────────────────────────────────
+    //
+    // vsock is the channel a guest uses to reach the host, which makes it the
+    // classic escape vector: 2026 brought CVE-2026-46234 and CVE-2026-23086
+    // against the Linux vsock transport itself, where a malicious guest
+    // advertises a large buffer and reads slowly to force host allocation. That
+    // class lives in the host kernel and is EXTERNAL to us (see
+    // sandbox-trusted-base.txt); the frame reader already bounds what a guest
+    // can make us allocate via MAX_COMMAND_LEN.
+    //
+    // What was NOT written down anywhere is the request surface itself — which
+    // commands the host will act on for a guest. This pins it.
+    //
+    // TWO PINS, and the compile-time one is the point:
+    //
+    //   * `guest_request_surface_is_exhaustive` cannot COMPILE if a variant is
+    //     added to WorkloadApiCommand. A runtime assertion can be forgotten by
+    //     someone adding a variant; a non-exhaustive match cannot.
+    //   * `guest_request_surface_is_exactly_three` pins the wire spellings, so
+    //     renaming one on the wire is also a visible diff.
+    //
+    // IS THE FIRST ONE REDUNDANT? The dispatcher in workload_api_vsock.rs
+    // already matches exhaustively, so a new variant fails to compile there too
+    // — and a second gate that agrees with the first buys nothing. It is NOT
+    // redundant, and the difference was established by bite rather than by
+    // argument: adding a catch-all `Ok(_) =>` arm to the dispatcher blinds it
+    // silently, and with the dispatcher blinded THIS test still refuses to
+    // compile. It is a backstop against the dispatcher acquiring a wildcard,
+    // which is the one way the compile-time guarantee can be lost without
+    // anyone noticing.
+    #[test]
+    fn guest_request_surface_is_exhaustive() {
+        // Deliberately written WITHOUT a wildcard arm. Adding a variant to
+        // WorkloadApiCommand makes this fail to compile, which is the strongest
+        // form this pin can take: the surface cannot grow silently.
+        fn assert_known(cmd: WorkloadApiCommand) -> &'static str {
+            match cmd {
+                WorkloadApiCommand::FetchSvid => "FETCH_SVID",
+                WorkloadApiCommand::FetchBundle => "FETCH_BUNDLE",
+                WorkloadApiCommand::Ping => "PING",
+            }
+        }
+        for cmd in [
+            WorkloadApiCommand::FetchSvid,
+            WorkloadApiCommand::FetchBundle,
+            WorkloadApiCommand::Ping,
+        ] {
+            assert_eq!(assert_known(cmd), cmd.as_wire());
+        }
+    }
+
+    #[test]
+    fn guest_request_surface_is_exactly_three() {
+        let accepted: std::collections::BTreeSet<String> = [
+            WorkloadApiCommand::FetchSvid,
+            WorkloadApiCommand::FetchBundle,
+            WorkloadApiCommand::Ping,
+        ]
+        .iter()
+        .map(|c| c.as_wire().to_string())
+        .collect();
+        let want: std::collections::BTreeSet<String> = ["FETCH_BUNDLE", "FETCH_SVID", "PING"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            accepted, want,
+            "the guest-to-host request surface changed — a command a guest can \
+             make the host act on was added, removed or renamed"
+        );
+    }
 }

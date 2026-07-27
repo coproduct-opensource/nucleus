@@ -1,0 +1,38 @@
+# North Star mediation gate — process-spawn baseline (brick 0).
+#
+# Each entry below is an un-migrated AGENT-PATH raw process spawn: BASELINE DEBT
+# to be DELETED as the site moves behind the discharge-gated effect API
+# (preflight_action -> DischargedBundle, via portcullis-effects). The gate
+# forbids any NEW un-allowlisted agent-path spawn, so this list only shrinks.
+#
+# Format: exact TRIMMED source line (leading/trailing whitespace removed).
+#
+# nucleus::Executor SEALED synchronous spawn — RELOCATED (brick B2). The sync
+# `Command::new` that used to live in `Executor::spawn_checked` has moved behind
+# the discharge-gated effect API: `spawn_checked` now delegates to the sealed
+# home `ShellEffect::run_argv` (portcullis-effects), reached only PAST a minted
+# `DischargedBundle` and the `PolicyEnforced` gate. No raw sync spawn remains in
+# `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
+# primitive, one fewer allowlist entry (the metric win).
+#
+# nucleus::Executor SEALED async spawn — RELOCATED (brick B3). The async
+# `tokio::process::Command::new` that used to live in `Executor::run_with_timeout*`
+# has moved behind the discharge-gated effect API: `run_with_timeout*` now
+# delegate to the sealed async home `AsyncShellSpawnEffect::run_argv_async`
+# (portcullis-effects), reached only PAST a minted `DischargedBundle` and the
+# `PolicyEnforced` gate, via the concrete `PolicyEnforced<RealEffects>` handle
+# (the trait is not dyn-compatible). No raw async spawn remains in
+# `crates/nucleus/src`, so this allowlist entry is DELETED — one fewer raw
+# primitive, one fewer allowlist entry (the metric win).
+#
+# nucleus-mcp-guard downstream MCP-server child (proxy.rs:25) — RECLASSIFIED as
+# INFRA (brick B4), not agent-path debt. The spawned `cmd` is the downstream MCP
+# server named on the operator's guard CLI (operator/CLI-provided, never
+# agent-controlled), so it is not an agent effect. `crates/nucleus-mcp-guard/src`
+# is removed from the gate's SCOPE_DIRS (see check-mediation.sh) and this entry
+# is DELETED.
+#
+# The agent-path spawn allowlist is now EMPTY: every agent-path process-spawn
+# primitive has been relocated behind the discharge-gated sealed effect API
+# (`preflight_action` -> `DischargedBundle`, via portcullis-effects). A NEW raw
+# spawn on the agent path now fails the build with nothing to allowlist it.

@@ -12,6 +12,22 @@ use clap::{Args, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// On-disk MCP config locations the scanner probes, in probe order.
+///
+/// Intrinsic interop: real, non-neutralizable config paths written by external
+/// agent/editor tooling (e.g. `.claude/settings.json`,
+/// `claude_desktop_config.json`). These are detection targets the scanner must
+/// match verbatim, not nucleus-owned names. Single source of truth so the
+/// `guard audit` scan and its "not found" help output can never drift apart.
+const MCP_CONFIG_CANDIDATES: &[&str] = &[
+    ".claude/settings.json",
+    ".mcp.json",
+    "mcp.json",
+    ".vscode/mcp.json",
+    ".cursor/mcp.json",
+    "claude_desktop_config.json",
+];
+
 /// Secure your MCP servers in one command.
 #[derive(Args, Debug)]
 pub struct GuardArgs {
@@ -33,7 +49,7 @@ pub enum GuardCommand {
         #[arg(default_value = ".")]
         dir: String,
     },
-    /// Install nucleus-claude-hook for enforcement
+    /// Install the agent hook binary for enforcement
     Enable,
     /// Show active guard sessions and exposure state
     Status,
@@ -66,11 +82,9 @@ fn audit(dir: &str) -> Result<()> {
         println!("No MCP configurations found in {}", dir.display());
         println!();
         println!("Looked for:");
-        println!("  .claude/settings.json");
-        println!("  .mcp.json");
-        println!("  mcp.json");
-        println!("  .vscode/mcp.json");
-        println!("  .cursor/mcp.json");
+        for candidate in MCP_CONFIG_CANDIDATES {
+            println!("  {candidate}");
+        }
         return Ok(());
     }
 
@@ -140,16 +154,7 @@ enum Risk {
 }
 
 fn find_mcp_configs(dir: &Path) -> Vec<PathBuf> {
-    let candidates = [
-        ".claude/settings.json",
-        ".mcp.json",
-        "mcp.json",
-        ".vscode/mcp.json",
-        ".cursor/mcp.json",
-        "claude_desktop_config.json",
-    ];
-
-    candidates
+    MCP_CONFIG_CANDIDATES
         .iter()
         .map(|c| dir.join(c))
         .filter(|p| p.exists())
@@ -163,7 +168,7 @@ fn extract_mcp_servers(content: &str) -> Vec<(String, serde_json::Value)> {
         return servers;
     };
 
-    // Check mcpServers (Claude Code / MCP config format)
+    // Check mcpServers (agent / MCP config format)
     if let Some(mcp) = json.get("mcpServers").and_then(|v| v.as_object()) {
         for (name, config) in mcp {
             servers.push((name.clone(), config.clone()));
@@ -233,6 +238,8 @@ fn assess_server_risk(name: &str, config: &serde_json::Value) -> Risk {
 }
 
 fn is_known_safe_package(pkg: &str) -> bool {
+    // Intrinsic interop: real npm scopes/package names published by third
+    // parties, matched verbatim as an allowlist of vetted MCP packages.
     let safe = [
         "@anthropic-ai/",
         "@modelcontextprotocol/",
@@ -394,7 +401,12 @@ fn enable() -> Result<()> {
     let output = std::process::Command::new(&hook_bin)
         .arg("--setup")
         .output()
-        .context("failed to run nucleus-claude-hook --setup")?;
+        .with_context(|| {
+            format!(
+                "failed to run {} --setup",
+                crate::constants::HOOK_BINARY_NAME
+            )
+        })?;
 
     if output.status.success() {
         println!("  Status: enabled");
@@ -420,7 +432,7 @@ fn which_hook() -> Result<PathBuf> {
     // Check same directory as nucleus binary
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join("nucleus-claude-hook");
+            let sibling = dir.join(crate::constants::HOOK_BINARY_NAME);
             if sibling.exists() {
                 return Ok(sibling);
             }
@@ -429,7 +441,7 @@ fn which_hook() -> Result<PathBuf> {
 
     // Check PATH
     if let Ok(output) = std::process::Command::new("which")
-        .arg("nucleus-claude-hook")
+        .arg(crate::constants::HOOK_BINARY_NAME)
         .output()
     {
         if output.status.success() {
@@ -441,8 +453,8 @@ fn which_hook() -> Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "nucleus-claude-hook not found. Install with:\n  \
-         cargo install --path crates/nucleus-claude-hook"
+        "{name} not found. Install with:\n  cargo install --path crates/{name}",
+        name = crate::constants::HOOK_BINARY_NAME,
     )
 }
 

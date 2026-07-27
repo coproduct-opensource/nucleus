@@ -233,11 +233,11 @@ pub async fn handler(
         OidcApiError::InvalidGrant("subject_token sig wrong length (Ed25519 = 64 bytes)".into())
     })?;
     let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-    use ed25519_dalek::Verifier;
-    vk.verify(signing_input.as_bytes(), &sig).map_err(|e| {
-        tracing::warn!(error = %e, "subject_token signature verify failed");
-        OidcApiError::InvalidGrant("subject_token signature verify failed".into())
-    })?;
+    vk.verify_strict(signing_input.as_bytes(), &sig)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "subject_token signature verify failed");
+            OidcApiError::InvalidGrant("subject_token signature verify failed".into())
+        })?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -566,6 +566,110 @@ mod tests {
         assert_eq!(v["token_type"], "Bearer");
         assert!(v["expires_in"].as_u64().unwrap() > 0);
         assert!(v["expires_in"].as_u64().unwrap() <= 300);
+    }
+
+    /// M-3 strong-binding regression for the OIDC subject_token trust root
+    /// (site: subject_token signature check, the `vk.verify_strict(...)`
+    /// call). The Ed25519 identity/neutral key (`[1, 0, ..., 0]`) with the
+    /// identity-triple signature (R = identity encoding, s = 0) satisfies
+    /// the COFACTORED verification equation for EVERY message, so non-strict
+    /// `verify()` ACCEPTS it. The crafted subject_token below is otherwise
+    /// fully valid (valid SPIFFE `sub`, fresh `exp`/`jti`, matching
+    /// `audience`) and the identity key is registered in the trust bundle,
+    /// so under non-strict `verify()` the exchange SUCCEEDS (200) and mints
+    /// an access token bound to a FORGED identity. `verify_strict()` rejects
+    /// the small-order key → 400 invalid_grant. If the site reverts to
+    /// `vk.verify(...)`, assertion (ii) sees 200 OK and fails.
+    #[tokio::test]
+    async fn small_order_key_is_rejected_by_verify_strict() {
+        use ed25519_dalek::VerifyingKey;
+
+        // (i) No regression: an honest token still succeeds.
+        let honest = make_subject_jwt("spiffe://prod.example.com/ns/agents/sa/coder", 300, None);
+        let honest_body = form_body(&[
+            ("grant_type", TOKEN_EXCHANGE_GRANT),
+            ("subject_token", &honest),
+            ("subject_token_type", TOKEN_TYPE_JWT),
+            ("audience", "https://rp-a.example/api"),
+        ]);
+        assert_eq!(
+            post_token(app(), honest_body).await.status(),
+            StatusCode::OK
+        );
+
+        // Build an app whose trust bundle contains the small-order identity
+        // key under the trust domain the federation rule allows.
+        let mut id = [0u8; 32];
+        id[0] = 1; // identity/neutral point encoding — a small-order key
+        let identity_vk =
+            VerifyingKey::from_bytes(&id).expect("identity point is a valid Ed25519 encoding");
+        let identity_kid = crate::keystore::rfc7638_kid(&identity_vk);
+
+        let store: Arc<dyn JwtKeyStore> = Arc::new(InMemoryKeyStore::new());
+        let issuer = Arc::new(
+            JwtIssuer::new(
+                store.clone(),
+                "https://oidc.nucleus.example/".to_string(),
+                Duration::from_secs(300),
+            )
+            .unwrap(),
+        );
+        let rules = crate::federation::FederationRules {
+            rule: vec![crate::federation::FederationRule {
+                id: "test-allow".to_string(),
+                subject_prefix: "spiffe://prod.example.com/*".to_string(),
+                audience: "https://rp-a.example/api".to_string(),
+                allowed_grants: vec![TOKEN_EXCHANGE_GRANT.to_string()],
+                max_token_lifetime_secs: 3600,
+            }],
+        };
+        let federation = Arc::new(crate::federation::FederationRegistry::new(rules));
+        let bundle = crate::spire::StaticBundleProvider::new();
+        bundle.add_key("prod.example.com", identity_kid.clone(), identity_vk);
+        let forged_app = crate::app::build_app(crate::app::AppState {
+            keystore: store,
+            issuer_url: Arc::from("https://oidc.nucleus.example/"),
+            issuer,
+            jti_cache: Arc::new(JtiCache::new()),
+            federation,
+            bundle_provider: Arc::new(bundle),
+        });
+
+        // (ii) Strong binding: a subject_token that is fully valid EXCEPT
+        //      that it carries the identity-triple signature under the
+        //      registered small-order identity key.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let exp = (now + 300) as u64;
+        let jti = Uuid::new_v4().to_string();
+        let header_json = format!(r#"{{"alg":"EdDSA","kid":"{identity_kid}","typ":"JWT"}}"#);
+        let payload_json = format!(
+            r#"{{"sub":"spiffe://prod.example.com/ns/agents/sa/coder","exp":{exp},"jti":"{jti}"}}"#
+        );
+        let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes[..32].copy_from_slice(&id); // R = identity, s = 0
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig_bytes);
+        let forged = format!("{header_b64}.{payload_b64}.{sig_b64}");
+        let forged_body = form_body(&[
+            ("grant_type", TOKEN_EXCHANGE_GRANT),
+            ("subject_token", &forged),
+            ("subject_token_type", TOKEN_TYPE_JWT),
+            ("audience", "https://rp-a.example/api"),
+        ]);
+        let resp = post_token(forged_app, forged_body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "identity-triple subject_token must be REFUSED by verify_strict; a \
+             revert to non-strict verify() would mint an access token for a \
+             forged identity"
+        );
+        let v = body_to_value(resp.into_body()).await;
+        assert_eq!(v["error"], "invalid_grant");
     }
 
     #[tokio::test]

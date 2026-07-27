@@ -6,7 +6,7 @@
 //!      input"). Uses `Command::new("tr").stdin(...)` — never `bash -c` with
 //!      string interpolation; this is a security demo, no shell injection.
 //!   2. Write: persist a derived file from step 1's output.
-//!   3. LLM call (mock by default; `--real-claude` for live mode): sends
+//!   3. LLM call (mock by default; `--real-llm` for live mode): sends
 //!      the file content to a relying party. The mock LLM verifies the
 //!      JWT-SVID by loading the issuer's JWKS from disk (cross-process
 //!      verification, not a same-process self-loop).
@@ -19,10 +19,12 @@
 //!
 //! to walk the chain with cryptographic verification.
 //!
-//! `--real-claude` mode honestly records `wire_auth=api_key` because we
-//! don't have a registered federation issuer at Anthropic for our demo
-//! trust domain. The SPIFFE ID is recorded locally to show what a real
-//! WIF call WOULD attribute.
+//! `--real-llm` mode honestly records `wire_auth=api_key` because we
+//! don't have a registered federation issuer at the LLM provider for our
+//! demo trust domain. The SPIFFE ID is recorded locally to show what a
+//! real WIF call WOULD attribute. The real endpoint, token, and model are
+//! supplied by the operator via the `LLM_API_URL`, `LLM_API_TOKEN`, and
+//! `LLM_MODEL` environment variables — nucleus stays vendor-agnostic.
 
 use std::env;
 use std::path::PathBuf;
@@ -39,10 +41,10 @@ const POD_NAMESPACE: &str = "agents";
 const POD_SA: &str = "lineage-demo";
 
 const MOCK_LLM_AUDIENCE: &str = "https://mock-llm.local/api";
-const REAL_CLAUDE_AUDIENCE: &str = "https://api.anthropic.com";
+const DEFAULT_LLM_AUDIENCE: &str = "https://api.example-llm.local";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let real_claude = env::args().any(|a| a == "--real-claude");
+    let real_llm = env::args().any(|a| a == "--real-llm");
     let log_path = env::args()
         .skip_while(|a| a != "--log")
         .nth(1)
@@ -59,8 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("jwks:        {}", jwks_path.display());
     println!(
         "external:    {}",
-        if real_claude {
-            "real Claude API (--real-claude; uses ANTHROPIC_API_KEY for wire auth)"
+        if real_llm {
+            "real LLM API (--real-llm; uses LLM_API_TOKEN for wire auth)"
         } else {
             "mock LLM (default; verifies JWT-SVID against on-disk JWKS)"
         }
@@ -161,10 +163,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("step 2 ✔ Write → {} ({})", write_id, tmp.display());
 
     // ── Step 3: LLM call ──────────────────────────────────────────────
+    // Provider label + audience are operator-supplied so nucleus stays
+    // vendor-agnostic (the orchestrator layer owns vendor specifics).
+    let provider = env::var("LLM_PROVIDER").unwrap_or_else(|_| "example-llm".to_string());
+    let real_llm_audience =
+        env::var("LLM_API_URL").unwrap_or_else(|_| DEFAULT_LLM_AUDIENCE.to_string());
     let prompt_bytes = std::fs::read(&tmp)?;
-    let prompt_id = write_id.derive_llm("anthropic", "prompt", &prompt_bytes)?;
-    let aud = if real_claude {
-        REAL_CLAUDE_AUDIENCE
+    let prompt_id = write_id.derive_llm(&provider, "prompt", &prompt_bytes)?;
+    let aud: &str = if real_llm {
+        real_llm_audience.as_str()
     } else {
         MOCK_LLM_AUDIENCE
     };
@@ -175,15 +182,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prompt_id.clone(),
         write_id.clone(),
         EdgeKind::LlmCall {
-            provider: "anthropic".to_string(),
+            provider: provider.clone(),
             direction: "prompt".to_string(),
         },
     )
     .with_content_hash(prompt_id.content_hash_hex().unwrap_or_default());
-    if real_claude {
+    if real_llm {
         // The actual wire auth is the API key; the JWT-SVID is recorded but
-        // NOT presented to Anthropic (no federation rule registered for our
-        // demo trust domain). Audit reflects this.
+        // NOT presented to the provider (no federation rule registered for
+        // our demo trust domain). Audit reflects this.
         prompt_edge = prompt_edge
             .with_attr("wire_auth", "api_key")
             .with_attr("audience_intended", aud.to_string())
@@ -198,18 +205,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_signed(prompt_edge)?;
     println!("step 3a ✔ LLM prompt → {}", prompt_id);
 
-    let response_bytes = if real_claude {
-        call_real_claude(&prompt_bytes)?
+    let response_bytes = if real_llm {
+        call_real_llm(&prompt_bytes)?
     } else {
         call_mock_llm_via_jwks(&prompt_bytes, &prompt_jwt, &jwks_path)?
     };
-    let response_id = prompt_id.derive_llm("anthropic", "response", &response_bytes)?;
+    let response_id = prompt_id.derive_llm(&provider, "response", &response_bytes)?;
     emit_signed(
         LineageEdge::from_parent(
             response_id.clone(),
             prompt_id.clone(),
             EdgeKind::LlmCall {
-                provider: "anthropic".to_string(),
+                provider: provider.clone(),
                 direction: "response".to_string(),
             },
         )
@@ -281,35 +288,40 @@ fn call_mock_llm_via_jwks(
     .into_bytes())
 }
 
-/// Real Claude API call. Uses ANTHROPIC_API_KEY for auth — the JWT-SVID is
-/// recorded in the audit log but NOT presented to Anthropic, since we don't
-/// have a registered federation issuer in the Claude Console for our demo
-/// SPIFFE trust domain. The audit `prompt` edge for `--real-claude` records
+/// Real LLM API call. Uses `LLM_API_TOKEN` for auth — the JWT-SVID is
+/// recorded in the audit log but NOT presented to the provider, since we
+/// don't have a registered federation issuer for our demo SPIFFE trust
+/// domain. The audit `prompt` edge for `--real-llm` records
 /// `wire_auth=api_key` to be honest about what was actually on the wire.
-fn call_real_claude(prompt: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let api_key = env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY must be set for --real-claude mode")?;
+///
+/// The endpoint (`LLM_API_URL`), bearer token (`LLM_API_TOKEN`), and model
+/// name (`LLM_MODEL`) are all operator-supplied — nucleus makes no vendor
+/// assumptions. The response is read from either a `content[0].text` or a
+/// `choices[0].message.content` shape, falling back to the raw JSON body.
+fn call_real_llm(prompt: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let api_key =
+        env::var("LLM_API_TOKEN").map_err(|_| "LLM_API_TOKEN must be set for --real-llm mode")?;
+    let url = env::var("LLM_API_URL").map_err(|_| "LLM_API_URL must be set for --real-llm mode")?;
+    let model = env::var("LLM_MODEL").unwrap_or_else(|_| "default".to_string());
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "max_tokens": 64,
         "messages": [{
             "role": "user",
             "content": String::from_utf8_lossy(prompt).into_owned(),
         }],
     });
-    let resp = ureq::post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
+    let resp = ureq::post(&url)
+        .header("authorization", &format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .send_json(&body)?;
     let body: serde_json::Value = resp.into_body().read_json()?;
     let text = body
-        .get("content")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("text"))
+        .pointer("/content/0/text")
+        .or_else(|| body.pointer("/choices/0/message/content"))
         .and_then(|t| t.as_str())
-        .unwrap_or("(no text in response)")
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| body.to_string());
     Ok(text.into_bytes())
 }
 

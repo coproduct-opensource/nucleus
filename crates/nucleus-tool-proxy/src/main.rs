@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 mod attestation;
 mod auth;
@@ -41,7 +41,9 @@ mod mtls;
 mod node_client;
 mod pod_mgmt;
 mod policy;
+mod run_gate;
 mod sandbox_proof;
+mod session_token;
 mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
@@ -245,6 +247,26 @@ struct Args {
     #[arg(long, env = "NUCLEUS_CERT_ROOT_PUBKEY")]
     cert_root_pubkey: Option<String>,
 
+    // === Live-Path Session Task Token (PR-2, present-not-consumed) ===
+    // Host-minted session capability token injected on the SAME host-controlled
+    // boot channel that provisions credentials (the pod boot environment set by
+    // the node — see nucleus-node's pod launch). NEVER read from an agent-supplied
+    // field (`spec_yaml`, tool args). Verified once at startup and held privately
+    // in `AppState`; a later PR consumes it to gate RunBash. Fail-closed: absent
+    // or invalid ⇒ the later gate DENIES.
+    /// Serialized (JSON) host-minted session task token (`SignedTaskRef`).
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN")]
+    task_token: Option<String>,
+    /// Hex-encoded 16-byte expected effective nonce for the session task token.
+    /// Host-controlled out-of-band value (never agent-readable) — the token
+    /// chain's truncation defense.
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN_NONCE")]
+    task_token_nonce: Option<String>,
+    /// Hex-encoded 32-byte Ed25519 root issuer public key the session task token
+    /// is pinned to.
+    #[arg(long, env = "NUCLEUS_TASK_TOKEN_ISSUER")]
+    task_token_issuer: Option<String>,
+
     // === Approval Bundle Configuration ===
     /// Require a signed approval bundle at startup.
     /// When set, the tool-proxy refuses to start without a valid JWS bundle
@@ -332,6 +354,12 @@ pub(crate) struct AppState {
     /// `NUCLEUS_DECLASSIFY_THRESHOLD` (default 1); with empty trusted keys this
     /// is unsatisfiable, so declassification is fail-closed until configured.
     pub(crate) declassify_threshold: usize,
+    /// Host-minted session capability token, verified once at startup (PR-2,
+    /// present-not-consumed). Private to the tool-proxy session — NOT
+    /// agent-reachable. Fail-closed: `Missing`/`Invalid` MUST cause the later
+    /// RunBash-gating PR to DENY. Consumed by that later PR, hence unused today.
+    #[allow(dead_code)]
+    pub(crate) session_task_token: session_token::SessionTaskToken,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -343,6 +371,34 @@ fn is_locked(state: &AppState) -> bool {
         || state
             .stream_lockdown
             .load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Convert the runtime's `portcullis::CapabilityLattice` into the
+/// `portcullis_core` / `nucleus_ifc_kernel` lattice that
+/// [`portcullis_effects::production_effects_concrete`] expects — the lattice the
+/// sealed net effect's `PolicyEnforced` gate reads (B5). Both carry the identical
+/// 13 named dimensions over the same `CapabilityLevel`, so this is a straight
+/// field-for-field copy; the `portcullis` lattice's extension dimensions have no
+/// `portcullis_core` counterpart and are dropped (net-irrelevant). Mirrors
+/// nucleus core's `command::core_capabilities`.
+pub(crate) fn core_capabilities(
+    caps: &portcullis::CapabilityLattice,
+) -> nucleus_ifc_kernel::CapabilityLattice {
+    nucleus_ifc_kernel::CapabilityLattice {
+        read_files: caps.read_files,
+        write_files: caps.write_files,
+        edit_files: caps.edit_files,
+        run_bash: caps.run_bash,
+        glob_search: caps.glob_search,
+        grep_search: caps.grep_search,
+        web_search: caps.web_search,
+        web_fetch: caps.web_fetch,
+        git_commit: caps.git_commit,
+        git_push: caps.git_push,
+        create_pr: caps.create_pr,
+        manage_pods: caps.manage_pods,
+        spawn_agent: caps.spawn_agent,
+    }
 }
 
 /// Extract an ActorIdentity from the auth context for verdict recording.
@@ -552,36 +608,74 @@ fn load_approval_bundle(
         }
     };
 
-    verify_and_load_approval_bundle(&jws, spec_contents, approvals)
+    let trusted_keys = parse_approval_trusted_keys();
+    verify_and_load_approval_bundle(&jws, spec_contents, approvals, &trusted_keys)
 }
 
-/// Verify a JWS approval bundle and populate the ApprovalRegistry.
+/// Parse the pinned trusted approver keys from `NUCLEUS_APPROVAL_TRUSTED_KEYS`
+/// (a JSON array of JWKs). Unset / empty / parse-error ⇒ empty set ⇒ approval
+/// bundles are refused fail-closed. Mirrors the `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`
+/// pinned-trust-anchor pattern.
+fn parse_approval_trusted_keys() -> Vec<nucleus_identity::did::JsonWebKey> {
+    match std::env::var("NUCLEUS_APPROVAL_TRUSTED_KEYS") {
+        Ok(val) if !val.trim().is_empty() => {
+            match serde_json::from_str::<Vec<nucleus_identity::did::JsonWebKey>>(&val) {
+                Ok(keys) => keys,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "NUCLEUS_APPROVAL_TRUSTED_KEYS is set but is not a valid JSON array of \
+                         JWKs — treating as empty (approval bundles will be refused fail-closed)"
+                    );
+                    Vec::new()
+                }
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Verify a JWS approval bundle against a PINNED set of trusted approver keys and
+/// populate the ApprovalRegistry.
+///
+/// SECURITY: the bundle is verified against `trusted_keys` (the pinned approver
+/// trust anchors), NOT against the key embedded in the JWS header. Trusting the
+/// header's own JWK would be vacuous — an attacker could sign a bundle with their
+/// own key, embed that key in the header, and self-verify, bypassing the
+/// human-in-the-loop approval gate. Fail-closed: if no trusted approver key is
+/// configured, the bundle is refused.
 fn verify_and_load_approval_bundle(
     jws: &str,
     spec_contents: &str,
     approvals: &ApprovalRegistry,
+    trusted_keys: &[nucleus_identity::did::JsonWebKey],
 ) -> Result<(), ApiError> {
     let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
 
-    // Extract the embedded JWK from the JWS header for self-trust verification.
-    // In production, the expected key would come from a pinned trust store.
-    let header = {
-        let header_b64 = jws.split('.').next().ok_or_else(|| {
-            ApiError::Spec("approval bundle is not a valid JWS (no header)".to_string())
-        })?;
-        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(header_b64)
-            .map_err(|e| ApiError::Spec(format!("approval bundle header decode error: {e}")))?;
-        let header: nucleus_identity::approval_bundle::ApprovalBundleHeader =
-            serde_json::from_slice(&header_bytes)
-                .map_err(|e| ApiError::Spec(format!("approval bundle header parse error: {e}")))?;
-        header
-    };
+    // Fail-closed: never self-trust the bundle's embedded key. Without a pinned
+    // trusted approver key there is no authority to check against, so refuse.
+    if trusted_keys.is_empty() {
+        return Err(ApiError::Spec(
+            "no trusted approver keys configured (set NUCLEUS_APPROVAL_TRUSTED_KEYS) — refusing \
+             to load an approval bundle fail-closed (the embedded JWS key is never self-trusted)"
+                .to_string(),
+        ));
+    }
 
     let verifier = ApprovalBundleVerifier::new();
-    let claims = verifier
-        .verify(jws, &header.jwk, &manifest_hash)
-        .map_err(|e| ApiError::Spec(format!("approval bundle verification failed: {e}")))?;
+    // Verify against each PINNED trusted approver key; accept the first that the
+    // bundle validly matches (correct key + valid signature + manifest binding).
+    // A bundle signed by any non-trusted key is rejected.
+    let claims = trusted_keys
+        .iter()
+        .find_map(|tk| verifier.verify(jws, tk, &manifest_hash).ok())
+        .ok_or_else(|| {
+            ApiError::Spec(
+                "approval bundle signer is not a trusted approver key (or the signature / \
+                 manifest binding is invalid)"
+                    .to_string(),
+            )
+        })?;
 
     // Populate the ApprovalRegistry with the approved operations
     let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
@@ -1056,6 +1150,42 @@ async fn main() -> Result<(), ApiError> {
 
     let args = Args::parse();
 
+    // === Auth-secret sanity (fail-closed on a world-known key) ===
+    // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
+    // while being a world-known HMAC key — an empty key makes sandbox tokens and
+    // signed requests trivially forgeable (an attacker computes HMAC(∅, msg)).
+    // Refuse to start rather than authenticate against it. Legit deployments
+    // always provide a real secret, so this never affects them.
+    // `.trim().is_empty()` (matching nucleus-node) also rejects a whitespace-only
+    // secret, which is effectively unset.
+    if args.auth_secret.trim().is_empty() {
+        error!(
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
+             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
+        );
+        std::process::exit(1);
+    }
+    if args.auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
+        warn!(
+            secret_len = args.auth_secret.len(),
+            min = nucleus_client::MIN_AUTH_SECRET_LEN,
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
+        );
+    }
+    // The node-auth secret defaults to `auth_secret` when unset, but an explicitly
+    // provided EMPTY `--node-auth-secret` would be a world-known key for node
+    // requests — refuse it too (fail-closed).
+    if let Some(ref node_secret) = args.node_auth_secret {
+        if node_secret.trim().is_empty() {
+            error!(
+                "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET is empty — refusing to start: an empty HMAC \
+                 key makes node request auth forgeable (fail-closed). Unset it to inherit \
+                 the main auth secret instead."
+            );
+            std::process::exit(1);
+        }
+    }
+
     // === Sandbox Proof Gate ===
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
     let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
@@ -1306,6 +1436,27 @@ async fn main() -> Result<(), ApiError> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1);
 
+    // Live-path session task token (PR-2, present-not-consumed). Read the
+    // host-injected token/nonce/issuer off the boot channel and verify ONCE.
+    // Fail-closed: an unreadable clock, an absent token, or a verification
+    // failure all yield a non-`Verified` state so the later RunBash-gating PR
+    // denies. `now` is derived from the wall clock here (production) but passed
+    // explicitly into the pure resolver (tests supply a fixed `now`).
+    let session_task_token = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => session_token::resolve_session_task_token(
+            args.task_token.as_deref(),
+            args.task_token_nonce.as_deref(),
+            args.task_token_issuer.as_deref(),
+            elapsed.as_secs(),
+        ),
+        // Clock before the epoch ⇒ cannot evaluate freshness ⇒ fail closed.
+        Err(_) => session_token::SessionTaskToken::Invalid,
+    };
+    info!(
+        "live-path session task token: {}",
+        session_task_token.state_label()
+    );
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1342,6 +1493,7 @@ async fn main() -> Result<(), ApiError> {
         memory_transforms,
         declassify_trusted_keys,
         declassify_threshold,
+        session_task_token,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1458,7 +1610,15 @@ async fn main() -> Result<(), ApiError> {
 
     let app = app
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state, auth_middleware));
+        .layer(middleware::from_fn_with_state(state, auth_middleware))
+        // OUTERMOST layer (last `.layer()` wins — it receives the request first,
+        // wrapping every inner layer and handler). A stray panic anywhere inside
+        // — e.g. a poisoned enforcement lock's `.expect()` — is caught here and
+        // converted to a fail-closed HTTP 500 DENY, never a reset/allow, so the
+        // proxy can neither crash nor fail-open. See `fail_closed_panic_response`.
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            fail_closed_panic_response,
+        ));
 
     if let Some(vsock) = pod_mgmt::resolve_vsock(&args, &spec)? {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
@@ -1507,6 +1667,33 @@ async fn main() -> Result<(), ApiError> {
     write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
 
     Ok(())
+}
+
+/// Fail-closed panic handler for [`tower_http::catch_panic::CatchPanicLayer`].
+///
+/// Any panic that unwinds through the router — a poisoned enforcement lock's
+/// `.expect()`, an `unwrap()` on unexpected input, an arithmetic overflow — is
+/// converted into an HTTP 500 DENY. It NEVER resets the connection and NEVER
+/// returns success/allow: the request is refused, fail-closed. This is the
+/// process-level backstop that keeps a stray panic from either crashing the
+/// proxy or letting a request through unchecked.
+fn fail_closed_panic_response(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    let detail = if let Some(s) = err.downcast_ref::<String>() {
+        s.as_str()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        s
+    } else {
+        "unknown panic"
+    };
+    warn!(
+        panic = %detail,
+        "request handler panicked; failing CLOSED with HTTP 500 DENY"
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "denied: internal enforcement error (fail-closed)",
+    )
+        .into_response()
 }
 
 /// Write the exit report on shutdown (including verified exposure data).
@@ -2181,13 +2368,34 @@ async fn http_kernel_decide(
     decide_with_flow_mapped(&mut kernel, &flow, operation, subject)
 }
 
+/// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
+/// brick 3). Recomputes the SHA-256 of the real bytes in hand at the ingest site
+/// and wraps the digest in the kernel [`ContentHash`] the FlowTracker node API
+/// expects. The hash is NEVER read from an agent-supplied field — it is always
+/// recomputed here from the bytes we actually observed.
+///
+/// [`ContentHash`]: nucleus_ifc_kernel::ContentHash
+pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHash {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+    nucleus_ifc_kernel::ContentHash::from_bytes(digest)
+}
+
 /// Observe a data-ingest node in the session flow tracker after a *successful*
 /// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial
 /// taint source; `FileRead` contributes to the confidentiality ceiling. Must be
 /// called only on success paths so a denied/failed op never leaks taint.
-async fn http_observe_flow(state: &AppState, kind: NodeKind) {
+///
+/// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*, whose
+/// recomputed SHA-256 is recorded on the node via `observe_with_content_hash`.
+/// Label/taint behaviour is identical to the old bare `observe` — only the hash
+/// is added.
+async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
+    let hash = ingest_content_hash(bytes);
     let mut flow = state.flow_tracker.lock().await;
-    if let Err(e) = flow.observe(kind) {
+    if let Err(e) = flow.observe_with_content_hash(kind, hash) {
         warn!(?kind, error = %e, "flow-tracker observe failed");
     }
 }
@@ -2291,7 +2499,8 @@ async fn read_file(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful file read brings data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact bytes read.
+    http_observe_flow(&state, NodeKind::FileRead, contents.as_bytes()).await;
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2331,11 +2540,56 @@ async fn write_file(
     let path = req.path.clone();
     let contents = req.contents.clone();
 
-    match state
-        .runtime
-        .sandbox()
-        .write(&path, contents.as_bytes(), &decision_token)
-    {
+    // ─── Sealed discharge gate (B6, parity with the RunBash executor-proof gate
+    // and the B5 net-egress gate). PRECONDITION for the `_proof`-gated
+    // `Sandbox::write`: mint the sealed 8-witness `DischargedBundle` via
+    // `preflight_fs`. Fail closed — a Missing/Invalid session task token gives
+    // `verified_scope == None` ⇒ `InScopeWithTask` denies (no vacuous witness);
+    // an out-of-scope op denies. Without the bundle the `_proof`-gated write
+    // cannot be typed, so no un-preflighted agent fs write can reach cap-std.
+    // The cap-std root confinement inside `Sandbox::write` is retained
+    // (dual-stack): this bundle is additive, not a relocation.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let fs_ceiling = state.runtime.policy().capabilities.write_files;
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_fs(
+            Operation::WriteFiles,
+            verified_scope,
+            fs_ceiling,
+            &path,
+            &flow,
+        );
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: path.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    match state.runtime.sandbox().write(
+        &path,
+        contents.as_bytes(),
+        &decision_token,
+        &discharge_bundle,
+    ) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -2352,6 +2606,7 @@ async fn write_file(
                     contents.as_bytes(),
                     &approved_dt,
                     &approval,
+                    &discharge_bundle,
                 )?;
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -2475,7 +2730,68 @@ async fn run_command(
     let stdin = req.stdin.as_deref();
     let directory = req.directory.as_deref();
 
-    let output = match executor.run_args(&req.args, stdin, directory, &decision_token) {
+    // ─── Executor-proof gate (PR-2, parity with the MCP RunBash handler) ──────
+    // Mint the sealed 8-witness `DischargedBundle` — the type-level precondition
+    // that lets `run_args`/`run_args_with_approval` even be typed. Reuses the exact
+    // `preflight_runbash` the MCP path uses (no re-mint, no forged bundle). Fail
+    // closed on Denied/RequiresApproval: a Missing/Invalid session task token gives
+    // `verified_scope == None` ⇒ `InScopeWithTask` denies — never a permissive
+    // default. Without a bundle here this HTTP spawn would not compile.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let run_bash_ceiling = state.runtime.policy().capabilities.run_bash;
+        let flow = state.flow_tracker.lock().await;
+        let result =
+            run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: display_command.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+            PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: display_command.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge requires approval: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!(
+                    "discharge requires approval: {reason}"
+                )));
+            }
+        }
+    };
+    // Durable audit witness of the sealed 8-witness proof (parity with the MCP
+    // handler's `discharge_bundle` verdict extension).
+    let discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    let output = match executor.run_args(
+        &req.args,
+        stdin,
+        directory,
+        &decision_token,
+        &discharge_bundle,
+    ) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -2499,6 +2815,8 @@ async fn run_command(
                     directory,
                     &approved_dt,
                     &approval,
+                    // Same sealed bundle minted above authorizes the approved retry.
+                    &discharge_bundle,
                 )?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -2527,7 +2845,10 @@ async fn run_command(
                 },
                 actor,
                 policy_rule: None,
-                extensions: BTreeMap::new(),
+                extensions: BTreeMap::from([(
+                    "discharge_bundle".to_string(),
+                    discharge_note.clone(),
+                )]),
             }) {
                 warn!(error = %e, "verdict recording failed -- audit gap");
             }
@@ -2541,7 +2862,7 @@ async fn run_command(
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
-        extensions: BTreeMap::new(),
+        extensions: BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
@@ -2652,28 +2973,67 @@ async fn web_fetch(
     web_fetch_policy::check_url_allowlist(&state.url_allow, url.as_str())
         .map_err(ApiError::WebFetch)?;
 
-    // Build the request
+    // Build the request pieces (method / headers / body) the sealed net effect
+    // needs. The raw reqwest send itself now lives in `portcullis-effects`
+    // (`NetEffect::fetch`) — this handler no longer performs it.
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
+    let headers: Vec<(String, String)> = req.headers.unwrap_or_default().into_iter().collect();
+    let body: Option<Vec<u8>> = req.body.map(|b| b.into_bytes());
 
-    let mut request = state.web_client.request(method, url);
-
-    // Add custom headers
-    if let Some(hdrs) = req.headers {
-        for (key, value) in hdrs {
-            request = request.header(&key, &value);
+    // ─── Sealed discharge gate (B5, parity with the RunBash executor-proof gate)
+    // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed 8-witness
+    // `DischargedBundle` via `preflight_web`. Fail closed — a Missing/Invalid
+    // session task token gives `verified_scope == None` ⇒ `InScopeWithTask`
+    // denies (no vacuous witness); an out-of-scope op denies. Without the bundle
+    // the sealed fetch cannot be typed, so no un-preflighted agent egress can
+    // reach the wire.
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_web(operation, verified_scope, level, &url_str, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: url_str.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
         }
-    }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    // Add body if present
-    if let Some(body) = req.body {
-        request = request.body(body);
-    }
-
-    // Execute request
-    let response = request
-        .send()
+    // Execute the request through the sealed, `_proof`-gated net effect. Passing
+    // the bundle is the type-level authorization; `PolicyEnforced` re-checks the
+    // `web_fetch` capability inside the sealed home.
+    use portcullis_effects::{NetCapability, NetEffect};
+    let effects =
+        portcullis_effects::production_effects_concrete(core_capabilities(&policy.capabilities));
+    let response = effects
+        .fetch(
+            &state.web_client,
+            NetCapability::WebFetch,
+            method,
+            url,
+            &headers,
+            body,
+            None,
+            &discharge_bundle,
+        )
         .await
         .map_err(|e| ApiError::WebFetch(format!("request failed: {e}")))?;
 
@@ -2717,21 +3077,14 @@ async fn web_fetch(
         response_headers.insert("x-nucleus-source-domain".to_string(), host);
     }
 
-    // Read body with size limit
-    let bytes = response
-        .bytes()
+    // Read body with a HARD allocation cap: stream and stop at the limit so a
+    // malicious upstream body cannot OOM-kill the enforcement process, which
+    // would run the agent unmonitored (fail-open). Audit H-1.
+    let (bytes, was_truncated) = read_body_capped(response, state.web_fetch_max_bytes)
         .await
         .map_err(|e| ApiError::WebFetch(format!("failed to read response: {e}")))?;
-
-    let (body, truncated) = if bytes.len() > state.web_fetch_max_bytes {
-        let truncated_bytes = &bytes[..state.web_fetch_max_bytes];
-        (
-            String::from_utf8_lossy(truncated_bytes).to_string(),
-            Some(true),
-        )
-    } else {
-        (String::from_utf8_lossy(&bytes).to_string(), None)
-    };
+    let body = String::from_utf8_lossy(&bytes).to_string();
+    let truncated = if was_truncated { Some(true) } else { None };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -2745,7 +3098,8 @@ async fn web_fetch(
     }
     // IFC: web content is an adversarial taint source — taint the session so
     // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
-    http_observe_flow(&state, NodeKind::WebContent).await;
+    // Brick 3: content-address the exact fetched body bytes.
+    http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -2900,7 +3254,9 @@ async fn glob_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful glob brings file data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact match listing ingested.
+    let listing = matches.join("\n");
+    http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3111,7 +3467,10 @@ async fn grep_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: a successful grep brings file data into the session (#1633).
-    http_observe_flow(&state, NodeKind::FileRead).await;
+    // Brick 3: content-address the exact match set ingested (deterministic
+    // serialization of the real matched bytes).
+    let match_bytes = serde_json::to_vec(&matches).unwrap_or_default();
+    http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3189,15 +3548,9 @@ async fn web_search(
     // Web search requires a configured backend URL
     // For now, return an error indicating the backend must be configured
     // A real implementation would read NUCLEUS_WEB_SEARCH_URL from env/config
-    let search_url = std::env::var("NUCLEUS_WEB_SEARCH_URL").ok();
-
-    if search_url.is_none() {
-        return Err(ApiError::Spec(
-            "web_search requires NUCLEUS_WEB_SEARCH_URL to be configured".to_string(),
-        ));
-    }
-
-    let search_url = search_url.unwrap();
+    let search_url = std::env::var("NUCLEUS_WEB_SEARCH_URL").map_err(|_| {
+        ApiError::Spec("web_search requires NUCLEUS_WEB_SEARCH_URL to be configured".to_string())
+    })?;
 
     // Check DNS allow list
     let url = url::Url::parse(&search_url)
@@ -3219,13 +3572,63 @@ async fn web_search(
         }
     }
 
-    // Perform search request
+    // Perform search request. Fold the query params into the URL here so the
+    // sealed net effect stays a plain method+url+headers+body send; the raw
+    // reqwest send itself lives in `portcullis-effects` (`NetEffect::fetch`).
     let max_results = req.max_results.unwrap_or(10);
-    let response = state
-        .web_client
-        .get(&search_url)
-        .query(&[("q", &req.query), ("num", &max_results.to_string())])
-        .send()
+    let mut fetch_url = url.clone();
+    fetch_url
+        .query_pairs_mut()
+        .append_pair("q", &req.query)
+        .append_pair("num", &max_results.to_string());
+
+    // ─── Sealed discharge gate (B5) ─────────────────────────────────────────
+    // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed 8-witness
+    // `DischargedBundle` via `preflight_web` (WebSearch/HTTPEgress). Fail closed
+    // — Missing/Invalid token ⇒ `verified_scope == None` ⇒ `InScopeWithTask`
+    // denies; out-of-scope op denies. No bundle ⇒ no fetch (no wire egress).
+    let discharge_bundle = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let flow = state.flow_tracker.lock().await;
+        let result = run_gate::preflight_web(operation, verified_scope, level, &req.query, &flow);
+        drop(flow);
+        match result {
+            PreflightResult::Allowed(bundle) => bundle,
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                if let Err(e) = sink.record(VerdictContext {
+                    operation,
+                    subject: req.query.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: format!("discharge denied: {reason}"),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    use portcullis_effects::{NetCapability, NetEffect};
+    let effects =
+        portcullis_effects::production_effects_concrete(core_capabilities(&policy.capabilities));
+    let response = effects
+        .fetch(
+            &state.web_client,
+            NetCapability::WebSearch,
+            reqwest::Method::GET,
+            fetch_url,
+            &[],
+            None,
+            None,
+            &discharge_bundle,
+        )
         .await
         .map_err(|e| ApiError::WebFetch(format!("search request failed: {e}")))?;
 
@@ -3238,9 +3641,10 @@ async fn web_search(
 
     // Parse response - this is a generic JSON structure
     // Real implementations would adapt to specific search APIs
-    let body = response
-        .json::<serde_json::Value>()
+    let (search_bytes, _truncated) = read_body_capped(response, state.web_fetch_max_bytes)
         .await
+        .map_err(|e| ApiError::WebFetch(format!("failed to read search response: {e}")))?;
+    let body: serde_json::Value = serde_json::from_slice(&search_bytes)
         .map_err(|e| ApiError::WebFetch(format!("failed to parse search response: {e}")))?;
 
     // Try to extract results from common formats
@@ -3274,7 +3678,8 @@ async fn web_search(
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
     // IFC: web search results are an adversarial taint source (#1633).
-    http_observe_flow(&state, NodeKind::WebContent).await;
+    // Brick 3: content-address the exact search-backend response bytes.
+    http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
     Ok(Json(WebSearchResponse { results }))
 }
 
@@ -3979,7 +4384,7 @@ impl S3Sink {
             .body(line.as_bytes().to_vec().into())
             .content_type("application/jsonl")
             .if_none_match("*")
-            .send()
+            .send() // net-infra: audit S3 append (aws_sdk_s3, operator sink — not agent egress)
             .await;
 
         if let Err(e) = result {
@@ -4059,7 +4464,7 @@ impl AuditLog {
                     .header("Content-Type", "application/json")
                     .header("X-Nucleus-Signature", &sig)
                     .body(body)
-                    .send()
+                    .send() // net-infra: audit webhook (operator-configured URL — not agent egress)
                     .await;
 
                 if let Err(e) = result {
@@ -4127,6 +4532,150 @@ fn load_last_hash(path: &Path) -> Option<String> {
         return None;
     }
     Some(entry.hash)
+}
+
+/// Read an HTTP response body while STRICTLY bounding peak retained allocation to
+/// `max_bytes` (+ at most one upstream chunk), independent of the upstream's
+/// Content-Length or true size. Streams via `chunk()` and STOPS at the cap, so a
+/// malicious upstream cannot OOM-kill the tool-proxy (the enforcement point) —
+/// the untrusted-content fail-open of audit H-1. Returns `(body, truncated)`;
+/// `truncated` is true iff the upstream had more than `max_bytes` (the surplus is
+/// never accumulated).
+pub(crate) async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max_bytes {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let remaining = max_bytes - buf.len();
+                if chunk.len() > remaining {
+                    buf.extend_from_slice(&chunk[..remaining]);
+                    return Ok((buf, true)); // hit the cap mid-chunk; stop reading
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            None => return Ok((buf, false)), // upstream ended within the cap
+        }
+    }
+    // Exactly at the cap: peek one more chunk to set the truncation flag. The
+    // surplus chunk is read into reqwest's buffer and immediately dropped — peak
+    // retained allocation stays at `max_bytes`.
+    let truncated = resp.chunk().await?.is_some();
+    Ok((buf, truncated))
+}
+
+#[cfg(test)]
+mod read_body_capped_tests {
+    //! Regression guard for audit H-1: the tool-proxy must not buffer an entire
+    //! attacker-controlled upstream body. `read_body_capped` must stop at the cap
+    //! regardless of upstream size. Fails if reverted to whole-body buffering.
+    use super::read_body_capped;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn stops_at_cap_on_oversize_body() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cap = 64 * 1024;
+        let server = MockServer::start().await;
+        // Upstream body two orders of magnitude larger than the cap.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; 4 * 1024 * 1024]))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let (body, truncated) = read_body_capped(resp, cap).await.expect("read");
+        assert_eq!(
+            body.len(),
+            cap,
+            "must retain at most the cap, not the 4 MiB body"
+        );
+        assert!(
+            truncated,
+            "an oversize upstream body must be flagged truncated"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_full_small_body_untruncated() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello".to_vec()))
+            .mount(&server)
+            .await;
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let (body, truncated) = read_body_capped(resp, 64 * 1024).await.expect("read");
+        assert_eq!(body, b"hello");
+        assert!(!truncated);
+    }
+}
+
+#[cfg(test)]
+mod panic_net_tests {
+    //! Audit H-3 — router panic net. A stray panic anywhere under the proxy
+    //! router (e.g. a poisoned enforcement lock's `.expect()`) must become a
+    //! fail-closed HTTP 500, never a connection reset or an allow, and the router
+    //! must keep serving afterwards. Exercises the real `fail_closed_panic_response`
+    //! handler behind the same OUTERMOST `CatchPanicLayer` wiring as the server.
+    use super::fail_closed_panic_response;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+    use tower_http::catch_panic::CatchPanicLayer;
+
+    async fn panicking_handler() -> &'static str {
+        panic!("boom in handler (H-3 test)")
+    }
+
+    fn panic_net_router() -> Router {
+        Router::new()
+            .route("/panic", get(panicking_handler))
+            .route("/ok", get(|| async { "ok" }))
+            // Same OUTERMOST wiring as the production server.
+            .layer(CatchPanicLayer::custom(fail_closed_panic_response))
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_returns_fail_closed_500_and_keeps_serving() {
+        let app = panic_net_router();
+
+        // 1. A panicking handler ⇒ fail-closed 500 (not a reset, not an allow).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/panic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router must return a response, not drop the connection");
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a panicking handler must fail closed with HTTP 500"
+        );
+
+        // 2. The router still serves a subsequent normal request.
+        let resp2 = app
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .expect("router must keep serving after a caught panic");
+        assert_eq!(resp2.status(), StatusCode::OK);
+    }
 }
 
 #[cfg(test)]

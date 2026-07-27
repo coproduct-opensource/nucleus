@@ -1,0 +1,10 @@
+# Pin the Rust toolchain — a DECLARED, versioned build input (not "latest stable").
+# CI was unpinned and floated to 1.97, which newly fires clippy lints (for_kv_map et al.)
+# under `-D warnings`, red-lighting Clippy on every PR and jamming the merge queue — while
+# the code is clean on 1.96.1 (verified: full-workspace `cargo clippy` passes on 1.96.1).
+# Pinning makes the toolchain reproducible across CI and local dev; bump deliberately +
+# fix any new lints in one PR, rather than being surprised by an auto-upgrade.
+# (The Aeneas/Charon jobs set their own nightly explicitly, overriding this.)
+[toolchain]
+channel = "1.96.1"
+components = ["clippy", "rustfmt"]

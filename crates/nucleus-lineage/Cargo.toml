@@ -45,23 +45,28 @@ uuid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 tracing = { workspace = true }
 # base64 is used by the always-on `proof` module to wire-encode signature
-# bytes; not gated.
-base64 = "0.22"
+# bytes; not gated. Version inherited from the workspace pin.
+base64 = { workspace = true }
 # ed25519-dalek is default-on for VERIFICATION (the walker validates `Proof`
 # signatures) and for the production `Pkcs8FileSigner` (decode-only: `pkcs8` +
 # `alloc` + `pem`, no CSPRNG). The `insecure-local-issuer` feature additionally
-# enables `rand_core` for the in-process key-GENERATING LocalIssuer.
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["pkcs8", "alloc", "pem"] }
+# enables `rand_core` for the in-process key-GENERATING LocalIssuer. Version
+# (`=3.0.0-pre.7`) inherited from the workspace pin; only features are local.
+ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc", "pem"] }
 # RFC 6962 / RFC 9162-style Merkle tree for the `MerkleSink` checkpointing
 # layer (transparency-log style append-only integrity). serde feature lets
 # us snapshot the tree if a sink ever needs to persist its state.
 ct-merkle = { version = "0.3", features = ["serde"] }
-# JWT signing/encoding crate — only needed by the dev LocalIssuer.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"], optional = true }
+# JWT signing/encoding crate — only needed by the dev LocalIssuer. Version +
+# feature set (default-features off, use_pem + aws_lc_rs) inherited from the
+# workspace so the whole tree converges on one jsonwebtoken build.
+jsonwebtoken = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
 # Blocking HTTP client for the optional HttpWitnessClient + C2SP
-# witness adapter. Default-off; only pulled in via `http` feature.
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
+# witness adapter. Default-off; only pulled in via `http` feature. Version +
+# `default-features = false` inherited from the workspace; only the local
+# feature set (blocking/json/rustls) is declared here.
+reqwest = { workspace = true, features = ["blocking", "json", "rustls"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

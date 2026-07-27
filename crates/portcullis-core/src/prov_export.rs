@@ -14,7 +14,7 @@ use crate::flow::NodeKind;
 use crate::{AuthorityLevel, DerivationClass, IntegLevel};
 use std::collections::BTreeMap;
 
-/// Convert a u8 discriminant to NodeKind (matching nucleus-claude-hook's encoding).
+/// Convert a u8 discriminant to NodeKind (matching the hook adapter's encoding).
 fn u8_to_node_kind(v: u8) -> NodeKind {
     match v {
         0 => NodeKind::UserPrompt,

@@ -208,6 +208,147 @@ impl MachineDriver for MockMachineDriver {
     }
 }
 
+// ── InMemoryMachineProvider ──────────────────────────────────────────────────
+
+/// An in-memory [`MachineDriver`] test double.
+///
+/// Like [`MockMachineDriver`] it enforces the real lifecycle transitions, but it
+/// additionally retains the [`MachineSpec`] each machine was created with so a
+/// test can assert on the *stored configuration*, not just the lifecycle state.
+/// All state lives in an in-memory map behind the crate's own [`std::sync::Mutex`];
+/// there are no external dependencies and no network access, which makes it a
+/// drop-in provider for reconciler round-trip tests.
+#[derive(Default)]
+pub struct InMemoryMachineProvider {
+    // (next_id_counter, id → record). std Mutex is fine: no `.await` is held
+    // across the lock in any method.
+    inner: std::sync::Mutex<(u64, BTreeMap<MachineId, MachineRecord>)>,
+}
+
+/// The in-memory bookkeeping for one machine held by an
+/// [`InMemoryMachineProvider`].
+#[derive(Debug, Clone)]
+struct MachineRecord {
+    state: MachineState,
+    spec: MachineSpec,
+}
+
+impl InMemoryMachineProvider {
+    /// A fresh, empty in-memory provider.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of machine records currently tracked (including destroyed ones).
+    /// Purely an observability hook for tests.
+    pub fn machine_count(&self) -> usize {
+        let guard = self.inner.lock().expect("provider mutex poisoned");
+        guard.1.len()
+    }
+
+    /// Return a clone of the [`MachineSpec`] a machine was created with, or
+    /// [`MachineError::NotFound`] if the id is unknown. Lets a test verify that
+    /// the provider round-tripped the requested configuration.
+    pub fn spec_of(&self, id: &str) -> Result<MachineSpec, MachineError> {
+        let guard = self.inner.lock().expect("provider mutex poisoned");
+        guard
+            .1
+            .get(id)
+            .map(|rec| rec.spec.clone())
+            .ok_or_else(|| MachineError::NotFound(id.to_string()))
+    }
+
+    fn transition(
+        &self,
+        id: &str,
+        op: &'static str,
+        allowed_from: &[MachineState],
+        to: MachineState,
+    ) -> Result<(), MachineError> {
+        let mut guard = self.inner.lock().expect("provider mutex poisoned");
+        let record = guard
+            .1
+            .get_mut(id)
+            .ok_or_else(|| MachineError::NotFound(id.to_string()))?;
+        if !allowed_from.contains(&record.state) {
+            return Err(MachineError::InvalidTransition {
+                id: id.to_string(),
+                from: record.state,
+                op,
+            });
+        }
+        record.state = to;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MachineDriver for InMemoryMachineProvider {
+    async fn create(&self, spec: &MachineSpec) -> Result<MachineId, MachineError> {
+        let mut guard = self.inner.lock().expect("provider mutex poisoned");
+        guard.0 += 1;
+        let id = format!("inmem-{}", guard.0);
+        guard.1.insert(
+            id.clone(),
+            MachineRecord {
+                state: MachineState::Created,
+                spec: spec.clone(),
+            },
+        );
+        Ok(id)
+    }
+
+    async fn start(&self, id: &str) -> Result<(), MachineError> {
+        self.transition(
+            id,
+            "start",
+            &[
+                MachineState::Created,
+                MachineState::Frozen,
+                MachineState::Stopped,
+                MachineState::Active, // idempotent
+            ],
+            MachineState::Active,
+        )
+    }
+
+    async fn suspend(&self, id: &str) -> Result<(), MachineError> {
+        self.transition(id, "suspend", &[MachineState::Active], MachineState::Frozen)
+    }
+
+    async fn stop(&self, id: &str) -> Result<(), MachineError> {
+        self.transition(
+            id,
+            "stop",
+            &[MachineState::Active, MachineState::Frozen],
+            MachineState::Stopped,
+        )
+    }
+
+    async fn destroy(&self, id: &str) -> Result<(), MachineError> {
+        self.transition(
+            id,
+            "destroy",
+            &[
+                MachineState::Created,
+                MachineState::Active,
+                MachineState::Frozen,
+                MachineState::Stopped,
+            ],
+            MachineState::Destroyed,
+        )
+    }
+
+    async fn status(&self, id: &str) -> Result<MachineState, MachineError> {
+        let guard = self.inner.lock().expect("provider mutex poisoned");
+        guard
+            .1
+            .get(id)
+            .map(|rec| rec.state)
+            .ok_or_else(|| MachineError::NotFound(id.to_string()))
+    }
+}
+
 // ── FlyMachineDriver (skeleton) ──────────────────────────────────────────────
 
 /// A Fly.io Machines API operation, used to map a [`MachineDriver`] call to its
@@ -368,6 +509,47 @@ mod tests {
         assert!(matches!(
             d.status("nope").await.unwrap_err(),
             MachineError::NotFound(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_provider_full_round_trip() {
+        let p = InMemoryMachineProvider::new();
+        assert_eq!(p.machine_count(), 0);
+
+        // create → look up spec + state (observable state assertions)
+        let s = spec();
+        let id = p.create(&s).await.unwrap();
+        assert_eq!(p.machine_count(), 1);
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Created);
+        let stored = p.spec_of(&id).unwrap();
+        assert_eq!(stored.image, s.image);
+        assert_eq!(stored.region, s.region);
+        assert_eq!(stored.cpus, s.cpus);
+        assert_eq!(stored.memory_mb, s.memory_mb);
+
+        // full lifecycle: start → suspend → resume → stop → destroy
+        p.start(&id).await.unwrap();
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Active);
+        p.suspend(&id).await.unwrap();
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Frozen);
+        p.start(&id).await.unwrap();
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Active);
+        p.stop(&id).await.unwrap();
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Stopped);
+        p.destroy(&id).await.unwrap();
+        assert_eq!(p.status(&id).await.unwrap(), MachineState::Destroyed);
+
+        // error paths behave per the trait's conventions
+        assert!(matches!(
+            p.status("nope").await.unwrap_err(),
+            MachineError::NotFound(_)
+        ));
+        let fresh = p.create(&s).await.unwrap();
+        assert_eq!(p.machine_count(), 2);
+        assert!(matches!(
+            p.suspend(&fresh).await.unwrap_err(),
+            MachineError::InvalidTransition { op: "suspend", .. }
         ));
     }
 

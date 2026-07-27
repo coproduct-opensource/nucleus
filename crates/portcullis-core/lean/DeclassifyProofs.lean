@@ -9,6 +9,9 @@ Proves that declassification rules cannot escalate privileges:
 - RaiseAuthority can only increase authority
 - No rule modifies dimensions it doesn't target
 - Applying a rule twice is idempotent
+- Robust declassification: the authenticated, artifact-scoped, sink-restricted
+  token path confines endorsement to the authorized target — an attacker cannot
+  influence what/where is endorsed (Askarov–Myers robustness)
 
 Hand-written Lean models mirroring `portcullis-core/src/declassify.rs`.
 All proofs fully checked, no proof holes.
@@ -209,5 +212,91 @@ theorem non_expired_token_matches_rule (label from_ to_ : IntegLevel) (valid_unt
     (h : isExpired valid_until now = false) :
     applyIfNotExpired label from_ to_ valid_until now = raiseInteg label from_ to_ := by
   simp [applyIfNotExpired, h]
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Robust declassification: the authenticated, artifact-scoped token path
+-- ═══════════════════════════════════════════════════════════════════════
+-- Reconciles the proof with the runtime `apply_declassification_token()`
+-- (crates/portcullis/src/kernel.rs). The unsigned label-class rule path fired on
+-- ANY node matching a precondition (attacker-influenceable) and is now REFUSED
+-- under a security posture at both application (#2058) and registration (#2060).
+-- The signed path endorses ONLY a named target node, only with a verified
+-- signature, only before expiry, and only toward allowlisted sinks. These
+-- theorems prove that path satisfies ROBUST DECLASSIFICATION: an attacker cannot
+-- influence what/where is endorsed (Askarov–Myers robustness; Myers–Sabelfeld–
+-- Zdancewic robust declassification).
+
+/-- Endorsement via the authenticated, artifact-scoped token. `authorized` models
+    successful Ed25519 signature verification against a trusted key (the runtime
+    precondition of `apply_declassification_token`). The integrity raise applies
+    ONLY when the signature verified, the node is the token's target, and the token
+    is unexpired; every other node — including any attacker-controlled node — is
+    left untouched. -/
+def applyScopedToken (target_node node_id : Nat) (authorized : Bool)
+    (label from_ to_ : IntegLevel) (valid_until now : Nat) : IntegLevel :=
+  if authorized = true ∧ node_id = target_node ∧ isExpired valid_until now = false
+  then raiseInteg label from_ to_
+  else label
+
+/-- **Robust declassification (endorsement robustness).** An attacker controlling a
+    node other than the token's authorized target — or lacking a verified signature
+    — cannot obtain an endorsement: that node's integrity is unchanged. The
+    authorized release is confined to the explicitly named target, so the attacker
+    cannot influence WHAT gets endorsed. -/
+theorem attacker_cannot_launder
+    (target_node attacker_node : Nat) (authorized : Bool)
+    (label from_ to_ : IntegLevel) (valid_until now : Nat)
+    (h : attacker_node ≠ target_node ∨ authorized = false) :
+    applyScopedToken target_node attacker_node authorized label from_ to_ valid_until now = label := by
+  unfold applyScopedToken
+  rcases h with h | h
+  · rw [if_neg (by rintro ⟨_, heq, _⟩; exact h heq)]
+  · rw [if_neg (by rintro ⟨hauth, _, _⟩; simp [h] at hauth)]
+
+/-- Without a verified signature the token endorses nothing — the attacker cannot
+    forge the authenticated path. -/
+theorem unauthorized_is_identity
+    (target_node node_id : Nat) (label from_ to_ : IntegLevel) (valid_until now : Nat) :
+    applyScopedToken target_node node_id false label from_ to_ valid_until now = label := by
+  simp [applyScopedToken]
+
+/-- Non-vacuity: the AUTHORIZED, in-scope, unexpired endorsement DOES apply at the
+    target — the mechanism is not vacuously disabled. -/
+theorem authorized_endorsement_applies
+    (target_node : Nat) (label from_ to_ : IntegLevel) (valid_until now : Nat)
+    (hexp : isExpired valid_until now = false) :
+    applyScopedToken target_node target_node true label from_ to_ valid_until now
+      = raiseInteg label from_ to_ := by
+  unfold applyScopedToken
+  rw [if_pos ⟨rfl, rfl, hexp⟩]
+
+/-- The scoped endorsement never LOWERS integrity — the authorized release stays in
+    the declassification direction (inherits `raise_integ_cannot_decrease`). -/
+theorem scoped_cannot_decrease
+    (target_node node_id : Nat) (authorized : Bool)
+    (label from_ to_ : IntegLevel) (valid_until now : Nat) :
+    (applyScopedToken target_node node_id authorized label from_ to_ valid_until now).toNat
+      ≥ label.toNat := by
+  unfold applyScopedToken
+  split
+  · exact raise_integ_cannot_decrease label from_ to_
+  · exact Nat.le_refl _
+
+/-- The full scoped-token authorization for a flow to `sink`: endorsement fires
+    (authorized ∧ scoped ∧ unexpired) AND the sink is in the token's allowlist. -/
+def scopedFlowAuthorized (target_node node_id : Nat) (authorized : Bool)
+    (allowed_sinks : List Nat) (sink : Nat) (valid_until now : Nat) : Bool :=
+  authorized && node_id == target_node && !isExpired valid_until now && allowed_sinks.contains sink
+
+/-- **Sink restriction ("where").** A sink NOT in the token's allowlist is denied
+    regardless of the endorsement — the release is bounded in destination, so
+    endorsed data cannot reach an arbitrary privileged sink. -/
+theorem sink_outside_allowlist_denied
+    (target_node node_id : Nat) (authorized : Bool)
+    (allowed_sinks : List Nat) (sink : Nat) (valid_until now : Nat)
+    (h : allowed_sinks.contains sink = false) :
+    scopedFlowAuthorized target_node node_id authorized allowed_sinks sink valid_until now = false := by
+  unfold scopedFlowAuthorized
+  rw [h, Bool.and_false]
 
 end DeclassifyProofs

@@ -5,7 +5,7 @@ import PortcullisCoreBridge
 # Compartment Ceiling Proofs
 
 Proves properties of the compartment capability ceilings used by
-the nucleus-claude-hook for research/draft/execute/breakglass modes.
+the nucleus hook adapter for research/draft/execute/breakglass modes.
 
 ## What's proved
 

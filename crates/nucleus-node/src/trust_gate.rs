@@ -55,6 +55,15 @@ pub struct TrustGateConfig {
     pub executor_signing_key: Arc<SigningKey>,
     /// Executor identity sent as X-Nucleus-Executor-Id on receipt POSTs.
     pub executor_id: String,
+    /// Dedicated Ed25519 key that signs live-path **session capability tokens**
+    /// ([`SignedTaskRef`](nucleus_provenance_memory::SignedTaskRef)) minted at
+    /// pod spawn. Deliberately DISTINCT from `executor_signing_key` (role
+    /// separation): the executor key signs executor decisions and is the
+    /// executor's receipt identity, so reusing it as the token root issuer
+    /// would conflate two trust roles. Only the PUBLIC half is ever injected
+    /// into a pod (as `NUCLEUS_TASK_TOKEN_ISSUER`); the private key never leaves
+    /// the node.
+    pub task_issuer_signing_key: Arc<SigningKey>,
 }
 
 impl Default for TrustGateConfig {
@@ -66,6 +75,7 @@ impl Default for TrustGateConfig {
             receipt_secret: None,
             executor_signing_key: Arc::new(generate_signing_key()),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
+            task_issuer_signing_key: Arc::new(generate_signing_key()),
         }
     }
 }
@@ -87,6 +97,11 @@ fn uuid_hex() -> String {
 
 /// Filename (under `state_dir`) holding the persisted executor signing key.
 const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
+
+/// Filename (under `state_dir`) holding the persisted **task-issuer** signing
+/// key — the root that signs live-path session capability tokens. DISTINCT from
+/// [`EXECUTOR_KEY_FILE`] so the two trust roles never share a key.
+const TASK_ISSUER_KEY_FILE: &str = "task_issuer_signing_key.der";
 
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
@@ -117,25 +132,45 @@ fn generate_signing_key() -> SigningKey {
 /// replaced rather than crashing the node (fail-open on *availability*, not on
 /// identity — a corrupt key was never a valid enrollment anyway).
 pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
-    let path = state_dir.join(EXECUTOR_KEY_FILE);
+    load_or_create_key_file(state_dir, EXECUTOR_KEY_FILE, "executor signing key")
+}
+
+/// Load the dedicated **task-issuer** Ed25519 signing key from `state_dir`,
+/// creating and persisting a fresh one on first run.
+///
+/// Uses the identical persistence discipline as
+/// [`load_or_create_signing_key`] (PKCS#8 DER, `0o400`, fail-open on
+/// availability) but a DISTINCT file ([`TASK_ISSUER_KEY_FILE`]). This is the
+/// root that signs live-path session capability tokens; keeping it separate
+/// from the executor key enforces role separation — a compromise or rotation
+/// of one identity does not implicate the other, and the executor key (which
+/// is also the executor's receipt identity) never doubles as a token root.
+pub fn load_or_create_task_issuer_signing_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(state_dir, TASK_ISSUER_KEY_FILE, "task issuer signing key")
+}
+
+/// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
+/// the basename under `state_dir`; `label` is used only in log lines.
+fn load_or_create_key_file(state_dir: &Path, filename: &str, label: &str) -> SigningKey {
+    let path = state_dir.join(filename);
 
     if path.exists() {
         match std::fs::read(&path) {
             Ok(bytes) => match SigningKey::from_pkcs8_der(&bytes) {
                 Ok(key) => {
-                    debug!(path = %path.display(), "loaded persisted executor signing key");
+                    debug!(path = %path.display(), "loaded persisted {label}");
                     return key;
                 }
                 Err(e) => warn!(
                     path = %path.display(),
                     error = %e,
-                    "executor signing key file is unreadable; regenerating"
+                    "{label} file is unreadable; regenerating"
                 ),
             },
             Err(e) => warn!(
                 path = %path.display(),
                 error = %e,
-                "failed to read executor signing key file; regenerating"
+                "failed to read {label} file; regenerating"
             ),
         }
     }
@@ -147,13 +182,13 @@ pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    "failed to persist executor signing key; identity will not survive restart"
+                    "failed to persist {label}; identity will not survive restart"
                 );
             } else {
-                info!(path = %path.display(), "generated and persisted new executor signing key");
+                info!(path = %path.display(), "generated and persisted new {label}");
             }
         }
-        Err(e) => warn!(error = %e, "failed to PKCS#8-encode executor signing key; not persisting"),
+        Err(e) => warn!(error = %e, "failed to PKCS#8-encode {label}; not persisting"),
     }
     key
 }
@@ -190,6 +225,8 @@ impl TrustGateConfig {
             .map(Arc::new);
 
         let executor_signing_key = load_or_create_signing_key(state_dir);
+        // Role-separated key that signs live-path session capability tokens.
+        let task_issuer_signing_key = load_or_create_task_issuer_signing_key(state_dir);
 
         // Prefer an explicit id; otherwise derive a stable one from the
         // persistent key (not a fresh uuid per process — #1636).
@@ -206,6 +243,7 @@ impl TrustGateConfig {
             receipt_secret,
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
+            task_issuer_signing_key: Arc::new(task_issuer_signing_key),
         }
     }
 
@@ -1165,6 +1203,47 @@ mod tests {
             "executor signing key must be stable across restarts"
         );
         assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
+    }
+
+    /// Role separation: the task-issuer key must be a DIFFERENT key from the
+    /// executor key in the same state_dir (distinct files), yet each must be
+    /// stable across restarts. Reusing the executor key as the token root would
+    /// conflate the executor identity with the capability-token issuer.
+    #[test]
+    fn test_task_issuer_key_is_distinct_from_executor_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let exec = load_or_create_signing_key(dir.path());
+        let issuer = load_or_create_task_issuer_signing_key(dir.path());
+        assert_ne!(
+            exec.verifying_key().as_bytes(),
+            issuer.verifying_key().as_bytes(),
+            "task-issuer key must not equal the executor key (role separation)"
+        );
+
+        // Distinct files on disk.
+        assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
+        assert!(dir.path().join(TASK_ISSUER_KEY_FILE).exists());
+
+        // Stable across a "restart" (second load from the same dir).
+        let issuer2 = load_or_create_task_issuer_signing_key(dir.path());
+        assert_eq!(
+            issuer.verifying_key().as_bytes(),
+            issuer2.verifying_key().as_bytes(),
+            "task-issuer key must be stable across restarts"
+        );
+    }
+
+    /// `from_env` provisions BOTH keys and they are role-separated.
+    #[test]
+    fn test_from_env_provisions_role_separated_task_issuer_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = TrustGateConfig::from_env(dir.path());
+        assert_ne!(
+            config.executor_signing_key.verifying_key().as_bytes(),
+            config.task_issuer_signing_key.verifying_key().as_bytes(),
+            "from_env must provision a task-issuer key distinct from the executor key"
+        );
     }
 
     #[test]

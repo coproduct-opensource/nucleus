@@ -86,6 +86,11 @@ impl std::fmt::Display for Severity {
 // ── MCP config scanning ─────────────────────────────────────────────
 
 /// Known MCP config file locations to scan.
+///
+/// Intrinsic interop: real, non-neutralizable on-disk config paths written by
+/// external agent/editor tooling (e.g. `.claude/mcp.json`,
+/// `claude_desktop_config.json`). These are detection targets the scanner must
+/// match verbatim, not nucleus-owned names.
 const MCP_CONFIG_LOCATIONS: &[&str] = &[
     ".mcp.json",
     "mcp.json",

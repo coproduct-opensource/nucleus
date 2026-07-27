@@ -20,12 +20,18 @@ struct MsFlags;
 #[allow(dead_code)]
 impl MsFlags {
     const MS_NOSUID: MsFlags = MsFlags;
+    const MS_NOEXEC: MsFlags = MsFlags;
     const MS_NODEV: MsFlags = MsFlags;
     const MS_REMOUNT: MsFlags = MsFlags;
     const MS_RDONLY: MsFlags = MsFlags;
     fn empty() -> MsFlags {
         MsFlags
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl std::ops::BitOrAssign for MsFlags {
+    fn bitor_assign(&mut self, _rhs: MsFlags) {}
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -56,11 +62,9 @@ fn run() -> Result<(), String> {
     ensure_dir("/etc/nucleus")?;
     ensure_dir("/work")?;
 
-    mount_fs("proc", "/proc", "proc", MsFlags::empty(), None);
-    mount_fs("sys", "/sys", "sysfs", MsFlags::empty(), None);
-    mount_fs("dev", "/dev", "devtmpfs", MsFlags::empty(), None);
-    mount_fs("tmpfs", "/tmp", "tmpfs", MsFlags::empty(), None);
-    mount_fs("tmpfs", "/run", "tmpfs", MsFlags::empty(), None);
+    for m in GUEST_MOUNTS {
+        mount_fs(m.source, m.target, m.fstype, m.ms_flags(), None);
+    }
 
     if Path::new("/dev/vdb").exists() {
         mount_fs(
@@ -123,6 +127,36 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
 
+    // Live-path session capability token (optional). The node injects it on the
+    // kernel cmdline as `nucleus.task_token_hex` (hex of the token JSON — the
+    // cmdline is whitespace-delimited and quote-sensitive, so raw JSON is unsafe)
+    // plus hex nonce/issuer. We decode the token back to the exact JSON string
+    // the tool-proxy verify half expects and forward all three as env vars. If
+    // the token is absent or the hex is malformed we simply do not set them —
+    // the tool-proxy then records Missing/Invalid and fails closed.
+    if let Some(token_hex) = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex") {
+        match hex::decode(&token_hex)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+        {
+            Some(token_json) => {
+                std::env::set_var("NUCLEUS_TASK_TOKEN", token_json);
+                if let Some(nonce) = parse_cmdline_secret(&cmdline, "nucleus.task_token_nonce") {
+                    std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", nonce);
+                }
+                if let Some(issuer) = parse_cmdline_secret(&cmdline, "nucleus.task_token_issuer") {
+                    std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", issuer);
+                }
+            }
+            None => {
+                eprintln!(
+                    "nucleus-guest-init: nucleus.task_token_hex is not valid hex/UTF-8; \
+                     skipping session token (tool-proxy will fail closed)"
+                );
+            }
+        }
+    }
+
     // S3 audit sink config (optional, passed via kernel args from nucleus-node)
     for (arg, env_var) in [
         (
@@ -166,11 +200,105 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
     }
 
-    remount_root_ro();
+    remount_root_ro()?;
 
     exec_proxy(&spec_path);
     Ok(())
 }
+
+/// One guest mount, with its hardening flags as PLAIN BOOLS.
+///
+/// Bools rather than `MsFlags` so the table is inspectable on any host — the
+/// same reason `firecracker_config`'s lowering seams are not gated behind
+/// `target_os = "linux"`. A hardening table that can only be read on the machine
+/// it runs on is a hardening table nobody checks.
+pub(crate) struct GuestMount {
+    pub source: &'static str,
+    pub target: &'static str,
+    pub fstype: &'static str,
+    /// SUID/SGID bits are not honoured — blocks a dropped setuid binary.
+    pub nosuid: bool,
+    /// Device nodes cannot be created — blocks a crafted /dev/mem or /dev/sda.
+    pub nodev: bool,
+    /// Binaries cannot be executed from here.
+    pub noexec: bool,
+}
+
+impl GuestMount {
+    fn ms_flags(&self) -> MsFlags {
+        let mut f = MsFlags::empty();
+        if self.nosuid {
+            f |= MsFlags::MS_NOSUID;
+        }
+        if self.nodev {
+            f |= MsFlags::MS_NODEV;
+        }
+        if self.noexec {
+            f |= MsFlags::MS_NOEXEC;
+        }
+        f
+    }
+}
+
+/// The guest's pseudo-filesystem mounts, hardened.
+///
+/// Every one of these was mounted with `MsFlags::empty()` — no nosuid, no
+/// nodev, no noexec — while `/work`, the data volume mounted a few lines below,
+/// already carried `MS_NOSUID | MS_NODEV`. The pattern was known and the
+/// pseudo-filesystems simply missed it.
+///
+/// Standard practice for microVMs is a read-only rootfs with writable layers
+/// marked noexec/nodev/nosuid. `/tmp` and `/run` are the writable tmpfs layers
+/// and the classic staging ground for a dropped payload; `/proc` and `/sys`
+/// have no business carrying setuid bits, device nodes or executables.
+///
+/// `/dev` keeps `nodev = false` for the obvious reason — it IS the device tree —
+/// and keeps `noexec = false` deliberately rather than by omission: tightening a
+/// mount the guest boots from, with no end-to-end test available here, risks the
+/// mount failing and `mount_fs` continuing without it, which would be a worse
+/// outcome than the flag's absence.
+pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
+    GuestMount {
+        source: "proc",
+        target: "/proc",
+        fstype: "proc",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "sys",
+        target: "/sys",
+        fstype: "sysfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "dev",
+        target: "/dev",
+        fstype: "devtmpfs",
+        nosuid: true,
+        nodev: false,
+        noexec: false,
+    },
+    GuestMount {
+        source: "tmpfs",
+        target: "/tmp",
+        fstype: "tmpfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "tmpfs",
+        target: "/run",
+        fstype: "tmpfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+];
 
 fn ensure_dir(path: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("create {path}: {err}"))
@@ -190,19 +318,40 @@ fn mount_fs(source: &str, target: &str, fstype: &str, flags: MsFlags, data: Opti
     }
 }
 
-fn remount_root_ro() {
+/// Remount the guest root read-only, and FAIL THE BOOT if it does not take.
+///
+/// This logged the failure and carried on, so a guest whose rootfs did not go
+/// read-only booted anyway — silently losing the read-only-rootfs posture that
+/// the whole image is built around, with nothing above it any the wiser.
+///
+/// The repo already states the rule for the analogous case one layer up, in
+/// nucleus-node's seccomp verification: "a process whose seccomp filter cannot
+/// be confirmed active is killed and the launch is aborted rather than left
+/// running unconfined. The previous behavior only logged a warning and continued
+/// (fail-open)." The same applies here. The Linux kernel itself panics rather
+/// than continue when it cannot mount root.
+///
+/// Returning `Result` rather than panicking so the caller aborts BEFORE
+/// `exec_proxy` — a controlled refusal with a legible message, not a panic
+/// midway through boot.
+fn remount_root_ro() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        if let Err(err) = mount::<str, str, str, str>(
+        mount::<str, str, str, str>(
             None,
             "/",
             None,
             MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
             None,
-        ) {
-            eprintln!("remount / ro failed: {err}");
-        }
+        )
+        .map_err(|err| {
+            format!(
+                "remount / read-only failed: {err} — refusing to start the \
+                     workload rather than run it on a writable rootfs"
+            )
+        })?;
     }
+    Ok(())
 }
 
 fn resolve_pod_spec() -> Result<String, String> {
@@ -367,6 +516,55 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Every guest pseudo-filesystem is hardened, and `/tmp` and `/run`
+    /// especially.**
+    ///
+    /// All five were mounted with `MsFlags::empty()` while `/work`, the data
+    /// volume a few lines below, already carried `MS_NOSUID | MS_NODEV`. The
+    /// pattern was known; the pseudo-filesystems missed it.
+    ///
+    /// Standard microVM practice is a read-only rootfs with writable layers
+    /// marked nosuid/nodev/noexec. `/tmp` and `/run` are those writable layers
+    /// and the classic staging ground for a dropped payload.
+    ///
+    /// Runs on any host because the table stores plain bools rather than
+    /// `MsFlags` — a hardening table readable only on the machine it runs on is
+    /// one nobody checks.
+    #[test]
+    fn guest_mounts_are_hardened() {
+        for m in super::GUEST_MOUNTS {
+            assert!(
+                m.nosuid,
+                "{} must be nosuid — a setuid binary dropped there is a \
+                 privilege-escalation primitive",
+                m.target
+            );
+        }
+
+        for target in ["/tmp", "/run"] {
+            let m = super::GUEST_MOUNTS
+                .iter()
+                .find(|m| m.target == target)
+                .unwrap_or_else(|| panic!("{target} must be in the mount table"));
+            assert!(
+                m.nodev && m.noexec,
+                "{target} is writable: needs nodev + noexec"
+            );
+        }
+
+        // /dev is the device tree, so nodev would defeat its purpose. Asserted
+        // rather than left implicit, so flipping it reads as a deliberate change.
+        let dev = super::GUEST_MOUNTS
+            .iter()
+            .find(|m| m.target == "/dev")
+            .unwrap();
+        assert!(
+            !dev.nodev,
+            "/dev must permit device nodes — it is the device tree"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -388,5 +586,39 @@ mod tests {
     fn parse_sandbox_token_empty_value() {
         let cmdline = "nucleus.sandbox_token=";
         assert_eq!(parse_cmdline_secret(cmdline, "nucleus.sandbox_token"), None);
+    }
+
+    /// The live-path token rides the cmdline hex-encoded; decoding it back must
+    /// reproduce the EXACT JSON string the tool-proxy verify half parses. JSON
+    /// contains `{`, `"`, `:`, `,` — all cmdline-hostile — which is why it is
+    /// hex-wrapped; this asserts the wrapper round-trips losslessly and that the
+    /// hex token is a single whitespace-delimited cmdline argument.
+    #[test]
+    fn task_token_hex_roundtrips_to_exact_json() {
+        let token_json = r#"{"task_id":"pod-1","blocks":[{"claim":{"nonce":[1,2,3]}}]}"#;
+        let token_hex = hex::encode(token_json.as_bytes());
+        let nonce_hex = hex::encode([7u8; 16]);
+        let issuer_hex = hex::encode([9u8; 32]);
+        let cmdline = format!(
+            "console=ttyS0 nucleus.auth_secret=a nucleus.task_token_hex={token_hex} \
+             nucleus.task_token_nonce={nonce_hex} nucleus.task_token_issuer={issuer_hex}"
+        );
+
+        let parsed_hex = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex")
+            .expect("hex token must parse as a single cmdline arg");
+        let decoded = String::from_utf8(hex::decode(&parsed_hex).unwrap()).unwrap();
+        assert_eq!(
+            decoded, token_json,
+            "hex must decode back to the exact JSON"
+        );
+
+        assert_eq!(
+            parse_cmdline_secret(&cmdline, "nucleus.task_token_nonce"),
+            Some(nonce_hex)
+        );
+        assert_eq!(
+            parse_cmdline_secret(&cmdline, "nucleus.task_token_issuer"),
+            Some(issuer_hex)
+        );
     }
 }

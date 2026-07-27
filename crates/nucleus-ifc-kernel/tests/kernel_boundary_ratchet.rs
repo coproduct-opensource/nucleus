@@ -37,6 +37,7 @@ const KERNEL_FILES: &[&str] = &[
     "src/capability_level.rs",
     "src/capability_lattice.rs",
     "src/exposure.rs",
+    "src/hash_types.rs",
     "src/ifc_lattice.rs",
     "src/ifc_ops.rs",
     "src/flow.rs",
@@ -56,6 +57,7 @@ const KERNEL_MODULES: &[&str] = &[
     "capability_level",
     "capability_lattice",
     "exposure",
+    "hash_types",
     "ifc_lattice",
     "ifc_ops",
     "flow",
@@ -81,6 +83,8 @@ const KERNEL_ROOT_PRIMITIVES: &[&str] = &[
     "Freshness",
     "DerivationClass",
     "IFCLabel",
+    // hash_types.rs (InputsAuthorized brick 1)
+    "ContentHash",
     // ifc_ops.rs (M1b)
     "Operation",
     "SinkClass",

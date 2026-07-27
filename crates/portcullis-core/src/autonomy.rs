@@ -13,7 +13,7 @@
 //! - **Confused deputy**: The ceiling prevents destructive operations
 //!   (delete, destroy) from being auto-approved even if the user trusts
 //!   the agent.
-//! - **Trust ratchet**: ~40% of Claude Code users reach full auto-approve
+//! - **Trust ratchet**: ~40% of agentic-CLI users reach full auto-approve
 //!   by 750 sessions. The ceiling bounds the maximum damage.
 //!
 //! ## How it works

@@ -16,8 +16,8 @@ fn main() {
     let mut total = 0;
 
     // ═══════════════════════════════════════════════════════════════════
-    // CVE-2025-32711 — EchoLeak: Copilot zero-click exfiltration
-    // CVSS 9.3 — PowerPoint speaker notes exfiltrate email/Teams/OneDrive
+    // CVE-2025-32711 — EchoLeak: enterprise AI assistant zero-click exfiltration
+    // CVSS 9.3 — presentation speaker notes exfiltrate email/chat/file-store data
     // ═══════════════════════════════════════════════════════════════════
     total += 1;
     {
@@ -31,13 +31,13 @@ fn main() {
         assert_eq!(decision, Verdict::Deny);
         assert_eq!(contradiction, Verdict::Conflict);
         passed += 1;
-        println!("  [BLOCKED] CVE-2025-32711 EchoLeak (Copilot zero-click)");
+        println!("  [BLOCKED] CVE-2025-32711 EchoLeak (enterprise assistant zero-click)");
         println!("           truth_meet(ExternalDoc, InternalData) = DENY");
         println!("           info_join detects CONFLICT — two trust levels disagree\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CVE-2025-53773 — GitHub Copilot YOLO mode RCE
+    // CVE-2025-53773 — AI coding assistant YOLO mode RCE
     // Prompt injection enables auto-approve, then executes shell commands
     // ═══════════════════════════════════════════════════════════════════
     total += 1;
@@ -53,14 +53,14 @@ fn main() {
         assert_eq!(write_decision, Verdict::Deny);
         assert_eq!(exec_decision, Verdict::Deny);
         passed += 1;
-        println!("  [BLOCKED] CVE-2025-53773 Copilot YOLO RCE");
+        println!("  [BLOCKED] CVE-2025-53773 AI coding assistant YOLO RCE");
         println!("           truth_meet(UntrustedInput, ConfigWrite) = DENY");
         println!("           Agent cannot modify its own security config\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CVE-2025-59536 / CVE-2026-21852 — Claude Code hook RCE + API key theft
-    // Malicious .claude/settings.json executes hooks before trust dialog
+    // CVE-2025-59536 / CVE-2026-21852 — coding-agent CLI hook RCE + API key theft
+    // Malicious repo-supplied agent settings.json executes hooks before trust dialog
     // ═══════════════════════════════════════════════════════════════════
     total += 1;
     {
@@ -73,7 +73,7 @@ fn main() {
         assert_eq!(decision, Verdict::Unknown); // requires approval before proceeding
         assert!(!decision.is_allow());
         passed += 1;
-        println!("  [BLOCKED] CVE-2025-59536 Claude Code hook RCE");
+        println!("  [BLOCKED] CVE-2025-59536 coding-agent CLI hook RCE");
         println!("           truth_meet(RepoConfig, ExecuteHook) = UNKNOWN");
         println!("           Unapproved config cannot trigger execution\n");
     }
@@ -137,7 +137,7 @@ fn main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // GitHub MCP prompt injection via public Issues (May 2025)
+    // Hosted-repo MCP prompt injection via public Issues (May 2025)
     // Issue content exfiltrates private repo source and keys
     // ═══════════════════════════════════════════════════════════════════
     total += 1;
@@ -149,13 +149,13 @@ fn main() {
 
         assert_eq!(decision, Verdict::Deny);
         passed += 1;
-        println!("  [BLOCKED] GitHub MCP Issue injection");
+        println!("  [BLOCKED] Hosted-repo MCP Issue injection");
         println!("           truth_meet(PublicIssue, PrivateRepos) = DENY");
         println!("           Public issue content cannot access private repos\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Google Gemini calendar invite attack (Black Hat 2025)
+    // Consumer AI assistant calendar invite attack (Black Hat 2025)
     // Hidden injection in calendar events controls smart home + email
     // ═══════════════════════════════════════════════════════════════════
     total += 1;
@@ -170,7 +170,7 @@ fn main() {
         assert_eq!(home_decision, Verdict::Deny);
         assert_eq!(email_decision, Verdict::Deny);
         passed += 1;
-        println!("  [BLOCKED] Gemini calendar invite attack (Black Hat 2025)");
+        println!("  [BLOCKED] Consumer AI assistant calendar invite attack (Black Hat 2025)");
         println!("           truth_meet(CalendarEvent, SmartHome) = DENY");
         println!("           External invite cannot control smart home or read email\n");
     }

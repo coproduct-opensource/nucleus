@@ -9,7 +9,7 @@
 //! self-proving-system north star. See `docs/rfcs/witness-olog-functor.md`.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use nucleus_externality::AssuranceRung;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -137,7 +137,7 @@ pub fn verify_manifest(m: &AccumulationManifest, vk: &VerifyingKey) -> Result<()
     let mut buf = [0u8; 64];
     buf.copy_from_slice(&sig_bytes);
     let sig = Signature::from_bytes(&buf);
-    vk.verify(&canonical_manifest_bytes(m), &sig)
+    vk.verify_strict(&canonical_manifest_bytes(m), &sig)
         .map_err(|e| ManifestError::SignatureInvalid(e.to_string()))
 }
 
