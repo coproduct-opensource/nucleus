@@ -27,7 +27,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 # RFC 6962 consistency-proof verification on the server side. Same pin
 # as nucleus-lineage / nucleus-verifier-service so the workspace keeps a
 # single ct-merkle version.

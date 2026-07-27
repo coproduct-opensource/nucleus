@@ -127,7 +127,7 @@ anyhow = "1.0"
 # NOT drag in a second ed25519-dalek (v2) / sha2 (0.10) line — letting the whole
 # workspace converge on ed25519-dalek 3 + sha2 0.11. Supports the full alg set
 # (RS/PS/ES/EdDSA) we verify. See docs/PROOFS.md and scripts/check-dep-ceiling.sh.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 async-trait = "0.1"
 
 # Async runtime
@@ -190,7 +190,7 @@ shell-words = "1.1"
 regex = "1.12"
 
 # Encoding
-base64 = "0.22"
+base64 = "0.23"
 
 # Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Pinned to the
 # exact prerelease iroh requires (=3.0.0-pre.7) so the WHOLE workspace resolves a
