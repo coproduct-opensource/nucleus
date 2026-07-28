@@ -1932,6 +1932,114 @@ mod tests {
         );
     }
 
+    // ── Receipts: every mediated decision is witnessed ─────────────────────
+
+    /// Completeness: each mediated call appends exactly one receipt, naming the
+    /// `(Operation, SinkClass)` it was decided for, in call order — and the
+    /// chain verifies.
+    ///
+    /// This is the property the receipt exists for. A log that were merely
+    /// *present* would prove nothing; what makes it evidence is that the count
+    /// matches the number of effects and the contents match what was decided.
+    #[test]
+    fn every_mediated_call_is_witnessed_exactly_once() {
+        use crate::receipt::EffectOutcome;
+        use portcullis_core::{Operation as Op, SinkClass as Sink};
+
+        let fx = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
+            policy: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            },
+        };
+
+        fx.read(Path::new("/tmp/x"), read_auth()).expect("read");
+        fx.write(Path::new("/tmp/x"), b"x", write_auth())
+            .expect("write");
+        fx.append(Path::new("/tmp/x"), b"x", write_auth())
+            .expect("append");
+        fx.glob("*.rs", glob_auth()).expect("glob");
+        fx.fetch("https://example.com", fetch_auth())
+            .expect("fetch");
+        fx.search("q", search_auth()).expect("search");
+        fx.run("ls", shell_auth()).expect("run");
+        fx.commit("msg", commit_auth()).expect("commit");
+        fx.push("origin", "main", push_auth()).expect("push");
+        fx.spawn("http://a", "{}", spawn_auth()).expect("spawn");
+
+        let entries = fx.receipts().entries();
+        assert_eq!(
+            entries.len(),
+            10,
+            "one receipt per mediated call; got {entries:?}"
+        );
+        assert_eq!(fx.receipts().verify_chain(), Ok(()));
+
+        let expected = [
+            (Op::ReadFiles, Sink::AuditLogAppend),
+            (Op::WriteFiles, Sink::WorkspaceWrite),
+            (Op::WriteFiles, Sink::WorkspaceWrite), // append shares the write sink
+            (Op::GlobSearch, Sink::AuditLogAppend),
+            (Op::WebFetch, Sink::HTTPEgress),
+            (Op::WebSearch, Sink::HTTPEgress),
+            (Op::RunBash, Sink::BashExec),
+            (Op::GitCommit, Sink::GitCommit),
+            (Op::GitPush, Sink::GitPush),
+            (Op::SpawnAgent, Sink::AgentSpawn),
+        ];
+        for (i, (op, sink)) in expected.iter().enumerate() {
+            assert_eq!(entries[i].operation, *op, "receipt {i} operation");
+            assert_eq!(entries[i].sink_class, *sink, "receipt {i} sink");
+            assert_eq!(entries[i].outcome, EffectOutcome::Allowed, "receipt {i}");
+        }
+    }
+
+    /// A refusal is witnessed too, and distinguishes WHY. An audit that recorded
+    /// only successes would let a refused push vanish from the record; one that
+    /// collapsed the two denial kinds could not tell "capability off" from
+    /// "wrong authority presented".
+    #[test]
+    fn refusals_are_witnessed_and_say_which_check_refused() {
+        use crate::receipt::EffectOutcome;
+
+        // `git_push` off entirely → the coarse lattice refuses.
+        let denied_by_policy = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
+            policy: CapabilityLattice::bottom(),
+        };
+        let _ = denied_by_policy.push("origin", "main", push_auth());
+        assert_eq!(
+            denied_by_policy.receipts().entries()[0].outcome,
+            EffectOutcome::DeniedByPolicy
+        );
+
+        // `git_push` on, but the wrong authority → the scope check refuses.
+        let denied_by_scope = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
+            policy: CapabilityLattice {
+                git_push: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            },
+        };
+        let _ = denied_by_scope.push("origin", "main", commit_auth());
+        let e = &denied_by_scope.receipts().entries()[0];
+        assert_eq!(e.outcome, EffectOutcome::DeniedByScope);
+        assert_eq!(e.operation, portcullis_core::Operation::GitPush);
+        assert_eq!(e.sink_class, portcullis_core::SinkClass::GitPush);
+    }
+
     // ── EffectError ────────────────────────────────────────────────────────
 
     #[test]
