@@ -620,12 +620,18 @@ mod tests {
         // Same signature, different claimed root.
         let mut forged = signed;
         forged.checkpoint.root[0] ^= 0xff;
-        assert!(!forged.verify_signature(&vk), "a rewritten root kept its signature");
+        assert!(
+            !forged.verify_signature(&vk),
+            "a rewritten root kept its signature"
+        );
 
         // Same signature, different claimed size.
         let mut resized = signed;
         resized.checkpoint.size += 1;
-        assert!(!resized.verify_signature(&vk), "a rewritten size kept its signature");
+        assert!(
+            !resized.verify_signature(&vk),
+            "a rewritten size kept its signature"
+        );
     }
 
     #[test]
