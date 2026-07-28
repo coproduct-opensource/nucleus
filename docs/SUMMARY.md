@@ -13,6 +13,7 @@
 - [Architecture](architecture/overview.md)
   - [Security Architecture](architecture/security.md)
   - [Isolation Levels](architecture/isolation-levels.md)
+  - [Landscape and Rationale](architecture/landscape.md)
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)
 - [Assurance](assurance/formal-methods.md)
