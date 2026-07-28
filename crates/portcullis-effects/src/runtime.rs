@@ -732,9 +732,13 @@ impl NucleusRuntime {
             SinkClass::AuditLogAppend,
             "read file",
         )?;
+        // The runtime check above yields the precise `ScopeMismatch` error; the
+        // effect layer re-checks when it spends the authority. Both are cheap,
+        // and the effect-level one also covers callers that bypass the runtime.
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
         let data = fx
-            .read(path)
+            .read(path, authority)
             .map_err(|e| self.translate_error(e, "read file", path))?;
 
         let node_id = self
@@ -772,8 +776,9 @@ impl NucleusRuntime {
         // property of THIS write, and a bundle minted by a different preflight
         // would otherwise never encounter the check.
         self.check_path_allowed(path)?;
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
-        fx.write(path, content)
+        fx.write(path, content, authority)
             .map_err(|e| self.translate_error(e, "write file", path))
     }
 
@@ -805,7 +810,8 @@ impl NucleusRuntime {
             "fetch url",
         )?;
         let fx = &self.effects;
-        let data = fx.fetch(url).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let data = fx.fetch(url, authority).map_err(RuntimeError::from)?;
 
         let node_id = self
             .flow_tracker
@@ -837,7 +843,8 @@ impl NucleusRuntime {
             "run shell command",
         )?;
         let fx = &self.effects;
-        let output = fx.run(cmd).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let output = fx.run(cmd, authority).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
         })
@@ -862,7 +869,8 @@ impl NucleusRuntime {
             "git commit",
         )?;
         let fx = &self.effects;
-        let hash = fx.commit(message).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let hash = fx.commit(message, authority).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
         })
@@ -883,7 +891,8 @@ impl NucleusRuntime {
     ) -> Result<(), RuntimeError> {
         Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
-        fx.push(remote, branch).map_err(RuntimeError::from)
+        let authority = crate::authority::Authority::new(proof);
+        fx.push(remote, branch, authority).map_err(RuntimeError::from)
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
@@ -1750,7 +1759,7 @@ mod tests {
         let fx = rt.unmediated_effects(&token, proof).unwrap();
 
         // Write should be policy-denied (capability levels still enforced)
-        let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
+        let result = fx.write(std::path::Path::new("/tmp/test"), b"data", crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)));
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
     }
 
