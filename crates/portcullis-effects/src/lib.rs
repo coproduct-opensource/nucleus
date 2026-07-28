@@ -1844,6 +1844,50 @@ mod tests {
         );
     }
 
+    /// No false denial: each method ACCEPTS the authority earned for it and
+    /// reaches the inner effect. Without this, a scope check that refused
+    /// everything would satisfy the test above and break the runtime.
+    #[test]
+    fn every_mediated_method_accepts_its_own_authority() {
+        let fx = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            policy: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            },
+        };
+
+        fx.read(Path::new("/tmp/x"), read_auth()).expect("read");
+        fx.write(Path::new("/tmp/x"), b"x", write_auth())
+            .expect("write");
+        fx.append(Path::new("/tmp/x"), b"x", write_auth())
+            .expect("append");
+        fx.glob("*.rs", glob_auth()).expect("glob");
+        fx.fetch("https://example.com", fetch_auth())
+            .expect("fetch");
+        fx.search("q", search_auth()).expect("search");
+        fx.run("ls", shell_auth()).expect("run");
+        fx.commit("msg", commit_auth()).expect("commit");
+        fx.push("origin", "main", push_auth()).expect("push");
+        fx.spawn("http://a", "{}", spawn_auth()).expect("spawn");
+
+        // All ten reached the inner impl — nothing was refused on scope.
+        assert_eq!(
+            fx.inner.calls().len(),
+            10,
+            "every correctly-scoped call must reach the effect: {:?}",
+            fx.inner.calls()
+        );
+    }
+
     // ── EffectError ────────────────────────────────────────────────────────
 
     #[test]
