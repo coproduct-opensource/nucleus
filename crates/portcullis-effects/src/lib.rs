@@ -58,6 +58,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 
+use crate::authority::Authority;
 use portcullis_core::discharge::DischargedBundle;
 use portcullis_core::{CapabilityLattice, CapabilityLevel};
 
@@ -104,22 +105,45 @@ impl std::error::Error for EffectError {}
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// File system read/write operations.
+///
+/// # Mediation surface (B1/B2)
+///
+/// Every method takes an [`Authority`](crate::authority::Authority) **by value**.
+/// That is the whole point and it buys two properties the previous surface did
+/// not have:
+///
+/// * **Scoped** — the authority names the `(Operation, SinkClass)` it was earned
+///   for, and spending it on a different pair fails. Previously these four
+///   methods took no obligation token at all and were gated only by the coarse
+///   capability lattice (`write_files != Never`), so none of the eight
+///   obligations reached a file write.
+/// * **One-shot** — by value means moved. Replaying an authority is a
+///   move-after-move *compile* error, not a policy someone has to remember.
+///
+/// `read_str` is a provided method and consumes the authority it is handed,
+/// forwarding it to `read` — one authority, one read.
 pub trait FileEffect {
     /// Read the full contents of a file.
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError>;
+    fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError>;
 
     /// Write bytes to a file, creating it if it does not exist.
-    fn write(&self, path: &Path, content: &[u8]) -> Result<(), EffectError>;
+    fn write(&self, path: &Path, content: &[u8], authority: Authority)
+        -> Result<(), EffectError>;
 
     /// Append bytes to a file, creating it if it does not exist.
-    fn append(&self, path: &Path, content: &[u8]) -> Result<(), EffectError>;
+    fn append(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError>;
 
     /// List files matching a glob pattern. Returns absolute paths.
-    fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError>;
+    fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError>;
 
     /// Read the full contents of a file as UTF-8.
-    fn read_str(&self, path: &Path) -> Result<String, EffectError> {
-        let bytes = self.read(path)?;
+    fn read_str(&self, path: &Path, authority: Authority) -> Result<String, EffectError> {
+        let bytes = self.read(path, authority)?;
         String::from_utf8(bytes).map_err(|e| EffectError::Io(format!("UTF-8 decode failed: {e}")))
     }
 }
@@ -340,11 +364,20 @@ impl RealEffects {
 }
 
 impl FileEffect for RealEffects {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
+    fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError> {
+        // The authority is consumed here and never handed back — this is the
+        // point at which the right to read is spent.
+        drop(authority);
         std::fs::read(path).map_err(|e| EffectError::Io(format!("{}: {e}", path.display())))
     }
 
-    fn write(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn write(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
+        drop(authority);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| EffectError::Io(format!("{}: {e}", parent.display())))?;
@@ -353,7 +386,13 @@ impl FileEffect for RealEffects {
             .map_err(|e| EffectError::Io(format!("{}: {e}", path.display())))
     }
 
-    fn append(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn append(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
+        drop(authority);
         use std::io::Write as _;
         let mut f = std::fs::OpenOptions::new()
             .create(true)
@@ -364,7 +403,8 @@ impl FileEffect for RealEffects {
             .map_err(|e| EffectError::Io(format!("{}: {e}", path.display())))
     }
 
-    fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
+    fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
+        drop(authority);
         // Use regex-based glob matching against directory walk.
         // Convert glob syntax to regex: * → [^/]*, ** → .*, ? → [^/]
         let re_pattern = glob_to_regex(pattern);
@@ -691,25 +731,73 @@ impl<E> PolicyEnforced<E> {
     }
 }
 
+/// Spend an authority on `(op, sink)` and re-wrap it for the inner effect.
+///
+/// The scope check happens HERE, at the policy gate, so every `FileEffect` call
+/// through `PolicyEnforced` is checked exactly once. The bundle is re-wrapped
+/// rather than handed back raw: the inner impl still receives a by-value
+/// `Authority`, so the one-shot property survives delegation instead of
+/// decaying into the ambient `&DischargedBundle` surface at the last hop.
+fn spend_for(
+    authority: Authority,
+    op: portcullis_core::Operation,
+    sink: portcullis_core::SinkClass,
+) -> Result<Authority, EffectError> {
+    let bundle = authority
+        .spend(op, sink)
+        .map_err(|e| EffectError::PolicyDenied(e.to_string()))?;
+    Ok(Authority::new(bundle))
+}
+
 impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
+    fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.require(self.policy.read_files, "read_files")?;
-        self.inner.read(path)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::ReadFiles,
+            portcullis_core::SinkClass::AuditLogAppend,
+        )?;
+        self.inner.read(path, authority)
     }
 
-    fn write(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn write(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
         self.require(self.policy.write_files, "write_files")?;
-        self.inner.write(path, content)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::WriteFiles,
+            portcullis_core::SinkClass::WorkspaceWrite,
+        )?;
+        self.inner.write(path, content, authority)
     }
 
-    fn append(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn append(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
         self.require(self.policy.write_files, "write_files (append)")?;
-        self.inner.append(path, content)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::WriteFiles,
+            portcullis_core::SinkClass::WorkspaceWrite,
+        )?;
+        self.inner.append(path, content, authority)
     }
 
-    fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
+    fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
         self.require(self.policy.glob_search, "glob_search")?;
-        self.inner.glob(pattern)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::GlobSearch,
+            portcullis_core::SinkClass::AuditLogAppend,
+        )?;
+        self.inner.glob(pattern, authority)
     }
 }
 
@@ -941,12 +1029,17 @@ impl Default for RecordingEffects {
 }
 
 impl FileEffect for RecordingEffects {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
+    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.record("read", path.display().to_string());
         Ok(self.file_read_response.clone())
     }
 
-    fn write(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn write(
+        &self,
+        path: &Path,
+        content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         self.record(
             "write",
             format!("{}({} bytes)", path.display(), content.len()),
@@ -954,7 +1047,12 @@ impl FileEffect for RecordingEffects {
         Ok(())
     }
 
-    fn append(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
+    fn append(
+        &self,
+        path: &Path,
+        content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         self.record(
             "append",
             format!("{}(+{} bytes)", path.display(), content.len()),
@@ -962,7 +1060,7 @@ impl FileEffect for RecordingEffects {
         Ok(())
     }
 
-    fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
+    fn glob(&self, pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
         self.record("glob", pattern);
         Ok(Vec::new())
     }
@@ -1063,25 +1161,35 @@ impl AgentSpawnEffect for RecordingEffects {
 pub struct DenyAllEffects;
 
 impl FileEffect for DenyAllEffects {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
+    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "read denied: {}",
             path.display()
         )))
     }
-    fn write(&self, path: &Path, _content: &[u8]) -> Result<(), EffectError> {
+    fn write(
+        &self,
+        path: &Path,
+        _content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "write denied: {}",
             path.display()
         )))
     }
-    fn append(&self, path: &Path, _content: &[u8]) -> Result<(), EffectError> {
+    fn append(
+        &self,
+        path: &Path,
+        _content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "append denied: {}",
             path.display()
         )))
     }
-    fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
+    fn glob(&self, pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
         Err(EffectError::PolicyDenied(format!("glob denied: {pattern}")))
     }
 }
@@ -1239,20 +1347,30 @@ impl Default for AllowListEffects {
 }
 
 impl FileEffect for AllowListEffects {
-    fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
+    fn read(&self, path: &Path, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.check_path(path)?;
         Ok(self.file_read_response.clone())
     }
 
-    fn write(&self, path: &Path, _content: &[u8]) -> Result<(), EffectError> {
+    fn write(
+        &self,
+        path: &Path,
+        _content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         self.check_path(path)
     }
 
-    fn append(&self, path: &Path, _content: &[u8]) -> Result<(), EffectError> {
+    fn append(
+        &self,
+        path: &Path,
+        _content: &[u8],
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         self.check_path(path)
     }
 
-    fn glob(&self, _pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
+    fn glob(&self, _pattern: &str, _authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
         Ok(Vec::new())
     }
 }
@@ -1363,6 +1481,30 @@ fn collect_matches(
 mod tests {
     use super::*;
 
+    /// An authority scoped to a file read.
+    fn read_auth() -> Authority {
+        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+            portcullis_core::Operation::ReadFiles,
+            portcullis_core::SinkClass::AuditLogAppend,
+        ))
+    }
+
+    /// An authority scoped to a workspace write (also governs `append`).
+    fn write_auth() -> Authority {
+        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+            portcullis_core::Operation::WriteFiles,
+            portcullis_core::SinkClass::WorkspaceWrite,
+        ))
+    }
+
+    /// An authority scoped to a glob search.
+    fn glob_auth() -> Authority {
+        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+            portcullis_core::Operation::GlobSearch,
+            portcullis_core::SinkClass::AuditLogAppend,
+        ))
+    }
+
     // ── EffectError ────────────────────────────────────────────────────────
 
     #[test]
@@ -1399,14 +1541,14 @@ mod tests {
     fn deny_all_rejects_every_call() {
         let fx = DenyAllEffects;
         assert!(matches!(
-            fx.read(Path::new("file.txt")),
+            fx.read(Path::new("file.txt"), read_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.write(Path::new("file.txt"), b"data"),
+            fx.write(Path::new("file.txt"), b"data", write_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.glob("*.rs"), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(fx.glob("*.rs", glob_auth()), Err(EffectError::PolicyDenied(_))));
         assert!(matches!(
             fx.fetch("https://example.com"),
             Err(EffectError::PolicyDenied(_))
@@ -1431,8 +1573,8 @@ mod tests {
     #[test]
     fn recording_records_calls_in_order() {
         let fx = RecordingEffects::new();
-        let _ = fx.read(Path::new("a.rs"));
-        let _ = fx.write(Path::new("b.rs"), b"hi");
+        let _ = fx.read(Path::new("a.rs"), read_auth());
+        let _ = fx.write(Path::new("b.rs"), b"hi", write_auth());
         let _ = fx.run("echo hello");
         let calls = fx.calls();
         assert_eq!(calls.len(), 3);
@@ -1444,7 +1586,7 @@ mod tests {
     #[test]
     fn recording_returns_configured_file_content() {
         let fx = RecordingEffects::new().with_file_content(b"hello world".to_vec());
-        let bytes = fx.read(Path::new("any.txt")).unwrap();
+        let bytes = fx.read(Path::new("any.txt"), read_auth()).unwrap();
         assert_eq!(bytes, b"hello world");
     }
 
@@ -1460,13 +1602,13 @@ mod tests {
     #[test]
     fn allow_list_path_prefix_enforcement() {
         let fx = AllowListEffects::new().allow_path("/workspace/src");
-        assert!(fx.read(Path::new("/workspace/src/main.rs")).is_ok());
+        assert!(fx.read(Path::new("/workspace/src/main.rs"), read_auth()).is_ok());
         assert!(matches!(
-            fx.read(Path::new("/etc/passwd")),
+            fx.read(Path::new("/etc/passwd"), read_auth()),
             Err(EffectError::PathViolation(_))
         ));
         assert!(matches!(
-            fx.read(Path::new("/workspace/secrets")),
+            fx.read(Path::new("/workspace/secrets"), read_auth()),
             Err(EffectError::PathViolation(_))
         ));
     }
@@ -1491,7 +1633,7 @@ mod tests {
             policy,
         };
         assert!(matches!(
-            fx.read(Path::new("file.txt")),
+            fx.read(Path::new("file.txt"), read_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
@@ -1523,8 +1665,8 @@ mod tests {
             policy,
         };
         // These should reach the inner impl
-        assert!(fx.read(Path::new("file.txt")).is_ok());
-        assert!(fx.glob("*.rs").is_ok());
+        assert!(fx.read(Path::new("file.txt"), read_auth()).is_ok());
+        assert!(fx.glob("*.rs", glob_auth()).is_ok());
         assert_eq!(fx.inner.calls().len(), 2);
         // But web_fetch is still Never
         assert!(matches!(
@@ -1539,7 +1681,7 @@ mod tests {
         let fx = production_effects(policy);
         // Everything denied — confirming production_effects wraps in PolicyEnforced
         assert!(matches!(
-            fx.read(Path::new("any.txt")),
+            fx.read(Path::new("any.txt"), read_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
     }
@@ -1551,7 +1693,7 @@ mod tests {
 
         let fx = production_effects(policy);
         // Should pass the policy gate — will fail at I/O level (file missing)
-        let result = fx.read(Path::new("/nonexistent/path/to/missing.txt"));
+        let result = fx.read(Path::new("/nonexistent/path/to/missing.txt"), read_auth());
         assert!(matches!(result, Err(EffectError::Io(_))));
     }
 
@@ -1634,8 +1776,8 @@ mod tests {
         policy.write_files = CapabilityLevel::Always;
 
         let fx = production_effects(policy);
-        fx.write(&path, b"hello effects").unwrap();
-        let bytes = fx.read(&path).unwrap();
+        fx.write(&path, b"hello effects", write_auth()).unwrap();
+        let bytes = fx.read(&path, read_auth()).unwrap();
         assert_eq!(bytes, b"hello effects");
     }
 

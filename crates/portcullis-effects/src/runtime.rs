@@ -732,9 +732,13 @@ impl NucleusRuntime {
             SinkClass::AuditLogAppend,
             "read file",
         )?;
+        // The runtime check above yields the precise `ScopeMismatch` error; the
+        // effect layer re-checks when it spends the authority. Both are cheap,
+        // and the effect-level one also covers callers that bypass the runtime.
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
         let data = fx
-            .read(path)
+            .read(path, authority)
             .map_err(|e| self.translate_error(e, "read file", path))?;
 
         let node_id = self
@@ -772,8 +776,9 @@ impl NucleusRuntime {
         // property of THIS write, and a bundle minted by a different preflight
         // would otherwise never encounter the check.
         self.check_path_allowed(path)?;
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
-        fx.write(path, content)
+        fx.write(path, content, authority)
             .map_err(|e| self.translate_error(e, "write file", path))
     }
 
@@ -1750,7 +1755,7 @@ mod tests {
         let fx = rt.unmediated_effects(&token, proof).unwrap();
 
         // Write should be policy-denied (capability levels still enforced)
-        let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
+        let result = fx.write(std::path::Path::new("/tmp/test"), b"data", crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)));
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
     }
 

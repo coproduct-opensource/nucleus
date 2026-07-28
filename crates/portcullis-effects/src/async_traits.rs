@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::authority::Authority;
 use crate::{EffectError, SearchResult, ShellOutput};
 
 /// Async file system operations.
@@ -17,6 +18,7 @@ pub trait AsyncFileEffect {
     fn read(
         &self,
         path: &Path,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, EffectError>> + Send;
 
     /// Write bytes to a file, creating it if it does not exist.
@@ -24,6 +26,7 @@ pub trait AsyncFileEffect {
         &self,
         path: &Path,
         content: &[u8],
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<(), EffectError>> + Send;
 
     /// Append bytes to a file, creating it if it does not exist.
@@ -31,12 +34,14 @@ pub trait AsyncFileEffect {
         &self,
         path: &Path,
         content: &[u8],
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<(), EffectError>> + Send;
 
     /// List files matching a glob pattern. Returns absolute paths.
     fn glob(
         &self,
         pattern: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<Vec<PathBuf>, EffectError>> + Send;
 }
 
@@ -101,17 +106,27 @@ pub trait AsyncAgentSpawnEffect {
 pub struct SyncAdapter<E>(pub E);
 
 impl<E: crate::FileEffect + Send + Sync> AsyncFileEffect for SyncAdapter<E> {
-    async fn read(&self, path: &Path) -> Result<Vec<u8>, EffectError> {
-        self.0.read(path)
+    async fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError> {
+        self.0.read(path, authority)
     }
-    async fn write(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
-        self.0.write(path, content)
+    async fn write(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
+        self.0.write(path, content, authority)
     }
-    async fn append(&self, path: &Path, content: &[u8]) -> Result<(), EffectError> {
-        self.0.append(path, content)
+    async fn append(
+        &self,
+        path: &Path,
+        content: &[u8],
+        authority: Authority,
+    ) -> Result<(), EffectError> {
+        self.0.append(path, content, authority)
     }
-    async fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EffectError> {
-        self.0.glob(pattern)
+    async fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
+        self.0.glob(pattern, authority)
     }
 }
 
