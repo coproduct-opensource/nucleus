@@ -27,23 +27,38 @@
 //! };
 //! let fx = production_effects(policy);
 //!
-//! // Policy is checked here — no need to call preflight separately
-//! let contents = fx.read(Path::new("src/main.rs"))?;
+//! // Policy is checked here, and the call consumes an `Authority` — the
+//! // right to perform exactly this one action, earned from a preflight.
+//! let contents = fx.read(Path::new("src/main.rs"), authority)?;
 //! fx.fetch("https://example.com")?;
+//! ```
+//!
+//! Most callers should not build authorities by hand: [`runtime::NucleusRuntime`]
+//! pairs each `preflight_*` with the effect it authorizes.
+//!
+//! ```rust,ignore
+//! let proof = rt.preflight_read()?;      // discharges the eight obligations
+//! let data  = rt.read_file(&path, proof)?; // spends it on exactly this read
 //! ```
 //!
 //! ## Testing
 //!
 //! ```rust
 //! use portcullis_effects::{DenyAllEffects, RecordingEffects, FileEffect};
+//! use portcullis_effects::authority::Authority;
+//! use portcullis_core::discharge::test_helpers::bundle_for;
+//! use portcullis_core::{Operation, SinkClass};
+//!
+//! let read_authority = || Authority::new(
+//!     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
 //!
 //! // DenyAllEffects rejects everything — useful for testing deny paths
 //! let fx = DenyAllEffects;
-//! assert!(fx.read(std::path::Path::new("file.txt")).is_err());
+//! assert!(fx.read(std::path::Path::new("file.txt"), read_authority()).is_err());
 //!
 //! // RecordingEffects records all calls — useful for asserting what was invoked
 //! let fx = RecordingEffects::new();
-//! let _ = fx.read(std::path::Path::new("file.txt"));
+//! let _ = fx.read(std::path::Path::new("file.txt"), read_authority());
 //! assert_eq!(fx.calls().len(), 1);
 //! ```
 
@@ -928,6 +943,11 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 ///
 /// ```rust
 /// use portcullis_effects::{production_effects, FileEffect};
+/// # use portcullis_effects::authority::Authority;
+/// # use portcullis_core::discharge::test_helpers::bundle_for;
+/// # use portcullis_core::{Operation, SinkClass};
+/// # let read_authority = || Authority::new(
+/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
 /// use portcullis_core::{CapabilityLattice, CapabilityLevel};
 ///
 /// let policy = CapabilityLattice {
@@ -936,8 +956,9 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 /// };
 /// let fx = production_effects(policy);
 /// // fx implements FileEffect, WebEffect, ShellEffect, GitEffect, AgentSpawnEffect
-/// // Policy is checked at every call — no separate preflight needed.
-/// let result = fx.read(std::path::Path::new("Cargo.toml"));
+/// // The lattice is checked at every call; the `Authority` carries the eight
+/// // obligations and is spent by the call.
+/// let result = fx.read(std::path::Path::new("Cargo.toml"), read_authority());
 /// // May succeed or fail depending on filesystem; policy gate is open.
 /// let _ = result;
 /// ```
@@ -984,9 +1005,14 @@ pub struct EffectCall {
 ///
 /// ```rust
 /// use portcullis_effects::{RecordingEffects, FileEffect};
+/// # use portcullis_effects::authority::Authority;
+/// # use portcullis_core::discharge::test_helpers::bundle_for;
+/// # use portcullis_core::{Operation, SinkClass};
+/// # let read_authority = || Authority::new(
+/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
 ///
 /// let fx = RecordingEffects::new();
-/// let _ = fx.read(std::path::Path::new("src/main.rs"));
+/// let _ = fx.read(std::path::Path::new("src/main.rs"), read_authority());
 /// assert_eq!(fx.calls().len(), 1);
 /// assert_eq!(fx.calls()[0].kind, "read");
 /// ```
@@ -1154,9 +1180,14 @@ impl AgentSpawnEffect for RecordingEffects {
 ///
 /// ```rust
 /// use portcullis_effects::{DenyAllEffects, FileEffect};
+/// # use portcullis_effects::authority::Authority;
+/// # use portcullis_core::discharge::test_helpers::bundle_for;
+/// # use portcullis_core::{Operation, SinkClass};
+/// # let read_authority = || Authority::new(
+/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
 ///
 /// let fx = DenyAllEffects;
-/// assert!(fx.read(std::path::Path::new("any.txt")).is_err());
+/// assert!(fx.read(std::path::Path::new("any.txt"), read_authority()).is_err());
 /// ```
 pub struct DenyAllEffects;
 
@@ -1274,11 +1305,16 @@ impl AgentSpawnEffect for DenyAllEffects {
 ///
 /// ```rust
 /// use portcullis_effects::{AllowListEffects, FileEffect};
+/// # use portcullis_effects::authority::Authority;
+/// # use portcullis_core::discharge::test_helpers::bundle_for;
+/// # use portcullis_core::{Operation, SinkClass};
+/// # let read_authority = || Authority::new(
+/// #     bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
 ///
 /// let fx = AllowListEffects::new()
 ///     .allow_path("/workspace/src");
-/// assert!(fx.read(std::path::Path::new("/workspace/src/main.rs")).is_ok());
-/// assert!(fx.read(std::path::Path::new("/etc/passwd")).is_err());
+/// assert!(fx.read(std::path::Path::new("/workspace/src/main.rs"), read_authority()).is_ok());
+/// assert!(fx.read(std::path::Path::new("/etc/passwd"), read_authority()).is_err());
 /// ```
 pub struct AllowListEffects {
     allowed_path_prefixes: Vec<PathBuf>,
@@ -1504,6 +1540,74 @@ mod tests {
             portcullis_core::SinkClass::AuditLogAppend,
         ))
     }
+
+    // ── Uniform mediation on FileEffect (B1/B2) ────────────────────────────
+
+    /// The gap this cutover closes: before it, `FileEffect::write` took no
+    /// obligation token at all and was gated only by `write_files != Never`, so
+    /// none of the eight obligations reached a file write. Now the write spends
+    /// an authority, and one earned for a read will not pay for it.
+    #[test]
+    fn a_read_authority_will_not_pay_for_a_write_at_the_effect_layer() {
+        let fx = production_effects_concrete(CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            ..CapabilityLattice::bottom()
+        });
+        let err = fx
+            .write(Path::new("/tmp/nucleus-scope-test"), b"x", read_auth())
+            .expect_err("a read authority must not pay for a write");
+        assert!(
+            matches!(err, EffectError::PolicyDenied(ref m) if m.contains("scope")),
+            "expected a scope denial, got: {err:?}"
+        );
+    }
+
+    /// …and the lattice gate is NOT what refuses it. `write_files` is `Always`
+    /// above, so a pass here would mean the coarse capability was doing the work
+    /// and the obligations still were not.
+    #[test]
+    fn the_scope_refusal_is_not_the_lattice_gate() {
+        let fx = production_effects_concrete(CapabilityLattice {
+            write_files: CapabilityLevel::Always,
+            ..CapabilityLattice::bottom()
+        });
+        // Correctly scoped: passes the scope check, reaches the real effect.
+        let ok = fx.write(Path::new("/tmp/nucleus-scope-test-ok"), b"x", write_auth());
+        assert!(
+            !matches!(&ok, Err(EffectError::PolicyDenied(m)) if m.contains("scope")),
+            "a correctly-scoped write must not be refused on scope: {ok:?}"
+        );
+        let _ = std::fs::remove_file("/tmp/nucleus-scope-test-ok");
+    }
+
+    /// An authority buys ONE call. This is `!Clone` + by-value, so the second
+    /// use is a move-after-move compile error rather than a runtime check.
+    ///
+    /// Perturbation, as required by the `Authority` doctest's own reasoning: a
+    /// `compile_fail` test passes for ANY compile error. Deleting the second
+    /// `write` below makes this snippet compile, so the failure depends on the
+    /// replay and on nothing else. That was checked, not assumed.
+    ///
+    /// ```compile_fail,E0382
+    /// use portcullis_effects::{production_effects_concrete, FileEffect};
+    /// use portcullis_effects::authority::Authority;
+    /// use portcullis_core::discharge::test_helpers::bundle_for;
+    /// use portcullis_core::{CapabilityLattice, CapabilityLevel, Operation, SinkClass};
+    ///
+    /// let fx = production_effects_concrete(CapabilityLattice {
+    ///     write_files: CapabilityLevel::Always,
+    ///     ..CapabilityLattice::bottom()
+    /// });
+    /// let authority = Authority::new(
+    ///     bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
+    ///
+    /// let _first = fx.write(std::path::Path::new("/tmp/a"), b"x", authority);
+    /// // Replay: `authority` was moved by the first write.
+    /// let _second = fx.write(std::path::Path::new("/tmp/b"), b"x", authority);
+    /// ```
+    #[allow(dead_code)]
+    fn an_authority_pays_for_exactly_one_file_effect() {}
 
     // ── EffectError ────────────────────────────────────────────────────────
 
