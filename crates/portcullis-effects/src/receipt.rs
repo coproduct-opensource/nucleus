@@ -58,10 +58,18 @@
 //!   log (Rekor) is the further escalation and is not done.
 //! * **The signing key is whatever the caller supplies.** Binding it to a
 //!   *measured binary* is the attestation work, and is not done here.
-//! * **Coverage is the ten methods `PolicyEnforced` gates.**
+//! * **Coverage is all thirteen effect methods**, including the three —
 //!   `ShellEffect::run_argv`, `AsyncShellSpawnEffect::run_argv_async` and
-//!   `NetEffect::fetch` spend their authority inside `RealEffects`, below this
-//!   layer, so they are not witnessed.
+//!   `NetEffect::fetch` — that spend their authority inside `RealEffects`,
+//!   below this layer. They are covered because the receipt is written by
+//!   [`Authority::spend`](crate::authority::Authority::spend) wherever the spend
+//!   happens, rather than at the gate. See that type's docs for why the
+//!   placement is the design.
+//! * **A receipt records an authorised spend, not a completed effect.** The
+//!   spend is upstream of the syscall, so `Allowed` means the authority was
+//!   exercised for that scope — not that the write hit the disk or the request
+//!   left the host. Splitting *authorised* from *committed* needs a second
+//!   event after the effect returns, and is not implemented.
 
 use std::sync::Mutex;
 

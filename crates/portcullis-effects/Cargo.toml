@@ -40,6 +40,10 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 # in the `net` policy-gate test (the workspace reqwest uses `rustls-no-provider`
 # under feature unification, so a provider must be installed first).
 rustls = { workspace = true }
+# Test-only: constructs a `reqwest::Response` for the `NetEffect` double, so the
+# third deferred-spend method can be receipt-tested without opening a socket.
+# Already in the tree via reqwest; declared here only to name it directly.
+http = "1"
 
 [lints]
 workspace = true

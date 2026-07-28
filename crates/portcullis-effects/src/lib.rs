@@ -796,11 +796,36 @@ impl<E> PolicyEnforced<E> {
         &self.receipts
     }
 
-    /// Check the capability, spend the authority, and record what was decided.
+    /// Hand an authority the log it should record its spend against.
     ///
-    /// One function so the receipt cannot drift from the check: there is no path
-    /// through the gate that skips the append, because the append is on every
-    /// branch of the same expression that performs the check.
+    /// The mediation layer owns the log and the authority owns the spend, so the
+    /// witness has to be attached on the way past. Every method that accepts an
+    /// `Authority` routes it through here — the ten via [`gate`](Self::gate), the
+    /// three that spend further down by calling this directly.
+    fn witnessed(&self, authority: Authority) -> Authority {
+        authority.witnessed_by(std::sync::Arc::clone(&self.receipts))
+    }
+
+    /// Record a refusal the authority never got far enough to record itself.
+    ///
+    /// The capability lattice is checked before the spend, so on that path the
+    /// authority is dropped unspent and no receipt comes from `spend`.
+    fn record_policy_denial(
+        &self,
+        op: portcullis_core::Operation,
+        sink: portcullis_core::SinkClass,
+    ) {
+        self.receipts
+            .append(op, sink, crate::receipt::EffectOutcome::DeniedByPolicy);
+    }
+
+    /// Check the capability, then spend the authority.
+    ///
+    /// The `Allowed` and `DeniedByScope` receipts are **not** written here — they
+    /// are written by [`Authority::spend`], which is the only way to consume an
+    /// authority and therefore the one place the record cannot be skipped. This
+    /// function only has to add the branch `spend` never sees: the capability
+    /// lattice refusing before any spend happens.
     fn gate(
         &self,
         level: CapabilityLevel,
@@ -809,21 +834,13 @@ impl<E> PolicyEnforced<E> {
         op: portcullis_core::Operation,
         sink: portcullis_core::SinkClass,
     ) -> Result<Authority, EffectError> {
-        use crate::receipt::EffectOutcome;
         if let Err(e) = self.require(level, capability) {
-            self.receipts
-                .append(op, sink, EffectOutcome::DeniedByPolicy);
+            self.record_policy_denial(op, sink);
             return Err(e);
         }
-        match authority.spend(op, sink) {
-            Ok(bundle) => {
-                self.receipts.append(op, sink, EffectOutcome::Allowed);
-                Ok(Authority::new(bundle))
-            }
-            Err(e) => {
-                self.receipts.append(op, sink, EffectOutcome::DeniedByScope);
-                Err(EffectError::PolicyDenied(e.to_string()))
-            }
+        match self.witnessed(authority).spend(op, sink) {
+            Ok(bundle) => Ok(Authority::new(bundle)),
+            Err(e) => Err(EffectError::PolicyDenied(e.to_string())),
         }
     }
 
@@ -930,11 +947,25 @@ impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         authority: Authority,
     ) -> io::Result<Output> {
-        // Preserve the sealed policy gate for the structured spawn too.
-        self.require(self.policy.run_bash, "run_bash")
-            .map_err(policy_denied_io)?;
-        self.inner
-            .run_argv(program, args, cwd, stdin, allowed_env, harden, authority)
+        // Preserve the sealed policy gate for the structured spawn too. The
+        // authority itself is spent further down, inside `RealEffects`, so the
+        // witness is attached here and travels with it.
+        if let Err(e) = self.require(self.policy.run_bash, "run_bash") {
+            self.record_policy_denial(
+                portcullis_core::Operation::RunBash,
+                portcullis_core::SinkClass::BashExec,
+            );
+            return Err(policy_denied_io(e));
+        }
+        self.inner.run_argv(
+            program,
+            args,
+            cwd,
+            stdin,
+            allowed_env,
+            harden,
+            self.witnessed(authority),
+        )
     }
 }
 
@@ -951,8 +982,13 @@ impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> io::Result<Output> {
-        self.require(self.policy.run_bash, "run_bash")
-            .map_err(policy_denied_io)?;
+        if let Err(e) = self.require(self.policy.run_bash, "run_bash") {
+            self.record_policy_denial(
+                portcullis_core::Operation::RunBash,
+                portcullis_core::SinkClass::BashExec,
+            );
+            return Err(policy_denied_io(e));
+        }
         self.inner
             .run_argv_async(
                 program,
@@ -962,7 +998,7 @@ impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
                 allowed_env,
                 harden,
                 timeout,
-                authority,
+                self.witnessed(authority),
             )
             .await
     }
@@ -984,12 +1020,31 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
         // Preserve the sealed policy gate for the egress too — mirror of the
         // `run_bash` gate on the structured spawn. The governing capability
         // depends on which agent net op this is (web_fetch vs web_search).
-        match cap {
-            NetCapability::WebFetch => self.require(self.policy.web_fetch, "web_fetch")?,
-            NetCapability::WebSearch => self.require(self.policy.web_search, "web_search")?,
+        let governing = match cap {
+            NetCapability::WebFetch => self.require(self.policy.web_fetch, "web_fetch"),
+            NetCapability::WebSearch => self.require(self.policy.web_search, "web_search"),
+        };
+        if let Err(e) = governing {
+            // Recorded against the pair the spend below would have used, which
+            // is `(WebFetch, HTTPEgress)` for both capabilities — the egress is
+            // the same sink whichever agent op reached for it.
+            self.record_policy_denial(
+                portcullis_core::Operation::WebFetch,
+                portcullis_core::SinkClass::HTTPEgress,
+            );
+            return Err(e);
         }
         self.inner
-            .fetch(client, cap, method, url, headers, body, timeout, authority)
+            .fetch(
+                client,
+                cap,
+                method,
+                url,
+                headers,
+                body,
+                timeout,
+                self.witnessed(authority),
+            )
             .await
     }
 }
@@ -1227,8 +1282,21 @@ impl ShellEffect for RecordingEffects {
         _stdin: Option<&[u8]>,
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _authority: Authority,
+        authority: Authority,
     ) -> io::Result<Output> {
+        // Spent here for the same reason `RealEffects::run_argv` spends here:
+        // this is one of the three methods `PolicyEnforced` forwards without
+        // spending, so the consumption happens in the inner effect. A double
+        // that dropped the authority instead would silently diverge from the
+        // real implementation on the exact property the receipt tests check.
+        drop(
+            authority
+                .spend(
+                    portcullis_core::Operation::RunBash,
+                    portcullis_core::SinkClass::BashExec,
+                )
+                .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?,
+        );
         self.record(
             "run_argv",
             format!("{program} {args:?} @ {}", cwd.display()),
@@ -1248,13 +1316,57 @@ impl AsyncShellSpawnEffect for RecordingEffects {
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         _timeout: Option<std::time::Duration>,
-        _authority: Authority,
+        authority: Authority,
     ) -> io::Result<Output> {
+        // Mirrors `RealEffects::run_argv_async` — see `run_argv` above.
+        drop(
+            authority
+                .spend(
+                    portcullis_core::Operation::RunBash,
+                    portcullis_core::SinkClass::BashExec,
+                )
+                .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?,
+        );
         self.record(
             "run_argv_async",
             format!("{program} {args:?} @ {}", cwd.display()),
         );
         Ok(empty_success_output())
+    }
+}
+
+/// Records the egress and spends the authority, without ever opening a socket.
+///
+/// `RealEffects::fetch` is the only other `NetEffect`, and it performs a real
+/// send — so without this double the third of the three deferred-spend methods
+/// could not be covered by a receipt test at all.
+/// Test-only, so the production dependency surface of this crate is unchanged:
+/// building a `reqwest::Response` from nothing needs `http` directly, and that
+/// is a dev-dependency.
+#[cfg(all(test, feature = "net"))]
+impl NetEffect for RecordingEffects {
+    async fn fetch(
+        &self,
+        _client: &reqwest::Client,
+        _cap: NetCapability,
+        method: reqwest::Method,
+        url: reqwest::Url,
+        _headers: &[(String, String)],
+        _body: Option<Vec<u8>>,
+        _timeout: Option<std::time::Duration>,
+        authority: Authority,
+    ) -> Result<reqwest::Response, EffectError> {
+        // Mirrors `RealEffects::fetch`: the egress right is consumed at the send.
+        drop(
+            authority
+                .spend(
+                    portcullis_core::Operation::WebFetch,
+                    portcullis_core::SinkClass::HTTPEgress,
+                )
+                .map_err(|e| EffectError::Io(e.to_string()))?,
+        );
+        self.record("net_fetch", format!("{method} {url}"));
+        Ok(reqwest::Response::from(http::Response::new("")))
     }
 }
 
@@ -1810,7 +1922,7 @@ mod tests {
             ("glob", fx.glob("*.rs", read_auth()).is_err()),
             (
                 "fetch",
-                fx.fetch("https://example.com", read_auth()).is_err(),
+                WebEffect::fetch(&fx, "https://example.com", read_auth()).is_err(),
             ),
             ("search", fx.search("q", read_auth()).is_err()),
             ("run", fx.run("ls", read_auth()).is_err()),
@@ -1856,8 +1968,7 @@ mod tests {
         fx.append(Path::new("/tmp/x"), b"x", write_auth())
             .expect("append");
         fx.glob("*.rs", glob_auth()).expect("glob");
-        fx.fetch("https://example.com", fetch_auth())
-            .expect("fetch");
+        WebEffect::fetch(&fx, "https://example.com", fetch_auth()).expect("fetch");
         fx.search("q", search_auth()).expect("search");
         fx.run("ls", shell_auth()).expect("run");
         fx.commit("msg", commit_auth()).expect("commit");
@@ -1910,8 +2021,7 @@ mod tests {
         fx.append(Path::new("/tmp/x"), b"x", write_auth())
             .expect("append");
         fx.glob("*.rs", glob_auth()).expect("glob");
-        fx.fetch("https://example.com", fetch_auth())
-            .expect("fetch");
+        WebEffect::fetch(&fx, "https://example.com", fetch_auth()).expect("fetch");
         fx.search("q", search_auth()).expect("search");
         fx.run("ls", shell_auth()).expect("run");
         fx.commit("msg", commit_auth()).expect("commit");
@@ -1962,6 +2072,88 @@ mod tests {
             assert_eq!(entries[i].sink_class, *sink, "receipt {i} sink");
             assert_eq!(entries[i].outcome, EffectOutcome::Allowed, "receipt {i}");
         }
+    }
+
+    /// The three that the log used to miss: `run_argv`, `run_argv_async` and
+    /// `NetEffect::fetch`.
+    ///
+    /// These do not spend inside `PolicyEnforced` — they forward the authority
+    /// and it is consumed in the inner effect — so a receipt written at the gate
+    /// could not cover them, and for a while did not. Process execution and
+    /// network egress were the two effects absent from the transparency log,
+    /// which is close to the only two an exfiltration story needs.
+    ///
+    /// They are covered now because the receipt is written by `Authority::spend`,
+    /// wherever that happens to be. Note what this test would catch that the
+    /// count-based test above would not: `witnessed()` not being attached in one
+    /// of the three forwarding methods. Enforcement would still be correct — the
+    /// spend still happens — and the effect would silently leave no trace.
+    #[cfg(all(feature = "net", feature = "async"))]
+    #[tokio::test]
+    async fn the_deferred_spend_methods_are_witnessed_where_they_spend() {
+        use crate::receipt::EffectOutcome;
+        use portcullis_core::{Operation as Op, SinkClass as Sink};
+
+        let fx = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
+            policy: CapabilityLattice {
+                run_bash: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            },
+        };
+
+        let env = BTreeMap::new();
+        fx.run_argv("ls", &[], Path::new("/tmp"), None, &env, None, shell_auth())
+            .expect("run_argv");
+
+        fx.run_argv_async(
+            "ls",
+            &[],
+            Path::new("/tmp"),
+            None,
+            &env,
+            None,
+            None,
+            shell_auth(),
+        )
+        .await
+        .expect("run_argv_async");
+
+        NetEffect::fetch(
+            &fx,
+            &reqwest::Client::new(),
+            NetCapability::WebFetch,
+            reqwest::Method::GET,
+            "https://example.com".parse().expect("url"),
+            &[],
+            None,
+            None,
+            fetch_auth(),
+        )
+        .await
+        .expect("net fetch");
+
+        let entries = fx.receipts().entries();
+        assert_eq!(
+            entries.len(),
+            3,
+            "each deferred-spend method must leave exactly one receipt; got {entries:?}"
+        );
+        let got: Vec<_> = entries
+            .iter()
+            .map(|e| (e.operation, e.sink_class, e.outcome))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (Op::RunBash, Sink::BashExec, EffectOutcome::Allowed),
+                (Op::RunBash, Sink::BashExec, EffectOutcome::Allowed),
+                (Op::WebFetch, Sink::HTTPEgress, EffectOutcome::Allowed),
+            ],
+            "the shell spawns and the egress must each be named in the log"
+        );
     }
 
     /// A refusal is witnessed too, and distinguishes WHY. An audit that recorded
@@ -2048,7 +2240,7 @@ mod tests {
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.fetch("https://example.com", fetch_auth()),
+            WebEffect::fetch(&fx, "https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
@@ -2141,7 +2333,7 @@ mod tests {
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.fetch("https://example.com", fetch_auth()),
+            WebEffect::fetch(&fx, "https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
@@ -2178,7 +2370,7 @@ mod tests {
         assert_eq!(fx.inner.calls().len(), 2);
         // But web_fetch is still Never
         assert!(matches!(
-            fx.fetch("https://example.com", fetch_auth()),
+            WebEffect::fetch(&fx, "https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
     }
@@ -2217,7 +2409,7 @@ mod tests {
         policy.web_fetch = CapabilityLevel::Always;
         let fx = production_effects(policy);
         assert!(matches!(
-            fx.fetch("https://example.com", fetch_auth()),
+            WebEffect::fetch(&fx, "https://example.com", fetch_auth()),
             Err(EffectError::NotImplemented(_))
         ));
     }
