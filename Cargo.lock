@@ -8314,6 +8314,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "rustls 0.23.42",
+ "sha2 0.11.0",
  "shell-words",
  "tempfile",
  "tokio",
