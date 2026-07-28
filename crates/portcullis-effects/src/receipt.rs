@@ -160,11 +160,7 @@ impl ReceiptLog {
         let seq = entries.len() as u64;
         let prev_hash = entries.last().map_or([0u8; 32], |e| e.hash);
         let hash: [u8; 32] = Sha256::digest(canonical_bytes(
-            seq,
-            operation,
-            sink_class,
-            outcome,
-            &prev_hash,
+            seq, operation, sink_class, outcome, &prev_hash,
         ))
         .into();
         entries.push(EffectReceipt {

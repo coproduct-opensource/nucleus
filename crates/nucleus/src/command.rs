@@ -450,8 +450,13 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output =
-            self.spawn_checked(program, program_args, self.sandbox.root_path(), None, authority)?;
+        let output = self.spawn_checked(
+            program,
+            program_args,
+            self.sandbox.root_path(),
+            None,
+            authority,
+        )?;
 
         Ok(output)
     }
@@ -648,8 +653,13 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output =
-            self.spawn_checked(program, program_args, self.sandbox.root_path(), None, authority)?;
+        let output = self.spawn_checked(
+            program,
+            program_args,
+            self.sandbox.root_path(),
+            None,
+            authority,
+        )?;
 
         Ok(output)
     }
@@ -1052,7 +1062,9 @@ mod tests {
             .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
-        let output = executor.run("echo hello", &dt, Authority::new(allowed_bundle())).unwrap();
+        let output = executor
+            .run("echo hello", &dt, Authority::new(allowed_bundle()))
+            .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
@@ -1171,7 +1183,12 @@ mod tests {
         let dt = run_token(&mut kernel, "echo hello");
 
         let approval = executor.request_approval("echo hello").unwrap();
-        let result = executor.run_with_approval("echo hello", &dt, &approval, Authority::new(allowed_bundle()));
+        let result = executor.run_with_approval(
+            "echo hello",
+            &dt,
+            &approval,
+            Authority::new(allowed_bundle()),
+        );
         assert!(result.is_ok());
     }
 
@@ -1198,7 +1215,11 @@ mod tests {
         // curl is an exfiltration vector, uninhabitable_state should require approval
         // Force a token to test the executor-level check
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force for exfil check");
-        let result = executor.run("curl http://example.com", &forced, Authority::new(allowed_bundle()));
+        let result = executor.run(
+            "curl http://example.com",
+            &forced,
+            Authority::new(allowed_bundle()),
+        );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -1223,7 +1244,11 @@ mod tests {
 
         let forced =
             kernel.issue_approved_token(Operation::RunBash, "test: force for interpreter check");
-        let result = executor.run("bash -c \"echo hi\"", &forced, Authority::new(allowed_bundle()));
+        let result = executor.run(
+            "bash -c \"echo hi\"",
+            &forced,
+            Authority::new(allowed_bundle()),
+        );
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -1341,7 +1366,13 @@ mod tests {
         let args = vec!["pwd".to_string()];
         let dt = run_token(&mut kernel, "pwd");
         // Attempt to escape sandbox using absolute path
-        let result = executor.run_args(&args, None, Some("/etc"), &dt, Authority::new(allowed_bundle()));
+        let result = executor.run_args(
+            &args,
+            None,
+            Some("/etc"),
+            &dt,
+            Authority::new(allowed_bundle()),
+        );
         assert!(matches!(result, Err(NucleusError::SandboxEscape { .. })));
     }
 
@@ -1365,7 +1396,11 @@ mod tests {
         // Try to access the parent env var - should NOT be visible
         let dt = run_token(&mut kernel, "printenv TEST_PARENT_SECRET");
         let output = executor
-            .run("printenv TEST_PARENT_SECRET", &dt, Authority::new(allowed_bundle()))
+            .run(
+                "printenv TEST_PARENT_SECRET",
+                &dt,
+                Authority::new(allowed_bundle()),
+            )
             .unwrap();
 
         // Command should succeed but output should be empty (var not found)
@@ -1396,7 +1431,11 @@ mod tests {
         // The allowed var should be visible
         let dt = run_token(&mut kernel, "printenv ALLOWED_TOKEN");
         let output = executor
-            .run("printenv ALLOWED_TOKEN", &dt, Authority::new(allowed_bundle()))
+            .run(
+                "printenv ALLOWED_TOKEN",
+                &dt,
+                Authority::new(allowed_bundle()),
+            )
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("test-value-123"));
@@ -1500,7 +1539,9 @@ mod tests {
             let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt, Authority::new(allowed_bundle())).unwrap_err();
+            let err = executor
+                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationNotConfigured),
                 "expected IsolationNotConfigured, got {err:?}"
@@ -1544,7 +1585,9 @@ mod tests {
                 .allow_unsandboxed_local();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let output = executor.run("echo hi", &dt, Authority::new(allowed_bundle())).unwrap();
+            let output = executor
+                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .unwrap();
             assert!(output.status.success());
         }
 
@@ -1567,7 +1610,9 @@ mod tests {
                 .allow_unsandboxed_local();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt, Authority::new(allowed_bundle())).unwrap_err();
+            let err = executor
+                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .unwrap_err();
             assert!(
                 matches!(err, NucleusError::IsolationInsufficient { .. }),
                 "expected IsolationInsufficient, got {err:?}"
@@ -1589,7 +1634,9 @@ mod tests {
                 .in_microvm();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let output = executor.run("echo hi", &dt, Authority::new(allowed_bundle())).unwrap();
+            let output = executor
+                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .unwrap();
             assert!(output.status.success());
         }
 
@@ -1610,7 +1657,9 @@ mod tests {
                 .with_host_hardening();
 
             let dt = run_token(&mut kernel, "echo hi");
-            let err = executor.run("echo hi", &dt, Authority::new(allowed_bundle())).unwrap_err();
+            let err = executor
+                .run("echo hi", &dt, Authority::new(allowed_bundle()))
+                .unwrap_err();
             assert!(
                 matches!(err, NucleusError::HardeningUnavailable { .. }),
                 "expected HardeningUnavailable off-Linux, got {err:?}"
@@ -1635,7 +1684,11 @@ mod tests {
 
             let dt = run_token(&mut kernel, "cat /proc/self/status");
             let output = executor
-                .run("cat /proc/self/status", &dt, Authority::new(allowed_bundle()))
+                .run(
+                    "cat /proc/self/status",
+                    &dt,
+                    Authority::new(allowed_bundle()),
+                )
                 .unwrap();
             let status = String::from_utf8_lossy(&output.stdout);
             assert!(
@@ -1674,7 +1727,12 @@ mod tests {
 
             let dt = run_token(&mut kernel, "echo hello");
             let output = executor
-                .run_with_timeout("echo hello", Duration::from_secs(5), &dt, Authority::new(allowed_bundle()))
+                .run_with_timeout(
+                    "echo hello",
+                    Duration::from_secs(5),
+                    &dt,
+                    Authority::new(allowed_bundle()),
+                )
                 .await
                 .unwrap();
             assert!(output.status.success());
