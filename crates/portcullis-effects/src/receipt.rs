@@ -51,10 +51,11 @@
 //! # What this still does NOT establish
 //!
 //! * **Nothing is published.** A signed checkpoint proves the operator asserted
-//!   a root, not that anyone else saw it. Detecting a *forked* log — two
-//!   checkpoints of the same size with different roots — requires a witness or a
-//!   third-party log to compare against. Rekor anchoring is the escalation path;
-//!   it is not done here.
+//!   a root, not that anyone else saw it. [`Witness`] closes the *split-view*
+//!   half of that — a log cannot get two conflicting views cosigned — but a
+//!   witness only helps clients who demand a cosignature, and this crate ships
+//!   the verification core, not a running witness service. Anchoring to a public
+//!   log (Rekor) is the further escalation and is not done.
 //! * **The signing key is whatever the caller supplies.** Binding it to a
 //!   *measured binary* is the attestation work, and is not done here.
 //! * **Coverage is the ten methods `PolicyEnforced` gates.**
@@ -666,9 +667,15 @@ impl std::fmt::Display for WitnessError {
         match self {
             WitnessError::BadLogSignature => write!(f, "checkpoint signature did not verify"),
             WitnessError::OldSizeExceedsCheckpoint => {
-                write!(f, "old size exceeds the checkpoint size — a log cannot shrink")
+                write!(
+                    f,
+                    "old size exceeds the checkpoint size — a log cannot shrink"
+                )
             }
-            WitnessError::StaleOrForkedOldSize { expected, submitted } => write!(
+            WitnessError::StaleOrForkedOldSize {
+                expected,
+                submitted,
+            } => write!(
                 f,
                 "old size {submitted} is not the {expected} this witness last cosigned"
             ),
@@ -893,7 +900,10 @@ mod witness_tests {
         let forked = rewritten.sign_checkpoint(&lk);
         assert_eq!(forked.checkpoint.size, first.checkpoint.size);
         assert_ne!(forked.checkpoint.root, first.checkpoint.root);
-        assert!(forked.verify(&lvk), "the fork is validly signed — that is the point");
+        assert!(
+            forked.verify(&lvk),
+            "the fork is validly signed — that is the point"
+        );
 
         let err = w
             .witness(&forked, &lvk, 8, &[], &wk)
