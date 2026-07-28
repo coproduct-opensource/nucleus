@@ -135,14 +135,31 @@ constructor is private.
 that cannot be named outside its module. `Discharged<O>` tokens are zero-sized
 proof witnesses; `Discharged::mint()` is `fn` (not `pub fn`).
 
-**Proved in:** Compile-fail doc-test on `DischargedBundle` (portcullis-core/src/discharge.rs)
+**Scope binding:** the type system establishes that *a* preflight ran, not that a
+preflight ran for **this** action. The bundle carries the `(Operation, SinkClass)`
+pair it was earned for, and each mediated method checks it via `require_scope`;
+without that check a bundle earned for a cheaper action would authorize any other
+— the confused deputy. That is a runtime check, not a type-level one, and it is
+carried by tests rather than by the compiler.
+
+**Proved in:** Compile-fail doc-test on `DischargedBundle`
+(portcullis-core/src/discharge.rs); scope binding by
+`a_read_bundle_will_not_authorize_a_write` and siblings in
+`portcullis-effects/src/runtime.rs`.
 
 **What it does NOT prove:** That the obligation checks themselves are correct.
 Only that they cannot be skipped. The checks' correctness is tested by 33 unit
 tests and the Kani harnesses above.
 
-**CI gate:** `Tests` job runs the compile-fail doc-test. A PR that makes the
-`Seal` field public or adds a public constructor would fail the doc-test.
+Nor does it prove **complete mediation**. Two properties remain open: 10 of the 13
+effect-trait methods (including `FileEffect::write`) take no bundle at all and are
+gated only by the coarse capability lattice; and a bundle is passed by reference
+at the effect-trait layer, so a correctly-scoped bundle can be replayed. Closing
+both — and proving the result — is tracked as the complete-mediation work.
+
+**CI gate:** `Tests` job runs the compile-fail doc-test and the scope-binding
+tests. A PR that makes the `Seal` field public, adds a public constructor, or
+drops a `require_scope` call would fail it.
 
 ---
 
