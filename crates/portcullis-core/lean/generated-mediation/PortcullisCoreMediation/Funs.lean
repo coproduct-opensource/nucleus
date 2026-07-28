@@ -80,4 +80,37 @@ def extracted.mediation.scope_admits
     ok (i2 = i3)
   else ok false
 
+/-- [nucleus_ifc_kernel::extracted::mediation::med_idle]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 199:0-205:1
+    Visibility: public -/
+def extracted.mediation.med_idle : Result extracted.mediation.MedState := do
+  ok
+    {
+      held := false,
+      op := extracted.mediation.MedOperation.ReadFiles,
+      sink := extracted.mediation.MedSinkClass.AuditLogAppend
+    }
+
+/-- [nucleus_ifc_kernel::extracted::mediation::med_step]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 222:0-243:1
+    Visibility: public -/
+def extracted.mediation.med_step
+  (state : extracted.mediation.MedState)
+  (action : extracted.mediation.MedAction) :
+  Result extracted.mediation.StepResult
+  := do
+  match action with
+  | extracted.mediation.MedAction.Discharge o k =>
+    ok { ok := true, next := { held := true, op := o, sink := k } }
+  | extracted.mediation.MedAction.Effect o k =>
+    if state.held
+    then
+      let b ← extracted.mediation.scope_admits state.op state.sink o k
+      if b
+      then
+        let ms ← extracted.mediation.med_idle
+        ok { ok := true, next := ms }
+      else ok { ok := false, next := state }
+    else ok { ok := false, next := state }
+
 end nucleus_ifc_kernel

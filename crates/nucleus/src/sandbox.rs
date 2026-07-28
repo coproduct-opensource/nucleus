@@ -685,11 +685,17 @@ impl Sandbox {
     /// Read a file for search/grep operations (#1273).
     ///
     /// Uses the cap-std sandbox directory for I/O, bypassing raw `std::fs`.
-    /// Does NOT require a `DecisionToken` — the caller must have already
-    /// obtained a GrepSearch decision via `kernel_decide`.
+    ///
+    /// Takes no `DecisionToken` — the caller obtains a GrepSearch decision via
+    /// `kernel_decide` — but it DOES require an `Authority` scoped to
+    /// `(GrepSearch, AuditLogAppend)`. That requirement used to be a comment
+    /// saying the caller "must have already obtained a decision", which is a
+    /// convention rather than an enforcement; the `mediated` lint flagged it as
+    /// an agent-reachable read with no discharge.
     ///
     /// Returns `Err` for paths outside the sandbox or unreadable files.
-    pub fn read_to_string_for_search(&self, path: &Path) -> Result<String> {
+    pub fn read_to_string_for_search(&self, path: &Path, authority: Authority) -> Result<String> {
+        Self::spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
         self.check_policy(path)?;
         self.root
             .read_to_string(path)

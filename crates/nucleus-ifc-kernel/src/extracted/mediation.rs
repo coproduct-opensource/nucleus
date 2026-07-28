@@ -156,6 +156,95 @@ pub fn scope_admits(
     opcode(earned_op) == opcode(attempted_op) && sinkcode(earned_sink) == sinkcode(attempted_sink)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The mediation machine — the slice the TRACE theorem is proven over
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Whether an authority is currently held, and for what.
+///
+/// `held == false` means no authority is in hand; `op`/`sink` are then
+/// meaningless and every function below ignores them. A payload-carrying enum
+/// would be more idiomatic Rust, but this flat encoding keeps the extracted Lean
+/// free of a discriminated union in the proof's critical path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MedState {
+    /// Is an unspent authority in hand?
+    pub held: bool,
+    /// The operation it was earned for. Meaningless when `held` is false.
+    pub op: MedOperation,
+    /// The sink it was earned for. Meaningless when `held` is false.
+    pub sink: MedSinkClass,
+}
+
+/// What the program did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MedAction {
+    /// `preflight_action` succeeded and minted an authority for this pair.
+    Discharge(MedOperation, MedSinkClass),
+    /// An effect was attempted against this pair.
+    Effect(MedOperation, MedSinkClass),
+}
+
+/// The result of one step: whether it was permitted, and the state after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepResult {
+    /// Was the action permitted?
+    pub ok: bool,
+    /// The state afterwards. On a refused effect the state is unchanged — a
+    /// denial does not consume the authority.
+    pub next: MedState,
+}
+
+/// The idle state: nothing held.
+pub fn med_idle() -> MedState {
+    MedState {
+        held: false,
+        op: MedOperation::ReadFiles,
+        sink: MedSinkClass::AuditLogAppend,
+    }
+}
+
+/// One step of the mediation machine.
+///
+/// This is the abstract counterpart of what the Rust type system enforces:
+///
+/// * **Discharge** always succeeds and puts an authority in hand. Any previously
+///   held authority is dropped — allowed, because affine means *at most* once,
+///   not exactly once. An authority that is never spent is an action that was
+///   authorised and not taken.
+/// * **Effect** succeeds only when an authority is held AND its scope admits the
+///   attempted pair, and it CONSUMES the authority — the state goes idle. That
+///   consumption is the whole content of "by value": a second effect without a
+///   fresh discharge cannot succeed.
+///
+/// A refused effect leaves the state untouched, so a wrong-scope attempt cannot
+/// burn a legitimate authority.
+pub fn med_step(state: MedState, action: MedAction) -> StepResult {
+    match action {
+        MedAction::Discharge(o, k) => StepResult {
+            ok: true,
+            next: MedState {
+                held: true,
+                op: o,
+                sink: k,
+            },
+        },
+        MedAction::Effect(o, k) => {
+            if state.held && scope_admits(state.op, state.sink, o, k) {
+                StepResult {
+                    ok: true,
+                    next: med_idle(),
+                }
+            } else {
+                StepResult {
+                    ok: false,
+                    next: state,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +370,65 @@ mod tests {
         // domain this proof covers changes with it, and that should be a visible
         // diff rather than a silent narrowing.
         assert_eq!(earnable, EARNABLE_PAIRS, "earnable domain changed");
+    }
+
+    /// The machine refuses an effect from idle, for EVERY attempted pair. This
+    /// is complete mediation at the level of one step: no authority, no effect.
+    #[test]
+    fn no_effect_succeeds_from_idle() {
+        for o in ALL_MED_OPS {
+            for k in ALL_MED_SINKS {
+                let r = med_step(med_idle(), MedAction::Effect(o, k));
+                assert!(!r.ok, "{o:?}/{k:?} succeeded with nothing held");
+                assert_eq!(r.next, med_idle(), "a refusal must not change state");
+            }
+        }
+    }
+
+    /// Discharge then the matching effect succeeds and CONSUMES — and a second
+    /// effect with no fresh discharge fails. One authority, one effect.
+    #[test]
+    fn an_authority_pays_for_exactly_one_effect() {
+        for o in ALL_MED_OPS {
+            for k in ALL_MED_SINKS {
+                let held = med_step(med_idle(), MedAction::Discharge(o, k));
+                assert!(held.ok);
+                let first = med_step(held.next, MedAction::Effect(o, k));
+                assert!(first.ok, "the matching effect must succeed");
+                assert!(!first.next.held, "a successful effect must consume");
+                let second = med_step(first.next, MedAction::Effect(o, k));
+                assert!(!second.ok, "{o:?}/{k:?} replayed on one discharge");
+            }
+        }
+    }
+
+    /// A wrong-scope attempt is refused AND leaves the authority intact, so it
+    /// cannot be used to burn a legitimate token. Swept over every earned pair
+    /// against every attempted pair — 247 × 247 = 61 009 cases, the whole domain
+    /// (no `PathAllowed` restriction applies here: the machine is about scope,
+    /// not about which pairs are earnable).
+    #[test]
+    fn a_refusal_never_consumes_the_authority() {
+        let mut checked = 0usize;
+        for eo in ALL_MED_OPS {
+            for es in ALL_MED_SINKS {
+                let held = med_step(med_idle(), MedAction::Discharge(eo, es)).next;
+                for ao in ALL_MED_OPS {
+                    for as_ in ALL_MED_SINKS {
+                        let r = med_step(held, MedAction::Effect(ao, as_));
+                        if scope_admits(eo, es, ao, as_) {
+                            assert!(r.ok);
+                            assert!(!r.next.held, "success must consume");
+                        } else {
+                            assert!(!r.ok, "out-of-scope effect succeeded");
+                            assert_eq!(r.next, held, "a refusal must preserve the authority");
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 247 * 247);
     }
 
     /// No false denial: a bundle admits the action it was earned for.

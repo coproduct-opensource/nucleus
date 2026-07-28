@@ -214,7 +214,7 @@ necessary for paths where the type is erased.
 
 ---
 
-### 8a. A discharge authorizes its own action and nothing else
+### 8a. A discharge authorizes its own action, once, and nothing else
 
 **Plain English:** An authorization earned for one action cannot be spent on a
 different one. A bundle earned for reading a file does not authorize a write, a
@@ -222,15 +222,20 @@ shell spawn, or a push — even when the coarse capability for that action is
 enabled. This is the confused deputy, and it is the first half of complete
 mediation.
 
-**Formal statement:** for the extracted scope predicate,
-`scope_admits(eo, es, ao, as) ↔ (eo = ao ∧ es = as)`. Corollaries: admission is
-reflexive (no false denial), discriminates on each component independently, and
-is functional — a bundle admits **at most one** pair.
+**Formal statement, two halves.** The *predicate*: `scope_admits(eo, es, ao, as) ↔
+(eo = ao ∧ es = as)` — reflexive, discriminating on each component, and functional
+(a bundle admits at most one pair). The *machine*: an effect succeeds only from a
+held authority whose scope admits it (`effect_requires_held`), a success
+**consumes** it (`effect_consumes_the_authority`), a refusal does **not**
+(`refusal_preserves_the_authority`), and therefore a second effect with no fresh
+discharge fails (`no_replay_without_a_fresh_discharge`).
 
 **Proved in:**
 - Lean 4: [`lean/MediationScopeExtracted.lean`](../crates/portcullis-core/lean/MediationScopeExtracted.lean)
-  — `scope_admits_refl`, `scope_admits_iff_eq`, `scope_admits_unique`,
-  `scope_admits_no_escalation`
+  — eight theorems: `scope_admits_{refl,iff_eq,unique,no_escalation}` over the
+  predicate, and `effect_requires_held`, `effect_consumes_the_authority`,
+  `refusal_preserves_the_authority`, `no_replay_without_a_fresh_discharge` over
+  the extracted state machine `med_step`
 - Proven **over the Aeneas-extracted definitions**, not a hand-written model:
   `crates/nucleus-ifc-kernel/src/extracted/mediation.rs` → charon (scoped
   `--start-from`) → aeneas → `generated-mediation/PortcullisCoreMediation/`.
@@ -244,16 +249,19 @@ Aeneas `*External` opaque axiom. The Rust slice compares explicit `u8` ranks
 rather than deriving `PartialEq` precisely so no opaque comparison axiom lands on
 the critical path.
 
-**What it does NOT prove:** that every effect path *calls* the predicate. For the
-effect traits that is now true: **all 13 methods take an `Authority` by value**,
-up from 3 taking any token at all, so the scope check is unavoidable and replay
-is a compile error — carried by a `compile_fail` doctest on `FileEffect` whose
-dependence on the replay was established by perturbation.
+**What it does NOT prove — and cannot:** that every effect path *calls* the
+predicate. That is a whole-program property over an open program, so Lean has
+nothing to quantify over, and the effect layer's real I/O is outside the
+extractable subset regardless. These theorems are the **conditional** half.
 
-It remains untrue elsewhere. `nucleus::Sandbox::{write,write_approved}` take a
-`&DischargedBundle` and ignore it (`_proof`), so that surface is unmediated in
-the same way the effect traits were. See
-[Production Delta](production-delta.md).
+The premise is discharged mechanically by the `mediated` Dylint pass
+(`tools/nucleus-mediation-lint`), closed under the call graph, over the set
+defined in [The Mediated Set](architecture/mediated-set.md). seL4 has the same
+shape: it assumes compiler/assembly/hardware correctness and imposes syntactic
+restrictions checked outside Isabelle so the proof has a static call graph.
+
+**Trusted, stated rather than hidden:** rustc's enforcement of affine moves, the
+lint's deny-set completeness, and Charon/Aeneas extraction fidelity.
 
 It also says nothing about the other seven obligations: it governs which action a
 bundle speaks for, not whether that action is safe.

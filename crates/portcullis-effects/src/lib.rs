@@ -1924,7 +1924,26 @@ mod tests {
             10,
             "one receipt per mediated call; got {entries:?}"
         );
-        assert_eq!(fx.receipts().verify_chain(), Ok(()));
+        // Every receipt proves its own membership against the log root — the
+        // check an auditor runs holding one entry and an O(log n) proof, not the
+        // whole log.
+        let root = fx.receipts().root();
+        for (i, e) in entries.iter().enumerate() {
+            let proof = fx
+                .receipts()
+                .inclusion_proof(i as u64)
+                .expect("entry is in range");
+            assert!(
+                crate::receipt::verify_inclusion(
+                    &e.leaf_hash(),
+                    i as u64,
+                    entries.len() as u64,
+                    &proof,
+                    &root,
+                ),
+                "receipt {i} could not prove inclusion"
+            );
+        }
 
         let expected = [
             (Op::ReadFiles, Sink::AuditLogAppend),

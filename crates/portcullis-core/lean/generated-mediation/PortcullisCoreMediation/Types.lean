@@ -58,4 +58,33 @@ inductive extracted.mediation.MedSinkClass where
 | TicketWrite : extracted.mediation.MedSinkClass
 | AuditLogAppend : extracted.mediation.MedSinkClass
 
+/-- [nucleus_ifc_kernel::extracted::mediation::MedState]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 170:0-177:1
+    Visibility: public -/
+structure extracted.mediation.MedState where
+  held : Bool
+  op : extracted.mediation.MedOperation
+  sink : extracted.mediation.MedSinkClass
+
+/-- [nucleus_ifc_kernel::extracted::mediation::MedAction]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 181:0-186:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.mediation.MedAction where
+| Discharge :
+  extracted.mediation.MedOperation →
+  extracted.mediation.MedSinkClass →
+  extracted.mediation.MedAction
+| Effect :
+  extracted.mediation.MedOperation →
+  extracted.mediation.MedSinkClass →
+  extracted.mediation.MedAction
+
+/-- [nucleus_ifc_kernel::extracted::mediation::StepResult]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 190:0-196:1
+    Visibility: public -/
+structure extracted.mediation.StepResult where
+  ok : Bool
+  next : extracted.mediation.MedState
+
 end nucleus_ifc_kernel
