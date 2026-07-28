@@ -304,9 +304,11 @@ pub fn full_access_context(
 /// effect path, and it should not quietly become one: use `NucleusRuntime` or the
 /// `FileEffect` traits, where a scoped `Authority` is required.
 pub fn read_file<C: HasFileRead>(_ctx: &Context<C>, _path: &str) -> Result<String, String> {
-    Err("read_file is not an effect path in portcullis-core; use NucleusRuntime::read_file \
+    Err(
+        "read_file is not an effect path in portcullis-core; use NucleusRuntime::read_file \
          (preflight + Authority) or the FileEffect trait"
-        .into())
+            .into(),
+    )
 }
 
 /// Write a file — requires `HasFileWrite` capability.
@@ -318,9 +320,11 @@ pub fn write_file<C: HasFileWrite>(
     _path: &str,
     _data: &str,
 ) -> Result<(), String> {
-    Err("write_file is not an effect path in portcullis-core; use NucleusRuntime::write_file \
+    Err(
+        "write_file is not an effect path in portcullis-core; use NucleusRuntime::write_file \
          (preflight + Authority) or the FileEffect trait"
-        .into())
+            .into(),
+    )
 }
 
 /// Search files by pattern — requires `HasGlobSearch` capability.

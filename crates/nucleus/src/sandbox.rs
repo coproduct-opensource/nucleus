@@ -694,11 +694,7 @@ impl Sandbox {
     /// an agent-reachable read with no discharge.
     ///
     /// Returns `Err` for paths outside the sandbox or unreadable files.
-    pub fn read_to_string_for_search(
-        &self,
-        path: &Path,
-        authority: Authority,
-    ) -> Result<String> {
+    pub fn read_to_string_for_search(&self, path: &Path, authority: Authority) -> Result<String> {
         Self::spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
         self.check_policy(path)?;
         self.root
