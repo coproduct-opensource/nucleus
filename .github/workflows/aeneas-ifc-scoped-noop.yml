@@ -15,6 +15,8 @@ on:
       - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
+      - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"

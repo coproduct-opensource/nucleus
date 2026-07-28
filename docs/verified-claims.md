@@ -135,7 +135,8 @@ constructor is private.
 that cannot be named outside its module. `Discharged<O>` tokens are zero-sized
 proof witnesses; `Discharged::mint()` is `fn` (not `pub fn`).
 
-**Scope binding:** the type system establishes that *a* preflight ran, not that a
+**Scope binding (now machine-checked — see claim 8a):** the type system
+establishes that *a* preflight ran, not that a
 preflight ran for **this** action. The bundle carries the `(Operation, SinkClass)`
 pair it was earned for, and each mediated method checks it via `require_scope`;
 without that check a bundle earned for a cheaper action would authorize any other
@@ -209,6 +210,50 @@ system is an approximation — dynamic data flow through the `FlowTracker` remai
 necessary for paths where the type is erased.
 
 **CI gate:** `Tests` job.
+
+---
+
+### 8a. A discharge authorizes its own action and nothing else
+
+**Plain English:** An authorization earned for one action cannot be spent on a
+different one. A bundle earned for reading a file does not authorize a write, a
+shell spawn, or a push — even when the coarse capability for that action is
+enabled. This is the confused deputy, and it is the first half of complete
+mediation.
+
+**Formal statement:** for the extracted scope predicate,
+`scope_admits(eo, es, ao, as) ↔ (eo = ao ∧ es = as)`. Corollaries: admission is
+reflexive (no false denial), discriminates on each component independently, and
+is functional — a bundle admits **at most one** pair.
+
+**Proved in:**
+- Lean 4: [`lean/MediationScopeExtracted.lean`](../crates/portcullis-core/lean/MediationScopeExtracted.lean)
+  — `scope_admits_refl`, `scope_admits_iff_eq`, `scope_admits_unique`,
+  `scope_admits_no_escalation`
+- Proven **over the Aeneas-extracted definitions**, not a hand-written model:
+  `crates/nucleus-ifc-kernel/src/extracted/mediation.rs` → charon (scoped
+  `--start-from`) → aeneas → `generated-mediation/PortcullisCoreMediation/`.
+- Rust↔model parity: exhaustive sweep in `src/extracted/mediation.rs` over every
+  earnable pair (27 of 247 pass `PathAllowed`) against all 247 attempted pairs —
+  6,669 comparisons, the complete domain, so this is an equivalence proof rather
+  than a sample.
+
+**Axiom set:** `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, and no
+Aeneas `*External` opaque axiom. The Rust slice compares explicit `u8` ranks
+rather than deriving `PartialEq` precisely so no opaque comparison axiom lands on
+the critical path.
+
+**What it does NOT prove:** that every effect path *calls* the predicate. That is
+the second half of complete mediation and is **not yet true** — 10 of 13
+effect-trait methods take no bundle at all, and the 3 that do take it by
+reference, so a correctly-scoped bundle can be replayed. See
+[Production Delta](production-delta.md). It also says nothing about the other
+seven obligations: it governs which action a bundle speaks for, not whether that
+action is safe.
+
+**CI gate:** `Scoped Aeneas (Rust → Lean 4) + parity tests` — re-extracts from
+Rust, rebuilds the theorem against the fresh extraction, and fails on a dirty
+axiom set or any `sorry`/`admit`/`native_decide`.
 
 ---
 
