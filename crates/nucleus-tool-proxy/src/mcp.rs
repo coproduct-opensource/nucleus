@@ -600,7 +600,7 @@ impl NucleusMcpServer {
                     // by `preflight_runbash` above is the type-level authorization.
                     // Reaching this spawn requires it, so no un-preflighted spawn
                     // can compile.
-                    &discharge_bundle,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
             })
         }) {
@@ -1158,7 +1158,7 @@ impl NucleusMcpServer {
                     &[],
                     None,
                     None,
-                    &discharge_bundle,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
                 .await
                 .map_err(|e| format!("fetch failed: {e}"))?;

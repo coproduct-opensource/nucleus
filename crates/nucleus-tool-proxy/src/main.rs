@@ -2790,7 +2790,7 @@ async fn run_command(
         stdin,
         directory,
         &decision_token,
-        &discharge_bundle,
+        portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
@@ -2815,8 +2815,31 @@ async fn run_command(
                     directory,
                     &approved_dt,
                     &approval,
-                    // Same sealed bundle minted above authorizes the approved retry.
-                    &discharge_bundle,
+                    // A fresh discharge for the retry. The first attempt spent
+                    // the authority minted above — one discharge authorizes one
+                    // attempt, and the approved retry is a distinct action that
+                    // must clear the obligations on its own.
+                    portcullis_effects::authority::Authority::new({
+                        use nucleus_ifc_kernel::discharge::PreflightResult;
+                        let verified_scope = state.session_task_token.verified_scope();
+                        let ceiling = state.runtime.policy().capabilities.run_bash;
+                        let flow = state.flow_tracker.lock().await;
+                        let r = run_gate::preflight_runbash(
+                            verified_scope,
+                            ceiling,
+                            &display_command,
+                            &flow,
+                        );
+                        drop(flow);
+                        match r {
+                            PreflightResult::Allowed(b) => b,
+                            _ => {
+                                return Err(ApiError::Body(
+                                    "approved retry failed re-discharge".to_string(),
+                                ))
+                            }
+                        }
+                    }),
                 )?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -3032,7 +3055,7 @@ async fn web_fetch(
             &headers,
             body,
             None,
-            &discharge_bundle,
+            portcullis_effects::authority::Authority::new(discharge_bundle),
         )
         .await
         .map_err(|e| ApiError::WebFetch(format!("request failed: {e}")))?;
@@ -3627,7 +3650,7 @@ async fn web_search(
             &[],
             None,
             None,
-            &discharge_bundle,
+            portcullis_effects::authority::Authority::new(discharge_bundle),
         )
         .await
         .map_err(|e| ApiError::WebFetch(format!("search request failed: {e}")))?;
