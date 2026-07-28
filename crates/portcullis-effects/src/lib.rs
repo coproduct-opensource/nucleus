@@ -171,16 +171,10 @@ pub trait FileEffect {
     fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError>;
 
     /// Write bytes to a file, creating it if it does not exist.
-    fn write(&self, path: &Path, content: &[u8], authority: Authority)
-        -> Result<(), EffectError>;
+    fn write(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError>;
 
     /// Append bytes to a file, creating it if it does not exist.
-    fn append(
-        &self,
-        path: &Path,
-        content: &[u8],
-        authority: Authority,
-    ) -> Result<(), EffectError>;
+    fn append(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError>;
 
     /// List files matching a glob pattern. Returns absolute paths.
     fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError>;
@@ -203,11 +197,7 @@ pub trait WebEffect {
     fn fetch(&self, url: &str, authority: Authority) -> Result<Vec<u8>, EffectError>;
 
     /// Perform a web search and return result snippets.
-    fn search(
-        &self,
-        query: &str,
-        authority: Authority,
-    ) -> Result<Vec<SearchResult>, EffectError>;
+    fn search(&self, query: &str, authority: Authority) -> Result<Vec<SearchResult>, EffectError>;
 }
 
 /// Shell command execution.
@@ -359,8 +349,7 @@ pub trait GitEffect {
     fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError>;
 
     /// Push the current branch to a remote.
-    fn push(&self, remote: &str, branch: &str, authority: Authority)
-        -> Result<(), EffectError>;
+    fn push(&self, remote: &str, branch: &str, authority: Authority) -> Result<(), EffectError>;
 }
 
 /// Sub-agent spawn operations.
@@ -442,12 +431,7 @@ impl FileEffect for RealEffects {
         std::fs::read(path).map_err(|e| EffectError::Io(format!("{}: {e}", path.display())))
     }
 
-    fn write(
-        &self,
-        path: &Path,
-        content: &[u8],
-        authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn write(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError> {
         drop(authority);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -457,12 +441,7 @@ impl FileEffect for RealEffects {
             .map_err(|e| EffectError::Io(format!("{}: {e}", path.display())))
     }
 
-    fn append(
-        &self,
-        path: &Path,
-        content: &[u8],
-        authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn append(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError> {
         drop(authority);
         use std::io::Write as _;
         let mut f = std::fs::OpenOptions::new()
@@ -758,12 +737,7 @@ impl GitEffect for RealEffects {
         Ok(out.trim().to_string())
     }
 
-    fn push(
-        &self,
-        remote: &str,
-        branch: &str,
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
         let output = std::process::Command::new("git")
             .args(["push", remote, branch])
             .output()
@@ -837,7 +811,8 @@ impl<E> PolicyEnforced<E> {
     ) -> Result<Authority, EffectError> {
         use crate::receipt::EffectOutcome;
         if let Err(e) = self.require(level, capability) {
-            self.receipts.append(op, sink, EffectOutcome::DeniedByPolicy);
+            self.receipts
+                .append(op, sink, EffectOutcome::DeniedByPolicy);
             return Err(e);
         }
         match authority.spend(op, sink) {
@@ -875,12 +850,7 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
         self.inner.read(path, authority)
     }
 
-    fn write(
-        &self,
-        path: &Path,
-        content: &[u8],
-        authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn write(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError> {
         let authority = self.gate(
             self.policy.write_files,
             "write_files",
@@ -891,12 +861,7 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
         self.inner.write(path, content, authority)
     }
 
-    fn append(
-        &self,
-        path: &Path,
-        content: &[u8],
-        authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn append(&self, path: &Path, content: &[u8], authority: Authority) -> Result<(), EffectError> {
         let authority = self.gate(
             self.policy.write_files,
             "write_files (append)",
@@ -931,11 +896,7 @@ impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
         self.inner.fetch(url, authority)
     }
 
-    fn search(
-        &self,
-        query: &str,
-        authority: Authority,
-    ) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(&self, query: &str, authority: Authority) -> Result<Vec<SearchResult>, EffectError> {
         let authority = self.gate(
             self.policy.web_search,
             "web_search",
@@ -1045,12 +1006,7 @@ impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
         self.inner.commit(message, authority)
     }
 
-    fn push(
-        &self,
-        remote: &str,
-        branch: &str,
-        authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn push(&self, remote: &str, branch: &str, authority: Authority) -> Result<(), EffectError> {
         let authority = self.gate(
             self.policy.git_push,
             "git_push",
@@ -1214,12 +1170,7 @@ impl FileEffect for RecordingEffects {
         Ok(self.file_read_response.clone())
     }
 
-    fn write(
-        &self,
-        path: &Path,
-        content: &[u8],
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn write(&self, path: &Path, content: &[u8], _authority: Authority) -> Result<(), EffectError> {
         self.record(
             "write",
             format!("{}({} bytes)", path.display(), content.len()),
@@ -1252,11 +1203,7 @@ impl WebEffect for RecordingEffects {
         Ok(Vec::new())
     }
 
-    fn search(
-        &self,
-        query: &str,
-        _authority: Authority,
-    ) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(&self, query: &str, _authority: Authority) -> Result<Vec<SearchResult>, EffectError> {
         self.record("search", query);
         Ok(Vec::new())
     }
@@ -1317,12 +1264,7 @@ impl GitEffect for RecordingEffects {
         Ok("deadbeef".to_string())
     }
 
-    fn push(
-        &self,
-        remote: &str,
-        branch: &str,
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
         self.record("push", format!("{remote}/{branch}"));
         Ok(())
     }
@@ -1397,11 +1339,7 @@ impl WebEffect for DenyAllEffects {
     fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         Err(EffectError::PolicyDenied(format!("fetch denied: {url}")))
     }
-    fn search(
-        &self,
-        query: &str,
-        _authority: Authority,
-    ) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(&self, query: &str, _authority: Authority) -> Result<Vec<SearchResult>, EffectError> {
         Err(EffectError::PolicyDenied(format!("search denied: {query}")))
     }
 }
@@ -1454,12 +1392,7 @@ impl GitEffect for DenyAllEffects {
             "git commit denied: {message}"
         )))
     }
-    fn push(
-        &self,
-        remote: &str,
-        branch: &str,
-        _authority: Authority,
-    ) -> Result<(), EffectError> {
+    fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "git push denied: {remote}/{branch}"
         )))
@@ -1729,11 +1662,10 @@ mod tests {
 
     /// Authorities for the remaining effect traits, each scoped to the one
     /// `(Operation, SinkClass)` pair its trait method spends on.
-    fn auth_for(
-        op: portcullis_core::Operation,
-        sink: portcullis_core::SinkClass,
-    ) -> Authority {
-        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(op, sink))
+    fn auth_for(op: portcullis_core::Operation, sink: portcullis_core::SinkClass) -> Authority {
+        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+            op, sink,
+        ))
     }
     fn fetch_auth() -> Authority {
         auth_for(
@@ -1867,10 +1799,19 @@ mod tests {
         };
 
         let outcomes: Vec<(&str, bool)> = vec![
-            ("write", fx.write(Path::new("/tmp/x"), b"x", read_auth()).is_err()),
-            ("append", fx.append(Path::new("/tmp/x"), b"x", read_auth()).is_err()),
+            (
+                "write",
+                fx.write(Path::new("/tmp/x"), b"x", read_auth()).is_err(),
+            ),
+            (
+                "append",
+                fx.append(Path::new("/tmp/x"), b"x", read_auth()).is_err(),
+            ),
             ("glob", fx.glob("*.rs", read_auth()).is_err()),
-            ("fetch", fx.fetch("https://example.com", read_auth()).is_err()),
+            (
+                "fetch",
+                fx.fetch("https://example.com", read_auth()).is_err(),
+            ),
             ("search", fx.search("q", read_auth()).is_err()),
             ("run", fx.run("ls", read_auth()).is_err()),
             ("commit", fx.commit("msg", read_auth()).is_err()),
@@ -2083,12 +2024,18 @@ mod tests {
             fx.write(Path::new("file.txt"), b"data", write_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.glob("*.rs", glob_auth()), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(
+            fx.glob("*.rs", glob_auth()),
+            Err(EffectError::PolicyDenied(_))
+        ));
         assert!(matches!(
             fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.run("ls", shell_auth()), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(
+            fx.run("ls", shell_auth()),
+            Err(EffectError::PolicyDenied(_))
+        ));
         assert!(matches!(
             fx.commit("msg", commit_auth()),
             Err(EffectError::PolicyDenied(_))
@@ -2137,7 +2084,9 @@ mod tests {
     #[test]
     fn allow_list_path_prefix_enforcement() {
         let fx = AllowListEffects::new().allow_path("/workspace/src");
-        assert!(fx.read(Path::new("/workspace/src/main.rs"), read_auth()).is_ok());
+        assert!(fx
+            .read(Path::new("/workspace/src/main.rs"), read_auth())
+            .is_ok());
         assert!(matches!(
             fx.read(Path::new("/etc/passwd"), read_auth()),
             Err(EffectError::PathViolation(_))
@@ -2176,7 +2125,10 @@ mod tests {
             fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.run("ls", shell_auth()), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(
+            fx.run("ls", shell_auth()),
+            Err(EffectError::PolicyDenied(_))
+        ));
         assert!(matches!(
             fx.commit("msg", commit_auth()),
             Err(EffectError::PolicyDenied(_))
@@ -2364,7 +2316,15 @@ mod tests {
         // (1) `pwd` proves `current_dir` was honored. The program name is
         //     resolved via the parent PATH even though the child env is cleared.
         let pwd_out = fx
-            .run_argv("pwd", &[], dir.path(), None, &allowed_env, None, shell_authority())
+            .run_argv(
+                "pwd",
+                &[],
+                dir.path(),
+                None,
+                &allowed_env,
+                None,
+                shell_authority(),
+            )
             .expect("run_argv spawns pwd");
         assert!(pwd_out.status.success());
         let printed_cwd = String::from_utf8_lossy(&pwd_out.stdout);

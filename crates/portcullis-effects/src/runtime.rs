@@ -892,7 +892,8 @@ impl NucleusRuntime {
         Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
         let authority = crate::authority::Authority::new(proof);
-        fx.push(remote, branch, authority).map_err(RuntimeError::from)
+        fx.push(remote, branch, authority)
+            .map_err(RuntimeError::from)
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
@@ -1759,7 +1760,14 @@ mod tests {
         let fx = rt.unmediated_effects(&token, proof).unwrap();
 
         // Write should be policy-denied (capability levels still enforced)
-        let result = fx.write(std::path::Path::new("/tmp/test"), b"data", crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)));
+        let result = fx.write(
+            std::path::Path::new("/tmp/test"),
+            b"data",
+            crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+                Operation::WriteFiles,
+                SinkClass::WorkspaceWrite,
+            )),
+        );
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
     }
 
@@ -2029,7 +2037,9 @@ mod tests {
         // The file was seeded empty; the refusal has to happen before the effect,
         // so it must still be empty rather than holding the redirected content.
         assert!(
-            std::fs::read(&outside).expect("seeded file readable").is_empty(),
+            std::fs::read(&outside)
+                .expect("seeded file readable")
+                .is_empty(),
             "the write must be refused before the effect runs, but content landed: {err:?}"
         );
     }
