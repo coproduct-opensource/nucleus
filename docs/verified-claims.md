@@ -138,10 +138,11 @@ proof witnesses; `Discharged::mint()` is `fn` (not `pub fn`).
 **Scope binding (now machine-checked — see claim 8a):** the type system
 establishes that *a* preflight ran, not that a
 preflight ran for **this** action. The bundle carries the `(Operation, SinkClass)`
-pair it was earned for, and each mediated method checks it via `require_scope`;
-without that check a bundle earned for a cheaper action would authorize any other
-— the confused deputy. That is a runtime check, not a type-level one, and it is
-carried by tests rather than by the compiler.
+pair it was earned for, and each mediated method checks it; without that check a
+bundle earned for a cheaper action would authorize any other — the confused
+deputy. The check itself is a runtime comparison, but it can no longer be
+*skipped*: effect methods take an owned `Authority`, so reaching the effect
+requires surrendering one.
 
 **Proved in:** Compile-fail doc-test on `DischargedBundle`
 (portcullis-core/src/discharge.rs); scope binding by
@@ -152,11 +153,11 @@ carried by tests rather than by the compiler.
 Only that they cannot be skipped. The checks' correctness is tested by 33 unit
 tests and the Kani harnesses above.
 
-Nor does it prove **complete mediation**. Two properties remain open: 10 of the 13
-effect-trait methods (including `FileEffect::write`) take no bundle at all and are
-gated only by the coarse capability lattice; and a bundle is passed by reference
-at the effect-trait layer, so a correctly-scoped bundle can be replayed. Closing
-both — and proving the result — is tracked as the complete-mediation work.
+Nor does it prove **complete mediation** on its own. For the effect traits that
+property now holds structurally: all 13 methods take an `Authority` **by value**,
+so the scope check cannot be skipped and replay is a compile error. See claim 8a
+for the machine-checked scope predicate, and
+[Production Delta](production-delta.md) for the surfaces still outside it.
 
 **CI gate:** `Tests` job runs the compile-fail doc-test and the scope-binding
 tests. A PR that makes the `Seal` field public, adds a public constructor, or
@@ -243,17 +244,16 @@ Aeneas `*External` opaque axiom. The Rust slice compares explicit `u8` ranks
 rather than deriving `PartialEq` precisely so no opaque comparison axiom lands on
 the critical path.
 
-**What it does NOT prove:** that every effect path *calls* the predicate. That is
-the second half of complete mediation and is now **mostly** true. All 13
-effect-trait methods require an obligation token, up from 3. Ten take an
-`Authority` **by value**, so for those the scope check is unavoidable and replay
+**What it does NOT prove:** that every effect path *calls* the predicate. For the
+effect traits that is now true: **all 13 methods take an `Authority` by value**,
+up from 3 taking any token at all, so the scope check is unavoidable and replay
 is a compile error — carried by a `compile_fail` doctest on `FileEffect` whose
 dependence on the replay was established by perturbation.
 
-Three still take the bundle by reference — `ShellEffect::run_argv`,
-`AsyncShellSpawnEffect::run_argv_async`, `NetEffect::fetch` — so a
-correctly-scoped bundle can be replayed on the structured-spawn and net-egress
-paths. See [Production Delta](production-delta.md).
+It remains untrue elsewhere. `nucleus::Sandbox::{write,write_approved}` take a
+`&DischargedBundle` and ignore it (`_proof`), so that surface is unmediated in
+the same way the effect traits were. See
+[Production Delta](production-delta.md).
 
 It also says nothing about the other seven obligations: it governs which action a
 bundle speaks for, not whether that action is safe.
