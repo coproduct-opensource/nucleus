@@ -390,48 +390,58 @@ pub fn verify_consistency(
     root_n: &[u8; 32],
     proof: &[[u8; 32]],
 ) -> bool {
-    if m == 0 || m > n {
+    if m > n {
         return false;
     }
     if m == n {
         return proof.is_empty() && root_m == root_n;
     }
-    let mut proof = proof.to_vec();
-    // A proof for an exact power-of-two prefix omits the left subtree hash,
-    // because the verifier can supply it: it is `root_m` itself.
+    if m == 0 {
+        // The empty tree is a prefix of everything, and needs no proof.
+        return proof.is_empty();
+    }
+
+    // Walk up while the first tree's last leaf is a RIGHT child: those levels
+    // are shared by both trees and contribute nothing to the proof.
     let (mut fn_, mut sn) = (m - 1, n - 1);
-    if m.is_power_of_two() {
-        proof.insert(0, *root_m);
+    while fn_ & 1 == 1 {
+        fn_ >>= 1;
+        sn >>= 1;
+    }
+
+    let mut it = proof.iter();
+    // When `fn_` reached 0 the first tree is a complete subtree, so its root is
+    // `root_m` and the proof omits it. Otherwise the proof supplies the seed.
+    let (mut fr, mut sr) = if fn_ != 0 {
+        match it.next() {
+            Some(seed) => (*seed, *seed),
+            None => return false,
+        }
     } else {
-        while fn_ % 2 == 1 {
-            fn_ /= 2;
-            sn /= 2;
-        }
-    }
-    if proof.is_empty() {
-        return false;
-    }
-    let mut fr = proof[0];
-    let mut sr = proof[0];
-    for p in &proof[1..] {
+        (*root_m, *root_m)
+    };
+
+    for c in it {
         if sn == 0 {
-            return false;
+            return false; // proof longer than the tree can justify
         }
-        if fn_ % 2 == 1 || fn_ == sn {
-            if fn_ % 2 == 1 {
-                fr = node_hash(p, &fr);
-            }
-            sr = node_hash(p, &sr);
-            while fn_ % 2 == 0 && fn_ != 0 {
-                fn_ /= 2;
-                sn /= 2;
+        if fn_ & 1 == 1 || fn_ == sn {
+            // A node on the first tree's right border: it contributes to BOTH
+            // roots. Hashing only `sr` here was the bug in the first version —
+            // every prefix then failed to reproduce `root_m`.
+            fr = node_hash(c, &fr);
+            sr = node_hash(c, &sr);
+            while fn_ != 0 && fn_ & 1 == 0 {
+                fn_ >>= 1;
+                sn >>= 1;
             }
         } else {
-            sr = node_hash(&sr, p);
+            sr = node_hash(&sr, c);
         }
-        fn_ /= 2;
-        sn /= 2;
+        fn_ >>= 1;
+        sn >>= 1;
     }
+
     sn == 0 && fr == *root_m && sr == *root_n
 }
 
