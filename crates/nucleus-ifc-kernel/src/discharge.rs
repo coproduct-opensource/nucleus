@@ -1009,10 +1009,7 @@ pub mod test_helpers {
     /// to sweep the whole product needs to distinguish "this pair cannot be
     /// earned" from "this pair was earned and then misused", which the panicking
     /// form cannot express.
-    pub fn try_bundle_for(
-        operation: Operation,
-        sink_class: SinkClass,
-    ) -> Option<DischargedBundle> {
+    pub fn try_bundle_for(operation: Operation, sink_class: SinkClass) -> Option<DischargedBundle> {
         let term = ActionTerm {
             operation,
             sink_class,
