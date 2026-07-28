@@ -38,7 +38,7 @@
 //!
 //! ```rust,ignore
 //! let proof = rt.preflight_read()?;      // discharges the eight obligations
-//! let data  = rt.read_file(&path, proof)?; // spends it on exactly this read
+//! let data  = rt.read_file(&path, authority)?; // spends it on exactly this read
 //! ```
 //!
 //! ## Testing
@@ -252,7 +252,7 @@ pub trait ShellEffect {
         stdin: Option<&[u8]>,
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output>;
 }
 
@@ -288,7 +288,7 @@ pub trait AsyncShellSpawnEffect {
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output>;
 }
 
@@ -343,7 +343,7 @@ pub trait NetEffect {
         headers: &[(String, String)],
         body: Option<Vec<u8>>,
         timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> Result<reqwest::Response, EffectError>;
 }
 
@@ -576,14 +576,14 @@ impl ShellEffect for RealEffects {
         stdin: Option<&[u8]>,
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> io::Result<Output> {
-        require_scope(
-            proof,
-            portcullis_core::Operation::RunBash,
-            portcullis_core::SinkClass::BashExec,
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
+        authority
+            .spend(
+                portcullis_core::Operation::RunBash,
+                portcullis_core::SinkClass::BashExec,
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
         // relocate here losslessly: env_clear + envs(allowlist), piped
         // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
@@ -633,14 +633,14 @@ impl AsyncShellSpawnEffect for RealEffects {
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         timeout: Option<std::time::Duration>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> io::Result<Output> {
-        require_scope(
-            proof,
-            portcullis_core::Operation::RunBash,
-            portcullis_core::SinkClass::BashExec,
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
+        authority
+            .spend(
+                portcullis_core::Operation::RunBash,
+                portcullis_core::SinkClass::BashExec,
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         // Mirrors `Executor::run_with_timeout`'s tokio spawn.
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args)
@@ -694,14 +694,14 @@ impl NetEffect for RealEffects {
         headers: &[(String, String)],
         body: Option<Vec<u8>>,
         timeout: Option<std::time::Duration>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> Result<reqwest::Response, EffectError> {
-        require_scope(
-            proof,
-            portcullis_core::Operation::WebFetch,
-            portcullis_core::SinkClass::HTTPEgress,
-        )
-        .map_err(EffectError::Io)?;
+        authority
+            .spend(
+                portcullis_core::Operation::WebFetch,
+                portcullis_core::SinkClass::HTTPEgress,
+            )
+            .map_err(|e| EffectError::Io(e.to_string()))?;
         // The relocated agent-egress send: build the request from the caller's
         // pieces on the caller's configured client, then perform the one raw
         // `reqwest …send()` that used to live in the tool-proxy handlers. This
@@ -930,13 +930,13 @@ impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
         stdin: Option<&[u8]>,
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> io::Result<Output> {
         // Preserve the sealed policy gate for the structured spawn too.
         self.require(self.policy.run_bash, "run_bash")
             .map_err(policy_denied_io)?;
         self.inner
-            .run_argv(program, args, cwd, stdin, allowed_env, harden, proof)
+            .run_argv(program, args, cwd, stdin, allowed_env, harden, authority)
     }
 }
 
@@ -951,7 +951,7 @@ impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
         allowed_env: &BTreeMap<String, String>,
         harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         timeout: Option<std::time::Duration>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> io::Result<Output> {
         self.require(self.policy.run_bash, "run_bash")
             .map_err(policy_denied_io)?;
@@ -964,7 +964,7 @@ impl<E: AsyncShellSpawnEffect> AsyncShellSpawnEffect for PolicyEnforced<E> {
                 allowed_env,
                 harden,
                 timeout,
-                proof,
+                authority,
             )
             .await
     }
@@ -981,7 +981,7 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
         headers: &[(String, String)],
         body: Option<Vec<u8>>,
         timeout: Option<std::time::Duration>,
-        proof: &DischargedBundle,
+        authority: Authority,
     ) -> Result<reqwest::Response, EffectError> {
         // Preserve the sealed policy gate for the egress too — mirror of the
         // `run_bash` gate on the structured spawn. The governing capability
@@ -991,7 +991,7 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
             NetCapability::WebSearch => self.require(self.policy.web_search, "web_search")?,
         }
         self.inner
-            .fetch(client, cap, method, url, headers, body, timeout, proof)
+            .fetch(client, cap, method, url, headers, body, timeout, authority)
             .await
     }
 }
@@ -1239,7 +1239,7 @@ impl ShellEffect for RecordingEffects {
         _stdin: Option<&[u8]>,
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output> {
         self.record(
             "run_argv",
@@ -1260,7 +1260,7 @@ impl AsyncShellSpawnEffect for RecordingEffects {
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         _timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output> {
         self.record(
             "run_argv_async",
@@ -1378,7 +1378,7 @@ impl ShellEffect for DenyAllEffects {
         _stdin: Option<&[u8]>,
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output> {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -1398,7 +1398,7 @@ impl AsyncShellSpawnEffect for DenyAllEffects {
         _allowed_env: &BTreeMap<String, String>,
         _harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)>,
         _timeout: Option<std::time::Duration>,
-        _proof: &DischargedBundle,
+        _authority: Authority,
     ) -> io::Result<Output> {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -2195,7 +2195,11 @@ mod tests {
         let mut policy = CapabilityLattice::bottom();
         policy.run_bash = CapabilityLevel::Always;
         let fx = production_effects(policy);
-        let bundle = bundle_for(Operation::RunBash, SinkClass::BashExec);
+        // One authority per spawn: an `Authority` is spent by the call, so a
+        // single bundle can no longer cover four of them. That is the property,
+        // not an inconvenience — this test used to replay one discharge.
+        let shell_authority =
+            || Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec));
 
         let dir = tempfile::tempdir().unwrap();
         let want_cwd = dir.path().canonicalize().unwrap();
@@ -2206,7 +2210,7 @@ mod tests {
         // (1) `pwd` proves `current_dir` was honored. The program name is
         //     resolved via the parent PATH even though the child env is cleared.
         let pwd_out = fx
-            .run_argv("pwd", &[], dir.path(), None, &allowed_env, None, &bundle)
+            .run_argv("pwd", &[], dir.path(), None, &allowed_env, None, shell_authority())
             .expect("run_argv spawns pwd");
         assert!(pwd_out.status.success());
         let printed_cwd = String::from_utf8_lossy(&pwd_out.stdout);
@@ -2227,7 +2231,7 @@ mod tests {
                 None,
                 &allowed_env,
                 None,
-                &bundle,
+                shell_authority(),
             )
             .expect("run_argv spawns printenv");
         assert!(env_out.status.success());
@@ -2250,7 +2254,7 @@ mod tests {
                 Some(b"piped-stdin"),
                 &allowed_env,
                 None,
-                &bundle,
+                shell_authority(),
             )
             .expect("run_argv spawns cat with stdin");
         assert!(cat_out.status.success());
@@ -2264,7 +2268,6 @@ mod tests {
         // run_bash is Never in bottom() — the sealed policy gate must reject the
         // structured spawn just as it rejects `run`.
         let fx = production_effects(CapabilityLattice::bottom());
-        let bundle = allowed_bundle();
         let err = fx
             .run_argv(
                 "echo",
@@ -2273,7 +2276,7 @@ mod tests {
                 None,
                 &BTreeMap::new(),
                 None,
-                &bundle,
+                Authority::new(allowed_bundle()),
             )
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
@@ -2330,7 +2333,6 @@ mod tests {
         // `Client::new()` can build (idempotent — ignore the already-set Err).
         let _ = rustls::crypto::ring::default_provider().install_default();
         let fx = production_effects_concrete(CapabilityLattice::bottom());
-        let bundle = allowed_bundle();
         let client = reqwest::Client::new();
         let url: reqwest::Url = "https://example.com/".parse().unwrap();
 
@@ -2345,7 +2347,7 @@ mod tests {
                 &[],
                 None,
                 None,
-                &bundle,
+                Authority::new(allowed_bundle()),
             )
             .await
             .expect_err("Never-policy egress must be denied before any send");
