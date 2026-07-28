@@ -3,14 +3,19 @@
 //! This module centralizes constants used across multiple CLI commands
 //! to maintain consistency and simplify version/configuration updates.
 
-/// Version of Firecracker to download and validate.
+/// Version of Firecracker to download.
 ///
-/// This version is used by:
-/// - `setup` command: Downloads and provisions Firecracker on Lima VM
-/// - `doctor` command: Verifies installed Firecracker matches expected version
+/// Used by `setup` to build the release download URL. **Not** the acceptance
+/// check — `doctor` and the node judge an installed build against
+/// [`nucleus_spec::vmm_version`], which is a floor plus a known-vulnerable
+/// denylist rather than an equality test. Keeping the two apart matters: the
+/// previous code compared installed-vs-pinned with `String::contains`, so a
+/// newer *patched* Firecracker was reported as wrong exactly like an older
+/// vulnerable one.
 ///
-/// Update this constant when upgrading to a new Firecracker version.
-pub const FIRECRACKER_VERSION: &str = "1.14.1";
+/// Update by changing `vmm_version::PINNED`; this string is derived from it, so
+/// the installer and the acceptance check cannot drift apart.
+pub const FIRECRACKER_VERSION: &str = nucleus_spec::vmm_version::PINNED_STR;
 
 /// The agent's BUILT-IN tools that MUST be disabled when launching the assistant
 /// under nucleus enforcement, so the agent can only act through the nucleus MCP

@@ -1891,6 +1891,41 @@ async fn wait_for_container_announce(
     wait_result.unwrap_or_default()
 }
 
+/// Ask the VMM its version and judge it against the floor.
+///
+/// A binary that will not run, or that prints nothing recognisable, yields a
+/// refusal rather than a pass — the whole point is that the failure mode is
+/// "no microVM", never "microVM on an unknown build".
+///
+/// Deliberately NOT `#[cfg(target_os = "linux")]` even though its only caller
+/// is: nothing in here is platform-specific, and gating it would mean the code
+/// is never compiled or tested on a macOS dev host. `vmm_preflight_refuses_*`
+/// exercise it here.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
+    use nucleus_spec::vmm_version::{judge, VmmVerdict};
+
+    // Fully qualified: the `Command` import is feature/platform-gated, and this
+    // function deliberately is not.
+    match tokio::process::Command::new(firecracker_path)
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(out) => {
+            // Firecracker has printed its banner on stdout across releases, but
+            // judge both streams rather than depend on which.
+            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            judge(&text)
+        }
+        Err(e) => VmmVerdict::Unparseable {
+            raw: format!("{} could not be executed: {e}", firecracker_path.display()),
+        },
+    }
+}
+
 async fn spawn_firecracker_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1911,6 +1946,21 @@ async fn spawn_firecracker_pod(
             return Err(ApiError::Driver(
                 "firecracker requires /dev/kvm (KVM not available)".to_string(),
             ));
+        }
+
+        // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
+        //
+        // Nucleus's isolation claim is delegated to Firecracker and the jailer,
+        // so a VMM carrying an escape-class advisory is a hole in the boundary
+        // even when every line of nucleus is correct. `doctor` reports this, but
+        // `doctor` is advisory and nobody has to run it — the launch path is the
+        // only place a refusal actually binds. Fail closed: an unreadable
+        // version is refused, not assumed safe.
+        let verdict = vmm_preflight(&state.firecracker_path).await;
+        if !verdict.is_acceptable() {
+            return Err(ApiError::Driver(format!(
+                "refusing to launch a microVM: {verdict}"
+            )));
         }
         if state.proxy_approval_secret.trim().is_empty() {
             return Err(ApiError::Driver(

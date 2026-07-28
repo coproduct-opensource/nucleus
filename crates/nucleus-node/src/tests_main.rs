@@ -101,3 +101,31 @@ fn container_driver_rejects_network_policy_fail_closed() {
     let without = mk(None);
     assert!(container_driver_reject_unsupported_network_policy(&without).is_ok());
 }
+
+// ── VMM version floor: the launch path must fail closed ───────────────────
+
+/// A Firecracker binary that does not exist must REFUSE, not pass.
+///
+/// This is the direction that matters. If an unrunnable or unreadable VMM
+/// returned "acceptable", the floor would be defeated by anything that broke
+/// the version probe — which is a far easier condition for an attacker to
+/// arrange than shipping a specific vulnerable build.
+#[tokio::test]
+async fn vmm_preflight_refuses_a_binary_it_cannot_run() {
+    let verdict = vmm_preflight(Path::new("/nonexistent/firecracker")).await;
+    assert!(
+        !verdict.is_acceptable(),
+        "an unrunnable VMM must be refused, got {verdict:?}"
+    );
+}
+
+/// A binary that runs but prints no recognisable version is also refused.
+/// `/bin/echo --version` prints something, but not a Firecracker banner.
+#[tokio::test]
+async fn vmm_preflight_refuses_output_without_a_version() {
+    let verdict = vmm_preflight(Path::new("/usr/bin/true")).await;
+    assert!(
+        !verdict.is_acceptable(),
+        "output with no version triple must be refused, got {verdict:?}"
+    );
+}
