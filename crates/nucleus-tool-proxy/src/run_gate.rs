@@ -188,6 +188,31 @@ pub(crate) fn preflight_read_fs(
     )
 }
 
+/// Discharge obligations for one grep/search file read.
+///
+/// Separate from [`preflight_read_fs`] because the operation differs
+/// (`GrepSearch`, not `ReadFiles`) and the discharge is scope-bound to it.
+///
+/// Called once PER FILE. That is the affine model working as designed, not an
+/// oversight: an `Authority` buys one read, so a search over N files needs N
+/// discharges. The alternative — one authority covering a whole directory walk —
+/// is exactly the replay the by-value cutover removed.
+pub(crate) fn preflight_grep_fs(
+    verified_scope: Option<&TokenScope>,
+    fs_ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::GrepSearch,
+        SinkClass::AuditLogAppend,
+        verified_scope,
+        fs_ceiling,
+        subject,
+        flow,
+    )
+}
+
 /// Shared term-builder + preflight for the sealed live paths (RunBash spawn, net
 /// egress, and filesystem write). Feeds the discharge
 /// [`ActionTerm`](discharge::ActionTerm) the session's REAL IFC labels + content
