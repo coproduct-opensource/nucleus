@@ -66,6 +66,7 @@ pub mod async_traits;
 pub mod runtime;
 
 pub mod authority;
+pub mod receipt;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -802,12 +803,53 @@ impl AgentSpawnEffect for RealEffects {
 pub struct PolicyEnforced<E> {
     inner: E,
     policy: CapabilityLattice,
+    /// Every mediation decision this handler makes, hash-chained.
+    ///
+    /// Always present, never optional: an effect handler that could be built
+    /// without a log would make "every effect is witnessed" a deployment
+    /// question rather than a property of the type.
+    receipts: Arc<crate::receipt::ReceiptLog>,
 }
 
 impl<E> PolicyEnforced<E> {
     /// Expose the underlying policy for inspection.
     pub fn policy(&self) -> &CapabilityLattice {
         &self.policy
+    }
+
+    /// The chain of mediation decisions made through this handler.
+    pub fn receipts(&self) -> &crate::receipt::ReceiptLog {
+        &self.receipts
+    }
+
+    /// Check the capability, spend the authority, and record what was decided.
+    ///
+    /// One function so the receipt cannot drift from the check: there is no path
+    /// through the gate that skips the append, because the append is on every
+    /// branch of the same expression that performs the check.
+    fn gate(
+        &self,
+        level: CapabilityLevel,
+        capability: &str,
+        authority: Authority,
+        op: portcullis_core::Operation,
+        sink: portcullis_core::SinkClass,
+    ) -> Result<Authority, EffectError> {
+        use crate::receipt::EffectOutcome;
+        if let Err(e) = self.require(level, capability) {
+            self.receipts.append(op, sink, EffectOutcome::DeniedByPolicy);
+            return Err(e);
+        }
+        match authority.spend(op, sink) {
+            Ok(bundle) => {
+                self.receipts.append(op, sink, EffectOutcome::Allowed);
+                Ok(Authority::new(bundle))
+            }
+            Err(e) => {
+                self.receipts.append(op, sink, EffectOutcome::DeniedByScope);
+                Err(EffectError::PolicyDenied(e.to_string()))
+            }
+        }
     }
 
     fn require(&self, level: CapabilityLevel, capability: &str) -> Result<(), EffectError> {
@@ -821,28 +863,11 @@ impl<E> PolicyEnforced<E> {
     }
 }
 
-/// Spend an authority on `(op, sink)` and re-wrap it for the inner effect.
-///
-/// The scope check happens HERE, at the policy gate, so every `FileEffect` call
-/// through `PolicyEnforced` is checked exactly once. The bundle is re-wrapped
-/// rather than handed back raw: the inner impl still receives a by-value
-/// `Authority`, so the one-shot property survives delegation instead of
-/// decaying into the ambient `&DischargedBundle` surface at the last hop.
-fn spend_for(
-    authority: Authority,
-    op: portcullis_core::Operation,
-    sink: portcullis_core::SinkClass,
-) -> Result<Authority, EffectError> {
-    let bundle = authority
-        .spend(op, sink)
-        .map_err(|e| EffectError::PolicyDenied(e.to_string()))?;
-    Ok(Authority::new(bundle))
-}
-
 impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
     fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.require(self.policy.read_files, "read_files")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.read_files,
+            "read_files",
             authority,
             portcullis_core::Operation::ReadFiles,
             portcullis_core::SinkClass::AuditLogAppend,
@@ -856,8 +881,9 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
         content: &[u8],
         authority: Authority,
     ) -> Result<(), EffectError> {
-        self.require(self.policy.write_files, "write_files")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.write_files,
+            "write_files",
             authority,
             portcullis_core::Operation::WriteFiles,
             portcullis_core::SinkClass::WorkspaceWrite,
@@ -871,8 +897,9 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
         content: &[u8],
         authority: Authority,
     ) -> Result<(), EffectError> {
-        self.require(self.policy.write_files, "write_files (append)")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.write_files,
+            "write_files (append)",
             authority,
             portcullis_core::Operation::WriteFiles,
             portcullis_core::SinkClass::WorkspaceWrite,
@@ -881,8 +908,9 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
     }
 
     fn glob(&self, pattern: &str, authority: Authority) -> Result<Vec<PathBuf>, EffectError> {
-        self.require(self.policy.glob_search, "glob_search")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.glob_search,
+            "glob_search",
             authority,
             portcullis_core::Operation::GlobSearch,
             portcullis_core::SinkClass::AuditLogAppend,
@@ -893,8 +921,9 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
 
 impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
     fn fetch(&self, url: &str, authority: Authority) -> Result<Vec<u8>, EffectError> {
-        self.require(self.policy.web_fetch, "web_fetch")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.web_fetch,
+            "web_fetch",
             authority,
             portcullis_core::Operation::WebFetch,
             portcullis_core::SinkClass::HTTPEgress,
@@ -907,8 +936,9 @@ impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
         query: &str,
         authority: Authority,
     ) -> Result<Vec<SearchResult>, EffectError> {
-        self.require(self.policy.web_search, "web_search")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.web_search,
+            "web_search",
             authority,
             portcullis_core::Operation::WebSearch,
             portcullis_core::SinkClass::HTTPEgress,
@@ -919,8 +949,9 @@ impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
 
 impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
     fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError> {
-        self.require(self.policy.run_bash, "run_bash")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.run_bash,
+            "run_bash",
             authority,
             portcullis_core::Operation::RunBash,
             portcullis_core::SinkClass::BashExec,
@@ -1004,8 +1035,9 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
 
 impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
     fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError> {
-        self.require(self.policy.git_commit, "git_commit")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.git_commit,
+            "git_commit",
             authority,
             portcullis_core::Operation::GitCommit,
             portcullis_core::SinkClass::GitCommit,
@@ -1019,8 +1051,9 @@ impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
         branch: &str,
         authority: Authority,
     ) -> Result<(), EffectError> {
-        self.require(self.policy.git_push, "git_push")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.git_push,
+            "git_push",
             authority,
             portcullis_core::Operation::GitPush,
             portcullis_core::SinkClass::GitPush,
@@ -1036,8 +1069,9 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
         term_json: &str,
         authority: Authority,
     ) -> Result<String, EffectError> {
-        self.require(self.policy.spawn_agent, "spawn_agent")?;
-        let authority = spend_for(
+        let authority = self.gate(
+            self.policy.spawn_agent,
+            "spawn_agent",
             authority,
             portcullis_core::Operation::SpawnAgent,
             portcullis_core::SinkClass::AgentSpawn,
@@ -1102,6 +1136,7 @@ pub fn production_effects_concrete(policy: CapabilityLattice) -> PolicyEnforced<
     PolicyEnforced {
         inner: RealEffects::new(),
         policy,
+        receipts: Arc::new(crate::receipt::ReceiptLog::new()),
     }
 }
 
@@ -1787,6 +1822,7 @@ mod tests {
     fn a_commit_authority_will_not_pay_for_a_push() {
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy: CapabilityLattice {
                 git_commit: CapabilityLevel::Always,
                 git_push: CapabilityLevel::Always,
@@ -1826,6 +1862,7 @@ mod tests {
         // `read_auth()` is the wrong scope for every one of these.
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy: all,
         };
 
@@ -1857,6 +1894,7 @@ mod tests {
     fn every_mediated_method_accepts_its_own_authority() {
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy: CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::Always,
@@ -2019,6 +2057,7 @@ mod tests {
         let policy = CapabilityLattice::bottom();
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy,
         };
         assert!(matches!(
@@ -2051,6 +2090,7 @@ mod tests {
 
         let fx = PolicyEnforced {
             inner: RecordingEffects::new(),
+            receipts: Arc::new(crate::receipt::ReceiptLog::new()),
             policy,
         };
         // These should reach the inner impl

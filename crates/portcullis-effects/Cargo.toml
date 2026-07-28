@@ -23,6 +23,7 @@ net = ["dep:reqwest"]
 
 [dependencies]
 portcullis-core = { path = "../portcullis-core" }
+sha2 = { workspace = true }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 ed25519-dalek = { workspace = true }
 shell-words = { workspace = true }
