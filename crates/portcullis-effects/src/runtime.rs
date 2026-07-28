@@ -810,7 +810,8 @@ impl NucleusRuntime {
             "fetch url",
         )?;
         let fx = &self.effects;
-        let data = fx.fetch(url).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let data = fx.fetch(url, authority).map_err(RuntimeError::from)?;
 
         let node_id = self
             .flow_tracker
@@ -842,7 +843,8 @@ impl NucleusRuntime {
             "run shell command",
         )?;
         let fx = &self.effects;
-        let output = fx.run(cmd).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let output = fx.run(cmd, authority).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
         })
@@ -867,7 +869,8 @@ impl NucleusRuntime {
             "git commit",
         )?;
         let fx = &self.effects;
-        let hash = fx.commit(message).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let hash = fx.commit(message, authority).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
         })
@@ -888,7 +891,8 @@ impl NucleusRuntime {
     ) -> Result<(), RuntimeError> {
         Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
-        fx.push(remote, branch).map_err(RuntimeError::from)
+        let authority = crate::authority::Authority::new(proof);
+        fx.push(remote, branch, authority).map_err(RuntimeError::from)
     }
 
     // ── Internal helpers ────────────────────────────────────────────────

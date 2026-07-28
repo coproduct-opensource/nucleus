@@ -192,12 +192,21 @@ pub trait FileEffect {
 }
 
 /// Web fetch and search operations.
+///
+/// Both methods consume an [`Authority`] by value — see [`FileEffect`] for what
+/// that buys. Egress is an `HTTPEgress` sink, which `sink_min_integrity` holds to
+/// `Untrusted`: a session that has observed adversarial content cannot discharge
+/// for it at all, and before this change that check never reached a fetch.
 pub trait WebEffect {
     /// Fetch the body of a URL. Returns raw bytes.
-    fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError>;
+    fn fetch(&self, url: &str, authority: Authority) -> Result<Vec<u8>, EffectError>;
 
     /// Perform a web search and return result snippets.
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, EffectError>;
+    fn search(
+        &self,
+        query: &str,
+        authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError>;
 }
 
 /// Shell command execution.
@@ -205,7 +214,11 @@ pub trait ShellEffect {
     /// Run a shell command and return stdout/stderr.
     ///
     /// `cmd` is parsed via `shell-words` to prevent injection.
-    fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError>;
+    ///
+    /// Consumes an [`Authority`] by value. `run_argv` already required a
+    /// discharge; this method did not, so the unstructured path was the weaker
+    /// of the two.
+    fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError>;
 
     /// Structured argv spawn — the sealed home for a mediated process spawn (B1).
     ///
@@ -335,19 +348,33 @@ pub trait NetEffect {
 }
 
 /// Git operations.
+///
+/// Both methods consume an [`Authority`] by value. `push` is the
+/// highest-consequence sink in the system and was gated only by
+/// `git_push != Never` — the coarse capability — so a session too tainted to
+/// discharge for `GitPush` could still push.
 pub trait GitEffect {
     /// Create a git commit with the given message.
-    fn commit(&self, message: &str) -> Result<String, EffectError>;
+    fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError>;
 
     /// Push the current branch to a remote.
-    fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError>;
+    fn push(&self, remote: &str, branch: &str, authority: Authority)
+        -> Result<(), EffectError>;
 }
 
 /// Sub-agent spawn operations.
 pub trait AgentSpawnEffect {
     /// Spawn a sub-agent at the given endpoint with the given term.
-    /// Returns an opaque decision token.
-    fn spawn(&self, endpoint: &str, term_json: &str) -> Result<String, EffectError>;
+    ///
+    /// Consumes an [`Authority`] by value. `AgentSpawn` is held to `Untrusted`
+    /// minimum integrity because adversarial instructions would propagate to the
+    /// child — a check that never reached this call before.
+    fn spawn(
+        &self,
+        endpoint: &str,
+        term_json: &str,
+        authority: Authority,
+    ) -> Result<String, EffectError>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -469,7 +496,7 @@ impl FileEffect for RealEffects {
 }
 
 impl WebEffect for RealEffects {
-    fn fetch(&self, _url: &str) -> Result<Vec<u8>, EffectError> {
+    fn fetch(&self, _url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         // Synchronous HTTP is intentionally not implemented in portcullis-effects
         // to avoid pulling in a heavyweight HTTP client dependency. Callers that
         // need HTTP should use the nucleus-tool-proxy or inject a custom impl.
@@ -478,7 +505,11 @@ impl WebEffect for RealEffects {
         ))
     }
 
-    fn search(&self, _query: &str) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(
+        &self,
+        _query: &str,
+        _authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
         Err(EffectError::NotImplemented(
             "web search requires nucleus-tool-proxy; inject a custom WebEffect impl",
         ))
@@ -520,7 +551,7 @@ pub(crate) fn require_scope(
 }
 
 impl ShellEffect for RealEffects {
-    fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
+    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
         let words = shell_words::split(cmd)
             .map_err(|e| EffectError::Io(format!("shell parse failed: {e}")))?;
         if words.is_empty() {
@@ -693,7 +724,7 @@ impl NetEffect for RealEffects {
 }
 
 impl GitEffect for RealEffects {
-    fn commit(&self, message: &str) -> Result<String, EffectError> {
+    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
         // Stage all tracked modifications and commit.
         let add = std::process::Command::new("git")
             .args(["add", "-u"])
@@ -720,7 +751,12 @@ impl GitEffect for RealEffects {
         Ok(out.trim().to_string())
     }
 
-    fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError> {
+    fn push(
+        &self,
+        remote: &str,
+        branch: &str,
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         let output = std::process::Command::new("git")
             .args(["push", remote, branch])
             .output()
@@ -737,7 +773,12 @@ impl GitEffect for RealEffects {
 }
 
 impl AgentSpawnEffect for RealEffects {
-    fn spawn(&self, _endpoint: &str, _term_json: &str) -> Result<String, EffectError> {
+    fn spawn(
+        &self,
+        _endpoint: &str,
+        _term_json: &str,
+        _authority: Authority,
+    ) -> Result<String, EffectError> {
         Err(EffectError::NotImplemented(
             "agent spawn not yet implemented; use nucleus-client for remote dispatch",
         ))
@@ -845,21 +886,40 @@ impl<E: FileEffect> FileEffect for PolicyEnforced<E> {
 }
 
 impl<E: WebEffect> WebEffect for PolicyEnforced<E> {
-    fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError> {
+    fn fetch(&self, url: &str, authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.require(self.policy.web_fetch, "web_fetch")?;
-        self.inner.fetch(url)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::WebFetch,
+            portcullis_core::SinkClass::HTTPEgress,
+        )?;
+        self.inner.fetch(url, authority)
     }
 
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(
+        &self,
+        query: &str,
+        authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
         self.require(self.policy.web_search, "web_search")?;
-        self.inner.search(query)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::WebSearch,
+            portcullis_core::SinkClass::HTTPEgress,
+        )?;
+        self.inner.search(query, authority)
     }
 }
 
 impl<E: ShellEffect> ShellEffect for PolicyEnforced<E> {
-    fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
+    fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError> {
         self.require(self.policy.run_bash, "run_bash")?;
-        self.inner.run(cmd)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::RunBash,
+            portcullis_core::SinkClass::BashExec,
+        )?;
+        self.inner.run(cmd, authority)
     }
 
     fn run_argv(
@@ -937,21 +997,46 @@ impl<E: NetEffect> NetEffect for PolicyEnforced<E> {
 }
 
 impl<E: GitEffect> GitEffect for PolicyEnforced<E> {
-    fn commit(&self, message: &str) -> Result<String, EffectError> {
+    fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError> {
         self.require(self.policy.git_commit, "git_commit")?;
-        self.inner.commit(message)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::GitCommit,
+            portcullis_core::SinkClass::GitCommit,
+        )?;
+        self.inner.commit(message, authority)
     }
 
-    fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError> {
+    fn push(
+        &self,
+        remote: &str,
+        branch: &str,
+        authority: Authority,
+    ) -> Result<(), EffectError> {
         self.require(self.policy.git_push, "git_push")?;
-        self.inner.push(remote, branch)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::GitPush,
+            portcullis_core::SinkClass::GitPush,
+        )?;
+        self.inner.push(remote, branch, authority)
     }
 }
 
 impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
-    fn spawn(&self, endpoint: &str, term_json: &str) -> Result<String, EffectError> {
+    fn spawn(
+        &self,
+        endpoint: &str,
+        term_json: &str,
+        authority: Authority,
+    ) -> Result<String, EffectError> {
         self.require(self.policy.spawn_agent, "spawn_agent")?;
-        self.inner.spawn(endpoint, term_json)
+        let authority = spend_for(
+            authority,
+            portcullis_core::Operation::SpawnAgent,
+            portcullis_core::SinkClass::AgentSpawn,
+        )?;
+        self.inner.spawn(endpoint, term_json, authority)
     }
 }
 
@@ -1121,19 +1206,23 @@ impl FileEffect for RecordingEffects {
 }
 
 impl WebEffect for RecordingEffects {
-    fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError> {
+    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.record("fetch", url);
         Ok(Vec::new())
     }
 
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(
+        &self,
+        query: &str,
+        _authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
         self.record("search", query);
         Ok(Vec::new())
     }
 }
 
 impl ShellEffect for RecordingEffects {
-    fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
+    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
         self.record("run", cmd);
         Ok(ShellOutput {
             stdout: Vec::new(),
@@ -1182,19 +1271,29 @@ impl AsyncShellSpawnEffect for RecordingEffects {
 }
 
 impl GitEffect for RecordingEffects {
-    fn commit(&self, message: &str) -> Result<String, EffectError> {
+    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
         self.record("commit", message);
         Ok("deadbeef".to_string())
     }
 
-    fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError> {
+    fn push(
+        &self,
+        remote: &str,
+        branch: &str,
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         self.record("push", format!("{remote}/{branch}"));
         Ok(())
     }
 }
 
 impl AgentSpawnEffect for RecordingEffects {
-    fn spawn(&self, endpoint: &str, term_json: &str) -> Result<String, EffectError> {
+    fn spawn(
+        &self,
+        endpoint: &str,
+        term_json: &str,
+        _authority: Authority,
+    ) -> Result<String, EffectError> {
         self.record("spawn", format!("{endpoint}: {term_json}"));
         Ok("decision:allow".to_string())
     }
@@ -1254,16 +1353,20 @@ impl FileEffect for DenyAllEffects {
 }
 
 impl WebEffect for DenyAllEffects {
-    fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError> {
+    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         Err(EffectError::PolicyDenied(format!("fetch denied: {url}")))
     }
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(
+        &self,
+        query: &str,
+        _authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
         Err(EffectError::PolicyDenied(format!("search denied: {query}")))
     }
 }
 
 impl ShellEffect for DenyAllEffects {
-    fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
+    fn run(&self, cmd: &str, _authority: Authority) -> Result<ShellOutput, EffectError> {
         Err(EffectError::PolicyDenied(format!("shell denied: {cmd}")))
     }
 
@@ -1305,12 +1408,17 @@ impl AsyncShellSpawnEffect for DenyAllEffects {
 }
 
 impl GitEffect for DenyAllEffects {
-    fn commit(&self, message: &str) -> Result<String, EffectError> {
+    fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "git commit denied: {message}"
         )))
     }
-    fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError> {
+    fn push(
+        &self,
+        remote: &str,
+        branch: &str,
+        _authority: Authority,
+    ) -> Result<(), EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "git push denied: {remote}/{branch}"
         )))
@@ -1318,7 +1426,12 @@ impl GitEffect for DenyAllEffects {
 }
 
 impl AgentSpawnEffect for DenyAllEffects {
-    fn spawn(&self, endpoint: &str, _term_json: &str) -> Result<String, EffectError> {
+    fn spawn(
+        &self,
+        endpoint: &str,
+        _term_json: &str,
+        _authority: Authority,
+    ) -> Result<String, EffectError> {
         Err(EffectError::PolicyDenied(format!(
             "spawn denied: {endpoint}"
         )))
@@ -1440,12 +1553,16 @@ impl FileEffect for AllowListEffects {
 }
 
 impl WebEffect for AllowListEffects {
-    fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError> {
+    fn fetch(&self, url: &str, _authority: Authority) -> Result<Vec<u8>, EffectError> {
         self.check_url(url)?;
         Ok(Vec::new())
     }
 
-    fn search(&self, _query: &str) -> Result<Vec<SearchResult>, EffectError> {
+    fn search(
+        &self,
+        _query: &str,
+        _authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
         Ok(Vec::new())
     }
 }
@@ -1569,6 +1686,51 @@ mod tests {
         ))
     }
 
+    /// Authorities for the remaining effect traits, each scoped to the one
+    /// `(Operation, SinkClass)` pair its trait method spends on.
+    fn auth_for(
+        op: portcullis_core::Operation,
+        sink: portcullis_core::SinkClass,
+    ) -> Authority {
+        Authority::new(portcullis_core::discharge::test_helpers::bundle_for(op, sink))
+    }
+    fn fetch_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::WebFetch,
+            portcullis_core::SinkClass::HTTPEgress,
+        )
+    }
+    fn search_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::WebSearch,
+            portcullis_core::SinkClass::HTTPEgress,
+        )
+    }
+    fn shell_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::RunBash,
+            portcullis_core::SinkClass::BashExec,
+        )
+    }
+    fn commit_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::GitCommit,
+            portcullis_core::SinkClass::GitCommit,
+        )
+    }
+    fn push_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::GitPush,
+            portcullis_core::SinkClass::GitPush,
+        )
+    }
+    fn spawn_auth() -> Authority {
+        auth_for(
+            portcullis_core::Operation::SpawnAgent,
+            portcullis_core::SinkClass::AgentSpawn,
+        )
+    }
+
     // ── Uniform mediation on FileEffect (B1/B2) ────────────────────────────
 
     /// The gap this cutover closes: before it, `FileEffect::write` took no
@@ -1654,20 +1816,20 @@ mod tests {
         ));
         assert!(matches!(fx.glob("*.rs", glob_auth()), Err(EffectError::PolicyDenied(_))));
         assert!(matches!(
-            fx.fetch("https://example.com"),
+            fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.run("ls"), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(fx.run("ls", shell_auth()), Err(EffectError::PolicyDenied(_))));
         assert!(matches!(
-            fx.commit("msg"),
-            Err(EffectError::PolicyDenied(_))
-        ));
-        assert!(matches!(
-            fx.push("origin", "main"),
+            fx.commit("msg", commit_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.spawn("http://agent", "{}"),
+            fx.push("origin", "main", push_auth()),
+            Err(EffectError::PolicyDenied(_))
+        ));
+        assert!(matches!(
+            fx.spawn("http://agent", "{}", spawn_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
     }
@@ -1679,7 +1841,7 @@ mod tests {
         let fx = RecordingEffects::new();
         let _ = fx.read(Path::new("a.rs"), read_auth());
         let _ = fx.write(Path::new("b.rs"), b"hi", write_auth());
-        let _ = fx.run("echo hello");
+        let _ = fx.run("echo hello", shell_auth());
         let calls = fx.calls();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].kind, "read");
@@ -1697,7 +1859,7 @@ mod tests {
     #[test]
     fn recording_commit_returns_stub_hash() {
         let fx = RecordingEffects::new();
-        let hash = fx.commit("fix: something").unwrap();
+        let hash = fx.commit("fix: something", commit_auth()).unwrap();
         assert_eq!(hash, "deadbeef");
     }
 
@@ -1720,9 +1882,9 @@ mod tests {
     #[test]
     fn allow_list_url_prefix_enforcement() {
         let fx = AllowListEffects::new().allow_url("https://docs.rs/");
-        assert!(fx.fetch("https://docs.rs/portcullis").is_ok());
+        assert!(fx.fetch("https://docs.rs/portcullis", fetch_auth()).is_ok());
         assert!(matches!(
-            fx.fetch("https://evil.com/exfil"),
+            fx.fetch("https://evil.com/exfil", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
     }
@@ -1741,16 +1903,16 @@ mod tests {
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.fetch("https://example.com"),
+            fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
-        assert!(matches!(fx.run("ls"), Err(EffectError::PolicyDenied(_))));
+        assert!(matches!(fx.run("ls", shell_auth()), Err(EffectError::PolicyDenied(_))));
         assert!(matches!(
-            fx.commit("msg"),
+            fx.commit("msg", commit_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         assert!(matches!(
-            fx.push("origin", "main"),
+            fx.push("origin", "main", push_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
         // Nothing should have reached the inner impl
@@ -1774,7 +1936,7 @@ mod tests {
         assert_eq!(fx.inner.calls().len(), 2);
         // But web_fetch is still Never
         assert!(matches!(
-            fx.fetch("https://example.com"),
+            fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::PolicyDenied(_))
         ));
     }
@@ -1813,7 +1975,7 @@ mod tests {
         policy.web_fetch = CapabilityLevel::Always;
         let fx = production_effects(policy);
         assert!(matches!(
-            fx.fetch("https://example.com"),
+            fx.fetch("https://example.com", fetch_auth()),
             Err(EffectError::NotImplemented(_))
         ));
     }
@@ -1890,7 +2052,7 @@ mod tests {
         let mut policy = CapabilityLattice::bottom();
         policy.run_bash = CapabilityLevel::Always;
         let fx = production_effects(policy);
-        let out = fx.run("echo nucleus").unwrap();
+        let out = fx.run("echo nucleus", shell_auth()).unwrap();
         assert!(out.success());
         assert!(out.stdout_str().contains("nucleus"));
     }

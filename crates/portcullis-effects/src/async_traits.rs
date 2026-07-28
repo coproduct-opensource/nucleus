@@ -51,12 +51,14 @@ pub trait AsyncWebEffect {
     fn fetch(
         &self,
         url: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, EffectError>> + Send;
 
     /// Perform a web search and return result snippets.
     fn search(
         &self,
         query: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<Vec<SearchResult>, EffectError>> + Send;
 }
 
@@ -66,6 +68,7 @@ pub trait AsyncShellEffect {
     fn run(
         &self,
         cmd: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<ShellOutput, EffectError>> + Send;
 }
 
@@ -75,6 +78,7 @@ pub trait AsyncGitEffect {
     fn commit(
         &self,
         message: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<String, EffectError>> + Send;
 
     /// Push the current branch to a remote.
@@ -82,6 +86,7 @@ pub trait AsyncGitEffect {
         &self,
         remote: &str,
         branch: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<(), EffectError>> + Send;
 }
 
@@ -92,6 +97,7 @@ pub trait AsyncAgentSpawnEffect {
         &self,
         endpoint: &str,
         term_json: &str,
+        authority: Authority,
     ) -> impl std::future::Future<Output = Result<String, EffectError>> + Send;
 }
 
@@ -131,32 +137,46 @@ impl<E: crate::FileEffect + Send + Sync> AsyncFileEffect for SyncAdapter<E> {
 }
 
 impl<E: crate::WebEffect + Send + Sync> AsyncWebEffect for SyncAdapter<E> {
-    async fn fetch(&self, url: &str) -> Result<Vec<u8>, EffectError> {
-        self.0.fetch(url)
+    async fn fetch(&self, url: &str, authority: Authority) -> Result<Vec<u8>, EffectError> {
+        self.0.fetch(url, authority)
     }
-    async fn search(&self, query: &str) -> Result<Vec<SearchResult>, EffectError> {
-        self.0.search(query)
+    async fn search(
+        &self,
+        query: &str,
+        authority: Authority,
+    ) -> Result<Vec<SearchResult>, EffectError> {
+        self.0.search(query, authority)
     }
 }
 
 impl<E: crate::ShellEffect + Send + Sync> AsyncShellEffect for SyncAdapter<E> {
-    async fn run(&self, cmd: &str) -> Result<ShellOutput, EffectError> {
-        self.0.run(cmd)
+    async fn run(&self, cmd: &str, authority: Authority) -> Result<ShellOutput, EffectError> {
+        self.0.run(cmd, authority)
     }
 }
 
 impl<E: crate::GitEffect + Send + Sync> AsyncGitEffect for SyncAdapter<E> {
-    async fn commit(&self, message: &str) -> Result<String, EffectError> {
-        self.0.commit(message)
+    async fn commit(&self, message: &str, authority: Authority) -> Result<String, EffectError> {
+        self.0.commit(message, authority)
     }
-    async fn push(&self, remote: &str, branch: &str) -> Result<(), EffectError> {
-        self.0.push(remote, branch)
+    async fn push(
+        &self,
+        remote: &str,
+        branch: &str,
+        authority: Authority,
+    ) -> Result<(), EffectError> {
+        self.0.push(remote, branch, authority)
     }
 }
 
 impl<E: crate::AgentSpawnEffect + Send + Sync> AsyncAgentSpawnEffect for SyncAdapter<E> {
-    async fn spawn(&self, endpoint: &str, term_json: &str) -> Result<String, EffectError> {
-        self.0.spawn(endpoint, term_json)
+    async fn spawn(
+        &self,
+        endpoint: &str,
+        term_json: &str,
+        authority: Authority,
+    ) -> Result<String, EffectError> {
+        self.0.spawn(endpoint, term_json, authority)
     }
 }
 
