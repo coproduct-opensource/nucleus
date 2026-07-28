@@ -34,9 +34,5 @@ c2pa = { version = "0.90", default-features = false, features = ["rust_native_cr
 default = []
 c2pa = ["dep:c2pa"]
 
-[dev-dependencies]
-nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
-tempfile = { workspace = true }
-
 [lints]
 workspace = true

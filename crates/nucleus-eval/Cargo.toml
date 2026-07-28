@@ -20,6 +20,3 @@ serde_json = { workspace = true }
 # this crate by PATH — the minted event is the real type, never a local shadow.
 # Default features OFF keeps the closure lean + WASM-safe (no durable-store deps).
 nucleus-creditworthiness = { path = "../nucleus-creditworthiness", default-features = false }
-
-[dev-dependencies]
-serde_json = { workspace = true }

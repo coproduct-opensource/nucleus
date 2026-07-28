@@ -41,9 +41,5 @@ nucleus-identity = { path = "../nucleus-identity", optional = true }
 default = []
 identity = ["dep:nucleus-identity"]
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-test = { workspace = true }
-
 [lints]
 workspace = true

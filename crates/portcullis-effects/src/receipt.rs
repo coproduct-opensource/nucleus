@@ -65,7 +65,7 @@
 
 use std::sync::Mutex;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use portcullis_core::{Operation, SinkClass};
 use sha2::{Digest, Sha256};
 

@@ -22,8 +22,6 @@ nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-iss
 ed25519-dalek = "=3.0.0-pre.7"
 serde_json = { workspace = true }
 hex = { workspace = true }
-
-[dev-dependencies]
 # tests/ uses the same dev features as the library — no additional deps.
 
 [lints]

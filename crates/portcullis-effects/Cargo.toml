@@ -31,15 +31,5 @@ regex = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time"], optional = true }
 reqwest = { workspace = true, optional = true }
 
-[dev-dependencies]
-portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
-tempfile = { workspace = true }
-proptest = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros"] }
-# Test-only: install a rustls crypto provider before building a reqwest Client
-# in the `net` policy-gate test (the workspace reqwest uses `rustls-no-provider`
-# under feature unification, so a provider must be installed first).
-rustls = { workspace = true }
-
 [lints]
 workspace = true

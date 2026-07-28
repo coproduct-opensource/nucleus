@@ -18,6 +18,3 @@ serde = { workspace = true }
 # README + module docs) so nucleus (PUBLIC) takes NO dependency on the PRIVATE
 # olog repo.
 nucleus-rubric = { path = "../nucleus-rubric" }
-
-[dev-dependencies]
-serde_json = { workspace = true }

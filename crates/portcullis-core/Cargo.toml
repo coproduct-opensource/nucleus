@@ -43,18 +43,5 @@ wasmtime = { version = "45", optional = true }
 c2pa = { workspace = true, optional = true }
 risc0-zkvm = { workspace = true, optional = true }
 
-[dev-dependencies]
-wat = "1"
-
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
-
-[dev-dependencies.ck-types]
-# Parity pin for the constitutional attenuation instance
-# (tests/constitutional_attenuation.rs). DEV-ONLY by design: the
-# minimal verified kernel (ck-*) must not depend on this crate, and
-# this crate's production graph stays dependency-free for Aeneas.
-path = "../ck-types"
-
-[dev-dependencies.ck-policy]
-path = "../ck-policy"

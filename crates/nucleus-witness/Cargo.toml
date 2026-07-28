@@ -37,9 +37,5 @@ ct-merkle = { version = "0.3", features = ["serde"] }
 # green (nucleus-lineage / nucleus-verifier-service both pin this).
 ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
 
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
-
 [lints]
 workspace = true

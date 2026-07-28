@@ -28,6 +28,3 @@ portcullis = { path = "../portcullis", version = "1.0.0", default-features = fal
 nucleus-ifc = { path = "../nucleus-ifc", version = "1.0.0", features = ["decision"] }
 chrono = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-ed25519-dalek = { workspace = true }

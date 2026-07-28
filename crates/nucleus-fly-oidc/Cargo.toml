@@ -25,6 +25,3 @@ tokio = { workspace = true, features = ["net", "io-util"] }
 tracing = { workspace = true }
 base64 = { workspace = true }
 nucleus-lineage = { path = "../nucleus-lineage" }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }

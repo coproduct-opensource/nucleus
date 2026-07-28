@@ -31,6 +31,3 @@ js-sys = { version = "0.3", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # uuid needed to enable js feature for WASM (pulled in via portcullis)
 uuid = { version = "1", features = ["v4"] }
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3"

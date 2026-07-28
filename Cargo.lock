@@ -583,16 +583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "assert-json-diff"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "async-generic"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1900,12 +1890,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cast"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
-
-[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2131,7 +2115,6 @@ dependencies = [
  "chrono",
  "ck-policy",
  "ck-types",
- "pretty_assertions",
  "ring",
  "serde",
  "serde_json",
@@ -2143,8 +2126,6 @@ name = "ck-policy"
 version = "1.0.0"
 dependencies = [
  "ck-types",
- "pretty_assertions",
- "proptest",
 ]
 
 [[package]]
@@ -2154,7 +2135,6 @@ dependencies = [
  "base64 0.23.0",
  "blake3",
  "chrono",
- "pretty_assertions",
  "ring",
  "serde",
  "serde_json",
@@ -2761,7 +2741,6 @@ dependencies = [
  "serde_json",
  "uuid",
  "wasm-bindgen",
- "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -2966,24 +2945,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deadpool"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0be2b1d1d6ec8d846f05e137292d0b89133caf95ef33695424c09568bdd39b1b"
-dependencies = [
- "deadpool-runtime",
- "lazy_static",
- "num_cpus",
- "tokio",
-]
-
-[[package]]
-name = "deadpool-runtime"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
-
-[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3118,12 +3079,6 @@ name = "diatomic-waker"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
-
-[[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
@@ -4257,12 +4212,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "hermit-abi"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hex"
@@ -5528,12 +5477,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kani"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4b7234edbef8bfed0dd44c39b0cd344d4ef7fa2bcb5dec3c9c334874ed8744"
-
-[[package]]
 name = "kasuari"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6017,16 +5960,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minicov"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4869b6a491569605d66d3952bcdf03df789e5b536e5f0cf7758a7f08a55ae24d"
-dependencies = [
- "cc",
- "walkdir",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6486,10 +6419,8 @@ dependencies = [
  "portcullis",
  "portcullis-effects",
  "quanta",
- "rust_decimal",
  "sha2 0.11.0",
  "shell-words",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -6501,13 +6432,11 @@ name = "nucleus-agent-card"
 version = "1.0.0"
 dependencies = [
  "base64 0.23.0",
- "ed25519-dalek 3.0.0-pre.7",
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
  "nucleus-receipt",
  "p256",
- "ring",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -6531,7 +6460,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
  "toml 1.1.3+spec-1.1.0",
  "url",
@@ -6546,10 +6474,8 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "nucleus-envelope",
- "nucleus-lineage",
  "serde_json",
  "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]
@@ -6582,7 +6508,6 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.0",
  "shellexpand",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "toml 1.1.3+spec-1.1.0",
@@ -6619,7 +6544,6 @@ dependencies = [
  "nucleus-lineage",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.19",
  "uuid",
 ]
@@ -6638,7 +6562,6 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.13.0",
- "http-body-util",
  "nucleus-control-plane",
  "nucleus-envelope",
  "nucleus-lineage",
@@ -6669,12 +6592,10 @@ dependencies = [
  "nucleus-econ-kernels",
  "nucleus-recompute",
  "nucleus-witness-olog",
- "proptest",
  "redb",
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -6682,13 +6603,10 @@ dependencies = [
 name = "nucleus-econ-kernels"
 version = "1.0.0"
 dependencies = [
- "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-types",
  "nucleus-externality",
- "proptest",
  "serde",
- "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
 ]
@@ -6697,9 +6615,7 @@ dependencies = [
 name = "nucleus-econ-types"
 version = "1.0.0"
 dependencies = [
- "proptest",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -6715,7 +6631,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -6745,12 +6660,9 @@ name = "nucleus-externality"
 version = "1.0.0"
 dependencies = [
  "base64 0.23.0",
- "chrono",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
- "nucleus-econ-kernels",
  "nucleus-lineage",
- "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6781,13 +6693,9 @@ dependencies = [
  "jsonwebtoken",
  "nucleus-lineage",
  "nucleus-oidc-core",
- "proptest",
- "reqwest 0.13.4",
- "rustls 0.23.42",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
- "tokio",
  "tracing",
 ]
 
@@ -6813,9 +6721,7 @@ dependencies = [
  "hex",
  "pem",
  "portcullis-core",
- "proptest",
  "prost 0.14.4",
- "rand 0.10.2",
  "rcgen",
  "reqwest 0.13.4",
  "ring",
@@ -6825,12 +6731,10 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "spiffe",
- "tempfile",
  "thiserror 2.0.19",
  "time",
  "tokio",
  "tokio-rustls 0.26.4",
- "tokio-test",
  "tracing",
  "x509-parser",
 ]
@@ -6840,16 +6744,13 @@ name = "nucleus-ifc"
 version = "1.0.0"
 dependencies = [
  "portcullis-core",
- "proptest",
  "serde",
- "serde_json",
 ]
 
 [[package]]
 name = "nucleus-ifc-kernel"
 version = "1.0.0"
 dependencies = [
- "proptest",
  "serde",
 ]
 
@@ -6868,13 +6769,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
- "tokio",
  "tracing",
- "ureq",
  "uuid",
- "wiremock",
 ]
 
 [[package]]
@@ -6884,7 +6781,6 @@ dependencies = [
  "async-trait",
  "serde",
  "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]
@@ -6900,7 +6796,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
- "tokio-test",
  "tokio-util",
 ]
 
@@ -6919,7 +6814,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "tempfile",
  "ureq",
  "uuid",
 ]
@@ -6971,7 +6865,6 @@ dependencies = [
  "nucleus-spec",
  "oid-registry",
  "portcullis",
- "proptest",
  "prost 0.14.4",
  "prost-types",
  "rand_core 0.6.4",
@@ -6981,11 +6874,9 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-stream",
- "tokio-test",
  "tonic",
  "tonic-prost",
  "tracing",
@@ -7002,7 +6893,6 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "serde",
- "serde_json",
  "thiserror 2.0.19",
 ]
 
@@ -7019,7 +6909,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
- "tokio",
  "tracing",
 ]
 
@@ -7034,17 +6923,14 @@ dependencies = [
  "clap",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
- "http-body-util",
  "nucleus-lineage",
  "nucleus-oidc-core",
  "nucleus-otel-bootstrap",
- "proptest",
  "rand 0.10.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "subtle",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
@@ -7062,7 +6948,6 @@ name = "nucleus-oracle"
 version = "1.0.0"
 dependencies = [
  "hex",
- "nucleus-creditworthiness",
  "nucleus-eval",
  "nucleus-rubric",
  "serde",
@@ -7089,7 +6974,6 @@ name = "nucleus-pca"
 version = "1.0.0"
 dependencies = [
  "chrono",
- "ed25519-dalek 3.0.0-pre.7",
  "nucleus-ifc",
  "nucleus-policy-cert",
  "nucleus-policy-kernel",
@@ -7101,7 +6985,6 @@ dependencies = [
 name = "nucleus-permission-market"
 version = "1.0.0"
 dependencies = [
- "proptest",
  "serde",
  "serde_json",
  "tracing",
@@ -7115,9 +6998,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "nucleus-policy-kernel",
  "portcullis",
- "proptest",
  "serde",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
@@ -7126,9 +7007,7 @@ dependencies = [
 name = "nucleus-policy-kernel"
 version = "0.2.0"
 dependencies = [
- "proptest",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -7188,7 +7067,6 @@ dependencies = [
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
- "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
  "nucleus-ifc",
@@ -7206,7 +7084,6 @@ version = "1.0.0"
 dependencies = [
  "nucleus-creditworthiness",
  "nucleus-eval",
- "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7218,7 +7095,6 @@ version = "1.0.0"
 dependencies = [
  "nucleus-rubric",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -7238,7 +7114,6 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.19",
  "tokio",
- "tokio-test",
  "tonic",
  "tracing",
 ]
@@ -7267,7 +7142,6 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
- "ed25519-dalek 3.0.0-pre.7",
  "glob",
  "hex",
  "hmac 0.13.0",
@@ -7284,7 +7158,6 @@ dependencies = [
  "opentelemetry_sdk",
  "pem",
  "portcullis",
- "portcullis-core",
  "portcullis-effects",
  "regex",
  "reqwest 0.13.4",
@@ -7297,7 +7170,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -7305,7 +7177,6 @@ dependencies = [
  "tokio-util",
  "tokio-vsock",
  "tonic",
- "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-opentelemetry",
@@ -7314,7 +7185,6 @@ dependencies = [
  "uuid",
  "walkdir",
  "whoami 2.1.2",
- "wiremock",
  "x509-parser",
 ]
 
@@ -7335,7 +7205,6 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.19",
  "toml 1.1.3+spec-1.1.0",
  "tracing",
@@ -7353,25 +7222,20 @@ dependencies = [
  "ct-merkle",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
- "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "nucleus-agent-card",
- "nucleus-control-plane",
  "nucleus-creditworthiness",
- "nucleus-econ-kernels",
  "nucleus-envelope",
  "nucleus-lineage",
  "nucleus-otel-bootstrap",
  "nucleus-receipt",
  "nucleus-recompute",
  "rand 0.10.2",
- "ring",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "sqlx",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
@@ -7393,12 +7257,10 @@ dependencies = [
  "nucleus-ifc",
  "nucleus-lineage",
  "portcullis-core",
- "ring",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]
@@ -7412,14 +7274,12 @@ dependencies = [
  "ct-merkle",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
- "http-body-util",
  "nucleus-lineage",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
  "tokio",
- "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber 0.3.23",
@@ -7429,7 +7289,6 @@ dependencies = [
 name = "nucleus-witness-gossip"
 version = "1.0.0"
 dependencies = [
- "base64 0.23.0",
  "blake3",
  "ed25519-dalek 3.0.0-pre.7",
  "iroh",
@@ -7439,7 +7298,6 @@ dependencies = [
  "nucleus-witness",
  "postcard",
  "serde",
- "tokio",
 ]
 
 [[package]]
@@ -7452,9 +7310,7 @@ dependencies = [
  "hex",
  "nucleus-econ-kernels",
  "nucleus-externality",
- "proptest",
  "serde",
- "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
 ]
@@ -7532,16 +7388,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "num_cpus"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
-dependencies = [
- "hermit-abi",
- "libc",
 ]
 
 [[package]]
@@ -7719,12 +7565,6 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
-
-[[package]]
-name = "oorandom"
-version = "11.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "opaque-debug"
@@ -8267,9 +8107,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "hmac 0.13.0",
- "kani",
  "portcullis-core",
- "proptest",
  "regex",
  "reqwest 0.13.4",
  "ring",
@@ -8279,7 +8117,6 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.0",
  "shell-words",
- "tempfile",
  "tokio",
  "toml 1.1.3+spec-1.1.0",
  "tracing",
@@ -8291,8 +8128,6 @@ name = "portcullis-core"
 version = "1.0.0"
 dependencies = [
  "c2pa",
- "ck-policy",
- "ck-types",
  "nucleus-ifc-kernel",
  "risc0-zkvm",
  "serde",
@@ -8300,7 +8135,6 @@ dependencies = [
  "sha2 0.11.0",
  "toml 1.1.3+spec-1.1.0",
  "wasmtime",
- "wat",
 ]
 
 [[package]]
@@ -8310,13 +8144,10 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "nucleus-provenance-memory",
  "portcullis-core",
- "proptest",
  "regex",
  "reqwest 0.13.4",
- "rustls 0.23.42",
  "sha2 0.11.0",
  "shell-words",
- "tempfile",
  "tokio",
 ]
 
@@ -8454,16 +8285,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pretty_assertions"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
-dependencies = [
- "diff",
- "yansi",
-]
-
-[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8596,16 +8417,12 @@ version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
 dependencies = [
- "bit-set",
- "bit-vec 0.8.0",
  "bitflags 2.13.0",
  "num-traits",
  "rand 0.9.4",
  "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
- "rusty-fork",
- "tempfile",
  "unarray",
 ]
 
@@ -8836,12 +8653,6 @@ dependencies = [
  "web-sys",
  "winapi",
 ]
-
-[[package]]
-name = "quick-error"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
@@ -10085,18 +9896,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rusty-fork"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
-dependencies = [
- "fnv",
- "quick-error",
- "tempfile",
- "wait-timeout",
-]
 
 [[package]]
 name = "ryu"
@@ -11540,17 +11339,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-test"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
-dependencies = [
- "futures-core",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12338,15 +12126,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wait-timeout"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12468,45 +12247,6 @@ checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
 dependencies = [
  "unicode-ident",
 ]
-
-[[package]]
-name = "wasm-bindgen-test"
-version = "0.3.72"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fde991ccdc895cb7fbaa14b137d62af74d9011be67b71c694bfc40edd3119c"
-dependencies = [
- "async-trait",
- "cast",
- "js-sys",
- "libm",
- "minicov",
- "nu-ansi-term",
- "num-traits",
- "oorandom",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test-macro",
- "wasm-bindgen-test-shared",
-]
-
-[[package]]
-name = "wasm-bindgen-test-macro"
-version = "0.3.72"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e925354648d2a4d1bf205412e36d520a800280622eef4719678d268e5d40e978"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "wasm-bindgen-test-shared"
-version = "0.2.122"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "684365b586a9a6256c1cc3544eee8680de48d6041142f581776ec7b139622ae9"
 
 [[package]]
 name = "wasm-compose"
@@ -13352,29 +13092,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wiremock"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
-dependencies = [
- "assert-json-diff",
- "base64 0.22.1",
- "deadpool",
- "futures",
- "http 1.4.1",
- "http-body-util",
- "hyper 1.11.0",
- "hyper-util",
- "log",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13644,12 +13361,6 @@ dependencies = [
  "encoding_rs",
  "hashlink",
 ]
-
-[[package]]
-name = "yansi"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yasna"

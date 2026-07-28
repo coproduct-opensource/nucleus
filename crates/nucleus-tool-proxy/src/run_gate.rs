@@ -197,6 +197,9 @@ pub(crate) fn preflight_read_fs(
 /// oversight: an `Authority` buys one read, so a search over N files needs N
 /// discharges. The alternative — one authority covering a whole directory walk —
 /// is exactly the replay the by-value cutover removed.
+/// Only the MCP search tool greps, and `mod mcp` is feature-gated, so this is
+/// dead code without it — `-D warnings` in the musl type-check job caught that.
+#[cfg(feature = "mcp")]
 pub(crate) fn preflight_grep_fs(
     verified_scope: Option<&TokenScope>,
     fs_ceiling: CapabilityLevel,
