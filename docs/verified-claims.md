@@ -244,12 +244,17 @@ rather than deriving `PartialEq` precisely so no opaque comparison axiom lands o
 the critical path.
 
 **What it does NOT prove:** that every effect path *calls* the predicate. That is
-the second half of complete mediation and is **not yet true** — 10 of 13
-effect-trait methods take no bundle at all, and the 3 that do take it by
-reference, so a correctly-scoped bundle can be replayed. See
-[Production Delta](production-delta.md). It also says nothing about the other
-seven obligations: it governs which action a bundle speaks for, not whether that
-action is safe.
+the second half of complete mediation and is **partially** true. `FileEffect`
+(`read`/`write`/`append`/`glob`) now takes an `Authority` by value, so for those
+methods the scope check is unavoidable and replay is a compile error — carried by
+a `compile_fail` doctest on the trait whose dependence on the replay was
+established by perturbation. Six methods remain unmediated
+(`WebEffect::{fetch,search}`, `ShellEffect::run`, `GitEffect::{commit,push}`,
+`AgentSpawnEffect::spawn`) and three take the bundle by reference. See
+[Production Delta](production-delta.md).
+
+It also says nothing about the other seven obligations: it governs which action a
+bundle speaks for, not whether that action is safe.
 
 **CI gate:** `Scoped Aeneas (Rust → Lean 4) + parity tests` — re-extracts from
 Rust, rebuilds the theorem against the fresh extraction, and fails on a dirty
