@@ -578,12 +578,14 @@ impl ShellEffect for RealEffects {
         harden: Option<&(dyn Fn(&mut Command) + Send + Sync)>,
         authority: Authority,
     ) -> io::Result<Output> {
-        authority
+        // Spent here and dropped: the right to spawn is consumed at the spawn.
+        let spent = authority
             .spend(
                 portcullis_core::Operation::RunBash,
                 portcullis_core::SinkClass::BashExec,
             )
             .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
+        drop(spent);
         // Reproduces `Executor::spawn_checked` exactly so the raw spawn can
         // relocate here losslessly: env_clear + envs(allowlist), piped
         // stdout/stderr, stdin pipe-vs-null, host hardening via the injected
@@ -635,12 +637,14 @@ impl AsyncShellSpawnEffect for RealEffects {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> io::Result<Output> {
-        authority
+        // Spent here and dropped: the right to spawn is consumed at the spawn.
+        let spent = authority
             .spend(
                 portcullis_core::Operation::RunBash,
                 portcullis_core::SinkClass::BashExec,
             )
             .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
+        drop(spent);
         // Mirrors `Executor::run_with_timeout`'s tokio spawn.
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args)
@@ -696,12 +700,14 @@ impl NetEffect for RealEffects {
         timeout: Option<std::time::Duration>,
         authority: Authority,
     ) -> Result<reqwest::Response, EffectError> {
-        authority
+        // Spent here and dropped: the right to egress is consumed at the send.
+        let spent = authority
             .spend(
                 portcullis_core::Operation::WebFetch,
                 portcullis_core::SinkClass::HTTPEgress,
             )
             .map_err(|e| EffectError::Io(e.to_string()))?;
+        drop(spent);
         // The relocated agent-egress send: build the request from the caller's
         // pieces on the caller's configured client, then perform the one raw
         // `reqwest …send()` that used to live in the tool-proxy handlers. This

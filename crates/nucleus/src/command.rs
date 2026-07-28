@@ -18,7 +18,6 @@ use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
-use nucleus_ifc_kernel::discharge::DischargedBundle;
 // The sealed effects home (B1). `portcullis_core::CapabilityLattice` — the type
 // `production_effects` requires — is a re-export of `nucleus_ifc_kernel`'s
 // lattice (already a nucleus dependency), so no new dep is needed to name it.
