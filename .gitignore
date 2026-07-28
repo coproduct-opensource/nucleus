@@ -47,3 +47,4 @@ LOOPS.md
 .verus/*.zip
 .claude/worktrees/
 portcullis_core.llbc
+nucleus_ifc_kernel.llbc

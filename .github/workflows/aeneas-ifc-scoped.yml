@@ -25,6 +25,8 @@ on:
       - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
+      - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -33,6 +35,8 @@ on:
       - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
+      - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -49,7 +53,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode"
 
 jobs:
   aeneas-ifc-scoped:
@@ -169,6 +173,21 @@ jobs:
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreIFC.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
+      - name: Canonicalize generated-mediation from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-mediation/PortcullisCoreMediation
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          # Same single disclosed hand-edit as generated-ifc: only the
+          # inter-module import is retargeted so the lib name does not collide.
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreMediation.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-mediation/ canonicalized from the fresh extraction."
+
       - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
           echo "CANONICAL-TYPES-START"
@@ -197,6 +216,7 @@ jobs:
           lake build PortcullisCoreIFC
           lake build IntegrityNoninterferenceExtracted 2>&1 | tee /tmp/lake-ifc.log
           lake build ConfidentialityNoninterferenceExtracted 2>&1 | tee /tmp/lake-conf-ifc.log
+          lake build MediationScopeExtracted 2>&1 | tee /tmp/lake-mediation.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
@@ -205,7 +225,8 @@ jobs:
         run: |
           echo "=== #print axioms output (from build log) ==="
           grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-ifc.log || true
-          if grep -qE "sorryAx|External" /tmp/lake-ifc.log; then
+          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-mediation.log || true
+          if grep -qE "sorryAx|External" /tmp/lake-ifc.log /tmp/lake-mediation.log; then
             echo "ERROR: dirty axiom set — sorryAx or an opaque *External axiom is on the proof's critical path."
             exit 1
           fi
@@ -222,7 +243,9 @@ jobs:
           # `sorryAx` / "sorry-free" (a plain substring grep does, and did).
           if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
                IntegrityNoninterferenceExtracted.lean \
-               generated-ifc/PortcullisCoreIFC/ --include='*.lean'; then
+               MediationScopeExtracted.lean \
+               generated-ifc/PortcullisCoreIFC/ \
+               generated-mediation/PortcullisCoreMediation/ --include='*.lean'; then
             echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1
           fi

@@ -59,6 +59,21 @@ lean_lib «PortcullisCoreCapQuantale» where
 lean_lib «CapabilityResiduatedQuantaleProofs» where
   roots := #[`CapabilityResiduatedQuantaleProofs]
 
+-- Aeneas-generated scope-binding core (from real Rust:
+-- crates/nucleus-ifc-kernel/src/extracted/mediation.rs). UNMODIFIED Aeneas
+-- output (only the inter-module import in Funs.lean was retargeted from
+-- NucleusIfcKernel.Types to PortcullisCoreMediation.Types so this lib does not
+-- collide with the other generated libs).
+lean_lib «PortcullisCoreMediation» where
+  roots := #[`PortcullisCoreMediation.Types, `PortcullisCoreMediation.Funs]
+  srcDir := "generated-mediation"
+
+-- Scope binding proven OVER the Aeneas-generated core above: a discharge
+-- authorizes the action it was earned for and nothing else (first half of
+-- complete mediation).
+lean_lib «MediationScopeExtracted» where
+  roots := #[`MediationScopeExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where
