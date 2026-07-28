@@ -629,3 +629,377 @@ mod tests {
         assert!(!signed.verify(&other));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Witness — split-view detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Why a witness refused to cosign.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WitnessError {
+    /// The checkpoint's signature did not verify against the log's key.
+    BadLogSignature,
+    /// The submitted `old_size` exceeds the checkpoint size — a log cannot
+    /// shrink.
+    OldSizeExceedsCheckpoint,
+    /// The submitted `old_size` is not the size this witness last cosigned.
+    ///
+    /// The log is either behind, or is presenting a view that skips over what
+    /// the witness already saw.
+    StaleOrForkedOldSize {
+        /// What this witness last cosigned for the origin.
+        expected: u64,
+        /// What the log submitted.
+        submitted: u64,
+    },
+    /// The consistency proof did not verify: the new log is NOT an append-only
+    /// extension of what this witness last saw. **This is a detected fork.**
+    NotConsistent,
+    /// Sizes were equal but the roots differed — a split view at the same size.
+    SameSizeDifferentRoot,
+    /// A zero-size checkpoint must carry the empty tree's root.
+    BadEmptyRoot,
+}
+
+impl std::fmt::Display for WitnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WitnessError::BadLogSignature => write!(f, "checkpoint signature did not verify"),
+            WitnessError::OldSizeExceedsCheckpoint => {
+                write!(f, "old size exceeds the checkpoint size — a log cannot shrink")
+            }
+            WitnessError::StaleOrForkedOldSize { expected, submitted } => write!(
+                f,
+                "old size {submitted} is not the {expected} this witness last cosigned"
+            ),
+            WitnessError::NotConsistent => write!(
+                f,
+                "consistency proof failed — the log is not an append-only extension (FORK)"
+            ),
+            WitnessError::SameSizeDifferentRoot => {
+                write!(f, "same size, different root — split view")
+            }
+            WitnessError::BadEmptyRoot => write!(f, "size-0 checkpoint with a non-empty root"),
+        }
+    }
+}
+
+impl std::error::Error for WitnessError {}
+
+/// A witness's signature over a checkpoint it has verified.
+#[derive(Debug, Clone, Copy)]
+pub struct Cosignature {
+    /// The checkpoint being attested.
+    pub checkpoint: Checkpoint,
+    /// Ed25519 by the witness key.
+    pub signature: [u8; 64],
+}
+
+impl Cosignature {
+    /// Check a cosignature against a known witness key.
+    pub fn verify(&self, witness_key: &VerifyingKey) -> bool {
+        let sig = Signature::from_bytes(&self.signature);
+        witness_key
+            .verify(&self.checkpoint.signing_bytes(), &sig)
+            .is_ok()
+    }
+}
+
+/// A transparency-log witness for ONE log.
+///
+/// # What this is for
+///
+/// A signed checkpoint proves the operator *asserted* a root. It does not stop
+/// them asserting a **different** root of the same size to somebody else — the
+/// split-view attack, and the gap this module previously documented as open.
+///
+/// A witness closes it by remembering. It stores only the latest checkpoint it
+/// has cosigned, and refuses to cosign anything that is not a provable
+/// append-only extension of that. A forking log cannot get both views cosigned,
+/// so a client that requires a cosignature cannot be shown a private view.
+///
+/// Per the C2SP `tlog-witness` protocol: *"only a single witness is required to
+/// prove a log is append-only"* — more witnesses defend against collusion, not
+/// against the basic attack.
+///
+/// # Scope
+///
+/// This is the **verification core**, not the service. There is no HTTP, no
+/// persistence, and no origin multiplexing: those are deployment concerns, and
+/// putting them here would mean shipping a network service that cannot be tested
+/// in a unit test. What is here is the part that decides.
+#[derive(Debug, Default)]
+pub struct Witness {
+    latest: Option<Checkpoint>,
+}
+
+impl Witness {
+    /// A witness that has seen nothing yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The latest checkpoint this witness has cosigned.
+    pub fn latest(&self) -> Option<Checkpoint> {
+        self.latest
+    }
+
+    /// Verify a checkpoint against everything this witness has seen, and cosign
+    /// it if it is a sound append-only extension.
+    ///
+    /// The checks follow C2SP `tlog-witness` in order: log signature, size
+    /// sanity, that `old_size` is exactly what this witness last cosigned, the
+    /// RFC 6962 consistency proof, and the equal-size root match.
+    ///
+    /// On success the witness advances its stored state — which is what makes
+    /// the *next* call able to detect a fork.
+    pub fn witness(
+        &mut self,
+        submitted: &SignedCheckpoint,
+        log_key: &VerifyingKey,
+        old_size: u64,
+        consistency_proof: &[[u8; 32]],
+        witness_key: &SigningKey,
+    ) -> Result<Cosignature, WitnessError> {
+        if !submitted.verify(log_key) {
+            return Err(WitnessError::BadLogSignature);
+        }
+        let cp = submitted.checkpoint;
+
+        if cp.size == 0 {
+            let empty: [u8; 32] = Sha256::new().finalize().into();
+            if cp.root != empty {
+                return Err(WitnessError::BadEmptyRoot);
+            }
+        }
+        if old_size > cp.size {
+            return Err(WitnessError::OldSizeExceedsCheckpoint);
+        }
+
+        let expected = self.latest.map(|c| c.size).unwrap_or(0);
+        if old_size != expected {
+            return Err(WitnessError::StaleOrForkedOldSize {
+                expected,
+                submitted: old_size,
+            });
+        }
+
+        match self.latest {
+            None => {
+                // Nothing seen yet: any checkpoint is acceptable, and the proof
+                // must be empty because there is nothing to be consistent with.
+                if !consistency_proof.is_empty() {
+                    return Err(WitnessError::NotConsistent);
+                }
+            }
+            Some(prev) => {
+                if prev.size == cp.size {
+                    // The split view, at its sharpest: same size, and the only
+                    // question is whether the root moved.
+                    if prev.root != cp.root {
+                        return Err(WitnessError::SameSizeDifferentRoot);
+                    }
+                } else if !verify_consistency(
+                    prev.size,
+                    &prev.root,
+                    cp.size,
+                    &cp.root,
+                    consistency_proof,
+                ) {
+                    return Err(WitnessError::NotConsistent);
+                }
+            }
+        }
+
+        self.latest = Some(cp);
+        let sig = witness_key.sign(&cp.signing_bytes());
+        Ok(Cosignature {
+            checkpoint: cp,
+            signature: sig.to_bytes(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+
+    fn log_of(n: u64) -> ReceiptLog {
+        let log = ReceiptLog::new();
+        for _ in 0..n {
+            log.append(
+                Operation::ReadFiles,
+                SinkClass::AuditLogAppend,
+                EffectOutcome::Allowed,
+            );
+        }
+        log
+    }
+
+    fn keys() -> (SigningKey, VerifyingKey, SigningKey, VerifyingKey) {
+        let log_key = SigningKey::from_bytes(&[3u8; 32]);
+        let wit_key = SigningKey::from_bytes(&[4u8; 32]);
+        let lvk = log_key.verifying_key();
+        let wvk = wit_key.verifying_key();
+        (log_key, lvk, wit_key, wvk)
+    }
+
+    /// Honest growth is cosigned at every step, and the cosignature verifies.
+    #[test]
+    fn a_growing_log_is_cosigned_at_every_step() {
+        let (lk, lvk, wk, wvk) = keys();
+        let mut w = Witness::new();
+        let mut prev = 0u64;
+        for n in 1u64..=12 {
+            let log = log_of(n);
+            let signed = log.sign_checkpoint(&lk);
+            let proof = if prev == 0 {
+                Vec::new()
+            } else {
+                log.consistency_proof(prev).expect("prev in range")
+            };
+            let co = w
+                .witness(&signed, &lvk, prev, &proof, &wk)
+                .unwrap_or_else(|e| panic!("honest growth {prev}->{n} refused: {e}"));
+            assert!(co.verify(&wvk));
+            assert_eq!(w.latest().unwrap().size, n);
+            prev = n;
+        }
+    }
+
+    /// **The attack this exists to stop.**
+    ///
+    /// The log cosigns 8 entries with the witness, then rewrites history — keeps
+    /// 5, appends 3 different ones — and presents the result at the SAME size, so
+    /// the size cannot give it away. The signature is valid; the log's own
+    /// internal structure is perfect. The witness refuses because it remembers.
+    #[test]
+    fn a_split_view_at_the_same_size_is_refused() {
+        let (lk, lvk, wk, _wvk) = keys();
+        let mut w = Witness::new();
+
+        let honest = log_of(8);
+        let first = honest.sign_checkpoint(&lk);
+        w.witness(&first, &lvk, 0, &[], &wk).expect("first is fine");
+
+        let rewritten = log_of(5);
+        for _ in 0..3 {
+            rewritten.append(
+                Operation::GitPush,
+                SinkClass::GitPush,
+                EffectOutcome::Allowed,
+            );
+        }
+        let forked = rewritten.sign_checkpoint(&lk);
+        assert_eq!(forked.checkpoint.size, first.checkpoint.size);
+        assert_ne!(forked.checkpoint.root, first.checkpoint.root);
+        assert!(forked.verify(&lvk), "the fork is validly signed — that is the point");
+
+        let err = w
+            .witness(&forked, &lvk, 8, &[], &wk)
+            .expect_err("a split view must not be cosigned");
+        assert_eq!(err, WitnessError::SameSizeDifferentRoot);
+    }
+
+    /// A fork that also GROWS cannot buy its way past the witness either: no
+    /// consistency proof exists from the witnessed root to a rewritten one.
+    #[test]
+    fn a_forked_log_that_grows_still_cannot_be_cosigned() {
+        let (lk, lvk, wk, _wvk) = keys();
+        let mut w = Witness::new();
+
+        let honest = log_of(6);
+        w.witness(&honest.sign_checkpoint(&lk), &lvk, 0, &[], &wk)
+            .expect("first is fine");
+
+        let rewritten = log_of(3);
+        for _ in 0..7 {
+            rewritten.append(
+                Operation::GitPush,
+                SinkClass::GitPush,
+                EffectOutcome::Allowed,
+            );
+        }
+        let forked = rewritten.sign_checkpoint(&lk);
+        assert!(forked.checkpoint.size > 6);
+
+        // Try every proof the forked log can produce.
+        for m in 1..=forked.checkpoint.size {
+            if let Some(p) = rewritten.consistency_proof(m) {
+                assert!(
+                    w.witness(&forked, &lvk, 6, &p, &wk).is_err(),
+                    "a forked log was cosigned using the size-{m} proof"
+                );
+            }
+        }
+    }
+
+    /// A log that lies about where the witness is gets caught before any proof
+    /// is even checked — the witness knows what it last signed.
+    #[test]
+    fn a_wrong_old_size_is_refused() {
+        let (lk, lvk, wk, _wvk) = keys();
+        let mut w = Witness::new();
+        let l6 = log_of(6);
+        w.witness(&l6.sign_checkpoint(&lk), &lvk, 0, &[], &wk)
+            .expect("first");
+
+        let l9 = log_of(9);
+        let proof = l9.consistency_proof(4).expect("in range");
+        let err = w
+            .witness(&l9.sign_checkpoint(&lk), &lvk, 4, &proof, &wk)
+            .expect_err("old_size 4 is not the 6 the witness holds");
+        assert_eq!(
+            err,
+            WitnessError::StaleOrForkedOldSize {
+                expected: 6,
+                submitted: 4
+            }
+        );
+    }
+
+    /// An unsigned or wrongly-signed checkpoint is refused before anything else.
+    #[test]
+    fn a_checkpoint_from_the_wrong_key_is_refused() {
+        let (_lk, lvk, wk, _wvk) = keys();
+        let impostor = SigningKey::from_bytes(&[9u8; 32]);
+        let mut w = Witness::new();
+        let err = w
+            .witness(&log_of(3).sign_checkpoint(&impostor), &lvk, 0, &[], &wk)
+            .expect_err("wrong key");
+        assert_eq!(err, WitnessError::BadLogSignature);
+    }
+
+    /// A refused checkpoint must NOT advance the witness. If it did, one rejected
+    /// fork would poison the witness's state and lock out the honest log.
+    #[test]
+    fn a_refusal_does_not_advance_the_witness() {
+        let (lk, lvk, wk, _wvk) = keys();
+        let mut w = Witness::new();
+        let l4 = log_of(4);
+        w.witness(&l4.sign_checkpoint(&lk), &lvk, 0, &[], &wk)
+            .expect("first");
+        assert_eq!(w.latest().unwrap().size, 4);
+
+        let rewritten = log_of(2);
+        for _ in 0..2 {
+            rewritten.append(
+                Operation::GitPush,
+                SinkClass::GitPush,
+                EffectOutcome::Allowed,
+            );
+        }
+        let _ = w.witness(&rewritten.sign_checkpoint(&lk), &lvk, 4, &[], &wk);
+        assert_eq!(
+            w.latest().unwrap(),
+            l4.checkpoint(),
+            "a refusal must leave the witness on the last good checkpoint"
+        );
+
+        // And the honest log can still make progress afterwards.
+        let l7 = log_of(7);
+        let proof = l7.consistency_proof(4).expect("in range");
+        w.witness(&l7.sign_checkpoint(&lk), &lvk, 4, &proof, &wk)
+            .expect("the honest log is not locked out by a rejected fork");
+    }
+}
