@@ -1771,6 +1771,79 @@ mod tests {
         let _ = std::fs::remove_file("/tmp/nucleus-scope-test-ok");
     }
 
+    /// `git push` is the highest-consequence sink in the system and was gated
+    /// only by `git_push != Never`. A commit authority must not pay for it —
+    /// the escalation `scope_admits_no_escalation` names on the Lean side.
+    ///
+    /// Uses `RecordingEffects` as the inner impl: a correctly-scoped push
+    /// through `RealEffects` would run a real `git push`.
+    #[test]
+    fn a_commit_authority_will_not_pay_for_a_push() {
+        let fx = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            policy: CapabilityLattice {
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            },
+        };
+        let err = fx
+            .push("origin", "main", commit_auth())
+            .expect_err("a commit authority must not pay for a push");
+        assert!(
+            matches!(err, EffectError::PolicyDenied(ref m) if m.contains("scope")),
+            "expected a scope denial, got: {err:?}"
+        );
+        assert!(
+            fx.inner.calls().is_empty(),
+            "the refusal must precede the effect, but the inner impl was called"
+        );
+    }
+
+    /// Every newly-mediated method refuses an authority earned elsewhere, and
+    /// refuses it BEFORE reaching the inner effect. `git_push` above is the
+    /// headline; this pins the same property across the rest of the surface.
+    #[test]
+    fn every_mediated_method_refuses_an_out_of_scope_authority() {
+        let all = CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            run_bash: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Always,
+            git_push: CapabilityLevel::Always,
+            spawn_agent: CapabilityLevel::Always,
+            ..CapabilityLattice::bottom()
+        };
+        // `read_auth()` is the wrong scope for every one of these.
+        let fx = PolicyEnforced {
+            inner: RecordingEffects::new(),
+            policy: all,
+        };
+
+        let outcomes: Vec<(&str, bool)> = vec![
+            ("write", fx.write(Path::new("/tmp/x"), b"x", read_auth()).is_err()),
+            ("append", fx.append(Path::new("/tmp/x"), b"x", read_auth()).is_err()),
+            ("glob", fx.glob("*.rs", read_auth()).is_err()),
+            ("fetch", fx.fetch("https://example.com", read_auth()).is_err()),
+            ("search", fx.search("q", read_auth()).is_err()),
+            ("run", fx.run("ls", read_auth()).is_err()),
+            ("commit", fx.commit("msg", read_auth()).is_err()),
+            ("push", fx.push("origin", "main", read_auth()).is_err()),
+            ("spawn", fx.spawn("http://a", "{}", read_auth()).is_err()),
+        ];
+        for (name, refused) in &outcomes {
+            assert!(refused, "{name} accepted an out-of-scope authority");
+        }
+        assert!(
+            fx.inner.calls().is_empty(),
+            "every refusal must precede the effect; inner calls: {:?}",
+            fx.inner.calls()
+        );
+    }
+
     // ── EffectError ────────────────────────────────────────────────────────
 
     #[test]
