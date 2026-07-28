@@ -361,9 +361,9 @@ pub fn verify_inclusion(
         if sn == 0 {
             return false;
         }
-        if fn_ % 2 == 1 || fn_ == sn {
+        if !fn_.is_multiple_of(2) || fn_ == sn {
             r = node_hash(p, &r);
-            while fn_ % 2 == 0 && fn_ != 0 {
+            while fn_.is_multiple_of(2) && fn_ != 0 {
                 fn_ /= 2;
                 sn /= 2;
             }
@@ -585,7 +585,10 @@ mod tests {
             );
         }
         let now = rewritten.checkpoint();
-        assert_eq!(now.size, seen.size, "same size — the sizes cannot betray it");
+        assert_eq!(
+            now.size, seen.size,
+            "same size — the sizes cannot betray it"
+        );
         assert_ne!(now.root, seen.root);
 
         // Whatever proof they offer, at any size, it cannot bridge the two.
