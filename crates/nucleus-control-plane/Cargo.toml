@@ -19,5 +19,9 @@ thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
+[dev-dependencies]
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

@@ -30,3 +30,7 @@ nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
 # root, no full tree). Same crate nucleus-lineage uses; carries no signature dep
 # (so no ed25519-dalek version clash — checkpoints are signed with our own dalek).
 ct-merkle = { version = "0.3", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }

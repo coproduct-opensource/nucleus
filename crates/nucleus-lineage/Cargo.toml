@@ -68,6 +68,14 @@ rand = { version = "0.10", optional = true }
 # feature set (blocking/json/rustls) is declared here.
 reqwest = { workspace = true, features = ["blocking", "json", "rustls"], optional = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+ureq = { workspace = true, features = ["json"] }
+# HTTP mocking for HttpWitnessClient integration tests. `wiremock`'s
+# async runtime requires tokio; we already use it elsewhere.
+wiremock = "0.6"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [[example]]
 name = "three_step_demo"
 required-features = ["insecure-local-issuer"]

@@ -24,6 +24,22 @@ nucleus-oidc-core = { path = "../nucleus-oidc-core" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# `rt-multi-thread` for the example's `#[tokio::main]`; `reqwest` for the live
+# token request. Both are dev-only so the default workspace build stays green.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+# Workspace reqwest uses `rustls-no-provider`; tests/examples that build a
+# reqwest Client must install a crypto provider first (workspace convention:
+# `rustls::crypto::ring`). Never actually exercised here (mock is plain HTTP),
+# but required at Client-build time.
+rustls = { workspace = true }
+# Parity proptests binding the production `sanitize_segment`/`derive_spiffe_id`
+# to the Aeneas-extractable `extracted/` mirror (byte-identical across random
+# Unicode), plus the lossiness/collision finding.
+proptest = { workspace = true }
+
 [[example]]
 name = "keyless_oidc_prototype"
 # Lives behind `--example` so it never builds in the default workspace pass.

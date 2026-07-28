@@ -32,5 +32,11 @@ iroh-blobs = "=0.102.0"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `dev` enables LocalIssuer/InMemorySink for building real signed test bundles.
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
+nucleus-envelope = { path = "../nucleus-envelope" }
+
 [lints]
 workspace = true

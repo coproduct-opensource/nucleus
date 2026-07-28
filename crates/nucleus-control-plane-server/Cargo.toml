@@ -53,5 +53,10 @@ futures-util = "0.3"
 uuid = { workspace = true, features = ["v4", "serde"] }
 rand = "0.10"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+
 [lints]
 workspace = true

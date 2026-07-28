@@ -26,6 +26,9 @@ test-helpers = []
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 # Adopt workspace lints (incl. the cfg(kani) allow for the BMC harnesses).
 workspace = true

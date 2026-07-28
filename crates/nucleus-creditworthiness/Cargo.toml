@@ -49,3 +49,12 @@ recompute = ["dep:nucleus-recompute", "dep:nucleus-econ-kernels", "dep:hex"]
 # verifier service turns this on; the hash chain in `ledger` is compiled either
 # way.
 persist = ["dep:redb", "dep:thiserror", "dep:serde_json"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+# Used only by the `mint` tests to construct genuinely-honest receipts (so a
+# Match is real, not asserted) via the same proven kernels recompute uses.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+# On-disk reopen tests for the `persist` store.
+tempfile = { workspace = true }

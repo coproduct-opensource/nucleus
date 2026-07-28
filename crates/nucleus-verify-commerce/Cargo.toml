@@ -33,3 +33,13 @@ nucleus-lineage = { path = "../nucleus-lineage" }
 # single source) — this crate re-exports them; the recompute SDK shares the code.
 nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
 portcullis-core = { path = "../portcullis-core" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+# Real key material for the agent-card sign↔verify round-trip + a real
+# Ed25519 edge signer / JWKS for the envelope-bundle receipt. The
+# `insecure-local-issuer` signer is TEST-ONLY (never enabled in the lib's own
+# deps); a production seller injects a real EdgeSigner.
+nucleus-agent-card = { path = "../nucleus-agent-card", features = ["sign"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
+ring = { workspace = true }

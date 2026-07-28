@@ -25,3 +25,8 @@ test-harness = ["dep:base64"]
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+# cfg(test) builds use the harness directly (e.g. gate.rs unit tests).
+base64 = "0.23"

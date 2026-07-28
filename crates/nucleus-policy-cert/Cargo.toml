@@ -67,3 +67,8 @@ dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git"
 # in-repo PATH dep (this crate moved into nucleus alongside portcullis) — no more
 # cross-repo git pin for the bridge.
 portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, features = ["serde"], optional = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }

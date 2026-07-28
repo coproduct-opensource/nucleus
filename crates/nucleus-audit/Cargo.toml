@@ -26,3 +26,6 @@ c2pa = { workspace = true, optional = true, features = ["file_io"] }
 [features]
 default = []
 c2pa-verify = ["dep:c2pa"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

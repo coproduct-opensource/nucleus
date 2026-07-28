@@ -23,3 +23,7 @@ nucleus-eval = { path = "../nucleus-eval" }
 # honest_settlement — never a local shadow. Default features OFF keeps the
 # closure lean + WASM-safe (no durable-store deps).
 nucleus-creditworthiness = { path = "../nucleus-creditworthiness", default-features = false }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }

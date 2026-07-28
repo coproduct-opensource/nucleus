@@ -93,6 +93,12 @@ tokio = { workspace = true, features = ["rt"], optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+kani = "0.0.1"
+
 [[test]]
 name = "example_policies"
 required-features = ["spec"]

@@ -226,7 +226,7 @@ impl SignedCheckpoint {
     /// It does NOT establish that the log was not forked: two validly signed
     /// checkpoints of the same size with different roots is exactly what forking
     /// looks like, and catching it requires comparing against a witness.
-    pub fn verify(&self, key: &VerifyingKey) -> bool {
+    pub fn verify_signature(&self, key: &VerifyingKey) -> bool {
         let sig = Signature::from_bytes(&self.signature);
         // `verify_strict`, not `verify`: the strict form rejects small-order and
         // torsion-component public keys, under which one signature can verify
@@ -615,17 +615,17 @@ mod tests {
         let vk = key.verifying_key();
         let log = log_of(6);
         let signed = log.sign_checkpoint(&key);
-        assert!(signed.verify(&vk));
+        assert!(signed.verify_signature(&vk));
 
         // Same signature, different claimed root.
         let mut forged = signed;
         forged.checkpoint.root[0] ^= 0xff;
-        assert!(!forged.verify(&vk), "a rewritten root kept its signature");
+        assert!(!forged.verify_signature(&vk), "a rewritten root kept its signature");
 
         // Same signature, different claimed size.
         let mut resized = signed;
         resized.checkpoint.size += 1;
-        assert!(!resized.verify(&vk), "a rewritten size kept its signature");
+        assert!(!resized.verify_signature(&vk), "a rewritten size kept its signature");
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
         let log = log_of(4);
         let signed = log.sign_checkpoint(&SigningKey::from_bytes(&[1u8; 32]));
         let other = SigningKey::from_bytes(&[2u8; 32]).verifying_key();
-        assert!(!signed.verify(&other));
+        assert!(!signed.verify_signature(&other));
     }
 }
 
@@ -710,7 +710,7 @@ pub struct Cosignature {
 
 impl Cosignature {
     /// Check a cosignature against a known witness key.
-    pub fn verify(&self, witness_key: &VerifyingKey) -> bool {
+    pub fn verify_signature(&self, witness_key: &VerifyingKey) -> bool {
         let sig = Signature::from_bytes(&self.signature);
         // Strict for the same reason as `SignedCheckpoint::verify`: a client
         // relying on "a witness cosigned this" needs the witness identity to be
@@ -777,7 +777,7 @@ impl Witness {
         consistency_proof: &[[u8; 32]],
         witness_key: &SigningKey,
     ) -> Result<Cosignature, WitnessError> {
-        if !submitted.verify(log_key) {
+        if !submitted.verify_signature(log_key) {
             return Err(WitnessError::BadLogSignature);
         }
         let cp = submitted.checkpoint;
@@ -877,7 +877,7 @@ mod witness_tests {
             let co = w
                 .witness(&signed, &lvk, prev, &proof, &wk)
                 .unwrap_or_else(|e| panic!("honest growth {prev}->{n} refused: {e}"));
-            assert!(co.verify(&wvk));
+            assert!(co.verify_signature(&wvk));
             assert_eq!(w.latest().unwrap().size, n);
             prev = n;
         }
@@ -910,7 +910,7 @@ mod witness_tests {
         assert_eq!(forked.checkpoint.size, first.checkpoint.size);
         assert_ne!(forked.checkpoint.root, first.checkpoint.root);
         assert!(
-            forked.verify(&lvk),
+            forked.verify_signature(&lvk),
             "the fork is validly signed — that is the point"
         );
 
