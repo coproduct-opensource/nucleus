@@ -137,6 +137,34 @@ impl std::error::Error for EffectError {}
 ///
 /// `read_str` is a provided method and consumes the authority it is handed,
 /// forwarding it to `read` — one authority, one read.
+///
+/// # An authority pays for exactly one file effect
+///
+/// The second use below is a move-after-move **compile error**, not a runtime
+/// check someone has to remember to write.
+///
+/// A `compile_fail` test passes when the snippet fails to compile FOR ANY
+/// REASON, so dependence on the replay must be established rather than assumed:
+/// deleting the second `write` makes this snippet COMPILE. That was checked by
+/// perturbation, the same discipline the [`Authority`] doctest documents.
+///
+/// ```compile_fail,E0382
+/// use portcullis_effects::{production_effects_concrete, FileEffect};
+/// use portcullis_effects::authority::Authority;
+/// use portcullis_core::discharge::test_helpers::bundle_for;
+/// use portcullis_core::{CapabilityLattice, CapabilityLevel, Operation, SinkClass};
+///
+/// let fx = production_effects_concrete(CapabilityLattice {
+///     write_files: CapabilityLevel::Always,
+///     ..CapabilityLattice::bottom()
+/// });
+/// let authority = Authority::new(
+///     bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
+///
+/// let _first = fx.write(std::path::Path::new("/tmp/a"), b"x", authority);
+/// // Replay: `authority` was moved by the first write.
+/// let _second = fx.write(std::path::Path::new("/tmp/b"), b"x", authority);
+/// ```
 pub trait FileEffect {
     /// Read the full contents of a file.
     fn read(&self, path: &Path, authority: Authority) -> Result<Vec<u8>, EffectError>;
@@ -1580,34 +1608,6 @@ mod tests {
         );
         let _ = std::fs::remove_file("/tmp/nucleus-scope-test-ok");
     }
-
-    /// An authority buys ONE call. This is `!Clone` + by-value, so the second
-    /// use is a move-after-move compile error rather than a runtime check.
-    ///
-    /// Perturbation, as required by the `Authority` doctest's own reasoning: a
-    /// `compile_fail` test passes for ANY compile error. Deleting the second
-    /// `write` below makes this snippet compile, so the failure depends on the
-    /// replay and on nothing else. That was checked, not assumed.
-    ///
-    /// ```compile_fail,E0382
-    /// use portcullis_effects::{production_effects_concrete, FileEffect};
-    /// use portcullis_effects::authority::Authority;
-    /// use portcullis_core::discharge::test_helpers::bundle_for;
-    /// use portcullis_core::{CapabilityLattice, CapabilityLevel, Operation, SinkClass};
-    ///
-    /// let fx = production_effects_concrete(CapabilityLattice {
-    ///     write_files: CapabilityLevel::Always,
-    ///     ..CapabilityLattice::bottom()
-    /// });
-    /// let authority = Authority::new(
-    ///     bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
-    ///
-    /// let _first = fx.write(std::path::Path::new("/tmp/a"), b"x", authority);
-    /// // Replay: `authority` was moved by the first write.
-    /// let _second = fx.write(std::path::Path::new("/tmp/b"), b"x", authority);
-    /// ```
-    #[allow(dead_code)]
-    fn an_authority_pays_for_exactly_one_file_effect() {}
 
     // ── EffectError ────────────────────────────────────────────────────────
 
