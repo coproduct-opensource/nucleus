@@ -228,7 +228,13 @@ impl SignedCheckpoint {
     /// looks like, and catching it requires comparing against a witness.
     pub fn verify(&self, key: &VerifyingKey) -> bool {
         let sig = Signature::from_bytes(&self.signature);
-        key.verify(&self.checkpoint.signing_bytes(), &sig).is_ok()
+        // `verify_strict`, not `verify`: the strict form rejects small-order and
+        // torsion-component public keys, under which one signature can verify
+        // against several keys. For a log whose whole point is "WHICH operator
+        // asserted this root", that malleability would undo the claim. Enforced
+        // repo-wide by scripts/check-verify-strict.sh (M-3), which caught this.
+        key.verify_strict(&self.checkpoint.signing_bytes(), &sig)
+            .is_ok()
     }
 }
 
@@ -706,8 +712,11 @@ impl Cosignature {
     /// Check a cosignature against a known witness key.
     pub fn verify(&self, witness_key: &VerifyingKey) -> bool {
         let sig = Signature::from_bytes(&self.signature);
+        // Strict for the same reason as `SignedCheckpoint::verify`: a client
+        // relying on "a witness cosigned this" needs the witness identity to be
+        // unambiguous.
         witness_key
-            .verify(&self.checkpoint.signing_bytes(), &sig)
+            .verify_strict(&self.checkpoint.signing_bytes(), &sig)
             .is_ok()
     }
 }
