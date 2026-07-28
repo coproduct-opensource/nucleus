@@ -1055,6 +1055,12 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::CommandDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "command_denied", None, None)
             }
+            // An authority earned for a different action was presented. FORBIDDEN
+            // rather than 400: the request was well-formed, the authority was not
+            // valid for it.
+            ApiError::Nucleus(NucleusError::ScopeMismatch { .. }) => {
+                (StatusCode::FORBIDDEN, "scope_mismatch", None, None)
+            }
             ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "path_denied", None, None)
             }
@@ -2588,7 +2594,7 @@ async fn write_file(
         &path,
         contents.as_bytes(),
         &decision_token,
-        &discharge_bundle,
+        portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
@@ -2601,12 +2607,38 @@ async fn write_file(
                     let mut kernel = state.kernel.lock().await;
                     kernel.issue_approved_token(operation, &format!("approved: write {}", path))
                 };
+                // A fresh discharge for the approved retry: the first attempt
+                // spent the authority minted above. One discharge authorizes one
+                // attempt, and the approved write is a distinct action that must
+                // clear the obligations on its own.
+                let retry_bundle = {
+                    use nucleus_ifc_kernel::discharge::PreflightResult;
+                    let verified_scope = state.session_task_token.verified_scope();
+                    let fs_ceiling = state.runtime.policy().capabilities.write_files;
+                    let flow = state.flow_tracker.lock().await;
+                    let r = run_gate::preflight_fs(
+                        Operation::WriteFiles,
+                        verified_scope,
+                        fs_ceiling,
+                        &path,
+                        &flow,
+                    );
+                    drop(flow);
+                    match r {
+                        PreflightResult::Allowed(b) => b,
+                        _ => {
+                            return Err(ApiError::IfcDenied(
+                                "approved write failed re-discharge".to_string(),
+                            ))
+                        }
+                    }
+                };
                 state.runtime.sandbox().write_approved(
                     &path,
                     contents.as_bytes(),
                     &approved_dt,
                     &approval,
-                    &discharge_bundle,
+                    portcullis_effects::authority::Authority::new(retry_bundle),
                 )?;
             } else {
                 if let Err(e) = sink.record(VerdictContext {

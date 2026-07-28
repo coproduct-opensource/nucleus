@@ -426,7 +426,7 @@ impl ToolDispatcher {
                 path,
                 contents.as_bytes(),
                 &decision_token,
-                &discharge_bundle,
+                portcullis_effects::authority::Authority::new(discharge_bundle),
             )
         }) {
             Ok(()) => ("ok".into(), false),

@@ -168,7 +168,7 @@ fn test_symlink_write_blocked() {
         "write_escape.txt",
         b"OVERWRITTEN_BY_ATTACKER",
         &tok,
-        &allowed_bundle(),
+        portcullis_effects::authority::Authority::new(allowed_bundle()),
     );
     assert!(
         result.is_err(),

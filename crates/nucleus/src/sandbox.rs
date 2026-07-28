@@ -33,11 +33,12 @@ use std::sync::Arc;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::error::{NucleusError, Result};
-use nucleus_ifc_kernel::discharge::DischargedBundle;
 use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, Obligations, Operation, PathLattice, PermissionLattice,
+    SinkClass,
 };
+use portcullis_effects::authority::Authority;
 
 /// A capability-based file sandbox.
 ///
@@ -351,8 +352,9 @@ impl Sandbox {
     /// use nucleus::portcullis::kernel::DecisionToken;
     ///
     /// fn un_preflighted_write(sandbox: &Sandbox, dt: &DecisionToken) {
-    ///     // No trailing `&DischargedBundle` — the sealed proof is missing, so
-    ///     // this call cannot be typed. There is no way to write without one.
+    ///     // No trailing `Authority` — the sealed proof is missing, so this
+    ///     // call cannot be typed. There is no way to write without one, and
+    ///     // the one supplied must have been earned FOR a workspace write.
     ///     let _ = sandbox.write("out.txt", b"data", dt);
     /// }
     /// ```
@@ -361,13 +363,14 @@ impl Sandbox {
         path: impl AsRef<Path>,
         contents: impl AsRef<[u8]>,
         decision: &DecisionToken,
-        _proof: &DischargedBundle,
+        authority: Authority,
     ) -> Result<()> {
         debug_assert_eq!(
             decision.operation(),
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
+        Self::spend_write(authority)?;
         self.write_internal(path.as_ref(), contents, None)
     }
 
@@ -383,14 +386,31 @@ impl Sandbox {
         contents: impl AsRef<[u8]>,
         decision: &DecisionToken,
         approval: &ApprovalToken,
-        _proof: &DischargedBundle,
+        authority: Authority,
     ) -> Result<()> {
         debug_assert_eq!(
             decision.operation(),
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
+        Self::spend_write(authority)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
+    }
+
+    /// Spend a write authority, refusing one earned for anything else.
+    ///
+    /// Both write entry points previously took the bundle as `_proof` and never
+    /// read it, so ANY bundle authorized a write — the confused deputy, and the
+    /// same defect fixed in `NucleusRuntime` (#2087). The doc-test above claimed
+    /// "there is no way to write without one", which was true of *presenting* a
+    /// bundle and false of presenting the *right* one.
+    fn spend_write(authority: Authority) -> Result<()> {
+        authority
+            .spend(Operation::WriteFiles, SinkClass::WorkspaceWrite)
+            .map(drop)
+            .map_err(|e| NucleusError::ScopeMismatch {
+                reason: e.to_string(),
+            })
     }
 
     fn write_internal(
@@ -815,6 +835,58 @@ mod tests {
         tok.expect("permissive kernel should allow this operation")
     }
 
+    /// The gap this closes: `write` took the bundle as `_proof` and never read
+    /// it, so a bundle earned for a READ authorized a write — the confused
+    /// deputy, the same defect fixed in `NucleusRuntime` (#2087). The doc-test
+    /// on `write` claimed "there is no way to write without one", which was true
+    /// of presenting *a* bundle and false of presenting the *right* one.
+    #[test]
+    fn a_read_authority_will_not_pay_for_a_sandbox_write() {
+        use nucleus_ifc_kernel::discharge::test_helpers::bundle_for;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "escalated.txt");
+        let read_authority =
+            Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
+
+        let err = sandbox
+            .write(
+                "escalated.txt",
+                b"written under a read",
+                &wt,
+                read_authority,
+            )
+            .expect_err("a read authority must not pay for a sandbox write");
+        assert!(
+            matches!(err, NucleusError::ScopeMismatch { .. }),
+            "expected a scope mismatch, got: {err:?}"
+        );
+        assert!(
+            !tmp.path().join("escalated.txt").exists(),
+            "the refusal must precede the write, but the file was created"
+        );
+    }
+
+    /// No false denial: the correctly-scoped authority still writes. A check
+    /// that refused everything would satisfy the test above and break the API.
+    #[test]
+    fn a_write_authority_still_pays_for_a_sandbox_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "ok.txt");
+        sandbox
+            .write("ok.txt", b"in scope", &wt, Authority::new(allowed_bundle()))
+            .expect("a correctly-scoped write must succeed");
+        assert!(tmp.path().join("ok.txt").exists());
+    }
+
     #[test]
     fn test_basic_read_write() {
         let tmp = tempdir().unwrap();
@@ -825,7 +897,12 @@ mod tests {
         // Write a file
         let wt = token(&mut kernel, Operation::WriteFiles, "test.txt");
         sandbox
-            .write("test.txt", b"hello world", &wt, &allowed_bundle())
+            .write(
+                "test.txt",
+                b"hello world",
+                &wt,
+                Authority::new(allowed_bundle()),
+            )
             .unwrap();
 
         // Read it back
@@ -849,14 +926,24 @@ mod tests {
         // path policy, not the kernel's.
         let wt = kernel.issue_approved_token(Operation::WriteFiles, "test: write normal file");
         sandbox
-            .write("normal_file.txt", b"# Hello", &wt, &allowed_bundle())
+            .write(
+                "normal_file.txt",
+                b"# Hello",
+                &wt,
+                Authority::new(allowed_bundle()),
+            )
             .unwrap();
 
         // Should block .env files (sandbox policy blocks it; kernel also blocks via PathLattice)
         // Force a token to test the sandbox's own path policy enforcement
         let wt2 =
             kernel.issue_approved_token(Operation::WriteFiles, "test: .env blocked by sandbox");
-        let result = sandbox.write(".env", b"SECRET=foo", &wt2, &allowed_bundle());
+        let result = sandbox.write(
+            ".env",
+            b"SECRET=foo",
+            &wt2,
+            Authority::new(allowed_bundle()),
+        );
         assert!(result.is_err());
     }
 
@@ -942,7 +1029,12 @@ mod tests {
 
         let wt2 = token(&mut kernel, Operation::WriteFiles, "subdir/file.txt");
         sandbox
-            .write("subdir/file.txt", b"nested", &wt2, &allowed_bundle())
+            .write(
+                "subdir/file.txt",
+                b"nested",
+                &wt2,
+                Authority::new(allowed_bundle()),
+            )
             .unwrap();
 
         // Open as sub-sandbox

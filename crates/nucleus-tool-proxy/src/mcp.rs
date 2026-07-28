@@ -457,7 +457,7 @@ impl NucleusMcpServer {
                     &params.path,
                     params.contents.as_bytes(),
                     &decision_token,
-                    &discharge_bundle,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
             })
         }) {
