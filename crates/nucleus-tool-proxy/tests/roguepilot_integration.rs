@@ -84,7 +84,16 @@ fn test_symlink_read_blocked_capstd() {
 
     // Legit file should be readable
     let tok = dt(&mut kernel, Operation::ReadFiles, "legit.txt");
-    let result = sandbox.read_to_string("legit.txt", &tok);
+    let result = sandbox.read_to_string(
+        "legit.txt",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(
         result.is_ok(),
         "legit file should be readable: {:?}",
@@ -94,7 +103,16 @@ fn test_symlink_read_blocked_capstd() {
 
     // Symlink should be blocked by cap-std (kernel-level enforcement)
     let tok = dt(&mut kernel, Operation::ReadFiles, "link.txt");
-    let result = sandbox.read_to_string("link.txt", &tok);
+    let result = sandbox.read_to_string(
+        "link.txt",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(
         result.is_err(),
         "symlink read should be blocked by cap-std: {:?}",
@@ -129,12 +147,30 @@ fn test_symlink_read_mcp_parity() {
 
     // But cap-std blocks the symlink escape
     let tok = dt(&mut kernel, Operation::ReadFiles, "escape.txt");
-    let result = sandbox.read_to_string("escape.txt", &tok);
+    let result = sandbox.read_to_string(
+        "escape.txt",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_err(), "symlink escape should fail via Sandbox");
 
     // Legit file works
     let tok = dt(&mut kernel, Operation::ReadFiles, "ok.txt");
-    let result = sandbox.read_to_string("ok.txt", &tok);
+    let result = sandbox.read_to_string(
+        "ok.txt",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "safe content");
 }
@@ -201,12 +237,30 @@ fn test_path_traversal_blocked() {
 
     // Absolute path — rejected by policy (check_policy rejects absolute paths)
     let tok = dt(&mut kernel, Operation::ReadFiles, "/etc/passwd");
-    let result = sandbox.read_to_string("/etc/passwd", &tok);
+    let result = sandbox.read_to_string(
+        "/etc/passwd",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_err(), "absolute path should be rejected");
 
     // Relative escape via .. — kernel prevents via Dir handle
     let tok = dt(&mut kernel, Operation::ReadFiles, "../../etc/passwd");
-    let result = sandbox.read_to_string("../../etc/passwd", &tok);
+    let result = sandbox.read_to_string(
+        "../../etc/passwd",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_err(), "../ escape should be rejected");
 
     // Double-dot with extra nesting
@@ -215,12 +269,30 @@ fn test_path_traversal_blocked() {
         Operation::ReadFiles,
         "src/../../../../etc/shadow",
     );
-    let result = sandbox.read_to_string("src/../../../../etc/shadow", &tok);
+    let result = sandbox.read_to_string(
+        "src/../../../../etc/shadow",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_err(), "deep ../ escape should be rejected");
 
     // Legit file still works
     let tok = dt(&mut kernel, Operation::ReadFiles, "ok.txt");
-    let result = sandbox.read_to_string("ok.txt", &tok);
+    let result = sandbox.read_to_string(
+        "ok.txt",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_ok());
 }
 
@@ -297,7 +369,16 @@ fn test_credential_isolation() {
     // Even if an attacker tries to read /proc/self/environ (Linux) or
     // similar, the sandbox blocks absolute paths.
     let tok = dt(&mut kernel, Operation::ReadFiles, "/proc/self/environ");
-    let result = sandbox.read_to_string("/proc/self/environ", &tok);
+    let result = sandbox.read_to_string(
+        "/proc/self/environ",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(
         result.is_err(),
         "/proc/self/environ should be blocked (absolute path)"
@@ -311,7 +392,16 @@ fn test_credential_isolation() {
         Operation::ReadFiles,
         "../../../proc/self/environ",
     );
-    let result = sandbox.read_to_string("../../../proc/self/environ", &tok);
+    let result = sandbox.read_to_string(
+        "../../../proc/self/environ",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_err(), "traversal to /proc should be blocked");
 }
 
@@ -350,7 +440,16 @@ fn test_full_rogue_pilot_chain() {
     // PathLattice should block .env files (kernel also blocks via path check,
     // so force token to test sandbox layer)
     let tok = kernel.issue_approved_token(Operation::ReadFiles, "test: .env read attempt");
-    let result = sandbox.read_to_string(".env", &tok);
+    let result = sandbox.read_to_string(
+        ".env",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(
         result.is_err(),
         ".env should be blocked by PathLattice: {:?}",
@@ -359,7 +458,16 @@ fn test_full_rogue_pilot_chain() {
 
     // ── Attack Step 1b: Try to read via symlink (escape) ──
     let tok = dt(&mut kernel, Operation::ReadFiles, "data.json");
-    let result = sandbox.read_to_string("data.json", &tok);
+    let result = sandbox.read_to_string(
+        "data.json",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(
         result.is_err(),
         "symlink escape should be blocked by cap-std: {:?}",
@@ -368,7 +476,16 @@ fn test_full_rogue_pilot_chain() {
 
     // ── Attack Step 1c: Read a legitimate file (succeeds) ──
     let tok = dt(&mut kernel, Operation::ReadFiles, "src/main.rs");
-    let result = sandbox.read_to_string("src/main.rs", &tok);
+    let result = sandbox.read_to_string(
+        "src/main.rs",
+        &tok,
+        portcullis_effects::authority::Authority::new(
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::ReadFiles,
+                nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+            ),
+        ),
+    );
     assert!(result.is_ok(), "legit read should work");
     check_and_record(&guard, Operation::ReadFiles);
 

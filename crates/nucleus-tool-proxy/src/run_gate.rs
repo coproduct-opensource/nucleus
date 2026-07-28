@@ -162,6 +162,32 @@ pub(crate) fn preflight_fs(
     )
 }
 
+/// Discharge obligations for a sandbox READ.
+///
+/// The sibling of [`preflight_fs`] for the read side. Reads were previously
+/// unmediated at this layer — the HTTP read path went straight from
+/// `http_kernel_decide` to `Sandbox::read_to_string` with no discharge — so the
+/// eight obligations never reached a file read even though `FileEffect::read`
+/// required them on the other filesystem path.
+///
+/// `AuditLogAppend` is the sink a read is structurally permitted against
+/// (`operation_allowed_for_sink`), matching `NucleusRuntime::preflight_read`.
+pub(crate) fn preflight_read_fs(
+    verified_scope: Option<&TokenScope>,
+    fs_ceiling: CapabilityLevel,
+    subject: &str,
+    flow: &FlowTracker,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::ReadFiles,
+        SinkClass::AuditLogAppend,
+        verified_scope,
+        fs_ceiling,
+        subject,
+        flow,
+    )
+}
+
 /// Shared term-builder + preflight for the sealed live paths (RunBash spawn, net
 /// egress, and filesystem write). Feeds the discharge
 /// [`ActionTerm`](discharge::ActionTerm) the session's REAL IFC labels + content

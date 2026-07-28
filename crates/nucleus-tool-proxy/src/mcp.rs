@@ -342,12 +342,41 @@ impl NucleusMcpServer {
             }
         };
 
+        // Discharge the eight obligations for the read. Previously this path
+        // went straight to the sandbox with only the guard proof, so a read
+        // never cleared the obligations `FileEffect::read` enforces.
+        let read_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let fs_ceiling = self.state.runtime.policy().capabilities.read_files;
+            let flow = self.flow_tracker.lock().await;
+            let result =
+                crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(path = %params.path, %reason, "discharge preflight DENIED read — no read");
+                    self.record_verdict(
+                        Operation::ReadFiles,
+                        &params.path,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let read_authority = portcullis_effects::authority::Authority::new(read_bundle);
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
-                self.state
-                    .runtime
-                    .sandbox()
-                    .read_to_string(&params.path, &decision_token)
+                self.state.runtime.sandbox().read_to_string(
+                    &params.path,
+                    &decision_token,
+                    read_authority,
+                )
             })
         }) {
             Ok(contents) => {
