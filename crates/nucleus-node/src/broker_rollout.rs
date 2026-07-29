@@ -93,6 +93,25 @@ pub enum BrokerTransport {
     Vsock,
     /// A Unix socket in the pod directory, already visible to the guest
     /// (container).
+    ///
+    /// # Admitted by this predicate, not yet reachable in practice
+    ///
+    /// The container spawn path does not construct one, and the reason is not
+    /// missing wiring. `broker_launch::broker_identity` refuses to serve a pod
+    /// with no host-established identity, and **the container driver registers
+    /// none** — there is no `identity_manager` call on that path at all.
+    ///
+    /// Giving containers an identity is not a line of glue either. On the
+    /// Firecracker path an identity comes with an attested SVID and a netns that
+    /// default-denies egress; a container has neither, so the identity would
+    /// assert something the driver cannot back. That is the same defect as
+    /// letting the guest name itself, one level up: an identity nobody
+    /// established.
+    ///
+    /// So this variant records that the *transport* is not the obstacle, which
+    /// is worth knowing — the obstacle is that the container driver has no
+    /// story for workload identity, and inventing one to unblock a socket would
+    /// be the claim outrunning the wiring again.
     PodDirSocket,
 }
 

@@ -11,10 +11,25 @@
 //! host established. A pod that was never registered has no such fact, and
 //! serving it anyway would mean inventing one — which is precisely the
 //! sloppiness removed when `pod_identity` stopped coming off the wire. So the
-//! answer is to not serve, and that composes with a gate already in place:
-//! identity is only registered when the pod's egress is confined enough to hold
-//! one, so **a pod with unconfined egress cannot obtain brokered credentials at
-//! all**. The tradeoff is visible rather than hidden.
+//! answer is to not serve.
+//!
+//! ## A correction to what this module previously claimed
+//!
+//! It said the refusal "composes with a gate already in place: identity is only
+//! registered when the pod's egress is confined enough to hold one, so a pod
+//! with unconfined egress cannot obtain brokered credentials at all."
+//!
+//! **That overstated the gate.** `net::decide_identity_grant` returns `Granted`
+//! for `None` — a pod with *no* network policy is registered. What it refuses is
+//! a policy whose `allow` list names a broad public range. So the composition
+//! holds where a driver applies default-deny to a pod that declared no policy
+//! (the Firecracker netns path), and does **not** hold in general.
+//!
+//! The distinction is not academic. The container driver rejects any structured
+//! network policy outright — `container_driver_reject_unsupported_network_policy`
+//! — so a container pod always has `None`, would always be `Granted`, and has no
+//! default-deny behind it. "Unconfined egress cannot get credentials" would be
+//! false there in exactly the case that matters.
 //!
 //! **Under `Enforcing`, a listener that fails to start fails the launch.** This
 //! is the one place the two rollout halves come apart at *runtime* rather than
@@ -136,8 +151,11 @@ mod tests {
 
     /// **The gate.** A pod the node never registered has no host-established
     /// identity, so there is nothing truthful to bind the listener to and it is
-    /// not served. Since registration is itself gated on confined egress, a pod
-    /// that kept public egress cannot reach brokered credentials.
+    /// not served.
+    ///
+    /// This is the whole of the gate, deliberately stated without the egress
+    /// claim this module used to make — see the module docs for why that claim
+    /// was too strong.
     #[test]
     fn a_pod_without_an_identity_is_not_served_even_when_asked_for() {
         for rollout in [BrokerRollout::ListenOnly, BrokerRollout::Enforcing] {
@@ -176,6 +194,19 @@ mod tests {
             on_start_failure(BrokerRollout::Disabled),
             StartFailure::ContinueDegraded
         );
+    }
+
+    /// **What the identity gate actually does**, pinned so the prose above
+    /// cannot drift back into overstating it. A pod with NO network policy is
+    /// granted an identity; what gets refused is a policy naming a broad public
+    /// range. Any claim of the form "unconfined egress cannot obtain X" has to
+    /// rest on a driver's default-deny, not on this function.
+    #[test]
+    fn a_pod_with_no_network_policy_is_still_granted_an_identity() {
+        assert!(matches!(
+            crate::net::decide_identity_grant(None),
+            crate::net::IdentityGrant::Granted
+        ));
     }
 
     /// **A security claim may not outrun its wiring.** Asking to enforce where
