@@ -73,6 +73,30 @@
 /// `nucleus.workload_api_port` is NOT here: it is a port number, identical for
 /// every pod on a node, and carries no authority by itself — the identity it
 /// leads to is gated separately by `net::decide_identity_grant`.
+/// # The next removal, and what has to be true first
+///
+/// `nucleus.sandbox_token` is the strongest candidate for deletion rather than
+/// relocation — the same shape as `nucleus.auth_secret`, which Phase 1 deleted
+/// once the vsock peer check made it redundant. Three facts point that way:
+///
+/// * it is **Tier 3** of the sandbox proof — the Docker-without-SPIRE fallback —
+///   and `firecracker_config.rs` says so at the emission site: *"tier 1 (SVID
+///   with attestation) is preferred in Firecracker"*;
+/// * it is verified with `auth_secret`, which **is no longer delivered on this
+///   path**. The cmdline key is gone, and the only remaining channel is
+///   `/etc/nucleus/auth.secret`, written by `build-rootfs.sh` at IMAGE BUILD
+///   time — so it is either absent or shared by every pod built from that image.
+///   A per-pod token whose verification key is fleet-wide is not per-pod;
+/// * it is one of the five keys blocking a snapshot base.
+///
+/// **Not removed here, deliberately.** Deleting it makes every Firecracker pod
+/// depend on Tier 1 or Tier 2 succeeding, and the tool-proxy exits fatally when
+/// no tier does — `SandboxProofError::NakedProcess`. That is fail-closed and
+/// correct, but it is the startup path of every pod, and the precondition is an
+/// empirical one this repository cannot check by reading itself: **boot a pod on
+/// the KVM box and confirm the SVID carries the attestation extension**. Until
+/// someone has that observation, removing the fallback is a guess dressed as a
+/// simplification.
 pub const PER_POD_SECRET_KEYS: &[&str] = &[
     "nucleus.approval_secret",
     "nucleus.auth_secret",
@@ -262,6 +286,81 @@ mod tests {
                  nor shared. Decide which it is: getting it wrong in the 'shared' direction \
                  leaks it to every clone restored from a snapshot."
             );
+        }
+    }
+
+    /// **How far the snapshot payoff actually is, measured rather than claimed.**
+    ///
+    /// The plan for this work called the snapshot payoff "a consequence, not a
+    /// workstream": remove per-pod material from the guest and
+    /// [`snapshot_safety`] becomes satisfiable by construction. **That was
+    /// wrong**, and this test is what makes the error visible instead of
+    /// discovering it when the warm pool is built. Phase 1 deleted exactly one
+    /// key — `nucleus.auth_secret` — and FIVE remain.
+    ///
+    /// Five, not four: the first version of this test asserted four, because the
+    /// shell pipeline I counted with deduplicated `nucleus.task_token_nonce`
+    /// away. The test caught the miscount, which is the argument for pinning the
+    /// set rather than the number.
+    ///
+    /// A ratchet in both directions. Emitting a NEW per-pod key fails here; so
+    /// does removing one, which forces the list to be updated and the distance
+    /// re-stated rather than quietly drifting.
+    ///
+    /// Scans for `nucleus.key=` — actual EMISSION. The sibling
+    /// `every_cmdline_key_is_classified` scans for bare mentions, which is right
+    /// for classification and wrong here: `nucleus.auth_secret` still appears in
+    /// a comment explaining what it used to do, and counting that would report a
+    /// key that is no longer emitted.
+    #[test]
+    fn the_remaining_distance_to_a_snapshottable_base_is_five_keys() {
+        let src = include_str!("firecracker_config.rs");
+        let mut emitted: Vec<&str> = Vec::new();
+        for key in PER_POD_SECRET_KEYS {
+            if src.contains(&format!("{key}=")) {
+                emitted.push(key);
+            }
+        }
+        emitted.sort_unstable();
+
+        let expected = [
+            "nucleus.approval_secret",
+            "nucleus.sandbox_token",
+            "nucleus.task_token_hex",
+            "nucleus.task_token_issuer",
+            "nucleus.task_token_nonce",
+        ];
+        assert_eq!(
+            emitted, expected,
+            "the set of per-pod secrets still riding the kernel command line has changed. \
+             Adding one blocks the snapshot base further; removing one is progress and this \
+             list should be updated to match. Either way the distance must be re-stated, not \
+             silently drifted."
+        );
+    }
+
+    /// The consequence of the above, stated as behaviour rather than as a count:
+    /// a command line built for a REAL pod today is not snapshottable.
+    ///
+    /// Without this, the module reads as though the guard exists for a hazard
+    /// that no longer occurs. It occurs on every pod.
+    #[test]
+    fn a_realistic_pod_cmdline_is_still_refused_today() {
+        let realistic = format!(
+            "{BASE} nucleus.workload_api_port=15012 nucleus.approval_secret=deadbeef \
+             nucleus.sandbox_token=abc123 nucleus.task_token_hex=7b7d"
+        );
+        match snapshot_safety(&realistic) {
+            SnapshotSafety::WouldDuplicateSecret { key } => assert!(
+                PER_POD_SECRET_KEYS.contains(&key.as_str()),
+                "the refusal should name a classified per-pod key, got {key}"
+            ),
+            SnapshotSafety::SafeToClone => panic!(
+                "a realistic pod command line reported safe to clone — either the per-pod \
+                 material really has been removed (in which case this test and \
+                 `the_remaining_distance_to_a_snapshottable_base_is_five_keys` should both be \
+                 updated, and the warm pool is unblocked), or the guard has stopped matching"
+            ),
         }
     }
 }
