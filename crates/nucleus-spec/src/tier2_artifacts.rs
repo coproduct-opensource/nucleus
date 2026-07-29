@@ -91,9 +91,16 @@ pub const GUEST_RELEASE_FLOOR: &str = "2.1.0";
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// Kept equal to [`GUEST_RELEASE_FLOOR`] until there is a reason to differ;
-/// `pinned_release_is_at_or_above_the_floor` fails if it ever drops below.
-pub const GUEST_RELEASE: &str = "2.1.0";
+/// `2.1.0-rc.1` is the first published build containing everything a pod needs to
+/// boot: the CA bundle in the rootfs (#2110), the `ip netns exec` separator fix
+/// without which no pod launches on a default install, and the workload-API
+/// socket chown without which the guest cannot fetch its SVID. A release
+/// candidate rather than a release because the aarch64 boot is verified by hand,
+/// and that had not happened for a `2.1.0` at the time this was pinned.
+///
+/// `pinned_release_is_at_or_above_the_floor` fails if this ever drops below the
+/// floor; `parse_release` explains why an RC compares equal to its own version.
+pub const GUEST_RELEASE: &str = "2.1.0-rc.1";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,12 +149,29 @@ impl Tier2Artifact {
     }
 }
 
-/// Parse a `major.minor.patch` release string into a comparable tuple.
+/// Parse a release string into its comparable numeric core.
 ///
-/// Returns `None` for anything that is not three numeric components, so a
-/// malformed pin fails the comparison rather than silently ordering as zero.
+/// Accepts a `v` prefix and a prerelease or build suffix, so `v2.1.0-rc.1` and
+/// `2.1.0` both yield `(2, 1, 0)`. Returns `None` for anything whose core is not
+/// three numeric components, so a malformed pin fails the comparison rather than
+/// silently ordering as zero.
+///
+/// # Why the suffix is dropped rather than ordered
+///
+/// Semver sorts `2.1.0-rc.1` **before** `2.1.0`, so a strict semver comparison
+/// would reject an RC against a floor of `2.1.0`. That is the wrong answer for
+/// what this floor is *for*: it exists to exclude releases whose rootfs has no CA
+/// bundle and therefore panics as PID 1, and a release candidate **of** an
+/// acceptable version contains those fixes. Comparing the numeric core is the
+/// deliberate choice, not an oversight.
+///
+/// It is still a floor: `2.0.2-rc.1` has core `(2, 0, 2)` and is refused, because
+/// a prerelease of a broken version is still broken.
 pub fn parse_release(raw: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = raw.trim_start_matches('v').split('.');
+    let core = raw.trim_start_matches('v');
+    // `-` starts a prerelease, `+` starts build metadata; either ends the core.
+    let core = core.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
     let patch = parts.next()?.parse().ok()?;
@@ -221,6 +245,31 @@ mod tests {
             assert!(
                 !release_is_acceptable(broken),
                 "{broken} predates the PID-1 CA-store fix and must be refused"
+            );
+        }
+    }
+
+    /// A release CANDIDATE of an acceptable version must be acceptable: it
+    /// contains the fixes the floor exists to require. Strict semver would sort
+    /// it below `2.1.0` and refuse it — which is why the parser compares the
+    /// numeric core.
+    #[test]
+    fn a_prerelease_of_an_acceptable_version_is_accepted() {
+        for rc in ["2.1.0-rc.1", "v2.1.0-rc.1", "2.1.0-rc1", "2.1.0+build.7"] {
+            assert_eq!(parse_release(rc), Some((2, 1, 0)), "{rc} core");
+            assert!(release_is_acceptable(rc), "{rc} should be accepted");
+        }
+    }
+
+    /// The other half, and the one that keeps the above from being a hole: a
+    /// prerelease of a BROKEN version is still broken. Without this the suffix
+    /// handling would be a way to smuggle a pre-CA-bundle rootfs past the floor.
+    #[test]
+    fn a_prerelease_of_a_refused_version_is_still_refused() {
+        for rc in ["2.0.2-rc.1", "1.1.0-rc.1", "v2.0.0-beta"] {
+            assert!(
+                !release_is_acceptable(rc),
+                "{rc} predates the PID-1 CA-store fix and must stay refused"
             );
         }
     }
