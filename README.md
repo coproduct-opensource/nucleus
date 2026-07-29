@@ -65,10 +65,16 @@ Tier 1 is process-level. For kernel-level isolation you need a Linux VM with
 `/dev/kvm` it does not run slowly, it does not run at all.
 
 ```bash
-brew install lima          # 2.0+ required for nested virtualization
-nucleus setup              # provisions the VM and installs Firecracker + jailer
-nucleus doctor             # verifies; the /dev/kvm line is the one that matters
+nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
+                               # installs Firecracker + jailer, then BOOTS a
+                               # throwaway microVM to prove it actually works
 ```
+
+`--install-deps` is opt-in — without it, setup prints the one command to run
+(`brew install lima`) rather than installing software unasked. Setup ends with a
+smoke test that boots a real microVM; if that fails, setup fails, because every
+other check only verifies a precondition. `--skip-smoke-test` opts out and says
+so.
 
 Requires Apple Silicon **M3 or newer** and **macOS 15+**. `nucleus doctor` reads
 `/dev/kvm` directly rather than inferring from the chip name — if the probe says

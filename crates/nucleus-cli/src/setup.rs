@@ -45,6 +45,21 @@ pub struct SetupArgs {
     /// Skip artifact download (for offline setup)
     #[arg(long)]
     pub skip_artifacts: bool,
+
+    /// Install missing host dependencies (currently Lima, via Homebrew).
+    ///
+    /// Off by default: installing software on someone's machine is not
+    /// something a setup command should do unasked. Without it, a missing
+    /// dependency prints the exact command to run.
+    #[arg(long)]
+    pub install_deps: bool,
+
+    /// Skip the post-setup smoke test that boots a throwaway microVM.
+    ///
+    /// The smoke test is the only step that proves Tier 2 actually works
+    /// rather than appears configured, so skipping it is opt-out, not opt-in.
+    #[arg(long)]
+    pub skip_smoke_test: bool,
 }
 
 /// Platform detection result
@@ -180,7 +195,27 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     println!("\nWriting configuration...");
     write_config(&args)?;
 
-    // Step 6: Print summary
+    // Step 6: Prove it works, rather than reporting that it appears configured.
+    //
+    // Deliberately the LAST thing, and deliberately opt-out: every other step
+    // above checks a precondition, and a machine can pass all of them and still
+    // boot no microVM. If this fails the user learns it here, not the first
+    // time they try to run a workload.
+    let vm_expected = !args.skip_vm && matches!(platform, Platform::MacOS { .. });
+    if vm_expected && !args.skip_smoke_test {
+        if !run_smoke_test(&args.vm_name) {
+            print_setup_summary(&args, &platform);
+            bail!(
+                "setup finished, but no microVM could boot — Tier 2 is not usable yet.\n\
+                 Re-run `nucleus doctor` and check the /dev/kvm line.\n\
+                 To skip this check: nucleus setup --skip-smoke-test"
+            );
+        }
+    } else if vm_expected {
+        println!("\nSkipping smoke test (--skip-smoke-test) — Tier 2 is unverified.");
+    }
+
+    // Step 7: Print summary
     print_setup_summary(&args, &platform);
 
     Ok(())
@@ -326,11 +361,15 @@ async fn setup_lima_vm(args: &SetupArgs, chip: &AppleChip) -> Result<()> {
 
     // Check if Lima is installed
     if !is_lima_installed() {
-        bail!(
-            "Lima is not installed.\n\
-             Install with: brew install lima\n\
-             Then re-run: nucleus setup"
-        );
+        if args.install_deps {
+            install_lima()?;
+        } else {
+            bail!(
+                "Lima is not installed (2.0+ required for nested virtualization).\n\
+                 Install it for me:  nucleus setup --install-deps\n\
+                 Or do it yourself:  brew install lima && nucleus setup"
+            );
+        }
     }
 
     // Check if VM already exists
@@ -422,6 +461,82 @@ fn verify_kvm_in_vm(vm_name: &str) {
         println!("    - Apple Silicon M3/M4 Mac");
         println!("    - macOS 15+ (Sequoia)");
         println!("    - Or: Use a Linux host with KVM support");
+    }
+}
+
+/// Install Lima via Homebrew, on explicit request (`--install-deps`).
+fn install_lima() -> Result<()> {
+    if which("brew").is_none() {
+        bail!(
+            "--install-deps needs Homebrew, which is not on PATH.\n\
+             Install Lima another way, then re-run: nucleus setup"
+        );
+    }
+    println!("Installing Lima (brew install lima)...");
+    let status = Command::new("brew")
+        .args(["install", "lima"])
+        .status()
+        .context("failed to run brew")?;
+    if !status.success() {
+        bail!("brew install lima failed; install it manually and re-run: nucleus setup");
+    }
+    if !is_lima_installed() {
+        bail!("Lima still not on PATH after install; open a new shell and re-run: nucleus setup");
+    }
+    println!("Lima installed.");
+    Ok(())
+}
+
+fn which(bin: &str) -> Option<String> {
+    Command::new("which")
+        .arg(bin)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|p| !p.is_empty())
+}
+
+/// Boot a throwaway microVM inside the Lima VM and report whether it reached
+/// userspace.
+///
+/// This is the only check in setup that RUNS the thing rather than inferring
+/// from it. `test -c /dev/kvm` passing means the device node exists, not that
+/// Firecracker can use it — so without this, setup can report success on a
+/// machine where no microVM will ever boot.
+fn run_smoke_test(vm_name: &str) -> bool {
+    println!("\nSmoke test: booting a throwaway microVM...");
+    let script = include_str!("../../../scripts/firecracker/smoke-test.sh");
+    let out = Command::new("limactl")
+        .args(["shell", vm_name, "--", "sudo", "sh", "-s"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(script.as_bytes());
+            }
+            child.wait_with_output()
+        });
+    match out {
+        Ok(o) if o.status.success() => {
+            println!("  PASS - a microVM booted to userspace. Tier 2 works on this host.");
+            true
+        }
+        Ok(o) => {
+            println!("  FAIL - Tier 2 is not usable on this host yet.");
+            let err = String::from_utf8_lossy(&o.stderr);
+            for line in err.lines().take(12) {
+                println!("    {line}");
+            }
+            false
+        }
+        Err(e) => {
+            println!("  FAIL - could not run the smoke test: {e}");
+            false
+        }
     }
 }
 
@@ -901,6 +1016,8 @@ mod tests {
             vm_disk_gib: 20,
             rotate_secrets: false,
             skip_artifacts: false,
+            install_deps: false,
+            skip_smoke_test: true,
         };
 
         let config = generate_lima_config(&args, &AppleChip::M3).unwrap();
@@ -923,6 +1040,8 @@ mod tests {
             vm_disk_gib: 20,
             rotate_secrets: false,
             skip_artifacts: false,
+            install_deps: false,
+            skip_smoke_test: true,
         };
 
         let config = generate_lima_config(&args, &AppleChip::Intel).unwrap();
