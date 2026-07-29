@@ -37,6 +37,7 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod broker;
+mod broker_transport;
 mod cgroup;
 mod cred_split;
 mod envelope_frame;
