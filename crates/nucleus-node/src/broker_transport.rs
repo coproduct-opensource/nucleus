@@ -174,3 +174,223 @@ mod tests {
         assert_eq!(read_frame(Cursor::new(bad)), Err(ReadError::Io));
     }
 }
+
+// ── The serving side ──────────────────────────────────────────────────────
+
+use std::time::Duration;
+
+use nucleus_cred_broker::CredentialStore;
+use portcullis::PermissionLattice;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+
+/// How long one guest connection may take from accept to answered.
+///
+/// An untrusted peer that connects and then says nothing would otherwise hold a
+/// slot forever — the classic slowloris shape, which exhausts a listener without
+/// sending meaningful traffic. Every connection is on a clock.
+pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many guest connections may be in flight at once.
+///
+/// Bounded because a guest can open sockets far faster than the host can serve
+/// them, and an unbounded accept loop turns that into file-descriptor
+/// exhaustion for the whole node — not just this listener.
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+
+/// Read one frame asynchronously, refusing to accumulate past `max`.
+///
+/// The async twin of [`read_frame_bounded`], and bounded for the same reason:
+/// `read_line` would grow its buffer to whatever the peer sends, and the peer is
+/// the agent the sandbox exists to contain.
+pub async fn read_frame_async(
+    reader: impl AsyncRead + Unpin,
+    max: usize,
+) -> Result<String, ReadError> {
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match tokio::io::AsyncReadExt::read(&mut reader, &mut byte).await {
+            Ok(0) => return Err(ReadError::Eof),
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    return String::from_utf8(buf).map_err(|_| ReadError::Io);
+                }
+                if buf.len() >= max {
+                    return Err(ReadError::Unterminated { bytes: buf.len() });
+                }
+                buf.push(byte[0]);
+            }
+            Err(_) => return Err(ReadError::Io),
+        }
+    }
+}
+
+/// Serve exactly one request on an already-accepted connection.
+///
+/// Generic over the stream so it is testable with an in-memory pipe rather than
+/// a real socket — the lesson from the vsock accept path, where the logic sat
+/// behind `cfg(target_os = "linux")` and a dev machine never compiled it.
+///
+/// One frame per connection, deliberately. A connection that could carry many
+/// requests would need per-connection state and its own lifetime policy; one
+/// request per connection needs neither, and the guest is not a latency-
+/// sensitive client.
+pub async fn serve_connection<S>(stream: S, policy: &PermissionLattice, store: &CredentialStore)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    serve_connection_with_timeout(stream, policy, store, CONNECTION_TIMEOUT).await
+}
+
+/// As [`serve_connection`], with the deadline injectable so the timeout itself
+/// can be tested without a ten-second test.
+///
+/// # The bug this signature exists because of
+///
+/// The first version of `serve_connection` defined `CONNECTION_TIMEOUT` and then
+/// never applied it. A peer that connected and said nothing held the task
+/// forever — precisely the slowloris shape the constant was named for, with the
+/// constant sitting right there unused. `a_peer_that_sends_nothing_gets_a_refusal_not_a_hang`
+/// found it. A named constant is not a bound until something reads it.
+pub async fn serve_connection_with_timeout<S>(
+    stream: S,
+    policy: &PermissionLattice,
+    store: &CredentialStore,
+    deadline: Duration,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
+
+    let read = tokio::time::timeout(deadline, read_frame_async(reader, MAX_FRAME_BYTES)).await;
+    let response = match read {
+        Ok(Ok(frame)) => crate::broker::handle_frame(&frame, policy, store),
+        // A read failure and a TIMEOUT are answered with the SAME coarse refusal
+        // a policy denial gets. Distinguishing "you sent garbage" from "you were
+        // too slow" from "you were denied" would hand the guest a probe it does
+        // not otherwise have.
+        Ok(Err(_)) | Err(_) => crate::broker::BrokerResponse::refused("malformed request"),
+    };
+
+    let mut line = serde_json::to_string(&response).unwrap_or_else(|_| {
+        // Serialising a two-field struct cannot realistically fail, but falling
+        // back to a granted response would be catastrophic, so the fallback is
+        // a refusal.
+        r#"{"granted":false,"reason":"internal error"}"#.to_string()
+    });
+    line.push('\n');
+    let _ = writer.write_all(line.as_bytes()).await;
+    let _ = writer.flush().await;
+}
+
+#[cfg(test)]
+mod serving_tests {
+    use super::*;
+    use nucleus_cred_broker::Credential;
+
+    fn store_with(target: &str, value: &str) -> CredentialStore {
+        let mut s = CredentialStore::new();
+        s.insert(target, Credential::new(value));
+        s
+    }
+
+    async fn round_trip(
+        request: &str,
+        policy: &PermissionLattice,
+        store: &CredentialStore,
+    ) -> String {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let serve = serve_connection(server, policy, store);
+        let talk = async {
+            let (r, mut w) = tokio::io::split(client);
+            w.write_all(request.as_bytes()).await.unwrap();
+            w.flush().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await.unwrap();
+            line
+        };
+        let (_, reply) = tokio::join!(serve, talk);
+        reply
+    }
+
+    /// End to end over a real (in-memory) stream: a permitted request is
+    /// granted, and the credential does not appear on the wire.
+    #[tokio::test]
+    async fn a_permitted_request_is_granted_without_leaking_the_secret() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "super-secret-token");
+        let req = serde_json::json!({
+            "pod_identity": "spiffe://nucleus/pod/abc",
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string()
+            + "\n";
+
+        let reply = round_trip(&req, &policy, &store).await;
+        assert!(reply.contains("\"granted\":true"), "reply: {reply}");
+        assert!(
+            !reply.contains("super-secret-token"),
+            "the credential reached the guest: {reply}"
+        );
+    }
+
+    /// **A silent peer must not hold the connection open.** Nothing is sent, so
+    /// the read ends at EOF once the client half drops — the server answers
+    /// rather than hanging.
+    #[tokio::test]
+    async fn a_peer_that_sends_nothing_gets_a_refusal_not_a_hang() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "token");
+        let (client, server) = tokio::io::duplex(1024);
+        let (r, w) = tokio::io::split(client);
+        drop(w); // say nothing at all
+
+        // A short deadline so the test is fast; the production default is
+        // CONNECTION_TIMEOUT. The outer timeout is generous — if the inner one
+        // is missing, this is what fails.
+        let served = tokio::time::timeout(
+            Duration::from_secs(5),
+            serve_connection_with_timeout(server, &policy, &store, Duration::from_millis(200)),
+        )
+        .await;
+        assert!(
+            served.is_ok(),
+            "serving a silent peer must not hang — the connection deadline is not being applied"
+        );
+
+        let mut line = String::new();
+        let _ = BufReader::new(r).read_line(&mut line).await;
+        assert!(line.contains("\"granted\":false"), "reply: {line}");
+    }
+
+    /// An unterminated flood is cut off at the ceiling rather than buffered.
+    #[tokio::test]
+    async fn an_unterminated_flood_is_refused() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "token");
+        let flood = "x".repeat(MAX_FRAME_BYTES * 4); // no newline, ever
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (r, mut w) = tokio::io::split(client);
+
+        let serve = serve_connection(server, &policy, &store);
+        let talk = async {
+            let _ = w.write_all(flood.as_bytes()).await;
+            let mut line = String::new();
+            let _ = BufReader::new(r).read_line(&mut line).await;
+            line
+        };
+        let (_, reply) = tokio::join!(serve, talk);
+        assert!(reply.contains("\"granted\":false"), "reply: {reply}");
+    }
+
+    /// The bounds are not decorative: the timeout must be finite and the
+    /// concurrency cap small enough to matter.
+    #[tokio::test]
+    async fn the_serving_bounds_are_real() {
+        assert!(CONNECTION_TIMEOUT <= Duration::from_secs(30));
+        assert!(MAX_CONCURRENT_CONNECTIONS > 0 && MAX_CONCURRENT_CONNECTIONS <= 64);
+    }
+}
