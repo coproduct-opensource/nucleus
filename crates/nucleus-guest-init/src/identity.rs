@@ -36,6 +36,15 @@ struct BundleResponse {
     bundle_pem: String,
 }
 
+/// Where [`fetch_identity`] writes the SVID certificate chain.
+///
+/// Exposed so the caller can advertise it to the tool-proxy via
+/// `NUCLEUS_IDENTITY_CERT`. Fetching the cert and not naming it leaves Tier 1/2
+/// reporting "no identity cert" with the cert sitting on disk.
+pub fn svid_cert_path() -> String {
+    format!("{IDENTITY_DIR}/svid.pem")
+}
+
 /// The three values a session capability token comprises.
 ///
 /// Named to match what the tool-proxy reads from its environment —

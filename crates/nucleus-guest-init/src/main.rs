@@ -98,6 +98,19 @@ fn run() -> Result<(), String> {
         match identity::fetch_identity(port) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
+                // POINT THE PROXY AT WHAT WE JUST FETCHED.
+                //
+                // Without this the fetch is decorative: `fetch_identity` writes
+                // the SVID to /etc/nucleus/identity, and the tool-proxy looks
+                // for `--identity-cert` / `NUCLEUS_IDENTITY_CERT`, which nobody
+                // set — so the cert existed on disk and Tier 1/2 still reported
+                // "no identity cert" and the guest died as a naked process.
+                //
+                // Observed on real hardware once the workload API bridge started
+                // early enough for the fetch to SUCCEED. Before that the fetch
+                // always failed, so this gap was invisible: the pod died one
+                // step earlier for a different reason.
+                std::env::set_var("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");

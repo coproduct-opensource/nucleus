@@ -2596,70 +2596,25 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = wait_for_proxy_health(health_addr).await {
-            if let Some(proxy) = signed_proxy {
-                proxy.shutdown().await;
-            }
-            bridge.shutdown().await;
-            let _ = child.kill().await;
-            cleanup_net_resources(
-                &state.network_allocator,
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(err);
-        }
-
-        let child = Arc::new(Mutex::new(child));
-        let drift_stop = Arc::new(AtomicBool::new(false));
-        let drift_monitor = if state.firecracker_netns_drift_check {
-            if let (Some(pid), Some(baseline)) = (netns_pid, netns_baseline) {
-                let pod_dir = pod_dir.to_path_buf();
-                let child = Arc::clone(&child);
-                let stop = Arc::clone(&drift_stop);
-                let interval = state.firecracker_netns_drift_interval;
-                Some(tokio::spawn(async move {
-                    let current_path = pod_dir.join("net.iptables.current");
-                    let mut ticker = tokio::time::interval(interval);
-                    loop {
-                        ticker.tick().await;
-                        if stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        match net::snapshot_iptables(pid).await {
-                            Ok(snapshot) => {
-                                if snapshot != baseline {
-                                    let _ =
-                                        tokio::fs::write(&current_path, snapshot.as_bytes()).await;
-                                    let mut child = child.lock().await;
-                                    let _ = child.kill().await;
-                                    error!("iptables drift detected; pod netns {} terminated", pid);
-                                    break;
-                                }
-                            }
-                            Err(err) => {
-                                let _ = tokio::fs::write(&current_path, format!("{err}")).await;
-                                let mut child = child.lock().await;
-                                let _ = child.kill().await;
-                                error!(
-                                    "iptables drift check failed; pod netns {} terminated: {err}",
-                                    pid
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
+        // IDENTITY BEFORE HEALTH, and the order is the point.
+        //
+        // This block used to sit AFTER `wait_for_proxy_health`, which made the
+        // guest's SVID source start only once the guest was already healthy —
+        // while the guest needs that source IN ORDER to become healthy. The
+        // dependency ran backwards.
+        //
+        // It was survivable only because `nucleus.sandbox_token` gave the guest a
+        // Tier 3 proof that needs nothing from the host, so it passed the health
+        // check and fetched its SVID afterwards. The moment that token was made
+        // conditional (#2107), identity-bearing pods had no proof at the only
+        // moment that mattered and every launch failed with "proxy health check
+        // timed out" — observed on real hardware, invisible to every unit test,
+        // because the omission is correct in isolation and only wrong in
+        // composition with this ordering.
+        //
+        // Moved here so the composition is right rather than compensated for.
+        // The block is self-contained: it reads the spec, the image paths and
+        // the minted token, and touches nothing the health check creates.
         // Create and register SPIFFE identity if identity management is enabled
         // AND the pod's egress is confined enough to hold one.
         //
@@ -2768,6 +2723,75 @@ async fn spawn_firecracker_pod(
             } else {
                 (None, None, None)
             };
+
+        if let Err(err) = wait_for_proxy_health(health_addr).await {
+            if let Some(proxy) = signed_proxy {
+                proxy.shutdown().await;
+            }
+            // Started above, so this path now owns it. A workload API bridge
+            // left behind would hold a per-pod socket for a pod that never ran.
+            if let Some(api) = workload_api_bridge {
+                api.shutdown().await;
+            }
+            bridge.shutdown().await;
+            let _ = child.kill().await;
+            cleanup_net_resources(
+                &state.network_allocator,
+                &mut net_plan,
+                &mut netns_name,
+                &mut dns_proxy,
+                jail_layout.as_ref(),
+            )
+            .await;
+            return Err(err);
+        }
+
+        let child = Arc::new(Mutex::new(child));
+        let drift_stop = Arc::new(AtomicBool::new(false));
+        let drift_monitor = if state.firecracker_netns_drift_check {
+            if let (Some(pid), Some(baseline)) = (netns_pid, netns_baseline) {
+                let pod_dir = pod_dir.to_path_buf();
+                let child = Arc::clone(&child);
+                let stop = Arc::clone(&drift_stop);
+                let interval = state.firecracker_netns_drift_interval;
+                Some(tokio::spawn(async move {
+                    let current_path = pod_dir.join("net.iptables.current");
+                    let mut ticker = tokio::time::interval(interval);
+                    loop {
+                        ticker.tick().await;
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match net::snapshot_iptables(pid).await {
+                            Ok(snapshot) => {
+                                if snapshot != baseline {
+                                    let _ =
+                                        tokio::fs::write(&current_path, snapshot.as_bytes()).await;
+                                    let mut child = child.lock().await;
+                                    let _ = child.kill().await;
+                                    error!("iptables drift detected; pod netns {} terminated", pid);
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                let _ = tokio::fs::write(&current_path, format!("{err}")).await;
+                                let mut child = child.lock().await;
+                                let _ = child.kill().await;
+                                error!(
+                                    "iptables drift check failed; pod netns {} terminated: {err}",
+                                    pid
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let broker = start_broker_for_pod(state, spec, &vsock_path, pod_identity.as_ref(), id)?;
 
