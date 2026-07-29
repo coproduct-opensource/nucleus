@@ -71,12 +71,12 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-**Today this needs a checkout.** `setup` installs guest artifacts from a pinned
-release, and the pin deliberately sits above the newest published one: every
-release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest panics
-as PID 1. Until a release above that floor is cut, use `--artifacts local` from
-a clone; `setup` fails with that exact instruction rather than installing a pod
-that cannot boot.
+**The one-liner still needs a full release**, because `install.sh` resolves the
+CLI from `/releases/latest` and the newest bootable artifacts are the prerelease
+`v2.1.0-rc.1` (everything up to 2.0.2 ships a rootfs with no CA bundle, on which
+the guest panics as PID 1). Build the CLI from a clone and `setup` installs the
+rest from that RC — **measured 48.7 s** from a deleted VM to a booted pod, with
+Sigstore provenance verified on every downloaded artifact.
 
 `--install-deps` is opt-in — without it, setup prints the one command to run
 (`brew install lima`) rather than installing software unasked. Setup ends with

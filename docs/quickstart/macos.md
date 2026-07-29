@@ -12,24 +12,21 @@ or, if you already have the `nucleus` binary:
 nucleus setup
 ```
 
-> **Today this needs a checkout, not the one-liner.** `setup` installs guest
-> artifacts from the pinned release, and the pin sits above the newest published
-> release on purpose: every release up to 2.0.2 ships a rootfs with no CA bundle,
-> on which the guest panics as PID 1 (see [Where guest artifacts come
-> from](#where-guest-artifacts-come-from)). Until a release above the floor is
-> cut, run from a clone:
+> **The one-liner still needs a full release.** `install.sh` resolves the CLI
+> version from GitHub's `/releases/latest`, which correctly excludes prereleases —
+> and the newest artifacts able to boot a pod are the prerelease `v2.1.0-rc.1`
+> (every release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest
+> panics as PID 1). So today: build the CLI from a clone, then `setup` installs
+> the rest from the published RC.
 >
 > ```bash
 > cargo build --release -p nucleus-cli
-> ./scripts/firecracker/build-rootfs.sh          # plus musl builds of node + cli
-> ./target/release/nucleus setup --artifacts local
+> ./target/release/nucleus setup            # pulls the pinned RC artifacts
 > ```
 >
-> `setup` fails with that exact instruction rather than installing a pod that
-> cannot boot.
-
-Setup ends by **booting a real nucleus pod** and asserting what it did. If that
-fails, setup fails. It does not report success on a machine where no pod can run.
+> **Measured 2026-07-29: 48.7 s** from `limactl delete nucleus` to a booted,
+> identity-proving pod, with `gh attestation verify` passing on every downloaded
+> artifact. `--artifacts local` uses this working tree's build instead.
 
 ---
 
@@ -140,8 +137,13 @@ the tool-proxy directly — the same enforcement path, no vendor in it.
 Releases at or below **2.0.2 cannot boot**: their rootfs contains no CA bundle
 anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1,
 takes the guest kernel with it. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses
-them rather than installing a pod that cannot start. Until a release above the
-floor is published, use `--artifacts local`.
+them rather than installing a pod that cannot start.
+
+The pinned release is **`2.1.0-rc.1`**, the first build carrying the CA bundle,
+the `ip netns exec` separator fix and the workload-API socket chown. Each
+downloaded asset is checked against the release API digest and, when `gh` is on
+PATH, against its Sigstore build provenance — the output says which of the two
+happened rather than implying both.
 
 ## Troubleshooting
 

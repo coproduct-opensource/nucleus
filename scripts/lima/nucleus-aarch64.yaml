@@ -61,6 +61,18 @@ portForwards:
   - guestPort: 9180
     hostPort: 9180
 
+# Lima installs rootless containerd + BuildKit by default. A Firecracker host
+# needs neither, and installing them is not free: on a fresh VM it pushed first
+# boot past `limactl start`'s timeout, so setup failed with "Lima VM failed to
+# start" while the VM was in fact running and finishing provisioning. Measured
+# 2026-07-29 — a 10-minute failure caused entirely by software nothing here uses.
+#
+# The config this template replaced disabled containerd; dropping the block was a
+# regression, and `the_templates_disable_containerd` now pins it.
+containerd:
+  system: false
+  user: false
+
 provision:
   - mode: system
     script: |

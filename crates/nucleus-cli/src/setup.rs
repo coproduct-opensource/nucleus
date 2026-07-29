@@ -888,6 +888,32 @@ mod tests {
         }
     }
 
+    /// A Firecracker host needs no container runtime, and Lima installs rootless
+    /// containerd + BuildKit unless told not to. That is not merely wasteful: on
+    /// a fresh VM it pushed first boot past `limactl start`'s timeout, and setup
+    /// failed with "Lima VM failed to start" after ten minutes while the VM was
+    /// running fine and still provisioning. The config these templates replaced
+    /// disabled it; dropping the block was a regression this test exists to stop
+    /// recurring.
+    #[test]
+    fn the_templates_disable_containerd() {
+        for (chip, template) in [
+            (AppleChip::M3, lima_template(&AppleChip::M3)),
+            (AppleChip::Intel, lima_template(&AppleChip::Intel)),
+        ] {
+            assert!(
+                template.contains("containerd:"),
+                "{chip:?} template must declare containerd explicitly"
+            );
+            let after = template.split("containerd:").nth(1).unwrap_or("");
+            let block = &after[..after.len().min(200)];
+            assert!(
+                block.contains("system: false") && block.contains("user: false"),
+                "{chip:?} template must disable BOTH system and user containerd; got:{block}"
+            );
+        }
+    }
+
     /// Each template must still describe the right machine.
     #[test]
     fn the_templates_describe_the_right_vm_shape() {

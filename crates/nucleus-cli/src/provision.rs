@@ -129,23 +129,14 @@ impl Tier2Host {
                 if !status.success() {
                     bail!("limactl copy of {} into {vm} failed", local.display());
                 }
-                self.sh(&format!(
-                    "set -e
-                     mkdir -p \"$(dirname {remote})\"
-                     cp {tmp} {staged}
-                     chmod {mode} {staged}
-                     mv {staged} {remote}
-                     rm -f {tmp}"
-                ))?;
+                self.sh(&put_script(remote, &staged, &tmp, mode))?;
             }
             Self::Local => {
-                self.sh(&format!(
-                    "set -e
-                     mkdir -p \"$(dirname {remote})\"
-                     cp {} {staged}
-                     chmod {mode} {staged}
-                     mv {staged} {remote}",
-                    local.display()
+                self.sh(&put_script(
+                    remote,
+                    &staged,
+                    &local.display().to_string(),
+                    mode,
                 ))?;
             }
         }
@@ -158,6 +149,30 @@ impl Tier2Host {
             Self::Local => "this host".to_string(),
         }
     }
+}
+
+/// The root shell that lands a staged file at its destination.
+///
+/// Pure, so the one case that bit can be tested without a VM: when `remote` is
+/// itself under `/tmp`, the path `limactl copy` writes to and the destination are
+/// **the same file**, and an unconditional `rm -f {source}` cleanup deletes what
+/// was just installed. That is exactly what happened installing the node tarball,
+/// whose destination is `/tmp/<asset>.tar.gz` — provenance verified, file copied,
+/// then removed, and `tar` reported a missing archive three layers later.
+fn put_script(remote: &str, staged: &str, source: &str, mode: &str) -> String {
+    // Only clean up a source that is not the destination.
+    let cleanup = if source == remote {
+        String::new()
+    } else {
+        format!("\n                     rm -f {source}")
+    };
+    format!(
+        "set -e
+                     mkdir -p \"$(dirname {remote})\"
+                     cp {source} {staged}
+                     chmod {mode} {staged}
+                     mv {staged} {remote}{cleanup}"
+    )
 }
 
 /// Download `url` to `dest`, returning the SHA-256 of what arrived.
@@ -651,11 +666,66 @@ mod tests {
         assert!(node_env_body("a", "b", "c").contains(HOST_STATE_DIR));
     }
 
-    /// Installing must go through a sibling temp file and a rename, or it fails
-    /// against a running binary with `ETXTBSY`. On a Linux Tier 2 host the
-    /// destination for the CLI is very often the binary doing the installing.
+    /// The bug this pins: `install_binary` stages a release tarball at
+    /// `/tmp/<asset>` and asks `put` to land it there, so `put`'s staging source
+    /// and its destination are the same file. An unconditional cleanup deleted
+    /// the installed archive, and `tar` then failed on a missing file — with
+    /// "build provenance verified" printed two lines above, which made it look
+    /// like a download problem.
     #[test]
-    fn install_lands_via_a_sibling_temp_file_so_it_can_replace_a_running_binary() {
+    fn the_cleanup_never_deletes_the_destination() {
+        let same = put_script(
+            "/tmp/a.tar.gz",
+            "/tmp/a.tar.gz.new",
+            "/tmp/a.tar.gz",
+            "0644",
+        );
+        assert!(
+            !same.contains("rm -f"),
+            "source == destination, so there is nothing to clean up:\n{same}"
+        );
+        assert!(same.contains("mv /tmp/a.tar.gz.new /tmp/a.tar.gz"));
+    }
+
+    /// And the ordinary case still cleans up, so the guard above is not a licence
+    /// to leave staged copies behind.
+    #[test]
+    fn a_distinct_source_is_still_cleaned_up() {
+        let differ = put_script(
+            "/usr/local/bin/nucleus",
+            "/usr/local/bin/nucleus.new",
+            "/tmp/n",
+            "0755",
+        );
+        assert!(differ.contains("rm -f /tmp/n"), "must clean up:\n{differ}");
+    }
+
+    /// The rename must be the last thing that touches the destination.
+    #[test]
+    fn the_destination_is_written_by_rename_not_by_copy() {
+        let s = put_script(
+            "/usr/local/bin/nucleus",
+            "/usr/local/bin/nucleus.new",
+            "/tmp/n",
+            "0755",
+        );
+        assert!(
+            !s.contains("cp /tmp/n /usr/local/bin/nucleus\n"),
+            "must not copy onto the destination:\n{s}"
+        );
+        assert!(s.contains("mv /usr/local/bin/nucleus.new /usr/local/bin/nucleus"));
+    }
+
+    /// The staged path must be a SIBLING of the destination.
+    ///
+    /// `mv` within one directory is a `rename(2)` — it swaps the directory entry
+    /// instead of writing through it, so it succeeds against a running binary
+    /// (ETXTBSY) and is atomic. Staging under `/tmp` instead would very likely be
+    /// a cross-filesystem move, which degrades to copy+unlink and brings the
+    /// problem back. That derivation lives in `put`, so it is checked at the
+    /// source; everything downstream of it is checked against `put_script`.
+    #[test]
+    fn the_staged_path_is_a_sibling_of_the_destination() {
         let source = include_str!("provision.rs");
         let put = source
             .split("pub fn put(")
@@ -664,16 +734,11 @@ mod tests {
         let body = &put[..put.find("\n    fn describe").unwrap_or(put.len())];
         assert!(
             body.contains("{remote}.nucleus-new"),
-            "the staged path must be a SIBLING of the destination, or `mv` is a \
-             cross-filesystem copy and ETXTBSY comes back"
+            "the staged path must be derived from the DESTINATION, not from /tmp"
         );
         assert!(
-            body.contains("mv {staged} {remote}"),
-            "the final step must be a rename, not a write into the destination"
-        );
-        assert!(
-            !body.contains("cp {} {remote}"),
-            "copying straight onto the destination is the ETXTBSY bug"
+            body.contains("put_script("),
+            "landing must go through put_script, which is where the cleanup guard lives"
         );
     }
 
