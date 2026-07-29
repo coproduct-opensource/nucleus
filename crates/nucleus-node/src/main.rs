@@ -40,6 +40,7 @@ mod cgroup;
 mod net;
 mod session_mint;
 mod signed_proxy;
+mod snapshot;
 mod trust_gate;
 mod vsock_bridge;
 

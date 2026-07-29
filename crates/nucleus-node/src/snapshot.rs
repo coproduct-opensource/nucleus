@@ -1,0 +1,242 @@
+//! Which microVMs may become a snapshot base, and why most may not.
+//!
+//! # The measurement that motivates this
+//!
+//! On an Apple M5 Pro via Lima `vz` → KVM → Firecracker 1.16.1, measured with
+//! the real API:
+//!
+//! ```text
+//! cold boot to userspace  :  79 ms
+//! snapshot create         : 151 ms  (256 MiB memory file)
+//! snapshot restore+resume :   7 ms   <- with the plain File backend, not UFFD
+//! ```
+//!
+//! An 11x improvement, in the same class as the fastest agent-sandbox platforms.
+//! That is worth having, and it is why the guard below exists rather than a
+//! note in a design doc: the fast path is attractive enough that someone will
+//! build it, and the unsafe version of it looks identical from the outside.
+//!
+//! # What restoring a clone actually duplicates
+//!
+//! Firecracker always enables **VMGenID**: on resume it changes a 16-byte
+//! generation ID and notifies the guest, so a Linux ≥ 5.18 guest re-seeds its
+//! in-kernel PRNG. That fixes kernel randomness and nothing else. The docs are
+//! explicit that *"unique identifiers, cached random numbers, cryptographic
+//! tokens, etc will still be replicated across multiple microVMs resumed from
+//! the same snapshot"*, and that users must de-duplicate such state themselves.
+//!
+//! Nucleus injects exactly that kind of state — **on the kernel command line**,
+//! where it is baked into `/proc/cmdline` and into the snapshot's memory image.
+//! Restoring N pods from a snapshot taken after boot would give all N the same
+//! `approval_secret`, the same `auth_secret`, the same `sandbox_token`, the same
+//! task token — and the same `task_token_nonce`. A nonce reused across pods is
+//! precisely the "meant to be used once, used twice" failure the Firecracker
+//! documentation warns about, and here it is an authority leak between tenants:
+//! the task token is what authorises the in-VM tool proxy.
+//!
+//! So a snapshot base must be built **before any per-pod material exists**, and
+//! uniqueness must be delivered after restore by a channel that is not the
+//! command line. This module refuses the unsafe case; it does not yet implement
+//! the delivery channel, and [`SnapshotSafety`] is deliberately useless for
+//! anything except saying no.
+
+/// Command-line keys that carry **per-pod** material.
+///
+/// Anything here makes a booted microVM unfit to be a snapshot base, because
+/// the value would be shared by every clone restored from it.
+///
+/// `nucleus.workload_api_port` is NOT here: it is a port number, identical for
+/// every pod on a node, and carries no authority by itself — the identity it
+/// leads to is gated separately by `net::decide_identity_grant`.
+pub const PER_POD_SECRET_KEYS: &[&str] = &[
+    "nucleus.approval_secret",
+    "nucleus.auth_secret",
+    "nucleus.sandbox_token",
+    "nucleus.task_token_hex",
+    "nucleus.task_token_issuer",
+    "nucleus.task_token_nonce",
+    "nucleus.aws_access_key_id",
+    "nucleus.aws_secret_access_key",
+    "nucleus.aws_session_token",
+];
+
+/// Command-line keys that are per-*node* or per-*fleet* configuration, safe to
+/// bake into a shared base because every clone should have the same value.
+///
+/// Listed explicitly rather than implied by absence, so that a NEW key is
+/// unclassified rather than silently assumed safe — see
+/// `every_cmdline_key_is_classified`.
+pub const SHARED_CONFIG_KEYS: &[&str] = &[
+    "nucleus.audit_s3_bucket",
+    "nucleus.audit_s3_endpoint",
+    "nucleus.audit_s3_prefix",
+    "nucleus.audit_s3_region",
+    "nucleus.aws_default_region",
+    "nucleus.workload_api_port",
+    // Networking is re-established after restore, not inherited: Firecracker
+    // documents that "guest network connectivity is not guaranteed to be
+    // preserved after resume".
+    "nucleus.net",
+];
+
+/// Whether a booted microVM may be snapshotted as a reusable base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotSafety {
+    /// No per-pod material on the command line; safe to clone from.
+    SafeToClone,
+    /// Carries per-pod material that every clone would inherit.
+    WouldDuplicateSecret {
+        /// The offending key, so the refusal is actionable.
+        key: String,
+    },
+}
+
+impl SnapshotSafety {
+    /// Whether a snapshot of this microVM may be restored more than once.
+    pub fn is_safe_to_clone(&self) -> bool {
+        matches!(self, SnapshotSafety::SafeToClone)
+    }
+}
+
+impl std::fmt::Display for SnapshotSafety {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotSafety::SafeToClone => write!(f, "safe to clone"),
+            SnapshotSafety::WouldDuplicateSecret { key } => write!(
+                f,
+                "refusing to snapshot: the kernel command line carries {key}, which every clone \
+                 restored from this snapshot would inherit. VMGenID re-seeds the guest kernel \
+                 PRNG on resume but does NOT de-duplicate identifiers, tokens or nonces. Build \
+                 the base from a spec with no per-pod material and deliver it after restore."
+            ),
+        }
+    }
+}
+
+/// Judge a guest kernel command line as a snapshot base.
+///
+/// Fails closed on the *presence* of a key, not on its value: an empty or
+/// placeholder secret is still a key that will be populated later, and a base
+/// built around one invites the caller to fill it in afterwards.
+pub fn snapshot_safety(boot_args: &str) -> SnapshotSafety {
+    for token in boot_args.split_whitespace() {
+        let key = token.split('=').next().unwrap_or(token);
+        if PER_POD_SECRET_KEYS.contains(&key) {
+            return SnapshotSafety::WouldDuplicateSecret {
+                key: key.to_string(),
+            };
+        }
+    }
+    SnapshotSafety::SafeToClone
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/init ipv6.disable=1";
+
+    #[test]
+    fn a_plain_base_cmdline_is_safe_to_clone() {
+        assert!(snapshot_safety(BASE).is_safe_to_clone());
+    }
+
+    /// Every per-pod secret must be refused individually — a guard that only
+    /// caught one of them would pass this suite while leaking the rest.
+    #[test]
+    fn every_per_pod_secret_is_refused() {
+        for key in PER_POD_SECRET_KEYS {
+            let args = format!("{BASE} {key}=deadbeef");
+            let verdict = snapshot_safety(&args);
+            assert!(
+                !verdict.is_safe_to_clone(),
+                "{key} must make a microVM unfit as a snapshot base"
+            );
+            match verdict {
+                SnapshotSafety::WouldDuplicateSecret { key: found } => assert_eq!(&found, key),
+                SnapshotSafety::SafeToClone => unreachable!(),
+            }
+        }
+    }
+
+    /// The nonce is the sharpest case: reusing one across clones is the
+    /// "meant to be used once, used twice" failure by definition.
+    #[test]
+    fn a_shared_nonce_is_refused_and_the_message_says_why() {
+        let msg = snapshot_safety(&format!("{BASE} nucleus.task_token_nonce=abc")).to_string();
+        assert!(msg.contains("nucleus.task_token_nonce"), "names it: {msg}");
+        assert!(
+            msg.contains("VMGenID"),
+            "explains what is NOT covered: {msg}"
+        );
+    }
+
+    /// Shared config must NOT block snapshotting, or no base is ever buildable
+    /// and the guard is just an off switch.
+    #[test]
+    fn shared_configuration_does_not_block_a_base() {
+        let mut args = BASE.to_string();
+        for key in SHARED_CONFIG_KEYS {
+            args.push_str(&format!(" {key}=x"));
+        }
+        assert!(
+            snapshot_safety(&args).is_safe_to_clone(),
+            "per-node config is identical for every clone and must not block: {args}"
+        );
+    }
+
+    /// Presence, not value: a base built with an empty secret is still a base
+    /// someone will populate later.
+    #[test]
+    fn an_empty_secret_value_is_still_refused() {
+        assert!(!snapshot_safety(&format!("{BASE} nucleus.auth_secret=")).is_safe_to_clone());
+    }
+
+    /// Prefixes must not collide — `nucleus.auth_secret_hint` is not
+    /// `nucleus.auth_secret`, and matching loosely would refuse bases that are
+    /// fine.
+    #[test]
+    fn matching_is_on_whole_keys_not_prefixes() {
+        assert!(snapshot_safety(&format!("{BASE} nucleus.auth_secretive=1")).is_safe_to_clone());
+    }
+
+    /// THE DRIFT GUARD, and the reason the two lists are exhaustive rather than
+    /// implied.
+    ///
+    /// If someone adds a new `nucleus.*` key to the command-line builder and
+    /// does not classify it, this fails. Without it, a new secret would default
+    /// to "not in the denylist" — i.e. silently clonable — which is exactly the
+    /// wrong direction for a guard whose whole job is refusing to duplicate
+    /// secrets.
+    #[test]
+    fn every_cmdline_key_is_classified() {
+        let src = include_str!("firecracker_config.rs");
+        let mut emitted: Vec<String> = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("nucleus.") {
+            rest = &rest[i..];
+            let key: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_')
+                .collect();
+            if key.len() > "nucleus.".len() && !emitted.contains(&key) {
+                emitted.push(key);
+            }
+            rest = &rest["nucleus.".len()..];
+        }
+        assert!(
+            emitted.len() >= 10,
+            "the scraper found only {} keys — it has stopped matching the source",
+            emitted.len()
+        );
+        for key in &emitted {
+            let k = key.as_str();
+            assert!(
+                PER_POD_SECRET_KEYS.contains(&k) || SHARED_CONFIG_KEYS.contains(&k),
+                "{k} is emitted onto the guest command line but is classified neither per-pod \
+                 nor shared. Decide which it is: getting it wrong in the 'shared' direction \
+                 leaks it to every clone restored from a snapshot."
+            );
+        }
+    }
+}
