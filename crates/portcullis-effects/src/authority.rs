@@ -54,7 +54,15 @@
 //! Etas splits `request`/`handled`/`commit`/`denied` for exactly this reason —
 //! and that is not implemented here. Attaching the witness is also still a call
 //! the mediation layer has to make; forgetting it loses the record but never the
-//! enforcement, and `every_effect_is_witnessed` is what stops it drifting.
+//! enforcement, and `every_policy_enforced_method_routes_its_authority_through_the_witness`
+//! (in `lib.rs`) is what stops it drifting.
+//!
+//! That sentence previously named a test called `every_effect_is_witnessed`,
+//! **which had never been written**. The claim sat in these docs unbacked while
+//! the completeness it asserted rested on nobody forgetting. The named test now
+//! exists, scans the source rather than exercising paths, and refuses to pass
+//! vacuously — a scan that matched nothing would look identical to a clean
+//! result, which is how the original gap went unnoticed.
 
 use std::sync::Arc;
 
