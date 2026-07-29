@@ -39,6 +39,7 @@ use auth::{AuthConfig, AuthError};
 mod broker;
 mod cgroup;
 mod cred_split;
+mod envelope_frame;
 mod net;
 mod session_mint;
 mod signed_proxy;
