@@ -125,12 +125,24 @@ pub struct Authority {
 pub enum SpendError {
     /// The authority was earned for a different (operation, sink) pair.
     ScopeMismatch(String),
+    /// No receipt log was attached, so the spend could not be recorded.
+    ///
+    /// Refused rather than performed. An effect that happens without a record is
+    /// an effect nobody can account for afterwards, and the whole point of
+    /// spending at the authority is that "the authority was exercised" and "a
+    /// receipt exists" are the same event.
+    Unwitnessed,
 }
 
 impl std::fmt::Display for SpendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpendError::ScopeMismatch(why) => write!(f, "{why}"),
+            SpendError::Unwitnessed => write!(
+                f,
+                "authority spent with no receipt log attached — refusing, because \
+                 an effect that leaves no record cannot be accounted for"
+            ),
         }
     }
 }
@@ -178,20 +190,33 @@ impl Authority {
     ///   through the effect traits, which this type exists to inform rather
     ///   than to pre-empt.
     pub fn spend(self, op: Operation, sink: SinkClass) -> Result<DischargedBundle, SpendError> {
+        // NO SPEND WITHOUT A RECEIPT, checked before the scope check.
+        //
+        // The witness used to be optional at the spend: an authority with no log
+        // attached succeeded and recorded nothing. That is a fail-OPEN audit —
+        // the effect happens, the record does not, and every existing test stays
+        // green because the effect still works. NIST SP 800-53 AU-5(4) names the
+        // alternative (degrade or refuse on audit failure) and CB4A states it
+        // outright for credential issuance.
+        //
+        // Ordered first deliberately. If the scope check ran first, a
+        // scope-mismatched spend on an unwitnessed authority would report
+        // `ScopeMismatch` and the missing log would stay invisible — the
+        // configuration defect masked by the policy one.
+        let Some(log) = self.witness.clone() else {
+            return Err(SpendError::Unwitnessed);
+        };
+
         // Record against the scope ATTEMPTED, not the scope held. A refused
         // spend is evidence about what was reached for, and the pair held is
         // already implied by whichever authority was issued.
         match crate::require_scope(&self.bundle, op, sink) {
             Ok(()) => {
-                if let Some(log) = &self.witness {
-                    log.append(op, sink, EffectOutcome::Allowed);
-                }
+                log.append(op, sink, EffectOutcome::Allowed);
                 Ok(self.bundle)
             }
             Err(why) => {
-                if let Some(log) = &self.witness {
-                    log.append(op, sink, EffectOutcome::DeniedByScope);
-                }
+                log.append(op, sink, EffectOutcome::DeniedByScope);
                 Err(SpendError::ScopeMismatch(why))
             }
         }
@@ -203,9 +228,18 @@ mod tests {
     use super::*;
     use portcullis_core::discharge::test_helpers::bundle_for;
 
+    /// An authority with a throwaway log attached.
+    ///
+    /// Every test that means to exercise the SCOPE check needs one, because an
+    /// unwitnessed spend now refuses before the scope check runs — deliberately,
+    /// so a missing log cannot hide behind a policy error.
+    fn witnessed(op: Operation, sink: SinkClass) -> Authority {
+        Authority::new(bundle_for(op, sink)).witnessed_by(Arc::new(ReceiptLog::new()))
+    }
+
     #[test]
     fn an_authority_spends_on_the_scope_it_was_earned_for() {
-        let a = Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec));
+        let a = witnessed(Operation::RunBash, SinkClass::BashExec);
         assert_eq!(a.scope(), (Operation::RunBash, SinkClass::BashExec));
         assert!(a.spend(Operation::RunBash, SinkClass::BashExec).is_ok());
     }
@@ -216,15 +250,58 @@ mod tests {
     /// caller actually holds the thing.
     #[test]
     fn an_authority_earned_for_one_action_will_not_spend_on_another() {
-        let a = Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
+        let a = witnessed(Operation::WriteFiles, SinkClass::WorkspaceWrite);
         let err = a
             .spend(Operation::RunBash, SinkClass::BashExec)
             .expect_err("a write authority must not buy a shell execution");
-        let SpendError::ScopeMismatch(why) = err;
+        let SpendError::ScopeMismatch(why) = err else {
+            panic!("expected a scope mismatch, got {err:?}");
+        };
         assert!(
             why.contains("WriteFiles") && why.contains("RunBash"),
             "the refusal should name both the authority held and the action attempted: {why}"
         );
+    }
+
+    /// **No spend without a receipt.** An authority with no log attached is
+    /// refused rather than silently spent — an effect that leaves no record
+    /// cannot be accounted for afterwards, which is the fail-open shape NIST
+    /// SP 800-53 AU-5(4) names and CB4A states outright for credential issuance.
+    #[test]
+    fn an_unwitnessed_authority_will_not_spend() {
+        let a = Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec));
+        assert_eq!(
+            a.spend(Operation::RunBash, SinkClass::BashExec)
+                .unwrap_err(),
+            SpendError::Unwitnessed,
+            "a spend that could not be recorded must be refused, not performed"
+        );
+    }
+
+    /// The refusal is checked BEFORE the scope check, so a missing log cannot
+    /// hide behind a policy error. Without the ordering, this spend would report
+    /// `ScopeMismatch` and the absent receipt would stay invisible — a
+    /// configuration defect masked by a policy one.
+    #[test]
+    fn a_missing_log_is_not_masked_by_a_scope_mismatch() {
+        let a = Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
+        assert_eq!(
+            a.spend(Operation::RunBash, SinkClass::BashExec)
+                .unwrap_err(),
+            SpendError::Unwitnessed,
+            "both defects are present; the audit one must surface"
+        );
+    }
+
+    /// Non-vacuity: the same authority WITH a log spends fine, so the refusal
+    /// above is about the missing witness and not about the bundle.
+    #[test]
+    fn the_same_authority_witnessed_spends_fine() {
+        let log = Arc::new(ReceiptLog::new());
+        let a = Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec))
+            .witnessed_by(Arc::clone(&log));
+        assert!(a.spend(Operation::RunBash, SinkClass::BashExec).is_ok());
+        assert_eq!(log.len(), 1, "the spend must have left its receipt");
     }
 
     /// The affine property is INHERITED, not invented here: it holds because
@@ -241,7 +318,7 @@ mod tests {
     /// whose dependence on the replay was established by perturbation.
     #[test]
     fn spending_returns_the_bundle_for_the_transitional_surface() {
-        let a = Authority::new(bundle_for(Operation::RunBash, SinkClass::BashExec));
+        let a = witnessed(Operation::RunBash, SinkClass::BashExec);
         let bundle = a
             .spend(Operation::RunBash, SinkClass::BashExec)
             .expect("in-scope spend succeeds");

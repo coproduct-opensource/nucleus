@@ -57,9 +57,23 @@ pub struct Sandbox {
     obligations: Obligations,
     /// Approver for approval-gated operations
     approver: Option<Arc<dyn Approver>>,
+    /// The log every authority spent through this sandbox is recorded against.
+    ///
+    /// Sandbox writes spend their authority DIRECTLY, in `spend_as`, rather than
+    /// through `PolicyEnforced` — which is where every other effect picks up its
+    /// witness. So this was the one path in the workspace where an authority was
+    /// spent with no log attached, and the writes it authorised left no record.
+    /// `Authority::spend` now refuses that outright; this is the log that makes
+    /// the refusal unnecessary.
+    receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
 }
 
 impl Sandbox {
+    /// The receipts for authorities spent through this sandbox.
+    pub fn receipts(&self) -> &portcullis_effects::receipt::ReceiptLog {
+        &self.receipts
+    }
+
     /// Create a new sandbox rooted at the given path.
     ///
     /// The `policy` determines which files within the sandbox can be accessed
@@ -73,6 +87,7 @@ impl Sandbox {
         let root_dir = Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())?;
 
         Ok(Self {
+            receipts: Arc::new(portcullis_effects::receipt::ReceiptLog::new()),
             root: root_dir,
             root_path,
             policy: normalized.paths,
@@ -133,7 +148,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), None)
     }
 
@@ -150,7 +165,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_internal(path.as_ref(), Some(approval))
     }
 
@@ -182,7 +197,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, None)
     }
 
@@ -200,7 +215,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.open_with_internal(path.as_ref(), options, Some(approval))
     }
 
@@ -236,7 +251,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), None)
     }
 
@@ -253,7 +268,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_internal(path.as_ref(), Some(approval))
     }
 
@@ -281,7 +296,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), None)
     }
 
@@ -298,7 +313,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_internal(path.as_ref(), Some(approval))
     }
 
@@ -324,7 +339,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), None)
     }
 
@@ -341,7 +356,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.read_to_string_internal(path.as_ref(), Some(approval))
     }
 
@@ -402,7 +417,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, None)
     }
 
@@ -425,7 +440,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
 
@@ -436,8 +451,13 @@ impl Sandbox {
     /// same defect fixed in `NucleusRuntime` (#2087). The doc-test above claimed
     /// "there is no way to write without one", which was true of *presenting* a
     /// bundle and false of presenting the *right* one.
-    fn spend_as(authority: Authority, op: Operation, sink: SinkClass) -> Result<()> {
+    ///
+    /// Takes `&self` so it can attach the sandbox's receipt log. It was an
+    /// associated function, which is precisely why it could not witness: there
+    /// was no log in scope, and `spend` accepted that silently.
+    fn spend_as(&self, authority: Authority, op: Operation, sink: SinkClass) -> Result<()> {
         authority
+            .witnessed_by(Arc::clone(&self.receipts))
             .spend(op, sink)
             .map(drop)
             .map_err(|e| NucleusError::ScopeMismatch {
@@ -474,7 +494,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), None)
     }
 
@@ -491,7 +511,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -519,7 +539,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), None)
     }
 
@@ -536,7 +556,7 @@ impl Sandbox {
             Operation::WriteFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::WriteFiles, SinkClass::WorkspaceWrite)?;
         self.create_dir_all_internal(path.as_ref(), Some(approval))
     }
 
@@ -564,7 +584,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), None)
     }
 
@@ -581,7 +601,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_file_internal(path.as_ref(), Some(approval))
     }
 
@@ -609,7 +629,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), None)
     }
 
@@ -626,7 +646,7 @@ impl Sandbox {
             Operation::EditFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
+        self.spend_as(authority, Operation::EditFiles, SinkClass::WorkspaceWrite)?;
         self.remove_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -695,7 +715,7 @@ impl Sandbox {
     ///
     /// Returns `Err` for paths outside the sandbox or unreadable files.
     pub fn read_to_string_for_search(&self, path: &Path, authority: Authority) -> Result<String> {
-        Self::spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::GrepSearch, SinkClass::AuditLogAppend)?;
         self.check_policy(path)?;
         self.root
             .read_to_string(path)
@@ -832,7 +852,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), None)
     }
 
@@ -849,7 +869,7 @@ impl Sandbox {
             Operation::ReadFiles,
             "DecisionToken operation mismatch"
         );
-        Self::spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
+        self.spend_as(authority, Operation::ReadFiles, SinkClass::AuditLogAppend)?;
         self.open_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -866,6 +886,7 @@ impl Sandbox {
             })?;
 
         Ok(Sandbox {
+            receipts: Arc::new(portcullis_effects::receipt::ReceiptLog::new()),
             root: subdir,
             root_path: self.root_path.join(path),
             policy: self.policy.clone(),
@@ -1026,6 +1047,58 @@ mod tests {
             .write("ok.txt", b"in scope", &wt, Authority::new(allowed_bundle()))
             .expect("a correctly-scoped write must succeed");
         assert!(tmp.path().join("ok.txt").exists());
+    }
+
+    /// **The payoff.** Sandbox writes spend their authority directly rather than
+    /// through `PolicyEnforced`, which is where every other effect picks up its
+    /// witness — so this was the one path in the workspace that authorised an
+    /// effect and recorded nothing. `Authority::spend` now refuses an
+    /// unwitnessed spend outright, and these six write tests failing is what
+    /// surfaced it.
+    #[test]
+    fn a_sandbox_write_leaves_a_receipt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        assert_eq!(sandbox.receipts().len(), 0);
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "ok.txt");
+        sandbox
+            .write("ok.txt", b"in scope", &wt, Authority::new(allowed_bundle()))
+            .expect("write succeeds");
+
+        let entries = sandbox.receipts().entries();
+        assert_eq!(entries.len(), 1, "the write must be recorded: {entries:?}");
+        assert_eq!(entries[0].operation, Operation::WriteFiles);
+    }
+
+    /// A REFUSED write is recorded too. A log that only held successes would
+    /// answer "what was allowed" but not "what was attempted", and the second
+    /// question is the one an audit trail exists for.
+    #[test]
+    fn a_refused_sandbox_write_is_also_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let wt = token(&mut kernel, Operation::WriteFiles, "no.txt");
+        // An authority earned for reading cannot buy a write.
+        let bundle = bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend);
+        let err = sandbox.write("no.txt", b"nope", &wt, Authority::new(bundle));
+        assert!(err.is_err(), "a read authority must not buy a write");
+
+        let entries = sandbox.receipts().entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "the refusal must be recorded, not just the successes: {entries:?}"
+        );
+        assert_eq!(
+            entries[0].outcome,
+            portcullis_effects::receipt::EffectOutcome::DeniedByScope
+        );
     }
 
     #[test]
