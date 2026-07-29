@@ -170,7 +170,11 @@ jobs:
           # The CA bundle this installs is load-bearing: without it the
           # tool-proxy's drand client fails and, as PID 1, takes the guest
           # kernel with it (#2110).
-          ARCH=x86_64 ./scripts/firecracker/build-rootfs.sh
+          # `bash <script>`, not `./<script>`: the file is mode 100644 in git, so
+          # executing it directly fails with "Permission denied" (exit 126).
+          # release.yml chmods it first; invoking the interpreter avoids mutating
+          # the tree to work around a file mode.
+          ARCH=x86_64 bash ./scripts/firecracker/build-rootfs.sh
           test -s build/firecracker/x86_64/rootfs.ext4
 
       - name: Install this build as the Tier 2 host
