@@ -37,6 +37,8 @@ on:
       - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
       - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
@@ -49,6 +51,8 @@ on:
       - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
       - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
@@ -66,7 +70,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits"
 
 jobs:
   aeneas-ifc-scoped:

@@ -83,6 +83,15 @@ lean_lib «PortcullisCoreEgress» where
 lean_lib «EgressConfinementExtracted» where
   roots := #[`EgressConfinementExtracted]
 
+lean_lib «PortcullisCoreCredential» where
+  roots := #[`PortcullisCoreCredential.Types, `PortcullisCoreCredential.Funs]
+  srcDir := "generated-credential"
+
+-- FM-1: a credential never reaches the guest, proven over the extracted
+-- delivery relation as a corollary of the confidentiality axis.
+lean_lib «CredentialNoninterferenceExtracted» where
+  roots := #[`CredentialNoninterferenceExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where

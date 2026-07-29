@@ -18,6 +18,8 @@ on:
       - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
       - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
