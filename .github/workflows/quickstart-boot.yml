@@ -58,7 +58,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
       - name: Print the pin manifest
         id: pins
         run: |
@@ -69,52 +71,58 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          # Kernels are the only pins with a digest compiled into the binary, so
-          # they are the only ones that can be checked without trusting the
-          # server that serves them. Treated as hard failures for that reason.
-          jq -r 'map(select(.kind == "kernel")) | .[] | "\(.arch)\t\(.url)\t\(.sha256)"' pins.json |
+          # Read from a redirect, NOT `... | while read`: a pipeline runs the loop
+          # in a SUBSHELL, so `fail=1` set inside it is lost and the final
+          # `exit $fail` always sees 0. That is a gate that cannot go red — the
+          # exact defect this workflow exists to catch, and the first version of
+          # this step had it.
+          jq -r 'map(select(.kind == "kernel")) | .[] | "\(.arch)\t\(.url)\t\(.sha256)"' \
+            pins.json > kernels.tsv
+          # Non-vacuity: an empty list would satisfy every check below.
+          test -s kernels.tsv || { echo "::error::no kernel pins found"; exit 1; }
           while IFS=$'\t' read -r arch url want; do
             echo "::group::kernel $arch"
             if ! curl -fsSL -o kernel.bin "$url"; then
               echo "::error::pinned kernel for $arch does not resolve: $url"
-              fail=1; echo "::endgroup::"; continue
-            fi
-            got=$(sha256sum kernel.bin | cut -d' ' -f1)
-            if [ "$got" != "$want" ]; then
-              echo "::error::kernel digest mismatch for $arch: want $want got $got"
               fail=1
             else
-              echo "ok: $arch $got"
+              got=$(sha256sum kernel.bin | cut -d' ' -f1)
+              if [ "$got" != "$want" ]; then
+                echo "::error::kernel digest mismatch for $arch: want $want got $got"
+                fail=1
+              else
+                echo "ok: $arch $got"
+              fi
+              rm -f kernel.bin
             fi
-            rm -f kernel.bin
             echo "::endgroup::"
-          done
+          done < kernels.tsv
           exit $fail
 
       - name: Release assets — missing is an error, unpublished is a notice
         run: |
           set -euo pipefail
           version=$(jq -r 'map(select(.release)) | .[0].release' pins.json)
-          # Distinguish the two states deliberately. "The pinned release has not
-          # been cut yet" is a known, tracked condition and must not be reported
-          # as rot; "the release exists but an asset is gone" is exactly the rot
-          # this job is for.
+          # Two states, deliberately distinguished. "The pinned release has not
+          # been cut yet" is known and tracked, and must not be reported as rot;
+          # "the release exists but an asset is gone" is exactly the rot this job
+          # is for.
           if ! curl -fsSL -o release.json \
               "https://api.github.com/repos/coproduct-opensource/nucleus/releases/tags/v${version}"; then
-            echo "::notice::pinned guest release v${version} is not published yet; \
-          the clean-machine quickstart cannot install release artifacts until it is. \
-          Build locally with: nucleus setup --artifacts local"
+            echo "::notice::pinned guest release v${version} is not published yet; the clean-machine quickstart cannot install release artifacts until it is. Build locally with: nucleus setup --artifacts local"
             exit 0
           fi
           fail=0
-          for name in $(jq -r 'map(select(.release)) | .[] | .url | split("/") | last' pins.json | sort -u); do
+          jq -r 'map(select(.release)) | .[] | .url | split("/") | last' pins.json | sort -u > wanted.txt
+          test -s wanted.txt || { echo "::error::no release-asset pins found"; exit 1; }
+          while read -r name; do
             if jq -e --arg n "$name" '.assets[] | select(.name == $n)' release.json >/dev/null; then
               echo "ok: $name"
             else
               echo "::error::release v${version} is missing asset $name"
               fail=1
             fi
-          done
+          done < wanted.txt
           exit $fail
 
   boot-a-real-pod:
@@ -122,8 +130,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
+          # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
+          # is what would otherwise supply it, and a SHA carries no tag.
+          toolchain: stable
           targets: x86_64-unknown-linux-musl
 
       - name: This runner must actually have KVM
