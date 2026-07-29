@@ -37,6 +37,7 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod broker;
+mod broker_launch;
 mod broker_rollout;
 mod broker_transport;
 mod cgroup;
@@ -211,6 +212,21 @@ struct Args {
         default_value_t = 15012
     )]
     identity_workload_api_vsock_port: u32,
+    /// Serve the per-pod credential broker socket.
+    ///
+    /// Off by default. On, the socket exists and answers; credential delivery is
+    /// unchanged, because the guest has no client yet. See `broker_rollout`.
+    #[arg(long, env = "NUCLEUS_NODE_BROKER_LISTEN", default_value_t = false)]
+    broker_listen: bool,
+    /// Serve the broker AND withhold credential values from the guest spec.
+    ///
+    /// Refused on drivers that bake the pod spec into the image, where nothing
+    /// can be withheld — see `broker_launch::check_enforcement_is_honest`.
+    #[arg(long, env = "NUCLEUS_NODE_BROKER_ENFORCING", default_value_t = false)]
+    broker_enforcing: bool,
+    /// Vsock port the guest uses to reach the credential broker.
+    #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
+    broker_vsock_port: u32,
     /// Enable drand anchoring for approval signatures.
     #[arg(long, env = "NUCLEUS_NODE_DRAND_ENABLED", default_value_t = true)]
     drand_enabled: bool,
@@ -326,6 +342,15 @@ struct NodeState {
     /// Vsock port for guest-to-host Workload API connections.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     identity_vsock_port: u32,
+    /// Whether pods should be served a credential broker socket.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    broker_listen: bool,
+    /// Whether the broker should also withhold credentials from the guest spec.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    broker_enforcing: bool,
+    /// Vsock port the guest uses to reach the credential broker.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    broker_vsock_port: u32,
     /// GitHub OIDC validator for CI/CD authentication.
     github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
     /// Authorization policy for SPIFFE-based access control.
@@ -397,6 +422,12 @@ struct FirecrackerPod {
     identity_manager: Option<identity::IdentityManager>,
     /// Workload API vsock bridge for this pod
     workload_api_bridge: Mutex<Option<workload_api_vsock::WorkloadApiVsockBridge>>,
+    /// The credential broker listening for this pod, when the rollout serves one.
+    ///
+    /// Owned rather than spawned-and-forgotten: the socket path is derived from
+    /// the pod's vsock path, so a listener outliving its pod would still be bound
+    /// to the dead pod's identity when a later pod reused that path.
+    broker: Mutex<Option<broker_transport::BrokerListener>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -638,6 +669,9 @@ async fn main() -> Result<(), ApiError> {
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
+        broker_listen: args.broker_listen,
+        broker_enforcing: args.broker_enforcing,
+        broker_vsock_port: args.broker_vsock_port,
         github_oidc: build_github_oidc(&args),
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain),
         container_image: args.container_image.clone(),
@@ -1204,6 +1238,19 @@ impl FirecrackerPod {
             bridge.shutdown().await;
         }
 
+        // Stop the credential broker and unlink its socket. Both halves matter:
+        // see `BrokerListener::shutdown`.
+        if let Some(listener) = self.broker.lock().await.take() {
+            let path = listener.socket_path().to_path_buf();
+            if listener.shutdown().await == broker_transport::ShutdownOutcome::Aborted {
+                tracing::warn!(
+                    socket = %path.display(),
+                    "credential broker had to be aborted at teardown — a connection outlived the \
+                     shutdown signal"
+                );
+            }
+        }
+
         if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
             manager.unregister_pod(&identity.to_spiffe_uri()).await;
             manager.forget_certificate(identity).await;
@@ -1290,6 +1337,88 @@ impl ContainerPod {
             )
             .await;
         self.permit.lock().await.take();
+    }
+}
+
+/// Start the credential broker for a pod, if the rollout and the pod's identity
+/// both permit it.
+///
+/// Returns `Ok(None)` when no socket should exist — which is the default. The
+/// error case is deliberately narrow: a launch fails only when enforcement was
+/// requested dishonestly, or when the socket could not be created *and*
+/// credentials had already been withheld in exchange for it.
+#[cfg(target_os = "linux")]
+fn start_broker_for_pod(
+    state: &NodeState,
+    spec: &PodSpec,
+    vsock_path: &Path,
+    registered: Option<&nucleus_identity::Identity>,
+    id: Uuid,
+) -> Result<Option<broker_transport::BrokerListener>, ApiError> {
+    let rollout = broker_rollout::decide_rollout(
+        state.broker_enforcing,
+        state.broker_listen,
+        spec.spec.vsock.is_some(),
+    );
+    // The Firecracker rootfs carries the pod spec from image build time, so the
+    // node writes no guest spec and can withhold nothing from it. Passing `false`
+    // here is what turns `--broker-enforcing` into a refusal rather than a false
+    // claim; it becomes `true` when the split gains a call site.
+    let rollout = broker_launch::check_enforcement_is_honest(rollout, false)
+        .map_err(|e| ApiError::Driver(e.to_string()))?;
+
+    let Some(identity) = broker_launch::broker_identity(rollout, registered) else {
+        return Ok(None);
+    };
+
+    // The policy the PDP will decide against is the pod's own resolved lattice.
+    // A pod whose policy will not resolve gets no broker: deciding against a
+    // default lattice would silently substitute a policy nobody wrote.
+    let policy = match spec.spec.resolve_policy() {
+        Ok(p) => std::sync::Arc::new(p),
+        Err(e) => {
+            tracing::warn!(
+                pod = %id,
+                error = %e,
+                "credential broker not started: the pod's policy did not resolve, and deciding \
+                 against a default lattice would substitute a policy nobody wrote"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Empty until `cred_split` has a call site on this driver. A broker with an
+    // empty store answers every request with a refusal, which is the correct
+    // behaviour for a pod whose credentials are not brokered yet — and is why
+    // enforcing is refused above rather than merely discouraged.
+    let store = std::sync::Arc::new(nucleus_cred_broker::CredentialStore::new());
+
+    match broker_transport::BrokerListener::start(
+        vsock_path,
+        state.broker_vsock_port,
+        identity,
+        policy,
+        store,
+    ) {
+        Ok(listener) => {
+            info!(
+                "started credential broker at {} for pod {}",
+                listener.socket_path().display(),
+                id
+            );
+            Ok(Some(listener))
+        }
+        Err(e) => match broker_launch::on_start_failure(rollout) {
+            broker_launch::StartFailure::AbortLaunch => Err(ApiError::Driver(format!(
+                "credential broker socket could not be created ({e}), and this pod's credentials \
+                 were withheld in exchange for it — refusing to launch a pod that has neither its \
+                 credentials nor a way to ask for them"
+            ))),
+            broker_launch::StartFailure::ContinueDegraded => {
+                tracing::warn!(pod = %id, error = %e, "credential broker socket not created");
+                Ok(None)
+            }
+        },
     }
 }
 
@@ -2634,6 +2763,8 @@ async fn spawn_firecracker_pod(
                 (None, None, None)
             };
 
+        let broker = start_broker_for_pod(state, spec, &vsock_path, pod_identity.as_ref(), id)?;
+
         let handle = FirecrackerPod {
             jail: Mutex::new(jail_layout.clone()),
             child,
@@ -2649,6 +2780,7 @@ async fn spawn_firecracker_pod(
             identity: pod_identity,
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
+            broker: Mutex::new(broker),
         };
 
         info!("spawned firecracker pod {}", id);

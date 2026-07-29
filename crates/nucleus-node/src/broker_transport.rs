@@ -535,6 +535,115 @@ pub async fn serve_broker(
 }
 
 /// Connect to the broker as a guest would, for tests and diagnostics.
+/// How a [`BrokerListener`] came to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOutcome {
+    /// The serving task observed the signal and returned.
+    Stopped,
+    /// The task had to be aborted — a connection outlived the signal.
+    Aborted,
+}
+
+/// A running broker listener, owned by the pod it serves.
+///
+/// # Why this exists rather than a bare `tokio::spawn`
+///
+/// The socket is a **file on the host**, and the pod that owns it dies. A task
+/// spawned and forgotten leaves both the task and the socket file behind, and
+/// the socket path is derived from the pod's vsock path — so a later pod
+/// reusing that path would find a live listener still bound to the DEAD pod's
+/// identity, and be served credentials as that pod. Owning the handle is what
+/// makes the identity binding hold over time rather than only at start-up.
+pub struct BrokerListener {
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<()>,
+    socket_path: std::path::PathBuf,
+}
+
+impl std::fmt::Debug for BrokerListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The identity is deliberately absent: this is logged on pod teardown,
+        // and a socket path is enough to correlate.
+        f.debug_struct("BrokerListener")
+            .field("socket_path", &self.socket_path)
+            .finish()
+    }
+}
+
+impl BrokerListener {
+    /// Bind the broker socket for one pod and start serving it.
+    ///
+    /// `identity` is bound here, once, for the listener's whole life — see
+    /// [`serve_broker`].
+    pub fn start(
+        uds_path: &std::path::Path,
+        port: u32,
+        identity: PodIdentity,
+        policy: Arc<PermissionLattice>,
+        store: Arc<CredentialStore>,
+    ) -> io::Result<Self> {
+        let socket_path = broker_socket_path(uds_path, port);
+        let listener = prepare_socket(&socket_path)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            serve_broker(listener, identity, policy, store, async {
+                let _ = rx.await;
+            })
+            .await;
+        });
+        Ok(BrokerListener {
+            shutdown: Some(tx),
+            task,
+            socket_path,
+        })
+    }
+
+    /// Where the guest connects.
+    pub fn socket_path(&self) -> &std::path::Path {
+        &self.socket_path
+    }
+
+    /// Stop serving and remove the socket.
+    ///
+    /// Returns whether the serving task stopped on its own. That is not
+    /// bookkeeping: an [`ShutdownOutcome::Aborted`] means a connection outlived
+    /// the signal, which is what a guest stalling teardown looks like, and it is
+    /// worth a log line. It also makes the shutdown signal TESTABLE — an earlier
+    /// version of this returned nothing, and the lifecycle test passed with the
+    /// signal removed entirely, testing only the unlink while claiming more.
+    ///
+    /// Both halves matter. Stopping without unlinking leaves a path a later pod
+    /// would refuse to bind; unlinking without stopping leaves a task holding a
+    /// listener with no name, which is a leak rather than a hazard but still a
+    /// leak. The task is aborted if it does not observe the shutdown signal,
+    /// because teardown must not be able to hang on a connection that is being
+    /// slow on purpose.
+    pub async fn shutdown(mut self) -> ShutdownOutcome {
+        // Dropping the sender resolves the receiver too, so shutdown is robust
+        // to a path that forgets to send. Established by perturbation: replacing
+        // the send with a drop changed nothing, and only `mem::forget` on the
+        // sender made the lifecycle tests fail.
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        // The serving loop only checks for shutdown between accepts, so a
+        // connection in flight can outlive the signal by up to CONNECTION_TIMEOUT.
+        // Teardown does not wait that long for a guest that may be stalling
+        // deliberately.
+        let outcome = if tokio::time::timeout(Duration::from_secs(2), &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+            ShutdownOutcome::Aborted
+        } else {
+            ShutdownOutcome::Stopped
+        };
+        let _ = tokio::fs::remove_file(&self.socket_path).await;
+        outcome
+    }
+}
+
 pub async fn request_over_socket(path: &std::path::Path, frame: &str) -> io::Result<String> {
     let stream = UnixStream::connect(path).await?;
     let (r, mut w) = tokio::io::split(stream);
@@ -545,6 +654,102 @@ pub async fn request_over_socket(path: &std::path::Path, frame: &str) -> io::Res
     let mut reader = BufReader::new(r);
     reader.read_line(&mut line).await?;
     Ok(line)
+}
+
+#[cfg(test)]
+mod listener_lifecycle_tests {
+    use super::*;
+    use nucleus_cred_broker::Credential;
+
+    fn policy() -> Arc<PermissionLattice> {
+        Arc::new(PermissionLattice::default())
+    }
+
+    fn store(target: &str, value: &str) -> Arc<CredentialStore> {
+        let mut s = CredentialStore::new();
+        s.insert(target, Credential::new(value));
+        Arc::new(s)
+    }
+
+    /// **The reason the handle is owned.** A pod dies and its socket path is
+    /// reusable — Firecracker derives it from the pod's vsock path. If teardown
+    /// left the listener running, a later pod binding that path would find a
+    /// live listener still speaking for the DEAD pod, and be served credentials
+    /// under the previous pod's identity.
+    ///
+    /// So: after shutdown the path is free, and a fresh listener there answers
+    /// under the NEW identity. Without the unlink, the second `start` fails; with
+    /// the unlink but no shutdown, the old task would still be holding it.
+    #[tokio::test]
+    async fn a_reused_socket_path_does_not_inherit_the_dead_pods_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let uds = dir.path().join("vsock.sock");
+
+        let first = BrokerListener::start(
+            &uds,
+            9999,
+            PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
+            policy(),
+            store("api.example.test", "v"),
+        )
+        .expect("first listener binds");
+        let path = first.socket_path().to_path_buf();
+        assert!(path.exists(), "the socket should exist while serving");
+        assert_eq!(
+            first.shutdown().await,
+            ShutdownOutcome::Stopped,
+            "teardown must actually stop the serving task, not just unlink its socket"
+        );
+        assert!(
+            !path.exists(),
+            "teardown must remove the socket, or a later pod cannot bind it"
+        );
+
+        // The same path, a different pod. This is the case that must not reach
+        // the previous listener.
+        let second = BrokerListener::start(
+            &uds,
+            9999,
+            PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
+            policy(),
+            store("api.example.test", "v"),
+        )
+        .expect("a second listener must be able to bind the freed path");
+        assert_eq!(second.socket_path(), path);
+        assert_eq!(second.shutdown().await, ShutdownOutcome::Stopped);
+    }
+
+    /// The listener actually answers on the path it reports — a socket that
+    /// exists but serves nothing would pass the test above while being useless.
+    #[tokio::test]
+    async fn the_listener_answers_on_the_path_it_reports() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let uds = dir.path().join("vsock.sock");
+        let listener = BrokerListener::start(
+            &uds,
+            9998,
+            PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
+            policy(),
+            store("api.example.test", "v"),
+        )
+        .expect("binds");
+
+        let frame = serde_json::json!({
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string()
+            + "\n";
+        let reply = request_over_socket(listener.socket_path(), &frame)
+            .await
+            .expect("the listener must answer");
+        assert!(
+            reply.contains("granted"),
+            "expected a broker reply, got {reply:?}"
+        );
+        assert_eq!(listener.shutdown().await, ShutdownOutcome::Stopped);
+    }
 }
 
 #[cfg(test)]
