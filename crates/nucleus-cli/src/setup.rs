@@ -64,13 +64,39 @@ pub enum AppleChip {
     M2,
     M3,
     M4,
+    /// M5 **or newer**. The detection below folds every generation from 5 up
+    /// into this variant deliberately: enumerating chips means the check goes
+    /// stale on every Apple release, and the failure mode is the bad one —
+    /// an unrecognised chip fell through to `Unknown`, whose
+    /// `supports_nested_virt()` is `false`, so `doctor` told an M5 owner their
+    /// hardware could not do nested virtualisation. That is exactly backwards,
+    /// and it discourages the Lima+`vz` path that Firecracker needs for KVM.
+    M5OrNewer,
     Intel,
     Unknown,
 }
 
+/// The generation number in an Apple Silicon brand string, e.g.
+/// `"apple m5 pro"` -> `Some(5)`.
+///
+/// Parses rather than enumerating, because enumerating goes stale on every
+/// Apple release and the stale failure mode is the harmful one: an
+/// unrecognised chip fell through to [`AppleChip::Unknown`], whose
+/// `supports_nested_virt()` is `false`, so `doctor` told an M5 owner their
+/// hardware could not do nested virtualisation. It can — and that is the
+/// capability the Lima `vz` path needs to expose `/dev/kvm` for Firecracker.
+///
+/// Requires the `apple m` prefix so a stray `m1` elsewhere in the string
+/// cannot be mistaken for a generation.
+pub fn apple_silicon_generation(brand_lowercase: &str) -> Option<u32> {
+    let rest = brand_lowercase.split("apple m").nth(1)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 impl AppleChip {
     pub fn supports_nested_virt(&self) -> bool {
-        matches!(self, AppleChip::M3 | AppleChip::M4)
+        matches!(self, AppleChip::M3 | AppleChip::M4 | AppleChip::M5OrNewer)
     }
 
     /// Returns the Linux architecture for this chip
@@ -182,19 +208,20 @@ fn detect_apple_chip() -> Result<AppleChip> {
 
     let brand = String::from_utf8_lossy(&output.stdout).to_lowercase();
 
-    if brand.contains("m4") {
-        Ok(AppleChip::M4)
-    } else if brand.contains("m3") {
-        Ok(AppleChip::M3)
-    } else if brand.contains("m2") {
-        Ok(AppleChip::M2)
-    } else if brand.contains("m1") {
-        Ok(AppleChip::M1)
-    } else if brand.contains("intel") {
-        Ok(AppleChip::Intel)
-    } else {
-        Ok(AppleChip::Unknown)
+    if brand.contains("intel") {
+        return Ok(AppleChip::Intel);
     }
+    // Parse the generation rather than enumerating chips, so a new Apple
+    // Silicon release is not misreported as `Unknown` (and therefore as
+    // lacking nested virtualisation).
+    Ok(match apple_silicon_generation(&brand) {
+        Some(1) => AppleChip::M1,
+        Some(2) => AppleChip::M2,
+        Some(3) => AppleChip::M3,
+        Some(4) => AppleChip::M4,
+        Some(_) => AppleChip::M5OrNewer,
+        None => AppleChip::Unknown,
+    })
 }
 
 fn detect_macos_version() -> Result<MacOSVersion> {
@@ -916,5 +943,55 @@ mod tests {
     fn test_apple_chip_musl_target() {
         assert_eq!(AppleChip::M3.musl_target(), "aarch64-unknown-linux-musl");
         assert_eq!(AppleChip::Intel.musl_target(), "x86_64-unknown-linux-musl");
+    }
+}
+
+#[cfg(test)]
+mod apple_chip_tests {
+    use super::*;
+
+    /// The bug: "Apple M5 Pro" matched none of the enumerated m1..m4 strings,
+    /// fell through to `Unknown`, and `Unknown.supports_nested_virt()` is
+    /// false — so `doctor` reported that an M5 cannot do nested virtualisation.
+    /// It can, and that is precisely the capability needed to expose /dev/kvm
+    /// to Firecracker under Lima's `vz` backend.
+    #[test]
+    fn m5_and_newer_are_recognised_and_support_nested_virt() {
+        for (brand, gen) in [
+            ("apple m5 pro", 5),
+            ("apple m5 max", 5),
+            ("apple m6", 6),
+            ("apple m12 ultra", 12),
+        ] {
+            assert_eq!(apple_silicon_generation(brand), Some(gen), "{brand}");
+        }
+        assert!(AppleChip::M5OrNewer.supports_nested_virt());
+    }
+
+    #[test]
+    fn the_known_generations_still_parse() {
+        for (brand, gen) in [
+            ("apple m1", 1),
+            ("apple m2 pro", 2),
+            ("apple m3 max", 3),
+            ("apple m4", 4),
+        ] {
+            assert_eq!(apple_silicon_generation(brand), Some(gen), "{brand}");
+        }
+    }
+
+    /// M1/M2 genuinely lack nested virt; the fix must not paper over that.
+    #[test]
+    fn older_silicon_still_reports_no_nested_virt() {
+        assert!(!AppleChip::M1.supports_nested_virt());
+        assert!(!AppleChip::M2.supports_nested_virt());
+        assert!(AppleChip::M3.supports_nested_virt());
+    }
+
+    #[test]
+    fn non_apple_silicon_yields_no_generation() {
+        for brand in ["intel(r) core(tm) i9", "", "some other cpu"] {
+            assert_eq!(apple_silicon_generation(brand), None, "{brand}");
+        }
     }
 }

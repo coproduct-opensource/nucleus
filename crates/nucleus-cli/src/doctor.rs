@@ -170,18 +170,16 @@ fn check_chip() -> AppleChip {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
         .unwrap_or_default();
 
-    if brand.contains("m4") {
-        AppleChip::M4
-    } else if brand.contains("m3") {
-        AppleChip::M3
-    } else if brand.contains("m2") {
-        AppleChip::M2
-    } else if brand.contains("m1") {
-        AppleChip::M1
-    } else if brand.contains("intel") {
-        AppleChip::Intel
-    } else {
-        AppleChip::Unknown
+    if brand.contains("intel") {
+        return AppleChip::Intel;
+    }
+    match crate::setup::apple_silicon_generation(&brand) {
+        Some(1) => AppleChip::M1,
+        Some(2) => AppleChip::M2,
+        Some(3) => AppleChip::M3,
+        Some(4) => AppleChip::M4,
+        Some(_) => AppleChip::M5OrNewer,
+        None => AppleChip::Unknown,
     }
 }
 

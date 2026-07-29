@@ -624,6 +624,7 @@ pub fn egress_chain(
 /// `None` rather than a lossy conversion keeps "the model does not cover this"
 /// distinct from "the model says this is fine" — the second would be a claim
 /// nobody proved.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn model_rule(rule: &NetRule) -> Option<EgressRule> {
     let IpNet::V4(v4) = rule.net else {
         return None;
@@ -640,6 +641,7 @@ pub fn model_rule(rule: &NetRule) -> Option<EgressRule> {
 /// The whole chain in the proof's representation, or `None` if any rule is
 /// outside it. All-or-nothing: a partially-modelled chain would licence a
 /// confinement claim over a chain that has rules the model never saw.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn model_chain(chain: &[NetRule]) -> Option<Vec<EgressRule>> {
     chain.iter().map(model_rule).collect()
 }
@@ -1497,6 +1499,7 @@ pub fn identity_registration<'a, T>(
 /// The property that closes it is simply that there IS no upstream. Kept as an
 /// explicit denylist so `the_dns_proxy_has_no_upstream_and_cannot_forward` fails
 /// loudly if one is ever added.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const DNS_FORWARDING_DIRECTIVES: &[&str] = &[
     "server=",
     "resolv-file",
