@@ -30,6 +30,7 @@ use tracing::{error, info, warn};
 
 mod attestation;
 mod auth;
+mod broker_client;
 mod cert_bridge;
 mod exit_report;
 mod identity_fusion;

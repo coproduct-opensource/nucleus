@@ -1,0 +1,27 @@
+[package]
+name = "nucleus-cred-protocol"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire types shared by the credential broker's host and guest halves — no credential material"
+
+# THIS CRATE EXISTS BECAUSE THE BAN CAUGHT A DESIGN ERROR.
+#
+# The guest needs the ENVELOPE shape to ask the broker for something. It must
+# never link the crate that holds `Credential` and `CredentialStore`. Putting
+# both in `nucleus-cred-broker` meant the guest could only get the wire types by
+# taking the credential machinery with them, which `deny.toml`'s wrapper list
+# correctly refused.
+#
+# So the protocol lives here: two plain serde structs, no secrets, safe for
+# either side to depend on.
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
