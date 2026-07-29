@@ -12,6 +12,22 @@ or, if you already have the `nucleus` binary:
 nucleus setup
 ```
 
+> **Today this needs a checkout, not the one-liner.** `setup` installs guest
+> artifacts from the pinned release, and the pin sits above the newest published
+> release on purpose: every release up to 2.0.2 ships a rootfs with no CA bundle,
+> on which the guest panics as PID 1 (see [Where guest artifacts come
+> from](#where-guest-artifacts-come-from)). Until a release above the floor is
+> cut, run from a clone:
+>
+> ```bash
+> cargo build --release -p nucleus-cli
+> ./scripts/firecracker/build-rootfs.sh          # plus musl builds of node + cli
+> ./target/release/nucleus setup --artifacts local
+> ```
+>
+> `setup` fails with that exact instruction rather than installing a pod that
+> cannot boot.
+
 Setup ends by **booting a real nucleus pod** and asserting what it did. If that
 fails, setup fails. It does not report success on a machine where no pod can run.
 

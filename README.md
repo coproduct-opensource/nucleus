@@ -71,6 +71,13 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
+**Today this needs a checkout.** `setup` installs guest artifacts from a pinned
+release, and the pin deliberately sits above the newest published one: every
+release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest panics
+as PID 1. Until a release above that floor is cut, use `--artifacts local` from
+a clone; `setup` fails with that exact instruction rather than installing a pod
+that cannot boot.
+
 `--install-deps` is opt-in — without it, setup prints the one command to run
 (`brew install lima`) rather than installing software unasked. Setup ends with
 `nucleus verify --tier2`; if that fails, setup fails, because every other check
@@ -97,7 +104,7 @@ rather than inferring from the chip name.
   [OK] pod created in 7620 ms, tool-proxy at http://127.0.0.1:42149
   [OK] guest proved itself to its proxy: tier 2 (spiffe-identity)
   [OK] allowed operation served from the guest sandbox
-  [OK] forbidden operation denied by policy (kind=insufficient_capability)
+  [OK] forbidden operation denied by policy (kind=kernel_denied)
   [OK] SPIFFE identity fetched
   [OK] task token fetched over vsock
   [OK] Firecracker is running under a seccomp filter
