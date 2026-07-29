@@ -150,6 +150,13 @@ jobs:
           test -e /dev/kvm || { echo "::error::no /dev/kvm on this runner"; exit 1; }
           sudo chmod 666 /dev/kvm
           ls -l /dev/kvm
+          # Firecracker's vsock device needs vhost-vsock, and the guest fetches
+          # its SVID and task token over that channel. Asserted, not assumed:
+          # without it the pod fails at device setup, far from anything that
+          # names vsock.
+          sudo modprobe vhost_vsock
+          test -e /dev/vhost-vsock || { echo "::error::no /dev/vhost-vsock"; exit 1; }
+          ls -l /dev/vhost-vsock
 
       - name: Build the guest and host binaries
         run: |

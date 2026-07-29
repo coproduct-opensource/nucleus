@@ -69,6 +69,7 @@ $ nucleus verify --tier2
 Tier 2 verification: booting a real nucleus pod
 ================================================
   [OK] /dev/kvm
+  [OK] /dev/vhost-vsock
   [OK] firecracker
   [OK] guest kernel
   [OK] nucleus rootfs
@@ -78,7 +79,7 @@ Tier 2 verification: booting a real nucleus pod
   [OK] guest proved itself to its proxy: tier 2 (spiffe-identity)
   [OK] allowed operation served from the guest sandbox
        glob "*" -> {"matches":["audit"]}
-  [OK] forbidden operation denied by policy (kind=insufficient_capability)
+  [OK] forbidden operation denied by policy (kind=kernel_denied)
   [OK] SPIFFE identity fetched
   [OK] task token fetched over vsock
   [OK] no PID-1 panic
@@ -131,6 +132,7 @@ floor is published, use `--artifacts local`.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `no /dev/kvm` in the VM | chip older than M3, or macOS older than 15 | no fix on that hardware; use a Linux host with KVM |
+| `no /dev/vhost-vsock` | the host vsock module is not loaded | `sudo modprobe vhost_vsock` — the guest fetches its SVID and task token over vsock, so without it a pod fails at device setup |
 | setup pauses with no output after "Setting up secrets" | macOS Keychain dialog awaiting an answer | answer it; it recurs when the binary changes |
 | `nucleus-node did not become healthy` | a missing secret — the node exits at startup without all three | `nucleus setup` rewrites `/etc/nucleus/node.env`; the error quotes the node's own log |
 | `pinned guest release ... is not published yet` | `GUEST_RELEASE` points past the newest release | `nucleus setup --artifacts local` |
