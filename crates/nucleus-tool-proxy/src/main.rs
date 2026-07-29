@@ -289,6 +289,14 @@ pub(crate) struct AppState {
     audit: Arc<AuditLog>,
     auth: AuthConfig,
     approval_auth: AuthConfig,
+    /// True when this server was started on a vsock listener that accepts only
+    /// the host (`pod_mgmt::peer_is_host`).
+    ///
+    /// When set, a request's origin is established by the transport — the guest
+    /// kernel sets the peer CID and no guest process can forge it — so the HMAC
+    /// fallback is not consulted. It is a fact about how the server was bound,
+    /// never something a request can claim.
+    host_verified_transport: bool,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
@@ -1463,12 +1471,18 @@ async fn main() -> Result<(), ApiError> {
         session_task_token.state_label()
     );
 
+    // Resolved BEFORE the state is built: `host_verified_transport` must
+    // describe how this server will actually be bound, not be patched in later.
+    // A request can never influence it.
+    let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
         audit,
         auth,
         approval_auth,
+        host_verified_transport: vsock_binding.is_some(),
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
@@ -1626,7 +1640,7 @@ async fn main() -> Result<(), ApiError> {
             fail_closed_panic_response,
         ));
 
-    if let Some(vsock) = pod_mgmt::resolve_vsock(&args, &spec)? {
+    if let Some(vsock) = vsock_binding {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
         write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
         return Ok(());
@@ -1931,6 +1945,27 @@ async fn auth_middleware(
 
     // Determine authentication context (unified flow — no early returns).
     // SPIFFE mTLS is most secure, then HMAC+drand for approvals, then HMAC.
+    // Precedence is decided by `auth::select_auth_tier`, which is unit-tested;
+    // this match only performs the chosen tier. Keeping the order in one
+    // testable place is deliberate — an invisible reordering here would make
+    // the transport tier dead and silently reinstate the readable-key HMAC.
+    debug_assert_eq!(
+        auth::select_auth_tier(
+            auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
+            parts.uri.path() == APPROVE_PATH,
+            state.host_verified_transport,
+        ),
+        if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
+            auth::AuthTier::SpiffeMtls
+        } else if parts.uri.path() == APPROVE_PATH {
+            auth::AuthTier::ApprovalHmacDrand
+        } else if state.host_verified_transport {
+            auth::AuthTier::HostVsock
+        } else {
+            auth::AuthTier::Hmac
+        },
+        "the inline chain has diverged from select_auth_tier"
+    );
     let mut context =
         if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
             tracing::info!(
@@ -1951,6 +1986,12 @@ async fn auth_middleware(
                 );
             }
             ctx
+        } else if state.host_verified_transport {
+            // The listener already dropped every non-host peer, so this request
+            // provably came from the host. No shared secret is involved, which
+            // is the point: the HMAC key it replaces was readable by the agent
+            // from /proc/cmdline.
+            auth::verify_host_vsock()
         } else {
             auth::verify_http(&parts.headers, &bytes, &state.auth)?
         };

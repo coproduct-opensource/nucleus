@@ -436,7 +436,7 @@ pub const VMADDR_CID_HOST: u32 = 2;
 /// `VMADDR_CID_LOCAL` — vsock loopback. An in-guest process connecting to a
 /// listener in its own VM arrives with this CID (or the VM's own CID), which is
 /// precisely how the agent could otherwise reach the proxy's control plane.
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub const VMADDR_CID_LOCAL: u32 = 1;
 
 /// Whether an accepted vsock peer is the host.
