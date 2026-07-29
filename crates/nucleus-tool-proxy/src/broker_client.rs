@@ -107,16 +107,19 @@ mod tests {
 
     fn envelope() -> TaskRequestEnvelope {
         TaskRequestEnvelope {
-            pod_identity: "spiffe://nucleus/pod/abc".to_string(),
             operation: "WebFetch".to_string(),
             target: "api.example.test".to_string(),
             justification: "routine".to_string(),
         }
     }
 
-    /// Only an explicit grant is a grant.
+    /// Only an explicit grant is a grant, and `is_granted` agrees with the
+    /// variant — the accessor is what call sites will branch on, so a version of
+    /// it that disagreed with the enum would defeat the parsing above.
     #[test]
     fn an_explicit_grant_is_the_only_grant() {
+        assert!(BrokerOutcome::Granted.is_granted());
+        assert!(!BrokerOutcome::NotGranted.is_granted());
         assert_eq!(
             parse_reply(r#"{"granted":true,"reason":"granted"}"#),
             BrokerOutcome::Granted

@@ -142,7 +142,6 @@ pub fn check_frame(raw: &str) -> Result<TaskRequestEnvelope, FrameError> {
     let env: TaskRequestEnvelope = serde_json::from_str(raw).map_err(|_| FrameError::Malformed)?;
 
     for (field, value) in [
-        ("pod_identity", &env.pod_identity),
         ("operation", &env.operation),
         ("target", &env.target),
         ("justification", &env.justification),
@@ -163,7 +162,6 @@ mod tests {
 
     fn valid() -> String {
         serde_json::json!({
-            "pod_identity": "spiffe://nucleus/pod/abc",
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "routine"
@@ -218,7 +216,6 @@ mod tests {
     #[test]
     fn an_overlong_justification_is_refused_by_name() {
         let env = serde_json::json!({
-            "pod_identity": "spiffe://nucleus/pod/abc",
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "a".repeat(MAX_FIELD_BYTES + 1)
@@ -235,7 +232,6 @@ mod tests {
     #[test]
     fn braces_inside_strings_do_not_count_as_depth() {
         let env = serde_json::json!({
-            "pod_identity": "spiffe://nucleus/pod/abc",
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "the code was {{{{ [[[[ nested }}}} ]]]]"

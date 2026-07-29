@@ -19,6 +19,9 @@ description = "CB4A Credential Delivery Point: holds credentials, makes no polic
 # deny.toml, where this crate is listed with `wrappers`, so only the composition
 # root may depend on it.
 [dependencies]
+# The shared wire shapes. One definition of the envelope, so the host cannot
+# drift from what the guest sends. Carries no credential material itself.
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
 serde = { workspace = true }
 # Wipe credential bytes on drop. A credential that lingers in freed memory is a
 # credential a later allocation can read.

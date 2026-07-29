@@ -123,12 +123,12 @@ spec:
     /// serve them. Without this the test above is satisfied by deleting them.
     #[test]
     fn the_values_move_to_the_broker_rather_than_vanishing() {
-        use nucleus_cred_broker::AuthorizedRequest;
+        use nucleus_cred_broker::{AuthorizedRequest, PodIdentity};
         let mut spec = spec_with_credentials();
         let store = split_credentials(&mut spec);
 
         let approved = AuthorizedRequest {
-            pod_identity: "spiffe://nucleus/pod/test".to_string(),
+            pod_identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/test"),
             operation: "WebFetch".to_string(),
             target: "LLM_API_TOKEN".to_string(),
         };
@@ -147,10 +147,10 @@ spec:
         let yaml = serde_yaml::to_string(&spec).expect("spec serialises");
         assert!(!yaml.contains("super-secret-token-value"));
         // The second store is empty — every value was already taken.
-        use nucleus_cred_broker::AuthorizedRequest;
+        use nucleus_cred_broker::{AuthorizedRequest, PodIdentity};
         assert!(second
             .for_request(&AuthorizedRequest {
-                pod_identity: "p".into(),
+                pod_identity: PodIdentity::observed_by_host("p"),
                 operation: "o".into(),
                 target: "LLM_API_TOKEN".into(),
             })

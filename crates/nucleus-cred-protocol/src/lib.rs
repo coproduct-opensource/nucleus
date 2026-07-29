@@ -21,10 +21,22 @@ use serde::{Deserialize, Serialize};
 /// A CB4A **Task Request Envelope**: what a guest submits to ask for an action.
 ///
 /// Every field crosses from the guest, so every field is untrusted input.
+///
+/// # There is no identity field, and that is the point
+///
+/// An earlier version carried `pod_identity`, and the host built its
+/// `AuthorizedRequest` from it. That is a confused deputy: the guest composes
+/// this struct, so it could have named **any** pod, and the PDP would have
+/// decided for the pod it was told about rather than the pod that asked.
+///
+/// The field is gone rather than validated. Identity is derived host-side from
+/// *which socket accepted the connection* — Firecracker creates one vsock
+/// `uds_path` per VM, so the host already knows who is calling and never needed
+/// to be told. Removing the field beats comparing it against the truth: a claim
+/// that cannot be expressed cannot be mishandled by a future caller who reaches
+/// for the field because it is there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRequestEnvelope {
-    /// The workload identity of the requesting pod (a SPIFFE ID).
-    pub pod_identity: String,
     /// The operation being requested, as the policy layer names it.
     pub operation: String,
     /// The destination the operation targets.
@@ -57,17 +69,13 @@ pub struct BrokerReply {
 mod tests {
     use super::*;
 
-    /// **The structural guarantee.** No type in this crate has a field that
-    /// could hold a secret, so a guest linking it gains no ability to receive
-    /// one. Checked against the source so a future field addition trips it.
-    #[test]
-    fn no_type_here_can_carry_a_credential() {
+    /// Declarations only, with prose stripped: the docs deliberately DISCUSS
+    /// the forbidden names to explain why they are absent, and a scanner that
+    /// counted prose would fire on the very explanation of the property it
+    /// checks.
+    fn declarations() -> String {
         let src = include_str!("lib.rs");
-        // Declarations only. The docs deliberately DISCUSS `Credential` to
-        // explain why it is absent, and a scanner that counted prose would fire
-        // on the very explanation of the property it checks.
-        let decls: String = src
-            .split("#[cfg(test)]")
+        src.split("#[cfg(test)]")
             .next()
             .expect("source before tests")
             .lines()
@@ -76,7 +84,15 @@ mod tests {
                 !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
             })
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    }
+
+    /// **The structural guarantee.** No type in this crate has a field that
+    /// could hold a secret, so a guest linking it gains no ability to receive
+    /// one. Checked against the source so a future field addition trips it.
+    #[test]
+    fn no_type_here_can_carry_a_credential() {
+        let decls = declarations();
         for forbidden in ["Credential", "secret", "token:", "password", "api_key"] {
             assert!(
                 !decls.contains(forbidden),
@@ -86,10 +102,33 @@ mod tests {
         }
     }
 
+    /// **No identity claim is expressible.** The guest composes this struct, so
+    /// any identity field in it would be an identity the guest chose. Checked
+    /// against the declarations so that re-adding one — under any of the
+    /// obvious names — trips here rather than silently restoring the confused
+    /// deputy this crate was changed to remove.
+    #[test]
+    fn the_guest_cannot_state_who_it_is() {
+        let decls = declarations();
+        for forbidden in [
+            "pod_identity",
+            "identity:",
+            "spiffe",
+            "pod_id",
+            "workload_id",
+            "subject",
+        ] {
+            assert!(
+                !decls.contains(forbidden),
+                "{forbidden:?} appeared in the wire types — identity must come from \
+                 which socket accepted the connection, never from what the guest says"
+            );
+        }
+    }
+
     #[test]
     fn the_envelope_round_trips() {
         let e = TaskRequestEnvelope {
-            pod_identity: "spiffe://nucleus/pod/abc".to_string(),
             operation: "WebFetch".to_string(),
             target: "api.example.test".to_string(),
             justification: "routine".to_string(),

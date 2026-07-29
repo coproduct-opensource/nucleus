@@ -185,7 +185,7 @@ mod tests {
 
 use std::time::Duration;
 
-use nucleus_cred_broker::CredentialStore;
+use nucleus_cred_broker::{CredentialStore, PodIdentity};
 use portcullis::PermissionLattice;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -243,11 +243,15 @@ pub async fn read_frame_async(
 /// requests would need per-connection state and its own lifetime policy; one
 /// request per connection needs neither, and the guest is not a latency-
 /// sensitive client.
-pub async fn serve_connection<S>(stream: S, policy: &PermissionLattice, store: &CredentialStore)
-where
+pub async fn serve_connection<S>(
+    stream: S,
+    identity: &PodIdentity,
+    policy: &PermissionLattice,
+    store: &CredentialStore,
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    serve_connection_with_timeout(stream, policy, store, CONNECTION_TIMEOUT).await
+    serve_connection_with_timeout(stream, identity, policy, store, CONNECTION_TIMEOUT).await
 }
 
 /// As [`serve_connection`], with the deadline injectable so the timeout itself
@@ -262,6 +266,7 @@ where
 /// found it. A named constant is not a bound until something reads it.
 pub async fn serve_connection_with_timeout<S>(
     stream: S,
+    identity: &PodIdentity,
     policy: &PermissionLattice,
     store: &CredentialStore,
     deadline: Duration,
@@ -272,7 +277,7 @@ pub async fn serve_connection_with_timeout<S>(
 
     let read = tokio::time::timeout(deadline, read_frame_async(reader, MAX_FRAME_BYTES)).await;
     let response = match read {
-        Ok(Ok(frame)) => crate::broker::handle_frame(&frame, policy, store),
+        Ok(Ok(frame)) => crate::broker::handle_frame(&frame, identity, policy, store),
         // A read failure and a TIMEOUT are answered with the SAME coarse refusal
         // a policy denial gets. Distinguishing "you sent garbage" from "you were
         // too slow" from "you were denied" would hand the guest a probe it does
@@ -296,6 +301,10 @@ mod serving_tests {
     use super::*;
     use nucleus_cred_broker::Credential;
 
+    fn who() -> PodIdentity {
+        PodIdentity::observed_by_host("spiffe://nucleus/pod/abc")
+    }
+
     fn store_with(target: &str, value: &str) -> CredentialStore {
         let mut s = CredentialStore::new();
         s.insert(target, Credential::new(value));
@@ -308,7 +317,8 @@ mod serving_tests {
         store: &CredentialStore,
     ) -> String {
         let (client, server) = tokio::io::duplex(64 * 1024);
-        let serve = serve_connection(server, policy, store);
+        let id = who();
+        let serve = serve_connection(server, &id, policy, store);
         let talk = async {
             let (r, mut w) = tokio::io::split(client);
             w.write_all(request.as_bytes()).await.unwrap();
@@ -328,7 +338,6 @@ mod serving_tests {
         let policy = PermissionLattice::permissive();
         let store = store_with("api.example.test", "super-secret-token");
         let req = serde_json::json!({
-            "pod_identity": "spiffe://nucleus/pod/abc",
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "routine"
@@ -360,7 +369,13 @@ mod serving_tests {
         // is missing, this is what fails.
         let served = tokio::time::timeout(
             Duration::from_secs(5),
-            serve_connection_with_timeout(server, &policy, &store, Duration::from_millis(200)),
+            serve_connection_with_timeout(
+                server,
+                &who(),
+                &policy,
+                &store,
+                Duration::from_millis(200),
+            ),
         )
         .await;
         assert!(
@@ -382,7 +397,8 @@ mod serving_tests {
         let (client, server) = tokio::io::duplex(64 * 1024);
         let (r, mut w) = tokio::io::split(client);
 
-        let serve = serve_connection(server, &policy, &store);
+        let id = who();
+        let serve = serve_connection(server, &id, &policy, &store);
         let talk = async {
             let _ = w.write_all(flood.as_bytes()).await;
             let mut line = String::new();
@@ -469,9 +485,17 @@ pub fn prepare_socket(path: &std::path::Path) -> io::Result<UnixListener> {
 /// pulling connections off the queue instead of accepting them and then queueing
 /// work internally.
 ///
+/// # Identity is bound to the listener, not to the request
+///
+/// `identity` is taken once, here, and applies to every connection this listener
+/// accepts. That is sound because Firecracker creates one vsock `uds_path` per
+/// VM, so a socket IS a pod. Binding it at the listener rather than per request
+/// means there is no point in the serving path where a guest could influence it.
+///
 /// Runs until `shutdown` resolves.
 pub async fn serve_broker(
     listener: UnixListener,
+    identity: PodIdentity,
     policy: Arc<PermissionLattice>,
     store: Arc<CredentialStore>,
     shutdown: impl std::future::Future<Output = ()>,
@@ -490,8 +514,9 @@ pub async fn serve_broker(
                     Ok((stream, _addr)) => {
                         let policy = Arc::clone(&policy);
                         let store = Arc::clone(&store);
+                        let identity = identity.clone();
                         tokio::spawn(async move {
-                            serve_connection(stream, &policy, &store).await;
+                            serve_connection(stream, &identity, &policy, &store).await;
                             drop(permit);
                         });
                     }
@@ -525,6 +550,10 @@ pub async fn request_over_socket(path: &std::path::Path, frame: &str) -> io::Res
 #[cfg(test)]
 mod listener_tests {
     use super::*;
+
+    fn who() -> PodIdentity {
+        PodIdentity::observed_by_host("spiffe://nucleus/pod/abc")
+    }
     use nucleus_cred_broker::Credential;
     use std::os::unix::fs::PermissionsExt;
 
@@ -594,12 +623,11 @@ mod listener_tests {
         let policy = Arc::new(PermissionLattice::permissive());
         let store = Arc::new(store_with("api.example.test", "super-secret-token"));
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(serve_broker(listener, policy, store, async {
+        let server = tokio::spawn(serve_broker(listener, who(), policy, store, async {
             let _ = rx.await;
         }));
 
         let frame = serde_json::json!({
-            "pod_identity": "spiffe://nucleus/pod/abc",
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "routine"

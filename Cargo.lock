@@ -6665,6 +6665,7 @@ dependencies = [
 name = "nucleus-cred-broker"
 version = "1.0.0"
 dependencies = [
+ "nucleus-cred-protocol",
  "serde",
  "thiserror 2.0.19",
  "zeroize",
