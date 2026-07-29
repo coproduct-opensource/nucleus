@@ -201,9 +201,17 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
     // above checks a precondition, and a machine can pass all of them and still
     // boot no microVM. If this fails the user learns it here, not the first
     // time they try to run a workload.
-    let vm_expected = !args.skip_vm && matches!(platform, Platform::MacOS { .. });
-    if vm_expected && !args.skip_smoke_test {
-        if !run_smoke_test(&args.vm_name) {
+    // On macOS Firecracker lives in the Lima VM; on Linux it is right here.
+    // Previously this only ran on macOS, so a Linux host — the case where Tier 2
+    // is most likely to actually be used — got no verification at all.
+    let smoke_target = match &platform {
+        Platform::MacOS { .. } if !args.skip_vm => Some(SmokeTarget::LimaVm(&args.vm_name)),
+        Platform::MacOS { .. } => None,
+        Platform::Linux => Some(SmokeTarget::LocalHost),
+        Platform::Other(_) => None,
+    };
+    if let (Some(target), false) = (smoke_target, args.skip_smoke_test) {
+        if !run_smoke_test(target) {
             print_setup_summary(&args, &platform);
             bail!(
                 "setup finished, but no microVM could boot — Tier 2 is not usable yet.\n\
@@ -211,7 +219,7 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
                  To skip this check: nucleus setup --skip-smoke-test"
             );
         }
-    } else if vm_expected {
+    } else if smoke_target.is_some() {
         println!("\nSkipping smoke test (--skip-smoke-test) — Tier 2 is unverified.");
     }
 
@@ -497,18 +505,41 @@ fn which(bin: &str) -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
-/// Boot a throwaway microVM inside the Lima VM and report whether it reached
-/// userspace.
+/// Where the smoke test should run.
+#[derive(Debug, Clone, Copy)]
+pub enum SmokeTarget<'a> {
+    /// Through a Lima VM (macOS hosts).
+    LimaVm(&'a str),
+    /// Directly on this machine (Linux hosts with KVM).
+    LocalHost,
+}
+
+/// Boot a throwaway microVM and report whether it reached userspace.
 ///
 /// This is the only check in setup that RUNS the thing rather than inferring
 /// from it. `test -c /dev/kvm` passing means the device node exists, not that
 /// Firecracker can use it — so without this, setup can report success on a
 /// machine where no microVM will ever boot.
-fn run_smoke_test(vm_name: &str) -> bool {
+fn run_smoke_test(target: SmokeTarget<'_>) -> bool {
     println!("\nSmoke test: booting a throwaway microVM...");
     let script = include_str!("../../../scripts/firecracker/smoke-test.sh");
-    let out = Command::new("limactl")
-        .args(["shell", vm_name, "--", "sudo", "sh", "-s"])
+    let mut cmd = match target {
+        // macOS reaches Firecracker through the Lima VM.
+        SmokeTarget::LimaVm(vm_name) => {
+            let mut c = Command::new("limactl");
+            c.args(["shell", vm_name, "--", "sudo", "sh", "-s"]);
+            c
+        }
+        // A Linux host with KVM already has everything; there is no VM to
+        // shell into, and pretending otherwise is why this check used to be
+        // skipped entirely on Linux.
+        SmokeTarget::LocalHost => {
+            let mut c = Command::new("sudo");
+            c.args(["sh", "-s"]);
+            c
+        }
+    };
+    let out = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
