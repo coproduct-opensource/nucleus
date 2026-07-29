@@ -460,6 +460,26 @@ use tokio::sync::Semaphore;
 /// existing path, and a node that could not restart after an unclean shutdown
 /// would be a self-inflicted outage.
 pub fn prepare_socket(path: &std::path::Path) -> io::Result<UnixListener> {
+    // NEVER near the container runtime's own socket. A broker socket lives in a
+    // per-pod directory; a path under a runtime socket directory means somebody
+    // has confused "the socket the guest asks through" with "the socket that
+    // controls the host". Mounting the Docker daemon socket into an agent
+    // sandbox is the canonical escape — it hands the guest the ability to launch
+    // privileged containers and mount the host filesystem — and the guard is
+    // cheap enough that it costs nothing to refuse the shape outright.
+    let as_str = path.to_string_lossy();
+    for forbidden in ["docker.sock", "containerd.sock", "podman.sock", "crio.sock"] {
+        if as_str.contains(forbidden) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "refusing to bind a broker socket at {as_str}: the path names a container \
+                     runtime socket, and a guest that could reach one would control the host"
+                ),
+            ));
+        }
+    }
+
     // Remove a stale socket, but only if it IS a socket — refusing to unlink
     // arbitrary paths, so a misconfigured path cannot delete a real file.
     if let Ok(meta) = std::fs::metadata(path) {
@@ -679,6 +699,27 @@ mod listener_lifecycle_tests {
         let mut s = CredentialStore::new();
         s.insert(target, Credential::new(value));
         Arc::new(s)
+    }
+
+    /// **Never the runtime's own socket.** A guest that could reach the Docker
+    /// daemon socket controls the host — it can launch privileged containers and
+    /// mount the host filesystem. The broker socket is bind-mounted into a
+    /// sandbox, so the one path shape that must never be accepted is one naming
+    /// a runtime socket.
+    #[tokio::test]
+    async fn a_runtime_socket_path_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["docker.sock", "containerd.sock", "podman.sock", "crio.sock"] {
+            let path = dir.path().join(name);
+            let err = prepare_socket(&path)
+                .expect_err("a broker socket must never be bound at a runtime socket path");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{name}");
+        }
+        // Non-vacuity: an ordinary path in the same directory binds fine, so the
+        // refusal is about the name and not about the directory.
+        let ok = prepare_socket(&dir.path().join("broker.sock"))
+            .expect("an ordinary broker socket path must still bind");
+        drop(ok);
     }
 
     /// **The reason the handle is owned.** A pod dies and its socket path is

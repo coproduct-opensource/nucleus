@@ -1355,11 +1355,13 @@ fn start_broker_for_pod(
     registered: Option<&nucleus_identity::Identity>,
     id: Uuid,
 ) -> Result<Option<broker_transport::BrokerListener>, ApiError> {
-    let rollout = broker_rollout::decide_rollout(
-        state.broker_enforcing,
-        state.broker_listen,
-        spec.spec.vsock.is_some(),
-    );
+    let transport = if spec.spec.vsock.is_some() {
+        broker_rollout::BrokerTransport::Vsock
+    } else {
+        broker_rollout::BrokerTransport::None
+    };
+    let rollout =
+        broker_rollout::decide_rollout(state.broker_enforcing, state.broker_listen, transport);
     // The Firecracker rootfs carries the pod spec from image build time, so the
     // node writes no guest spec and can withhold nothing from it. Passing `false`
     // here is what turns `--broker-enforcing` into a refusal rather than a false

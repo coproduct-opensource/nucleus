@@ -68,19 +68,54 @@ impl BrokerRollout {
     }
 }
 
+/// How a guest can reach the broker, if it can at all.
+///
+/// # Why this is not just "has vsock"
+///
+/// The first version keyed on vsock, because the Firecracker path was the only
+/// one being built for. That made the container driver structurally unable to
+/// have a broker — and the container driver is the one that **actually carries
+/// the credential exposure**, injecting values straight into the process
+/// environment. Keying on vsock encoded "the driver we designed for" as though
+/// it were "the driver that can be served".
+///
+/// A container has no vsock. It does have a filesystem, and `spawn_container_pod`
+/// already bind-mounts the pod directory into it. A Unix socket there is reachable
+/// with **no new mount**, which matters: bind-mounting more surface into an agent
+/// sandbox is how sandbox escapes happen, and the best-known example is mounting
+/// the Docker daemon socket, which hands the guest the whole host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokerTransport {
+    /// No way to reach a broker. The rollout is forced to
+    /// [`BrokerRollout::Disabled`].
+    None,
+    /// A guest-initiated vsock connection (Firecracker).
+    Vsock,
+    /// A Unix socket in the pod directory, already visible to the guest
+    /// (container).
+    PodDirSocket,
+}
+
+impl BrokerTransport {
+    /// Whether a guest can reach a broker at all over this transport.
+    pub fn is_reachable(self) -> bool {
+        !matches!(self, BrokerTransport::None)
+    }
+}
+
 /// Decide the rollout state for a pod.
 ///
-/// `has_vsock` matters because the broker is reached over a guest-initiated
-/// vsock connection; without one there is no socket to create, whatever the
-/// operator asked for. Failing closed to [`BrokerRollout::Disabled`] there is
-/// right: a node that thinks it is enforcing while no socket exists would strip
-/// credentials with nothing to replace them.
+/// The transport matters because without one there is no socket to create,
+/// whatever the operator asked for. Failing closed to
+/// [`BrokerRollout::Disabled`] there is right: a node that thinks it is
+/// enforcing while no socket exists would strip credentials with nothing to
+/// replace them.
 pub fn decide_rollout(
     requested_enforcing: bool,
     requested_listen: bool,
-    has_vsock: bool,
+    transport: BrokerTransport,
 ) -> BrokerRollout {
-    if !has_vsock {
+    if !transport.is_reachable() {
         return BrokerRollout::Disabled;
     }
     if requested_enforcing {
@@ -100,7 +135,10 @@ mod tests {
     /// as it did before this work.
     #[test]
     fn the_default_is_disabled() {
-        assert_eq!(decide_rollout(false, false, true), BrokerRollout::Disabled);
+        assert_eq!(
+            decide_rollout(false, false, BrokerTransport::Vsock),
+            BrokerRollout::Disabled
+        );
         assert!(!BrokerRollout::Disabled.serves_socket());
         assert!(!BrokerRollout::Disabled.withholds_credentials());
     }
@@ -110,7 +148,7 @@ mod tests {
     /// whose credentials were stripped would simply fail.
     #[test]
     fn listening_does_not_withhold_credentials() {
-        let r = decide_rollout(false, true, true);
+        let r = decide_rollout(false, true, BrokerTransport::Vsock);
         assert_eq!(r, BrokerRollout::ListenOnly);
         assert!(r.serves_socket(), "the socket should exist");
         assert!(
@@ -123,18 +161,57 @@ mod tests {
     /// Enforcing is reachable, but only by asking for it by name.
     #[test]
     fn enforcing_requires_asking_for_it_explicitly() {
-        let r = decide_rollout(true, false, true);
+        let r = decide_rollout(true, false, BrokerTransport::Vsock);
         assert_eq!(r, BrokerRollout::Enforcing);
         assert!(r.serves_socket() && r.withholds_credentials());
     }
 
-    /// **Fail closed without a transport.** A node with no vsock has no socket
+    /// **Every transport that can reach a broker serves one.** The point of
+    /// naming transports rather than asking "has vsock" is that a container can
+    /// be served too — and it is the driver that actually carries the credential
+    /// exposure, so excluding it excluded the case that matters most.
+    #[test]
+    fn a_container_transport_is_served_like_a_vsock_one() {
+        for transport in [BrokerTransport::Vsock, BrokerTransport::PodDirSocket] {
+            assert_eq!(
+                decide_rollout(false, true, transport),
+                BrokerRollout::ListenOnly,
+                "{transport:?} can reach a broker, so it should be served"
+            );
+            assert_eq!(
+                decide_rollout(true, false, transport),
+                BrokerRollout::Enforcing,
+                "{transport:?} can reach a broker, so it can enforce"
+            );
+        }
+    }
+
+    /// The transport set and the reachability predicate must not drift apart: a
+    /// new variant that nobody classified would otherwise default to whatever
+    /// `is_reachable` happens to say.
+    #[test]
+    fn only_the_none_transport_is_unreachable() {
+        for transport in [
+            BrokerTransport::None,
+            BrokerTransport::Vsock,
+            BrokerTransport::PodDirSocket,
+        ] {
+            let served = decide_rollout(false, true, transport).serves_socket();
+            assert_eq!(
+                served,
+                transport.is_reachable(),
+                "{transport:?} disagrees with its own reachability"
+            );
+        }
+    }
+
+    /// **Fail closed without a transport.** A node with no transport has no socket
     /// to create, so "enforcing" there would strip credentials with nothing to
     /// replace them — worse than not enabling it at all.
     #[test]
     fn without_vsock_even_enforcing_falls_back_to_disabled() {
         assert_eq!(
-            decide_rollout(true, true, false),
+            decide_rollout(true, true, BrokerTransport::None),
             BrokerRollout::Disabled,
             "enforcing without a transport would withhold credentials and offer \
              no way to obtain them"
