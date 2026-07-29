@@ -279,17 +279,7 @@ pub async fn start_dns_proxy(
     let config_path = pod_dir.join("dnsmasq.conf");
     let log_path = pod_dir.join("dnsmasq.log");
 
-    let mut config = String::new();
-    config.push_str("no-resolv\n");
-    config.push_str("no-hosts\n");
-    config.push_str("bind-interfaces\n");
-    config.push_str(&format!("listen-address={}\n", plan.gateway_ip));
-    config.push_str("port=53\n");
-    for entry in &entries {
-        for ip in &entry.ips {
-            config.push_str(&format!("address=/{}/{}\n", entry.host, ip));
-        }
-    }
+    let config = dnsmasq_config(plan.gateway_ip, &entries);
     tokio::fs::write(&config_path, config).await?;
 
     let log_file = std::fs::OpenOptions::new()
@@ -1491,4 +1481,51 @@ pub fn identity_registration<'a, T>(
     grant: &IdentityGrant,
 ) -> Option<&'a T> {
     manager.filter(|_| grant.is_granted())
+}
+
+// ── The DNS proxy is a static map, not a resolver ─────────────────────────
+
+/// dnsmasq directives that would give the proxy an upstream nameserver.
+///
+/// Any one of these turns a static map into a *forwarder*, and a forwarder is
+/// what makes DNS tunnelling work: the agent encodes data in query labels, the
+/// resolver dutifully forwards them to the attacker's authoritative server, and
+/// the data has left the host without a single packet going anywhere the egress
+/// allowlist would notice. Nothing in the iptables policy sees it, because the
+/// query goes to the allowed resolver.
+///
+/// The property that closes it is simply that there IS no upstream. Kept as an
+/// explicit denylist so `the_dns_proxy_has_no_upstream_and_cannot_forward` fails
+/// loudly if one is ever added.
+pub const DNS_FORWARDING_DIRECTIVES: &[&str] = &[
+    "server=",
+    "resolv-file",
+    "all-servers",
+    "strict-order",
+    "rev-server",
+    "local=/",
+];
+
+/// The dnsmasq configuration for a pod's DNS proxy.
+///
+/// Pure so the security property above is testable without spawning dnsmasq.
+/// Answers come only from the static `address=` map built from `dns_allow`;
+/// `no-resolv` plus the absence of any `server=` means there is no upstream to
+/// forward an unmatched query to, so an unlisted name fails locally rather than
+/// travelling.
+pub fn dnsmasq_config(gateway: Ipv4Addr, entries: &[ResolvedDnsEntry]) -> String {
+    let mut config = String::new();
+    // no-resolv: ignore /etc/resolv.conf. Without it dnsmasq would inherit the
+    // host's nameservers and become a forwarder.
+    config.push_str("no-resolv\n");
+    config.push_str("no-hosts\n");
+    config.push_str("bind-interfaces\n");
+    config.push_str(&format!("listen-address={gateway}\n"));
+    config.push_str("port=53\n");
+    for entry in entries {
+        for ip in &entry.ips {
+            config.push_str(&format!("address=/{}/{}\n", entry.host, ip));
+        }
+    }
+    config
 }

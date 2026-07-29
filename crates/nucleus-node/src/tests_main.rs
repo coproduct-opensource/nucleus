@@ -351,3 +351,74 @@ fn a_denied_grant_is_never_registered_with_the_workload_api() {
     // Identity disabled on the node still wins.
     assert!(identity_registration(None::<&&str>, &IdentityGrant::Granted).is_none());
 }
+
+// ── The DNS proxy is a static map, not a resolver ─────────────────────────
+
+fn dns_entry(host: &str, a: u8, b: u8, c: u8, d: u8) -> ResolvedDnsEntry {
+    ResolvedDnsEntry {
+        host: host.to_string(),
+        port: None,
+        ips: vec![std::net::Ipv4Addr::new(a, b, c, d)],
+    }
+}
+
+/// THE PROPERTY THAT CLOSES DNS TUNNELLING, and the reason it closes it.
+///
+/// A DNS tunnel needs a forwarder: the agent encodes data in query labels and
+/// the resolver carries them to the attacker's authoritative server. Nothing in
+/// the egress allowlist notices, because the query went to the allowed resolver.
+///
+/// nucleus's proxy has no upstream at all — `no-resolv` and not one `server=` —
+/// so an unlisted name fails locally instead of travelling. That is currently
+/// true by accident of how the config string was built; this test makes it a
+/// property, so adding a forwarder is a test failure rather than a silent
+/// re-opening of the channel.
+#[test]
+fn the_dns_proxy_has_no_upstream_and_cannot_forward() {
+    use crate::net::{dnsmasq_config, DNS_FORWARDING_DIRECTIVES};
+    let config = dnsmasq_config(
+        std::net::Ipv4Addr::new(10, 200, 0, 2),
+        &[dns_entry("api.example.test", 93, 184, 216, 34)],
+    );
+    assert!(
+        config.lines().any(|l| l.trim() == "no-resolv"),
+        "without no-resolv the proxy inherits the host's nameservers: {config}"
+    );
+    for directive in DNS_FORWARDING_DIRECTIVES {
+        assert!(
+            !config.contains(directive),
+            "{directive} would give the proxy an upstream and re-open DNS tunnelling: {config}"
+        );
+    }
+}
+
+/// Answers come only from the allowlist. An entry that was never allowed has no
+/// `address=` line, so it cannot even be resolved locally.
+#[test]
+fn only_allowlisted_names_get_an_answer() {
+    use crate::net::dnsmasq_config;
+    let config = dnsmasq_config(
+        std::net::Ipv4Addr::new(10, 200, 0, 2),
+        &[dns_entry("api.example.test", 93, 184, 216, 34)],
+    );
+    let addresses: Vec<&str> = config
+        .lines()
+        .filter(|l| l.starts_with("address=/"))
+        .collect();
+    assert_eq!(addresses, vec!["address=/api.example.test/93.184.216.34"]);
+    assert!(!config.contains("evil.test"));
+}
+
+/// An empty allowlist yields a proxy that answers nothing — not one that falls
+/// back to forwarding. The degenerate case is the one most likely to be got
+/// wrong, and it is the one where getting it wrong is a wide-open resolver.
+#[test]
+fn an_empty_allowlist_answers_nothing_rather_than_forwarding() {
+    use crate::net::{dnsmasq_config, DNS_FORWARDING_DIRECTIVES};
+    let config = dnsmasq_config(std::net::Ipv4Addr::new(10, 200, 0, 2), &[]);
+    assert!(!config.lines().any(|l| l.starts_with("address=/")));
+    for directive in DNS_FORWARDING_DIRECTIVES {
+        assert!(!config.contains(directive), "{directive} in empty config");
+    }
+    assert!(config.lines().any(|l| l.trim() == "no-resolv"));
+}
