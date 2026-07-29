@@ -40,6 +40,11 @@
 //! the delivery channel, and [`SnapshotSafety`] is deliberately useless for
 //! anything except saying no.
 
+// Not yet called from anywhere: the guard deliberately precedes the
+// snapshot/restore path it guards, so that the fast path cannot land without
+// tripping over it. The tests exercise every item below.
+#![cfg_attr(not(test), allow(dead_code))]
+
 /// Command-line keys that carry **per-pod** material.
 ///
 /// Anything here makes a booted microVM unfit to be a snapshot base, because
