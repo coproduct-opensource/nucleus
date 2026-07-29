@@ -2378,10 +2378,32 @@ async fn spawn_firecracker_pod(
             cmd.args(["netns", "exec", name, "--"]);
             cmd.arg(&state.firecracker_path);
             cmd.arg("--config-file").arg(&config_path);
+            // Per-pod, for the same reason as the plain branch below. A netns
+            // isolates the network, not the filesystem, so the default API
+            // socket path is still shared with every other pod on the host.
+            cmd.arg("--api-sock")
+                .arg(pod_dir.join("firecracker.socket"));
             cmd
         } else {
             let mut cmd = Command::new(&state.firecracker_path);
             cmd.arg("--config-file").arg(&config_path);
+            // WITHOUT THIS, ONE POD AT A TIME. Firecracker defaults its API
+            // socket to the global `/run/firecracker.socket`, so a second
+            // concurrent launch fails to bind it and exits immediately.
+            //
+            // The jailed path never hit this because the jailer chroots each
+            // pod, which is why it went unnoticed: the default configuration is
+            // fine and the unjailed one silently serialises.
+            //
+            // The failure is also badly misleading. Firecracker exits before
+            // creating its vsock socket, so the node reports "vsock socket not
+            // found"; and if the node gets far enough to check seccomp it reads
+            // the mode of a process that has already died and reports
+            // "seccomp mode 0 (expected 2 = filter)" — a fail-closed security
+            // check stating a true fact about the wrong process. Both were
+            // observed and both cost real time before the cause was understood.
+            cmd.arg("--api-sock")
+                .arg(pod_dir.join("firecracker.socket"));
             cmd
         };
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
