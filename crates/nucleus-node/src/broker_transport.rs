@@ -203,6 +203,7 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounded because a guest can open sockets far faster than the host can serve
 /// them, and an unbounded accept loop turns that into file-descriptor
 /// exhaustion for the whole node — not just this listener.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
 /// Read one frame asynchronously, refusing to accumulate past `max`.
