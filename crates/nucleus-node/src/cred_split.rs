@@ -63,6 +63,8 @@ pub fn split_credentials(spec: &mut PodSpec) -> CredentialStore {
 mod tests {
     use super::*;
 
+    const NOW: u64 = 1_700_000_000;
+
     fn spec_with_credentials() -> PodSpec {
         serde_yaml::from_str(
             r#"
@@ -128,12 +130,13 @@ spec:
         let store = split_credentials(&mut spec);
 
         let approved = AuthorizedRequest {
+            expires_at_unix: NOW + nucleus_cred_broker::APPROVAL_TTL_SECS,
             pod_identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/test"),
             operation: "WebFetch".to_string(),
             target: "LLM_API_TOKEN".to_string(),
         };
         let cred = store
-            .for_request(&approved)
+            .for_request(&approved, NOW)
             .expect("the broker holds what the spec gave up");
         assert_eq!(cred.expose(), "super-secret-token-value");
     }
@@ -149,11 +152,15 @@ spec:
         // The second store is empty — every value was already taken.
         use nucleus_cred_broker::{AuthorizedRequest, PodIdentity};
         assert!(second
-            .for_request(&AuthorizedRequest {
-                pod_identity: PodIdentity::observed_by_host("p"),
-                operation: "o".into(),
-                target: "LLM_API_TOKEN".into(),
-            })
+            .for_request(
+                &AuthorizedRequest {
+                    expires_at_unix: NOW + nucleus_cred_broker::APPROVAL_TTL_SECS,
+                    pod_identity: PodIdentity::observed_by_host("p"),
+                    operation: "o".into(),
+                    target: "LLM_API_TOKEN".into(),
+                },
+                NOW
+            )
             .is_err());
     }
 

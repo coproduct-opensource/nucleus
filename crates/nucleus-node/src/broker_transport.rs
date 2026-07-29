@@ -277,7 +277,17 @@ pub async fn serve_connection_with_timeout<S>(
 
     let read = tokio::time::timeout(deadline, read_frame_async(reader, MAX_FRAME_BYTES)).await;
     let response = match read {
-        Ok(Ok(frame)) => crate::broker::handle_frame(&frame, identity, policy, store),
+        Ok(Ok(frame)) => {
+            // Read once, here, rather than inside the decision functions: those
+            // take the instant as a parameter so they are testable without a
+            // clock, and so a single request is judged against ONE instant
+            // rather than against whatever the clock said at each step.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            crate::broker::handle_frame(&frame, identity, policy, store, now)
+        }
         // A read failure and a TIMEOUT are answered with the SAME coarse refusal
         // a policy denial gets. Distinguishing "you sent garbage" from "you were
         // too slow" from "you were denied" would hand the guest a probe it does
