@@ -73,7 +73,34 @@
 /// `nucleus.workload_api_port` is NOT here: it is a port number, identical for
 /// every pod on a node, and carries no authority by itself — the identity it
 /// leads to is gated separately by `net::decide_identity_grant`.
-/// # The next removal, and what has to be true first
+/// # The remaining four, each re-derived rather than inherited
+///
+/// `nucleus.sandbox_token` was removed for identity-bearing pods once the
+/// blocking question turned out to be the wrong one — it was filed as needing a
+/// booted pod to confirm attestation, when attestation only distinguishes Tier 1
+/// from Tier 2 and both satisfy the proof. That is a reason to re-derive the
+/// others rather than inherit their notes:
+///
+/// * **`nucleus.approval_secret`** — NOT redundant. `select_auth_tier` puts the
+///   approval path on `ApprovalHmacDrand` *above* `HostVsock`, deliberately: a
+///   host-verified transport does not remove the drand anchor from an approval.
+///   A conditional emission would need "this pod can never require approval"
+///   derived from the resolved policy, and `requires_approval` lives on an
+///   autonomy ceiling rather than on `PermissionLattice`. Getting that wrong
+///   fails approvals at the moment a human is meant to be in the loop, which is
+///   a worse failure than the exposure it would close.
+/// * **`nucleus.task_token_hex` / `_issuer` / `_nonce`** — these are documented
+///   at the emission site as *"a scoped capability + PUBLIC issuer key — NOT a
+///   secret"*, with anti-replay resting on a host-pinned nonce. They are in
+///   [`PER_POD_SECRET_KEYS`] for a different reason: they are **per-pod**, and a
+///   clone that inherited them would duplicate a value minted for one pod. So
+///   the fix is not to stop emitting them but to deliver them **after restore**,
+///   over a channel that is not the command line. The workload API vsock bridge
+///   is already that shape — it serves per-pod SVIDs over a per-pod socket — and
+///   carrying the task token on it is the next real piece of work here. It is
+///   architecture, not a conditional.
+///
+/// # An earlier note, and what has to be true first
 ///
 /// `nucleus.sandbox_token` is the strongest candidate for deletion rather than
 /// relocation — the same shape as `nucleus.auth_secret`, which Phase 1 deleted

@@ -1021,7 +1021,7 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::HashSet;
     use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     /// Minimal valid PodSpec with all optional sections defaulted to absent.
     /// Built by deserialization so it exercises the real spec defaults rather
@@ -1051,8 +1051,8 @@ mod tests {
     fn boot_args_with_identity(will_have_identity: bool) -> String {
         let config = FirecrackerConfig::from_spec(
             &base_spec(),
-            Path::new("/unused/firecracker.log"),
-            Path::new("/unused/vsock.sock"),
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
             &image(true, false),
             None,
             "auth-secret",
