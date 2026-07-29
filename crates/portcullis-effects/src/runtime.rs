@@ -548,6 +548,14 @@ pub struct NucleusRuntime {
     task_token: Option<VerifiedTaskRef>,
     flow_tracker: FlowTracker,
     allowed_write_paths: Vec<PathBuf>,
+    /// The receipt log every authority this runtime issues is witnessed by.
+    ///
+    /// Held by the runtime rather than passed in, because the property being
+    /// bought is that EVERY effect is recorded — and a log a caller could
+    /// decline to supply would be a log that is sometimes absent. It is an
+    /// `Arc` so the authority can carry it down to wherever it is spent, which
+    /// is the point of the design: the spend and the receipt are one event.
+    receipts: std::sync::Arc<crate::receipt::ReceiptLog>,
 }
 
 impl NucleusRuntime {
@@ -560,6 +568,15 @@ impl NucleusRuntime {
             task_token: None,
             allowed_write_paths: Vec::new(),
         }
+    }
+
+    /// The receipt log for this runtime's effects.
+    ///
+    /// Every authority the runtime issues is witnessed by this log, so its
+    /// entries are the record of what was actually authorised. See
+    /// `every_runtime_authority_is_witnessed` for what keeps that true.
+    pub fn receipts(&self) -> &std::sync::Arc<crate::receipt::ReceiptLog> {
+        &self.receipts
     }
 
     /// The active policy profile.
@@ -735,7 +752,8 @@ impl NucleusRuntime {
         // The runtime check above yields the precise `ScopeMismatch` error; the
         // effect layer re-checks when it spends the authority. Both are cheap,
         // and the effect-level one also covers callers that bypass the runtime.
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         let fx = &self.effects;
         let data = fx
             .read(path, authority)
@@ -776,7 +794,8 @@ impl NucleusRuntime {
         // property of THIS write, and a bundle minted by a different preflight
         // would otherwise never encounter the check.
         self.check_path_allowed(path)?;
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         let fx = &self.effects;
         fx.write(path, content, authority)
             .map_err(|e| self.translate_error(e, "write file", path))
@@ -810,7 +829,8 @@ impl NucleusRuntime {
             "fetch url",
         )?;
         let fx = &self.effects;
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         let data = fx.fetch(url, authority).map_err(RuntimeError::from)?;
 
         let node_id = self
@@ -843,7 +863,8 @@ impl NucleusRuntime {
             "run shell command",
         )?;
         let fx = &self.effects;
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         let output = fx.run(cmd, authority).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
@@ -869,7 +890,8 @@ impl NucleusRuntime {
             "git commit",
         )?;
         let fx = &self.effects;
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         let hash = fx.commit(message, authority).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
@@ -891,7 +913,8 @@ impl NucleusRuntime {
     ) -> Result<(), RuntimeError> {
         Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
-        let authority = crate::authority::Authority::new(proof);
+        let authority = crate::authority::Authority::new(proof)
+            .witnessed_by(std::sync::Arc::clone(&self.receipts));
         fx.push(remote, branch, authority)
             .map_err(RuntimeError::from)
     }
@@ -1533,6 +1556,10 @@ impl NucleusRuntimeBuilder {
             task_token: self.task_token,
             flow_tracker: FlowTracker::new(),
             allowed_write_paths: self.allowed_write_paths,
+            // Constructed here, not accepted from the builder. A log the caller
+            // could decline to supply is a log that is sometimes absent, and the
+            // property being bought is that every effect is recorded.
+            receipts: std::sync::Arc::new(crate::receipt::ReceiptLog::new()),
         }
     }
 }
@@ -1540,6 +1567,82 @@ impl NucleusRuntimeBuilder {
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod witness_drift_tests {
+    /// **The drift guard the module docs promised, which did not exist.**
+    ///
+    /// `authority.rs` said `every_effect_is_witnessed` "is what stops it
+    /// drifting". No such test had ever been written, and the consequence was
+    /// exactly what the missing guard would have caught: all six of the
+    /// runtime's `Authority::new` sites were unwitnessed, so the receipt log
+    /// existed, the authority could carry it, and the live path recorded
+    /// nothing.
+    ///
+    /// A source scan rather than a behavioural test, deliberately. The property
+    /// is about EVERY site including ones not yet written, and a behavioural
+    /// test only covers the paths it happens to exercise — which is how six
+    /// sites went uncovered while the suite was green.
+    #[test]
+    fn every_runtime_authority_is_witnessed() {
+        let src = include_str!("runtime.rs");
+        // Only the runtime's own construction sites. Test fixtures below
+        // legitimately build bare authorities to exercise the spend path.
+        //
+        // Cut at the first `#[cfg(test)]`, NOT at the banner comment: the file
+        // has 20 of those, so splitting on one truncated the scan to a prefix
+        // containing no authority sites at all. The scan then passed
+        // VACUOUSLY — caught by `the_witness_scan_finds_the_sites_it_checks`,
+        // which is the entire reason that test exists.
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before the tests");
+
+        let mut unwitnessed = Vec::new();
+        for (i, line) in production.lines().enumerate() {
+            if line.contains("Authority::new(") {
+                // The witness is attached by a chained call, so it may be on
+                // this line or the next.
+                let rest: String = production
+                    .lines()
+                    .skip(i)
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !rest.contains("witnessed_by") {
+                    unwitnessed.push(format!("line {}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            unwitnessed.is_empty(),
+            "these runtime authorities are spent without a receipt, so the effects they \
+             authorise leave no record:\n  {}",
+            unwitnessed.join("\n  ")
+        );
+    }
+
+    /// Non-vacuity: the scan must actually find the sites it is checking. A
+    /// version that matched nothing would pass forever — and would look
+    /// identical to a clean result, which is the failure mode that let the
+    /// missing guard go unnoticed in the first place.
+    #[test]
+    fn the_witness_scan_finds_the_sites_it_checks() {
+        let src = include_str!("runtime.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before tests");
+        let sites = production.matches("Authority::new(").count();
+        assert!(
+            sites >= 6,
+            "the witness scan found only {sites} authority sites in the runtime; \
+             a scan that matches nothing passes vacuously"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
