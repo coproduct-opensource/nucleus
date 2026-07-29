@@ -3053,10 +3053,56 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// How long to wait for the guest's tool-proxy to answer.
+///
+/// # Why this is not five seconds any more
+///
+/// Five was chosen when the guest could prove itself with material already on
+/// its kernel command line: boot, read the cmdline, serve. The guest now fetches
+/// its SVID **and** its session token from the host over vsock before it serves
+/// anything, so its readiness includes two host round-trips that did not exist
+/// when the budget was set.
+///
+/// Measured on real hardware: with the budget at five seconds the node started
+/// the workload API bridge and tore it down 5.08s later, having never seen the
+/// guest — the guest was still starting, and the log showed it had successfully
+/// fetched both artifacts. The launch failed with "proxy health check timed out"
+/// for a pod that was working.
+///
+/// Tunable because the right value depends on the image: a heavier rootfs boots
+/// slower, and an operator who knows theirs should not have to patch the node.
+///
+/// # This is necessary but NOT sufficient, and saying so matters
+///
+/// Raising it to thirty did not make the launch succeed. The guest reaches a
+/// healthy state — the pod log shows it fetching its SVID and its session token
+/// and then serving, with no error — and the check still times out, so something
+/// in the HOST chain (signed proxy to vsock bridge to guest) is not completing.
+/// That is a separate defect and is not yet isolated.
+///
+/// The budget change stands on its own: five seconds predates the guest doing
+/// host round-trips during startup, and would be wrong even once the host chain
+/// is fixed. It is not a workaround for that defect and should not be read as
+/// one.
+const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+
 async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
+    wait_for_proxy_health_within(
+        addr,
+        Duration::from_secs(
+            std::env::var("NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(PROXY_HEALTH_TIMEOUT_SECS_DEFAULT),
+        ),
+    )
+    .await
+}
+
+async fn wait_for_proxy_health_within(addr: SocketAddr, budget: Duration) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     let host = addr.ip();
-    while start.elapsed() < Duration::from_secs(5) {
+    while start.elapsed() < budget {
         if let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await {
             let request = format!(
                 "GET /v1/health HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n"
@@ -3080,7 +3126,13 @@ async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    Err(ApiError::Driver("proxy health check timed out".to_string()))
+    Err(ApiError::Driver(format!(
+        "proxy health check timed out after {}s. The guest fetches its SVID and session \
+         token from the host over vsock before it serves, so a slow image can legitimately \
+         exceed this; raise NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS if the pod log shows the \
+         guest still starting.",
+        budget.as_secs()
+    )))
 }
 
 async fn serve_grpc(
