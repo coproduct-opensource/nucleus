@@ -425,6 +425,44 @@ pub(crate) async fn serve_vsock(
     ))
 }
 
+/// `VMADDR_CID_HOST` — the well-known vsock context id of the host.
+///
+/// The kernel sets the peer CID on an accepted AF_VSOCK connection; a process
+/// cannot choose its own. That makes "the peer is the host" a fact the guest
+/// kernel enforces, rather than something a caller asserts.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub const VMADDR_CID_HOST: u32 = 2;
+
+/// `VMADDR_CID_LOCAL` — vsock loopback. An in-guest process connecting to a
+/// listener in its own VM arrives with this CID (or the VM's own CID), which is
+/// precisely how the agent could otherwise reach the proxy's control plane.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub const VMADDR_CID_LOCAL: u32 = 1;
+
+/// Whether an accepted vsock peer is the host.
+///
+/// # Why this is the whole point
+///
+/// The proxy serves its control plane over AF_VSOCK, and `accept()` previously
+/// returned every peer. But a guest process can reach a listener in its own VM
+/// — over loopback (`VMADDR_CID_LOCAL`) or the VM's own CID — so the agent
+/// could open the proxy's control plane and issue tool calls as if it were the
+/// host. `nucleus.auth_secret` exists to stop exactly that: the host HMACs its
+/// requests so the proxy can tell them from the agent's.
+///
+/// That defence cannot work, because the key travels on the kernel command line
+/// (`crates/nucleus-guest-init/src/main.rs` reads it from `/proc/cmdline`) and
+/// every guest process can read it. It draws a trust boundary inside one trust
+/// domain.
+///
+/// Checking the peer CID replaces a secret the agent can read with a property
+/// the guest kernel enforces and no guest process can forge. It is strictly
+/// stronger, and it is what lets the secret leave the command line.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub fn peer_is_host(peer_cid: u32) -> bool {
+    peer_cid == VMADDR_CID_HOST
+}
+
 #[cfg(target_os = "linux")]
 struct VsockAxumListener {
     inner: tokio_vsock::VsockListener,
@@ -438,7 +476,22 @@ impl axum::serve::Listener for VsockAxumListener {
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             match self.inner.accept().await {
-                Ok((stream, addr)) => return (stream, addr),
+                Ok((stream, addr)) => {
+                    // FAIL CLOSED ON PEER IDENTITY. Only the host may drive the
+                    // proxy's control plane. A guest process reaching this
+                    // listener over loopback is the agent trying to issue tool
+                    // calls as the host — dropped here by a fact the kernel
+                    // enforces, not by a secret the agent can read.
+                    if !peer_is_host(addr.cid()) {
+                        tracing::warn!(
+                            peer_cid = addr.cid(),
+                            "rejecting vsock control-plane connection from a non-host peer"
+                        );
+                        drop(stream);
+                        continue;
+                    }
+                    return (stream, addr);
+                }
                 Err(err) => {
                     tracing::error!("vsock accept error: {err}");
                 }
@@ -492,6 +545,79 @@ mod ifc_gate_tests {
         assert!(
             sub_pod_ifc_gate(&clean).is_ok(),
             "a clean parent must pass the IFC gate (no over-denial)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vsock_peer_tests {
+    use super::{peer_is_host, VMADDR_CID_HOST, VMADDR_CID_LOCAL};
+
+    /// The host, and only the host, may drive the control plane.
+    #[test]
+    fn only_the_host_cid_is_accepted() {
+        assert!(peer_is_host(VMADDR_CID_HOST));
+        for other in [0u32, VMADDR_CID_LOCAL, 3, 4, 42, u32::MAX] {
+            assert!(
+                !peer_is_host(other),
+                "CID {other} must not be treated as the host"
+            );
+        }
+    }
+
+    /// THE ATTACK THIS CLOSES. An in-guest process — the agent — reaching the
+    /// proxy's vsock listener arrives over loopback or the VM's own CID, never
+    /// as CID 2. Before the check it was indistinguishable from the host and
+    /// only `nucleus.auth_secret` stood in the way, a key the agent can read
+    /// from /proc/cmdline.
+    #[test]
+    fn an_in_guest_peer_cannot_pose_as_the_host() {
+        assert!(
+            !peer_is_host(VMADDR_CID_LOCAL),
+            "vsock loopback is not the host"
+        );
+        // A VM's own CID is >= 3; the first few are the realistic guest values.
+        for guest_cid in 3u32..=8 {
+            assert!(
+                !peer_is_host(guest_cid),
+                "guest CID {guest_cid} is not the host"
+            );
+        }
+    }
+
+    /// The hypervisor CID is not the host either — nothing but 2 passes.
+    #[test]
+    fn the_hypervisor_cid_is_not_the_host() {
+        assert!(!peer_is_host(0));
+    }
+}
+
+#[cfg(test)]
+mod vsock_accept_wiring {
+    /// The enforcement lives inside `#[cfg(target_os = "linux")]`, so no unit
+    /// test on a dev Mac can observe it being deleted — the predicate tests
+    /// above would stay green while the listener accepted every peer again.
+    ///
+    /// This reads the source and asserts the accept path still consults
+    /// `peer_is_host`. Structural, not semantic: it proves the call is present,
+    /// not that it is correct. The predicate tests cover correctness; this
+    /// covers the wiring that the platform hides.
+    #[test]
+    fn the_accept_path_still_checks_the_peer_cid() {
+        let src = include_str!("pod_mgmt.rs");
+        let accept = src
+            .split("async fn accept(&mut self)")
+            .nth(1)
+            .expect("VsockAxumListener::accept must exist");
+        let body = &accept[..accept.find("\n    fn local_addr").unwrap_or(accept.len())];
+        assert!(
+            body.contains("peer_is_host"),
+            "the vsock accept path no longer checks the peer CID — any guest \
+             process could reach the proxy control plane as if it were the host"
+        );
+        assert!(
+            body.contains("continue"),
+            "a rejected peer must be dropped and the loop continued, not returned"
         );
     }
 }
