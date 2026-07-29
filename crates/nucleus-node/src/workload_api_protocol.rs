@@ -44,6 +44,31 @@ pub enum WorkloadApiCommand {
     FetchBundle,
     /// `PING` — liveness probe.
     Ping,
+    /// `FETCH_TASK_TOKEN` — request this pod's live-path session capability
+    /// token.
+    ///
+    /// # Why this rides the workload API rather than the broker
+    ///
+    /// The broker socket is better engineered — identity-bound at the listener,
+    /// fail-closed, TTL'd — but its frame is a credential *request envelope*,
+    /// and a token fetch is not that; it would need a second operation kind
+    /// inside a protocol that has one job. This channel already serves per-pod
+    /// artifacts over a per-pod socket, so the extension is a variant rather
+    /// than a protocol inside a protocol.
+    ///
+    /// # What it replaces
+    ///
+    /// The token rides the **kernel command line** today, as
+    /// `nucleus.task_token_hex`/`_nonce`/`_issuer`. That is world-readable
+    /// inside the guest, and — the reason this exists — it is *per-pod material
+    /// baked into a boot artifact*, so every clone restored from a snapshot
+    /// would inherit one pod's token. Three of the five keys blocking a
+    /// snapshottable base are these.
+    ///
+    /// The token is **not a secret** (a scoped capability plus a public issuer
+    /// key, with anti-replay resting on a host-pinned nonce), so this is not
+    /// about confidentiality. It is about uniqueness surviving a restore.
+    FetchTaskToken,
 }
 
 impl WorkloadApiCommand {
@@ -59,6 +84,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchSvid => "FETCH_SVID",
             WorkloadApiCommand::FetchBundle => "FETCH_BUNDLE",
             WorkloadApiCommand::Ping => "PING",
+            WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
         }
     }
 }
@@ -121,6 +147,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_SVID" => Ok(WorkloadApiCommand::FetchSvid),
         "FETCH_BUNDLE" => Ok(WorkloadApiCommand::FetchBundle),
         "PING" => Ok(WorkloadApiCommand::Ping),
+        "FETCH_TASK_TOKEN" => Ok(WorkloadApiCommand::FetchTaskToken),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -133,6 +160,7 @@ mod tests {
     #[test]
     fn known_commands_round_trip() {
         for cmd in [
+            WorkloadApiCommand::FetchTaskToken,
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::Ping,
@@ -287,6 +315,7 @@ mod tests {
                 WorkloadApiCommand::FetchSvid => "FETCH_SVID",
                 WorkloadApiCommand::FetchBundle => "FETCH_BUNDLE",
                 WorkloadApiCommand::Ping => "PING",
+                WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
             }
         }
         for cmd in [

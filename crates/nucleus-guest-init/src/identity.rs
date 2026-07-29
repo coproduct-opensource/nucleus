@@ -36,6 +36,60 @@ struct BundleResponse {
     bundle_pem: String,
 }
 
+/// The three values a session capability token comprises.
+///
+/// Named to match what the tool-proxy reads from its environment —
+/// `NUCLEUS_TASK_TOKEN{,_NONCE,_ISSUER}` — because a mismatch here fails at
+/// proxy startup rather than at use, which is far from the cause.
+#[derive(Debug, serde::Deserialize)]
+pub struct TaskTokenResponse {
+    pub token: String,
+    pub nonce: String,
+    pub issuer: String,
+}
+
+/// Fetch this pod's session capability token from the host.
+///
+/// # Why over vsock rather than the kernel command line
+///
+/// The token rides `nucleus.task_token_hex`/`_nonce`/`_issuer` today. It is not
+/// a secret — a scoped capability plus a public issuer key — so this is not
+/// about confidentiality. It is that **per-pod material baked into a boot
+/// artifact survives a snapshot**: every clone restored from one base would
+/// carry a single pod's token. Fetching after boot is what makes a snapshot base
+/// reusable, and three of the five keys blocking one are these.
+///
+/// Fetched synchronously here, before the tool-proxy is exec'd, so the values
+/// are in the environment before anything reads them. That ordering is the whole
+/// risk of moving delivery off the command line, and it is structural rather
+/// than hoped-for: `main` calls this and only then calls `exec_proxy`.
+pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_TASK_TOKEN\n")
+        .map_err(|e| format!("failed to send FETCH_TASK_TOKEN: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read task token response: {e}"))?;
+
+    // The host answers a pod with no minted token with `{"error": ...}` rather
+    // than an empty token, so a parse failure here is a real protocol problem
+    // and not the ordinary "this pod has none" case.
+    serde_json::from_str::<TaskTokenResponse>(&response).map_err(|e| {
+        format!(
+            "failed to parse task token response ({e}): {}",
+            response.trim()
+        )
+    })
+}
+
 /// Fetches the workload certificate from the host via vsock.
 ///
 /// This connects to the host's Workload API server, fetches the X.509 SVID,

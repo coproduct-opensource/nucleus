@@ -93,7 +93,8 @@ fn run() -> Result<(), String> {
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
 
     // Fetch SPIFFE identity from host if configured
-    if let Some(port) = identity::parse_workload_api_port(&cmdline) {
+    let workload_api_port = identity::parse_workload_api_port(&cmdline);
+    if let Some(port) = workload_api_port {
         match identity::fetch_identity(port) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
@@ -101,6 +102,39 @@ fn run() -> Result<(), String> {
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");
                 // Continue without identity - not fatal for now
+            }
+        }
+    }
+
+    // Session capability token, preferred over the kernel command line.
+    //
+    // Fetching it here rather than reading `nucleus.task_token_hex` is what lets
+    // the command-line copy go, and the command line is what blocks a snapshot
+    // base: per-pod material baked into a boot artifact is inherited by every
+    // clone restored from it. The token is not a secret — a scoped capability
+    // plus a public issuer key — so this is about uniqueness surviving a
+    // restore, not confidentiality.
+    //
+    // Synchronous, and before `exec_proxy`, so the values are in the environment
+    // before anything reads them.
+    let mut token_from_vsock = false;
+    if let Some(port) = workload_api_port {
+        match identity::fetch_task_token(port) {
+            Ok(t) => {
+                std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
+                token_from_vsock = true;
+                eprintln!("fetched session task token over vsock");
+            }
+            Err(err) => {
+                // Not fatal, and deliberately so: the command-line path below is
+                // still in place, so a node that has not been updated still
+                // works. When the cmdline copy is removed this must become the
+                // only source, and THEN a failure here should be fatal — the
+                // tool-proxy would otherwise start with no token and fail closed
+                // later, far from the cause.
+                eprintln!("failed to fetch session task token over vsock: {err}");
             }
         }
     }
@@ -138,7 +172,12 @@ fn run() -> Result<(), String> {
     // the tool-proxy verify half expects and forward all three as env vars. If
     // the token is absent or the hex is malformed we simply do not set them —
     // the tool-proxy then records Missing/Invalid and fails closed.
-    if let Some(token_hex) = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex") {
+    let cmdline_token = if token_from_vsock {
+        None
+    } else {
+        parse_cmdline_secret(&cmdline, "nucleus.task_token_hex")
+    };
+    if let Some(token_hex) = cmdline_token {
         match hex::decode(&token_hex)
             .ok()
             .and_then(|b| String::from_utf8(b).ok())

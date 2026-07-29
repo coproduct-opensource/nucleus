@@ -2733,6 +2733,10 @@ async fn spawn_firecracker_pod(
                     state.identity_vsock_port,
                     id,
                     manager.clone(),
+                    // The same token that rides the kernel command line today.
+                    // Serving it here is what lets the cmdline copy go: a value
+                    // fetched after boot is not baked into a snapshot base.
+                    task_token.clone(),
                 )
                 .await
                 {

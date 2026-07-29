@@ -85,6 +85,7 @@ impl WorkloadApiVsockBridge {
         port: u32,
         pod_id: uuid::Uuid,
         identity_manager: IdentityManager,
+        task_token: Option<crate::session_mint::MintedTaskToken>,
     ) -> std::io::Result<Self> {
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
@@ -121,8 +122,11 @@ impl WorkloadApiVsockBridge {
                         match accept_result {
                             Ok((stream, _)) => {
                                 let manager = identity_manager.clone();
+                                let task_token = task_token.clone();
                                 tokio::spawn(async move {
-                                    if let Err(err) = handle_connection(stream, manager, pod_id).await {
+                                    if let Err(err) =
+                                        handle_connection(stream, manager, pod_id, task_token).await
+                                    {
                                         debug!("workload API connection closed: {err}");
                                     }
                                 });
@@ -170,10 +174,29 @@ impl WorkloadApiVsockBridge {
 
 /// Handles a single Workload API connection from a guest.
 #[allow(dead_code)]
+/// Serve this pod's session capability token.
+///
+/// `None` — the pod was launched without one — is answered with an explicit
+/// refusal rather than an empty token. A guest handed `{"token":""}` could not
+/// distinguish "none was minted" from "the token is empty", and the tool-proxy's
+/// verify half treats a missing token and an invalid one differently.
+fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> String {
+    match token {
+        Some(t) => serde_json::json!({
+            "token": t.token_json,
+            "nonce": t.nonce_hex,
+            "issuer": t.issuer_hex,
+        })
+        .to_string(),
+        None => r#"{"error":"no task token was minted for this pod"}"#.to_string(),
+    }
+}
+
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     manager: IdentityManager,
     pod_id: uuid::Uuid,
+    task_token: Option<crate::session_mint::MintedTaskToken>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -198,6 +221,10 @@ async fn handle_connection(
                 handle_fetch_bundle(&manager)
             }
             Ok(WorkloadApiCommand::Ping) => r#"{"status":"ok"}"#.to_string(),
+            Ok(WorkloadApiCommand::FetchTaskToken) => {
+                debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
+                handle_fetch_task_token(task_token.as_ref())
+            }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
                 // Build the error response via serde so the (attacker-controlled)
@@ -320,6 +347,63 @@ fn handle_fetch_bundle(manager: &IdentityManager) -> String {
 }
 
 #[cfg(test)]
+mod task_token_serving_tests {
+    use super::*;
+    use crate::session_mint::MintedTaskToken;
+
+    fn minted() -> MintedTaskToken {
+        MintedTaskToken {
+            token_json: r#"{"task":"demo"}"#.to_string(),
+            nonce_hex: "0011223344556677".to_string(),
+            issuer_hex: "aabbccdd".to_string(),
+        }
+    }
+
+    /// The served shape is exactly the three values the guest sets as
+    /// `NUCLEUS_TASK_TOKEN{,_NONCE,_ISSUER}` — the same trio the kernel command
+    /// line carries today. If these drift apart the guest gets a token the
+    /// tool-proxy cannot verify, which fails at startup rather than at use.
+    #[test]
+    fn the_served_token_carries_the_three_values_the_guest_needs() {
+        let body = handle_fetch_task_token(Some(&minted()));
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(v["token"], r#"{"task":"demo"}"#);
+        assert_eq!(v["nonce"], "0011223344556677");
+        assert_eq!(v["issuer"], "aabbccdd");
+    }
+
+    /// **A pod with no token gets a refusal, not an empty one.** A guest handed
+    /// `{"token":""}` could not tell "none was minted" from "the token is
+    /// empty", and the tool-proxy's verify half treats missing and invalid
+    /// differently — so collapsing them would turn a launch-time
+    /// misconfiguration into a confusing runtime denial.
+    #[test]
+    fn a_pod_without_a_token_is_refused_rather_than_given_an_empty_one() {
+        let body = handle_fetch_task_token(None);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            v.get("token").is_none(),
+            "must not offer an empty token: {body}"
+        );
+        assert!(v["error"].is_string(), "must say why: {body}");
+    }
+
+    /// The command must round-trip through the wire spelling the guest sends.
+    #[test]
+    fn the_guest_spelling_parses_to_the_command() {
+        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        assert_eq!(
+            parse_command(b"FETCH_TASK_TOKEN").unwrap(),
+            WorkloadApiCommand::FetchTaskToken
+        );
+        assert_eq!(
+            WorkloadApiCommand::FetchTaskToken.as_wire(),
+            "FETCH_TASK_TOKEN"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -335,7 +419,7 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager)
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
             .await
             .unwrap();
 
@@ -374,7 +458,7 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager)
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
             .await
             .unwrap();
 
@@ -407,7 +491,7 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager)
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None)
             .await
             .unwrap();
 
@@ -425,7 +509,7 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager)
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
             .await
             .unwrap();
 
@@ -486,12 +570,14 @@ mod tests {
         let vsock1_path = temp_dir.path().join("pod1").join("vsock.sock");
         let vsock2_path = temp_dir.path().join("pod2").join("vsock.sock");
 
-        let bridge1 = WorkloadApiVsockBridge::start(&vsock1_path, 15012, pod1_id, manager.clone())
-            .await
-            .unwrap();
-        let bridge2 = WorkloadApiVsockBridge::start(&vsock2_path, 15012, pod2_id, manager.clone())
-            .await
-            .unwrap();
+        let bridge1 =
+            WorkloadApiVsockBridge::start(&vsock1_path, 15012, pod1_id, manager.clone(), None)
+                .await
+                .unwrap();
+        let bridge2 =
+            WorkloadApiVsockBridge::start(&vsock2_path, 15012, pod2_id, manager.clone(), None)
+                .await
+                .unwrap();
 
         // Wait for servers to start
         tokio::time::sleep(Duration::from_millis(50)).await;
