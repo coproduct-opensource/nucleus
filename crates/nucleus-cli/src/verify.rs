@@ -227,11 +227,21 @@ fn verify_here() -> Result<()> {
 /// Separately, because a single "not ready" would send someone to re-run setup
 /// when the actual cause is one missing file they can see named here.
 fn preflight(host: &Tier2Host) -> Result<()> {
-    let checks: [(&str, String, &str); 5] = [
+    let checks: [(&str, String, &str); 6] = [
         (
             "/dev/kvm",
             "test -r /dev/kvm".to_string(),
             "no KVM: Tier 2 needs Apple M3+ on macOS 15+, or a Linux host with /dev/kvm",
+        ),
+        (
+            // Firecracker's vsock device needs the host's vhost-vsock, and the
+            // guest reaches the workload API — its SVID and task token — over
+            // exactly that channel. Without it the pod fails at device setup,
+            // far from anything that names vsock. Checked here because a missing
+            // kernel module is a host precondition, not a nucleus defect.
+            "/dev/vhost-vsock",
+            "test -e /dev/vhost-vsock".to_string(),
+            "no /dev/vhost-vsock — load it with: sudo modprobe vhost_vsock",
         ),
         (
             "firecracker",
@@ -481,12 +491,16 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// with [`check_allowed_operation`], which must *succeed*, so a proxy that
 /// denied everything fails this pair rather than passing it.
 ///
-/// It does **not** establish that the enforced lattice is the one the pod's
-/// profile declares. Measured 2026-07-29: a booted pod refuses `ReadFiles` as
-/// `Never` while its baked profile sets `read_files: Always`, and the cause is
-/// not yet located (see "Guest capabilities do not match the declared profile"
-/// in `docs/production-delta.md`). Saying "enforcement works" would be true;
-/// saying "your policy is what runs" would not be, on today's evidence.
+/// It does **not** establish that the enforced lattice equals the one the pod's
+/// profile declares — that would need the check to know the image's baked
+/// profile and compare it, which it does not do.
+///
+/// A note on the `kind` it accepts: a booted pod used to report this refusal as
+/// `insufficient_capability` with a fabricated `Never`, for a policy that said
+/// `Always`. That was the proxy flattening every kernel reason into a capability
+/// claim, since fixed — the denial now arrives as `kernel_denied` naming the
+/// delegation ceiling it exceeded. The check accepts both, because the point is
+/// that a *policy* refused, not which spelling it used.
 fn check_forbidden_operation(pod: &Pod) -> Result<()> {
     let (status, body) = proxy_post(pod, "read", serde_json::json!({ "path": FORBIDDEN_READ }))?;
     if status < 400 {
