@@ -332,21 +332,35 @@ fn verify_attestation(path: &Path) -> bool {
 
 /// Candidate paths for a locally built artifact in this working tree.
 fn local_build_candidates(artifact: Tier2Artifact, arch: &str) -> Vec<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // The working directory first, and `CARGO_MANIFEST_DIR` only as a fallback.
+    //
+    // `CARGO_MANIFEST_DIR` is resolved at COMPILE time, so a released binary
+    // carries whichever machine built it — a path that does not exist on the
+    // user's disk, which would make `--artifacts local` fail with a message
+    // naming a directory they have never seen. "The checkout I am standing in"
+    // is both what someone means by *local* and independent of where the binary
+    // came from.
+    let mut roots = vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))];
+    if let Some(manifest_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    {
+        if manifest_root.is_dir() && !roots.contains(&manifest_root.to_path_buf()) {
+            roots.push(manifest_root.to_path_buf());
+        }
+    }
+    // `find(is_file)` at the call sites picks the first that exists, so listing
+    // several roots is how a candidate list earns its plural.
+    let paths =
+        |suffix: String| -> Vec<PathBuf> { roots.iter().map(|r| r.join(&suffix)).collect() };
     match artifact {
         // Matches what release.yml packages, so a local build and a release
         // build are the same file in two places rather than two conventions.
-        Tier2Artifact::Rootfs => vec![root.join(format!("build/firecracker/{arch}/rootfs.ext4"))],
-        Tier2Artifact::Node => vec![root.join(format!(
+        Tier2Artifact::Rootfs => paths(format!("build/firecracker/{arch}/rootfs.ext4")),
+        Tier2Artifact::Node => paths(format!(
             "target/{arch}-unknown-linux-musl/release/nucleus-node"
-        ))],
-        Tier2Artifact::Cli => {
-            vec![root.join(format!("target/{arch}-unknown-linux-musl/release/nucleus"))]
-        }
+        )),
+        Tier2Artifact::Cli => paths(format!("target/{arch}-unknown-linux-musl/release/nucleus")),
     }
 }
 
@@ -603,6 +617,24 @@ mod tests {
     fn artifact_paths_are_guest_absolute_not_host_relative() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
         assert!(node_env_body("a", "b", "c").contains(HOST_STATE_DIR));
+    }
+
+    /// The first place looked at must be the working directory, not the
+    /// directory this binary was compiled in. `CARGO_MANIFEST_DIR` is resolved
+    /// at compile time, so a released binary would otherwise search a path that
+    /// exists only on the machine that built it.
+    #[test]
+    fn local_candidates_start_from_the_working_directory() {
+        let cwd = std::env::current_dir().expect("cwd");
+        for artifact in Tier2Artifact::all() {
+            let first = &local_build_candidates(*artifact, "aarch64")[0];
+            assert!(
+                first.starts_with(&cwd),
+                "{artifact:?} looks in {} before the working directory {}",
+                first.display(),
+                cwd.display()
+            );
+        }
     }
 
     /// `Auto` must not claim a local build when only half of one exists — a
