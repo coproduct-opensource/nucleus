@@ -336,3 +336,18 @@ fn a_denied_grant_withholds_the_workload_api_port() {
         None
     );
 }
+
+/// The serving-side half of the gate: a denied pod is never registered, so
+/// there is no identity to issue even if the guest reaches the listener.
+#[test]
+fn a_denied_grant_is_never_registered_with_the_workload_api() {
+    use crate::net::identity_registration;
+    let manager = "stand-in for IdentityManager";
+    let denied = IdentityGrant::Denied {
+        offending: "0.0.0.0/0".to_string(),
+    };
+    assert!(identity_registration(Some(&manager), &denied).is_none());
+    assert!(identity_registration(Some(&manager), &IdentityGrant::Granted).is_some());
+    // Identity disabled on the node still wins.
+    assert!(identity_registration(None::<&&str>, &IdentityGrant::Granted).is_none());
+}

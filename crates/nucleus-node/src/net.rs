@@ -1475,3 +1475,20 @@ pub fn workload_api_port_for(
         None
     }
 }
+
+/// The identity manager to register a pod with, or `None`.
+///
+/// Serving-side mirror of [`workload_api_port_for`]. Withholding the port hides
+/// the endpoint; withholding the REGISTRATION means there is nothing to serve
+/// even to a guest that found it anyway — `WorkloadApiServer` issues against
+/// registered connections, so an unregistered pod has nothing to fetch.
+///
+/// Generic over the manager type so this composition is compiled and tested on
+/// any host, rather than living only inside the Linux-gated spawn path where a
+/// dev machine never type-checks it.
+pub fn identity_registration<'a, T>(
+    manager: Option<&'a T>,
+    grant: &IdentityGrant,
+) -> Option<&'a T> {
+    manager.filter(|_| grant.is_granted())
+}

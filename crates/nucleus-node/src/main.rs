@@ -2474,8 +2474,18 @@ async fn spawn_firecracker_pod(
         };
 
         // Create and register SPIFFE identity if identity management is enabled
+        // AND the pod's egress is confined enough to hold one.
+        //
+        // DEFENCE IN DEPTH FOR THE IDENTITY GATE. Withholding the vsock port
+        // above only removes the signpost — a guest that guessed the port could
+        // still reach the listener. Not registering the pod means there is no
+        // identity to serve even then: `WorkloadApiServer` issues against
+        // registered connections, so an unregistered pod has nothing to fetch.
+        // The refusal is at the source rather than the advertisement.
+        let identity_source =
+            net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
         let (pod_identity, identity_manager, workload_api_bridge) =
-            if let Some(ref manager) = state.identity_manager {
+            if let Some(manager) = identity_source {
                 // Use pod metadata for namespace/service_account context
                 let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
                 let service_account = spec.metadata.name.as_deref().unwrap_or("");
