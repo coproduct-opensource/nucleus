@@ -1338,3 +1338,140 @@ COMMIT
         }
     }
 }
+
+// ── Identity is gated on egress confinement ───────────────────────────────
+
+/// IPv4 ranges that are not globally routable. A workload confined to these
+/// cannot present a credential to the open internet.
+///
+/// RFC1918 private, loopback, link-local, and CGNAT (RFC6598). Deliberately not
+/// exhaustive over every reserved block — anything unlisted is treated as
+/// PUBLIC, which is the conservative direction for a check whose `false` grants
+/// an identity.
+const NON_ROUTABLE_V4: &[(Ipv4Addr, u8)] = &[
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+    (Ipv4Addr::new(127, 0, 0, 0), 8),
+    (Ipv4Addr::new(169, 254, 0, 0), 16),
+    (Ipv4Addr::new(100, 64, 0, 0), 10),
+];
+
+/// Whether `net` can reach any globally-routable address.
+///
+/// True unless the whole range sits inside one of [`NON_ROUTABLE_V4`]. A range
+/// straddling private and public space counts as public, which is correct: it
+/// admits public destinations.
+///
+/// IPv6 returns `true` — the ranges above are IPv4 and nucleus disables IPv6 in
+/// the guest, so an IPv6 allow rule is not something to reason about and is
+/// treated as reaching the internet rather than assumed contained.
+pub fn reaches_public_internet(net: IpNet) -> bool {
+    let IpNet::V4(v4) = net else {
+        return true;
+    };
+    !NON_ROUTABLE_V4.iter().any(|(base, prefix)| {
+        ipnet::Ipv4Net::new(*base, *prefix)
+            .map(|block| block.contains(&v4))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether a pod may be given a workload identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityGrant {
+    /// Egress is confined; an SVID may be issued.
+    Granted,
+    /// Egress is unconfined; issuing would produce a credential presentable to
+    /// destinations nobody can name.
+    Denied {
+        /// The allow entry responsible, for an actionable error.
+        offending: String,
+    },
+}
+
+impl IdentityGrant {
+    /// Whether an SVID may be issued.
+    pub fn is_granted(&self) -> bool {
+        matches!(self, IdentityGrant::Granted)
+    }
+}
+
+impl std::fmt::Display for IdentityGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityGrant::Granted => write!(f, "granted"),
+            IdentityGrant::Denied { offending } => write!(
+                f,
+                "workload identity refused: network policy allows {offending}, which reaches \
+                 public address space without naming a specific host. A SPIFFE SVID bounds how \
+                 LONG a credential is useful; egress confinement is what bounds WHERE it can be \
+                 presented. With unbounded egress the second bound is absent, so the identity \
+                 would be presentable to any endpoint including an attacker's. Narrow the \
+                 allowlist to specific hosts (/32, or use dns_allow), or run without an identity."
+            ),
+        }
+    }
+}
+
+/// Decide whether a pod's egress policy is confined enough to hold an identity.
+///
+/// # The rule
+///
+/// Every `allow` entry must either stay inside non-routable space, or name a
+/// single host (`/32`). "Some private network" is fine at any breadth; "some
+/// slice of the internet" is not, unless you can say which host.
+///
+/// `dns_allow` is unaffected by construction — it resolves to `/32` entries.
+///
+/// # Why absence of a policy GRANTS
+///
+/// No policy means `NetnsPlan::decide` still creates the netns and applies
+/// default-deny, with no allow rules at all — the most confined state there is,
+/// not the least. Refusing there would invert the incentive the gate exists to
+/// create.
+pub fn decide_identity_grant(network: Option<&NetworkSpec>) -> IdentityGrant {
+    let Some(policy) = network else {
+        return IdentityGrant::Granted;
+    };
+    for entry in &policy.allow {
+        let Ok((net, _port)) = parse_entry(entry) else {
+            // Unparseable entries are rejected upstream by `validate_policy`.
+            // Refuse here too rather than skip: an entry nobody could parse is
+            // not an entry anyone can vouch for.
+            return IdentityGrant::Denied {
+                offending: entry.clone(),
+            };
+        };
+        let names_one_host = net.prefix_len() == net.max_prefix_len();
+        if reaches_public_internet(net) && !names_one_host {
+            return IdentityGrant::Denied {
+                offending: entry.clone(),
+            };
+        }
+    }
+    IdentityGrant::Granted
+}
+
+/// The vsock port to advertise to the guest for the workload API, or `None`.
+///
+/// Pulled out of `spawn_firecracker_pod` so the composition that actually
+/// enforces the trade is testable without booting a VM. `None` means the guest
+/// is never told where the workload API lives, so nothing in it can fetch an
+/// SVID through the ordinary path.
+///
+/// Residual, and worth stating: this withholds the ENDPOINT, it does not refuse
+/// to serve. A guest that guessed the port could still reach the listener. The
+/// defence-in-depth version refuses at the serving side too, keyed on the pod's
+/// grant; that is not implemented.
+pub fn workload_api_port_for(
+    identity_enabled: bool,
+    grant: &IdentityGrant,
+    port: u32,
+) -> Option<u32> {
+    if identity_enabled && grant.is_granted() {
+        Some(port)
+    } else {
+        None
+    }
+}

@@ -226,3 +226,113 @@ fn an_ipv6_rule_falls_outside_the_model_rather_than_being_assumed_safe() {
         "an IPv6 chain must be reported as outside the model"
     );
 }
+
+// ── Identity is gated on egress confinement ───────────────────────────────
+
+use crate::net::{decide_identity_grant, IdentityGrant};
+
+fn net_spec(allow: &[&str]) -> nucleus_spec::NetworkSpec {
+    serde_json::from_str(&format!(
+        r#"{{"allow":{},"deny":[],"dns_allow":[]}}"#,
+        serde_json::to_string(allow).unwrap()
+    ))
+    .expect("network spec")
+}
+
+/// The headline trade: you may have the open internet, or a workload identity,
+/// not both.
+#[test]
+fn a_wide_open_allowlist_forfeits_the_workload_identity() {
+    assert!(!decide_identity_grant(Some(&net_spec(&["0.0.0.0/0"]))).is_granted());
+}
+
+/// Absence of a policy is the MOST confined state, not the least: `NetnsPlan`
+/// still creates the netns and applies default-deny with no allow rules. If this
+/// denied, the gate would push operators toward writing a policy in order to
+/// keep an identity — inverting the incentive it exists to create.
+#[test]
+fn no_policy_at_all_still_gets_an_identity() {
+    assert!(decide_identity_grant(None).is_granted());
+}
+
+/// Private space is fine at any breadth — reaching "some internal network"
+/// cannot present a credential to the internet.
+#[test]
+fn broad_private_ranges_do_not_forfeit_the_identity() {
+    for allow in [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+    ] {
+        assert!(
+            decide_identity_grant(Some(&net_spec(&[allow]))).is_granted(),
+            "{allow} is non-routable and must not forfeit the identity"
+        );
+    }
+}
+
+/// A named public host keeps the identity: the destination set is enumerable,
+/// which is the whole property. This is also what `dns_allow` resolves to, so
+/// the ordinary "let me reach this API" case is unaffected.
+#[test]
+fn a_named_public_host_keeps_the_identity() {
+    assert!(decide_identity_grant(Some(&net_spec(&["93.184.216.34/32"]))).is_granted());
+    assert!(decide_identity_grant(Some(&net_spec(&["93.184.216.34/32:443"]))).is_granted());
+}
+
+/// …but a public RANGE does not, however small. /31 is two hosts and still
+/// forfeits, because the rule is "name the host", not "keep it small" — a
+/// size threshold would be an arbitrary line to argue about.
+#[test]
+fn a_public_range_forfeits_even_when_small() {
+    for allow in ["93.184.216.0/24", "93.184.216.34/31", "128.0.0.0/1"] {
+        assert!(
+            !decide_identity_grant(Some(&net_spec(&[allow]))).is_granted(),
+            "{allow} reaches unnamed public hosts and must forfeit the identity"
+        );
+    }
+}
+
+/// One bad entry forfeits, even alongside good ones — the check is over the
+/// whole allow set, not a majority of it.
+#[test]
+fn one_unconfined_entry_forfeits_despite_confined_siblings() {
+    let spec = net_spec(&["10.0.0.0/8", "93.184.216.34/32", "0.0.0.0/0"]);
+    match decide_identity_grant(Some(&spec)) {
+        IdentityGrant::Denied { offending } => assert_eq!(offending, "0.0.0.0/0"),
+        IdentityGrant::Granted => panic!("a wide-open entry must forfeit the identity"),
+    }
+}
+
+/// The refusal explains the trade rather than just saying no — an operator
+/// reading it should be able to act on it.
+#[test]
+fn the_refusal_names_the_entry_and_the_remedy() {
+    let msg = decide_identity_grant(Some(&net_spec(&["0.0.0.0/0"]))).to_string();
+    assert!(msg.contains("0.0.0.0/0"), "names the entry: {msg}");
+    assert!(
+        msg.contains("dns_allow") || msg.contains("/32"),
+        "names a remedy: {msg}"
+    );
+}
+
+/// The wiring, not just the decision: a denied grant must withhold the port
+/// even when identity management is fully enabled on the node.
+#[test]
+fn a_denied_grant_withholds_the_workload_api_port() {
+    use crate::net::workload_api_port_for;
+    let denied = IdentityGrant::Denied {
+        offending: "0.0.0.0/0".to_string(),
+    };
+    assert_eq!(workload_api_port_for(true, &denied, 9000), None);
+    assert_eq!(
+        workload_api_port_for(true, &IdentityGrant::Granted, 9000),
+        Some(9000)
+    );
+    // And identity being off on the node still wins regardless of the grant.
+    assert_eq!(
+        workload_api_port_for(false, &IdentityGrant::Granted, 9000),
+        None
+    );
+}

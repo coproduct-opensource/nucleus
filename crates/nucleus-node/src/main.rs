@@ -2047,10 +2047,27 @@ async fn spawn_firecracker_pod(
             None => pod_dir.join("vsock.sock"),
         };
 
-        let workload_api_port = state
-            .identity_manager
-            .as_ref()
-            .map(|_| state.identity_vsock_port);
+        // IDENTITY IS GATED ON EGRESS CONFINEMENT.
+        //
+        // A SPIFFE SVID bounds how LONG a credential is useful (short-lived,
+        // rotated). What bounds WHERE it can be presented is the egress policy.
+        // A pod allowed to reach the open internet holds a credential
+        // presentable to any endpoint, including an attacker's — the temporal
+        // bound survives and the spatial one is simply absent.
+        //
+        // So the two are offered as a trade rather than a prohibition: keep the
+        // broad allowlist and boot WITHOUT a workload API, or narrow it to named
+        // hosts and get an identity. The pod still runs either way; refusing the
+        // launch would make this a ban instead of a choice.
+        let identity_grant = net::decide_identity_grant(spec.spec.network.as_ref());
+        if let net::IdentityGrant::Denied { .. } = &identity_grant {
+            tracing::warn!(pod = %id, "{identity_grant}");
+        }
+        let workload_api_port = net::workload_api_port_for(
+            state.identity_manager.is_some(),
+            &identity_grant,
+            state.identity_vsock_port,
+        );
         // Live-path: mint the session capability token; from_spec injects it on
         // the kernel cmdline for guest-init to forward into the in-VM tool-proxy.
         let task_token = mint_task_token_for_spec(state, spec, id);
