@@ -84,7 +84,23 @@ yanked = "warn"
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"
-deny = []
+# CB4A separation of duties, enforced in the DEPENDENCY GRAPH.
+#
+# "The component that decides 'yes' (PDP) MUST never touch credential material."
+#
+# `nucleus-cred-broker` is the Credential Delivery Point. Listing it here with
+# `wrappers` means only the composition root may depend on it — so a policy
+# crate (portcullis*, nucleus-policy-*, nucleus-pca) that adds a dependency
+# fails this gate. A crate that is not in the dependency graph has no symbols to
+# reach, which is stronger than a lint over function bodies that indirection can
+# defeat.
+#
+# The converse MUST — the CDP must never decide policy — is enforced inside the
+# crate by `the_cdp_does_not_link_against_any_policy_crate`, which reads its own
+# manifest.
+deny = [
+  { name = "nucleus-cred-broker", wrappers = ["nucleus-node"] },
+]
 
 [licenses]
 # Allow common permissive licenses.
