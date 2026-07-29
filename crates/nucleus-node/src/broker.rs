@@ -126,6 +126,74 @@ pub fn authorize_and_fetch<'a>(
     cdp_fetch(&approved, store)
 }
 
+/// What the host sends back to the guest.
+///
+/// # The one thing this must never carry
+///
+/// A brokered request's whole purpose is that the guest acts *through* the
+/// credential without holding it. So the response carries the OUTCOME, never
+/// the secret — the industry pattern is that workloads inside the sandbox never
+/// hold credentials at all, only the result of actions taken with them.
+///
+/// That is not merely a convention here. `nucleus_cred_broker::Credential` has
+/// no `Serialize` impl, so a response type that tried to carry one **would not
+/// compile**. `a_response_cannot_carry_a_credential` pins that, and its
+/// dependence on the missing impl was established by perturbation in the broker
+/// crate rather than assumed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrokerResponse {
+    /// Whether the request was authorised and a credential was available.
+    pub granted: bool,
+    /// Why, in terms safe to hand back to untrusted code.
+    ///
+    /// Deliberately coarse. A refusal that explained *which* credential exists,
+    /// or how a policy is shaped, would turn every denial into an oracle the
+    /// agent could enumerate.
+    pub reason: &'static str,
+}
+
+impl BrokerResponse {
+    /// The request was authorised and a credential was found.
+    pub fn granted() -> Self {
+        BrokerResponse {
+            granted: true,
+            reason: "granted",
+        }
+    }
+
+    /// Refused, described coarsely on purpose.
+    pub fn refused(reason: &'static str) -> Self {
+        BrokerResponse {
+            granted: false,
+            reason,
+        }
+    }
+}
+
+/// The whole host-side path: parse a guest frame, decide, fetch, respond.
+///
+/// The credential is looked up and **dropped here**. It is never placed in the
+/// response, and could not be: see [`BrokerResponse`].
+///
+/// Refusal reasons are deliberately coarse and identical in shape for
+/// "policy said no" and "no such credential" would otherwise let a guest
+/// enumerate which credentials exist by watching which refusals differ. They are
+/// distinguished in the host's own logs, not in what goes back over the wire.
+pub fn handle_frame(
+    raw: &str,
+    policy: &PermissionLattice,
+    store: &CredentialStore,
+) -> BrokerResponse {
+    let envelope = match crate::envelope_frame::check_frame(raw) {
+        Ok(e) => e,
+        Err(_) => return BrokerResponse::refused("malformed request"),
+    };
+    match authorize_and_fetch(&envelope, policy, store) {
+        Ok(_credential) => BrokerResponse::granted(),
+        Err(_) => BrokerResponse::refused("not permitted"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +321,73 @@ mod tests {
         let err = authorize_and_fetch(&envelope("WebFetch", "nothing.here"), &policy, &store)
             .expect_err("nothing is registered");
         assert!(matches!(err, BrokerDenied::NoCredential(_)));
+    }
+
+    /// **The response must never carry the secret.** A granted response is
+    /// serialised and sent to the guest; if the credential value appeared
+    /// anywhere in it, the entire broker would be pointless.
+    #[test]
+    fn a_granted_response_contains_no_credential_value() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "super-secret-token");
+        let frame = serde_json::json!({
+            "pod_identity": "spiffe://nucleus/pod/abc",
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string();
+
+        let resp = handle_frame(&frame, &policy, &store);
+        assert!(resp.granted, "a permitted request should be granted");
+
+        let wire = serde_json::to_string(&resp).expect("response serialises");
+        assert!(
+            !wire.contains("super-secret-token"),
+            "the credential value reached the guest: {wire}"
+        );
+    }
+
+    /// **Refusals must not be an oracle.** "policy said no" and "no such
+    /// credential" have to look identical on the wire, or a guest can enumerate
+    /// which credentials exist by watching which refusals differ.
+    #[test]
+    fn refusals_do_not_reveal_which_credentials_exist() {
+        let mut denying = PermissionLattice::permissive();
+        denying.capabilities.web_fetch = CapabilityLevel::Never;
+        let permissive = PermissionLattice::permissive();
+
+        let frame = |target: &str| {
+            serde_json::json!({
+                "pod_identity": "spiffe://nucleus/pod/abc",
+                "operation": "WebFetch",
+                "target": target,
+                "justification": "routine"
+            })
+            .to_string()
+        };
+        let store = store_with("known.test", "token");
+
+        // Refused by policy, for a credential that DOES exist.
+        let by_policy = handle_frame(&frame("known.test"), &denying, &store);
+        // Refused because no such credential, under a policy that permits.
+        let by_absence = handle_frame(&frame("unknown.test"), &permissive, &store);
+
+        assert!(!by_policy.granted && !by_absence.granted);
+        assert_eq!(
+            by_policy, by_absence,
+            "the two refusals differ, so a guest can probe which credentials exist"
+        );
+    }
+
+    /// A malformed frame is refused without reaching policy or the store.
+    #[test]
+    fn a_malformed_frame_is_refused() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "token");
+        let resp = handle_frame("}{ not json", &policy, &store);
+        assert!(!resp.granted);
+        assert_eq!(resp.reason, "malformed request");
     }
 
     /// The separation, checked structurally: `pdp_decide` must not mention the
