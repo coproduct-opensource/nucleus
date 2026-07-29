@@ -4,7 +4,6 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::constants::FIRECRACKER_VERSION;
 use crate::keychain::{self, SecretKind, SecretStore};
 #[cfg(target_os = "macos")]
 use crate::setup::{AppleChip, MacOSVersion};
@@ -325,15 +324,25 @@ fn check_lima() -> bool {
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 let version = version_str.lines().next().unwrap_or("").trim();
 
-                let version_ok = version.contains(FIRECRACKER_VERSION);
+                // A FLOOR, NOT AN EQUALITY TEST. This used to be
+                // `version.contains(FIRECRACKER_VERSION)`, which reported a
+                // newer *patched* Firecracker as wrong exactly as loudly as an
+                // older vulnerable one — so the natural fix for the warning was
+                // to downgrade. `judge` refuses known-escape builds and accepts
+                // anything at or above the floor that is not denylisted.
+                let verdict = nucleus_spec::vmm_version::judge(version);
                 print_check(
                     "Firecracker",
-                    if version_ok {
+                    if verdict.is_acceptable() {
                         Status::Ok
                     } else {
-                        Status::Warning
+                        Status::Error
                     },
-                    version,
+                    &if verdict.is_acceptable() {
+                        version.to_string()
+                    } else {
+                        verdict.to_string()
+                    },
                 );
             } else {
                 print_check(

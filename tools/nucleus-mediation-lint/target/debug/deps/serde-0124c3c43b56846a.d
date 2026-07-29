@@ -1,0 +1,14 @@
+/Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/deps/serde-0124c3c43b56846a.d: /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/build/serde-9898c04bc3bfc40a/out/private.rs
+
+/Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/deps/libserde-0124c3c43b56846a.rlib: /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/build/serde-9898c04bc3bfc40a/out/private.rs
+
+/Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/deps/libserde-0124c3c43b56846a.rmeta: /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/build/serde-9898c04bc3bfc40a/out/private.rs
+
+/Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/bcrisp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/build/serde-9898c04bc3bfc40a/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/bcrisp/coproduct/nucleus/tools/nucleus-mediation-lint/target/debug/build/serde-9898c04bc3bfc40a/out
