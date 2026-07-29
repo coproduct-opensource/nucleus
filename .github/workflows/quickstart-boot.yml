@@ -134,8 +134,14 @@ jobs:
         with:
           # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
           # is what would otherwise supply it, and a SHA carries no tag.
+          #
+          # The `targets:` input is deliberately NOT used here. It installs the
+          # target for the toolchain the ACTION selects, but `rust-toolchain.toml`
+          # pins the channel cargo actually uses (1.96.1) — so the target landed
+          # on `stable` and the build ran on 1.96.1 without it, failing with
+          # "can't find crate for `std`". Added explicitly below instead, against
+          # whichever toolchain the pin resolves to.
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
 
       - name: This runner must actually have KVM
         run: |
@@ -149,6 +155,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools e2fsprogs
+          # Against the toolchain `rust-toolchain.toml` selects, not the one the
+          # setup action installed. Asserted, because a missing target fails deep
+          # in a dependency build with a message about `std` rather than about
+          # the target.
+          rustup target add x86_64-unknown-linux-musl
+          rustup target list --installed | grep -q x86_64-unknown-linux-musl
           cargo build --release --target x86_64-unknown-linux-musl \
             -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
             -p nucleus-tool-proxy -p nucleus-net-probe
