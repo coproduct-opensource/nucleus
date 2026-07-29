@@ -38,6 +38,13 @@
 //! Defence in depth against a bound that already exists, in other words, not the
 //! sole thing standing between a guest and a crashed host.
 
+// Not yet reachable from the launch path: nothing calls into the envelope bounds
+// during pod spawn, because the guest still has no way to submit an
+// envelope. CI denies warnings, and a bare dead_code warning here would
+// read as an oversight rather than a stated gap. The tests exercise every
+// item; `docs/production-delta.md` records the missing call site.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use nucleus_cred_broker::TaskRequestEnvelope;
 
 /// Largest frame the host will reassemble from the guest.

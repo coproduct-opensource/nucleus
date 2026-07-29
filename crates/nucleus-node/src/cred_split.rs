@@ -26,6 +26,13 @@
 //! `Debug` impl on `CredentialsSpec` already treats values as the sensitive part
 //! by redacting them alone.
 
+// Not yet reachable from the launch path: nothing calls into the credential split
+// during pod spawn, because the guest still has no way to submit an
+// envelope. CI denies warnings, and a bare dead_code warning here would
+// read as an oversight rather than a stated gap. The tests exercise every
+// item; `docs/production-delta.md` records the missing call site.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use nucleus_cred_broker::{Credential, CredentialStore};
 use nucleus_spec::PodSpec;
 
