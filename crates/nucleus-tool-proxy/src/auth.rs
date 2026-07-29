@@ -329,6 +329,40 @@ pub fn verify_http_with_drand(
     })
 }
 
+/// Authenticate a request purely from the transport it arrived on.
+///
+/// # Why this needs no secret
+///
+/// `pod_mgmt::VsockAxumListener` drops every peer whose CID is not
+/// `VMADDR_CID_HOST`, and the guest kernel — not the caller — sets that CID.
+/// So a request that reaches the router over that listener has already been
+/// proven to come from the host, by a mechanism no guest process can influence.
+///
+/// This replaces `verify_http`'s HMAC on the vsock path. The HMAC key travelled
+/// on the kernel command line, where the agent could read it out of
+/// `/proc/cmdline` and sign its own requests — a trust boundary drawn inside a
+/// single trust domain, which cannot hold. Verified empirically on a real
+/// kernel: an in-guest loopback peer arrives as CID 1, never CID 2.
+///
+/// Deliberately NOT a fallback. It is selected only when the server was started
+/// on a host-verified vsock listener; every other transport keeps its existing
+/// mechanism.
+pub fn verify_host_vsock() -> AuthContext {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    AuthContext {
+        actor: Some("host".to_string()),
+        timestamp: now,
+        drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::HostVsock,
+        identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
 /// Verify a request using SPIFFE mTLS identity.
 ///
 /// This function validates that a SPIFFE identity was extracted from the
@@ -349,6 +383,22 @@ pub fn verify_http_with_drand(
 /// 1. No static secrets that can be extracted
 /// 2. Identity is attested by the CA, not self-declared
 /// 3. Certificates auto-rotate, limiting compromise window
+pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    AuthContext {
+        actor: Some(spiffe_id.to_string()),
+        timestamp: now,
+        drand_round: None,
+        spiffe_id: Some(spiffe_id.to_string()),
+        auth_method: AuthMethod::SpiffeMtls,
+        identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
 /// Which authentication mechanism a request should be judged by.
 ///
 /// Extracted from the request handler so the PRECEDENCE is unit-testable. The
@@ -385,56 +435,6 @@ pub fn select_auth_tier(
         AuthTier::HostVsock
     } else {
         AuthTier::Hmac
-    }
-}
-
-/// Authenticate a request purely from the transport it arrived on.
-///
-/// # Why this needs no secret
-///
-/// `pod_mgmt::VsockAxumListener` drops every peer whose CID is not
-/// `VMADDR_CID_HOST`, and the guest kernel — not the caller — sets that CID.
-/// So a request that reaches the router over that listener has already been
-/// proven to come from the host, by a mechanism no guest process can influence.
-///
-/// This replaces `verify_http`'s HMAC on the vsock path. The HMAC key travelled
-/// on the kernel command line, where the agent could read it out of
-/// `/proc/cmdline` and sign its own requests — a trust boundary drawn inside a
-/// single trust domain, which cannot hold. Verified empirically on a real
-/// kernel: an in-guest loopback peer arrives as CID 1, never CID 2.
-///
-/// Deliberately NOT a fallback. It is selected only when the server was started
-/// on a host-verified vsock listener; every other transport keeps its existing
-/// mechanism.
-pub fn verify_host_vsock() -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    AuthContext {
-        actor: Some("host".to_string()),
-        timestamp: now,
-        drand_round: None,
-        spiffe_id: None,
-        auth_method: AuthMethod::HostVsock,
-        identity_binding: IdentityBinding::PolicyOnly,
-    }
-}
-
-pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    AuthContext {
-        actor: Some(spiffe_id.to_string()),
-        timestamp: now,
-        drand_round: None,
-        spiffe_id: Some(spiffe_id.to_string()),
-        auth_method: AuthMethod::SpiffeMtls,
-        identity_binding: IdentityBinding::PolicyOnly,
     }
 }
 
