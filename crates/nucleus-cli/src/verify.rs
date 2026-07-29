@@ -503,7 +503,20 @@ fn check_forbidden_operation(pod: &Pod) -> Result<()> {
         .ok()
         .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
         .unwrap_or_default();
-    let policy_kinds = ["path_denied", "insufficient_capability", "sandbox_escape"];
+    // `kernel_denied` carries the kernel's own reason (e.g. a delegation-ceiling
+    // rejection naming the operation and the level it exceeded). It is included
+    // because it is the ACCURATE kind: the proxy used to flatten most kernel
+    // refusals into `insufficient_capability` with a hand-written `Never`.
+    // `approval_required` is deliberately NOT here — "this needs an approval you
+    // did not present" is not the same as "this is forbidden", and accepting it
+    // would let an approvable operation pass as a denial.
+    let policy_kinds = [
+        "path_denied",
+        "insufficient_capability",
+        "sandbox_escape",
+        "kernel_denied",
+        "command_denied",
+    ];
     if !policy_kinds.contains(&kind.as_str()) {
         bail!(
             "reading {FORBIDDEN_READ} was refused ({status}) but not by policy \

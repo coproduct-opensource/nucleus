@@ -90,34 +90,61 @@ impl Tier2Host {
 
     /// Place a local file at an absolute path on the host, with `mode`.
     ///
-    /// Goes via `/tmp` on Lima because `limactl copy` cannot write to a
-    /// root-owned directory; the move and chmod happen in one root shell so a
-    /// binary is never briefly present with the wrong permissions.
+    /// # Why this lands via a sibling temp file and `mv`
+    ///
+    /// Writing **into** the destination fails when the destination is a running
+    /// binary: `cp` gets `ETXTBSY` ("Text file busy"). That is not a corner case
+    /// here — on a Linux Tier 2 host, `nucleus setup` installs the `nucleus` CLI
+    /// to `/usr/local/bin/nucleus`, which is very often the binary executing the
+    /// install. It failed exactly that way in CI.
+    ///
+    /// `mv` within the same directory is a `rename(2)`: it swaps the directory
+    /// entry rather than writing through it, so it succeeds against a running
+    /// binary (existing processes keep the old inode) and is atomic — no window
+    /// where the path holds a half-written file. Staging in the destination
+    /// directory rather than `/tmp` is what makes it a rename instead of a
+    /// cross-filesystem copy, which would reintroduce the problem.
+    ///
+    /// `chmod` happens on the temp file, before the rename, so the binary is
+    /// never visible at its real path with the wrong mode.
     pub fn put(&self, local: &Path, remote: &str, mode: &str) -> Result<()> {
         let file_name = local
             .file_name()
             .ok_or_else(|| anyhow!("not a file: {}", local.display()))?
             .to_string_lossy()
             .to_string();
+        // A sibling of the destination, so the final step is a rename.
+        let staged = format!("{remote}.nucleus-new");
         match self {
             Self::Lima(vm) => {
-                let staged = format!("/tmp/{file_name}");
+                // `limactl copy` cannot write into a root-owned directory, so
+                // land in /tmp first and move into place as root.
+                let tmp = format!("/tmp/{file_name}");
                 let status = Command::new("limactl")
                     .arg("copy")
                     .arg(local)
-                    .arg(format!("{vm}:{staged}"))
+                    .arg(format!("{vm}:{tmp}"))
                     .status()
                     .context("failed to run limactl copy")?;
                 if !status.success() {
                     bail!("limactl copy of {} into {vm} failed", local.display());
                 }
                 self.sh(&format!(
-                    "mkdir -p \"$(dirname {remote})\" && mv {staged} {remote} && chmod {mode} {remote}"
+                    "set -e
+                     mkdir -p \"$(dirname {remote})\"
+                     cp {tmp} {staged}
+                     chmod {mode} {staged}
+                     mv {staged} {remote}
+                     rm -f {tmp}"
                 ))?;
             }
             Self::Local => {
                 self.sh(&format!(
-                    "mkdir -p \"$(dirname {remote})\" && cp {} {remote} && chmod {mode} {remote}",
+                    "set -e
+                     mkdir -p \"$(dirname {remote})\"
+                     cp {} {staged}
+                     chmod {mode} {staged}
+                     mv {staged} {remote}",
                     local.display()
                 ))?;
             }
@@ -467,12 +494,17 @@ fn install_binary(host: &Tier2Host, local: &Path, name: &str, bin: &str) -> Resu
     if name.ends_with(".tar.gz") {
         let staged = format!("/tmp/{name}");
         host.put(local, &staged, "0644")?;
+        // Unpack beside the destination and rename into place, for the same
+        // reason `put` does: `mv` out of a `mktemp -d` under /tmp is very likely
+        // cross-filesystem, which degrades to copy+unlink and fails with
+        // ETXTBSY against a running binary.
         host.sh(&format!(
             "set -e
              tmp=$(mktemp -d)
              tar -xzf {staged} -C \"$tmp\"
-             mv \"$tmp/{bin}\" /usr/local/bin/{bin}
-             chmod 0755 /usr/local/bin/{bin}
+             cp \"$tmp/{bin}\" /usr/local/bin/{bin}.nucleus-new
+             chmod 0755 /usr/local/bin/{bin}.nucleus-new
+             mv /usr/local/bin/{bin}.nucleus-new /usr/local/bin/{bin}
              rm -rf \"$tmp\" {staged}"
         ))?;
     } else {
@@ -617,6 +649,32 @@ mod tests {
     fn artifact_paths_are_guest_absolute_not_host_relative() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
         assert!(node_env_body("a", "b", "c").contains(HOST_STATE_DIR));
+    }
+
+    /// Installing must go through a sibling temp file and a rename, or it fails
+    /// against a running binary with `ETXTBSY`. On a Linux Tier 2 host the
+    /// destination for the CLI is very often the binary doing the installing.
+    #[test]
+    fn install_lands_via_a_sibling_temp_file_so_it_can_replace_a_running_binary() {
+        let source = include_str!("provision.rs");
+        let put = source
+            .split("pub fn put(")
+            .nth(1)
+            .expect("put() must exist");
+        let body = &put[..put.find("\n    fn describe").unwrap_or(put.len())];
+        assert!(
+            body.contains("{remote}.nucleus-new"),
+            "the staged path must be a SIBLING of the destination, or `mv` is a \
+             cross-filesystem copy and ETXTBSY comes back"
+        );
+        assert!(
+            body.contains("mv {staged} {remote}"),
+            "the final step must be a rename, not a write into the destination"
+        );
+        assert!(
+            !body.contains("cp {} {remote}"),
+            "copying straight onto the destination is the ETXTBSY bug"
+        );
     }
 
     /// The first place looked at must be the working directory, not the

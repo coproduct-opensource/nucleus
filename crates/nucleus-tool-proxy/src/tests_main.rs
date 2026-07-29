@@ -433,20 +433,36 @@ mod ifc_http_enforcement {
     }
 
     #[test]
-    fn capability_deny_maps_to_insufficient_not_ifc() {
-        // read_only policy forbids writes; a clean session denial must surface as
-        // a capability error, NOT an IFC error (proves the two error classes are
-        // kept distinct).
+    fn capability_deny_is_distinct_from_ifc_and_names_the_ceiling() {
+        // read_only forbids writes; a clean-session denial must stay a CAPABILITY
+        // class error, distinct from an IFC one. That distinction is what this
+        // test has always protected and still does.
+        //
+        // What changed: the kernel reports this as
+        // `ActionTermRejected { detail: "WithinDelegationCeiling: requested
+        // WriteFiles@LowRisk exceeds available Never" }`, and the HTTP layer used
+        // to discard that detail and substitute a hand-written
+        // `InsufficientCapability { actual: Never }`. The substitution happened
+        // to be right HERE and was wrong for every other reason the kernel can
+        // give — a blocked path, an exhausted budget, an expired session, a
+        // request needing approval — all of which were reported as
+        // "capability is Never" about policies that said otherwise.
+        //
+        // So the assertion now checks the two things that are actually true and
+        // load-bearing: it is not an IFC denial, and the ceiling that caused it
+        // is named in the message rather than replaced by a constant.
         let mut kernel = Kernel::new(PermissionLattice::read_only());
         let flow = FlowTracker::new();
         let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
             .expect_err("read_only write must be denied");
         assert!(
-            matches!(
-                err,
-                ApiError::Nucleus(NucleusError::InsufficientCapability { .. })
-            ),
-            "expected InsufficientCapability, got {err:?}"
+            !matches!(err, ApiError::IfcDenied(_)),
+            "a capability denial must not be reported as an information-flow denial: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("WriteFiles") && msg.contains("Never"),
+            "the denial must name the operation and the ceiling it exceeded: {msg}"
         );
     }
 }
@@ -612,5 +628,104 @@ fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
     assert!(
         approvals.consume("run_bash"),
         "the trusted-signed operation must be registered"
+    );
+}
+
+// ── Kernel denials must say what the kernel actually said ────────────────────
+//
+// Both arms of `decide_with_flow_mapped` used to return
+// `InsufficientCapability { actual: Never }` — a constant written at the call
+// site, not a reading of the policy. A pod whose profile sets
+// `read_files: Always` was told its capability was `Never` for a blocked path,
+// an exhausted budget, an expired session, or a request that only needed
+// approval. Found on a booted pod, where the guest's own resolved runtime
+// printed `read_files = Always` while the wire said `Never`.
+
+/// A path denial must report the PATH, not a capability level.
+#[test]
+fn a_blocked_path_is_not_reported_as_a_capability_of_never() {
+    let err = kernel_denial_to_api_error(
+        Operation::ReadFiles,
+        ".ssh/id_rsa",
+        DenyReason::PathBlocked {
+            path: ".ssh/id_rsa".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains(".ssh/id_rsa"),
+        "the denial must name the path it blocked: {msg}"
+    );
+    assert!(
+        !msg.contains("level is Never"),
+        "a path denial is not a claim about the capability lattice: {msg}"
+    );
+}
+
+/// A budget denial must not masquerade as a capability denial either — the two
+/// send an operator to entirely different places.
+#[test]
+fn a_budget_denial_keeps_its_own_reason() {
+    let err = kernel_denial_to_api_error(
+        Operation::RunBash,
+        "cargo test",
+        DenyReason::BudgetExhausted {
+            remaining_usd: "0.00".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("BudgetExhausted"),
+        "the budget reason must survive: {msg}"
+    );
+    assert!(
+        !msg.contains("level is Never"),
+        "not a capability claim: {msg}"
+    );
+}
+
+/// The ONE case where `InsufficientCapability` is the truth still reports it,
+/// so this fix did not simply delete the variant.
+#[test]
+fn a_real_capability_denial_is_still_reported_as_one() {
+    let err =
+        kernel_denial_to_api_error(Operation::RunBash, "sh", DenyReason::InsufficientCapability);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("insufficient capability"),
+        "a genuine capability denial must still say so: {msg}"
+    );
+}
+
+/// A command denial names the command.
+#[test]
+fn a_blocked_command_names_the_command() {
+    let err = kernel_denial_to_api_error(
+        Operation::RunBash,
+        "curl evil.example",
+        DenyReason::CommandBlocked {
+            command: "curl".to_string(),
+        },
+    );
+    assert!(err.to_string().contains("curl"));
+}
+
+/// An unfamiliar reason must surface accurately rather than being flattened
+/// into a capability claim — the failure mode this whole change removes.
+#[test]
+fn an_unmapped_reason_keeps_its_text_instead_of_becoming_a_capability_claim() {
+    let err = kernel_denial_to_api_error(
+        Operation::WebFetch,
+        "https://example.com",
+        DenyReason::IsolationGated {
+            dimension: "network".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("IsolationGated"), "reason must survive: {msg}");
+    assert!(msg.contains("network"), "detail must survive: {msg}");
+    assert!(
+        !msg.contains("level is Never"),
+        "not a capability claim: {msg}"
     );
 }

@@ -1065,6 +1065,11 @@ enum ApiError {
     AttestationFailed(String),
     #[error("escalation error: {0}")]
     Escalation(String),
+    /// The permission kernel refused, for a reason that is not a capability
+    /// level. Carries the kernel's own reason rather than flattening every
+    /// refusal into "capability is Never".
+    #[error("kernel denied: {0}")]
+    KernelDenied(String),
     #[error("validation error: {0}")]
     Validation(#[from] validation::ValidationError),
     #[error("permission bid denied: insufficient value")]
@@ -1124,6 +1129,7 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
+            ApiError::KernelDenied(_) => (StatusCode::FORBIDDEN, "kernel_denied", None, None),
             ApiError::Nucleus(NucleusError::Io(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
             }
@@ -2351,6 +2357,41 @@ fn check_identity_policy(
     !requires_approval
 }
 
+/// Translate a kernel [`DenyReason`] into the HTTP error surface, preserving
+/// what the kernel actually said.
+///
+/// Each arm maps to a reason the response mapping already models, so a caller
+/// sees `path_denied` / `budget_exhausted` / `command_denied` rather than a
+/// blanket capability error. `InsufficientCapability` is the ONLY reason that
+/// still produces `InsufficientCapability` — that is the one case where it is
+/// true.
+///
+/// The catch-all keeps the reason text rather than discarding it: a new
+/// `DenyReason` variant should surface as an unfamiliar-but-accurate message,
+/// not silently become a capability claim.
+fn kernel_denial_to_api_error(operation: Operation, subject: &str, reason: DenyReason) -> ApiError {
+    match reason {
+        DenyReason::InsufficientCapability => {
+            ApiError::Nucleus(NucleusError::InsufficientCapability {
+                capability: format!("{operation:?}"),
+                actual: CapabilityLevel::Never,
+                required: CapabilityLevel::LowRisk,
+            })
+        }
+        DenyReason::PathBlocked { path } => ApiError::Nucleus(NucleusError::PathDenied {
+            path: std::path::PathBuf::from(path),
+            reason: "blocked by the path lattice".to_string(),
+        }),
+        DenyReason::CommandBlocked { command } => ApiError::Nucleus(NucleusError::CommandDenied {
+            command,
+            reason: "blocked by the command lattice".to_string(),
+        }),
+        other => {
+            ApiError::KernelDenied(format!("{other:?} (operation {operation:?} on {subject})"))
+        }
+    }
+}
+
 /// Pure reference monitor for the HTTP path: kernel decision + information-flow
 /// consult, mapped to the HTTP error surface. Split out from [`http_kernel_decide`]
 /// so it is unit-testable with a bare [`Kernel`] + [`FlowTracker`] (no `AppState`).
@@ -2375,13 +2416,26 @@ fn decide_with_flow_mapped(
             warn!(?operation, subject, %detail, "HTTP IFC denied outbound action (lethal trifecta)");
             Err(ApiError::IfcDenied(detail))
         }
+        // Report the reason the kernel actually gave.
+        //
+        // Both of these arms used to return
+        // `InsufficientCapability { capability: format!("{operation:?}"),
+        //  actual: Never, required: LowRisk }` — where `Never` is a **constant
+        // written here**, not a reading of the policy. So a pod whose profile
+        // sets `read_files: Always` was told "'ReadFiles' level is Never" for a
+        // blocked path, an exhausted budget, an expired session, or a request
+        // that merely needed approval. Measured on a booted pod: the guest's
+        // resolved runtime was `demo` with `read_files = Always` while the wire
+        // said `Never`. That is a control stating a confident falsehood about
+        // why it refused — the same shape as a seccomp check reporting mode 0
+        // for a process that had already exited.
+        //
+        // The capability name was also the Debug of the *Operation*
+        // (`ReadFiles`), not a capability, which is what made the mismatch
+        // visible: nothing in the lattice is spelled that way.
         Verdict::Deny(reason) => {
             warn!(?operation, subject, ?reason, "HTTP kernel denied operation");
-            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                capability: format!("{operation:?}"),
-                actual: CapabilityLevel::Never,
-                required: CapabilityLevel::LowRisk,
-            }))
+            Err(kernel_denial_to_api_error(operation, subject, reason))
         }
         Verdict::RequiresApproval => {
             info!(
@@ -2390,10 +2444,12 @@ fn decide_with_flow_mapped(
                 exposure = decision.exposure_transition.post_count,
                 "HTTP kernel requires approval (no auto-approve channel)"
             );
-            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                capability: format!("{operation:?}"),
-                actual: CapabilityLevel::Never,
-                required: CapabilityLevel::LowRisk,
+            // `approval_required`, which the response mapping already models and
+            // which tells the caller something true and actionable: this is not
+            // "you may never do this", it is "this needs an approval you have
+            // not presented".
+            Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                operation: format!("{operation:?} {subject}"),
             }))
         }
     }
