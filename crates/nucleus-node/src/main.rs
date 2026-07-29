@@ -2714,6 +2714,12 @@ async fn spawn_firecracker_pod(
                     // Serving it here is what lets the cmdline copy go: a value
                     // fetched after boot is not baked into a snapshot base.
                     task_token.clone(),
+                    // Only when jailed: unjailed Firecracker runs as this same
+                    // user and can already connect. Passing an owner there would
+                    // hand our own socket away for no reason.
+                    jail_layout
+                        .as_ref()
+                        .map(|_| (state.jailer_uid, state.jailer_gid)),
                 )
                 .await
                 {

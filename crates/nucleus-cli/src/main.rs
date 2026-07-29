@@ -38,6 +38,7 @@ mod manifest;
 mod node;
 mod observe;
 mod profiles;
+mod provision;
 mod replay;
 mod run;
 mod setup;
@@ -45,6 +46,7 @@ mod shell;
 mod start;
 mod stop;
 mod token;
+mod verify;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -53,7 +55,7 @@ mod token;
 struct Cli {
     /// Configuration file path
     #[arg(short, long, env = "NUCLEUS_CONFIG")]
-    #[arg(default_value = "~/.config/nucleus/config.toml")]
+    #[arg(default_value = config::DEFAULT_CONFIG_ARG)]
     config: String,
 
     /// Enable verbose logging
@@ -83,6 +85,9 @@ enum Commands {
 
     /// Set up nucleus environment (Lima VM, artifacts, secrets)
     Setup(setup::SetupArgs),
+
+    /// Prove Tier 2 works by booting a real nucleus pod
+    Verify(verify::VerifyArgs),
 
     /// Start nucleus-node in the Lima VM
     Start(start::StartArgs),
@@ -170,6 +175,7 @@ async fn main() -> Result<()> {
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args).await,
+        Commands::Verify(args) => verify::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
         Commands::Stop(args) => stop::execute(args).await,
         Commands::Lockdown(args) => lockdown::execute(args).await,

@@ -1,12 +1,22 @@
 #!/bin/sh
-# Boot a throwaway Firecracker microVM and prove the Tier 2 path actually works.
+# Boot a throwaway Firecracker microVM on a STOCK Ubuntu rootfs.
 #
-# WHY THIS EXISTS
+# WHAT THIS PROVES, AND WHAT IT DOES NOT
 #
-# `nucleus setup` could report success while leaving a machine on which no
-# microVM will ever boot: `test -c /dev/kvm` passing says the device node is
-# there, not that Firecracker can use it. Every other check in setup is an
-# inference. This one runs the thing.
+# It proves Firecracker can start a microVM on this host. It proves NOTHING
+# about nucleus: the rootfs comes from the Firecracker CI bucket, so no
+# `guest-init` and no tool-proxy ever run, and no defect in either can make it
+# fail.
+#
+# `nucleus setup` used to end here and call it verification. On 2026-07-29 that
+# reported "PASS - Tier 2 works on this host" on a VM with no nucleus-node and
+# no nucleus rootfs, in the same run where `nucleus start` exited 1. The same
+# gap had already hidden five production-blocking defects behind a fully green
+# test suite.
+#
+# The real check is `nucleus verify --tier2`, which boots a real nucleus pod and
+# asserts what the guest did. Keep this script for what it is genuinely good at:
+# bisecting "is it Firecracker or is it us?" when a pod will not boot.
 #
 # Runs INSIDE the Lima VM (needs Linux, KVM and root). Downloads a kernel and
 # rootfs from the Firecracker CI bucket once and caches them under

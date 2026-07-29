@@ -290,7 +290,8 @@ pub async fn start_dns_proxy(
 
     let mut command = tokio::process::Command::new("ip");
     command
-        .args(["netns", "exec", &plan.netns, "--"])
+        // No `--`: iproute2 would exec it as the command. See `run_netns`.
+        .args(["netns", "exec", &plan.netns])
         .arg("dnsmasq")
         .arg("--no-daemon")
         .arg("--conf-file")
@@ -1036,16 +1037,42 @@ async fn run_ip(args: &[&str]) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+/// Run a command inside a named network namespace.
+///
+/// # No `--` here, and it is not a style choice
+///
+/// `ip netns exec NAME -- cmd` does **not** mean "end of options" to iproute2.
+/// `ip` takes everything after NAME as the command vector, so the `--` becomes
+/// argv[0] and the exec fails:
+///
+/// ```text
+/// # ip netns exec nuctest -- iptables -w -F
+/// exec of "--" failed: No such file or directory
+/// ```
+///
+/// Measured on iproute2 6.1 (Ubuntu 24.04). Since `apply_default_deny` is the
+/// first thing the Firecracker driver does for a pod with a netns — the
+/// **default** — this made every launch fail on a default install, reported as
+/// `iptables -F failed with exit status: 1`. The two `nsenter` call sites in
+/// this file keep their `--`, because util-linux really does accept it there;
+/// the separators are not interchangeable and this is why.
+///
+/// Stderr is captured rather than inherited, because inheriting it is how the
+/// one line that identified this bug got lost: the driver reported an exit
+/// status while `exec of "--" failed` went to the node's stdout stream,
+/// unattached to the error that mattered.
 async fn run_netns(netns: &str, args: &[&str]) -> Result<(), ApiError> {
-    let status = tokio::process::Command::new("ip")
-        .args(["netns", "exec", netns, "--"])
+    let output = tokio::process::Command::new("ip")
+        .args(["netns", "exec", netns])
         .args(args)
-        .status()
+        .output()
         .await?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ApiError::Driver(format!(
-            "ip netns exec {netns:?} {:?} failed with {status}",
-            args
+            "ip netns exec {netns:?} {args:?} failed with {}: {}",
+            output.status,
+            stderr.trim()
         )));
     }
     Ok(())
@@ -1163,6 +1190,53 @@ async fn apply_rule(pid: u32, chain: &str, rule: &NetRule, verdict: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ip netns exec NAME -- cmd` execs the literal `--` and fails. This test
+    /// reads the source rather than running `ip`, because the bug is in the argv
+    /// we construct and the CI runner that would catch it at runtime is the one
+    /// place this code is hardest to exercise.
+    ///
+    /// Non-vacuity first: if the scan finds no `ip netns exec` call sites at all,
+    /// the "none of them has a `--`" conclusion would be equally true of a file
+    /// that had been renamed out from under it.
+    #[test]
+    fn no_ip_netns_exec_passes_a_double_dash_separator() {
+        let source = include_str!("net.rs");
+        let call_sites: Vec<&str> = source
+            .lines()
+            .filter(|l| l.contains("\"netns\", \"exec\""))
+            .collect();
+        assert!(
+            call_sites.len() >= 2,
+            "expected to find the ip-netns-exec call sites; found {} — has this \
+             code moved? A scan that matches nothing proves nothing.",
+            call_sites.len()
+        );
+        for line in call_sites {
+            assert!(
+                !line.contains("\"--\""),
+                "`ip netns exec` must not be given a `--` separator; iproute2 \
+                 execs it as the command:\n  {}",
+                line.trim()
+            );
+        }
+    }
+
+    /// The `nsenter` sites are the counterexample: util-linux does accept `--`
+    /// there, so a blanket "no `--` anywhere" rule would be wrong. Pinning both
+    /// halves keeps a future cleanup from removing the correct one too.
+    #[test]
+    fn nsenter_keeps_its_double_dash_separator() {
+        let source = include_str!("net.rs");
+        let nsenter_sites = source
+            .lines()
+            .filter(|l| l.contains("--net=/proc/"))
+            .count();
+        assert!(
+            nsenter_sites >= 2,
+            "expected the nsenter call sites; found {nsenter_sites}"
+        );
+    }
 
     #[test]
     fn parse_ipv4_with_port() {
