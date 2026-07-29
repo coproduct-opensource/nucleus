@@ -1,15 +1,37 @@
 //! Take credentials out of the spec before the spec enters the guest.
 //!
-//! # The exposure this closes
+//! # Where the exposure actually is — corrected
 //!
-//! The full `PodSpec` is written to `/etc/nucleus/pod.yaml` **inside the guest**
-//! (`nucleus_guest_init::POD_SPEC_PATH`), and `CredentialsSpec.env` carries
-//! user-supplied secrets in plaintext. So every credential a pod is given has
-//! been landing in a file the agent can read.
+//! This module was written believing the exposure was uniform: *"the full
+//! `PodSpec` is written to `/etc/nucleus/pod.yaml` inside the guest, so every
+//! credential a pod is given lands in a file the agent can read."* Tracing each
+//! driver shows that is **wrong per driver**, and the difference is what has kept
+//! this module from having a call site:
 //!
-//! That is a larger exposure than the kernel command line the Phase 1 work
-//! removed, and the same category: a secret placed inside the trust domain it
-//! is meant to be protected from.
+//! | Driver | Does the node write a guest spec? | How do `credentials.env` values reach the guest? |
+//! |---|---|---|
+//! | Firecracker | **No** — `scripts/firecracker/build-rootfs.sh` copies the spec into the rootfs at IMAGE BUILD time | They do not. Nothing on this path injects them. |
+//! | Container | Yes, `pod.yaml` in the pod dir | **Directly as container environment variables** (`spawn_container_pod`), *and* in the spec file |
+//! | Local | Yes, `pod.yaml` in the pod dir | Via the spec file |
+//!
+//! Two consequences, both load-bearing:
+//!
+//! * **The driver this work was built for has nothing to strip.** Firecracker
+//!   never receives `credentials.env`, so `split_credentials` would be a no-op
+//!   there. `broker_launch::check_enforcement_is_honest` refuses
+//!   `--broker-enforcing` on that path for exactly this reason.
+//! * **The driver that carries the exposure has no transport.** The container
+//!   driver puts credential values into environment variables — readable via
+//!   `docker inspect`, via `/proc/PID/environ`, and inherited by every child the
+//!   agent spawns, which is strictly worse than a file — but it has no per-pod
+//!   vsock, so `broker_rollout::decide_rollout` returns `Disabled` and there is
+//!   no broker to ask instead.
+//!
+//! That is the deadlock, stated plainly rather than left as a missing call site:
+//! stripping credentials on the container driver today would leave pods with no
+//! credentials and nothing to ask. Closing it needs the container driver to gain
+//! a broker socket (a bind-mounted Unix socket would do — it has no vsock, but it
+//! does have a filesystem), which is real work and not a wiring oversight.
 //!
 //! # What replaces it
 //!
@@ -85,6 +107,54 @@ spec:
 "#,
         )
         .expect("spec parses")
+    }
+
+    /// **The exposure map, pinned.** The module docs claim each driver handles
+    /// `credentials.env` differently, and that claim is why this module has no
+    /// call site. A doc table drifts silently from the code; this does not.
+    ///
+    /// Checked against `main.rs` rather than by running a driver, because the
+    /// property is about which code EXISTS on each path — a behavioural test
+    /// would need Docker, a kernel and a rootfs to say the same thing, and would
+    /// still only cover the paths it happened to exercise.
+    #[test]
+    fn only_the_container_driver_injects_credential_values() {
+        let src = include_str!("main.rs");
+
+        // The container driver reads `spec.spec.credentials` and pushes the
+        // values into the process environment. This is the exposure.
+        // Bounded at the next `async fn`, and matching the injection pattern
+        // itself rather than the word "credentials" — an unbounded span running
+        // to end-of-file, matched against a word that appears in a dozen
+        // comments, passed with the injection deleted. Caught by perturbation.
+        let container_fn = src
+            .split("async fn spawn_container_pod")
+            .nth(1)
+            .and_then(|s| s.split("\nasync fn ").next())
+            .expect("the container driver exists");
+        assert!(
+            container_fn.contains("creds.env"),
+            "the container driver no longer injects credentials — if that is real \
+             progress, update the exposure map in this module's docs; if it moved \
+             elsewhere, this test has stopped looking where the code is"
+        );
+
+        // The Firecracker driver does not. If it starts to, `split_credentials`
+        // gains a call site AND `check_enforcement_is_honest` must stop refusing
+        // enforcement there — the two must move together.
+        let firecracker_fn = src
+            .split("async fn spawn_firecracker_pod")
+            .nth(1)
+            .and_then(|s| s.split("\nasync fn ").next())
+            .expect("the firecracker driver exists");
+        assert!(
+            !firecracker_fn.contains("creds.env"),
+            "the Firecracker driver has started injecting credential values. That is \
+             the exposure this module exists to close, and it now has a call site: \
+             call `split_credentials` before the spec reaches the guest, and revisit \
+             `broker_launch::check_enforcement_is_honest`, which refuses \
+             --broker-enforcing on the grounds that there is nothing to strip"
+        );
     }
 
     /// **THE PROPERTY.** After splitting, serialising the spec — which is
