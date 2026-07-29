@@ -6667,6 +6667,7 @@ version = "1.0.0"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
+ "zeroize",
 ]
 
 [[package]]

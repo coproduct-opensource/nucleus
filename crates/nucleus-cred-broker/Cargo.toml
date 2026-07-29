@@ -20,6 +20,9 @@ description = "CB4A Credential Delivery Point: holds credentials, makes no polic
 # root may depend on it.
 [dependencies]
 serde = { workspace = true }
+# Wipe credential bytes on drop. A credential that lingers in freed memory is a
+# credential a later allocation can read.
+zeroize = { version = "1", features = ["zeroize_derive"] }
 thiserror = { workspace = true }
 
 [lints]

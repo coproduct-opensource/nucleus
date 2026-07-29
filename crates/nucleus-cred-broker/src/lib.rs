@@ -33,10 +33,15 @@
 //!
 //! # Status
 //!
-//! Types and the separation invariant only. No credential storage, no minting,
-//! no injection — the structure and its enforcement land before the material
-//! they are meant to contain, the same way `nucleus_node::snapshot` refused
-//! unsafe snapshots before the snapshot path existed.
+//! Types, the separation invariant, and credential *storage* with its
+//! containment properties. No minting and no injection yet — the structure and
+//! its enforcement land before the material they are meant to contain, the same
+//! way `nucleus_node::snapshot` refused unsafe snapshots before the snapshot
+//! path existed.
+//!
+//! Nothing is wired into `nucleus-node` yet, which is why cargo-deny reports an
+//! accurate `unused-wrapper` warning for the entry in `deny.toml`: the
+//! permission is declared ahead of its first use.
 
 use serde::{Deserialize, Serialize};
 
@@ -190,5 +195,184 @@ mod tests {
             !debug.contains("IGNORE PREVIOUS") && !debug.contains("justification"),
             "the approved request must not carry the justification at all: {debug}"
         );
+    }
+}
+
+/// A credential the CDP holds on a workload's behalf.
+///
+/// # What this type refuses to do
+///
+/// The whole point of a broker is that the credential never reaches the guest.
+/// Three properties make that hard to violate by accident, and each is the
+/// closure of a specific way secrets escape:
+///
+/// * **It cannot be serialised.** There is deliberately no `Serialize` impl.
+///   Serialisation is precisely how a value would cross the vsock boundary into
+///   the guest, so the absence is not an oversight — it is the containment.
+///   `a_credential_cannot_be_serialised` is a `compile_fail` doctest, and its
+///   dependence on the missing impl was established by perturbation rather than
+///   assumed (a `compile_fail` passes for *any* compile error, including a typo).
+/// * **It cannot be printed.** `Debug` is hand-written to emit `[REDACTED]`, so
+///   a stray `{:?}` in a log line or an error path cannot leak it. This mirrors
+///   `nucleus_spec::CredentialsSpec`, which already does the same.
+/// * **It does not linger.** The bytes are zeroed on drop, so a freed
+///   allocation cannot be read back by whatever is allocated next.
+///
+/// # Reading it
+///
+/// [`Credential::expose`] is named to be greppable. Every call site is a place
+/// where the secret becomes plaintext, and there should be exactly one: the
+/// moment the CDP injects it into an outbound request.
+#[derive(zeroize::ZeroizeOnDrop)]
+pub struct Credential {
+    value: String,
+}
+
+impl Credential {
+    /// Wrap a secret.
+    pub fn new(value: impl Into<String>) -> Self {
+        Credential {
+            value: value.into(),
+        }
+    }
+
+    /// Expose the plaintext.
+    ///
+    /// Named for grepping: each call is a point where the secret leaves its
+    /// wrapper. Do not add a `Display`, `Into<String>` or `Serialize` to make
+    /// this more convenient — that convenience is the leak.
+    pub fn expose(&self) -> &str {
+        &self.value
+    }
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the value, and never its length — a length is an oracle.
+        f.write_str("Credential([REDACTED])")
+    }
+}
+
+/// Credentials the CDP holds, keyed by the target they authenticate to.
+///
+/// Keys are targets, not pods: a credential belongs to the service it opens,
+/// and which pod may use it is a *policy* question this crate cannot answer.
+#[derive(Debug, Default)]
+pub struct CredentialStore {
+    entries: std::collections::BTreeMap<String, Credential>,
+}
+
+impl CredentialStore {
+    /// An empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a credential for a target.
+    pub fn insert(&mut self, target: impl Into<String>, credential: Credential) {
+        self.entries.insert(target.into(), credential);
+    }
+
+    /// Look up the credential for an **already-approved** request.
+    ///
+    /// Takes an [`AuthorizedRequest`], not a [`TaskRequestEnvelope`]: there is
+    /// no way to reach a credential from an unapproved ask, because the type
+    /// that unlocks the store can only be built from a PDP verdict.
+    pub fn for_request(&self, req: &AuthorizedRequest) -> Result<&Credential, BrokerError> {
+        self.entries
+            .get(&req.target)
+            .ok_or_else(|| BrokerError::NoCredentialForTarget {
+                target: req.target.clone(),
+            })
+    }
+}
+
+/// A credential cannot be serialised — the compiler refuses.
+///
+/// Serialisation is how a value would cross into the guest, so this is the
+/// containment property stated as a type error.
+///
+/// ```compile_fail
+/// use nucleus_cred_broker::Credential;
+/// fn needs_serialize<T: serde::Serialize>(_t: &T) {}
+/// let c = Credential::new("super-secret");
+/// needs_serialize(&c);
+/// ```
+///
+/// And it cannot be printed as plaintext either:
+///
+/// ```
+/// use nucleus_cred_broker::Credential;
+/// let c = Credential::new("super-secret");
+/// assert_eq!(format!("{c:?}"), "Credential([REDACTED])");
+/// assert!(!format!("{c:?}").contains("super-secret"));
+/// ```
+pub mod containment_docs {}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn approved(target: &str) -> AuthorizedRequest {
+        AuthorizedRequest {
+            pod_identity: "spiffe://nucleus/pod/abc".to_string(),
+            operation: "WebFetch".to_string(),
+            target: target.to_string(),
+        }
+    }
+
+    /// A stray `{:?}` must not leak the secret — nor its length, which is an
+    /// oracle in its own right.
+    #[test]
+    fn debug_never_reveals_the_value_or_its_length() {
+        let short = Credential::new("a");
+        let long = Credential::new("a-very-long-api-token-abcdefghijklmnop");
+        assert_eq!(format!("{short:?}"), "Credential([REDACTED])");
+        assert_eq!(
+            format!("{short:?}"),
+            format!("{long:?}"),
+            "debug output must not vary with the secret's length"
+        );
+    }
+
+    /// The store is reachable only through an approved request.
+    #[test]
+    fn a_credential_is_reached_only_through_an_approved_request() {
+        let mut store = CredentialStore::new();
+        store.insert("api.example.test", Credential::new("token-123"));
+        let cred = store
+            .for_request(&approved("api.example.test"))
+            .expect("registered target resolves");
+        assert_eq!(cred.expose(), "token-123");
+    }
+
+    /// An approved request for a target with no credential fails closed, naming
+    /// the target rather than falling back to anything.
+    #[test]
+    fn an_unregistered_target_fails_closed() {
+        let store = CredentialStore::new();
+        let err = store
+            .for_request(&approved("evil.test"))
+            .expect_err("nothing is registered");
+        assert_eq!(
+            err,
+            BrokerError::NoCredentialForTarget {
+                target: "evil.test".to_string()
+            }
+        );
+    }
+
+    /// The store's own Debug must not leak either — it holds Credentials, and
+    /// deriving Debug on the map is only safe because Credential redacts.
+    #[test]
+    fn the_store_debug_does_not_leak_its_credentials() {
+        let mut store = CredentialStore::new();
+        store.insert("api.example.test", Credential::new("token-123"));
+        let dumped = format!("{store:?}");
+        assert!(
+            !dumped.contains("token-123"),
+            "the store leaked a credential through Debug: {dumped}"
+        );
+        assert!(dumped.contains("[REDACTED]"));
     }
 }
