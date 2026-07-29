@@ -1058,3 +1058,59 @@ mod witness_tests {
             .expect("the honest log is not locked out by a rejected fork");
     }
 }
+
+#[cfg(test)]
+mod poison_resilience_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A poisoned log must stay usable.
+    ///
+    /// The log used to `.expect("receipt log poisoned")`. A `Mutex` is poisoned
+    /// when a thread panics while holding it — so one pod's panic would make
+    /// every subsequent spend panic, turning a logging problem into a node-wide
+    /// outage. This test poisons the lock for real (panicking inside a thread
+    /// that holds the guard) and then requires the log to keep working.
+    #[test]
+    fn a_poisoned_log_keeps_recording_instead_of_taking_the_node_down() {
+        let log = Arc::new(ReceiptLog::new());
+        log.append(
+            Operation::ReadFiles,
+            SinkClass::AuditLogAppend,
+            EffectOutcome::Allowed,
+        );
+
+        // Poison it: panic while holding the guard.
+        let poisoner = Arc::clone(&log);
+        let handle = std::thread::spawn(move || {
+            let _guard = poisoner.entries.lock().expect("first lock succeeds");
+            panic!("deliberate panic while holding the receipt log");
+        });
+        assert!(handle.join().is_err(), "the thread must actually panic");
+
+        // The lock is now poisoned. Everything must still work.
+        let seq = log.append(
+            Operation::RunBash,
+            SinkClass::BashExec,
+            EffectOutcome::Allowed,
+        );
+        assert_eq!(seq, 1, "append must still assign the next sequence number");
+        let entries = log.entries();
+        assert_eq!(entries.len(), 2, "both entries survive poisoning: {entries:?}");
+        assert_eq!(entries[0].operation, Operation::ReadFiles);
+        assert_eq!(entries[1].operation, Operation::RunBash);
+        assert_eq!(log.len(), 2);
+
+        // And the tree still verifies — the recovered data is the real log, not
+        // a salvaged approximation.
+        let root = log.root();
+        let proof = log.inclusion_proof(1).expect("entry 1 is in range");
+        assert!(verify_inclusion(
+            &entries[1].leaf_hash(),
+            1,
+            2,
+            &proof,
+            &root
+        ));
+    }
+}
