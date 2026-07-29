@@ -28,11 +28,11 @@
 //! Nucleus injects exactly that kind of state — **on the kernel command line**,
 //! where it is baked into `/proc/cmdline` and into the snapshot's memory image.
 //! Restoring N pods from a snapshot taken after boot would give all N the same
-//! `approval_secret`, the same `auth_secret`, the same `sandbox_token`, the same
-//! task token — and the same `task_token_nonce`. A nonce reused across pods is
-//! precisely the "meant to be used once, used twice" failure the Firecracker
-//! documentation warns about, and here it is an authority leak between tenants:
-//! the task token is what authorises the in-VM tool proxy.
+//! `sandbox_token` and the same task token — values minted per pod, so the
+//! duplication is real. See [`PER_POD_SECRET_KEYS`] for what is genuinely
+//! per-pod versus merely per-node, and for why the nonce case is less severe
+//! than it first appears (`session_mint` pins it host-side rather than relying
+//! on secrecy).
 //!
 //! So a snapshot base must be built **before any per-pod material exists**, and
 //! uniqueness must be delivered after restore by a channel that is not the
@@ -45,10 +45,30 @@
 // tripping over it. The tests exercise every item below.
 #![cfg_attr(not(test), allow(dead_code))]
 
-/// Command-line keys that carry **per-pod** material.
+/// Command-line keys that must never be baked into a snapshot base.
 ///
-/// Anything here makes a booted microVM unfit to be a snapshot base, because
-/// the value would be shared by every clone restored from it.
+/// Two distinct reasons, and the distinction was got wrong in the first version
+/// of this file, so it is spelled out:
+///
+/// * **Per-pod** — derived from the pod id or its spec, so cloning genuinely
+///   duplicates something that was meant to be unique:
+///   `task_token_hex` / `task_token_issuer` / `task_token_nonce` (minted by
+///   `mint_task_token_for_spec(state, spec, id)`), `sandbox_token` (freshly
+///   generated per VM), and the AWS credentials, which come from the spec.
+/// * **Per-node** — `auth_secret` and `approval_secret` are node-level config
+///   (`NUCLEUS_NODE_PROXY_AUTH_SECRET` and friends), so every pod on a node
+///   already shares them and cloning *within* a node changes nothing. They are
+///   still refused, because a snapshot base is a **portable artifact**: build it
+///   on node A, restore it on node B, and node A's proxy secrets have travelled.
+///
+/// A correction to the first version's claim: sharing the task-token nonce is
+/// NOT straightforwardly an authority leak, because `session_mint` documents
+/// that the token is "a scoped capability plus a public issuer key — not a
+/// secret", with anti-replay resting on a **host-pinned** effective nonce rather
+/// than on secrecy. A host that sees two sessions claiming one nonce can reject
+/// them. The duplication is still wrong — a value minted per pod should not be
+/// shared — but the failure is "the host must now arbitrate", not "the guest
+/// gets free authority".
 ///
 /// `nucleus.workload_api_port` is NOT here: it is a port number, identical for
 /// every pod on a node, and carries no authority by itself — the identity it
