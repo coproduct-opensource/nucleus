@@ -414,8 +414,11 @@ fn verify_kvm_in_vm(vm_name: &str) {
     } else {
         warn!("KVM not available in VM - Firecracker will use emulation");
         println!("\nKVM Status: /dev/kvm NOT available");
-        println!("  Firecracker microVMs will run in emulation mode (slower).");
-        println!("  For native performance, you need:");
+        // Firecracker is a KVM-based VMM. There is no emulation fallback: it
+        // refuses to start, and `nucleus-node` returns "firecracker requires
+        // /dev/kvm". Saying "slower" here promised a mode that does not exist.
+        println!("  Firecracker CANNOT START without KVM - this is not a slow mode.");
+        println!("  Tier 2 (microVM isolation) will be unavailable. You need:");
         println!("    - Apple Silicon M3/M4 Mac");
         println!("    - macOS 15+ (Sequoia)");
         println!("    - Or: Use a Linux host with KVM support");

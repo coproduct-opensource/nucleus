@@ -58,6 +58,42 @@ nucleus audit [PATH]                # Tier 0: scan agent configs, no runtime (CI
 nucleus run --local "your task"     # Tier 1: run with enforced permissions (process-level, no VM)
 ```
 
+### Tier 2 — real microVM isolation (macOS)
+
+Tier 1 is process-level. For kernel-level isolation you need a Linux VM with
+**nested virtualization**, because Firecracker is a KVM-based VMM — without
+`/dev/kvm` it does not run slowly, it does not run at all.
+
+```bash
+brew install lima          # 2.0+ required for nested virtualization
+nucleus setup              # provisions the VM and installs Firecracker + jailer
+nucleus doctor             # verifies; the /dev/kvm line is the one that matters
+```
+
+Requires Apple Silicon **M3 or newer** and **macOS 15+**. `nucleus doctor` reads
+`/dev/kvm` directly rather than inferring from the chip name — if the probe says
+available, Tier 2 works, whatever else the output guesses.
+
+<details>
+<summary>Verified on Apple M5 Pro / macOS 26 (what a working setup looks like)</summary>
+
+```
+/dev/kvm                    crw-rw---- 1 root kvm 10, 232
+firecracker --version       Firecracker v1.16.1
+jailer --version            Jailer v1.16.1
+```
+
+A jailed microVM boots to a root shell, and a `--cgroup cpu.weight=42` argument
+is applied *before* exec — the cgroup exists before the guest does.
+</details>
+
+### Linux, or just want the checks
+
+You do not need a VM for most development. A privileged Linux container gives
+network namespaces and `iptables`, which is enough to run the egress
+conformance check (`scripts/egress-conformance.sh`) and to compile the
+Linux-only code paths. Only the VMM work needs KVM.
+
 Every tool call flows through the permission kernel. `nucleus run` tracks data provenance and blocks dangerous combinations — like writing code derived from untrusted web content.
 
 > **Vendor neutrality.** The core library and the generic `credentials.env` / `PodSpec` interface are *intended* to be vendor-agnostic, but the surface is not fully clean today. Two things break it: (1) the *reference agent runner* shipped with `nucleus run`/`shell` is coupled to one specific assistant CLI (binary name, default model string, permission-bypass flag), and (2) `nucleus-spec` still hardcodes specific LLM-vendor hostnames and workload-identity defaults (see [Known Gaps](#known-gaps)). A PreToolUse hook for AI coding assistants lives in the external private orchestrator [nucleus-code](https://github.com/coproduct-opensource/nucleus-code), built on this runtime. Treat the runner as an integration *example*, not a vendor-agnostic component.
