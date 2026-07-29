@@ -267,13 +267,29 @@ impl ReceiptLog {
     /// Appending is the only mutation this type offers: there is no `remove`, no
     /// `truncate`, and no way to reach the inner `Vec`. That makes the log
     /// append-only *by construction* rather than by convention.
+    /// Record one decision.
+    ///
+    /// # Why this no longer panics on a poisoned lock
+    ///
+    /// It used to `.expect("receipt log poisoned")`. A `Mutex` is poisoned when
+    /// a thread panics while holding it, so one pod's panic would make every
+    /// SUBSEQUENT spend panic too — converting a logging problem into a
+    /// node-wide outage. That is neither fail-closed nor best-effort; it is a
+    /// crash, and it is the "denial-of-service on yourself" that audit-logging
+    /// guidance warns against, arrived at by accident rather than by choice.
+    ///
+    /// Recovering the guard is sound *for this structure specifically*: the log
+    /// is append-only, the only mutation is a `push`, and a `Vec` cannot be left
+    /// structurally inconsistent by a panic between pushes. The recovered data
+    /// is the real log, not a salvaged approximation. This reasoning does not
+    /// transfer to a structure with a multi-step invariant.
     pub fn append(
         &self,
         operation: Operation,
         sink_class: SinkClass,
         outcome: EffectOutcome,
     ) -> u64 {
-        let mut entries = self.entries.lock().expect("receipt log poisoned");
+        let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let seq = entries.len() as u64;
         entries.push(EffectReceipt {
             seq,
@@ -286,13 +302,16 @@ impl ReceiptLog {
 
     /// A snapshot of the entries.
     pub fn entries(&self) -> Vec<EffectReceipt> {
-        self.entries.lock().expect("receipt log poisoned").clone()
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn leaves(&self) -> Vec<[u8; 32]> {
         self.entries
             .lock()
-            .expect("receipt log poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .map(|e| e.leaf_hash())
             .collect()
@@ -305,7 +324,10 @@ impl ReceiptLog {
 
     /// How many decisions have been recorded.
     pub fn len(&self) -> usize {
-        self.entries.lock().expect("receipt log poisoned").len()
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     /// Whether the log is empty.
