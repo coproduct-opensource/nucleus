@@ -693,11 +693,36 @@ impl FirecrackerConfig {
         // stated on the advertising and serving sides. So `Some` here means the
         // pod will be registered and will have an SVID to prove itself with.
         //
-        // Deleting it unconditionally would be wrong, and that is why this is a
-        // condition rather than a removal: a node with identity management off,
-        // or a pod whose grant was denied, has Tier 3 as its ONLY proof, and the
-        // tool-proxy exits fatally when no tier succeeds.
-        if workload_api_port.is_none() {
+        // RESTORED TO UNCONDITIONAL — see below. The condition was correct about
+        // WHAT an identity-bearing pod needs and wrong about WHEN it can get it.
+        //
+        // # The deadlock this caused, found by booting a pod
+        //
+        // Emitting only when `workload_api_port.is_none()` assumed an
+        // identity-bearing pod reaches Tier 1/2 from its SVID. It does — but not
+        // in time. The spawn path runs `wait_for_proxy_health` BEFORE it starts
+        // the workload API vsock bridge, so at the moment the guest must prove
+        // itself the bridge does not exist yet:
+        //
+        //   wait_for_proxy_health(..)          <- guest must already be healthy
+        //   identity_registration(..)
+        //   WorkloadApiVsockBridge::start(..)  <- the SVID source, too late
+        //
+        // With Tier 3 present the guest proved itself from the token, became
+        // healthy, and fetched its SVID afterwards. Without it the guest has no
+        // proof at all, exits fatally as PID 1, and the launch fails with
+        // "proxy health check timed out". Observed end to end on real hardware:
+        // the node built a cmdline with `workload_api_port` and no
+        // `sandbox_token`, the guest logged "failed to fetch identity:
+        // Connection reset by peer", then "naked process detected".
+        //
+        // The right fix is to start the bridge BEFORE the health check — the
+        // guest's identity is a prerequisite for it being healthy, so producing
+        // it afterwards is the wrong order. That is a restructure of the spawn
+        // path and is tracked separately; until it lands, Tier 3 is load-bearing
+        // for every pod and this must stay unconditional.
+        {
+            let _ = workload_api_port;
             use sha2::{Digest, Sha256};
             let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
             let spec_hash = hex::encode(Sha256::digest(spec_yaml.as_bytes()));
@@ -1064,21 +1089,32 @@ mod tests {
         config.boot_source.boot_args.unwrap_or_default()
     }
 
-    /// **A pod that will hold an SVID gets no Tier 3 token.**
+    /// **Every pod carries the Tier 3 token, including identity-bearing ones.**
     ///
-    /// `sandbox_token` is the fallback proof for a workload with no SPIFFE
-    /// identity. A pod that gets one proves itself from the SVID and never reads
-    /// the token — so emitting it there put a per-pod secret on the
-    /// world-readable kernel command line to be ignored.
+    /// This test previously asserted the opposite, and that was a launch-blocking
+    /// bug. An identity-bearing pod does reach Tier 1/2 from its SVID — but not
+    /// in time: `wait_for_proxy_health` runs BEFORE
+    /// `WorkloadApiVsockBridge::start`, so when the guest must prove itself the
+    /// SVID source does not exist yet. Without Tier 3 the guest exits as PID 1
+    /// and the launch fails with "proxy health check timed out".
+    ///
+    /// Found by booting a pod through the real node, not by review — the
+    /// omission is correct in isolation and only wrong in composition with the
+    /// spawn ordering.
+    ///
+    /// When the bridge moves ahead of the health check, this flips back and the
+    /// three keys' worth of exposure goes with it.
     #[cfg(target_os = "linux")]
     #[test]
-    fn an_identity_bearing_pod_carries_no_sandbox_token() {
-        let args = boot_args_with_identity(true);
-        assert!(
-            !args.contains("nucleus.sandbox_token"),
-            "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
-             not need the Tier 3 token: {args}"
-        );
+    fn every_pod_carries_the_tier_3_token_until_the_bridge_starts_earlier() {
+        for identity in [true, false] {
+            let args = boot_args_with_identity(identity);
+            assert!(
+                args.contains("nucleus.sandbox_token="),
+                "identity={identity}: Tier 3 is the only proof available at health-check \
+                 time, because the workload API bridge starts after it: {args}"
+            );
+        }
     }
 
     /// **Non-vacuity, and the reason this is a condition rather than a removal.**
@@ -1097,13 +1133,13 @@ mod tests {
         );
     }
 
-    /// The condition must track the identity predicate rather than merely
-    /// correlating with it: `workload_api_port_for` and `identity_registration`
-    /// are the same rule stated on the advertising and serving sides, so the
-    /// port being present is exactly "this pod will be registered".
+    /// The identity predicate still decides the workload API PORT, which is the
+    /// part that was always correct — only the token's dependence on it was
+    /// wrong. Kept so the two do not get conflated again when the ordering fix
+    /// lands.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_token_condition_matches_the_identity_predicate() {
+    fn the_workload_api_port_still_tracks_the_identity_predicate() {
         for (enabled, granted) in [(true, true), (true, false), (false, true), (false, false)] {
             let grant = if granted {
                 net::IdentityGrant::Granted
@@ -1115,10 +1151,9 @@ mod tests {
             let port = net::workload_api_port_for(enabled, &grant, 15012);
             let args = boot_args_with_identity(port.is_some());
             assert_eq!(
-                args.contains("nucleus.sandbox_token="),
-                port.is_none(),
-                "identity_enabled={enabled} granted={granted}: the Tier 3 token must be \
-                 present exactly when the pod will have no SVID"
+                args.contains("nucleus.workload_api_port="),
+                port.is_some(),
+                "identity_enabled={enabled} granted={granted}"
             );
         }
     }
