@@ -58,6 +58,15 @@
 //!   log (Rekor) is the further escalation and is not done.
 //! * **The signing key is whatever the caller supplies.** Binding it to a
 //!   *measured binary* is the attestation work, and is not done here.
+//! * **Fail-closed audit is not yet meaningful here, and is not pretended.**
+//!   CB4A requires credential issuance to fail if logging fails. That is a real
+//!   requirement — but this log is an in-memory append-only `Vec`, so "the
+//!   receipt could not be recorded" is not a reachable state: a `push` does not
+//!   fail, and lock poisoning is now recovered rather than fatal. Giving
+//!   `append` a `Result` that can never be `Err` would look like a guarantee and
+//!   provide none. Fail-closed becomes load-bearing when the log gains a
+//!   DURABLE backing (persistence, or a remote witness), where an append can
+//!   genuinely fail — and that is where the decision belongs.
 //! * **Coverage is all thirteen effect methods**, including the three —
 //!   `ShellEffect::run_argv`, `AsyncShellSpawnEffect::run_argv_async` and
 //!   `NetEffect::fetch` — that spend their authority inside `RealEffects`,
@@ -289,7 +298,10 @@ impl ReceiptLog {
         sink_class: SinkClass,
         outcome: EffectOutcome,
     ) -> u64 {
-        let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let seq = entries.len() as u64;
         entries.push(EffectReceipt {
             seq,
@@ -1096,7 +1108,11 @@ mod poison_resilience_tests {
         );
         assert_eq!(seq, 1, "append must still assign the next sequence number");
         let entries = log.entries();
-        assert_eq!(entries.len(), 2, "both entries survive poisoning: {entries:?}");
+        assert_eq!(
+            entries.len(),
+            2,
+            "both entries survive poisoning: {entries:?}"
+        );
         assert_eq!(entries[0].operation, Operation::ReadFiles);
         assert_eq!(entries[1].operation, Operation::RunBash);
         assert_eq!(log.len(), 2);
