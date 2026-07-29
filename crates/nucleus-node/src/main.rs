@@ -37,6 +37,7 @@ mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
+mod cred_split;
 mod net;
 mod session_mint;
 mod signed_proxy;

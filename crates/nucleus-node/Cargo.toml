@@ -70,6 +70,10 @@ nucleus-spec = { path = "../nucleus-spec" }
 # The extracted egress matcher the Lean confinement theorem is stated over, so
 # `model_rule` targets the proof's own types rather than a restatement.
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
+# The CB4A Credential Delivery Point. nucleus-node is the composition root and
+# the ONLY crate permitted to depend on it — see the `wrappers` entry in
+# deny.toml, which stops any policy crate reaching credential material.
+nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }

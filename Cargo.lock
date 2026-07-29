@@ -6974,6 +6974,7 @@ dependencies = [
  "jsonwebtoken",
  "nucleus",
  "nucleus-client",
+ "nucleus-cred-broker",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-proto",
