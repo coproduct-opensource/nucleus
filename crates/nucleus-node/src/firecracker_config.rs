@@ -608,15 +608,28 @@ impl FirecrackerConfig {
         // without it. See `enforce_pci_off`.
         boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
-        // Inject secrets via kernel command line (read by nucleus-guest-init)
-        // This is more secure than baking secrets into the rootfs image
+        // `nucleus.auth_secret` is NO LONGER EMITTED.
+        //
+        // The kernel command line is world-readable inside the guest
+        // (`/proc/cmdline`), so every process there — including the agent the
+        // sandbox exists to contain — could read the HMAC key and sign requests
+        // as the host. That is a trust boundary drawn inside a single trust
+        // domain, and it cannot hold.
+        //
+        // It is not relocated, it is deleted: the tool-proxy is bound to a vsock
+        // listener that accepts only `VMADDR_CID_HOST`, and the guest kernel
+        // sets that CID. Origin is now established by something no guest process
+        // can forge. Firecracker pods always have vsock (`spawn_firecracker_pod`
+        // requires `spec.vsock`), so the HMAC tier is unreachable on this path.
+        //
+        // `nucleus.approval_secret` REMAINS for now: the approval endpoint is
+        // still drand-anchored HMAC, and dropping its key needs a drand-only
+        // tier first. Freshness is not origin, so the transport cannot replace
+        // it on its own.
+        let _ = auth_secret;
         boot_args = match boot_args.take() {
-            Some(args) => Some(format!(
-                "{args} nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
-            )),
-            None => Some(format!(
-                "nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
-            )),
+            Some(args) => Some(format!("{args} nucleus.approval_secret={approval_secret}")),
+            None => Some(format!("nucleus.approval_secret={approval_secret}")),
         };
 
         // Inject workload API port if identity management is enabled

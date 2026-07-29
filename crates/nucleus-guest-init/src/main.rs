@@ -105,18 +105,22 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // OPTIONAL. On the Firecracker path the tool-proxy is bound to a vsock
+    // listener that accepts only the host (`pod_mgmt::peer_is_host`), and the
+    // guest kernel — not the caller — sets the peer CID. The HMAC tier is
+    // unreachable there, so requiring a key would put a world-readable secret
+    // on /proc/cmdline for nothing. `enforce_hmac_key_quality` in the proxy
+    // still refuses an empty key on every transport that can reach that tier.
     let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
-        .or_else(|| read_secret("/etc/nucleus/auth.secret"))
-        .ok_or_else(|| {
-            "missing auth secret (set nucleus.auth_secret in boot args or /etc/nucleus/auth.secret)"
-                .to_string()
-        })?;
+        .or_else(|| read_secret("/etc/nucleus/auth.secret"));
 
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
         .or_else(|| read_secret("/etc/nucleus/approval.secret"))
         .ok_or_else(|| "missing approval secret (set nucleus.approval_secret in boot args or /etc/nucleus/approval.secret)".to_string())?;
 
-    std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+    if let Some(auth_secret) = auth_secret {
+        std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+    }
     std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry

@@ -449,3 +449,43 @@ fn an_empty_allowlist_answers_nothing_rather_than_forwarding() {
     }
     assert!(config.lines().any(|l| l.trim() == "no-resolv"));
 }
+
+// ── Secretless guest: the HMAC key is off the kernel command line ─────────
+
+/// THE NEGATIVE TEST FOR PHASE 1. `nucleus.auth_secret` must not appear on any
+/// guest kernel command line, for any spec.
+///
+/// /proc/cmdline is world-readable inside the guest, so a key there is a key
+/// the agent can read and sign with. The vsock listener now establishes origin
+/// from a peer CID the guest kernel sets, so the key is deleted rather than
+/// relocated.
+#[test]
+fn the_auth_secret_never_reaches_the_guest_command_line() {
+    use crate::snapshot::snapshot_safety;
+    // The exact string the builder used to emit.
+    let emitted = include_str!("firecracker_config.rs");
+    let emits_auth_secret = emitted
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .any(|l| l.contains("nucleus.auth_secret={") || l.contains("nucleus.auth_secret="));
+    assert!(
+        !emits_auth_secret,
+        "firecracker_config still emits nucleus.auth_secret onto the guest command line"
+    );
+    // And a command line carrying it would still be refused as a snapshot base,
+    // which is the independent guard from the snapshot work.
+    assert!(!snapshot_safety("console=ttyS0 nucleus.auth_secret=abc").is_safe_to_clone());
+}
+
+/// The approval secret is DELIBERATELY still emitted. Phase 1 removes the key
+/// the transport can replace; the approval endpoint is drand-anchored and
+/// freshness is not origin, so its key needs a drand-only tier first. Asserting
+/// this keeps the remaining exposure visible instead of quietly forgotten.
+#[test]
+fn the_approval_secret_is_still_emitted_and_that_is_tracked() {
+    let src = include_str!("firecracker_config.rs");
+    assert!(
+        src.contains("nucleus.approval_secret={approval_secret}"),
+        "if the approval secret has been removed, delete this test and the note beside it"
+    );
+}
