@@ -36,6 +36,7 @@ mod oidc;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
+mod broker;
 mod cgroup;
 mod cred_split;
 mod net;
