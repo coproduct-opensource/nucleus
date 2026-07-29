@@ -86,6 +86,7 @@ impl WorkloadApiVsockBridge {
         pod_id: uuid::Uuid,
         identity_manager: IdentityManager,
         task_token: Option<crate::session_mint::MintedTaskToken>,
+        jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<Self> {
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
@@ -101,6 +102,40 @@ impl WorkloadApiVsockBridge {
         }
 
         let listener = UnixListener::bind(&socket_path)?;
+
+        // Hand the socket to the jailed uid, or the guest cannot reach it.
+        //
+        // `prepare_jail` chowns everything it places, and its comment says the
+        // vsock socket is "deliberately absent" because Firecracker creates it.
+        // That is true of `vsock.sock` — and NOT of this one. `vsock.sock_<port>`
+        // is created HERE, by the node, running as root, so it lands
+        // `srwxr-xr-x root root` while Firecracker runs as the jailer uid.
+        // Connecting to a Unix socket requires WRITE permission on it, so
+        // Firecracker's connect() gets EACCES and the guest sees
+        // "Connection reset by peer" from a socket that is demonstrably
+        // listening. Measured on a booted pod, 2026-07-29:
+        //
+        //   srwxr-xr-x 1  123 users  vsock.sock          <- Firecracker made this
+        //   srwxr-xr-x 1 root root   vsock.sock_15012    <- the node made this
+        //
+        // Downstream, the guest fetched no SVID and no task token, all three
+        // sandbox-proof tiers failed, and the tool-proxy exited as PID 1 —
+        // a kernel panic whose visible cause was four layers from the file mode.
+        //
+        // chown, not chmod: only the jailed Firecracker should be able to
+        // connect. Widening the mode would open the workload API — which serves
+        // SVIDs and task tokens — to every user on the host.
+        #[cfg(target_os = "linux")]
+        if let Some((uid, gid)) = jail_owner {
+            std::os::unix::fs::chown(&socket_path, Some(uid), Some(gid)).map_err(|e| {
+                std::io::Error::other(format!(
+                    "cannot give {} to the jailed uid {uid}:{gid}: {e}",
+                    socket_path.display()
+                ))
+            })?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = jail_owner;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
         let socket_path_clone = socket_path.clone();
@@ -419,9 +454,10 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
-            .await
-            .unwrap();
+        let bridge =
+            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
+                .await
+                .unwrap();
 
         // Verify socket path follows Firecracker convention
         assert_eq!(
@@ -458,9 +494,10 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
-            .await
-            .unwrap();
+        let bridge =
+            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
+                .await
+                .unwrap();
 
         // Wait for server to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -491,9 +528,10 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None)
-            .await
-            .unwrap();
+        let bridge =
+            WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None, None)
+                .await
+                .unwrap();
 
         // Verify Firecracker naming convention: {uds_path}_{port}
         let expected_path = temp_dir.path().join("pod-123").join("vsock.sock_8080");
@@ -509,9 +547,10 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None)
-            .await
-            .unwrap();
+        let bridge =
+            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
+                .await
+                .unwrap();
 
         // Wait for server to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -570,14 +609,26 @@ mod tests {
         let vsock1_path = temp_dir.path().join("pod1").join("vsock.sock");
         let vsock2_path = temp_dir.path().join("pod2").join("vsock.sock");
 
-        let bridge1 =
-            WorkloadApiVsockBridge::start(&vsock1_path, 15012, pod1_id, manager.clone(), None)
-                .await
-                .unwrap();
-        let bridge2 =
-            WorkloadApiVsockBridge::start(&vsock2_path, 15012, pod2_id, manager.clone(), None)
-                .await
-                .unwrap();
+        let bridge1 = WorkloadApiVsockBridge::start(
+            &vsock1_path,
+            15012,
+            pod1_id,
+            manager.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let bridge2 = WorkloadApiVsockBridge::start(
+            &vsock2_path,
+            15012,
+            pod2_id,
+            manager.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Wait for servers to start
         tokio::time::sleep(Duration::from_millis(50)).await;
