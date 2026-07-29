@@ -474,6 +474,19 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 }
 
 /// A forbidden operation is refused BY POLICY. This is the non-vacuity leg.
+///
+/// # What this does and does not establish
+///
+/// It establishes that the proxy consults a policy and refuses on it — paired
+/// with [`check_allowed_operation`], which must *succeed*, so a proxy that
+/// denied everything fails this pair rather than passing it.
+///
+/// It does **not** establish that the enforced lattice is the one the pod's
+/// profile declares. Measured 2026-07-29: a booted pod refuses `ReadFiles` as
+/// `Never` while its baked profile sets `read_files: Always`, and the cause is
+/// not yet located (see "Guest capabilities do not match the declared profile"
+/// in `docs/production-delta.md`). Saying "enforcement works" would be true;
+/// saying "your policy is what runs" would not be, on today's evidence.
 fn check_forbidden_operation(pod: &Pod) -> Result<()> {
     let (status, body) = proxy_post(pod, "read", serde_json::json!({ "path": FORBIDDEN_READ }))?;
     if status < 400 {
