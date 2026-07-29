@@ -74,6 +74,15 @@ lean_lib «PortcullisCoreMediation» where
 lean_lib «MediationScopeExtracted» where
   roots := #[`MediationScopeExtracted]
 
+lean_lib «PortcullisCoreEgress» where
+  roots := #[`PortcullisCoreEgress.Types, `PortcullisCoreEgress.Funs]
+  srcDir := "generated-egress"
+
+-- Egress confinement proven OVER the Aeneas-generated matcher above: the
+-- network policy is the real enforcement boundary for shell effects.
+lean_lib «EgressConfinementExtracted» where
+  roots := #[`EgressConfinementExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where

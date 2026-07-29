@@ -28,9 +28,10 @@
 //! matchers underneath.
 //!
 //! The cost of the split is an explicit correspondence obligation: the Lean fold
-//! must be the order `nucleus_node::net` actually appends rules in.
-//! `egress_order_matches_the_applied_order` in that crate is what discharges it,
-//! and it is a test, not a proof.
+//! must be the order `nucleus_node::net` actually appends rules in (all Deny,
+//! then all Allow, into DROP-policy chains). That is NOT discharged yet — it
+//! needs the ruleset to be a value rather than a sequence of `iptables`
+//! subprocess calls, which is the next refactor.
 //!
 //! # The ordering that carries the property
 //!
@@ -68,29 +69,71 @@ pub struct Rule {
     pub allow: bool,
 }
 
+/// The netmask for `prefix`, as an explicit table.
+///
+/// # Why a table and not `u32::MAX << (32 - prefix)`
+///
+/// The shift formulation needs a subtraction, and in Aeneas's `Result` monad a
+/// `u32` subtraction is *fallible* — every theorem downstream would carry an
+/// underflow obligation, and [`in_cidr`] would no longer be total by
+/// construction. Bitwise `&` and `==` have no failure mode, so with a table the
+/// matcher cannot fail at all, which is the property a rule on the critical
+/// path should have.
+///
+/// The table is not trusted by eye: `every_prefix_length_agrees_with_a_mask_formulation`
+/// checks all 33 entries against the independent shift formulation.
+///
+/// A `prefix` above 32 cannot come from `parse_entry`, which rejects it. It maps
+/// to the full mask — narrowing, never widening, for a matcher whose `true`
+/// grants passage.
+pub fn netmask(prefix: u8) -> u32 {
+    match prefix {
+        0 => 0x00000000,
+        1 => 0x80000000,
+        2 => 0xC0000000,
+        3 => 0xE0000000,
+        4 => 0xF0000000,
+        5 => 0xF8000000,
+        6 => 0xFC000000,
+        7 => 0xFE000000,
+        8 => 0xFF000000,
+        9 => 0xFF800000,
+        10 => 0xFFC00000,
+        11 => 0xFFE00000,
+        12 => 0xFFF00000,
+        13 => 0xFFF80000,
+        14 => 0xFFFC0000,
+        15 => 0xFFFE0000,
+        16 => 0xFFFF0000,
+        17 => 0xFFFF8000,
+        18 => 0xFFFFC000,
+        19 => 0xFFFFE000,
+        20 => 0xFFFFF000,
+        21 => 0xFFFFF800,
+        22 => 0xFFFFFC00,
+        23 => 0xFFFFFE00,
+        24 => 0xFFFFFF00,
+        25 => 0xFFFFFF80,
+        26 => 0xFFFFFFC0,
+        27 => 0xFFFFFFE0,
+        28 => 0xFFFFFFF0,
+        29 => 0xFFFFFFF8,
+        30 => 0xFFFFFFFC,
+        31 => 0xFFFFFFFE,
+        32 => 0xFFFFFFFF,
+        _ => 0xFFFFFFFF,
+    }
+}
+
 /// Whether `addr` lies in `net/prefix`.
 ///
-/// Written with an explicit shift rather than a netmask table so the whole
-/// function translates. `prefix == 0` matches every address — that is what
-/// `0.0.0.0/0` means, and [`the_zero_prefix_matches_everything`] pins it
-/// because it is exactly the input that dissolves an allowlist.
-///
-/// A `prefix` above 32 cannot come from `parse_entry`, which rejects it. It is
-/// treated as a full-width match here rather than being allowed to shift out of
-/// range: narrowing is the safe direction for a matcher whose `true` grants
-/// passage.
+/// Total: no arithmetic that can fail, so the extracted Lean definition needs no
+/// side conditions. `prefix == 0` matches every address — that is what
+/// `0.0.0.0/0` means, and [`the_zero_prefix_matches_everything`] pins it because
+/// it is exactly the input that dissolves an allowlist.
 pub fn in_cidr(net: u32, prefix: u8, addr: u32) -> bool {
-    if prefix == 0 {
-        return true;
-    }
-    let p: u32 = if prefix > 32 { 32 } else { prefix as u32 };
-    // Shifting a u32 by 32 is undefined in C and a panic in debug Rust, which is
-    // why the p == 32 case is peeled off rather than folded into the shift.
-    if p == 32 {
-        return net == addr;
-    }
-    let shift: u32 = 32 - p;
-    (net >> shift) == (addr >> shift)
+    let m = netmask(prefix);
+    (net & m) == (addr & m)
 }
 
 /// Whether `rule` matches `dest`, ignoring the rule's verdict.

@@ -15,8 +15,17 @@ name: Aeneas IFC (scoped extraction + noninterference)
 #   to a dependency-free subgraph with `--start-from`, so Aeneas only translates
 #   the slice we prove over. This job does exactly that.
 #
-# This job is LINUX-ONLY: the macOS local aeneas build is broken (charon-ml
-# skew), so extraction is reproducible only on CI.
+# THIS JOB RUNS ON LINUX for reproducibility (pinned charon/aeneas releases),
+# but the extraction is NOT macOS-only-broken. A previous version of this
+# comment claimed "the macOS local aeneas build is broken (charon-ml skew)";
+# that was checked and is false. On macOS 15 / aarch64 with charon 0.1.223 and
+# aeneas d71d2e3 from ~/.cargo/bin, the scoped extraction of
+# extracted::egress ran clean — 4/4 functions translated, 0 opaque.
+#
+# The one real gotcha, which is what a stale build looks like: `charon cargo`
+# exits 0 and emits NOTHING when cargo has nothing to recompile. Run
+# `cargo clean -p nucleus-ifc-kernel` first. The .llbc lands at the REPO ROOT,
+# not in the crate directory.
 
 on:
   push:
@@ -27,6 +36,8 @@ on:
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
       - "crates/portcullis-core/lean/generated-mediation/**"
+      - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -37,6 +48,8 @@ on:
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
       - "crates/portcullis-core/lean/generated-mediation/**"
+      - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -53,7 +66,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits"
 
 jobs:
   aeneas-ifc-scoped:
