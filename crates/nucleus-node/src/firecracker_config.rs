@@ -676,9 +676,28 @@ impl FirecrackerConfig {
             }
         }
 
-        // Inject sandbox proof token so tool-proxy inside the VM can verify it's managed.
-        // This is a fallback — tier 1 (SVID with attestation) is preferred in Firecracker.
-        {
+        // Sandbox proof token — the tool-proxy refuses to start without SOME
+        // proof it is running inside a managed sandbox.
+        //
+        // # Emitted only when the pod will have no SVID
+        //
+        // This is Tier 3 of `sandbox_proof`: the fallback for a workload with no
+        // SPIFFE identity. A pod that gets an identity reaches Tier 1 or Tier 2
+        // from its SVID and never consults this token — so emitting it there put
+        // a per-pod secret on the world-readable kernel command line to be
+        // ignored.
+        //
+        // `workload_api_port` is exactly the right condition and not a proxy for
+        // it: `net::workload_api_port_for` and `net::identity_registration` are
+        // the same predicate — identity enabled AND the egress grant granted —
+        // stated on the advertising and serving sides. So `Some` here means the
+        // pod will be registered and will have an SVID to prove itself with.
+        //
+        // Deleting it unconditionally would be wrong, and that is why this is a
+        // condition rather than a removal: a node with identity management off,
+        // or a pod whose grant was denied, has Tier 3 as its ONLY proof, and the
+        // tool-proxy exits fatally when no tier succeeds.
+        if workload_api_port.is_none() {
             use sha2::{Digest, Sha256};
             let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
             let spec_hash = hex::encode(Sha256::digest(spec_yaml.as_bytes()));
@@ -1002,7 +1021,7 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::HashSet;
     use std::ffi::OsString;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Minimal valid PodSpec with all optional sections defaulted to absent.
     /// Built by deserialization so it exercises the real spec defaults rather
@@ -1019,6 +1038,88 @@ mod tests {
             boot_args: None,
             read_only,
             scratch_path: scratch.then(|| PathBuf::from("/var/lib/nucleus/scratch.ext4")),
+        }
+    }
+
+    /// Build a cmdline for a pod that either will or will not receive an SVID.
+    ///
+    /// Linux-gated because `from_spec` is: the cmdline builder only compiles on
+    /// the platform that can run a microVM. These therefore run in CI and in
+    /// OrbStack, never on a macOS dev machine — the same trap that once hid the
+    /// vsock accept path behind a `cfg` nobody compiled.
+    #[cfg(target_os = "linux")]
+    fn boot_args_with_identity(will_have_identity: bool) -> String {
+        let config = FirecrackerConfig::from_spec(
+            &base_spec(),
+            Path::new("/unused/firecracker.log"),
+            Path::new("/unused/vsock.sock"),
+            &image(true, false),
+            None,
+            "auth-secret",
+            "approval-secret",
+            will_have_identity.then_some(15012),
+            None,
+            None,
+        );
+        config.boot_source.boot_args.unwrap_or_default()
+    }
+
+    /// **A pod that will hold an SVID gets no Tier 3 token.**
+    ///
+    /// `sandbox_token` is the fallback proof for a workload with no SPIFFE
+    /// identity. A pod that gets one proves itself from the SVID and never reads
+    /// the token — so emitting it there put a per-pod secret on the
+    /// world-readable kernel command line to be ignored.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_bearing_pod_carries_no_sandbox_token() {
+        let args = boot_args_with_identity(true);
+        assert!(
+            !args.contains("nucleus.sandbox_token"),
+            "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
+             not need the Tier 3 token: {args}"
+        );
+    }
+
+    /// **Non-vacuity, and the reason this is a condition rather than a removal.**
+    ///
+    /// A node with identity management off, or a pod whose egress grant was
+    /// denied, has Tier 3 as its ONLY proof — and `sandbox_proof` exits fatally
+    /// when no tier succeeds. Deleting the token outright would turn those pods
+    /// from working into dead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pod_without_an_identity_keeps_its_only_proof() {
+        let args = boot_args_with_identity(false);
+        assert!(
+            args.contains("nucleus.sandbox_token="),
+            "a pod with no SVID has Tier 3 as its only sandbox proof and must keep it: {args}"
+        );
+    }
+
+    /// The condition must track the identity predicate rather than merely
+    /// correlating with it: `workload_api_port_for` and `identity_registration`
+    /// are the same rule stated on the advertising and serving sides, so the
+    /// port being present is exactly "this pod will be registered".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_token_condition_matches_the_identity_predicate() {
+        for (enabled, granted) in [(true, true), (true, false), (false, true), (false, false)] {
+            let grant = if granted {
+                net::IdentityGrant::Granted
+            } else {
+                net::IdentityGrant::Denied {
+                    offending: "0.0.0.0/0".to_string(),
+                }
+            };
+            let port = net::workload_api_port_for(enabled, &grant, 15012);
+            let args = boot_args_with_identity(port.is_some());
+            assert_eq!(
+                args.contains("nucleus.sandbox_token="),
+                port.is_none(),
+                "identity_enabled={enabled} granted={granted}: the Tier 3 token must be \
+                 present exactly when the pod will have no SVID"
+            );
         }
     }
 
