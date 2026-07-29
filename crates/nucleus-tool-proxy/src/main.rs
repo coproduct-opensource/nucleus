@@ -2439,32 +2439,79 @@ async fn read_file(
 
     let path = req.path.clone();
 
-    let contents = match state
-        .runtime
-        .sandbox()
-        .read_to_string(&path, &decision_token)
-    {
-        Ok(contents) => contents,
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                || state.approvals.consume(&op)
-            {
-                let approval = state.runtime.sandbox().request_approval(op.clone())?;
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(operation, &format!("approved: read {}", path))
-                };
-                state
-                    .runtime
-                    .sandbox()
-                    .read_to_string_approved(&path, &approved_dt, &approval)?
-            } else {
+    // Discharge the eight obligations for this read. Reads were previously
+    // unmediated on this path: it went from `http_kernel_decide` straight to the
+    // sandbox, so a read never cleared the obligations that `FileEffect::read`
+    // enforces on the other filesystem path.
+    macro_rules! read_authority {
+        () => {{
+            use nucleus_ifc_kernel::discharge::PreflightResult;
+            let verified_scope = state.session_task_token.verified_scope();
+            let ceiling = state.runtime.policy().capabilities.read_files;
+            let flow = state.flow_tracker.lock().await;
+            let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
+            drop(flow);
+            match r {
+                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+                }
+            }
+        }};
+    }
+    let first_authority = read_authority!();
+
+    let contents =
+        match state
+            .runtime
+            .sandbox()
+            .read_to_string(&path, &decision_token, first_authority)
+        {
+            Ok(contents) => contents,
+            Err(NucleusError::ApprovalRequired { operation: op }) => {
+                // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+                if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
+                    || state.approvals.consume(&op)
+                {
+                    let approval = state.runtime.sandbox().request_approval(op.clone())?;
+                    let approved_dt = {
+                        let mut kernel = state.kernel.lock().await;
+                        kernel.issue_approved_token(operation, &format!("approved: read {}", path))
+                    };
+                    // A fresh discharge for the approved retry: one discharge
+                    // authorizes one attempt.
+                    let retry_authority = read_authority!();
+                    state.runtime.sandbox().read_to_string_approved(
+                        &path,
+                        &approved_dt,
+                        &approval,
+                        retry_authority,
+                    )?
+                } else {
+                    if let Err(e) = sink.record(VerdictContext {
+                        operation,
+                        subject: path.clone(),
+                        outcome: VerdictOutcome::Deny {
+                            reason: "approval_required".to_string(),
+                        },
+                        actor,
+                        policy_rule: None,
+                        extensions: BTreeMap::new(),
+                    }) {
+                        warn!(error = %e, "verdict recording failed -- audit gap");
+                    }
+                    return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                        operation: op,
+                    }));
+                }
+            }
+            Err(err) => {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,
                     subject: path.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
+                    outcome: VerdictOutcome::Error {
+                        error: format!("{err:?}"),
                     },
                     actor,
                     policy_rule: None,
@@ -2472,27 +2519,9 @@ async fn read_file(
                 }) {
                     warn!(error = %e, "verdict recording failed -- audit gap");
                 }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
+                return Err(ApiError::Nucleus(err));
             }
-        }
-        Err(err) => {
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: path.clone(),
-                outcome: VerdictOutcome::Error {
-                    error: format!("{err:?}"),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-            return Err(ApiError::Nucleus(err));
-        }
-    };
+        };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,

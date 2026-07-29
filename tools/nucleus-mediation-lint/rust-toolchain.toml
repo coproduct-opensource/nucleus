@@ -1,0 +1,6 @@
+# EXACT pin required by dylint_linting 6.0.1 (Research Report 1, §2).
+# Both components are mandatory: without them the `extern crate rustc_*` declarations
+# in src/lib.rs fail to resolve.
+[toolchain]
+channel = "nightly-2026-04-16"
+components = ["llvm-tools-preview", "rustc-dev"]

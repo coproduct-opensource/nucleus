@@ -37,16 +37,38 @@
   6 669 comparisons, the complete domain. Those Rust tests close the model↔code
   gap; THIS file closes the property-over-extracted gap.
 
-  # Scope boundary (the honest caveat)
+  # What this file now covers, and what it does not
 
-  This proves the scope PREDICATE is exactly equality on the pair. It does NOT
-  prove that every effect path calls it — that is the second half of complete
-  mediation, and it is not yet true of the codebase: 10 of 13 effect-trait
-  methods take no bundle at all, and the 3 that do take it by reference so a
-  correctly-scoped bundle can be replayed. See docs/production-delta.md.
+  Two halves, both over the extracted model:
 
-  Nor does it say anything about the other seven obligations; `scope_admits`
-  governs which action a bundle speaks for, not whether that action is safe.
+  * the scope PREDICATE (`scope_admits_*`) — a discharge admits exactly its own
+    action;
+  * the MACHINE (`effect_requires_held`, `effect_consumes_the_authority`,
+    `refusal_preserves_the_authority`, `no_replay_without_a_fresh_discharge`) —
+    an effect needs a held authority, consumes it, and cannot be replayed.
+
+  Together these are the *conditional* half of global mediation: given that every
+  effect entry point consumes a scoped `Authority`, a run cannot contain an
+  unmediated or replayed effect.
+
+  **The premise is not proved here, and cannot be.** "Every effect entry point
+  consumes an Authority" is a whole-program property over an open program; Lean
+  has nothing to quantify over, and the effect layer's real I/O is outside the
+  extractable subset anyway. It is discharged mechanically by the `mediated`
+  Dylint pass (tools/nucleus-mediation-lint), closed under the call graph, over
+  the set defined in docs/architecture/mediated-set.md.
+
+  seL4 has the same shape: it assumes compiler, assembly and hardware
+  correctness, and imposes syntactic restrictions — notably no calls through
+  function pointers — checked outside Isabelle so the proof has a statically
+  known call graph.
+
+  What remains trusted, stated rather than hidden: rustc's enforcement of affine
+  moves, the lint's deny-set completeness, and Charon/Aeneas extraction fidelity.
+
+  Nor does any of this say anything about the other seven obligations;
+  `scope_admits` governs which action a bundle speaks for, not whether that
+  action is safe.
 -/
 
 import PortcullisCoreMediation.Types
@@ -212,6 +234,175 @@ theorem scope_admits_no_escalation :
   cases (scope_admits_iff_eq _ _ _ _).mp h with
   | intro hop _ => cases hop
 
+/-! ## The mediation machine — the trace half
+
+    Everything above is about the scope PREDICATE. What follows is about the
+    machine that uses it, and it is the half that says something about *runs*
+    rather than about one comparison.
+
+    The machine is the abstract counterpart of what the Rust types enforce:
+    `Discharge` puts an authority in hand, `Effect` succeeds only against a
+    matching held authority and CONSUMES it. Consumption is the whole content of
+    "by value" — it is why a second effect without a fresh discharge cannot
+    succeed, and it is what the `compile_fail` doctest on `FileEffect` pins on
+    the Rust side.
+
+    These theorems are stated over the GENERATED `med_step`, not a hand model.
+-/
+
+/-! ### Totality of the generated helpers
+
+    `med_step` is a `do`-block over `scope_admits`, which is itself a `do`-block
+    over `opcode`/`sinkcode`. None of them can fail — no loops, no partial
+    arithmetic — but the `Result` monad does not know that, so the binds must be
+    discharged before any theorem about `med_step` can reduce. -/
+
+theorem opcode_total (o : MedOperation) :
+    ∃ v, nucleus_ifc_kernel.extracted.mediation.opcode o = ok v := by
+  cases o <;> exact ⟨_, rfl⟩
+
+theorem sinkcode_total (k : MedSinkClass) :
+    ∃ v, nucleus_ifc_kernel.extracted.mediation.sinkcode k = ok v := by
+  cases k <;> exact ⟨_, rfl⟩
+
+/-- The sink comparison the true branch of `scope_admits` reduces to. Proved
+    separately (19² cases) so `scope_admits_total` needs only the 13² operation
+    split rather than the 61 009-case product. -/
+theorem sinkcode_cmp_total (es as_ : MedSinkClass) :
+    ∃ b, (do
+            let i2 ← nucleus_ifc_kernel.extracted.mediation.sinkcode es
+            let i3 ← nucleus_ifc_kernel.extracted.mediation.sinkcode as_
+            ok (decide (i2 = i3))) = ok b := by
+  cases es <;> cases as_ <;> exact ⟨_, rfl⟩
+
+theorem scope_admits_total (eo ao : MedOperation) (es as_ : MedSinkClass) :
+    ∃ b, nucleus_ifc_kernel.extracted.mediation.scope_admits eo es ao as_ = ok b := by
+  obtain ⟨b, hb⟩ := sinkcode_cmp_total es as_
+  unfold nucleus_ifc_kernel.extracted.mediation.scope_admits
+  cases eo <;> cases ao <;>
+    simp only [nucleus_ifc_kernel.extracted.mediation.opcode, bind_tc_ok] <;>
+    first
+      | exact ⟨b, hb⟩
+      | exact ⟨_, rfl⟩
+
+/-! ## The mediation machine — the trace half
+
+    Everything above is about the scope PREDICATE. What follows is about the
+    machine that uses it, and it is the half that says something about a *run*
+    rather than about one comparison.
+
+    The machine is the abstract counterpart of what the Rust types enforce:
+    `Discharge` puts an authority in hand; `Effect` succeeds only against a
+    matching held authority and CONSUMES it. Consumption is the whole content of
+    "by value" — it is why a second effect without a fresh discharge cannot
+    succeed, and it is what the `compile_fail` doctest on `FileEffect` pins on
+    the Rust side.
+
+    Stated over the GENERATED `med_step`, not a hand model. -/
+
+/-- An effect cannot succeed from the idle state. No authority, no effect —
+    complete mediation at the level of a single step. -/
+theorem effect_requires_held
+    (s : MedState) (o : MedOperation) (k : MedSinkClass) (r : StepResult)
+    (hstep : nucleus_ifc_kernel.extracted.mediation.med_step s
+              (MedAction.Effect o k) = ok r)
+    (hok : r.ok = true) :
+    s.held = true := by
+  by_cases h : s.held = true
+  · exact h
+  · exfalso
+    simp only [Bool.not_eq_true] at h
+    unfold nucleus_ifc_kernel.extracted.mediation.med_step at hstep
+    simp only [h, Bool.false_eq_true, if_false] at hstep
+    injection hstep with heq
+    subst heq
+    exact Bool.noConfusion hok
+
+/-- A successful effect CONSUMES the authority: the machine returns to idle.
+    Without this, one discharge would authorise unboundedly many effects — the
+    replay the by-value cutover removed from the Rust. -/
+theorem effect_consumes_the_authority
+    (s : MedState) (o : MedOperation) (k : MedSinkClass) (r : StepResult)
+    (hstep : nucleus_ifc_kernel.extracted.mediation.med_step s
+              (MedAction.Effect o k) = ok r)
+    (hok : r.ok = true) :
+    r.next.held = false := by
+  have hheld : s.held = true := effect_requires_held s o k r hstep hok
+  obtain ⟨b, hb⟩ := scope_admits_total s.op o s.sink k
+  unfold nucleus_ifc_kernel.extracted.mediation.med_step at hstep
+  simp only [hheld, if_true, hb, bind_tc_ok] at hstep
+  cases b
+  · simp only [Bool.false_eq_true, if_false] at hstep
+    injection hstep with heq
+    subst heq
+    exact absurd hok (by simp)
+  · simp only [if_true] at hstep
+    injection hstep with heq
+    subst heq
+    rfl
+
+/-- A REFUSED effect leaves the state untouched, so a wrong-scope attempt cannot
+    burn a legitimate authority. A denial that consumed the token would be a
+    denial of service on the honest path. -/
+theorem refusal_preserves_the_authority
+    (s : MedState) (o : MedOperation) (k : MedSinkClass) (r : StepResult)
+    (hstep : nucleus_ifc_kernel.extracted.mediation.med_step s
+              (MedAction.Effect o k) = ok r)
+    (hno : r.ok = false) :
+    r.next = s := by
+  obtain ⟨b, hb⟩ := scope_admits_total s.op o s.sink k
+  unfold nucleus_ifc_kernel.extracted.mediation.med_step at hstep
+  by_cases h : s.held = true
+  · simp only [h, if_true, hb, bind_tc_ok] at hstep
+    cases b
+    · simp only [Bool.false_eq_true, if_false] at hstep
+      injection hstep with heq
+      subst heq
+      rfl
+    · simp only [if_true] at hstep
+      injection hstep with heq
+      subst heq
+      exact absurd hno (by simp)
+  · simp only [Bool.not_eq_true] at h
+    simp only [h, Bool.false_eq_true, if_false] at hstep
+    injection hstep with heq
+    subst heq
+    rfl
+
+/-- Discharge always succeeds and holds exactly what it was earned for. -/
+theorem discharge_holds_its_own_scope
+    (s : MedState) (o : MedOperation) (k : MedSinkClass) (r : StepResult)
+    (hstep : nucleus_ifc_kernel.extracted.mediation.med_step s
+              (MedAction.Discharge o k) = ok r) :
+    r.ok = true ∧ r.next.held = true ∧ r.next.op = o ∧ r.next.sink = k := by
+  unfold nucleus_ifc_kernel.extracted.mediation.med_step at hstep
+  injection hstep with heq
+  subst heq
+  exact ⟨rfl, rfl, rfl, rfl⟩
+
+/-! ### No replay, as a two-step corollary
+
+    The composition that matters: after a successful effect the machine is idle,
+    and from idle no effect succeeds. So a second effect with no discharge
+    between them fails — one authority, one effect. -/
+
+theorem no_replay_without_a_fresh_discharge
+    (s : MedState) (o₁ o₂ : MedOperation) (k₁ k₂ : MedSinkClass)
+    (r₁ r₂ : StepResult)
+    (h₁ : nucleus_ifc_kernel.extracted.mediation.med_step s
+            (MedAction.Effect o₁ k₁) = ok r₁)
+    (hok₁ : r₁.ok = true)
+    (h₂ : nucleus_ifc_kernel.extracted.mediation.med_step r₁.next
+            (MedAction.Effect o₂ k₂) = ok r₂) :
+    r₂.ok = false := by
+  have hidle : r₁.next.held = false :=
+    effect_consumes_the_authority s o₁ k₁ r₁ h₁ hok₁
+  by_contra hok₂
+  simp only [Bool.not_eq_false] at hok₂
+  have := effect_requires_held r₁.next o₂ k₂ r₂ h₂ hok₂
+  rw [hidle] at this
+  exact Bool.noConfusion this
+
 /-! ## Axiom audit
 
     Must print only the trusted Lean kernel set — no `sorryAx`, and no Aeneas
@@ -223,5 +414,9 @@ theorem scope_admits_no_escalation :
 #print axioms scope_admits_iff_eq
 #print axioms scope_admits_unique
 #print axioms scope_admits_no_escalation
+#print axioms effect_requires_held
+#print axioms effect_consumes_the_authority
+#print axioms refusal_preserves_the_authority
+#print axioms no_replay_without_a_fresh_discharge
 
 end MediationScopeExtracted

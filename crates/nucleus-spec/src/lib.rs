@@ -1,5 +1,7 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod vmm_version;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

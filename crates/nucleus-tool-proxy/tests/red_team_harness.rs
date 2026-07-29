@@ -384,10 +384,18 @@ impl ToolDispatcher {
         };
 
         // Layer 2: Sandbox read (cap-std + PathLattice) + atomic record
-        match self
-            .guard
-            .execute_and_record(proof, || self.sandbox.read_to_string(path, &decision_token))
-        {
+        match self.guard.execute_and_record(proof, || {
+            self.sandbox.read_to_string(
+                path,
+                &decision_token,
+                portcullis_effects::authority::Authority::new(
+                    nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                        nucleus_ifc_kernel::Operation::ReadFiles,
+                        nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+                    ),
+                ),
+            )
+        }) {
             Ok(contents) => (contents, false),
             Err(ExecuteError::OperationFailed(e)) => (format!("BLOCKED by sandbox: {e}"), true),
             Err(ExecuteError::TocTouDenied { reason }) => {

@@ -514,6 +514,39 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
 // FirecrackerConfig construction
 // ---------------------------------------------------------------------------
 
+/// Force `pci=off` onto a guest kernel command line.
+///
+/// # Why this is a floor rather than a default
+///
+/// `pci=off` used to live only in the `default_args` literal, which is
+/// **discarded wholesale** when a `PodSpec` supplies `image.boot_args`. So any
+/// spec with a custom command line silently lost it, while `ipv6.disable=1`
+/// three lines below was correctly enforced by appending. The right idiom was
+/// already in the file, applied to one hardening flag and not the other.
+///
+/// It matters because nucleus's PCI posture is the guest half of its defence
+/// against the virtio-PCI transport (CVE-2026-5747, escape-class). The host half
+/// is that nucleus never passes `--enable-pci`, which
+/// `jailer_argv_never_enables_the_pci_transport` pins. Neither half should be
+/// reachable from spec input.
+///
+/// A spec-supplied `pci=` is **stripped**, not honoured and not an error:
+/// `from_spec` returns `Self` with no error channel, and silently keeping a
+/// weaker value would be the worst of the three options. In nucleus's model no
+/// PodSpec has a legitimate reason to want guest PCI — the VMM is not started
+/// with the PCI transport at all.
+/// Ungated although its only caller is Linux-only, so the logic is compiled and
+/// unit-tested on a macOS dev host rather than only in CI.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn enforce_pci_off(args: &str) -> String {
+    let mut out: Vec<&str> = args
+        .split_whitespace()
+        .filter(|tok| !tok.starts_with("pci="))
+        .collect();
+    out.push("pci=off");
+    out.join(" ")
+}
+
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
     #[allow(clippy::too_many_arguments)]
@@ -569,6 +602,11 @@ impl FirecrackerConfig {
             Some(args) => Some(format!("{args} ipv6.disable=1")),
             None => Some("ipv6.disable=1".to_string()),
         };
+
+        // Applied AFTER every branch that can build a command line, so no path
+        // — default, spec-supplied, or net-augmented — can reach the guest
+        // without it. See `enforce_pci_off`.
+        boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
         // Inject secrets via kernel command line (read by nucleus-guest-init)
         // This is more secure than baking secrets into the rootfs image
@@ -1780,6 +1818,88 @@ mod tests {
             got, want,
             "the guest-visible device surface changed — a device class was \
              added to or removed from what Firecracker is told to attach"
+        );
+    }
+
+    // ── PCI posture: both halves of the CVE-2026-5747 defence ─────────────
+
+    /// THE HOST HALF. Firecracker's virtio-PCI transport is opt-in via
+    /// `--enable-pci`; the default MMIO transport is unaffected by
+    /// CVE-2026-5747 (OOB write, CVSS v4 8.7, guest root -> potential host code
+    /// execution). Nucleus has never passed the flag, so the vulnerable code was
+    /// unreachable — but that was an unstated accident, and nothing would have
+    /// noticed it changing.
+    #[test]
+    fn jailer_argv_never_enables_the_pci_transport() {
+        let spec: nucleus_spec::CgroupSpec = serde_json::from_str(
+            r#"{"path":"/sys/fs/cgroup/nucleus","settings":[{"file":"cpu.weight","value":"42"}]}"#,
+        )
+        .expect("cgroup spec");
+        for cgroup in [None, Some(&spec)] {
+            for netns in [None, Some("/var/run/netns/pod-1")] {
+                let args = jailer_args(&JailerPlan {
+                    firecracker_path: "/usr/bin/firecracker",
+                    pod_id: "pod-1",
+                    chroot_base: "/srv/jailer",
+                    uid: 123,
+                    gid: 100,
+                    netns,
+                    cgroup,
+                    cgroup_version: 2,
+                    config_file_in_jail: in_jail::CONFIG,
+                });
+                assert!(
+                    !args.iter().any(|a| a.contains("enable-pci")),
+                    "jailer argv must never enable the virtio-PCI transport: {args:?}"
+                );
+            }
+        }
+    }
+
+    /// THE GUEST HALF, and the bug it fixes. `pci=off` used to live only in the
+    /// `default_args` literal, which is discarded whenever a PodSpec supplies
+    /// `image.boot_args` — so any spec with a custom command line silently lost
+    /// the hardening flag. Spec input must not be able to weaken it.
+    #[test]
+    fn a_spec_supplied_cmdline_cannot_drop_pci_off() {
+        // The pre-fix path: a custom cmdline with no mention of pci.
+        let hardened = enforce_pci_off("console=ttyS0 reboot=k panic=1 init=/init");
+        assert!(
+            hardened.split_whitespace().any(|t| t == "pci=off"),
+            "a spec-supplied cmdline must still get pci=off: {hardened}"
+        );
+    }
+
+    /// An explicit weakening is stripped rather than honoured — and the result
+    /// names `pci=off` exactly once, so the kernel is not handed two values.
+    #[test]
+    fn an_explicit_pci_on_is_overridden_not_honoured() {
+        let hardened = enforce_pci_off("console=ttyS0 pci=on init=/init");
+        assert!(
+            !hardened.split_whitespace().any(|t| t == "pci=on"),
+            "pci=on must not survive: {hardened}"
+        );
+        assert_eq!(
+            hardened
+                .split_whitespace()
+                .filter(|t| *t == "pci=off")
+                .count(),
+            1,
+            "exactly one pci= token: {hardened}"
+        );
+        // Everything else is preserved.
+        assert!(hardened.contains("console=ttyS0") && hardened.contains("init=/init"));
+    }
+
+    /// Idempotent: applying the floor to an already-hardened cmdline is a no-op,
+    /// so the default path does not end up with a duplicate.
+    #[test]
+    fn enforcing_pci_off_is_idempotent() {
+        let once = enforce_pci_off("console=ttyS0 pci=off init=/init");
+        assert_eq!(once, enforce_pci_off(&once));
+        assert_eq!(
+            once.split_whitespace().filter(|t| *t == "pci=off").count(),
+            1
         );
     }
 }

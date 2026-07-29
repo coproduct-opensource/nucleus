@@ -342,12 +342,41 @@ impl NucleusMcpServer {
             }
         };
 
+        // Discharge the eight obligations for the read. Previously this path
+        // went straight to the sandbox with only the guard proof, so a read
+        // never cleared the obligations `FileEffect::read` enforces.
+        let read_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let fs_ceiling = self.state.runtime.policy().capabilities.read_files;
+            let flow = self.flow_tracker.lock().await;
+            let result =
+                crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(path = %params.path, %reason, "discharge preflight DENIED read — no read");
+                    self.record_verdict(
+                        Operation::ReadFiles,
+                        &params.path,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let read_authority = portcullis_effects::authority::Authority::new(read_bundle);
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
-                self.state
-                    .runtime
-                    .sandbox()
-                    .read_to_string(&params.path, &decision_token)
+                self.state.runtime.sandbox().read_to_string(
+                    &params.path,
+                    &decision_token,
+                    read_authority,
+                )
             })
         }) {
             Ok(contents) => {
@@ -888,7 +917,37 @@ impl NucleusMcpServer {
                         Ok(r) => r,
                         Err(_) => continue,
                     };
-                    let contents = match state.runtime.sandbox().read_to_string_for_search(relative)
+                    // One discharge per file: an `Authority` buys one read, so a
+                    // search over N files needs N of them. Minting outside the
+                    // loop would be the replay the by-value cutover removed.
+                    let search_authority = {
+                        let verified_scope = state.session_task_token.verified_scope();
+                        let ceiling = state.runtime.policy().capabilities.grep_search;
+                        // `blocking_lock` rather than `.await`: this loop runs
+                        // inside `block_in_place`, which exists precisely to allow
+                        // blocking calls off the async executor.
+                        let flow = state.flow_tracker.blocking_lock();
+                        let r = crate::run_gate::preflight_grep_fs(
+                            verified_scope,
+                            ceiling,
+                            &relative.display().to_string(),
+                            &flow,
+                        );
+                        drop(flow);
+                        match r {
+                            PreflightResult::Allowed(b) => {
+                                portcullis_effects::authority::Authority::new(b)
+                            }
+                            // A file this session may not read is skipped, exactly
+                            // as an unreadable one is — the search returns fewer
+                            // hits rather than failing the whole request.
+                            _ => continue,
+                        }
+                    };
+                    let contents = match state
+                        .runtime
+                        .sandbox()
+                        .read_to_string_for_search(relative, search_authority)
                     {
                         Ok(c) => c,
                         Err(_) => continue, // Skip binary/unreadable files

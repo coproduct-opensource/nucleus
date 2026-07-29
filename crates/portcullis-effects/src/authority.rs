@@ -22,17 +22,46 @@
 //! via `std::marker::MustMove` is false — checked against 1.96.1, which is
 //! newer; the trait does not exist.)
 //!
-//! ## Status: a shape, not the cutover
+//! ## The spend is the witness point
 //!
-//! This type is deliberately **not** wired into the effect traits. Doing that is
-//! a signature change through every layer from `PreflightOutcome::Allowed` down
-//! to each effect impl, and it is a change to the enforcement path of a security
-//! runtime. What lands here is the shape and its proofs, so the call sites can be
-//! read before anyone commits to that refactor. See
-//! `docs/architecture/effect-sequencing-and-authority.md`.
+//! An `Authority` can carry the [`ReceiptLog`] it should record against, and
+//! [`spend`](Authority::spend) appends the receipt itself. That placement is the
+//! point of the design, not an implementation detail.
+//!
+//! The surveyed alternative is to log at the **policy decision point** and let
+//! each enforcement site annotate the record afterwards; the five-plane runtime
+//! governance architecture calls the result "complete by construction … a
+//! property of the architecture, not of developer diligence". It is a real
+//! improvement over ad-hoc logging, but the completeness is still architectural:
+//! some human wires every decision point, and a site that is added later and not
+//! wired is silently uncovered. That is exactly how the three most dangerous
+//! effects here — `run_argv`, `run_argv_async` and `NetEffect::fetch` — ended up
+//! outside the log while every safer effect was inside it.
+//!
+//! Because `Authority` is affine, this crate can do better than architectural
+//! completeness. `spend` is the *only* way to consume one, and after the #2090
+//! cutover an effect cannot run without consuming one. So "the authority was
+//! exercised" and "a receipt exists" are the same event, and the compiler is what
+//! keeps them the same event. Etas — the closest effect-typed agent language —
+//! keeps audit as a separate trace abstraction alongside the effect type and
+//! explicitly does *not* use linear or affine capabilities, so the coupling here
+//! is not what the current literature does.
+//!
+//! **What this does not claim.** A receipt says an authority was spent for a
+//! scope, which is upstream of the syscall: it is not proof the effect completed,
+//! and a spend followed by a crash still logs `Allowed`. Distinguishing
+//! *committed* from *authorised* needs a second event after the effect returns —
+//! Etas splits `request`/`handled`/`commit`/`denied` for exactly this reason —
+//! and that is not implemented here. Attaching the witness is also still a call
+//! the mediation layer has to make; forgetting it loses the record but never the
+//! enforcement, and `every_effect_is_witnessed` is what stops it drifting.
+
+use std::sync::Arc;
 
 use portcullis_core::discharge::DischargedBundle;
 use portcullis_core::{Operation, SinkClass};
+
+use crate::receipt::{EffectOutcome, ReceiptLog};
 
 /// One authorised action, **spent when used**.
 ///
@@ -77,6 +106,10 @@ use portcullis_core::{Operation, SinkClass};
 #[must_use = "an Authority that is never spent is an action that was authorised and not taken"]
 pub struct Authority {
     bundle: DischargedBundle,
+    /// Where to record the spend. `None` leaves the spend unwitnessed — the
+    /// enforcement is identical either way, so a missing witness degrades to
+    /// silence, never to permission.
+    witness: Option<Arc<ReceiptLog>>,
 }
 
 /// Why an authority could not be spent.
@@ -102,7 +135,20 @@ impl Authority {
     /// Takes the bundle **by value**: the caller gives up the ability to use it
     /// again, which is the entire point.
     pub fn new(bundle: DischargedBundle) -> Self {
-        Authority { bundle }
+        Authority {
+            bundle,
+            witness: None,
+        }
+    }
+
+    /// Attach the log that should record this authority's spend.
+    ///
+    /// The mediation layer owns the log, so it attaches the witness on the way
+    /// past; the authority then carries it down to wherever it is actually
+    /// spent. That is the whole trick — see the type docs.
+    pub fn witnessed_by(mut self, log: Arc<ReceiptLog>) -> Self {
+        self.witness = Some(log);
+        self
     }
 
     /// The operation and sink this authority was earned for, without spending it.
@@ -124,8 +170,23 @@ impl Authority {
     ///   through the effect traits, which this type exists to inform rather
     ///   than to pre-empt.
     pub fn spend(self, op: Operation, sink: SinkClass) -> Result<DischargedBundle, SpendError> {
-        crate::require_scope(&self.bundle, op, sink).map_err(SpendError::ScopeMismatch)?;
-        Ok(self.bundle)
+        // Record against the scope ATTEMPTED, not the scope held. A refused
+        // spend is evidence about what was reached for, and the pair held is
+        // already implied by whichever authority was issued.
+        match crate::require_scope(&self.bundle, op, sink) {
+            Ok(()) => {
+                if let Some(log) = &self.witness {
+                    log.append(op, sink, EffectOutcome::Allowed);
+                }
+                Ok(self.bundle)
+            }
+            Err(why) => {
+                if let Some(log) = &self.witness {
+                    log.append(op, sink, EffectOutcome::DeniedByScope);
+                }
+                Err(SpendError::ScopeMismatch(why))
+            }
+        }
     }
 }
 
