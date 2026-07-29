@@ -100,6 +100,44 @@
 ///   carrying the task token on it is the next real piece of work here. It is
 ///   architecture, not a conditional.
 ///
+/// # The task-token delivery design, decided
+///
+/// Two channels could carry it, and the choice is not arbitrary:
+///
+/// * the **broker socket** — per-pod, identity-bound at the listener,
+///   fail-closed, bounded frames, TTL'd. Better engineered, and the channel this
+///   whole effort built. But its frame is a credential *request envelope*, and a
+///   token fetch is not that; it would need a second operation kind.
+/// * the **workload API vsock bridge** — already serves per-pod artifacts over a
+///   per-pod socket, with a closed command enum (`FETCH_SVID`, `FETCH_BUNDLE`,
+///   `PING`) whose docs say adding a variant is the only way to teach the host a
+///   new command. A `FETCH_TASK_TOKEN` variant fits the existing shape exactly.
+///
+/// **The workload API bridge wins**, on the grounds that it is already the
+/// per-pod artifact channel and the extension is a variant rather than a second
+/// protocol inside a protocol.
+///
+/// ## It has to be conditional, for the same reason `sandbox_token` is
+///
+/// Both candidate channels are gated on identity: `workload_api_port_for` and
+/// `identity_registration` are the same predicate, and the broker's listener is
+/// refused for a pod with no host-established identity. So **for a pod without
+/// an identity neither channel exists**, and its task token must stay on the
+/// command line. The change is therefore "deliver over vsock *when the pod will
+/// have an identity*", exactly the shape [`PER_POD_SECRET_KEYS`]'s
+/// `sandbox_token` note landed on.
+///
+/// ## What has to be true before it lands — and here a boot really is required
+///
+/// The `sandbox_token` conditional needed no booted pod, because the question
+/// was answerable in code. **This one is different**, and the difference is worth
+/// being precise about rather than assuming the same shortcut applies twice:
+/// it changes GUEST STARTUP ORDERING. The tool-proxy verifies its task token
+/// once at startup; moving delivery from "already in the environment" to "fetch
+/// over vsock first" introduces a startup dependency whose failure mode — the
+/// fetch not completing before the proxy reads its environment — cannot be
+/// observed from the host side or from a unit test. It needs a pod that boots.
+///
 /// # An earlier note, and what has to be true first
 ///
 /// `nucleus.sandbox_token` is the strongest candidate for deletion rather than
