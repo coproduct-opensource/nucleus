@@ -354,6 +354,27 @@ mod tests {
         }
     }
 
+    /// **The guest rootfs must carry a CA bundle.**
+    ///
+    /// The tool-proxy builds an HTTPS client at startup when drand is enabled
+    /// (the default), and a Debian slim base ships no system CA store. Without
+    /// one the proxy cannot construct that client — and it is PID 1 in the
+    /// guest, so the failure panicked the kernel and took the microVM down.
+    ///
+    /// Found by booting a pod built from this repository's own rootfs script on
+    /// real KVM. No unit test could have caught it: they all run on a host that
+    /// happens to have a CA store, and all 436 of them passed before and after.
+    #[test]
+    fn the_rootfs_script_installs_a_ca_bundle() {
+        let script = include_str!("../../../scripts/firecracker/build-rootfs.sh");
+        assert!(
+            script.contains("ca-certificates.crt"),
+            "build-rootfs.sh no longer installs a CA bundle into the guest rootfs. \
+             The tool-proxy needs one to start with drand enabled, and it is PID 1 — \
+             so the pod will not boot."
+        );
+    }
+
     /// **How far the snapshot payoff actually is, measured rather than claimed.**
     ///
     /// The plan for this work called the snapshot payoff "a consequence, not a

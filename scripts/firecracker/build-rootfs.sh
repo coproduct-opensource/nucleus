@@ -296,6 +296,26 @@ mkdir -p "$ROOTFS_DIR/etc/nucleus" "$ROOTFS_DIR/usr/local/bin" "$ROOTFS_DIR/work
 # Copy pod spec
 cp "$POD_SPEC" "$ROOTFS_DIR/etc/nucleus/pod.yaml"
 
+# CA certificates. The tool-proxy builds an HTTPS client at startup when drand is
+# enabled (the default), and a Debian slim base ships NO system CA store — so
+# without this the proxy cannot construct that client. It is PID 1 in the guest,
+# so the failure took down the whole microVM.
+#
+# Found by booting a pod built from this script on real KVM, not by review: every
+# unit test passes on a host that happens to have a CA store.
+#
+# Copied from the build host rather than apt-installed, so the rootfs build stays
+# offline and needs no package manager inside the target tree.
+if [ -d /etc/ssl/certs ] && [ -s /etc/ssl/certs/ca-certificates.crt ]; then
+    mkdir -p "$ROOTFS_DIR/etc/ssl/certs"
+    cp /etc/ssl/certs/ca-certificates.crt "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt"
+    echo "Installed CA bundle from build host"
+else
+    echo "WARNING: no CA bundle at /etc/ssl/certs/ca-certificates.crt on the build host." >&2
+    echo "         The guest tool-proxy will refuse to start with drand enabled." >&2
+    echo "         Install ca-certificates on the build host, or build with drand off." >&2
+fi
+
 # Copy network policy files if provided
 if [ -n "$NET_ALLOW" ] && [ -f "$NET_ALLOW" ]; then
     cp "$NET_ALLOW" "$ROOTFS_DIR/etc/nucleus/net.allow"
