@@ -2683,3 +2683,83 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod witness_completeness_tests {
+    /// **The invariant `witnessed`'s own docs state as prose, enforced.**
+    ///
+    /// Those docs say: *"Every method that accepts an `Authority` routes it
+    /// through here — the ten via `gate`, the three that spend further down by
+    /// calling this directly."* That is a completeness claim about a set of
+    /// methods, and nothing checked it. A method added later that spends without
+    /// routing through `witnessed` would leave its effect unrecorded, and every
+    /// existing test would stay green — which is exactly the shape of the
+    /// original gap this work started from: the three most dangerous effects
+    /// (`run_argv`, `run_argv_async`, `NetEffect::fetch`) were outside the log
+    /// while every safer one was inside it.
+    ///
+    /// A source scan rather than a behavioural test, deliberately: the property
+    /// is about EVERY method including ones not yet written, and a behavioural
+    /// test only covers the paths it happens to exercise.
+    #[test]
+    fn every_policy_enforced_method_routes_its_authority_through_the_witness() {
+        let src = include_str!("lib.rs");
+        let body = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before the tests");
+
+        // Only `impl ... for PolicyEnforced` blocks: the mediation layer is
+        // where the routing obligation lives. Trait DECLARATIONS and the inert
+        // `Deny*`/test doubles take an authority and correctly drop it.
+        let mut offenders = Vec::new();
+        let mut checked = 0usize;
+        for block in body.split("impl").skip(1) {
+            let header: String = block.lines().next().unwrap_or("").to_string();
+            // Any impl ON PolicyEnforced, inherent or trait. An earlier version
+            // matched only `for PolicyEnforced` and so skipped inherent impls
+            // entirely — which is where `gate` and `witnessed` themselves live,
+            // and where a helper that spent without routing would most naturally
+            // be added.
+            if !header.contains("PolicyEnforced") {
+                continue;
+            }
+            // Cut the block at the next top-level `impl` — `split` already did.
+            for chunk in block.split("    fn ").skip(1) {
+                let sig = chunk.lines().take(6).collect::<Vec<_>>().join(" ");
+                if !sig.contains("authority: Authority") {
+                    continue;
+                }
+                checked += 1;
+                let name = chunk.split('(').next().unwrap_or("<unknown>").trim();
+                // `witnessed_by` counts: it is what `witnessed` itself calls, so
+                // the helper that attaches the log must not be flagged for
+                // attaching the log.
+                if !chunk.contains(".gate(")
+                    && !chunk.contains(".witnessed(")
+                    && !chunk.contains(".witnessed_by(")
+                {
+                    offenders.push(name.to_string());
+                }
+            }
+        }
+
+        // Non-vacuity FIRST. A scan that matched nothing would pass forever and
+        // look identical to a clean result — the failure mode that let the
+        // original gap sit unnoticed. Checked before the real assertion so a
+        // broken scan reports as a broken scan rather than as success.
+        assert!(
+            checked >= 10,
+            "the scan found only {checked} PolicyEnforced methods taking an authority; \
+             the docs claim thirteen, so a scan finding fewer is broken, not clean"
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "these PolicyEnforced methods take an `Authority` without routing it \
+             through `gate`/`witnessed`, so the effects they authorise leave no \
+             receipt:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+}
