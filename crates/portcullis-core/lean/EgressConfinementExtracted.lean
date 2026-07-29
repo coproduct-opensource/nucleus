@@ -56,15 +56,28 @@
   split the verified-iptables work (Diekmann et al.) uses: rule-list semantics
   in the prover, matchers underneath.
 
-  Two obligations therefore sit OUTSIDE this file, and neither is discharged by
-  it:
+  Obligations that therefore sit OUTSIDE this file:
 
   1. That `verdict`'s order is the order `nucleus_node::net` actually appends
-     rules in (all Deny, then all Allow, into DROP-policy chains). That is a
-     test, not a proof.
+     rules in. DISCHARGED, by construction plus tests rather than by proof:
+     `net::egress_chain` now returns the chain as an ordered VALUE and
+     `apply_host_policy` applies exactly that list in exactly that order, in one
+     pass. Before that refactor the ordering lived in two filtered loops of
+     subprocess calls and there was nothing for this fold to correspond TO.
+     `deny_precedes_allow_in_the_chain` and `a_specific_deny_beats_a_broader_allow`
+     pin it; reversing the two `extend`s fails exactly those two tests.
+     `tests_main.rs` also mirrors `verdict` below against the same extracted
+     matcher, so only the fold is restated, never the matching.
   2. That iptables implements these semantics, and that the rules are applied at
-     all. Diekmann et al. needed a whole paper for the first half, and even they
-     approximate unknown match expressions.
+     all. NOT discharged. Diekmann et al. needed a whole paper for the first
+     half, and even they approximate unknown match expressions.
+  3. That the chain is inside this model at all. `net::model_chain` returns
+     `None` for an IPv6 rule rather than converting lossily, so "not covered" is
+     never silently reported as "covered and fine". The baseline rules
+     `apply_default_deny` installs (loopback, and conntrack ESTABLISHED/RELATED)
+     are likewise outside `Rule` — it has no interface or ctstate field — so
+     this fold models the POLICY segment for a NEW connection to an external
+     destination, which is the case exfiltration needs.
 
   This also says nothing about DNS-tunnelled egress: a destination on the
   allowlist can still carry exfiltrated data, and queries to an allowed resolver

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use ipnet::IpNet;
+use nucleus_ifc_kernel::extracted::egress::Rule as EgressRule;
 use nucleus_spec::NetworkSpec;
 use tokio::io::AsyncWriteExt;
 use tokio::net::lookup_host;
@@ -187,17 +188,23 @@ impl NetnsPlan {
     }
 }
 
+/// Whether a chain rule accepts or drops. Public because `egress_chain`
+/// returns the chain as a value for the confinement proof's correspondence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuleKind {
+pub enum RuleKind {
     Allow,
     Deny,
 }
 
+/// One filter rule as nucleus decides it, before iptables formatting.
 #[derive(Clone, Debug)]
-struct NetRule {
-    kind: RuleKind,
-    net: IpNet,
-    port: Option<u16>,
+pub struct NetRule {
+    /// Accept or drop.
+    pub kind: RuleKind,
+    /// Destination network.
+    pub net: IpNet,
+    /// Destination port, or any port when `None`.
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -573,6 +580,80 @@ pub async fn setup_network(_plan: &NetPlan) -> Result<(), ApiError> {
     ))
 }
 
+/// The policy segment of the netns egress chain, **as an ordered value**.
+///
+/// # Why this function exists
+///
+/// The ruleset used to exist only as a sequence of `iptables` subprocess calls
+/// spread across two loops inside `apply_host_policy`. Nothing could be stated
+/// about it, because it was never a thing — only an effect. `EgressConfinement`
+/// in `crates/portcullis-core/lean` proves that a chain evaluated first-match-
+/// wins over a DROP policy drops anything no rule admits; for that proof to be
+/// about THIS system rather than about an intention, the list it folds has to be
+/// the list that is actually appended. That is what this returns.
+///
+/// The order is load-bearing and is the property `deny_precedes_allow_in_the_chain`
+/// pins: **every Deny, then every Allow**. Under first-match-wins that makes a
+/// deny strictly override a later allow. Reverse the two loops and an
+/// `allow: 10.0.0.0/8` silently re-opens a `deny: 10.0.0.7/32`.
+pub fn egress_chain(
+    policy: &NetworkSpec,
+    dns_entries: Option<&[ResolvedDnsEntry]>,
+) -> Result<Vec<NetRule>, ApiError> {
+    let parsed = parse_rules(policy)?;
+    let mut resolved: Vec<NetRule> = Vec::new();
+    if let Some(entries) = dns_entries {
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            for ip in &entry.ips {
+                if seen.insert((*ip, entry.port)) {
+                    resolved.push(NetRule {
+                        kind: RuleKind::Allow,
+                        net: IpNet::from(IpAddr::V4(*ip)),
+                        port: entry.port,
+                    });
+                }
+            }
+        }
+    }
+
+    // Deny first, then allow — including the DNS-resolved allows, which are
+    // allows like any other and must not outrank a deny.
+    let mut chain: Vec<NetRule> = Vec::with_capacity(parsed.len() + resolved.len());
+    chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Deny).cloned());
+    chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Allow).cloned());
+    chain.extend(resolved);
+    Ok(chain)
+}
+
+/// A chain rule in the representation the Lean confinement theorem is stated
+/// over, or `None` when it falls outside that model.
+///
+/// `None` means IPv6: the extracted matcher is IPv4-only (`parse_entry` yields
+/// IPv4 in practice and the guest cmdline carries `ipv6.disable=1`). Returning
+/// `None` rather than a lossy conversion keeps "the model does not cover this"
+/// distinct from "the model says this is fine" — the second would be a claim
+/// nobody proved.
+pub fn model_rule(rule: &NetRule) -> Option<EgressRule> {
+    let IpNet::V4(v4) = rule.net else {
+        return None;
+    };
+    Some(EgressRule {
+        net: u32::from(v4.network()),
+        prefix: v4.prefix_len(),
+        port_specific: rule.port.is_some(),
+        port: rule.port.unwrap_or(0),
+        allow: rule.kind == RuleKind::Allow,
+    })
+}
+
+/// The whole chain in the proof's representation, or `None` if any rule is
+/// outside it. All-or-nothing: a partially-modelled chain would licence a
+/// confinement claim over a chain that has rules the model never saw.
+pub fn model_chain(chain: &[NetRule]) -> Option<Vec<EgressRule>> {
+    chain.iter().map(model_rule).collect()
+}
+
 #[cfg(target_os = "linux")]
 pub async fn apply_host_policy(
     pid: u32,
@@ -582,22 +663,10 @@ pub async fn apply_host_policy(
 ) -> Result<(), ApiError> {
     ensure_command("nsenter")?;
     ensure_command("iptables")?;
-    let mut rules = parse_rules(policy)?;
-    if let Some(entries) = dns_entries {
-        let mut seen = BTreeSet::new();
-        for entry in entries {
-            for ip in &entry.ips {
-                let key = (*ip, entry.port);
-                if seen.insert(key) {
-                    rules.push(NetRule {
-                        kind: RuleKind::Allow,
-                        net: IpNet::from(IpAddr::V4(*ip)),
-                        port: entry.port,
-                    });
-                }
-            }
-        }
-    }
+    // The chain is decided as a value, then applied in exactly that order. The
+    // ordering guarantee the Lean theorem relies on lives in `egress_chain`,
+    // not scattered through the application loop below.
+    let chain = egress_chain(policy, dns_entries)?;
 
     run_nsenter(pid, &["iptables", "-w", "-F"]).await?;
     run_nsenter(pid, &["iptables", "-w", "-X"]).await?;
@@ -673,13 +742,18 @@ pub async fn apply_host_policy(
         apply_rule(pid, "INPUT", &rule, "ACCEPT").await?;
     }
 
-    for rule in rules.iter().filter(|rule| rule.kind == RuleKind::Deny) {
-        apply_rule(pid, "OUTPUT", rule, "DROP").await?;
-        apply_rule(pid, "FORWARD", rule, "DROP").await?;
-    }
-    for rule in rules.iter().filter(|rule| rule.kind == RuleKind::Allow) {
-        apply_rule(pid, "OUTPUT", rule, "ACCEPT").await?;
-        apply_rule(pid, "FORWARD", rule, "ACCEPT").await?;
+    // ONE pass, in chain order. Two filtered passes would re-encode the
+    // deny-before-allow ordering here as well as in `egress_chain`, and the two
+    // copies could drift — which is exactly the kind of gap the proof is
+    // supposed to close rather than depend on.
+    for rule in &chain {
+        let verdict = if rule.kind == RuleKind::Allow {
+            "ACCEPT"
+        } else {
+            "DROP"
+        };
+        apply_rule(pid, "OUTPUT", rule, verdict).await?;
+        apply_rule(pid, "FORWARD", rule, verdict).await?;
     }
 
     Ok(())

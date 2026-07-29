@@ -6966,6 +6966,7 @@ dependencies = [
  "nucleus",
  "nucleus-client",
  "nucleus-identity",
+ "nucleus-ifc-kernel",
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-spec",

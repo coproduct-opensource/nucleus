@@ -27,11 +27,13 @@
 //! iptables work uses: a formal semantics over rule lists in the prover, with
 //! matchers underneath.
 //!
-//! The cost of the split is an explicit correspondence obligation: the Lean fold
-//! must be the order `nucleus_node::net` actually appends rules in (all Deny,
-//! then all Allow, into DROP-policy chains). That is NOT discharged yet — it
-//! needs the ruleset to be a value rather than a sequence of `iptables`
-//! subprocess calls, which is the next refactor.
+//! The cost of the split is a correspondence obligation: the Lean fold must be
+//! the order `nucleus_node::net` actually appends rules in. That is discharged
+//! by construction — `net::egress_chain` returns the chain as an ordered VALUE
+//! and `apply_host_policy` applies exactly that list in one pass — plus the
+//! `deny_precedes_allow_in_the_chain` and `a_specific_deny_beats_a_broader_allow`
+//! tests, which fail if the ordering is reversed. What is NOT discharged is that
+//! iptables implements those semantics at all.
 //!
 //! # The ordering that carries the property
 //!
