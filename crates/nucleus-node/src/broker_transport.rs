@@ -187,9 +187,7 @@ use std::time::Duration;
 
 use nucleus_cred_broker::CredentialStore;
 use portcullis::PermissionLattice;
-#[cfg(test)]
-use tokio::io::AsyncBufReadExt;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// How long one guest connection may take from accept to answered.
 ///
@@ -393,5 +391,229 @@ mod serving_tests {
         };
         let (_, reply) = tokio::join!(serve, talk);
         assert!(reply.contains("\"granted\":false"), "reply: {reply}");
+    }
+}
+
+// ── The listener ──────────────────────────────────────────────────────────
+
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
+
+/// Create the broker's listening socket with restrictive permissions.
+///
+/// # Why permissions matter on this socket
+///
+/// Linux honours AF_UNIX file permissions: a process needs write access to the
+/// socket file to connect. This socket is the door to the credential broker, so
+/// a world-writable one would let any local process on the host ask for
+/// credentials on a pod's behalf.
+///
+/// `chmod` *after* `bind` is racy — there is a window in which the socket exists
+/// with the default mode and anyone may connect.
+///
+/// # Why not umask
+///
+/// The obvious fix is to set a restrictive umask before binding and restore it
+/// after. **That is wrong in a multi-threaded process, and it was tried here.**
+/// `umask(2)` is per-PROCESS, not per-thread, so during that window every other
+/// file the node creates concurrently gets the restrictive mode too. It was not
+/// caught by reasoning — it was caught by three unrelated `trust_gate` tests
+/// failing with `PermissionDenied` because they happened to create key files
+/// while this function held the mask.
+///
+/// So access control lives on the **parent directory** instead, which is the
+/// conventional answer for exactly this reason: the directory is created `0700`
+/// before the socket is bound inside it, so the socket's own mode never matters
+/// and no global process state is touched. There is no window, because there is
+/// nothing to traverse.
+///
+/// A stale socket from a previous run is unlinked first: `bind` fails on an
+/// existing path, and a node that could not restart after an unclean shutdown
+/// would be a self-inflicted outage.
+pub fn prepare_socket(path: &std::path::Path) -> io::Result<UnixListener> {
+    // Remove a stale socket, but only if it IS a socket — refusing to unlink
+    // arbitrary paths, so a misconfigured path cannot delete a real file.
+    if let Ok(meta) = std::fs::metadata(path) {
+        use std::os::unix::fs::FileTypeExt;
+        if meta.file_type().is_socket() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "broker socket path exists and is not a socket — refusing to unlink it",
+            ));
+        }
+    }
+
+    // Lock the PARENT DIRECTORY, not the socket. No process-global state, no
+    // window: a peer that cannot traverse the directory cannot reach the socket
+    // whatever mode the socket itself ends up with.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        let mut perms = std::fs::metadata(parent)?.permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(parent, perms)?;
+    }
+    UnixListener::bind(path)
+}
+
+/// Accept guest connections and serve one brokered request each.
+///
+/// Concurrency is capped by [`MAX_CONCURRENT_CONNECTIONS`]: a guest can open
+/// sockets far faster than the host can serve them, and an unbounded accept loop
+/// turns that into file-descriptor exhaustion for the whole node rather than
+/// just this listener. Permits are acquired BEFORE `accept`, so the loop stops
+/// pulling connections off the queue instead of accepting them and then queueing
+/// work internally.
+///
+/// Runs until `shutdown` resolves.
+pub async fn serve_broker(
+    listener: UnixListener,
+    policy: Arc<PermissionLattice>,
+    store: Arc<CredentialStore>,
+    shutdown: impl std::future::Future<Output = ()>,
+) {
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    tokio::pin!(shutdown);
+    loop {
+        let permit = match Arc::clone(&permits).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return, // semaphore closed
+        };
+        tokio::select! {
+            _ = &mut shutdown => return,
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, _addr)) => {
+                        let policy = Arc::clone(&policy);
+                        let store = Arc::clone(&store);
+                        tokio::spawn(async move {
+                            serve_connection(stream, &policy, &store).await;
+                            drop(permit);
+                        });
+                    }
+                    // A failed accept is not fatal: too many open files, or a
+                    // peer that vanished from the queue. Dropping the listener
+                    // over a transient error would be a worse outcome than the
+                    // error.
+                    Err(_) => {
+                        drop(permit);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Connect to the broker as a guest would, for tests and diagnostics.
+pub async fn request_over_socket(path: &std::path::Path, frame: &str) -> io::Result<String> {
+    let stream = UnixStream::connect(path).await?;
+    let (r, mut w) = tokio::io::split(stream);
+    w.write_all(frame.as_bytes()).await?;
+    w.write_all(b"\n").await?;
+    w.flush().await?;
+    let mut line = String::new();
+    let mut reader = BufReader::new(r);
+    reader.read_line(&mut line).await?;
+    Ok(line)
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use super::*;
+    use nucleus_cred_broker::Credential;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn store_with(target: &str, value: &str) -> CredentialStore {
+        let mut s = CredentialStore::new();
+        s.insert(target, Credential::new(value));
+        s
+    }
+
+    /// **The socket must not be reachable by other local processes.** Linux
+    /// honours AF_UNIX permissions, and a peer that can reach this socket can
+    /// ask the broker for credentials.
+    ///
+    /// Enforced on the containing DIRECTORY, not the socket: a umask would be
+    /// process-global and would briefly restrict every other file the node
+    /// creates concurrently — which is not hypothetical, it broke three
+    /// unrelated tests when it was tried.
+    #[tokio::test]
+    async fn the_socket_directory_denies_group_and_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let sockdir = dir.path().join("broker");
+        let path = sockdir.join("broker.sock");
+        let _listener = prepare_socket(&path).expect("bind");
+
+        let mode = std::fs::metadata(&sockdir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "group/other can traverse into the broker socket directory: {mode:o}"
+        );
+    }
+
+    /// A stale socket from an unclean shutdown must not stop the node starting.
+    #[tokio::test]
+    async fn a_stale_socket_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.sock");
+        let first = prepare_socket(&path).expect("first bind");
+        drop(first); // simulate an unclean exit leaving the file behind
+        assert!(path.exists(), "the stale socket should still be on disk");
+        let _second = prepare_socket(&path).expect("a stale socket must not block startup");
+    }
+
+    /// …but a REAL FILE at that path is not deleted. A misconfigured path must
+    /// not become a delete primitive.
+    #[tokio::test]
+    async fn a_regular_file_at_the_socket_path_is_not_unlinked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-a-socket");
+        std::fs::write(&path, b"important").unwrap();
+        assert!(prepare_socket(&path).is_err(), "must refuse, not unlink");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"important",
+            "the file was destroyed"
+        );
+    }
+
+    /// End to end over a real socket: a guest-shaped client gets a grant, and
+    /// the credential never appears on the wire.
+    #[tokio::test]
+    async fn a_real_client_is_served_without_the_secret_crossing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.sock");
+        let listener = prepare_socket(&path).expect("bind");
+
+        let policy = Arc::new(PermissionLattice::permissive());
+        let store = Arc::new(store_with("api.example.test", "super-secret-token"));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(serve_broker(listener, policy, store, async {
+            let _ = rx.await;
+        }));
+
+        let frame = serde_json::json!({
+            "pod_identity": "spiffe://nucleus/pod/abc",
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string();
+        let reply = request_over_socket(&path, &frame).await.expect("served");
+
+        assert!(reply.contains("\"granted\":true"), "reply: {reply}");
+        assert!(
+            !reply.contains("super-secret-token"),
+            "the credential crossed the socket: {reply}"
+        );
+
+        let _ = tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
     }
 }
