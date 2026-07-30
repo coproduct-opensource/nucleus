@@ -14,7 +14,7 @@ nucleus setup
 
 > **The one-liner still needs a full release.** `install.sh` resolves the CLI
 > version from GitHub's `/releases/latest`, which correctly excludes prereleases —
-> and the newest artifacts able to boot a pod are the prerelease `v2.1.0-rc.1`
+> and the newest artifacts able to boot a pod are `v2.1.0`
 > (every release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest
 > panics as PID 1). So today: build the CLI from a clone, then `setup` installs
 > the rest from the published RC.
@@ -139,7 +139,7 @@ anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1
 takes the guest kernel with it. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses
 them rather than installing a pod that cannot start.
 
-The pinned release is **`2.1.0-rc.1`**, the first build carrying the CA bundle,
+The pinned release is **`2.1.0`**, the first build carrying the CA bundle,
 the `ip netns exec` separator fix and the workload-API socket chown. Each
 downloaded asset is checked against the release API digest and, when `gh` is on
 PATH, against its Sigstore build provenance — the output says which of the two

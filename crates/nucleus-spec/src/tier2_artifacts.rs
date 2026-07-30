@@ -91,16 +91,18 @@ pub const GUEST_RELEASE_FLOOR: &str = "2.1.0";
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.1.0-rc.1` is the first published build containing everything a pod needs to
-/// boot: the CA bundle in the rootfs (#2110), the `ip netns exec` separator fix
-/// without which no pod launches on a default install, and the workload-API
-/// socket chown without which the guest cannot fetch its SVID. A release
-/// candidate rather than a release because the aarch64 boot is verified by hand,
-/// and that had not happened for a `2.1.0` at the time this was pinned.
+/// `2.1.0` is the first release containing everything a pod needs to boot: the CA
+/// bundle in the rootfs (#2110), the `ip netns exec` separator fix without which
+/// no pod launches on a default install, and the workload-API socket chown
+/// without which the guest cannot fetch its SVID.
+///
+/// Bumped from `2.1.0-rc.1` in the same change that is released as `2.1.0`, and
+/// deliberately BEFORE the tag is cut: a stable CLI must not pin prerelease guest
+/// images, which is what shipping 2.1.0 with the RC still pinned would do.
 ///
 /// `pinned_release_is_at_or_above_the_floor` fails if this ever drops below the
 /// floor; `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.1.0-rc.1";
+pub const GUEST_RELEASE: &str = "2.1.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
