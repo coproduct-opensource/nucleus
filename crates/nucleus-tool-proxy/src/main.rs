@@ -2386,7 +2386,35 @@ fn kernel_denial_to_api_error(operation: Operation, subject: &str, reason: DenyR
             command,
             reason: "blocked by the command lattice".to_string(),
         }),
-        other => {
+        // Everything else keeps the kernel's own words, and is listed
+        // EXHAUSTIVELY rather than behind `_`.
+        //
+        // The sibling mapping on the MCP path (`nucleus_mcp::format_deny_reason`)
+        // is exhaustive for the same reason, and it is the better discipline: a
+        // security surface should not acquire a new refusal reason without
+        // somebody deciding how it surfaces. Behind a catch-all, a future
+        // `DenyReason` variant silently becomes `kernel_denied` forever;
+        // exhaustive, it is a compile error until someone chooses.
+        //
+        // Deliberately NOT promoted to richer types where that needs an invented
+        // field: `NucleusError::BudgetExhausted` requires `requested`, and
+        // `DenyReason::BudgetExhausted` carries only `remaining_usd`.
+        // Synthesising the missing number is precisely the defect this function
+        // exists to remove.
+        other @ (DenyReason::BudgetExhausted { .. }
+        | DenyReason::TimeExpired { .. }
+        | DenyReason::IsolationInsufficient { .. }
+        | DenyReason::IsolationGated { .. }
+        | DenyReason::FlowViolation { .. }
+        | DenyReason::EgressBlocked { .. }
+        | DenyReason::PolicyDenied { .. }
+        | DenyReason::EnterpriseBlocked { .. }
+        | DenyReason::DelegationDenied { .. }
+        | DenyReason::InvalidDeclassification { .. }
+        | DenyReason::ActionTermRejected { .. }
+        | DenyReason::SinkScopeDenied { .. }
+        | DenyReason::IfcUnsafe { .. }
+        | DenyReason::CedarDenied { .. }) => {
             ApiError::KernelDenied(format!("{other:?} (operation {operation:?} on {subject})"))
         }
     }

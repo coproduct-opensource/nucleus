@@ -48,6 +48,9 @@ on:
     # The pins point at other people's servers. A weekly run catches an artifact
     # moving or disappearing before a user does.
     - cron: "17 6 * * 1"
+  # So the aarch64 job can be exercised on demand instead of only on the weekly
+  # cron — a gate nobody can trigger is a gate nobody validates.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -124,6 +127,82 @@ jobs:
             fi
           done < wanted.txt
           exit $fail
+
+  # Weekly aarch64 coverage, on hardware that can actually boot a microVM.
+  #
+  # WHY THIS IS SEPARATE, WEEKLY, AND OFF BY DEFAULT
+  #
+  # The x86_64 job below gates the nucleus half of the quickstart on every change.
+  # What it cannot cover is anything aarch64-SPECIFIC: the arm64 kernel digest and
+  # the arm64 rootfs build. No GitHub-hosted runner can — arm64 runners have no
+  # /dev/kvm, macOS runners cannot nest (Virtualization.framework), and EC2's
+  # nested-virt-on-VMs launch is Intel-only. arm64 + KVM means bare metal.
+  #
+  # So this runs on a self-hosted ephemeral arm64 metal runner, WEEKLY rather than
+  # per-PR: the arm-specific risk is narrow, and a per-PR metal instance is ~20
+  # minutes of billed time per run for coverage that changes rarely.
+  #
+  # It is INERT until `vars.ARM64_METAL_RUNNER` is set to the runner label. With
+  # the variable unset the job is skipped, so this file does not fail for anyone
+  # who has not provisioned one.
+  #
+  # WHAT IT STILL DOES NOT COVER — and no amount of money would
+  #
+  # The Apple Silicon layer: Lima, the `vz` driver, and macOS nested
+  # virtualisation. That exists only on Apple hardware and no hosted Apple runner
+  # exposes nesting, so `nucleus verify --tier2` on an Apple Silicon Mac remains a
+  # human pre-release step. This job narrows the gap; it does not close it.
+  boot-a-real-pod-aarch64:
+    name: a real nucleus pod boots and is enforced (aarch64, weekly)
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.ARM64_METAL_RUNNER != '' }}
+    runs-on: ${{ vars.ARM64_METAL_RUNNER }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-musl
+
+      # Asserted, because the architecture IS the point of this job. A silently
+      # x86 runner would duplicate the job below and report aarch64 coverage that
+      # never happened.
+      - name: This runner must be arm64 with KVM and vsock
+        run: |
+          test "$(uname -m)" = "aarch64" || {
+            echo "::error::expected an aarch64 runner, got $(uname -m)"; exit 1; }
+          test -e /dev/kvm || { echo "::error::no /dev/kvm on this runner"; exit 1; }
+          sudo modprobe vhost_vsock || true
+          test -e /dev/vhost-vsock || { echo "::error::no /dev/vhost-vsock"; exit 1; }
+          sudo chmod 666 /dev/kvm
+
+      - name: Build the guest and host binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools e2fsprogs
+          rustup target add aarch64-unknown-linux-musl
+          rustup target list --installed | grep -q aarch64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-musl \
+            -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
+            -p nucleus-tool-proxy -p nucleus-net-probe
+
+      - name: Build the guest rootfs
+        run: |
+          ARCH=aarch64 bash ./scripts/firecracker/build-rootfs.sh
+          test -s build/firecracker/aarch64/rootfs.ext4
+
+      - name: Install this build as the Tier 2 host
+        run: |
+          sudo cp target/aarch64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
+          nucleus setup --skip-verify --artifacts local
+
+      - name: Boot a real pod and assert what the guest did
+        run: nucleus verify --tier2 --here
+
+      - name: Show the guest log on failure
+        if: failure()
+        run: |
+          sudo find /var/lib/nucleus/state -name firecracker.log -exec tail -50 {} \; || true
+          sudo journalctl -u nucleus-node --no-pager -n 50 || true
 
   boot-a-real-pod:
     name: a real nucleus pod boots and is enforced (x86_64)
