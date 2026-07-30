@@ -31,6 +31,26 @@ set -euo pipefail
 GITHUB_REPO="coproduct-opensource/nucleus"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
+# Scratch directory for the downloaded tarball, cleaned up on EXIT rather than
+# on RETURN from the function that creates it.
+#
+# It was a `trap 'rm -rf "$tmp"' RETURN` on a `local tmp` inside `install_cli`.
+# A RETURN trap is not scoped to the function that set it: it stayed armed and
+# fired again when `main` returned, by which point `tmp` was out of scope, and
+# `set -u` turned that into `tmp: unbound variable` and exit 1 — AFTER the
+# install and the pod boot had both fully succeeded. The advertised one-liner
+# therefore reported failure on every successful run.
+#
+# EXIT also covers the `exit 1` error paths inside `install_cli`, which the
+# RETURN trap never reached.
+CLI_TMP=""
+cleanup() {
+    if [ -n "$CLI_TMP" ]; then
+        rm -rf "$CLI_TMP"
+    fi
+}
+trap cleanup EXIT
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -87,23 +107,22 @@ resolve_version() {
 }
 
 install_cli() {
-    local asset url tmp
+    local asset url
     asset="nucleus-cli-${VERSION}-${TARGET}.tar.gz"
     url="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/${asset}"
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
+    CLI_TMP=$(mktemp -d)
 
     log_step "Downloading ${asset}"
-    curl -fsSL "$url" -o "${tmp}/${asset}" ||
+    curl -fsSL "$url" -o "${CLI_TMP}/${asset}" ||
         { log_error "Download failed: ${url}"; exit 1; }
-    tar -xzf "${tmp}/${asset}" -C "$tmp"
-    [ -f "${tmp}/nucleus" ] || { log_error "${asset} does not contain a 'nucleus' binary."; exit 1; }
+    tar -xzf "${CLI_TMP}/${asset}" -C "$CLI_TMP"
+    [ -f "${CLI_TMP}/nucleus" ] || { log_error "${asset} does not contain a 'nucleus' binary."; exit 1; }
 
     log_step "Installing to ${INSTALL_DIR}/nucleus"
     if [ -w "$INSTALL_DIR" ]; then
-        mv "${tmp}/nucleus" "${INSTALL_DIR}/nucleus"
+        mv "${CLI_TMP}/nucleus" "${INSTALL_DIR}/nucleus"
     else
-        sudo mv "${tmp}/nucleus" "${INSTALL_DIR}/nucleus"
+        sudo mv "${CLI_TMP}/nucleus" "${INSTALL_DIR}/nucleus"
     fi
     chmod +x "${INSTALL_DIR}/nucleus" 2>/dev/null || sudo chmod +x "${INSTALL_DIR}/nucleus"
 }

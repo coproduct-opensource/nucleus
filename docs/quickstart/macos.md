@@ -12,21 +12,25 @@ or, if you already have the `nucleus` binary:
 nucleus setup
 ```
 
-> **The one-liner still needs a full release.** `install.sh` resolves the CLI
-> version from GitHub's `/releases/latest`, which correctly excludes prereleases —
-> and the newest artifacts able to boot a pod are `v2.1.0`
-> (every release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest
-> panics as PID 1). So today: build the CLI from a clone, then `setup` installs
-> the rest from the published RC.
+> **Verified against the published release, 2026-07-30.** From `limactl delete
+> nucleus`, the one-liner resolved `v2.1.0` from `/releases/latest`, installed
+> that CLI, provisioned the VM and booted a real pod on Apple Silicon: tier 2
+> `spiffe-identity`, an allowed operation served from inside the sandbox, a
+> forbidden one refused with `kind=kernel_denied`, and no PID-1 panic.
 >
-> ```bash
-> cargo build --release -p nucleus-cli
-> ./target/release/nucleus setup            # pulls the pinned RC artifacts
-> ```
+> `v2.1.0` is the first release whose rootfs carries a CA bundle — everything up
+> to 2.0.2 panics as PID 1, and `GUEST_RELEASE_FLOOR` refuses to install those.
+> Earlier revisions of this page told you to build from a clone instead, because
+> at the time no published release could boot a pod.
 >
 > **Measured 2026-07-29: 48.7 s** from `limactl delete nucleus` to a booted,
 > identity-proving pod, with `gh attestation verify` passing on every downloaded
 > artifact. `--artifacts local` uses this working tree's build instead.
+>
+> If your Mac has installed nucleus before, setup pauses once at "Setting up
+> secrets" on a macOS Keychain dialog and waits until you answer it — a changed
+> binary is not on the existing items' ACL. See
+> [Troubleshooting](#troubleshooting).
 
 ---
 
