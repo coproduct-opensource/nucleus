@@ -562,17 +562,23 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// An operation with NO issuer credential is refused BY THE VERIFIED-ADMISSION
 /// GATE — the active leg of the DLC-D scenario.
 ///
-/// The operation is `grep_search`: granted by the codegen profile and inside
-/// the pod's verified task scope, exercised by no other check, and
-/// deliberately absent from [`mint_admission`]'s credential list. In-scope
-/// matters: the first version of this check used `web_fetch` and the live pod
-/// refused it with `InScopeWithTask` — the task-scope discharge fires before
-/// the kernel on that route, so the request never reached the admission gate
-/// and the check failed exactly as its right-reason clause demands. An
-/// in-scope, uncredentialed operation reaches the kernel, where the admission
-/// gate runs before the capability lattice — so the refusal must arrive as
-/// the gate's own reason (`DlcAdmissionDenied`); anything else means a
-/// different control refused and this check proves nothing about admission.
+/// The operation is `run_bash`: granted by the codegen profile, inside the
+/// pod's verified task scope, exercised by no other check, a DISTINCT
+/// primitive at the ActionTerm layer, and deliberately absent from
+/// [`mint_admission`]'s credential list. Each qualifier was earned by a live
+/// failure of this check refusing to accept a counterfeit denial:
+/// - `web_fetch` (out of task scope) was refused by `InScopeWithTask` before
+///   the request ever reached the kernel;
+/// - `grep_search` was ADMITTED by the glob credential — `from_operation`
+///   collapses Grep and Glob into one `GlobSearch` primitive, so at the
+///   kernel boundary they are the same operation identity and a glob
+///   credential legitimately covers grep — then refused downstream by an
+///   obligations check, i.e. the wrong reason again.
+/// An in-scope, primitively-distinct, uncredentialed operation reaches the
+/// kernel, where the admission gate runs before the capability lattice — so
+/// the refusal must arrive as the gate's own reason (`DlcAdmissionDenied`);
+/// anything else means a different control refused and this check proves
+/// nothing about admission.
 fn check_admission_gate(pod: &Pod) -> Result<()> {
     // First: was the gate ARMED at all? The proxy's health endpoint reports
     // whether NUCLEUS_DLC_* provisioning reached it — without this, a refusal
@@ -598,12 +604,13 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
 
     let (status, body) = proxy_post(
         pod,
-        "grep",
-        serde_json::json!({ "pattern": "nucleus-verify-admission-probe" }),
+        "run",
+        // Never executes: the gate refuses before any discharge or spawn.
+        serde_json::json!({ "args": ["true"] }),
     )?;
     if status < 400 {
         bail!(
-            "grep WITHOUT a credential was ALLOWED ({status}): {}\n\
+            "run WITHOUT a credential was ALLOWED ({status}): {}\n\
              The pod is provisioned for verified admission, so an uncredentialed\n\
              operation passing means the admission gate is not on the live path.",
             body.trim()
@@ -611,14 +618,14 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
     }
     if !body.contains("DlcAdmissionDenied") {
         bail!(
-            "grep was refused ({status}) but NOT by the admission gate: {}\n\
+            "run was refused ({status}) but NOT by the admission gate: {}\n\
              A refusal for another reason (lattice, scope, IFC) does not prove\n\
              the verified-admission gate fired.",
             body.trim()
         );
     }
     println!("  [OK] uncredentialed operation refused by the verified-admission gate");
-    println!("       grep without an issuer credential -> {status} (DlcAdmissionDenied)");
+    println!("       run without an issuer credential -> {status} (DlcAdmissionDenied)");
     Ok(())
 }
 

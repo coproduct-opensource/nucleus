@@ -23,8 +23,11 @@
 //! Credentials bind to **portcullis operation names** (`Operation`'s canonical snake_case
 //! `Display` strings: `"web_fetch"`, `"run_bash"`, …) — the kernel's actual enforcement
 //! vocabulary — not to transport-level tool names (`"mcp__github__search"`), which the kernel
-//! never sees. Credential granularity therefore equals enforcement granularity. Finer,
-//! tool-name-level binding is a possible extension via the request context, not silently
+//! never sees. Credential granularity therefore equals enforcement granularity — including its
+//! equivalence relation: `ActionTerm::from_operation` collapses `GrepSearch` into the
+//! `GlobSearch` primitive, so at the kernel boundary those are ONE operation identity and a
+//! `"glob_search"` credential covers grep invocations (observed live in the Tier 2 harness).
+//! Finer, tool-name-level binding is a possible extension via the request context, not silently
 //! implied by this module.
 //!
 //! ## Trust boundary
