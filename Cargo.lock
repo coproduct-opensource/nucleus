@@ -3226,7 +3226,38 @@ dependencies = [
 [[package]]
 name = "dlc-core"
 version = "1.5.0"
-source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=bc7bc35ff79226267c906a2e1f1317cae6e918bb#bc7bc35ff79226267c906a2e1f1317cae6e918bb"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+
+[[package]]
+name = "dlc-crypto"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "dlc-core",
+ "ed25519-dalek 2.2.0",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "dlc-d"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "dlc-core",
+ "dlc-crypto",
+ "dlc-d-macro",
+]
+
+[[package]]
+name = "dlc-d-macro"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "dlopen2"
@@ -8285,6 +8316,9 @@ dependencies = [
  "cedar-policy",
  "cel-interpreter",
  "chrono",
+ "dlc-core",
+ "dlc-crypto",
+ "dlc-d",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "hmac 0.13.0",

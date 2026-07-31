@@ -16,8 +16,50 @@ use portcullis_core::ifc_api::FlowTracker;
 use super::{Decision, DecisionToken, DenyReason, Kernel, Verdict};
 use crate::exposure_core;
 use crate::ActionTerm;
+use crate::Operation;
 
 impl Kernel {
+    /// Extract source and artifact labels for policy rule evaluation.
+    ///
+    /// Reads the cached flow label (derived from graph state). When flow
+    /// control is enabled, uses the cache as both source and artifact label.
+    /// Otherwise returns empty sources and a bottom label (which causes
+    /// source predicates to be vacuously true and artifact predicates to
+    /// match permissively).
+    pub(super) fn policy_flow_labels(
+        &self,
+    ) -> (Vec<portcullis_core::IFCLabel>, portcullis_core::IFCLabel) {
+        if let Some(ref label) = self.flow_label {
+            // Cached label (derived from graph): use as both source and artifact.
+            (vec![*label], *label)
+        } else {
+            // No flow control — use bottom label (most permissive).
+            let now = chrono::Utc::now().timestamp() as u64;
+            let bottom = portcullis_core::IFCLabel::user_prompt(now);
+            (vec![], bottom)
+        }
+    }
+
+    /// Map an Operation to the most appropriate FlowNode kind.
+    /// (Moved here from `kernel.rs` for the line ratchet; used by the IFC gate
+    /// below and by `decide`'s intrinsic-label path.)
+    pub(super) fn node_kind_for(op: Operation) -> portcullis_core::flow::NodeKind {
+        use portcullis_core::flow::NodeKind;
+        match op {
+            Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
+                NodeKind::FileRead
+            }
+            Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+            Operation::WriteFiles | Operation::EditFiles => NodeKind::OutboundAction,
+            Operation::RunBash
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods
+            | Operation::SpawnAgent => NodeKind::OutboundAction,
+        }
+    }
+
     /// Consult the session flow tracker. Returns `Some(deny_decision)` if the
     /// IFC gate denies the action, or `None` to fall through to the normal
     /// decision path. `flow == None` ⇒ always `None` (backward compatible).
