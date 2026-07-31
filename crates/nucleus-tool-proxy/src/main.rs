@@ -2414,7 +2414,8 @@ fn kernel_denial_to_api_error(operation: Operation, subject: &str, reason: DenyR
         | DenyReason::ActionTermRejected { .. }
         | DenyReason::SinkScopeDenied { .. }
         | DenyReason::IfcUnsafe { .. }
-        | DenyReason::CedarDenied { .. }) => {
+        | DenyReason::CedarDenied { .. }
+        | DenyReason::DlcAdmissionDenied { .. }) => {
             ApiError::KernelDenied(format!("{other:?} (operation {operation:?} on {subject})"))
         }
     }
