@@ -142,8 +142,18 @@ impl VerdictSink for ToolProxyVerdictSink {
         } else {
             match &ctx.outcome {
                 VerdictOutcome::Allow => ("allow", String::new()),
+                // A deferral is NOT a refusal — kept distinct so the Article 14
+                // human-oversight event is legible in telemetry and evidence.
+                VerdictOutcome::RequiresApproval { reason } => {
+                    ("requires_approval", reason.clone())
+                }
                 VerdictOutcome::Deny { reason } => ("deny", reason.clone()),
                 VerdictOutcome::Error { error } => ("error", error.clone()),
+                // `VerdictOutcome` is #[non_exhaustive]. An outcome this build
+                // does not know must not silently read as "allow": record it as
+                // an error naming the gap, so unclassified evidence is visible
+                // rather than flattering.
+                other => ("error", format!("unclassified verdict outcome: {other:?}")),
             }
         };
 
@@ -221,6 +231,96 @@ impl VerdictSink for ToolProxyVerdictSink {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Emit one evidence record for a kernel decision — **the single
+/// implementation, used by both transports.**
+///
+/// EU AI Act Article 12 requires post-hoc reconstruction of an individual
+/// decision, so the kernel fields ride `VerdictContext.extensions`: which
+/// permissions were in force before and after, whether a dynamic exposure gate
+/// fired, the machine-stable refusal code, and the decision sequence that joins
+/// this record to the terminal outcome for the same operation.
+///
+/// # Why one function rather than one per transport
+///
+/// The HTTP and MCP paths reach the kernel through different chokepoints, and
+/// implementing this twice is how the two evidence streams silently diverge —
+/// the same failure mode as a duplicated canonical preimage. The transport is a
+/// parameter, not a copy.
+///
+/// Best-effort by design: a failure to record must not fail the call, because at
+/// most call sites the effect has already happened and returning an error would
+/// invite a retry that doubles it. The gap is surfaced as a warning and, once
+/// the durable log is wired, counted so it is explicit rather than silent.
+pub(crate) fn record_kernel_decision(
+    sink: &dyn VerdictSink,
+    decision: &portcullis::kernel::Decision,
+    operation: Operation,
+    subject: &str,
+    actor: ActorIdentity,
+    transport: &str,
+) {
+    use portcullis::gate_class;
+    use portcullis::kernel::Verdict;
+    use std::collections::BTreeMap;
+
+    let mut extensions = BTreeMap::new();
+    extensions.insert("transport".to_string(), transport.to_string());
+    extensions.insert(
+        "decision_sequence".to_string(),
+        decision.sequence.to_string(),
+    );
+    extensions.insert(
+        "gate_class".to_string(),
+        gate_class::classify(&decision.verdict, &decision.exposure_transition)
+            .as_str()
+            .to_string(),
+    );
+    extensions.insert(
+        "pre_permissions_hash".to_string(),
+        decision.pre_permissions_hash.clone(),
+    );
+    extensions.insert(
+        "post_permissions_hash".to_string(),
+        decision.post_permissions_hash.clone(),
+    );
+    extensions.insert(
+        "dynamic_gate_applied".to_string(),
+        decision
+            .exposure_transition
+            .dynamic_gate_applied
+            .to_string(),
+    );
+
+    let outcome = match &decision.verdict {
+        Verdict::Allow => VerdictOutcome::Allow,
+        Verdict::RequiresApproval => VerdictOutcome::RequiresApproval {
+            reason: "approval required before this operation may proceed".to_string(),
+        },
+        Verdict::Deny(reason) => {
+            // The machine-stable serde tag, never `Debug` — an auditor's saved
+            // query keys on this, and `Debug` shifts when a variant changes.
+            extensions.insert(
+                "deny_code".to_string(),
+                gate_class::deny_code(reason).to_string(),
+            );
+            VerdictOutcome::Deny {
+                reason: format!("{reason:?}"),
+            }
+        }
+    };
+
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome,
+        actor,
+        policy_rule: None,
+        extensions,
+    }) {
+        tracing::warn!(error = %e, ?operation, subject, "kernel-decision recording failed -- audit gap");
     }
 }
 

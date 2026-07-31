@@ -1,4 +1,6 @@
 use super::*;
+use crate::mediation::kernel_denial_to_api_error;
+use nucleus::portcullis::kernel::DenyReason;
 
 #[test]
 fn test_rate_limiter_allows_burst() {
@@ -341,7 +343,7 @@ fn test_lockdown_blocks_unknown_paths() {
 // ═══════════════════════════════════════════════════════════════════════════
 // IFC enforcement on the HTTP path (#1194, #1633)
 //
-// These exercise the pure reference monitor `decide_with_flow_mapped` against a
+// These exercise the reference monitor `mediation::decide_and_record` against a
 // bare Kernel + FlowTracker (no AppState), proving the HTTP path now has the
 // same taint-aware lethal-trifecta guard the MCP server has: once the session
 // ingests web content, outbound actions are denied with `ApiError::IfcDenied`
@@ -352,6 +354,142 @@ mod ifc_http_enforcement {
 
     fn permissive_kernel() -> Kernel {
         Kernel::new(PermissionLattice::permissive())
+    }
+
+    /// A sink that keeps what it was handed, so a test can assert on the record
+    /// that the live HTTP chokepoint would produce — not on a reconstruction of
+    /// it. `decide_and_record` is the same function `http_kernel_decide` calls,
+    /// which is what makes these tests evidence about the live path rather than
+    /// about a parallel copy of its logic.
+    #[derive(Default)]
+    struct CapturingSink {
+        records: std::sync::Mutex<Vec<(String, String, BTreeMap<String, String>)>>,
+    }
+
+    impl portcullis::verdict_sink::VerdictSink for CapturingSink {
+        fn record(
+            &self,
+            ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            let outcome = match &ctx.outcome {
+                portcullis::verdict_sink::VerdictOutcome::Allow => "allow".to_string(),
+                portcullis::verdict_sink::VerdictOutcome::Deny { reason } => {
+                    format!("deny:{reason}")
+                }
+                portcullis::verdict_sink::VerdictOutcome::RequiresApproval { .. } => {
+                    "requires_approval".to_string()
+                }
+                other => format!("{other:?}"),
+            };
+            self.records.lock().unwrap().push((
+                format!("{:?}", ctx.operation),
+                outcome,
+                ctx.extensions.clone(),
+            ));
+            Ok(())
+        }
+
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    /// Drive the live entry point and hand back both the mapped result and what
+    /// the sink actually saw.
+    #[allow(clippy::type_complexity)]
+    fn decide_capturing(
+        kernel: &mut Kernel,
+        flow: &FlowTracker,
+        operation: Operation,
+        subject: &str,
+    ) -> (
+        Result<portcullis::kernel::DecisionToken, ApiError>,
+        Vec<(String, String, BTreeMap<String, String>)>,
+    ) {
+        let sink = CapturingSink::default();
+        let mapped = crate::mediation::decide_and_record(
+            &sink,
+            kernel,
+            flow,
+            operation,
+            subject,
+            portcullis::verdict_sink::ActorIdentity::Unknown,
+            "http",
+        );
+        let seen = sink.records.lock().unwrap().clone();
+        (mapped, seen)
+    }
+
+    // ── The kernel-decision recording chokepoint (EU AI Act Article 12) ─────────
+    //
+    // The property under test is the one that reframed this whole feature: a
+    // REFUSAL must produce evidence. Before `http_kernel_decide` recorded the
+    // decision, every deny returned through `?` before any sink call, so an
+    // evidence log built on the sink would have contained allows only.
+
+    /// ★ A DENIED operation must be recorded, with the kernel fields that make it
+    /// reconstructable. This is the anti-vacuity leg: an evidence log whose records
+    /// are all `allow` is worse than no log, because it looks like evidence.
+    ///
+    /// The assertion is on what the SINK RECEIVED. An earlier version of this test
+    /// asserted only that the `Decision` carried the right fields — which passed
+    /// even with the recording call deleted, because availability is not recording.
+    #[test]
+    fn denied_kernel_decision_is_recorded_with_its_reason() {
+        let mut kernel = permissive_kernel();
+        let mut flow = FlowTracker::new();
+        // Ingest web content so the next outbound action is IFC-denied.
+        flow.observe(NodeKind::WebContent).expect("observe");
+
+        let (mapped, seen) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(mapped.is_err(), "post-web write must be denied");
+
+        assert_eq!(seen.len(), 1, "a refusal must produce exactly one record");
+        let (op, outcome, ext) = &seen[0];
+        assert_eq!(op, "WriteFiles");
+        assert!(
+            outcome.starts_with("deny:"),
+            "the refusal must be recorded as a denial, got {outcome}"
+        );
+        assert_eq!(
+            ext.get("deny_code").map(String::as_str),
+            Some("ifc_unsafe"),
+            "the refusal must carry its machine-stable code, not a Debug string"
+        );
+        assert_eq!(
+            ext.get("gate_class").map(String::as_str),
+            Some("information_flow")
+        );
+        assert_eq!(ext.get("transport").map(String::as_str), Some("http"));
+        for field in [
+            "pre_permissions_hash",
+            "post_permissions_hash",
+            "decision_sequence",
+        ] {
+            assert!(
+                ext.get(field).is_some_and(|v| !v.is_empty()),
+                "{field} must be recoverable from the record"
+            );
+        }
+    }
+
+    /// An ALLOWED operation is recorded too — the pair is what makes the log a
+    /// history rather than a denial list.
+    #[test]
+    fn allowed_kernel_decision_carries_no_deny_code() {
+        let mut kernel = permissive_kernel();
+        let flow = FlowTracker::new();
+        let (mapped, seen) = decide_capturing(&mut kernel, &flow, Operation::ReadFiles, "in.txt");
+        assert!(mapped.is_ok(), "clean read should be allowed");
+
+        assert_eq!(seen.len(), 1, "an allow must produce a record too");
+        let (_, outcome, ext) = &seen[0];
+        assert_eq!(outcome, "allow");
+        assert_eq!(ext.get("deny_code"), None, "an allow has nothing to refuse");
+        assert_eq!(ext.get("gate_class").map(String::as_str), Some("none"));
     }
 
     fn tainted_tracker() -> FlowTracker {
@@ -365,7 +503,7 @@ mod ifc_http_enforcement {
     fn clean_session_allows_outbound_write() {
         let mut kernel = permissive_kernel();
         let flow = FlowTracker::new();
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        let r = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt").0;
         assert!(r.is_ok(), "clean session should allow write, got {r:?}");
     }
 
@@ -373,7 +511,8 @@ mod ifc_http_enforcement {
     fn tainted_session_denies_write() {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("tainted write must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -385,7 +524,8 @@ mod ifc_http_enforcement {
     fn tainted_session_denies_run() {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::RunBash, "echo hi")
+        let err = decide_capturing(&mut kernel, &flow, Operation::RunBash, "echo hi")
+            .0
             .expect_err("tainted run must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -398,7 +538,7 @@ mod ifc_http_enforcement {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
         // FileRead is not an OutboundAction, so taint does not block it.
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::ReadFiles, "in.txt");
+        let r = decide_capturing(&mut kernel, &flow, Operation::ReadFiles, "in.txt").0;
         assert!(r.is_ok(), "tainted read should still be allowed, got {r:?}");
     }
 
@@ -407,7 +547,7 @@ mod ifc_http_enforcement {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
         // WebFetch is a taint *source* (WebContent), not an OutboundAction.
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test");
+        let r = decide_capturing(&mut kernel, &flow, Operation::WebFetch, "https://x.test").0;
         assert!(r.is_ok(), "tainted web_fetch should be allowed, got {r:?}");
     }
 
@@ -417,14 +557,16 @@ mod ifc_http_enforcement {
         let mut flow = FlowTracker::new();
         // 1. Clean session: web fetch allowed.
         assert!(
-            decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test")
+            decide_capturing(&mut kernel, &flow, Operation::WebFetch, "https://x.test")
+                .0
                 .is_ok(),
             "clean web_fetch should be allowed"
         );
         // 2. Web content enters the session.
         flow.observe(NodeKind::WebContent).expect("observe");
         // 3. The exfiltration sink (write) is now denied — the lethal trifecta.
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("post-web write must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -453,7 +595,8 @@ mod ifc_http_enforcement {
         // is named in the message rather than replaced by a constant.
         let mut kernel = Kernel::new(PermissionLattice::read_only());
         let flow = FlowTracker::new();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("read_only write must be denied");
         assert!(
             !matches!(err, ApiError::IfcDenied(_)),

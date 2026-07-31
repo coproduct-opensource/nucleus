@@ -252,6 +252,21 @@ impl NucleusMcpServer {
         let flow = self.flow_tracker.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
         drop(flow);
+        drop(kernel);
+
+        // ★ Record the kernel decision — allows AND refusals — BEFORE the match
+        // below returns. The HTTP path had the same hole: every refusal returned
+        // early, so the sink observed successes only and any evidence built on
+        // it would have shown an all-allow history.
+        crate::verdict_sink::record_kernel_decision(
+            self.sink.as_ref(),
+            &decision,
+            operation,
+            subject,
+            ActorIdentity::StdioGuest,
+            "mcp",
+        );
+
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
             Verdict::Deny(ref reason) => {

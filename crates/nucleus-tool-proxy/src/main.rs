@@ -12,11 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::portcullis::action_term::ActionTerm;
 use nucleus::portcullis::escalation::{
     EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
 };
-use nucleus::portcullis::kernel::{DecisionToken, DenyReason, Kernel, Verdict};
+use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
@@ -38,6 +37,7 @@ mod identity_fusion;
 mod lockdown_client;
 #[cfg(feature = "mcp")]
 mod mcp;
+mod mediation;
 mod memory;
 mod mtls;
 mod node_client;
@@ -2379,136 +2379,6 @@ fn check_identity_policy(
     !requires_approval
 }
 
-/// Translate a kernel [`DenyReason`] into the HTTP error surface, preserving
-/// what the kernel actually said.
-///
-/// Each arm maps to a reason the response mapping already models, so a caller
-/// sees `path_denied` / `budget_exhausted` / `command_denied` rather than a
-/// blanket capability error. `InsufficientCapability` is the ONLY reason that
-/// still produces `InsufficientCapability` — that is the one case where it is
-/// true.
-///
-/// The catch-all keeps the reason text rather than discarding it: a new
-/// `DenyReason` variant should surface as an unfamiliar-but-accurate message,
-/// not silently become a capability claim.
-fn kernel_denial_to_api_error(operation: Operation, subject: &str, reason: DenyReason) -> ApiError {
-    match reason {
-        DenyReason::InsufficientCapability => {
-            ApiError::Nucleus(NucleusError::InsufficientCapability {
-                capability: format!("{operation:?}"),
-                actual: CapabilityLevel::Never,
-                required: CapabilityLevel::LowRisk,
-            })
-        }
-        DenyReason::PathBlocked { path } => ApiError::Nucleus(NucleusError::PathDenied {
-            path: std::path::PathBuf::from(path),
-            reason: "blocked by the path lattice".to_string(),
-        }),
-        DenyReason::CommandBlocked { command } => ApiError::Nucleus(NucleusError::CommandDenied {
-            command,
-            reason: "blocked by the command lattice".to_string(),
-        }),
-        // Everything else keeps the kernel's own words, and is listed
-        // EXHAUSTIVELY rather than behind `_`.
-        //
-        // The sibling mapping on the MCP path (`nucleus_mcp::format_deny_reason`)
-        // is exhaustive for the same reason, and it is the better discipline: a
-        // security surface should not acquire a new refusal reason without
-        // somebody deciding how it surfaces. Behind a catch-all, a future
-        // `DenyReason` variant silently becomes `kernel_denied` forever;
-        // exhaustive, it is a compile error until someone chooses.
-        //
-        // Deliberately NOT promoted to richer types where that needs an invented
-        // field: `NucleusError::BudgetExhausted` requires `requested`, and
-        // `DenyReason::BudgetExhausted` carries only `remaining_usd`.
-        // Synthesising the missing number is precisely the defect this function
-        // exists to remove.
-        other @ (DenyReason::BudgetExhausted { .. }
-        | DenyReason::TimeExpired { .. }
-        | DenyReason::IsolationInsufficient { .. }
-        | DenyReason::IsolationGated { .. }
-        | DenyReason::FlowViolation { .. }
-        | DenyReason::EgressBlocked { .. }
-        | DenyReason::PolicyDenied { .. }
-        | DenyReason::EnterpriseBlocked { .. }
-        | DenyReason::DelegationDenied { .. }
-        | DenyReason::InvalidDeclassification { .. }
-        | DenyReason::ActionTermRejected { .. }
-        | DenyReason::SinkScopeDenied { .. }
-        | DenyReason::IfcUnsafe { .. }
-        | DenyReason::CedarDenied { .. }
-        | DenyReason::DlcAdmissionDenied { .. }) => {
-            ApiError::KernelDenied(format!("{other:?} (operation {operation:?} on {subject})"))
-        }
-    }
-}
-
-/// Pure reference monitor for the HTTP path: kernel decision + information-flow
-/// consult, mapped to the HTTP error surface. Split out from [`http_kernel_decide`]
-/// so it is unit-testable with a bare [`Kernel`] + [`FlowTracker`] (no `AppState`).
-///
-/// This is the single source of truth for HTTP mediation (#1194, #1633): it
-/// routes through [`Kernel::decide_term_with_flow`] — the same taint-aware path
-/// the MCP server uses — so once the session has ingested adversarial (web)
-/// content, outbound operations are denied with [`DenyReason::IfcUnsafe`] before
-/// any side effect. The deprecated capability-only `Kernel::decide()` is no
-/// longer reachable from the HTTP handlers.
-fn decide_with_flow_mapped(
-    kernel: &mut Kernel,
-    flow: &FlowTracker,
-    operation: Operation,
-    subject: &str,
-) -> Result<DecisionToken, ApiError> {
-    let term = ActionTerm::from_operation(operation, subject);
-    let (decision, token) = kernel.decide_term_with_flow(term, Some(flow));
-    match decision.verdict {
-        Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
-        Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
-            warn!(?operation, subject, %detail, "HTTP IFC denied outbound action (lethal trifecta)");
-            Err(ApiError::IfcDenied(detail))
-        }
-        // Report the reason the kernel actually gave.
-        //
-        // Both of these arms used to return
-        // `InsufficientCapability { capability: format!("{operation:?}"),
-        //  actual: Never, required: LowRisk }` — where `Never` is a **constant
-        // written here**, not a reading of the policy. So a pod whose profile
-        // sets `read_files: Always` was told "'ReadFiles' level is Never" for a
-        // blocked path, an exhausted budget, an expired session, or a request
-        // that merely needed approval. Measured on a booted pod: the guest's
-        // resolved runtime was `demo` with `read_files = Always` while the wire
-        // said `Never`. That is a control stating a confident falsehood about
-        // why it refused — the same shape as a seccomp check reporting mode 0
-        // for a process that had already exited.
-        //
-        // The capability name was also the Debug of the *Operation*
-        // (`ReadFiles`), not a capability, which is what made the mismatch
-        // visible: nothing in the lattice is spelled that way.
-        Verdict::Deny(reason) => {
-            warn!(?operation, subject, ?reason, "HTTP kernel denied operation");
-            Err(kernel_denial_to_api_error(operation, subject, reason))
-        }
-        Verdict::RequiresApproval => {
-            info!(
-                ?operation,
-                subject,
-                exposure = decision.exposure_transition.post_count,
-                "HTTP kernel requires approval (no auto-approve channel)"
-            );
-            // `approval_required`, which the response mapping already models and
-            // which tells the caller something true and actionable: this is not
-            // "you may never do this", it is "this needs an approval you have
-            // not presented".
-            Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                operation: format!("{operation:?} {subject}"),
-            }))
-        }
-    }
-}
-
-/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
-/// order as the MCP server) and runs the reference monitor. Both guards are
-/// dropped before the caller performs any sandbox/executor I/O.
 /// POST `/v1/memory/write` — provenance-verified memory admission (next-bet #1).
 /// A write maps to `WriteFiles` (so it is itself subject to the egress gate),
 /// then goes through `verified_admit`: a forged label is rejected; an honest
@@ -2555,6 +2425,14 @@ async fn memory_recall(
     Ok(Json(resp))
 }
 
+/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
+/// order as the MCP server) and runs the reference monitor. Both guards are
+/// dropped before the caller performs any sandbox/executor I/O.
+///
+/// The recording is not done here on purpose. `mediation::decide_and_record`
+/// owns both halves, so there is no way to obtain a decision on this path
+/// without it having been recorded — the hole this increment closes cannot be
+/// reopened by a future edit to this function.
 async fn http_kernel_decide(
     state: &AppState,
     operation: Operation,
@@ -2562,7 +2440,15 @@ async fn http_kernel_decide(
 ) -> Result<DecisionToken, ApiError> {
     let mut kernel = state.kernel.lock().await;
     let flow = state.flow_tracker.lock().await;
-    decide_with_flow_mapped(&mut kernel, &flow, operation, subject)
+    mediation::decide_and_record(
+        state.verdict_sink.as_ref(),
+        &mut kernel,
+        &flow,
+        operation,
+        subject,
+        ActorIdentity::Unknown,
+        "http",
+    )
 }
 
 /// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
