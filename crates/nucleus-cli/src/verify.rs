@@ -562,25 +562,26 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// An operation with NO issuer credential is refused BY THE VERIFIED-ADMISSION
 /// GATE — the active leg of the DLC-D scenario.
 ///
-/// `web_fetch` is deliberately absent from [`mint_admission`]'s credential
-/// list, so this request reaches the kernel with admission provisioned and no
-/// credential for the operation. The gate runs BEFORE the capability lattice,
-/// so the refusal must arrive as the admission gate's own reason
-/// (`DlcAdmissionDenied`) — a refusal for any other reason means the request
-/// was denied by a different control and this check proves nothing about
-/// admission (the right-reason discipline `check_forbidden_operation`
-/// documents, applied to the new gate).
+/// The operation is `grep_search`: granted by the codegen profile and inside
+/// the pod's verified task scope, exercised by no other check, and
+/// deliberately absent from [`mint_admission`]'s credential list. In-scope
+/// matters: the first version of this check used `web_fetch` and the live pod
+/// refused it with `InScopeWithTask` — the task-scope discharge fires before
+/// the kernel on that route, so the request never reached the admission gate
+/// and the check failed exactly as its right-reason clause demands. An
+/// in-scope, uncredentialed operation reaches the kernel, where the admission
+/// gate runs before the capability lattice — so the refusal must arrive as
+/// the gate's own reason (`DlcAdmissionDenied`); anything else means a
+/// different control refused and this check proves nothing about admission.
 fn check_admission_gate(pod: &Pod) -> Result<()> {
     let (status, body) = proxy_post(
         pod,
-        "web_fetch",
-        // A loopback URL that could never serve anything: if enforcement were
-        // broken the fetch itself still must not touch the network usefully.
-        serde_json::json!({ "url": "http://127.0.0.1:9/" }),
+        "grep",
+        serde_json::json!({ "pattern": "nucleus-verify-admission-probe" }),
     )?;
     if status < 400 {
         bail!(
-            "web_fetch WITHOUT a credential was ALLOWED ({status}): {}\n\
+            "grep WITHOUT a credential was ALLOWED ({status}): {}\n\
              The pod is provisioned for verified admission, so an uncredentialed\n\
              operation passing means the admission gate is not on the live path.",
             body.trim()
@@ -588,14 +589,14 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
     }
     if !body.contains("DlcAdmissionDenied") {
         bail!(
-            "web_fetch was refused ({status}) but NOT by the admission gate: {}\n\
-             A refusal for another reason (lattice, egress, IFC) does not prove\n\
+            "grep was refused ({status}) but NOT by the admission gate: {}\n\
+             A refusal for another reason (lattice, scope, IFC) does not prove\n\
              the verified-admission gate fired.",
             body.trim()
         );
     }
     println!("  [OK] uncredentialed operation refused by the verified-admission gate");
-    println!("       web_fetch without an issuer credential -> {status} (DlcAdmissionDenied)");
+    println!("       grep without an issuer credential -> {status} (DlcAdmissionDenied)");
     Ok(())
 }
 
