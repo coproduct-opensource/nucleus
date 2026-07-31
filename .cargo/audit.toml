@@ -82,4 +82,13 @@ ignore = [
     # ^0.39); local macOS plist parsing, not attacker-controlled XML.
     # REVISIT when plist releases >1.9.0.
     "RUSTSEC-2026-0195",
+
+    # event-listener 5.4.1 unsound: `!Send` tags can cross thread boundaries
+    # via `StackSlot` (RUSTSEC-2026-0221, filed 2026-07-13; hit CI when the
+    # advisory DB refreshed — the tree didn't change). No fixed release yet
+    # (5.4.1 is latest). Transitive via sqlx-core in nucleus-verifier-service
+    # only — not in the enforcement path — and sqlx does not use the unsound
+    # StackSlot API with !Send tags. REVISIT when event-listener releases a
+    # fix or sqlx bumps past it.
+    "RUSTSEC-2026-0221",
 ]
