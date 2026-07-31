@@ -75,6 +75,20 @@ ignore = [
   # ^0.39); local macOS plist parsing, not attacker-controlled XML.
   # REVISIT when plist releases >1.9.0.
   "RUSTSEC-2026-0195",
+
+  # wasmtime 45.0.3 — "Stores can mix up type indices between engines"
+  # (RUSTSEC-2026-0222, filed 2026-07-31, severity 3.8 LOW). Advisory-DB
+  # refresh, not a tree change. NO FIX EXISTS IN THE 45.x LINE: the patched
+  # ranges (>=24.0.12<25, >=36.0.13<37, >=46.0.2<47, >=47.0.3) skip 45 entirely,
+  # so clearing this needs a MAJOR wasmtime bump coordinated with
+  # portcullis-core's `wasm-sandbox` pin. Exposure is narrow — wasmtime is
+  # optional and reachable only via portcullis-wasi's non-default `host` feature
+  # (`default = []`), so it is absent from every default build and surfaces only
+  # under deny's --all-features scan; the bug also requires mixing Stores across
+  # two distinct Engines, which that host does not do. Same shape as the
+  # RUSTSEC-2026-0114 entry above. REVISIT as its own PR — a major engine bump
+  # does not belong inside unrelated work.
+  "RUSTSEC-2026-0222",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
