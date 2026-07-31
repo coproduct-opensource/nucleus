@@ -28,6 +28,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+mod art12;
 mod attestation;
 mod auth;
 mod broker_client;
@@ -4720,7 +4721,7 @@ impl AuditLog {
                 drand_part
             );
             let signature = auth::sign_message(&self.secret, message.as_bytes());
-            let hash = sha256_hex(&format!("{}|{}", message, signature));
+            let hash = art12::sha256_hex(&format!("{}|{}", message, signature));
             *last_hash = hash.clone();
             (prev_hash, hash, signature)
         };
@@ -4793,12 +4794,6 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-fn sha256_hex(message: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(message.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 fn load_last_hash(path: &Path) -> Option<String> {

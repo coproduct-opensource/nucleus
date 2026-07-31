@@ -118,6 +118,12 @@ pub mod exposure_core;
 pub mod flow_graph;
 pub mod frame;
 pub mod galois;
+/// Attenuation tokens — compact delegation credentials for wire transport.
+///
+/// Requires the `serde` feature for serialization.
+/// Gate classification — which KIND of control decided an operation
+/// (hard gate / soft gate / none), for EU AI Act Article 12 decision records.
+pub mod gate_class;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
@@ -146,9 +152,6 @@ pub mod observe;
 pub mod policy;
 #[cfg(feature = "spec")]
 pub mod profile;
-/// Attenuation tokens — compact delegation credentials for wire transport.
-///
-/// Requires the `serde` feature for serialization.
 /// Append-only receipt chain with hash-chain integrity enforcement.
 pub mod receipt_chain;
 #[cfg(feature = "crypto")]
