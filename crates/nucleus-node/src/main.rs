@@ -2665,109 +2665,125 @@ async fn spawn_firecracker_pod(
         // The refusal is at the source rather than the advertisement.
         let identity_source =
             net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
-        let (pod_identity, identity_manager, workload_api_bridge) =
-            if let Some(manager) = identity_source {
-                // Use pod metadata for namespace/service_account context
-                let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
-                let service_account = spec.metadata.name.as_deref().unwrap_or("");
-                let identity = manager.identity_for_pod(id, namespace, service_account);
+        let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
+            identity_source
+        {
+            // Use pod metadata for namespace/service_account context
+            let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
+            let service_account = spec.metadata.name.as_deref().unwrap_or("");
+            let identity = manager.identity_for_pod(id, namespace, service_account);
 
-                // Register the pod identity
-                manager.register_pod(id.to_string(), identity.clone()).await;
+            // Register the pod identity
+            manager.register_pod(id.to_string(), identity.clone()).await;
 
-                // Compute launch attestation for this pod
-                // This captures integrity measurements of kernel, rootfs, and config
-                let pod_id_str = id.to_string();
-                let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
-                match manager
-                    .compute_attestation(
-                        &pod_id_str,
-                        &image.kernel_path,
-                        &image.rootfs_path,
-                        &config_bytes,
-                    )
-                    .await
-                {
-                    Ok(attestation) => {
-                        info!(
-                            "computed launch attestation for pod {}: {}",
-                            id,
-                            attestation.to_hex_summary()
-                        );
-                        // Fetch attested certificate (includes attestation in X.509 extension)
-                        if let Err(e) = manager
-                            .fetch_attested_certificate(&identity, &pod_id_str)
-                            .await
-                        {
-                            tracing::warn!(
-                                "failed to fetch attested certificate for pod {}: {}",
-                                id,
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
+            // Compute launch attestation for this pod
+            // This captures integrity measurements of kernel, rootfs, and config
+            let pod_id_str = id.to_string();
+            let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
+            match manager
+                .compute_attestation(
+                    &pod_id_str,
+                    &image.kernel_path,
+                    &image.rootfs_path,
+                    &config_bytes,
+                )
+                .await
+            {
+                Ok(attestation) => {
+                    info!(
+                        "computed launch attestation for pod {}: {}",
+                        id,
+                        attestation.to_hex_summary()
+                    );
+                    // Fetch attested certificate (includes attestation in X.509 extension)
+                    if let Err(e) = manager
+                        .fetch_attested_certificate(&identity, &pod_id_str)
+                        .await
+                    {
                         tracing::warn!(
+                            "failed to fetch attested certificate for pod {}: {}",
+                            id,
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
                         "failed to compute attestation for pod {}, using standard certificate: {}",
                         id,
                         e
                     );
-                        // Fall back to standard certificate without attestation
-                        if let Err(e) = manager.prefetch_certificate(&identity).await {
-                            tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
-                        }
+                    // Fall back to standard certificate without attestation
+                    if let Err(e) = manager.prefetch_certificate(&identity).await {
+                        tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
                     }
                 }
+            }
 
-                // Start workload API vsock bridge for this pod
-                // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
-                // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
-                let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
-                    &vsock_path,
-                    state.identity_vsock_port,
-                    id,
-                    manager.clone(),
-                    // The same token that rides the kernel command line today.
-                    // Serving it here is what lets the cmdline copy go: a value
-                    // fetched after boot is not baked into a snapshot base.
-                    task_token.clone(),
-                    // Only when jailed: unjailed Firecracker runs as this same
-                    // user and can already connect. Passing an owner there would
-                    // hand our own socket away for no reason.
-                    jail_layout
-                        .as_ref()
-                        .map(|_| (state.jailer_uid, state.jailer_gid)),
-                )
-                .await
+            // Start workload API vsock bridge for this pod
+            // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
+            // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
+            let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
+                &vsock_path,
+                state.identity_vsock_port,
+                id,
+                manager.clone(),
+                // The same token that rides the kernel command line today.
+                // Serving it here is what lets the cmdline copy go: a value
+                // fetched after boot is not baked into a snapshot base.
+                task_token.clone(),
+                // Pod-scoped DLC-D admission provisioning (PodSpec labels).
+                // Served over the workload API rather than the cmdline:
+                // per-pod material survives snapshot restore correctly, and
+                // a credential set exceeds the cmdline capacity (observed
+                // live). Partial labels still provision — the proxy's
+                // parser fails CLOSED, so misconfiguration narrows.
                 {
-                    Ok(b) => {
-                        info!(
-                            "started workload API vsock bridge at {} for pod {}",
-                            b.socket_path().display(),
-                            id
-                        );
-                        Some(b)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to start workload API vsock bridge for pod {}: {}",
-                            id,
-                            e
-                        );
-                        None
-                    }
-                };
-
-                info!(
-                    "registered identity {} for pod {}",
-                    identity.to_spiffe_uri(),
-                    id
-                );
-
-                (Some(identity), Some(manager.clone()), bridge)
-            } else {
-                (None, None, None)
+                    let l = &spec.metadata.labels;
+                    l.get("dlc_trusted_keys")
+                        .map(|keys| workload_api_vsock::DlcAdmissionMaterial {
+                            trusted_keys: keys.clone(),
+                            issuer: l.get("dlc_issuer").cloned().unwrap_or_default(),
+                            credentials: l.get("dlc_credentials").cloned().unwrap_or_default(),
+                        })
+                },
+                // Only when jailed: unjailed Firecracker runs as this same
+                // user and can already connect. Passing an owner there would
+                // hand our own socket away for no reason.
+                jail_layout
+                    .as_ref()
+                    .map(|_| (state.jailer_uid, state.jailer_gid)),
+            )
+            .await
+            {
+                Ok(b) => {
+                    info!(
+                        "started workload API vsock bridge at {} for pod {}",
+                        b.socket_path().display(),
+                        id
+                    );
+                    Some(b)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to start workload API vsock bridge for pod {}: {}",
+                        id,
+                        e
+                    );
+                    None
+                }
             };
+
+            info!(
+                "registered identity {} for pod {}",
+                identity.to_spiffe_uri(),
+                id
+            );
+
+            (Some(identity), Some(manager.clone()), bridge)
+        } else {
+            (None, None, None)
+        };
 
         if let Err(err) = wait_for_proxy_health(health_addr).await {
             if let Some(proxy) = signed_proxy {

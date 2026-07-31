@@ -72,6 +72,43 @@ pub struct TaskTokenResponse {
 /// are in the environment before anything reads them. That ordering is the whole
 /// risk of moving delivery off the command line, and it is structural rather
 /// than hoped-for: `main` calls this and only then calls `exec_proxy`.
+/// This pod's DLC-D verified-admission provisioning, from `FETCH_DLC_ADMISSION`.
+#[derive(serde::Deserialize)]
+pub struct DlcAdmissionResponse {
+    /// Comma-separated hex trusted issuer public keys.
+    pub trusted_keys: String,
+    /// Hex public key of the issuer whose credentials this pod presents.
+    pub issuer: String,
+    /// Comma-separated `operation=hex_signature` credentials.
+    pub credentials: String,
+}
+
+/// Fetch this pod's DLC admission provisioning from the host. `Ok(None)` is the
+/// ordinary unprovisioned case (the host answers `{"error": ...}`); only a
+/// transport failure is an `Err`.
+pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_DLC_ADMISSION\n")
+        .map_err(|e| format!("failed to send FETCH_DLC_ADMISSION: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read dlc admission response: {e}"))?;
+
+    match serde_json::from_str::<DlcAdmissionResponse>(&response) {
+        Ok(material) => Ok(Some(material)),
+        // The unprovisioned host answers {"error": ...}: not a failure.
+        Err(_) => Ok(None),
+    }
+}
+
 pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;

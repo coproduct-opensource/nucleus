@@ -632,28 +632,6 @@ impl FirecrackerConfig {
             None => Some(format!("nucleus.approval_secret={approval_secret}")),
         };
 
-        // DLC-D verified admission: pod-scoped provisioning labels ride the
-        // kernel cmdline for guest-init to forward as NUCLEUS_DLC_* into the
-        // in-VM tool-proxy (the same channel as the task token). Unlike
-        // `nucleus.auth_secret` (deleted above — host-forging power must not be
-        // guest-readable), these are safe on the world-readable cmdline: the
-        // trusted keys and issuer are PUBLIC keys, and the credentials are the
-        // pod's OWN capability grants — possession is exactly the authority
-        // intended, and they cannot be widened (each Ed25519 signature admits
-        // only the single operation whose cap atom it covers).
-        for (label, key) in [
-            ("dlc_trusted_keys", "nucleus.dlc_trusted_keys"),
-            ("dlc_issuer", "nucleus.dlc_issuer"),
-            ("dlc_credentials", "nucleus.dlc_credentials"),
-        ] {
-            if let Some(value) = spec.metadata.labels.get(label) {
-                boot_args = match boot_args.take() {
-                    Some(args) => Some(format!("{args} {key}={value}")),
-                    None => Some(format!("{key}={value}")),
-                };
-            }
-        }
-
         // Inject workload API port if identity management is enabled
         if let Some(port) = workload_api_port {
             boot_args = match boot_args.take() {

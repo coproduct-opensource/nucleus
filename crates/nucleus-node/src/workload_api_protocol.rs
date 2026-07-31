@@ -69,6 +69,16 @@ pub enum WorkloadApiCommand {
     /// key, with anti-replay resting on a host-pinned nonce), so this is not
     /// about confidentiality. It is about uniqueness surviving a restore.
     FetchTaskToken,
+    /// `FETCH_DLC_ADMISSION` — request this pod's DLC-D verified-admission
+    /// provisioning (trusted issuer keys, issuer, per-operation credentials).
+    ///
+    /// Rides this channel for the same reasons as `FETCH_TASK_TOKEN`: per-pod
+    /// material over the per-pod socket, fetched after boot so it is neither
+    /// baked into a snapshot base nor subject to the kernel cmdline's capacity
+    /// (which a credential set exceeds — observed live). The values are a
+    /// public keyset plus the pod's OWN capability grants; possession is
+    /// exactly the authority intended.
+    FetchDlcAdmission,
 }
 
 impl WorkloadApiCommand {
@@ -85,6 +95,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchBundle => "FETCH_BUNDLE",
             WorkloadApiCommand::Ping => "PING",
             WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
+            WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
         }
     }
 }
@@ -148,6 +159,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_BUNDLE" => Ok(WorkloadApiCommand::FetchBundle),
         "PING" => Ok(WorkloadApiCommand::Ping),
         "FETCH_TASK_TOKEN" => Ok(WorkloadApiCommand::FetchTaskToken),
+        "FETCH_DLC_ADMISSION" => Ok(WorkloadApiCommand::FetchDlcAdmission),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -316,11 +328,13 @@ mod tests {
                 WorkloadApiCommand::FetchBundle => "FETCH_BUNDLE",
                 WorkloadApiCommand::Ping => "PING",
                 WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
+                WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
             }
         }
         for cmd in [
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
+            WorkloadApiCommand::FetchDlcAdmission,
             WorkloadApiCommand::Ping,
         ] {
             assert_eq!(assert_known(cmd), cmd.as_wire());

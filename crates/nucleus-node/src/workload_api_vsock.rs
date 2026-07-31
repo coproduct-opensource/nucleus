@@ -52,6 +52,19 @@ pub struct WorkloadApiVsockBridge {
     pod_id: uuid::Uuid,
 }
 
+/// The pod-scoped DLC-D admission provisioning served over `FETCH_DLC_ADMISSION`
+/// (values verbatim from the PodSpec labels; the in-VM tool-proxy's parser owns
+/// validation and fails closed).
+#[derive(Debug, Clone)]
+pub struct DlcAdmissionMaterial {
+    /// Comma-separated hex Ed25519 trusted issuer public keys.
+    pub trusted_keys: String,
+    /// Hex public key of the issuer whose credentials this pod presents.
+    pub issuer: String,
+    /// Comma-separated `operation=hex_signature` credentials.
+    pub credentials: String,
+}
+
 impl std::fmt::Debug for WorkloadApiVsockBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkloadApiVsockBridge")
@@ -86,6 +99,7 @@ impl WorkloadApiVsockBridge {
         pod_id: uuid::Uuid,
         identity_manager: IdentityManager,
         task_token: Option<crate::session_mint::MintedTaskToken>,
+        dlc_admission: Option<DlcAdmissionMaterial>,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<Self> {
         // Firecracker naming convention: {uds_path}_{port}
@@ -158,9 +172,12 @@ impl WorkloadApiVsockBridge {
                             Ok((stream, _)) => {
                                 let manager = identity_manager.clone();
                                 let task_token = task_token.clone();
+                                let dlc_admission = dlc_admission.clone();
                                 tokio::spawn(async move {
-                                    if let Err(err) =
-                                        handle_connection(stream, manager, pod_id, task_token).await
+                                    if let Err(err) = handle_connection(
+                                        stream, manager, pod_id, task_token, dlc_admission,
+                                    )
+                                    .await
                                     {
                                         debug!("workload API connection closed: {err}");
                                     }
@@ -215,6 +232,20 @@ impl WorkloadApiVsockBridge {
 /// refusal rather than an empty token. A guest handed `{"token":""}` could not
 /// distinguish "none was minted" from "the token is empty", and the tool-proxy's
 /// verify half treats a missing token and an invalid one differently.
+/// Serve the pod's DLC admission provisioning, or a JSON error when the pod
+/// was not provisioned (the ordinary case — the guest treats it as "inert").
+fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
+    match material {
+        Some(m) => serde_json::json!({
+            "trusted_keys": m.trusted_keys,
+            "issuer": m.issuer,
+            "credentials": m.credentials,
+        })
+        .to_string(),
+        None => r#"{"error":"no dlc admission provisioned for this pod"}"#.to_string(),
+    }
+}
+
 fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> String {
     match token {
         Some(t) => serde_json::json!({
@@ -232,6 +263,7 @@ async fn handle_connection(
     manager: IdentityManager,
     pod_id: uuid::Uuid,
     task_token: Option<crate::session_mint::MintedTaskToken>,
+    dlc_admission: Option<DlcAdmissionMaterial>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -259,6 +291,10 @@ async fn handle_connection(
             Ok(WorkloadApiCommand::FetchTaskToken) => {
                 debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
                 handle_fetch_task_token(task_token.as_ref())
+            }
+            Ok(WorkloadApiCommand::FetchDlcAdmission) => {
+                debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
+                handle_fetch_dlc_admission(dlc_admission.as_ref())
             }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
@@ -454,10 +490,17 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge =
-            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
-                .await
-                .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            pod_id,
+            manager,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Verify socket path follows Firecracker convention
         assert_eq!(
@@ -494,10 +537,17 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge =
-            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
-                .await
-                .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            pod_id,
+            manager,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Wait for server to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -529,7 +579,7 @@ mod tests {
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge =
-            WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None, None)
+            WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None, None, None)
                 .await
                 .unwrap();
 
@@ -547,10 +597,17 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge =
-            WorkloadApiVsockBridge::start(&vsock_uds_path, 15012, pod_id, manager, None, None)
-                .await
-                .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            pod_id,
+            manager,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Wait for server to start
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -616,6 +673,7 @@ mod tests {
             manager.clone(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -624,6 +682,7 @@ mod tests {
             15012,
             pod2_id,
             manager.clone(),
+            None,
             None,
             None,
         )
