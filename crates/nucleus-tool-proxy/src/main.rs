@@ -23,7 +23,6 @@ use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket
 use nucleus_spec::PodSpec;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};

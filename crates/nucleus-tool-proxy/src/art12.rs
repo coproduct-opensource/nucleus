@@ -42,6 +42,16 @@
 //! key the pod does not possess can do that, which is why the export attaches
 //! one. Both properties are asserted by tests, including the one that
 //! deliberately demonstrates the HMAC limit.
+//!
+//! # Why `allow(dead_code)` here
+//!
+//! This module is landed UNWIRED on purpose: the staging puts every unit and
+//! perturbation test green before anything on the live decision path changes.
+//! Until the sink is wired to it (the increment that adds `--art12-log`),
+//! nothing outside the tests constructs an `Art12Log`, and CI builds with
+//! `-D warnings`. **Remove this allow in the wiring increment** — once the sink
+//! calls `append`, genuinely dead code here should fail the build again.
+#![allow(dead_code)]
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
