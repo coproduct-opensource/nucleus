@@ -343,6 +343,11 @@ pub(crate) struct AppState {
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
     /// Kernel decision engine for complete mediation (HTTP path).
     pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
+    /// Whether DLC-D verified admission was provisioned on this pod's kernels
+    /// (NUCLEUS_DLC_* env, possibly via PodSpec labels). Exposed in /v1/health
+    /// so a host — or the Tier 2 harness — can distinguish "the gate refused"
+    /// from "the gate was never armed".
+    pub(crate) dlc_provisioned: bool,
     /// Session-scoped information-flow tracker for the lethal-trifecta guard on
     /// the HTTP path (#1633). Process-wide, mirroring the kernel above and the
     /// MCP server's per-session tracker: the tool-proxy is a per-pod sidecar
@@ -1482,6 +1487,9 @@ async fn main() -> Result<(), ApiError> {
             dlc_provisioned,
         ));
 
+    if dlc_provisioned {
+        tracing::info!("DLC-D verified admission provisioned from NUCLEUS_DLC_* env");
+    }
     let kernel = Arc::new(tokio::sync::Mutex::new({
         let mut k = Kernel::new(runtime.policy().clone());
         if let Some(admission) = dlc_admission {
@@ -1538,6 +1546,7 @@ async fn main() -> Result<(), ApiError> {
     enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
 
     let state = AppState {
+        dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
         audit,
@@ -2300,7 +2309,8 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "sandbox_proof": {
             "tier": state.sandbox_proof.tier(),
             "label": state.sandbox_proof.tier_label(),
-        }
+        },
+        "dlc_admission": if state.dlc_provisioned { "provisioned" } else { "unprovisioned" }
     }))
 }
 

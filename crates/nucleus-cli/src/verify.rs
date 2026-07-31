@@ -574,6 +574,28 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 /// the gate's own reason (`DlcAdmissionDenied`); anything else means a
 /// different control refused and this check proves nothing about admission.
 fn check_admission_gate(pod: &Pod) -> Result<()> {
+    // First: was the gate ARMED at all? The proxy's health endpoint reports
+    // whether NUCLEUS_DLC_* provisioning reached it — without this, a refusal
+    // check cannot distinguish "gate refused" from "gate never armed" (and an
+    // unarmed gate would let the uncredentialed operation THROUGH, failing
+    // below with a misleading message about enforcement).
+    let mut health = plain_agent()
+        .get(format!("{}/v1/health", pod.proxy))
+        .call()
+        .map_err(|e| anyhow!("the tool-proxy did not answer /v1/health: {e}"))?;
+    let health_body: serde_json::Value = health
+        .body_mut()
+        .read_json()
+        .context("health response was not JSON")?;
+    let armed = health_body.get("dlc_admission").and_then(|v| v.as_str());
+    if armed != Some("provisioned") {
+        bail!(
+            "the pod's tool-proxy reports dlc_admission={armed:?}, expected \
+             \"provisioned\" — the PodSpec labels did not arrive as NUCLEUS_DLC_* \
+             env. The break is in the labels→node→spawn-env chain, not the gate."
+        );
+    }
+
     let (status, body) = proxy_post(
         pod,
         "grep",
