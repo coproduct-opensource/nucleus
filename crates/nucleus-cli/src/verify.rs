@@ -574,6 +574,7 @@ fn check_allowed_operation(pod: &Pod) -> Result<()> {
 ///   kernel boundary they are the same operation identity and a glob
 ///   credential legitimately covers grep — then refused downstream by an
 ///   obligations check, i.e. the wrong reason again.
+///
 /// An in-scope, primitively-distinct, uncredentialed operation reaches the
 /// kernel, where the admission gate runs before the capability lattice — so
 /// the refusal must arrive as the gate's own reason (`DlcAdmissionDenied`);
