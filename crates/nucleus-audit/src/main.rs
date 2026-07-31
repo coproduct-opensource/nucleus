@@ -250,6 +250,22 @@ struct ToolProxyEntry {
     prev_hash: String,
     hash: String,
     signature: String,
+    /// Drand round the writer anchored this entry to, when a drand client is
+    /// configured. **Load-bearing for verification**: the writer folds
+    /// `|drand:{round}` into the signed message
+    /// (`nucleus-tool-proxy/src/main.rs`, `AuditLog::log`), so omitting it here
+    /// made every drand-anchored log fail with "signature mismatch".
+    #[serde(default)]
+    drand_round: Option<u64>,
+    /// Carried by the writer; not part of the signed preimage. Parsed so a log
+    /// containing it does not fail deserialization.
+    #[serde(default)]
+    #[allow(dead_code)]
+    spiffe_id: Option<String>,
+    /// Carried by the writer; not part of the signed preimage.
+    #[serde(default)]
+    #[allow(dead_code)]
+    policy_rule: Option<String>,
 }
 
 /// Signed line from FileAuditBackend.
@@ -717,9 +733,23 @@ fn verify_tool_proxy_log(path: &Path, secret: &[u8]) -> Result<usize, AuditError
             });
         }
         let actor = entry.actor.clone().unwrap_or_default();
+        // MUST mirror the writer's preimage exactly (`AuditLog::log` in
+        // nucleus-tool-proxy): the drand round, when present, is appended as
+        // `|drand:{round}` and IS signed. Reconstructing without it is what made
+        // every drand-anchored log fail verification.
+        let drand_part = entry
+            .drand_round
+            .map(|r| format!("|drand:{r}"))
+            .unwrap_or_default();
         let message = format!(
-            "{}|{}|{}|{}|{}|{}",
-            entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
+            "{}|{}|{}|{}|{}|{}{}",
+            entry.timestamp_unix,
+            actor,
+            entry.event,
+            entry.subject,
+            entry.result,
+            prev_hash,
+            drand_part
         );
         let signature = sign_message(secret, message.as_bytes());
         if signature != entry.signature {
@@ -1977,6 +2007,95 @@ fn check_zkvm_receipt(
 
 #[cfg(test)]
 mod tests {
+
+    /// Build a tool-proxy audit line exactly as `AuditLog::log` does
+    /// (nucleus-tool-proxy), optionally drand-anchored.
+    fn tool_proxy_line(
+        secret: &[u8],
+        ts: u64,
+        actor: &str,
+        event: &str,
+        subject: &str,
+        result: &str,
+        prev_hash: &str,
+        drand_round: Option<u64>,
+    ) -> (String, String) {
+        let drand_part = drand_round
+            .map(|r| format!("|drand:{r}"))
+            .unwrap_or_default();
+        let message = format!("{ts}|{actor}|{event}|{subject}|{result}|{prev_hash}{drand_part}");
+        let signature = sign_message(secret, message.as_bytes());
+        let hash = sha256_hex(&format!("{message}|{signature}"));
+        let mut obj = serde_json::json!({
+            "timestamp_unix": ts,
+            "actor": actor,
+            "event": event,
+            "subject": subject,
+            "result": result,
+            "prev_hash": prev_hash,
+            "hash": hash,
+            "signature": signature,
+        });
+        if let Some(r) = drand_round {
+            obj["drand_round"] = serde_json::json!(r);
+        }
+        (obj.to_string(), hash)
+    }
+
+    /// ★ Regression: a DRAND-ANCHORED log must verify. The writer folds
+    /// `|drand:{round}` into the signed preimage; the verifier used to omit it,
+    /// so every drand-anchored log failed with "signature mismatch" — i.e. the
+    /// verifier rejected authentic evidence. Perturbation-shaped: the same log
+    /// WITHOUT the round must still verify, so this test fails if the fix were
+    /// to unconditionally append the suffix instead of conditionally.
+    #[test]
+    fn verify_tool_proxy_log_accepts_drand_anchored_entries() {
+        let secret = b"art12-regression-secret";
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Drand-anchored chain of two entries.
+        let path = dir.path().join("anchored.log");
+        let (l1, h1) = tool_proxy_line(secret, 100, "n", "boot", "s1", "ok", "", Some(42));
+        let (l2, _) = tool_proxy_line(secret, 101, "n", "call", "s2", "ok", &h1, Some(43));
+        std::fs::write(&path, format!("{l1}\n{l2}\n")).expect("write");
+        assert_eq!(
+            verify_tool_proxy_log(&path, secret).expect("drand-anchored log must verify"),
+            2
+        );
+
+        // Un-anchored chain must still verify (the suffix is conditional).
+        let path2 = dir.path().join("plain.log");
+        let (p1, ph1) = tool_proxy_line(secret, 100, "n", "boot", "s1", "ok", "", None);
+        let (p2, _) = tool_proxy_line(secret, 101, "n", "call", "s2", "ok", &ph1, None);
+        std::fs::write(&path2, format!("{p1}\n{p2}\n")).expect("write");
+        assert_eq!(
+            verify_tool_proxy_log(&path2, secret).expect("plain log must verify"),
+            2
+        );
+    }
+
+    /// The verifier must still REJECT a tampered drand-anchored entry — the fix
+    /// must not have been "ignore the round".
+    #[test]
+    fn verify_tool_proxy_log_rejects_tampered_drand_round() {
+        let secret = b"art12-regression-secret";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tampered.log");
+        let (line, _) = tool_proxy_line(secret, 100, "n", "boot", "s", "ok", "", Some(42));
+        // Re-anchor the entry to a different round, leaving the signature intact.
+        let tampered = line.replace("\"drand_round\":42", "\"drand_round\":43");
+        assert_ne!(tampered, line, "the round must actually have changed");
+        std::fs::write(&path, format!("{tampered}\n")).expect("write");
+        match verify_tool_proxy_log(&path, secret) {
+            Err(AuditError::Invalid { message, .. }) => {
+                assert!(
+                    message.contains("signature mismatch"),
+                    "expected a signature mismatch, got: {message}"
+                );
+            }
+            other => panic!("tampered drand round must be rejected, got {other:?}"),
+        }
+    }
     use super::*;
 
     fn write_pod_spec(dir: &Path, name: &str, content: &str) -> PathBuf {

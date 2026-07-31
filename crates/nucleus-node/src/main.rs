@@ -1019,9 +1019,8 @@ async fn create_pod_internal(
     };
 
     // Write lifecycle audit event so even direct-task pods have an audit trail.
-    let audit_path = pod_dir.join("audit.log");
     write_lifecycle_audit(
-        &audit_path,
+        &pod_dir,
         "pod_started",
         &id.to_string(),
         &format!("driver={:?}", state.driver),
@@ -2954,11 +2953,22 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Write a lifecycle audit event to a pod's audit.log from the node side.
+/// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
 ///
-/// This ensures every pod (including direct-task pods that don't run a tool-proxy)
-/// has at least start/stop audit entries in its audit.log file.
-async fn write_lifecycle_audit(audit_path: &Path, event: &str, pod_id: &str, detail: &str) {
+/// Ensures every pod — including direct-task pods that never run a tool-proxy —
+/// has at least start/stop entries.
+///
+/// **Deliberately NOT `audit.log`.** These entries are unsigned and unchained;
+/// `audit.log` is the tool-proxy's HMAC-chained log, and interleaving unsigned
+/// lines into it made every local- and container-driver log fail
+/// `nucleus-audit verify` (its `ToolProxyEntry` requires
+/// `prev_hash`/`hash`/`signature`). Keeping the two files separate preserves a
+/// verifiable chain; the lifecycle file is folded into an evidence bundle as
+/// explicitly-unsigned context. The filename lives here, in one place, so the
+/// two cannot drift back together.
+async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &str, detail: &str) {
+    let audit_path = pod_dir.join("lifecycle.log");
+    let audit_path = audit_path.as_path();
     let entry = serde_json::json!({
         "timestamp_unix": now_unix(),
         "actor": "nucleus-node",
@@ -3062,12 +3072,8 @@ fn start_pod_reaper(state: NodeState) {
                         }
                         _ => "unknown".to_string(),
                     };
-                    let audit_path = pod
-                        .log_path
-                        .parent()
-                        .unwrap_or(Path::new("."))
-                        .join("audit.log");
-                    write_lifecycle_audit(&audit_path, "pod_exited", &pod.id.to_string(), &detail)
+                    let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
+                    write_lifecycle_audit(pod_dir, "pod_exited", &pod.id.to_string(), &detail)
                         .await;
 
                     exited_ids.push(pod.id);
@@ -3789,13 +3795,9 @@ impl NodeService for GrpcService {
                     operator = %req.operator_id,
                     "lockdown: pod affected"
                 );
-                let audit_path = pod
-                    .log_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join("audit.log");
+                let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
                 write_lifecycle_audit(
-                    &audit_path,
+                    pod_dir,
                     action,
                     &pod.id.to_string(),
                     &format!("reason={}, operator={}", reason, req.operator_id),
