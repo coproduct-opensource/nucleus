@@ -27,6 +27,12 @@ pub struct ToolProxyVerdictSink {
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
     session_id: String,
+    /// Whether DLC-D verified admission is provisioned on this pod's kernels.
+    /// When true, every `Allow` this sink records has — by kernel construction
+    /// (the dlc gate is consulted before any Allow can emerge from
+    /// `decide_term_with_flow`, and complete mediation routes every tool call
+    /// through the kernel) — passed the issuer-credential check.
+    dlc_provisioned: bool,
 }
 
 impl ToolProxyVerdictSink {
@@ -38,6 +44,7 @@ impl ToolProxyVerdictSink {
         exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
         policy_checksum: String,
         session_id: String,
+        dlc_provisioned: bool,
     ) -> Self {
         Self {
             file_lockdown,
@@ -46,6 +53,7 @@ impl ToolProxyVerdictSink {
             exposure_guard,
             policy_checksum,
             session_id,
+            dlc_provisioned,
         }
     }
 
@@ -144,6 +152,19 @@ impl VerdictSink for ToolProxyVerdictSink {
         let actor = Self::actor_str(&ctx.actor);
         let operation = Self::operation_name(ctx.operation);
         let is_ok = verdict_str == "allow";
+        // Attestation of the verified-admission state, per tool call: "admitted"
+        // is only ever emitted when admission is provisioned AND the kernel
+        // allowed (see the `dlc_provisioned` field docs for why that implies
+        // the credential check passed); otherwise the span says so honestly.
+        let dlc_admission = if self.dlc_provisioned {
+            if is_ok {
+                "admitted"
+            } else {
+                "not-admitted"
+            }
+        } else {
+            "unprovisioned"
+        };
 
         // 2. Emit a proper span (not an event) so it has duration and
         //    propagates trace context.  When the `otel` layer is active,
@@ -178,6 +199,7 @@ impl VerdictSink for ToolProxyVerdictSink {
             exposure.exfil_vector = exposure.exfil_vector,
             exposure.uninhabitable = exposure.is_uninhabitable,
             // Context
+            nucleus.dlc_admission = dlc_admission,
             nucleus.lockdown_active = lockdown_active,
             nucleus.lattice_checksum = %self.policy_checksum,
             nucleus.session_id = %self.session_id,
@@ -215,6 +237,7 @@ mod tests {
             Arc::new(std::sync::RwLock::new(None)),
             "test-checksum".to_string(),
             "test-session".to_string(),
+            false,
         )
     }
 

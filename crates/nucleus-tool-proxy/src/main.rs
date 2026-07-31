@@ -32,6 +32,7 @@ mod attestation;
 mod auth;
 mod broker_client;
 mod cert_bridge;
+mod dlc_admission;
 mod exit_report;
 mod identity_fusion;
 mod lockdown_client;
@@ -1464,6 +1465,12 @@ async fn main() -> Result<(), ApiError> {
     let exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>> =
         Arc::new(std::sync::RwLock::new(None));
 
+    // DLC-D verified admission: provisioned from NUCLEUS_DLC_* env (inert when
+    // unset). The SAME provisioning is applied to both transports' kernels, and
+    // the sink stamps every allowed verdict's span with the admission state.
+    let dlc_admission = dlc_admission::provision_from_env();
+    let dlc_provisioned = dlc_admission.is_some();
+
     let verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink> =
         Arc::new(verdict_sink::ToolProxyVerdictSink::new(
             file_lockdown.clone(),
@@ -1472,11 +1479,16 @@ async fn main() -> Result<(), ApiError> {
             exposure_guard.clone(),
             policy_checksum.clone(),
             session_id.clone(),
+            dlc_provisioned,
         ));
 
-    let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(
-        runtime.policy().clone(),
-    )));
+    let kernel = Arc::new(tokio::sync::Mutex::new({
+        let mut k = Kernel::new(runtime.policy().clone());
+        if let Some(admission) = dlc_admission {
+            k.set_dlc_admission(admission);
+        }
+        k
+    }));
 
     let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
 

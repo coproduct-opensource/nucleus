@@ -42,6 +42,18 @@ use dlc_core::principal::Principal;
 use dlc_core::syntax::Signature;
 use dlc_d::admission::{decide, Decision};
 
+/// Re-exported credential types, so a host crate (e.g. the tool proxy) can
+/// provision a [`DlcAdmission`] without depending on `dlc-core` directly.
+pub use dlc_core::judgment::KeyRing as DlcKeyRing;
+/// Re-export: a keyring row (issuer principal id + public key).
+pub use dlc_core::principal::KeyRecord as DlcKeyRecord;
+/// Re-export: the issuer principal.
+pub use dlc_core::principal::Principal as DlcPrincipal;
+/// Re-export: the issuer's stable principal id (32 bytes).
+pub use dlc_core::principal::PrincipalId as DlcPrincipalId;
+/// Re-export: an issuer-signed capability credential.
+pub use dlc_core::syntax::Signature as DlcSignature;
+
 use portcullis_core::combinators::{CheckResult, PolicyCheck, PolicyRequest};
 
 /// The provisioned admission state for a session: the trusted issuer keys, the issuer identity,

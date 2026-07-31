@@ -161,7 +161,15 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
-        let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(policy.clone())));
+        let kernel = Arc::new(tokio::sync::Mutex::new({
+            let mut k = Kernel::new(policy.clone());
+            // Same NUCLEUS_DLC_* provisioning as the HTTP path's kernel —
+            // verified admission gates both transports or neither.
+            if let Some(admission) = crate::dlc_admission::provision_from_env() {
+                k.set_dlc_admission(admission);
+            }
+            k
+        }));
 
         let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 

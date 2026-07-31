@@ -7318,6 +7318,8 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "dlc-crypto",
+ "dlc-d",
  "ed25519-dalek 3.0.0-pre.7",
  "glob",
  "hex",
