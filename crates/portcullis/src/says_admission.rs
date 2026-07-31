@@ -102,6 +102,33 @@ impl DlcAdmission {
     }
 }
 
+/// Mint an ephemeral issuer credential for one operation — **harness/host tooling,
+/// not a production issuance path** (real issuance belongs to the issuer's own key
+/// management). Returns the issuer's public key (which is also its principal id,
+/// per dlc-d's `Principal::Atom(PrincipalId(pk))` convention) and the Ed25519
+/// credential over the operation's cap atom.
+///
+/// This function carries a copy of dlc-d's v1 cap-invoke message layout; the
+/// round-trip test below (`mint_round_trips_through_admit`) equates it with the
+/// rev-pinned verifier, so layout drift surfaces as a RED test at pin-bump, not
+/// as silently-invalid credentials.
+#[must_use]
+pub fn mint_credential(seed: &[u8; 32], operation: &str) -> ([u8; 32], Signature) {
+    use ed25519_dalek::Signer as _;
+    let sk = ed25519_dalek::SigningKey::from_bytes(seed);
+    let vk = sk.verifying_key().to_bytes();
+    let mut msg = b"dlc-d/cap-invoke:".to_vec();
+    msg.extend_from_slice(&dlc_d::admission::cap_atom(operation).to_le_bytes());
+    let sig = sk.sign(&msg);
+    (
+        vk,
+        Signature {
+            alg: 0,
+            bytes: sig.to_bytes().to_vec(),
+        },
+    )
+}
+
 impl PolicyCheck for DlcAdmission {
     /// Composition-layer form of the same check. The operation name is taken from the request's
     /// `operation` field (the kernel's canonical vocabulary); a `"tool"` context entry, when
@@ -120,5 +147,36 @@ impl PolicyCheck for DlcAdmission {
 
     fn name(&self) -> &str {
         "dlc-d/says-admission"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dlc_core::principal::KeyRecord;
+
+    /// The layout guard: what `mint_credential` produces must be exactly what the
+    /// rev-pinned dlc-d verifier admits. If dlc-d's cap-invoke layout ever moves,
+    /// this REDs at pin-bump instead of credentials silently going invalid.
+    #[test]
+    fn mint_round_trips_through_admit() {
+        let seed = [3u8; 32];
+        let (pk, sig) = mint_credential(&seed, "web_fetch");
+        let issuer = Principal::Atom(dlc_core::principal::PrincipalId(pk));
+        let keyring = KeyRing {
+            entries: vec![KeyRecord {
+                principal: dlc_core::principal::PrincipalId(pk),
+                alg: 0,
+                public_key: pk.to_vec(),
+            }],
+        };
+        let admission = DlcAdmission::new(keyring, issuer)
+            .with_credential("web_fetch", sig.clone())
+            .with_credential("read_files", sig);
+        // Admitted for the minted operation…
+        assert!(admission.decide_operation("web_fetch").is_admit());
+        // …and the SAME signature registered under a different operation is
+        // refused by the verifier (tool-binding), not by bookkeeping.
+        assert!(!admission.decide_operation("read_files").is_admit());
     }
 }

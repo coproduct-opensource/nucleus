@@ -1583,6 +1583,23 @@ async fn spawn_local_pod(
         command.env("NUCLEUS_TASK_TOKEN_ISSUER", &minted.issuer_hex);
     }
 
+    // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
+    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads
+    // (crates/nucleus-tool-proxy/src/dlc_admission.rs). Node-global env still
+    // inherits (Command does not env_clear); labels let a single pod — e.g.
+    // `nucleus verify --tier2`'s — run under admission without touching host
+    // config. Values are NOT validated here: the proxy's parser owns that and
+    // fails CLOSED (partial/garbage config provisions deny-all).
+    for (label, env) in [
+        ("dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
+        ("dlc_issuer", "NUCLEUS_DLC_ISSUER"),
+        ("dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
+    ] {
+        if let Some(value) = spec.metadata.labels.get(label) {
+            command.env(env, value);
+        }
+    }
+
     // Detect orchestrator pod: inject pod management env vars
     let enable_pod_mgmt = spec
         .metadata
