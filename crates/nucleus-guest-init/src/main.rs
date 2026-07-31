@@ -172,6 +172,19 @@ fn run() -> Result<(), String> {
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
     // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
+    // DLC-D verified admission provisioning → the in-VM tool-proxy. Public
+    // keys + the pod's own capability credentials; safe on the world-readable
+    // cmdline (see the rationale in nucleus-node/src/firecracker_config.rs).
+    for (key, env) in [
+        ("nucleus.dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
+        ("nucleus.dlc_issuer", "NUCLEUS_DLC_ISSUER"),
+        ("nucleus.dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
+    ] {
+        if let Some(value) = parse_cmdline_secret(&cmdline, key) {
+            std::env::set_var(env, value);
+        }
+    }
+
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
         .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
     {
