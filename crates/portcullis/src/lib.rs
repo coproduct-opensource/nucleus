@@ -102,6 +102,13 @@ mod command;
 pub mod constraint;
 pub mod uninhabitable_state;
 
+/// Attenuation tokens — compact delegation credentials for wire transport.
+///
+/// Requires the `serde` feature for serialization.
+/// The EU AI Act Article 12 decision-record type and its canonical preimage —
+/// shared by the tool-proxy that writes records and the audit tool that
+/// verifies them, so there is exactly one definition.
+pub mod art12_record;
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
 pub mod dropout;
@@ -118,9 +125,6 @@ pub mod exposure_core;
 pub mod flow_graph;
 pub mod frame;
 pub mod galois;
-/// Attenuation tokens — compact delegation credentials for wire transport.
-///
-/// Requires the `serde` feature for serialization.
 /// Gate classification — which KIND of control decided an operation
 /// (hard gate / soft gate / none), for EU AI Act Article 12 decision records.
 pub mod gate_class;

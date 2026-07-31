@@ -59,16 +59,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
-
-/// Schema version for [`Art12Record`]. v1 is FROZEN: fields may be added with
-/// `#[serde(default)]`, never removed or repurposed, and the canonical preimage
-/// below must not change without a version bump.
-pub const ART12_SCHEMA_VERSION: u32 = 1;
-
-/// Domain separation tag for the record preimage, so an Article 12 record can
-/// never be confused with another HMAC'd artifact signed by the same secret.
-const PREIMAGE_DOMAIN: &str = "nucleus-art12-record-v1";
+// The record TYPE and its canonical preimage live in `portcullis` so the writer
+// here and the verifier in `nucleus-audit` share one definition.
+use portcullis::art12_record::{Art12Record, ART12_SCHEMA_VERSION};
 
 /// What went wrong writing a record.
 #[derive(Debug)]
@@ -92,137 +85,6 @@ impl std::fmt::Display for Art12Error {
 }
 
 impl std::error::Error for Art12Error {}
-
-/// The identity of whoever caused a decision.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Actor {
-    /// `authenticated` | `stdio_guest` | `unknown`.
-    pub kind: String,
-    /// SPIFFE ID when authenticated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spiffe_id: Option<String>,
-}
-
-/// A refusal, in machine-queryable form.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct DenyInfo {
-    /// The `DenyReason` serde tag (e.g. `dlc_admission_denied`) — stable across
-    /// releases, unlike a `Debug` rendering.
-    pub code: String,
-    /// Human-readable detail, for a reader rather than a query.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// One reconstructable decision.
-///
-/// Field set is deliberately sufficient to answer, without any other artifact:
-/// *who* asked, *what* they asked for, *what was decided*, *which kind of
-/// control decided it*, and *against which policy* — plus the chain fields that
-/// make the answer tamper-evident.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Art12Record {
-    /// Schema version; see [`ART12_SCHEMA_VERSION`].
-    pub schema_version: u32,
-    /// Monotonic sequence within this log, starting at 1.
-    pub seq: u64,
-    /// Seconds since the Unix epoch.
-    pub timestamp_unix: u64,
-    /// Session this decision belongs to.
-    pub session_id: String,
-    /// Which transport carried the request (`http` | `mcp`).
-    pub transport: String,
-    /// Who asked.
-    pub actor: Actor,
-    /// The operation's canonical name.
-    pub operation: String,
-    /// What it was requested against (path, command, URL, …).
-    pub subject: String,
-    /// `allow` | `requires_approval` | `deny` | `error`.
-    pub verdict: String,
-    /// Which KIND of control decided — the Article 12 hard/soft gate field.
-    pub gate_class: String,
-    /// Present iff `verdict == "deny"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deny_reason: Option<DenyInfo>,
-    /// Checksum of the permission lattice in force.
-    pub policy_checksum: String,
-    /// The named policy rule that decided, when one did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_rule: Option<String>,
-    /// `admitted` | `not_admitted` | `unprovisioned` — whether verified
-    /// admission was armed, and whether it passed. Distinguishes "the gate
-    /// refused" from "the gate was never armed".
-    pub dlc_admission: String,
-    /// Whether emergency lockdown was active at decision time (Article 14).
-    pub lockdown_active: bool,
-    /// Kernel decision sequence, when this record reflects a kernel decision —
-    /// joins the pre-effect and post-effect records for one operation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_sequence: Option<u64>,
-    /// Domain-specific metadata (e.g. a discharged-bundle witness).
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub extensions: std::collections::BTreeMap<String, String>,
-    /// Hash of the previous record; for the first record, the boot report's hash.
-    pub prev_hash: String,
-    /// SHA-256 over the canonical preimage.
-    pub hash: String,
-    /// HMAC-SHA256 over the canonical preimage, under the audit secret.
-    pub signature: String,
-}
-
-impl Art12Record {
-    /// The canonical preimage: a `|`-joined, field-ordered rendering that both
-    /// the writer and any verifier reconstruct **from the record's own fields**.
-    ///
-    /// Deliberately not `serde_json::to_string` — JSON key order and escaping
-    /// are not guaranteed stable across serde versions, and a verifier that
-    /// re-serializes to check a hash is checking its own serializer.
-    #[must_use]
-    pub fn canonical_preimage(&self) -> String {
-        let deny = self
-            .deny_reason
-            .as_ref()
-            .map(|d| format!("{}:{}", d.code, d.detail.as_deref().unwrap_or("")))
-            .unwrap_or_default();
-        let ext = self
-            .extensions
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            PREIMAGE_DOMAIN,
-            self.schema_version,
-            self.seq,
-            self.timestamp_unix,
-            self.session_id,
-            self.transport,
-            self.actor.kind,
-            self.actor.spiffe_id.as_deref().unwrap_or(""),
-            self.operation,
-            self.subject,
-            self.verdict,
-            self.gate_class,
-            deny,
-            self.policy_checksum,
-            self.policy_rule.as_deref().unwrap_or(""),
-            self.dlc_admission,
-            self.lockdown_active,
-            self.prev_hash,
-        ) + &format!(
-            "|{}|{}",
-            self.decision_sequence
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            ext
-        )
-    }
-}
 
 /// The synchronous, chained writer.
 pub struct Art12Log {
@@ -370,6 +232,7 @@ pub fn sha256_hex(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portcullis::art12_record::{Actor, DenyInfo};
     use std::collections::BTreeMap;
 
     fn draft(operation: &str, verdict: &str, gate_class: &str) -> Art12Record {
@@ -524,11 +387,27 @@ mod tests {
         assert_eq!(head, read_records(&path)[1].hash);
     }
 
-    /// Domain separation: an Article 12 preimage cannot collide with another
-    /// artifact HMAC'd under the same secret.
+    /// A refusal record carries its machine-queryable code — the field an
+    /// auditor queries on, and the one increment 3 makes reachable at all.
     #[test]
-    fn preimage_is_domain_separated() {
-        let rec = draft("read_files", "allow", "none");
-        assert!(rec.canonical_preimage().starts_with(PREIMAGE_DOMAIN));
+    fn deny_records_carry_their_reason_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("art12.jsonl");
+        let log = Art12Log::open(&path, b"s".to_vec(), "g".to_string(), false).unwrap();
+
+        let mut d = draft("run_bash", "deny", "admission");
+        d.deny_reason = Some(DenyInfo {
+            code: "dlc_admission_denied".to_string(),
+            detail: Some("no issuer-signed credential".to_string()),
+        });
+        log.append(d).unwrap();
+
+        let rec = read_records(&path).remove(0);
+        let reason = rec
+            .deny_reason
+            .as_ref()
+            .expect("deny record carries a reason");
+        assert_eq!(reason.code, "dlc_admission_denied");
+        assert_eq!(sha256_hex(&rec.canonical_preimage()), rec.hash);
     }
 }
