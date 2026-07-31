@@ -2010,16 +2010,28 @@ mod tests {
 
     /// Build a tool-proxy audit line exactly as `AuditLog::log` does
     /// (nucleus-tool-proxy), optionally drand-anchored.
-    fn tool_proxy_line(
-        secret: &[u8],
+    /// The mutable parts of a synthetic entry. Grouped into a struct because the
+    /// flat form tripped clippy's 7-argument limit — and because a test helper
+    /// whose call sites are eight positional values is unreadable anyway.
+    struct LineSpec<'a> {
         ts: u64,
-        actor: &str,
-        event: &str,
-        subject: &str,
-        result: &str,
-        prev_hash: &str,
+        event: &'a str,
+        subject: &'a str,
+        prev_hash: &'a str,
         drand_round: Option<u64>,
-    ) -> (String, String) {
+    }
+
+    fn tool_proxy_line(secret: &[u8], spec: LineSpec<'_>) -> (String, String) {
+        let LineSpec {
+            ts,
+            event,
+            subject,
+            prev_hash,
+            drand_round,
+        } = spec;
+        // Fixed across these fixtures; the writer signs them all the same way.
+        let actor = "n";
+        let result = "ok";
         let drand_part = drand_round
             .map(|r| format!("|drand:{r}"))
             .unwrap_or_default();
@@ -2055,8 +2067,26 @@ mod tests {
 
         // Drand-anchored chain of two entries.
         let path = dir.path().join("anchored.log");
-        let (l1, h1) = tool_proxy_line(secret, 100, "n", "boot", "s1", "ok", "", Some(42));
-        let (l2, _) = tool_proxy_line(secret, 101, "n", "call", "s2", "ok", &h1, Some(43));
+        let (l1, h1) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s1",
+                prev_hash: "",
+                drand_round: Some(42),
+            },
+        );
+        let (l2, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 101,
+                event: "call",
+                subject: "s2",
+                prev_hash: &h1,
+                drand_round: Some(43),
+            },
+        );
         std::fs::write(&path, format!("{l1}\n{l2}\n")).expect("write");
         assert_eq!(
             verify_tool_proxy_log(&path, secret).expect("drand-anchored log must verify"),
@@ -2065,8 +2095,26 @@ mod tests {
 
         // Un-anchored chain must still verify (the suffix is conditional).
         let path2 = dir.path().join("plain.log");
-        let (p1, ph1) = tool_proxy_line(secret, 100, "n", "boot", "s1", "ok", "", None);
-        let (p2, _) = tool_proxy_line(secret, 101, "n", "call", "s2", "ok", &ph1, None);
+        let (p1, ph1) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s1",
+                prev_hash: "",
+                drand_round: None,
+            },
+        );
+        let (p2, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 101,
+                event: "call",
+                subject: "s2",
+                prev_hash: &ph1,
+                drand_round: None,
+            },
+        );
         std::fs::write(&path2, format!("{p1}\n{p2}\n")).expect("write");
         assert_eq!(
             verify_tool_proxy_log(&path2, secret).expect("plain log must verify"),
@@ -2081,7 +2129,16 @@ mod tests {
         let secret = b"art12-regression-secret";
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tampered.log");
-        let (line, _) = tool_proxy_line(secret, 100, "n", "boot", "s", "ok", "", Some(42));
+        let (line, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s",
+                prev_hash: "",
+                drand_round: Some(42),
+            },
+        );
         // Re-anchor the entry to a different round, leaving the signature intact.
         let tampered = line.replace("\"drand_round\":42", "\"drand_round\":43");
         assert_ne!(tampered, line, "the round must actually have changed");

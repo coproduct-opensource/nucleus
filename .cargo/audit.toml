@@ -91,4 +91,18 @@ ignore = [
     # StackSlot API with !Send tags. REVISIT when event-listener releases a
     # fix or sqlx bumps past it.
     "RUSTSEC-2026-0221",
+
+    # wasmtime 45.0.3 — "Stores can mix up type indices between engines"
+    # (RUSTSEC-2026-0222, filed 2026-07-31, severity 3.8 LOW). Advisory-DB
+    # refresh; the tree did not change. NO FIX EXISTS IN THE 45.x LINE — the
+    # patched ranges (>=24.0.12<25, >=36.0.13<37, >=46.0.2<47, >=47.0.3) skip 45
+    # entirely, so clearing this requires a MAJOR bump of wasmtime, coordinated
+    # with portcullis-core's `wasm-sandbox` pin (workspace dep convergence).
+    # Exposure is narrow: wasmtime is optional and reachable only via
+    # portcullis-wasi's non-default `host` feature (`default = []`), i.e. it is
+    # absent from every default build and enters only under --all-features; the
+    # bug requires mixing Stores across two distinct Engines, which that host
+    # does not do. REVISIT as its own PR — a major engine bump does not belong
+    # inside unrelated work.
+    "RUSTSEC-2026-0222",
 ]
