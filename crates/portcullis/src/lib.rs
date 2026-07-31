@@ -108,6 +108,12 @@ pub mod uninhabitable_state;
 /// The EU AI Act Article 12 decision-record type and its canonical preimage —
 /// shared by the tool-proxy that writes records and the audit tool that
 /// verifies them, so there is exactly one definition.
+///
+/// Gated on `serde`: a decision record exists to be serialized into a
+/// tamper-evident log and read back by a third-party verifier, so the type is
+/// meaningless without it. Both consumers (`nucleus-tool-proxy`,
+/// `nucleus-audit`) enable the feature.
+#[cfg(feature = "serde")]
 pub mod art12_record;
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
