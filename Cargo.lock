@@ -6807,6 +6807,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-flow-replay"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "portcullis",
+ "portcullis-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "nucleus-fly-oidc"
 version = "1.0.0"
 dependencies = [
