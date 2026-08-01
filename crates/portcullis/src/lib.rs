@@ -100,6 +100,7 @@ pub mod cedar_bridge;
 pub mod certificate;
 mod command;
 pub mod constraint;
+pub mod trace_monitor;
 pub mod uninhabitable_state;
 
 /// Attenuation tokens — compact delegation credentials for wire transport.
