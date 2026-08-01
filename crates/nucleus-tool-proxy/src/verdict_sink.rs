@@ -63,16 +63,32 @@ pub fn build_monitored_sink(
     policy_checksum: String,
     session_id: String,
     dlc_provisioned: bool,
+    art12_log: Option<Arc<crate::art12::Art12Log>>,
 ) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
-    let inner = Arc::new(ToolProxyVerdictSink::new(
+    let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
         file_lockdown,
         stream_lockdown,
         capabilities,
         exposure_guard,
-        policy_checksum,
-        session_id,
+        policy_checksum.clone(),
+        session_id.clone(),
         dlc_provisioned,
     ));
+
+    // Article 12 record-keeping, when configured. INSIDE the monitor, so the
+    // monitor still observes every record; and inside this constructor, so
+    // there is no way to assemble a chain that skips it.
+    let inner = match art12_log {
+        Some(log) => Arc::new(crate::art12_sink::Art12Sink::new(
+            inner,
+            log,
+            session_id,
+            policy_checksum,
+            dlc_provisioned,
+        )) as Arc<dyn VerdictSink>,
+        None => inner,
+    };
+
     let monitor = Arc::new(TraceMonitor::new(inner));
     (monitor.clone(), monitor)
 }
@@ -432,6 +448,7 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            None,
         )
     }
 
@@ -483,6 +500,7 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            None,
         )
         .0;
         assert!(matches!(

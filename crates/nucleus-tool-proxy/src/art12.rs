@@ -43,15 +43,18 @@
 //! one. Both properties are asserted by tests, including the one that
 //! deliberately demonstrates the HMAC limit.
 //!
-//! # Why `allow(dead_code)` here
+//! # Wired
 //!
-//! This module is landed UNWIRED on purpose: the staging puts every unit and
-//! perturbation test green before anything on the live decision path changes.
-//! Until the sink is wired to it (the increment that adds `--art12-log`),
-//! nothing outside the tests constructs an `Art12Log`, and CI builds with
-//! `-D warnings`. **Remove this allow in the wiring increment** — once the sink
-//! calls `append`, genuinely dead code here should fail the build again.
-#![allow(dead_code)]
+//! This module was landed UNWIRED on purpose, behind `#![allow(dead_code)]`, so
+//! that every unit and perturbation test was green before anything on the live
+//! decision path changed. That allow said to remove it in the wiring increment,
+//! and this is that increment: `--art12-log` opens the log at startup and
+//! `Art12Sink` appends a record for every verdict.
+//!
+//! The allow is gone, which is not cosmetic — with `-D warnings`, genuinely dead
+//! code here now fails the build again. That is the check that the wiring is
+//! real: if the sink stopped calling `append`, this module would go dead and CI
+//! would say so.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -140,6 +143,22 @@ impl Art12Log {
             dropped: AtomicU64::new(0),
             console_mirror,
         })
+    }
+
+    /// Latch the degraded flag without a real write failure.
+    ///
+    /// `#[cfg(test)]`, so it does not exist in a production build — the concern
+    /// with test affordances is that they are REACHABLE from production, and
+    /// this one is compiled out. It exists because a genuine write failure is
+    /// not reliably reproducible: on unix an already-open descriptor keeps
+    /// accepting writes after the file is unlinked and after its directory is
+    /// removed. The alternative was a test with a conditional early return,
+    /// which passes without asserting anything on exactly the platforms where
+    /// the write succeeds.
+    #[cfg(test)]
+    pub(crate) fn force_degraded(&self) {
+        self.degraded.store(true, Ordering::Release);
+        self.dropped.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Whether a write has failed since startup.
