@@ -37,7 +37,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use portcullis::art12_record::{Art12Attestation, Art12Record, ART12_SCHEMA_VERSION};
 use serde::Serialize;
 
@@ -108,8 +108,13 @@ pub fn check_attestation(
             line: 0,
             message: "attestation signature is not 64 hex-encoded bytes".to_string(),
         })?;
+    // STRICT, not `verify`. Audit finding M-3: the cofactored equation accepts
+    // small-order and non-canonical points, so one crafted signature can verify
+    // under several identities. This attestation exists to bind a log to ONE
+    // executor, so a weak signature-to-identity binding would defeat its whole
+    // purpose. `check-verify-strict.sh` caught this before it landed.
     executor_pubkey
-        .verify(att.preimage().as_bytes(), &Signature::from_bytes(&bytes))
+        .verify_strict(att.preimage().as_bytes(), &Signature::from_bytes(&bytes))
         .map_err(|_| AuditError::Invalid {
             line: 0,
             message: "attestation signature does not verify under the executor public key"
