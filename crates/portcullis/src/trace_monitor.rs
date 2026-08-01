@@ -158,11 +158,24 @@ impl TraceMonitor {
             if matches!(ctx.outcome, VerdictOutcome::Allow) {
                 st.awaiting_outcome.insert(ctx.operation);
             }
-        } else if !st.awaiting_outcome.remove(&ctx.operation) {
+        } else if matches!(ctx.outcome, VerdictOutcome::Allow)
+            && !st.awaiting_outcome.remove(&ctx.operation)
+        {
+            // Only an ALLOWED outcome implies an effect occurred. A refusal
+            // recorded with no preceding decision is CORRECT and common: several
+            // handlers reject on input validation before ever consulting the
+            // kernel (`validate_path`, main.rs:2582/2724), and nothing happened.
+            // Flagging those would have made the monitor's first deployment
+            // noise, which is how a real signal gets ignored.
             drop(st);
             self.flag(Violation::OutcomeWithoutDecision {
                 operation: ctx.operation,
             });
+        } else {
+            // A refusal consumes any pending authorisation: the decision allowed
+            // it, the handler declined to proceed. Not a violation, but the
+            // authorisation is spent either way.
+            st.awaiting_outcome.remove(&ctx.operation);
         }
     }
 }
@@ -267,6 +280,22 @@ mod tests {
         m.record(outcome(Operation::WriteFiles)).unwrap();
         m.record(outcome(Operation::WriteFiles)).unwrap();
         assert_eq!(m.violations().len(), 1, "{:?}", m.violations());
+    }
+
+    /// **The false positive that would have made deployment noise.** Handlers
+    /// reject on input validation BEFORE consulting the kernel, recording a
+    /// refusal with no preceding decision. Nothing happened, so nothing is
+    /// wrong — and a monitor that cried wolf here would be ignored by the time
+    /// it saw something real.
+    #[test]
+    fn a_refusal_with_no_decision_is_not_a_violation() {
+        let m = monitor();
+        let mut rejected = outcome(Operation::ReadFiles);
+        rejected.outcome = VerdictOutcome::Deny {
+            reason: "validation: bad path".into(),
+        };
+        m.record(rejected).unwrap();
+        assert!(m.violations().is_empty(), "{:?}", m.violations());
     }
 
     /// Permissions changed outside the recorded path.
