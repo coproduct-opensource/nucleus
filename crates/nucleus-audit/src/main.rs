@@ -240,6 +240,16 @@ enum Command {
         /// Emit the report as JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Executor attestation JSON, as sent with the session-complete receipt.
+        ///
+        /// Supplying it (with --executor-pubkey) is what turns "no third party
+        /// altered this file" into evidence about the pod: the executor key
+        /// lives on the node and the pod never holds it.
+        #[arg(long, requires = "executor_pubkey")]
+        attestation: Option<PathBuf>,
+        /// The executor's Ed25519 public key, hex-encoded (32 bytes).
+        #[arg(long, requires = "attestation")]
+        executor_pubkey: Option<String>,
     },
 }
 
@@ -602,9 +612,44 @@ fn main() -> Result<(), AuditError> {
                 std::process::exit(1);
             }
         }
-        Command::VerifyArt12 { log, secret, json } => {
-            let report =
+        Command::VerifyArt12 {
+            log,
+            secret,
+            json,
+            attestation,
+            executor_pubkey,
+        } => {
+            let mut report =
                 verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
+
+            if let (Some(att_path), Some(pubkey_hex)) = (attestation, executor_pubkey) {
+                let att: portcullis::art12_record::Art12Attestation =
+                    serde_json::from_str(&std::fs::read_to_string(&att_path)?)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?;
+                let key_bytes: [u8; 32] = hex::decode(&pubkey_hex)
+                    .ok()
+                    .and_then(|v| v.try_into().ok())
+                    .ok_or_else(|| AuditError::Invalid {
+                        line: 0,
+                        message: "--executor-pubkey must be 32 hex-encoded bytes".to_string(),
+                    })?;
+                let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).map_err(|_| {
+                    AuditError::Invalid {
+                        line: 0,
+                        message: "--executor-pubkey is not a valid Ed25519 public key".to_string(),
+                    }
+                })?;
+                verify_art12::check_attestation(&att, &report.chain_head, &key)?;
+                report.attestation_checked = true;
+                report
+                    .limitations
+                    .retain(|l| !l.contains("holder of the secret"));
+                report.limitations.push(
+                    "The executor attestation binds this log's HEAD, not its content: a pod that \
+                     recorded nothing would export a validly signed empty log."
+                        .to_string(),
+                );
+            }
             if json {
                 println!(
                     "{}",
@@ -626,6 +671,14 @@ fn main() -> Result<(), AuditError> {
                 println!(
                     "  identified actors:  {} of {}",
                     report.identified_actors, report.records
+                );
+                println!(
+                    "  executor attested:  {}",
+                    if report.attestation_checked {
+                        "yes"
+                    } else {
+                        "NO"
+                    }
                 );
                 for (verdict, n) in &report.verdicts {
                     println!("  verdict {verdict:<18} {n}");

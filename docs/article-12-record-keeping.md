@@ -80,14 +80,44 @@ consumer cannot render "verified" without it.
 
 The third row is the one to read twice. If the pod derived its own signing
 secret — no operator-supplied `--audit-secret` — then the pod can re-sign any
-history it likes, and **the log is not evidence against the pod at all**. The
-file cannot reveal which case it is in; the operator knows. Supply an
-operator-held secret, or treat the log as an integrity check against third
-parties only.
+history it likes, and **the log alone is not evidence against the pod**.
 
-Closing that gap properly needs a signature over the chain head by a key the pod
-does not possess. The export path attaches one; that is a separate increment from
-this one, and until it lands the limitation above is the honest description.
+## The executor attestation closes that
+
+At pod exit the tool proxy reports its final chain head in the exit report, and
+`nucleus-node` signs `(session_id, chain_head, records, dropped, executor_id)`
+with its **executor key** — Ed25519, resident on the node, role-separated from
+the task-issuer key, and never seen by the pod. The attestation travels with the
+receipt in the `session-complete` body, and the chain head is committed into
+`v1_content_hash` so it cannot be stripped in flight.
+
+```
+nucleus-audit verify-art12 --log art12.jsonl --secret <s> \
+    --attestation att.json --executor-pubkey <hex>
+```
+
+The verifier checks the signature over the attestation's own preimage **and**
+that the head it names is the head recomputed from the log. Both halves are
+required: a valid signature over a different head proves only that some other log
+was attested. When both pass, the secret-holder limitation is lifted from the
+report — that is the one case where it does not apply.
+
+The signer and the verifier share one preimage function in
+`portcullis::art12_record`, for the reason `Art12Record` lives there too: two
+renderings that agree today break the first time either side gains a field, and
+they break by *rejecting authentic evidence*.
+
+Two limits remain, both structural:
+
+- **It binds the head, not the content.** A pod that recorded nothing exports a
+  validly signed empty log. Completeness stays unverifiable from the artifact.
+- **It binds a moment.** Signing happens at pod exit, after the host has stopped
+  the pod, so the head is one the pod can no longer move. A signature taken while
+  the pod still ran would bind a head the pod could advance past.
+
+An absent attestation means no Article 12 log was kept: `attest_art12` returns
+`None` rather than signing an empty head, because a signature over nothing would
+assert record-keeping that did not happen.
 
 ## Current limits
 

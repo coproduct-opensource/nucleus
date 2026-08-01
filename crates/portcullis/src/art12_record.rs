@@ -152,6 +152,83 @@ impl Art12Record {
     }
 }
 
+/// A host-signed attestation binding an Article 12 log to the executor that ran it.
+///
+/// # Why it lives here, beside `Art12Record`
+///
+/// For the same reason the record does: the SIGNER (`nucleus-node`) and the
+/// VERIFIER (`nucleus-audit`) must share one definition of the preimage. Two
+/// independent renderings that happen to agree today are the shape that breaks
+/// the first time either side gains a field, and it breaks by rejecting
+/// authentic evidence.
+///
+/// # What it establishes
+///
+/// `verify-art12` can show no party LACKING the log's HMAC secret altered it. It
+/// cannot show that a HOLDER of the secret did not rewrite history — and a pod
+/// that derives its own secret is such a holder. This is signed with the node's
+/// executor key, which the pod never sees, so a pod that rewrites its log
+/// produces a different chain head and cannot forge a signature over the new one.
+///
+/// # What it does NOT establish
+///
+/// It binds the HEAD, not the content: a pod that recorded nothing exports a
+/// validly signed empty log, so completeness stays unverifiable from the
+/// artifact. And it binds a MOMENT — signing happens at pod exit, after the host
+/// has stopped the pod, so the head is one the pod can no longer move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Art12Attestation {
+    /// Schema tag, so a verifier refuses rather than guessing at field drift.
+    pub kind: String,
+    /// The session whose log this attests to.
+    pub session_id: String,
+    /// The log's chain head as the pod reported it at shutdown.
+    pub chain_head: String,
+    /// Records the log wrote.
+    pub records: u64,
+    /// Records the log could not write. Non-zero means it went degraded.
+    pub dropped: u64,
+    /// Executor identity, so a verifier knows which public key to check.
+    pub executor_id: String,
+    /// Ed25519 signature over [`art12_attestation_preimage`], hex-encoded.
+    pub signature: String,
+}
+
+/// The tag every attestation carries, and the domain separator in its preimage.
+pub const ART12_ATTESTATION_KIND: &str = "nucleus-art12-attestation-v1";
+
+/// The signed preimage, field-ordered and delimited.
+///
+/// Deliberately not `serde_json::to_string`, for the reason
+/// [`Art12Record::canonical_preimage`] gives: JSON key order and escaping are not
+/// guaranteed stable across serde versions, and a verifier that re-serialises to
+/// check a signature is checking its own serialiser.
+#[must_use]
+pub fn art12_attestation_preimage(
+    session_id: &str,
+    chain_head: &str,
+    records: u64,
+    dropped: u64,
+    executor_id: &str,
+) -> String {
+    format!("{ART12_ATTESTATION_KIND}|{session_id}|{chain_head}|{records}|{dropped}|{executor_id}")
+}
+
+impl Art12Attestation {
+    /// This attestation's own preimage, reconstructed from its own fields.
+    #[must_use]
+    pub fn preimage(&self) -> String {
+        art12_attestation_preimage(
+            &self.session_id,
+            &self.chain_head,
+            self.records,
+            self.dropped,
+            &self.executor_id,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

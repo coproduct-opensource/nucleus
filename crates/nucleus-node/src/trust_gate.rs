@@ -733,60 +733,14 @@ pub struct ReceiptReport {
     pub v1_content_hash: String,
 }
 
-/// A host-signed attestation binding an Article 12 log to the executor that ran it.
-///
-/// # Why this exists
-///
-/// `verify-art12` can show that no party lacking the signing secret altered the
-/// log. It cannot show that a HOLDER of the secret did not rewrite history — and
-/// when the pod derives its own secret, the pod is such a holder, so the log is
-/// not evidence against the pod at all.
-///
-/// The executor key closes that. It lives on the node, is role-separated from
-/// the task-issuer key, and the pod never sees it. A pod that rewrites its log
-/// produces a different chain head and cannot forge this signature over the new
-/// one.
-///
-/// # What it does NOT establish
-///
-/// It binds the HEAD, not the content: a pod that recorded nothing exports a
-/// validly-signed empty log. Completeness remains unverifiable from the
-/// artifact, which is why `verify-art12` reports it as a limitation regardless.
-///
-/// The binding is also only as strong as the moment it is made. Signing happens
-/// at pod exit, after the host has stopped the pod — a signature taken while the
-/// pod could still write would bind a head the pod could move.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct Art12Attestation {
-    /// Schema tag, so a verifier refuses rather than guessing at field drift.
-    pub kind: String,
-    pub session_id: String,
-    /// The log's chain head as the pod reported it at shutdown.
-    pub chain_head: String,
-    pub records: u64,
-    /// Records the pod could not write. Non-zero means the log went degraded.
-    pub dropped: u64,
-    /// Executor identity, so a verifier knows which public key to check.
-    pub executor_id: String,
-    /// Ed25519 signature over the canonical preimage, hex-encoded.
-    pub signature: String,
-}
-
-/// The signed preimage. Field-ordered and delimited, never `serde_json` — a
-/// verifier that re-serialises to check a signature is checking its own
-/// serialiser.
-#[must_use]
-pub fn art12_attestation_preimage(
-    session_id: &str,
-    chain_head: &str,
-    records: u64,
-    dropped: u64,
-    executor_id: &str,
-) -> String {
-    format!(
-        "nucleus-art12-attestation-v1|{session_id}|{chain_head}|{records}|{dropped}|{executor_id}"
-    )
-}
+// `Art12Attestation` and `art12_attestation_preimage` live in
+// `portcullis::art12_record`, beside `Art12Record`, so this signer and the
+// verifier in `nucleus-audit` share ONE definition of the preimage. Two
+// renderings that agree today break the first time either side gains a field —
+// and they break by rejecting authentic evidence, which is the worst direction.
+pub use portcullis::art12_record::{
+    art12_attestation_preimage, Art12Attestation, ART12_ATTESTATION_KIND,
+};
 
 /// Sign a pod's Article 12 chain head with the executor key.
 ///
@@ -811,7 +765,7 @@ pub fn attest_art12(
     );
     let sig = key.sign(preimage.as_bytes());
     Some(Art12Attestation {
-        kind: "nucleus-art12-attestation-v1".to_string(),
+        kind: ART12_ATTESTATION_KIND.to_string(),
         session_id: session_id.to_string(),
         chain_head: report.art12_chain_head.clone(),
         records: report.art12_records,

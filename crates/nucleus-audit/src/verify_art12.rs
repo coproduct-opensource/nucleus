@@ -37,7 +37,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use portcullis::art12_record::{Art12Record, ART12_SCHEMA_VERSION};
+use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use portcullis::art12_record::{Art12Attestation, Art12Record, ART12_SCHEMA_VERSION};
 use serde::Serialize;
 
 use crate::AuditError;
@@ -61,8 +62,71 @@ pub struct Art12Report {
     pub verdicts: BTreeMap<String, u64>,
     /// Whether signatures were checked at all.
     pub signatures_checked: bool,
+    /// Whether an executor attestation was checked against the computed head.
+    pub attestation_checked: bool,
     /// What this run did NOT establish. Never empty.
     pub limitations: Vec<String>,
+}
+
+/// Check an executor attestation against the head this verifier computed.
+///
+/// # What this closes
+///
+/// Without it, a passing chain means "no party lacking the HMAC secret altered
+/// this file" — which says nothing about a pod that holds its own secret. The
+/// executor key lives on the node and the pod never sees it, so a pod that
+/// rewrites its log produces a different head and cannot forge a signature over
+/// the new one.
+///
+/// The signature is checked over the attestation's OWN preimage, then the head
+/// it names is compared to the head computed from the log. Both halves are
+/// required: a valid signature over a head that is not this log's proves only
+/// that some other log was attested.
+///
+/// # Errors
+/// If the signature does not verify, or the attested head is not the computed one.
+pub fn check_attestation(
+    att: &Art12Attestation,
+    computed_head: &str,
+    executor_pubkey: &VerifyingKey,
+) -> Result<(), AuditError> {
+    if att.kind != portcullis::art12_record::ART12_ATTESTATION_KIND {
+        return Err(AuditError::Invalid {
+            line: 0,
+            message: format!(
+                "unknown attestation kind {:?}; refusing rather than checking fields that may \
+                 have moved",
+                att.kind
+            ),
+        });
+    }
+
+    let bytes: [u8; 64] = hex::decode(&att.signature)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| AuditError::Invalid {
+            line: 0,
+            message: "attestation signature is not 64 hex-encoded bytes".to_string(),
+        })?;
+    executor_pubkey
+        .verify(att.preimage().as_bytes(), &Signature::from_bytes(&bytes))
+        .map_err(|_| AuditError::Invalid {
+            line: 0,
+            message: "attestation signature does not verify under the executor public key"
+                .to_string(),
+        })?;
+
+    if att.chain_head != computed_head {
+        return Err(AuditError::Invalid {
+            line: 0,
+            message: format!(
+                "the executor attested chain head {} but this log computes {computed_head} -- \
+                 the log was rewritten after it was attested",
+                att.chain_head
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// The limitations that hold for every run, stated as data so a consumer cannot
@@ -70,11 +134,12 @@ pub struct Art12Report {
 fn base_limitations(signatures_checked: bool) -> Vec<String> {
     let mut v = vec![
         "A valid chain shows no party WITHOUT the signing secret altered this file. It does not \
-         show that a holder of the secret did not rewrite history."
+         show that a holder of the secret did not rewrite history. Supply --attestation and \
+         --executor-pubkey to close that: the executor key is one the pod never holds."
             .to_string(),
         "If the pod derived its own signing secret (no operator-supplied --audit-secret), the pod \
-         could re-sign any history; the log is then not evidence against the pod. This file cannot \
-         reveal which case applies."
+         could re-sign any history; the log is then not evidence against the pod UNLESS an \
+         executor attestation was checked. This file alone cannot reveal which case applies."
             .to_string(),
         "Completeness is not verifiable from this artifact: the chain shows the records present \
          are consecutive and unaltered, not that every decision made was recorded."
@@ -110,6 +175,7 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         identified_actors: 0,
         verdicts: BTreeMap::new(),
         signatures_checked: secret.is_some(),
+        attestation_checked: false,
         limitations: base_limitations(secret.is_some()),
     };
 
@@ -429,5 +495,98 @@ mod tests {
         let report = verify_art12_log(&path, Some(SECRET)).unwrap();
         assert_eq!(report.records, 0);
         assert!(report.chain_head.is_empty());
+    }
+
+    // ── executor attestation ────────────────────────────────────────────────
+
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use portcullis::art12_record::{art12_attestation_preimage, ART12_ATTESTATION_KIND};
+
+    fn attest(chain_head: &str, key: &SigningKey) -> Art12Attestation {
+        let preimage = art12_attestation_preimage("sess", chain_head, 2, 0, "exec-1");
+        Art12Attestation {
+            kind: ART12_ATTESTATION_KIND.to_string(),
+            session_id: "sess".into(),
+            chain_head: chain_head.to_string(),
+            records: 2,
+            dropped: 0,
+            executor_id: "exec-1".into(),
+            signature: hex::encode(key.sign(preimage.as_bytes()).to_bytes()),
+        }
+    }
+
+    /// The happy path: the executor attested the head this log actually computes.
+    #[test]
+    fn an_attestation_over_the_computed_head_checks_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        assert!(check_attestation(
+            &attest(&report.chain_head, &key),
+            &report.chain_head,
+            &key.verifying_key()
+        )
+        .is_ok());
+    }
+
+    /// **The property the export exists for.** A pod that rewrites its log after
+    /// being attested produces a different head, and cannot re-sign.
+    #[test]
+    fn a_log_rewritten_after_attestation_is_caught() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        // Attested when the log ended at some earlier head.
+        let att = attest("the-head-that-was-attested", &key);
+
+        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
+        let err = check_attestation(&att, &report.chain_head, &key.verifying_key()).unwrap_err();
+        assert!(
+            format!("{err}").contains("rewritten after it was attested"),
+            "got: {err}"
+        );
+    }
+
+    /// A signature from the wrong key must not pass — otherwise the attestation
+    /// proves only that SOMEONE signed, which is what the pod can already do.
+    #[test]
+    fn an_attestation_from_another_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
+        let real = SigningKey::from_bytes(&[3u8; 32]);
+        let impostor = SigningKey::from_bytes(&[4u8; 32]);
+        let err = check_attestation(
+            &attest(&report.chain_head, &impostor),
+            &report.chain_head,
+            &real.verifying_key(),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("does not verify"), "got: {err}");
+    }
+
+    /// Both halves are required. A signature valid over ANOTHER log's head must
+    /// not pass for this one — that is the substitution attack.
+    #[test]
+    fn a_valid_signature_over_a_different_log_does_not_pass() {
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let att = attest("head-of-some-other-session", &key);
+        // The signature itself is perfectly valid...
+        assert!(
+            check_attestation(&att, "head-of-some-other-session", &key.verifying_key()).is_ok()
+        );
+        // ...but not for this log.
+        assert!(check_attestation(&att, "this-logs-head", &key.verifying_key()).is_err());
+    }
+
+    /// An unknown attestation kind is refused rather than field-guessed.
+    #[test]
+    fn an_unknown_attestation_kind_is_refused() {
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let mut att = attest("h", &key);
+        att.kind = "something-else-v9".into();
+        let err = check_attestation(&att, "h", &key.verifying_key()).unwrap_err();
+        assert!(
+            format!("{err}").contains("unknown attestation kind"),
+            "got: {err}"
+        );
     }
 }
