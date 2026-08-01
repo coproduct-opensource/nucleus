@@ -34,6 +34,7 @@ mod cert_bridge;
 mod dlc_admission;
 mod exit_report;
 mod identity_fusion;
+mod ingest;
 mod lockdown_client;
 #[cfg(feature = "mcp")]
 mod mcp;
@@ -357,19 +358,20 @@ pub(crate) struct AppState {
     /// blocks outbound for all); true multi-tenancy would require keying the
     /// kernel AND tracker together — out of scope here.
     pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
-    /// Paths written while the session was integrity-tainted.
+    /// Path → the flow node recording the content last written there.
     ///
-    /// Closes a disk-laundering channel: tainted bytes land in a file, the file
-    /// is read back, and the read produces a `FileRead` node whose intrinsic
-    /// integrity is `Trusted` — so the taint vanishes.
+    /// This is #2135's laundered-path SET, generalised from a boolean into an
+    /// EDGE. That version answered "was this path written while tainted?"; this
+    /// one answers "which node produced the content at this path?", and the
+    /// taint answer falls out of it — a read whose parent is a tainted write
+    /// node inherits `Adversarial` through `propagate_label`, so the special
+    /// case #2135 hand-coded becomes a consequence of the graph.
     ///
-    /// This is EMPTY in the default configuration and cannot become non-empty:
-    /// with `NUCLEUS_GRADED_TAINT` off, `WriteFiles`/`EditFiles`/`RunBash` are
-    /// all DENIED in a tainted session, so tainted bytes never reach disk. The
-    /// channel opens only when grading converts those denials into approvals and
-    /// a human approves one. `RunBash` stays denied even when graded, so there
-    /// is no bash-written blind spot.
-    pub(crate) laundered_paths: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    /// The proxy may only record edges it MEDIATED BOTH ENDS OF. It wrote these
+    /// bytes and it read them back, so this edge is established, not declared —
+    /// which matters because the agent is the compromised party under the threat
+    /// model and cannot be asked to report its own data flow.
+    pub(crate) path_provenance: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
     /// Provenance-verified, taint-labeled agent memory (next-bet #1). A write
     /// goes through `verified_admit`; a recall observes the record's own label
     /// into `flow_tracker` so the IFC gate governs whether it may inform an
@@ -1559,7 +1561,7 @@ async fn main() -> Result<(), ApiError> {
     enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
 
     let state = AppState {
-        laundered_paths: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+        path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
@@ -2480,92 +2482,6 @@ pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHa
     nucleus_ifc_kernel::ContentHash::from_bytes(digest)
 }
 
-/// Observe a data-ingest node in the session flow tracker after a *successful*
-/// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial
-/// taint source; `FileRead` contributes to the confidentiality ceiling. Must be
-/// called only on success paths so a denied/failed op never leaks taint.
-///
-/// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*, whose
-/// recomputed SHA-256 is recorded on the node via `observe_with_content_hash`.
-/// Label/taint behaviour is identical to the old bare `observe` — only the hash
-/// is added.
-async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
-    let hash = ingest_content_hash(bytes);
-    let mut flow = state.flow_tracker.lock().await;
-    if let Err(e) = flow.observe_with_content_hash(kind, hash) {
-        warn!(?kind, error = %e, "flow-tracker observe failed");
-    }
-}
-
-/// The flow node kind command output is observed as.
-///
-/// Extracted to a constant so the CHOICE is pinned by a test rather than
-/// inferred. A test asserting that `McpToolResult` is adversarial, plus a test
-/// that an `McpToolResult` observation trips the gate, BOTH pass even if this
-/// call site observes something weaker — verified by perturbation: swapping in
-/// `ToolResponse` (Untrusted, not Adversarial) failed nothing until this
-/// constant existed to assert against.
-pub(crate) const COMMAND_OUTPUT_NODE_KIND: NodeKind = NodeKind::McpToolResult;
-
-/// Which flow node kind a file read is observed as.
-///
-/// Extracted so the CHOICE is assertable. Perturbation showed why: with the
-/// branch inlined in `read_file` — a handler that needs a live sandbox to
-/// exercise — replacing the laundered arm with a plain `FileRead` (making the
-/// whole fix a no-op) passed every test, because the tests asserted the
-/// constant's properties and the tracker's behaviour but never what the handler
-/// actually selects.
-pub(crate) fn read_node_kind(is_laundered: bool) -> NodeKind {
-    if is_laundered {
-        // A path written while tainted re-enters adversarial, restoring the
-        // taint a disk round-trip would otherwise strip.
-        COMMAND_OUTPUT_NODE_KIND
-    } else {
-        // Ordinary reads stay trusted — labelling all reads adversarial would
-        // lock every session on its first read.
-        NodeKind::FileRead
-    }
-}
-
-/// Taint COMMAND OUTPUT as adversarial — the HTTP twin of
-/// `mcp::Server::observe_tool_result`.
-///
-/// `/v1/run` returns arbitrary subprocess stdout/stderr to the agent, which is
-/// external bytes by any definition: `curl` through bash is an ingest the proxy
-/// cannot distinguish from `ls`. Every other HTTP handler that returns external
-/// bytes observes them (`read_file`, `web_fetch`, `glob_search`, `grep_search`,
-/// `web_search`); this one did not, so bash-fetched content entered the session
-/// with no flow node at all.
-///
-/// The asymmetry was the real defect. `NUCLEUS_PARANOID_TOOL_IO=1` has always
-/// covered the MCP transport (`mcp.rs:675`) and never covered HTTP, so an
-/// operator who enabled it got partial coverage with nothing to indicate half
-/// their surface was uncovered — worse than the flag not existing, because it
-/// reads as a decision that was made.
-///
-/// Same env var, same default (OFF), same node kind, and the same reason for the
-/// default that `observe_tool_result` documents: blanket-tainting the proxy's own
-/// command output makes a session "one privileged action then locked"
-/// (run-tests → cannot commit). That is an operator's policy call, not ours.
-///
-/// Observed regardless of exit status: a failing command's stderr is still bytes
-/// the agent read. Called only after the command actually RAN, so a denied
-/// operation still leaks no taint.
-async fn http_observe_command_output(state: &AppState, stdout: &[u8], stderr: &[u8]) {
-    let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !paranoid {
-        return;
-    }
-    // Both streams in one node: they are one ingest event, and content-addressing
-    // them separately would imply two independent sources.
-    let mut bytes = Vec::with_capacity(stdout.len() + stderr.len());
-    bytes.extend_from_slice(stdout);
-    bytes.extend_from_slice(stderr);
-    http_observe_flow(state, COMMAND_OUTPUT_NODE_KIND, &bytes).await;
-}
-
 async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2699,12 +2615,24 @@ async fn read_file(
     // Brick 3: content-address the exact bytes read.
     // A path written during a tainted session re-enters as adversarial, not as a
     // trusted file read — otherwise a round-trip through disk strips the taint.
-    let is_laundered = state.laundered_paths.lock().await.contains(&observed_path);
-    if is_laundered {
-        warn!(path = %observed_path, "reading a path written while tainted; observing as adversarial");
+    // If the proxy wrote this path, the read DERIVES from that write — a real
+    // edge, because the proxy mediated both ends. `propagate_label` joins the
+    // parent's label in, so a read of a tainted write is adversarial without any
+    // special case: #2135 selected a different NodeKind by boolean; the graph now
+    // produces the same outcome as a consequence.
+    let parents: Vec<u64> = state
+        .path_provenance
+        .lock()
+        .await
+        .get(&observed_path)
+        .copied()
+        .into_iter()
+        .collect();
+    if !parents.is_empty() {
+        warn!(path = %observed_path, parent = parents[0],
+              "read derives from a prior write; attaching provenance edge");
     }
-    let read_kind = read_node_kind(is_laundered);
-    http_observe_flow(&state, read_kind, contents.as_bytes()).await;
+    ingest::http_observe_flow_from(&state, NodeKind::FileRead, contents.as_bytes(), &parents).await;
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2888,16 +2816,26 @@ async fn write_file(
     // If this write succeeded while the session was tainted, the bytes on disk
     // may carry that taint. Record the path so a later read of it is not treated
     // as a trusted file read. Only reachable under grading — see the field docs.
+    // Record a node for the content now at this path, so a later read of it has
+    // something to derive FROM.
+    //
+    // Its parent is the latest adversarial node, when there is one. The proxy
+    // cannot know which prior nodes influenced what the agent chose to write —
+    // that happens inside the agent — so it attaches the conservative edge and
+    // over-approximates. Over-approximation is the safe direction: it can only
+    // add taint, never clear it.
+    // Record a node for the content now at this path, so a later read has
+    // something to derive FROM. The provenance parent is attached inside
+    // `http_observe_authored`, where it cannot be omitted.
     {
-        let tainted = state.flow_tracker.lock().await.is_tainted();
-        if tainted {
-            let mut laundered = state.laundered_paths.lock().await;
-            laundered.insert(written_path.clone());
-            warn!(
-                path = %written_path,
-                "write taken while session tainted; later reads of this path \
-                 will be treated as adversarial"
-            );
+        if let Some(node) =
+            ingest::http_observe_authored(&state, NodeKind::FileRead, req.contents.as_bytes()).await
+        {
+            state
+                .path_provenance
+                .lock()
+                .await
+                .insert(written_path.clone(), node);
         }
     }
 
@@ -3137,7 +3075,7 @@ async fn run_command(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
-    http_observe_command_output(&state, &output.stdout, &output.stderr).await;
+    ingest::http_observe_command_output(&state, &output.stdout, &output.stderr).await;
 
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
@@ -3372,7 +3310,7 @@ async fn web_fetch(
     // IFC: web content is an adversarial taint source — taint the session so
     // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
     // Brick 3: content-address the exact fetched body bytes.
-    http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -3529,7 +3467,7 @@ async fn glob_search(
     // IFC: a successful glob brings file data into the session (#1633).
     // Brick 3: content-address the exact match listing ingested.
     let listing = matches.join("\n");
-    http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
+    ingest::http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3743,7 +3681,7 @@ async fn grep_search(
     // Brick 3: content-address the exact match set ingested (deterministic
     // serialization of the real matched bytes).
     let match_bytes = serde_json::to_vec(&matches).unwrap_or_default();
-    http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3952,7 +3890,7 @@ async fn web_search(
     }
     // IFC: web search results are an adversarial taint source (#1633).
     // Brick 3: content-address the exact search-backend response bytes.
-    http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
     Ok(Json(WebSearchResponse { results }))
 }
 

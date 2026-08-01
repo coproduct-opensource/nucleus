@@ -401,7 +401,7 @@ impl FlowTracker {
     /// and [`observe_with_content_hash`](Self::observe_with_content_hash): the
     /// intrinsic-label parent fold, ceiling ratchet, and node push, threading an
     /// optional content hash into node storage. Existing callers pass `None`.
-    fn observe_with_parents_and_hash(
+    pub fn observe_with_parents_and_hash(
         &mut self,
         kind: NodeKind,
         parents: &[u64],
@@ -806,6 +806,30 @@ impl FlowTracker {
     }
 
     /// Check if any node in the tracker has adversarial integrity.
+    /// The most recently observed node carrying `Adversarial` integrity.
+    ///
+    /// Used to attach a conservative provenance edge: when the proxy records
+    /// content the agent authored, it cannot know which prior nodes influenced
+    /// that content, so it attaches the latest adversarial one. That is an
+    /// OVER-approximation — the safe direction — and it is sufficient for the
+    /// label, because `propagate_label` JOINS parent labels: one adversarial
+    /// parent makes the child adversarial.
+    ///
+    /// Returning one node rather than all of them is deliberate. `MAX_PARENTS`
+    /// is 8, so attaching every adversarial node would fail with
+    /// `TooManyParents` on a long session. The resulting graph is therefore
+    /// INCOMPLETE — it records a real edge, not every real edge — while the
+    /// label it produces is correct. The session ceiling remains the backstop
+    /// for everything the graph does not capture.
+    pub fn latest_adversarial_node(&self) -> Option<u64> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (_, l, _, _))| l.integrity == IntegLevel::Adversarial)
+            .map(|(i, _)| (i + 1) as u64)
+    }
+
     pub fn is_tainted(&self) -> bool {
         self.nodes
             .iter()

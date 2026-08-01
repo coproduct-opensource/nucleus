@@ -895,12 +895,13 @@ mod command_output_taint {
     /// perturbation confirmed exactly that before this test existed.
     #[test]
     fn command_output_is_observed_as_an_adversarial_kind() {
-        let label = nucleus_ifc_kernel::flow::intrinsic_label(crate::COMMAND_OUTPUT_NODE_KIND, 0);
+        let label =
+            nucleus_ifc_kernel::flow::intrinsic_label(crate::ingest::COMMAND_OUTPUT_NODE_KIND, 0);
         assert_eq!(
             label.integrity,
             nucleus_ifc_kernel::IntegLevel::Adversarial,
             "command output is observed as {:?}, which cannot trip the egress gate",
-            crate::COMMAND_OUTPUT_NODE_KIND
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND
         );
     }
 
@@ -908,7 +909,7 @@ mod command_output_taint {
     #[test]
     fn http_and_mcp_observe_tool_output_identically() {
         assert_eq!(
-            crate::COMMAND_OUTPUT_NODE_KIND,
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND,
             NodeKind::McpToolResult,
             "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
         );
@@ -1018,18 +1019,19 @@ mod disk_laundering {
         );
     }
 
-    /// The laundered read must be observed as a kind that actually re-taints.
-    /// Asserted against the constant the read path uses, not a kind named again
-    /// here — naming it twice is how this test passes while the handler observes
-    /// something weaker.
+    /// Retained from the boolean era: `COMMAND_OUTPUT_NODE_KIND` still governs
+    /// /v1/run output (#2134), which has no path to attach an edge to. The READ
+    /// path no longer uses it — see `mod provenance_edges` for the mechanism
+    /// that replaced it.
     #[test]
-    fn a_laundered_read_is_observed_as_a_retainting_kind() {
-        let label = nucleus_ifc_kernel::flow::intrinsic_label(crate::COMMAND_OUTPUT_NODE_KIND, 0);
+    fn command_output_is_still_observed_as_a_retainting_kind() {
+        let label =
+            nucleus_ifc_kernel::flow::intrinsic_label(crate::ingest::COMMAND_OUTPUT_NODE_KIND, 0);
         assert_eq!(
             label.integrity,
             nucleus_ifc_kernel::IntegLevel::Adversarial,
             "a laundered read observed as {:?} would not restore the taint",
-            crate::COMMAND_OUTPUT_NODE_KIND
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND
         );
     }
 
@@ -1045,29 +1047,10 @@ mod disk_laundering {
         );
     }
 
-    /// **What the read path actually selects** — asserted against the function
-    /// the handler calls. Without this, replacing the laundered arm with a plain
-    /// `FileRead` (a total no-op) passes every other test here; verified by
-    /// perturbation before this test existed.
-    #[test]
-    fn the_read_path_selects_a_retainting_kind_for_a_laundered_path() {
-        let laundered = nucleus_ifc_kernel::flow::intrinsic_label(crate::read_node_kind(true), 0);
-        assert_eq!(
-            laundered.integrity,
-            nucleus_ifc_kernel::IntegLevel::Adversarial,
-            "laundered reads are observed as {:?}, which does not restore taint",
-            crate::read_node_kind(true)
-        );
-        let ordinary = nucleus_ifc_kernel::flow::intrinsic_label(crate::read_node_kind(false), 0);
-        assert_eq!(
-            ordinary.integrity,
-            nucleus_ifc_kernel::IntegLevel::Trusted,
-            "ordinary reads must stay trusted"
-        );
-    }
-
-    /// End to end on the flow tracker: re-observing a laundered read restores
-    /// the taint that the disk round-trip stripped.
+    /// End to end on the flow tracker. NOTE this exercises the node-kind route
+    /// that /v1/run still uses; the FILE-read route now restores taint through a
+    /// provenance edge instead — `provenance_edges::a_read_inherits_the_taint_
+    /// of_the_write_it_derives_from` is the test for that.
     #[test]
     fn re_observing_a_laundered_read_restores_the_taint() {
         // A plain file read leaves the session clean — the hole.
@@ -1081,7 +1064,7 @@ mod disk_laundering {
         // The same read, recognised as laundered, does.
         let mut fixed = FlowTracker::new();
         fixed
-            .observe(crate::COMMAND_OUTPUT_NODE_KIND)
+            .observe(crate::ingest::COMMAND_OUTPUT_NODE_KIND)
             .expect("laundered read");
         assert!(
             fixed.is_tainted(),
@@ -1095,5 +1078,123 @@ mod disk_laundering {
             r.is_err(),
             "after a laundered read the session must not act outbound; got {r:?}"
         );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Provenance edges — lineage the proxy MEDIATED, not lineage it was told
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Production observed every flow node with no parents, so the causal DAG was
+// edgeless and every per-node check passed trivially. These are the first real
+// edges: the proxy wrote the bytes and read them back, so it established the
+// derivation itself. It never asks the agent, which is the compromised party
+// under this threat model and cannot be trusted to report its own data flow.
+mod provenance_edges {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    /// The parent's label joins into the child's, so a read of a tainted write
+    /// is adversarial WITHOUT a special case. #2135 achieved this by selecting a
+    /// different NodeKind from a boolean; it is now a consequence of the graph.
+    #[test]
+    fn a_read_inherits_the_taint_of_the_write_it_derives_from() {
+        let mut flow = FlowTracker::new();
+        let web = flow
+            .observe(NodeKind::WebContent)
+            .expect("taint the session");
+
+        // The write, parented on the adversarial node (what the live path does).
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[web])
+            .expect("write node");
+
+        // The read, parented on the write.
+        let read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .expect("read node");
+
+        let label = flow.label(read).expect("read has a label");
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "taint must reach the read through the edge, not by special case"
+        );
+    }
+
+    /// The contrast that makes the above meaningful: with NO edge, the same read
+    /// is trusted. This is the edgeless production behaviour being fixed — and if
+    /// this test ever fails, `FileRead` has stopped being trusted and the one
+    /// above proves nothing.
+    #[test]
+    fn without_the_edge_the_same_read_is_trusted() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent)
+            .expect("taint the session");
+        let orphan = flow
+            .observe_with_parents(NodeKind::FileRead, &[])
+            .expect("parentless read");
+        assert_eq!(
+            flow.label(orphan).expect("label").integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted,
+            "a parentless FileRead is trusted — this is what the edge fixes"
+        );
+    }
+
+    /// A clean session's write/read chain stays clean, so the edge is not just
+    /// tainting everything it touches.
+    #[test]
+    fn a_clean_chain_stays_clean() {
+        let mut flow = FlowTracker::new();
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[])
+            .expect("write");
+        let read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .expect("read");
+        assert!(!flow.is_tainted(), "no adversarial node was ever observed");
+        assert_eq!(
+            flow.label(read).expect("label").integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted
+        );
+    }
+
+    /// End to end: after reading a laundered path the session cannot act.
+    #[test]
+    fn a_laundered_read_still_blocks_the_next_outbound_action() {
+        let mut flow = FlowTracker::new();
+        let web = flow.observe(NodeKind::WebContent).unwrap();
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[web])
+            .unwrap();
+        let _read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .unwrap();
+
+        let mut kernel = permissive_kernel();
+        let r = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt").0;
+        assert!(
+            r.is_err(),
+            "must not act outbound after a laundered read; got {r:?}"
+        );
+    }
+
+    /// `latest_adversarial_node` must actually find one, and must return `None`
+    /// on a clean session — otherwise the write path would attach a bogus parent
+    /// or none at all, and both failures are silent.
+    #[test]
+    fn latest_adversarial_node_is_selective() {
+        let mut clean = FlowTracker::new();
+        clean.observe(NodeKind::UserPrompt).unwrap();
+        assert_eq!(
+            clean.latest_adversarial_node(),
+            None,
+            "clean session has none"
+        );
+
+        let mut dirty = FlowTracker::new();
+        dirty.observe(NodeKind::UserPrompt).unwrap();
+        let web = dirty.observe(NodeKind::WebContent).unwrap();
+        assert_eq!(dirty.latest_adversarial_node(), Some(web));
     }
 }
