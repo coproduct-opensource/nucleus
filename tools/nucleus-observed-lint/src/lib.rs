@@ -38,46 +38,42 @@
 //! inheriting its "a clean pass asserts something real" would be the one lie
 //! this pass must not tell.
 //!
-//! # ⚠ STATUS: NOT WORKING. DO NOT GATE THIS IN CI.
+//! # Acceptance test, and the four bugs it took to pass it
 //!
-//! This pass builds, runs, and reports — but it **fails its own acceptance
-//! test** and must not be cited as coverage until it passes.
+//! The test: delete the `http_observe_command_output` call from `run_command`,
+//! recreating the `/v1/run` bug this pass exists to catch, and it must go RED
+//! there. It does, naming the function and the ingest primitive; with the call
+//! restored, zero handlers are flagged.
 //!
-//! The test: delete the `http_observe_command_output` call from `run_command`
-//! (recreating the `/v1/run` bug this pass exists to catch) and the pass must go
-//! RED at that function. **It stays green.** A pass that misses the one bug it
-//! was justified by is worse than no pass, because a green run reads as
-//! assurance.
+//! Getting there took four fixes, each of which made the pass report GREEN while
+//! being blind — worth recording because three of them apply to any lint of this
+//! shape, and two apply to the sibling as it stands:
 //!
-//! Diagnosis so far, so this is resumable rather than restarted:
+//! 1. **`async fn` bodies are closures and were never walked.** `check_fn`
+//!    returns early for `FnKind::Closure`, and `walk_expr` visits a closure
+//!    EXPRESSION without its body. Every handler in this codebase is `async fn`,
+//!    so the pass recorded them with **zero callees** — measured — and could not
+//!    see a single line of the code it targets, while sync helpers reported
+//!    normally and made it look healthy. Fixed by descending through
+//!    `ExprKind::Closure` into `tcx.hir_body`.
+//! 2. **`def_path_str` renders generics.** The executor call comes back as
+//!    `nucleus::Executor::<'a>::run_args`, so a needle of `Executor::run_args`
+//!    silently never matches — and a miss is indistinguishable from "no ingest
+//!    here". Fixed by normalising generics out of the path before matching
+//!    rather than making needles anticipate parameterisation.
+//! 3. **The obligation is transitive.** `read_file` calls `http_observe_flow`,
+//!    which calls the tracker. Direct-only absorption reported it as unobserved
+//!    — a false positive on a handler doing exactly the right thing. `observes`
+//!    is now closed under the call graph, like the ingest side.
+//! 4. **`is_public` filtering.** The sibling reports only at exported functions,
+//!    correct for a LIBRARY. This target is a BINARY whose handlers are private
+//!    (`async fn run_command`, never `pub`), so the filter hid all of them.
 //!
-//! * **Ruled out — `is_public` filtering.** The sibling reports only at exported
-//!   functions, which is right for a LIBRARY. `nucleus-tool-proxy` is a BINARY
-//!   whose handlers are private (`async fn run_command`, never `pub`), so the
-//!   filter hid every handler. Removed, and confirmed fixed: non-public
-//!   functions such as `load_last_hash` now report.
-//! * **Ruled out — std-only ingest set.** Handlers never call `std::process`
-//!   directly; they call an executor abstraction in another crate, and the
-//!   closure stops at crate boundaries by design. `INGEST_CONTAINS` was added
-//!   for the codebase's own surface. Did not fix it.
-//! * **Ruled out — the call is silently dropped as unresolvable.** There are
-//!   zero `unresolved` reports anywhere in `main.rs`, so the visitor is not
-//!   failing to resolve `executor.run_args(..)`; it is not matching it.
-//! * **Open — the pass barely sees `main.rs` at all.** The whole output mentions
-//!   that file twice. Next step is to establish whether dylint is analysing the
-//!   binary target's root module, and what `def_path_str` actually renders for
-//!   `Executor::run_args` (the working hypothesis is a generic-parameter
-//!   rendering such as `Executor::<'_>::run_args` that no current needle
-//!   matches). A one-shot debug print of every `FnFacts.path` with a
-//!   `direct_ingest` would settle both in a single run.
-//!
-//! What DOES work: 31 findings on the dependency crates, all genuine reads with
-//! no observation — and all of them runtime infrastructure (config loading, key
-//! loading, merkle checkpoints), i.e. correctly *not* agent-attributed ingest.
-//! That is a scoping problem, not a bug: the CI invocation must name the handler
-//! crates, and the sibling's own crate list is already wrong in this way
-//! (`dylint-separation.yml` scans two of the three crates `mediated-set.md`
-//! specifies).
+//! **Bugs 1 and 2 are present in `nucleus-mediation-lint` today**, which is a
+//! CI gate. It skips closures and has no `ExprKind::Closure` handling at all, so
+//! it cannot see any `async fn` body: 153 of ~571 functions in `nucleus-node`
+//! and 21 of ~376 in `portcullis-effects` are invisible to it. Its green board
+//! is not evidence over that code. Fixing it is a separate change.
 //!
 //! # What is deliberately not flagged
 //!
@@ -205,6 +201,34 @@ const INGEST_CONTAINS: &[&str] = &["Executor::run_args", "Sandbox::read_to_strin
 /// new helper does not silently become an unrecognised boundary.
 const OBSERVE_MARKERS: &[&str] = &["ifc_api::FlowTracker::observe", "FlowTracker::observe"];
 
+/// Strip generic argument lists from a `def_path_str` rendering.
+///
+/// `def_path_str` renders generics: the executor call comes back as
+/// `nucleus::Executor::<'a>::run_args`, so a needle of `Executor::run_args`
+/// never matches. Rather than make every needle anticipate how a type is
+/// parameterised — which silently fails open, since a miss looks identical to
+/// "no ingest here" — the path is normalised once before matching.
+///
+/// Diagnosed by dumping callee paths after the pass reported `ingest=None` on a
+/// handler that plainly ingests.
+fn strip_generics(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for c in path.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    // `A::<'a>::b` leaves `A::::b`.
+    while out.contains("::::") {
+        out = out.replace("::::", "::");
+    }
+    out
+}
+
 /// What we learned about one function, before the call-graph closure runs.
 struct FnFacts {
     span: Span,
@@ -253,7 +277,7 @@ struct CallScan<'a, 'tcx> {
 
 impl<'a, 'tcx> CallScan<'a, 'tcx> {
     fn record(&mut self, did: DefId, _span: Span) {
-        let path = self.cx.tcx.def_path_str(did);
+        let path = strip_generics(&self.cx.tcx.def_path_str(did));
         if self.direct_ingest.is_none()
             && let Some(hit) = INGEST_SET
                 .iter()
@@ -308,6 +332,24 @@ impl<'a, 'tcx> Visitor<'tcx> for CallScan<'a, 'tcx> {
             ExprKind::InlineAsm(_) => self
                 .unresolved
                 .push((ex.span, "inline `asm!` — opaque to the call graph".to_string())),
+            // Descend into closure bodies.
+            //
+            // THIS IS WHY THE PASS SAW NOTHING. An `async fn`'s body in HIR is a
+            // closure, and `check_fn` returns early for `FnKind::Closure`, so
+            // every async function was recorded with ZERO callees — measured:
+            // `run_command`, `read_file` and `web_fetch` all showed
+            // `ingest=None observes=false callees=0`, which is impossible for a
+            // 200-line handler. Every handler in this codebase is `async fn`, so
+            // the pass was structurally blind to exactly the code it targets,
+            // while sync helpers like `load_last_hash` reported normally and made
+            // it look like it was working.
+            //
+            // `walk_expr` visits the closure EXPRESSION but not its body, which
+            // is a separate `Body` reached through the HIR map.
+            ExprKind::Closure(closure) => {
+                let body = self.cx.tcx.hir_body(closure.body);
+                self.visit_body(body);
+            }
             _ => {}
         }
         walk_expr(self, ex);
@@ -368,16 +410,41 @@ impl<'tcx> LateLintPass<'tcx> for Observed {
         // NOTE the absorption is where order-blindness enters: `f` observing
         // anything at all stops the propagation, regardless of when or of what.
         // That is why a clean pass is a screen. See the module docs.
+        // `observes` is a DIRECT fact; the obligation is discharged transitively.
+        // `read_file` calls `http_observe_flow`, which calls the tracker — so
+        // direct-only absorption reported it as unobserved, a false positive on
+        // a handler that does exactly the right thing.
+        let mut reaches_observe: FxHashSet<LocalDefId> = facts
+            .iter()
+            .filter(|(_, f)| f.observes)
+            .map(|(d, _)| *d)
+            .collect();
+        loop {
+            let mut grew = false;
+            for (did, f) in facts.iter() {
+                if reaches_observe.contains(did) {
+                    continue;
+                }
+                if f.callees.iter().any(|c| reaches_observe.contains(c)) {
+                    reaches_observe.insert(*did);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
         let mut unobserved: FxHashSet<LocalDefId> = facts
             .iter()
-            .filter(|(_, f)| f.direct_ingest.is_some() && !f.observes)
+            .filter(|(d, f)| f.direct_ingest.is_some() && !reaches_observe.contains(d))
             .map(|(d, _)| *d)
             .collect();
 
         loop {
             let mut grew = false;
             for (did, f) in facts.iter() {
-                if f.observes || unobserved.contains(did) {
+                if reaches_observe.contains(did) || unobserved.contains(did) {
                     continue;
                 }
                 if f.callees.iter().any(|c| unobserved.contains(c)) {
