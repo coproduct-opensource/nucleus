@@ -311,6 +311,11 @@ pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, 
 // Re-export the information-flow tracker so downstream runtimes (e.g. the MCP
 // server in nucleus-tool-proxy) can drive `Kernel::decide_term_with_flow`
 // without depending on portcullis-core directly (#1633).
+/// The kernel's flow module, re-exported so a downstream runtime can build a
+/// `ZkFlowInput` from a live `FlowTracker` without taking a direct
+/// portcullis-core dependency — the same reason `FlowTracker` is re-exported
+/// above.
+pub use portcullis_core::flow;
 pub use portcullis_core::flow::NodeKind;
 pub use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
 

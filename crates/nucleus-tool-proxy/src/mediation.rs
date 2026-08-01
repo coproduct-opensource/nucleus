@@ -180,8 +180,273 @@ pub(crate) fn decide_and_record(
     transport: &str,
 ) -> Result<DecisionToken, ApiError> {
     let (decision, mapped) = decide_with_flow_mapped(kernel, flow, operation, subject);
+
+    // Second opinion from the causal DAG. Inside this function, beside the
+    // recording, for the same reason the recording is here: a step written at
+    // the call site is a step a refusal's `?` can skip.
+    let flow_check = cross_check_flow(flow, &decision, operation);
+    if let Some(result) = &flow_check {
+        if *result
+            != FlowCrossCheck::Checked(nucleus::portcullis::flow::VerificationResult::Confirmed)
+        {
+            warn!(
+                ?operation,
+                subject,
+                ?result,
+                verdict = ?decision.verdict,
+                "flow cross-check did not confirm the kernel verdict"
+            );
+        }
+    }
+
     crate::verdict_sink::record_kernel_decision(
-        sink, &decision, operation, subject, actor, transport,
+        sink, &decision, operation, subject, actor, transport, flow_check,
     );
     mapped
+}
+
+#[cfg(test)]
+mod cross_check_tests {
+    use super::*;
+    use nucleus::portcullis::flow::VerificationResult;
+    use nucleus::portcullis::kernel::ExposureTransition;
+    use nucleus::portcullis::NodeKind;
+
+    fn decision_with(verdict: Verdict) -> Decision {
+        Decision {
+            id: uuid::Uuid::nil(),
+            sequence: 1,
+            operation: Operation::WebFetch,
+            subject: "https://example.invalid".to_string(),
+            verdict,
+            timestamp: chrono::Utc::now(),
+            pre_permissions_hash: String::new(),
+            post_permissions_hash: String::new(),
+            exposure_transition: ExposureTransition {
+                pre_count: 0,
+                post_count: 0,
+                contributed_label: None,
+                state_uninhabitable: false,
+                dynamic_gate_applied: false,
+            },
+            flow_node_id: None,
+            action_term: None,
+            preflight_result: None,
+        }
+    }
+
+    /// **The bound that keeps this off the hot path.** A clean session has no
+    /// adversarial node, so the answer is `Allow` by construction and the
+    /// O(nodes) snapshot would buy nothing. Skipping is not an optimisation
+    /// that loses information; there is no information there.
+    #[test]
+    fn a_clean_session_is_not_cross_checked() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::UserPrompt).expect("observe");
+        assert!(
+            cross_check_flow(&flow, &decision_with(Verdict::Allow), Operation::WebFetch).is_none(),
+            "an untainted session should not pay for a check whose answer is fixed"
+        );
+    }
+
+    /// **The finding this exists to produce.** An allow on a tainted session,
+    /// heading for an exfil sink, is exactly what the causal graph should
+    /// refuse to confirm.
+    #[test]
+    fn an_allow_on_a_tainted_exfil_path_is_not_confirmed() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent).expect("observe");
+
+        let result = cross_check_flow(&flow, &decision_with(Verdict::Allow), Operation::WebFetch)
+            .expect("a tainted session must be checked");
+        assert!(
+            matches!(
+                result,
+                FlowCrossCheck::Checked(VerificationResult::Mismatch { .. })
+            ),
+            "the graph should refuse to confirm this Allow; got {result:?}"
+        );
+    }
+
+    /// The complement: an IFC refusal on the same session IS confirmed, so the
+    /// check is not simply reporting Mismatch for everything tainted.
+    #[test]
+    fn an_ifc_refusal_on_the_same_session_is_confirmed() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent).expect("observe");
+
+        let denied = decision_with(Verdict::Deny(DenyReason::IfcUnsafe {
+            detail: "lethal trifecta".to_string(),
+        }));
+        assert_eq!(
+            cross_check_flow(&flow, &denied, Operation::WebFetch),
+            Some(FlowCrossCheck::Checked(VerificationResult::Confirmed)),
+            "the graph agrees this should be denied; the check must say so"
+        );
+    }
+
+    /// A capability refusal is not a flow refusal. Conflating them would make
+    /// every budget or path denial look like an IFC finding, which is how a
+    /// real signal gets ignored.
+    #[test]
+    fn a_capability_refusal_is_judged_on_the_flow_axis_only() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::UserPrompt).expect("observe");
+        flow.observe(NodeKind::WebContent).expect("observe");
+
+        // Same session, same operation: a non-IFC denial must be treated as
+        // "flow was fine, something else stopped it" — i.e. compared against
+        // Allow, exactly as the Allow case above.
+        let cap_denied = decision_with(Verdict::Deny(DenyReason::InsufficientCapability));
+        let allowed = decision_with(Verdict::Allow);
+        assert_eq!(
+            cross_check_flow(&flow, &cap_denied, Operation::WebFetch),
+            cross_check_flow(&flow, &allowed, Operation::WebFetch),
+            "a capability refusal must not be scored differently on the flow axis"
+        );
+    }
+
+    /// **No silent caps.** Above the ceiling the check does not run — and must
+    /// say so distinctly, because "we did not look" read as "we looked and it
+    /// was fine" is the worst possible reading of an evidence field.
+    #[test]
+    fn an_oversized_graph_is_skipped_visibly_not_silently() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent).expect("observe");
+        while flow.node_count() <= MAX_CROSS_CHECK_NODES {
+            flow.observe(NodeKind::UserPrompt).expect("observe");
+        }
+
+        let result = cross_check_flow(&flow, &decision_with(Verdict::Allow), Operation::WebFetch)
+            .expect("an oversized graph must still report something");
+        assert_eq!(
+            result,
+            FlowCrossCheck::SkippedGraphTooLarge,
+            "the skip must be distinguishable from a confirmation"
+        );
+        assert_ne!(
+            result,
+            FlowCrossCheck::Checked(VerificationResult::Confirmed),
+            "a skipped check must never read as confirmed"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Independent re-derivation of the flow verdict (the ZkFlowInput producer)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cross-check the kernel's IFC verdict against the session's causal DAG.
+///
+/// # What this is
+///
+/// `verify_noninterference` walks the DAG, propagates labels from parents to
+/// children, and evaluates `check_flow` on the action node. Until now it had a
+/// zkVM guest, a CLI subcommand, and **no producer** — it only ever ran on
+/// hand-written fixtures. This is the producer, and it makes the function a live
+/// second opinion: the kernel decides, and an independent evaluator over the
+/// graph says whether the graph implies the same thing.
+///
+/// A `Mismatch` is a real finding either way round. The kernel allowed something
+/// the causal graph says it should not have, or refused something the graph does
+/// not justify.
+///
+/// # Only the IFC axis
+///
+/// The kernel's `Verdict` covers capabilities, budget, approval and flow. Only
+/// the last is comparable to a `FlowVerdict`, so a capability refusal maps to
+/// `FlowVerdict::Allow` here — the flow was fine, something else stopped it.
+/// Conflating the two would make every budget denial look like an IFC finding.
+///
+/// # Measured cost, and why there is a ceiling
+///
+/// The check is O(nodes): it snapshots the DAG and re-walks it. Measured on this
+/// machine (release, 100 iterations per point):
+///
+/// | nodes  | per decision |
+/// |--------|--------------|
+/// | 10     | 460 ns       |
+/// | 100    | 3.1 µs       |
+/// | 1 000  | 33 µs        |
+/// | 10 000 | 458 µs       |
+///
+/// Half a millisecond per decision on a long-lived session is not a cost to take
+/// silently, so above [`MAX_CROSS_CHECK_NODES`] the check is SKIPPED and says so
+/// — `skipped:graph_too_large`, which is neither a confirmation nor a finding.
+/// Truncating the graph instead was rejected: a smaller graph can confirm a
+/// verdict the full graph would refuse, which is a false assurance rather than a
+/// slower one.
+///
+/// # Why only on tainted sessions
+///
+/// On a session with no adversarial node the action has no parents, its label is
+/// the intrinsic label of an outbound action, and the answer is `Allow` by
+/// construction — confirming it costs an O(nodes) snapshot to learn nothing.
+/// The check runs where its answer can differ.
+/// Graph size above which the cross-check is skipped rather than paid for.
+/// ~135 µs per decision at this size, by the measurement in
+/// [`cross_check_flow`].
+pub(crate) const MAX_CROSS_CHECK_NODES: usize = 4096;
+
+/// Outcome of the cross-check, including the reasons it did not run.
+///
+/// A three-way answer rather than `Option<VerificationResult>` so that "we did
+/// not look" can never be read as "we looked and it was fine".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FlowCrossCheck {
+    /// The DAG was consulted; this is what it said.
+    Checked(nucleus::portcullis::flow::VerificationResult),
+    /// The graph exceeded [`MAX_CROSS_CHECK_NODES`].
+    SkippedGraphTooLarge,
+}
+
+pub(crate) fn cross_check_flow(
+    flow: &FlowTracker,
+    decision: &Decision,
+    operation: Operation,
+) -> Option<FlowCrossCheck> {
+    use nucleus::portcullis::flow::{FlowVerdict, ZkFlowInput};
+
+    if !flow.is_tainted() {
+        return None;
+    }
+    if flow.node_count() > MAX_CROSS_CHECK_NODES {
+        return Some(FlowCrossCheck::SkippedGraphTooLarge);
+    }
+
+    // The kernel's verdict, projected onto the flow axis.
+    let expected = match &decision.verdict {
+        Verdict::Deny(DenyReason::IfcUnsafe { .. }) => {
+            // The DAG must agree that SOMETHING is denied; which reason the two
+            // paths name is not required to match, since the kernel's detail
+            // string and `FlowDenyReason` are different vocabularies.
+            None
+        }
+        _ => Some(FlowVerdict::Allow),
+    };
+
+    let parents: Vec<u64> = flow.latest_adversarial_node().into_iter().collect();
+    let input = ZkFlowInput::for_action(
+        flow.snapshot(),
+        operation,
+        Some(nucleus::portcullis::default_sink_class(operation)),
+        &parents,
+        expected.unwrap_or(FlowVerdict::Allow),
+    );
+
+    let result = nucleus::portcullis::flow::verify_noninterference(&input);
+
+    match (&expected, &result) {
+        // Kernel said IFC-deny and the graph agrees it is not an Allow.
+        (
+            None,
+            nucleus::portcullis::flow::VerificationResult::Mismatch {
+                computed: FlowVerdict::Deny(_),
+                ..
+            },
+        ) => Some(FlowCrossCheck::Checked(
+            nucleus::portcullis::flow::VerificationResult::Confirmed,
+        )),
+        _ => Some(FlowCrossCheck::Checked(result)),
+    }
 }

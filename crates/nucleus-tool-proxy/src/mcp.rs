@@ -251,6 +251,10 @@ impl NucleusMcpServer {
         // are denied with `IfcUnsafe` before the normal decision path.
         let flow = self.flow_tracker.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
+        // Same second opinion the HTTP path takes (`mediation::cross_check_flow`),
+        // computed before the tracker lock is released. Both transports route
+        // through the same kernel, so both owe the same evidence.
+        let flow_check = crate::mediation::cross_check_flow(&flow, &decision, operation);
         drop(flow);
         drop(kernel);
 
@@ -265,6 +269,7 @@ impl NucleusMcpServer {
             subject,
             ActorIdentity::StdioGuest,
             "mcp",
+            flow_check,
         );
 
         match decision.verdict {
