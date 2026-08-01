@@ -3632,6 +3632,15 @@ impl NodeService for GrpcService {
             // written to .nucleus-exit-report.json at shutdown alongside exposure.
             monitor_violations: report.monitor_violations.clone(),
             monitor_violations_dropped: report.monitor_violations_dropped,
+            // Signed with the executor key, which the pod never sees. Taken at
+            // pod exit — after the pod has stopped — so the head it binds is one
+            // the pod can no longer move.
+            art12_attestation: trust_gate::attest_art12(
+                &report,
+                &id.to_string(),
+                &self.state.trust_gate.executor_id,
+                &self.state.trust_gate.executor_signing_key,
+            ),
             // Cryptographic session identity — required for the SandboxAttested
             // upgrade path in the trust-service session-complete handler.
             sandbox_identity: if spiffe_id.is_empty() {

@@ -1762,6 +1762,7 @@ async fn main() -> Result<(), ApiError> {
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
     let exit_monitor = state.trace_monitor.clone();
+    let exit_art12 = state.art12_log.clone();
 
     let app = app
         .with_state(state.clone())
@@ -1777,7 +1778,14 @@ async fn main() -> Result<(), ApiError> {
 
     if let Some(vsock) = vsock_binding {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
-        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure, &exit_monitor).await;
+        write_exit_report(
+            &exit_audit,
+            &exit_work_dir,
+            &exit_exposure,
+            &exit_monitor,
+            exit_art12.as_ref(),
+        )
+        .await;
         return Ok(());
     }
 
@@ -1819,7 +1827,14 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
-    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure, &exit_monitor).await;
+    write_exit_report(
+        &exit_audit,
+        &exit_work_dir,
+        &exit_exposure,
+        &exit_monitor,
+        exit_art12.as_ref(),
+    )
+    .await;
 
     Ok(())
 }
@@ -1857,6 +1872,7 @@ async fn write_exit_report(
     work_dir_path: &Path,
     exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
     monitor: &portcullis::trace_monitor::TraceMonitor,
+    art12_log: Option<&Arc<crate::art12::Art12Log>>,
 ) {
     let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
         Ok(h) => h,
@@ -1877,42 +1893,8 @@ async fn write_exit_report(
         );
     }
 
-    // Extract verified exposure from the session guard
-    if let Ok(guard_opt) = exposure_guard.read() {
-        if let Some(ref guard) = *guard_opt {
-            let exposure = guard.exposure();
-            if exposure.contains(portcullis::guard::ExposureLabel::PrivateData) {
-                report
-                    .observed_exposure_labels
-                    .push("PrivateData".to_string());
-            }
-            if exposure.contains(portcullis::guard::ExposureLabel::UntrustedContent) {
-                report
-                    .observed_exposure_labels
-                    .push("UntrustedContent".to_string());
-            }
-            if exposure.contains(portcullis::guard::ExposureLabel::ExfilVector) {
-                report
-                    .observed_exposure_labels
-                    .push("ExfilVector".to_string());
-            }
-            report.uninhabitable_reached = exposure.is_uninhabitable();
-            report.observed_risk_tier = match exposure.to_risk() {
-                portcullis::StateRisk::Safe => "safe",
-                portcullis::StateRisk::Low => "low",
-                portcullis::StateRisk::Medium => "medium",
-                portcullis::StateRisk::Uninhabitable => "critical",
-            }
-            .to_string();
-
-            info!(
-                exposure = ?report.observed_exposure_labels,
-                risk = %report.observed_risk_tier,
-                uninhabitable = report.uninhabitable_reached,
-                "exit report: verified exposure captured"
-            );
-        }
-    }
+    exit_report::apply_exposure(&mut report, exposure_guard);
+    exit_report::apply_art12(&mut report, art12_log);
 
     let report_path = work_dir_path.join(".nucleus-exit-report.json");
     match serde_json::to_string_pretty(&report) {

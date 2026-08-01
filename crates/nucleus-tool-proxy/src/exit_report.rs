@@ -123,7 +123,73 @@ pub fn build_exit_report(
             .map(|v| v.label().to_string())
             .collect(),
         monitor_violations_dropped: monitor.violations_dropped(),
+        // Populated by `apply_art12` — the log is not available here, and a
+        // default of "" reads correctly as "no Article 12 log was kept".
+        art12_chain_head: String::new(),
+        art12_records: 0,
+        art12_dropped: 0,
     }
+}
+
+/// Fold the Article 12 log's chain head into the report, for the host to sign.
+///
+/// `None` leaves the fields empty, which is the truthful rendering of a session
+/// that kept no Article 12 log — distinct from a log with zero records, which
+/// reports a genesis-derived head and `art12_records: 0`.
+pub fn apply_art12(report: &mut ExitReport, log: Option<&std::sync::Arc<crate::art12::Art12Log>>) {
+    let Some(log) = log else {
+        return;
+    };
+    let (head, records) = log.head().unwrap_or_else(|_| (String::new(), 0));
+    report.art12_chain_head = head;
+    report.art12_records = records;
+    report.art12_dropped = log.dropped();
+}
+
+/// Fold the session's verified exposure into the report.
+///
+/// Extracted from `write_exit_report` so the mapping from `ExposureLabel` to the
+/// strings the trust gate scores on is testable, and so main.rs stays under its
+/// line ratchet. The guard is read here rather than passed pre-extracted: the
+/// point of the field is what the guard actually held at shutdown.
+pub fn apply_exposure(
+    report: &mut ExitReport,
+    exposure_guard: &std::sync::RwLock<Option<std::sync::Arc<portcullis::GradedExposureGuard>>>,
+) {
+    let Ok(guard_opt) = exposure_guard.read() else {
+        return;
+    };
+    let Some(guard) = guard_opt.as_ref() else {
+        return;
+    };
+    let exposure = guard.exposure();
+    for (label, name) in [
+        (portcullis::guard::ExposureLabel::PrivateData, "PrivateData"),
+        (
+            portcullis::guard::ExposureLabel::UntrustedContent,
+            "UntrustedContent",
+        ),
+        (portcullis::guard::ExposureLabel::ExfilVector, "ExfilVector"),
+    ] {
+        if exposure.contains(label) {
+            report.observed_exposure_labels.push(name.to_string());
+        }
+    }
+    report.uninhabitable_reached = exposure.is_uninhabitable();
+    report.observed_risk_tier = match exposure.to_risk() {
+        portcullis::StateRisk::Safe => "safe",
+        portcullis::StateRisk::Low => "low",
+        portcullis::StateRisk::Medium => "medium",
+        portcullis::StateRisk::Uninhabitable => "critical",
+    }
+    .to_string();
+
+    tracing::info!(
+        exposure = ?report.observed_exposure_labels,
+        risk = %report.observed_risk_tier,
+        uninhabitable = report.uninhabitable_reached,
+        "exit report: verified exposure captured"
+    );
 }
 
 #[cfg(test)]

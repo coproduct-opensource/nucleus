@@ -668,6 +668,30 @@ pub struct ExitReport {
     /// must not be read as the total.
     #[serde(default)]
     pub monitor_violations_dropped: u64,
+
+    // ── Article 12 record-keeping (written by the tool proxy at shutdown) ──
+    /// The Article 12 log's chain head at shutdown, empty when no log was kept.
+    ///
+    /// This is the hash the host binds with its OWN key. Its purpose is to close
+    /// the limitation the verifier otherwise has to report: an HMAC'd chain shows
+    /// no party lacking the secret altered the file, but says nothing about a
+    /// holder of the secret rewriting history. A pod that rewrites its log
+    /// produces a different head, and cannot forge the executor's signature over
+    /// the new one.
+    ///
+    /// The binding is only as strong as the moment it happens: the host signs at
+    /// pod exit, which the pod does not control.
+    #[serde(default)]
+    pub art12_chain_head: String,
+
+    /// Records the Article 12 log wrote, and how many it could not.
+    ///
+    /// A non-zero `dropped` means the log went degraded — the runtime then
+    /// refuses further operations, so this bounds the gap rather than hiding it.
+    #[serde(default)]
+    pub art12_records: u64,
+    #[serde(default)]
+    pub art12_dropped: u64,
 }
 
 /// Errors resolving policies.

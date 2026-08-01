@@ -706,6 +706,10 @@ pub struct ReceiptReport {
     pub observed_risk_tier: String,
     /// Whether the uninhabitable state was reached during execution.
     pub uninhabitable_reached: bool,
+    /// The host's signature over the pod's Article 12 chain head, when the pod
+    /// kept a log. `None` means no Article 12 record-keeping happened, which is
+    /// reported rather than left to inference.
+    pub art12_attestation: Option<Art12Attestation>,
     /// Decision-stream property violations observed by the tool proxy's
     /// `TraceMonitor` (class labels), plus any dropped past the retention cap.
     ///
@@ -727,6 +731,94 @@ pub struct ReceiptReport {
     /// session-complete in secure mode; without it the handler returns 422
     /// when observed_exposure_labels are present.
     pub v1_content_hash: String,
+}
+
+/// A host-signed attestation binding an Article 12 log to the executor that ran it.
+///
+/// # Why this exists
+///
+/// `verify-art12` can show that no party lacking the signing secret altered the
+/// log. It cannot show that a HOLDER of the secret did not rewrite history — and
+/// when the pod derives its own secret, the pod is such a holder, so the log is
+/// not evidence against the pod at all.
+///
+/// The executor key closes that. It lives on the node, is role-separated from
+/// the task-issuer key, and the pod never sees it. A pod that rewrites its log
+/// produces a different chain head and cannot forge this signature over the new
+/// one.
+///
+/// # What it does NOT establish
+///
+/// It binds the HEAD, not the content: a pod that recorded nothing exports a
+/// validly-signed empty log. Completeness remains unverifiable from the
+/// artifact, which is why `verify-art12` reports it as a limitation regardless.
+///
+/// The binding is also only as strong as the moment it is made. Signing happens
+/// at pod exit, after the host has stopped the pod — a signature taken while the
+/// pod could still write would bind a head the pod could move.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct Art12Attestation {
+    /// Schema tag, so a verifier refuses rather than guessing at field drift.
+    pub kind: String,
+    pub session_id: String,
+    /// The log's chain head as the pod reported it at shutdown.
+    pub chain_head: String,
+    pub records: u64,
+    /// Records the pod could not write. Non-zero means the log went degraded.
+    pub dropped: u64,
+    /// Executor identity, so a verifier knows which public key to check.
+    pub executor_id: String,
+    /// Ed25519 signature over the canonical preimage, hex-encoded.
+    pub signature: String,
+}
+
+/// The signed preimage. Field-ordered and delimited, never `serde_json` — a
+/// verifier that re-serialises to check a signature is checking its own
+/// serialiser.
+#[must_use]
+pub fn art12_attestation_preimage(
+    session_id: &str,
+    chain_head: &str,
+    records: u64,
+    dropped: u64,
+    executor_id: &str,
+) -> String {
+    format!(
+        "nucleus-art12-attestation-v1|{session_id}|{chain_head}|{records}|{dropped}|{executor_id}"
+    )
+}
+
+/// Sign a pod's Article 12 chain head with the executor key.
+///
+/// Returns `None` when the pod kept no Article 12 log — an attestation over an
+/// empty head would assert something about record-keeping that did not happen.
+#[must_use]
+pub fn attest_art12(
+    report: &nucleus_spec::ExitReport,
+    session_id: &str,
+    executor_id: &str,
+    key: &SigningKey,
+) -> Option<Art12Attestation> {
+    if report.art12_chain_head.is_empty() {
+        return None;
+    }
+    let preimage = art12_attestation_preimage(
+        session_id,
+        &report.art12_chain_head,
+        report.art12_records,
+        report.art12_dropped,
+        executor_id,
+    );
+    let sig = key.sign(preimage.as_bytes());
+    Some(Art12Attestation {
+        kind: "nucleus-art12-attestation-v1".to_string(),
+        session_id: session_id.to_string(),
+        chain_head: report.art12_chain_head.clone(),
+        records: report.art12_records,
+        dropped: report.art12_dropped,
+        executor_id: executor_id.to_string(),
+        signature: hex::encode(sig.to_bytes()),
+    })
 }
 
 /// Compute the v1 content hash over the canonical receipt fields.
@@ -773,6 +865,11 @@ pub(crate) fn compute_v1_content_hash(
         hasher.update(label.as_bytes());
     }
     hasher.update(report.monitor_violations_dropped.to_le_bytes());
+    // Same reasoning again: an attestation the receipt hash does not cover can
+    // be stripped in flight while the hash still validates, and a stripped
+    // attestation reads as "this pod kept no Article 12 log".
+    hasher.update(report.art12_chain_head.as_bytes());
+    hasher.update(report.art12_records.to_le_bytes());
     hasher
         .finalize()
         .iter()
@@ -851,6 +948,10 @@ pub(crate) fn build_session_complete_body(report: &ReceiptReport) -> serde_json:
         "observed_risk_tier": report.observed_risk_tier,
         "monitor_violations": report.monitor_violations,
         "monitor_violations_dropped": report.monitor_violations_dropped,
+        // Present iff the pod kept an Article 12 log. The trust service can
+        // check this against the executor's registered public key WITHOUT
+        // holding the pod's HMAC secret — which is the whole point.
+        "art12_attestation": report.art12_attestation,
         "v1_content_hash": report.v1_content_hash,
     })
 }
@@ -1141,7 +1242,126 @@ mod tests {
             uninhabitable_reached: false,
             monitor_violations: vec!["OutcomeWithoutDecision".to_string()],
             monitor_violations_dropped: 2,
+            art12_chain_head: "head".to_string(),
+            art12_records: 5,
+            art12_dropped: 0,
         }
+    }
+
+    /// **The attestation must reach the trust service.** Signing it and then
+    /// dropping it on the floor is the defect this whole line of work is about:
+    /// a mechanism that exists, a claim about it, and nothing joining the two.
+    #[test]
+    fn the_attestation_reaches_the_session_complete_body() {
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let mut report = sample_receipt_report();
+        assert!(
+            build_session_complete_body(&report)["art12_attestation"].is_null(),
+            "no log means no attestation, or the assertion below proves nothing"
+        );
+
+        report.art12_attestation = attest_art12(&sample_exit_report(), "sess", "exec-1", &key);
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["art12_attestation"]["chain_head"].as_str(),
+            Some("head"),
+            "the executor's attestation must travel with the receipt"
+        );
+        assert!(
+            body["art12_attestation"]["signature"]
+                .as_str()
+                .is_some_and(|s| s.len() == 128),
+            "an Ed25519 signature is 64 bytes hex-encoded"
+        );
+    }
+
+    /// **The attestation binds the head with a key the pod does not hold.**
+    /// That is the whole point: an HMAC'd chain proves nothing against a pod
+    /// that holds its own signing secret.
+    #[test]
+    fn an_attestation_verifies_under_the_executor_public_key() {
+        use ed25519_dalek::{Signature, Verifier as _};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, "sess", "exec-1", &key).expect("a log was kept");
+
+        let preimage = art12_attestation_preimage(
+            "sess",
+            &report.art12_chain_head,
+            report.art12_records,
+            report.art12_dropped,
+            "exec-1",
+        );
+        let bytes: [u8; 64] = hex::decode(&att.signature).unwrap().try_into().unwrap();
+        assert!(key
+            .verifying_key()
+            .verify(preimage.as_bytes(), &Signature::from_bytes(&bytes))
+            .is_ok());
+    }
+
+    /// **A rewritten log cannot keep its attestation.** This is the property the
+    /// export exists for: change the history, and the head no longer matches the
+    /// one the executor signed.
+    #[test]
+    fn a_rewritten_chain_head_breaks_the_attestation() {
+        use ed25519_dalek::{Signature, Verifier as _};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, "sess", "exec-1", &key).unwrap();
+
+        // The pod rewrites its log after the fact; the head moves.
+        let forged = art12_attestation_preimage("sess", "different-head", 5, 0, "exec-1");
+        let bytes: [u8; 64] = hex::decode(&att.signature).unwrap().try_into().unwrap();
+        assert!(
+            key.verifying_key()
+                .verify(forged.as_bytes(), &Signature::from_bytes(&bytes))
+                .is_err(),
+            "a moved chain head must not verify under the original signature"
+        );
+    }
+
+    /// Every field in the preimage must be bound, or it can be rewritten freely
+    /// while the signature still checks.
+    #[test]
+    fn every_attestation_field_is_bound_by_the_signature() {
+        let base = art12_attestation_preimage("sess", "head", 5, 0, "exec-1");
+        for (field, other) in [
+            (
+                "session_id",
+                art12_attestation_preimage("other", "head", 5, 0, "exec-1"),
+            ),
+            (
+                "chain_head",
+                art12_attestation_preimage("sess", "other", 5, 0, "exec-1"),
+            ),
+            (
+                "records",
+                art12_attestation_preimage("sess", "head", 6, 0, "exec-1"),
+            ),
+            (
+                "dropped",
+                art12_attestation_preimage("sess", "head", 5, 1, "exec-1"),
+            ),
+            (
+                "executor_id",
+                art12_attestation_preimage("sess", "head", 5, 0, "exec-2"),
+            ),
+        ] {
+            assert_ne!(base, other, "{field} is not in the signed preimage");
+        }
+    }
+
+    /// A session that kept no log must NOT get an attestation — signing an empty
+    /// head would assert record-keeping that did not happen.
+    #[test]
+    fn no_log_means_no_attestation() {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_chain_head = String::new();
+        assert!(
+            attest_art12(&report, "sess", "exec-1", &key).is_none(),
+            "an absent log must not produce an attestation that implies one"
+        );
     }
 
     /// **Every observation the trust service acts on must be committed.** A
@@ -1219,6 +1439,7 @@ mod tests {
             uninhabitable_reached: false,
             monitor_violations: Vec::new(),
             monitor_violations_dropped: 0,
+            art12_attestation: None,
             sandbox_identity: "spiffe://nucleus/test-agent".to_string(),
             v1_content_hash: "cafebabe11223344556677889900aabbccddeeff".to_string(),
         }
