@@ -499,3 +499,145 @@ mod tests {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Graded taint response (Option C) — NOT YET WIRED
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// What a *tainted* session should do about an outbound action, graded by the
+/// consequence of the sink it targets.
+///
+/// Today `ifc_egress_denial` is all-or-nothing: once any adversarial content is
+/// observed, every outbound action is denied for the rest of the session. That
+/// is sound — it needs no lineage and trusts nobody's declaration — but it was
+/// measured to refuse 100% of outbound actions after a single web fetch, and
+/// the only escape (`reset_session_ceiling`) has no callers and writes a field
+/// the gate never reads.
+///
+/// This grades the *response* rather than weakening the *detection*. The session
+/// ceiling still decides whether taint is present; the sink decides what that
+/// costs. Crucially this needs **no derivation edges**: it does not ask whether
+/// this action descends from the tainted node, only how expensive the action is.
+/// That matters because per-node checks are vacuous while every production flow
+/// node is observed with no parents — a per-node gate would pass trivially and
+/// silently remove the protection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaintResponse {
+    /// Refuse outright — external, irreversible, or capable of arbitrary egress.
+    Deny,
+    /// Defer to a human. Where an approval channel exists this is real EU AI Act
+    /// Article 14 oversight; where none is configured the caller surfaces it as a
+    /// refusal, which is still strictly better than today's opaque block because
+    /// it names a path that could exist.
+    RequireApproval,
+    /// Permit — reads and append-only audit sinks mutate nothing an attacker
+    /// benefits from.
+    Allow,
+}
+
+/// Grade a tainted session's response by sink consequence.
+///
+/// The tiers below are a POLICY, stated as data so a reader can dispute a row
+/// rather than infer it from behaviour. Two rules decided the assignment:
+///
+/// 1. Anything that can move bytes out of the trust boundary, or that leaves an
+///    externally-visible artifact which is hard to retract, is `Deny`. These are
+///    `SinkClass::is_exfil_vector` and `requires_verified_derivation` — nucleus's
+///    own predicates, not a scheme invented here.
+/// 2. `BashExec` is `Deny` despite being neither, because a shell can `curl`.
+///    Classifying it by what it *is* rather than what it *can reach* would be the
+///    kind of mistake this whole exercise exists to catch.
+///
+/// Everything else mutates only pod-local, reversible state inside an ephemeral
+/// microVM, so it defers to a human rather than failing closed outright.
+pub fn graded_taint_response(op: Operation) -> TaintResponse {
+    use portcullis_core::SinkClass;
+
+    let sink = portcullis_core::default_sink_class(op);
+
+    // Read-only and append-only: nothing an attacker gains from.
+    if matches!(sink, SinkClass::SecretRead | SinkClass::AuditLogAppend) {
+        return TaintResponse::Allow;
+    }
+    // A shell reaches every sink, so it inherits the worst one.
+    if matches!(sink, SinkClass::BashExec) {
+        return TaintResponse::Deny;
+    }
+    // External or hard-to-retract.
+    if sink.is_exfil_vector() || sink.requires_verified_derivation() {
+        return TaintResponse::Deny;
+    }
+    TaintResponse::RequireApproval
+}
+
+#[cfg(test)]
+mod graded_taint_tests {
+    use super::*;
+
+    /// Every operation must be graded — a new one must not silently land in the
+    /// most permissive tier.
+    #[test]
+    fn every_operation_is_graded() {
+        for op in Operation::ALL {
+            let _ = graded_taint_response(op);
+        }
+    }
+
+    /// The load-bearing property: nothing that can move data out, or that leaves
+    /// an artifact someone else can see, is ever permitted under taint.
+    #[test]
+    fn no_exfil_or_irreversible_sink_is_ever_allowed_under_taint() {
+        for op in Operation::ALL {
+            let sink = portcullis_core::default_sink_class(op);
+            if sink.is_exfil_vector() || sink.requires_verified_derivation() {
+                assert_eq!(
+                    graded_taint_response(op),
+                    TaintResponse::Deny,
+                    "{op:?} -> {sink:?} is externally visible and must be denied"
+                );
+            }
+        }
+    }
+
+    /// A shell is denied even though its sink class is neither an exfil vector
+    /// nor hard-to-revoke — it can reach both.
+    #[test]
+    fn bash_is_denied_despite_a_benign_looking_sink_class() {
+        let sink = portcullis_core::default_sink_class(Operation::RunBash);
+        assert!(
+            !sink.is_exfil_vector() && !sink.requires_verified_derivation(),
+            "if BashExec ever becomes exfil/irreversible this test stops proving anything"
+        );
+        assert_eq!(
+            graded_taint_response(Operation::RunBash),
+            TaintResponse::Deny
+        );
+    }
+
+    /// The grading must actually discriminate. If every operation landed in one
+    /// tier, this would be the all-or-nothing gate wearing a new type.
+    #[test]
+    fn the_grading_discriminates() {
+        let responses: std::collections::BTreeSet<_> = Operation::ALL
+            .iter()
+            .map(|op| format!("{:?}", graded_taint_response(*op)))
+            .collect();
+        assert!(
+            responses.len() >= 2,
+            "grading collapsed to a single tier: {responses:?}"
+        );
+    }
+
+    /// Reads stay available: a tainted session that cannot even read is
+    /// indistinguishable from a terminated one.
+    #[test]
+    fn reads_remain_available_under_taint() {
+        for op in [
+            Operation::ReadFiles,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+        ] {
+            assert_eq!(graded_taint_response(op), TaintResponse::Allow, "{op:?}");
+        }
+    }
+}

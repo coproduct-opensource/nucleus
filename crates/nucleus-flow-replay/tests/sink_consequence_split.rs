@@ -131,3 +131,53 @@ fn report_refusal_split_by_sink_consequence() {
         "sweep never reaches a cheap sink"
     );
 }
+
+/// **What Option C would change.** For every refusal caused by session taint,
+/// what does the graded policy say instead? This is the utility recovery,
+/// measured before anything is wired — the policy is a pure function, so it can
+/// be evaluated against the same corpus the ceiling was measured on.
+#[test]
+fn report_what_grading_would_change() {
+    use portcullis::exposure_core::{graded_taint_response, TaintResponse};
+
+    let (tainted, clean) = measure();
+    let clean_verdict: BTreeMap<&str, &str> = clean
+        .iter()
+        .map(|o| (o.tool.as_str(), o.verdict.as_str()))
+        .collect();
+
+    let (mut denied, mut approval, mut allowed) = (0usize, 0usize, 0usize);
+    eprintln!("\n╔══ what the graded policy would do with taint-caused refusals ══");
+    for o in &tainted {
+        let caused = o.verdict != "allow" && clean_verdict.get(o.tool.as_str()) == Some(&"allow");
+        if !caused {
+            continue;
+        }
+        let graded = graded_taint_response(o.operation);
+        match graded {
+            TaintResponse::Deny => denied += 1,
+            TaintResponse::RequireApproval => approval += 1,
+            TaintResponse::Allow => allowed += 1,
+        }
+        eprintln!(
+            "║ {:<24} {:<16} today=deny  graded={:?}",
+            o.tool, o.sink_class, graded
+        );
+    }
+    eprintln!("╠═══════════════════════════════════════════════════════════════");
+    eprintln!("║ still denied outright:        {denied}");
+    eprintln!("║ deferred to a human:          {approval}");
+    eprintln!("║ permitted:                    {allowed}");
+    eprintln!("╚═══════════════════════════════════════════════════════════════");
+
+    // Grading must change SOMETHING, or it is the same gate with extra steps.
+    assert!(
+        approval + allowed > 0,
+        "graded policy denies everything the ceiling denies — no recovery"
+    );
+    // And it must not become a rubber stamp.
+    assert!(
+        denied + approval > 0,
+        "graded policy permits everything — protection lost"
+    );
+}
