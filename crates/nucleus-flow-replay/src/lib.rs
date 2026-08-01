@@ -25,7 +25,7 @@
 use portcullis::action_term::ActionTerm;
 use portcullis::gate_class::{self, GateClass};
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
-use portcullis::{FlowTracker, NodeKind, Operation, PermissionLattice};
+use portcullis::{default_sink_class, FlowTracker, NodeKind, Operation, PermissionLattice};
 use serde::{Deserialize, Serialize};
 
 /// One recorded step of an agent episode.
@@ -90,6 +90,24 @@ pub struct StepOutcome {
     /// genuinely do derive from the tainted node; without edges, nothing here
     /// can tell which.
     pub ceiling_attributable: bool,
+
+    // ── Sink consequence ────────────────────────────────────────────────────
+    // Nucleus already classifies sinks; these fields surface that
+    // classification per decision so refusals can be split by how expensive
+    // the thing refused actually was. None of this is a new policy — it reads
+    // `SinkClass`'s own predicates.
+    /// The sink this operation lands in, via `default_sink_class`.
+    pub sink_class: String,
+    /// `SinkClass::is_exfil_vector` — can move data out of the trust boundary.
+    pub is_exfil_vector: bool,
+    /// `SinkClass::requires_verified_derivation`, whose own docs describe it as
+    /// covering "externally-visible, hard-to-revoke artifacts". This is the
+    /// closest thing nucleus already has to an irreversibility axis, which is
+    /// why it is used rather than a scheme invented here.
+    pub hard_to_revoke: bool,
+    /// `SinkClass::required_integrity` — Trusted for publish vectors,
+    /// Untrusted for local mutations.
+    pub required_integrity: String,
 }
 
 /// Aggregate over a replayed trace.
@@ -105,6 +123,19 @@ pub struct ReplaySummary {
     /// Refusal-code histogram, so a reader can see *which* gate fired rather
     /// than only how often something did.
     pub deny_codes: std::collections::BTreeMap<String, usize>,
+
+    // ── How the refusals split by sink consequence ─────────────────────────
+    // The question this answers: are the denials concentrated on expensive,
+    // hard-to-revoke sinks (where blocking is cheap insurance) or on cheap
+    // local ones (where blocking costs utility and buys little)?
+    /// Refusals per sink class.
+    pub denied_by_sink: std::collections::BTreeMap<String, usize>,
+    /// Refusals at sinks that can move data outside the trust boundary.
+    pub denied_at_exfil_vector: usize,
+    /// Refusals at sinks producing externally-visible, hard-to-revoke artifacts.
+    pub denied_at_hard_to_revoke: usize,
+    /// Refusals at sinks that are neither — local, reversible mutations.
+    pub denied_at_local_reversible: usize,
 }
 
 impl ReplaySummary {
@@ -120,6 +151,16 @@ impl ReplaySummary {
         }
         if let Some(code) = &o.deny_code {
             *self.deny_codes.entry(code.clone()).or_insert(0) += 1;
+            *self.denied_by_sink.entry(o.sink_class.clone()).or_insert(0) += 1;
+            if o.is_exfil_vector {
+                self.denied_at_exfil_vector += 1;
+            }
+            if o.hard_to_revoke {
+                self.denied_at_hard_to_revoke += 1;
+            }
+            if !o.is_exfil_vector && !o.hard_to_revoke {
+                self.denied_at_local_reversible += 1;
+            }
         }
     }
 }
@@ -163,7 +204,12 @@ pub fn replay(steps: &[TraceStep]) -> (Vec<StepOutcome>, ReplaySummary) {
             Verdict::Deny(DenyReason::IfcUnsafe { .. })
         ) && tainted_before;
 
+        let sink = default_sink_class(step.operation);
         let outcome = StepOutcome {
+            sink_class: format!("{sink:?}"),
+            is_exfil_vector: sink.is_exfil_vector(),
+            hard_to_revoke: sink.requires_verified_derivation(),
+            required_integrity: format!("{:?}", sink.required_integrity()),
             step: step.step,
             tool: step.tool.clone(),
             operation: step.operation,

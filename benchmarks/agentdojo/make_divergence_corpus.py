@@ -60,6 +60,20 @@ TOOL_MAPPING: dict[str, dict[str, str | None]] = {
     # Neutral — carries no exposure label in the mirror.
     "delete_email":                   {"operation": "write_files", "ingest": None},
     "get_current_day":                {"operation": "read_files",  "ingest": None},
+    # ── Sinks beyond AgentDojo's vocabulary ─────────────────────────────────
+    # AgentDojo's suites are office/travel scenarios, so they never exercise the
+    # publish and infrastructure sinks where a wrong decision is expensive and
+    # hard to undo. Those are exactly the sinks the deny/allow tradeoff turns
+    # on, so synthetic steps are added for them. They are named `synthetic:` so
+    # no reader mistakes them for benchmark-derived data.
+    "synthetic:git_push":             {"operation": "git_push",    "ingest": None},
+    "synthetic:open_pr":              {"operation": "create_pr",   "ingest": None},
+    "synthetic:git_commit":           {"operation": "git_commit",  "ingest": None},
+    "synthetic:manage_pods":          {"operation": "manage_pods", "ingest": None},
+    "synthetic:spawn_agent":          {"operation": "spawn_agent", "ingest": None},
+    "synthetic:run_bash":             {"operation": "run_bash",    "ingest": None},
+    "synthetic:web_search":           {"operation": "web_search",  "ingest": None},
+    "synthetic:edit_files":           {"operation": "edit_files",  "ingest": None},
 }
 
 # One representative per behavioural class, so the cross-product stays small
@@ -70,6 +84,19 @@ REPRESENTATIVES = [
     "send_email",            # exfil action
     "get_current_day",       # neutral read
     "delete_email",          # neutral action
+]
+
+# Sink-consequence sweep. The mirror comparison needs a small, readable
+# alphabet; the sink-split measurement needs BREADTH across sink classes. Rather
+# than blow up the cross-product (which is exponential in length), each of these
+# is measured as a 2-step trace: ingest untrusted content, then attempt the
+# action. That is the shape the whole question is about.
+SINK_SWEEP = [
+    "send_email", "delete_email", "create_file", "post_webpage", "share_file",
+    "get_current_day", "get_received_emails", "get_webpage",
+    "synthetic:git_push", "synthetic:open_pr", "synthetic:git_commit",
+    "synthetic:manage_pods", "synthetic:spawn_agent", "synthetic:run_bash",
+    "synthetic:web_search", "synthetic:edit_files",
 ]
 
 
@@ -105,12 +132,62 @@ def build_sequences(max_len: int = 3) -> list[list[str]]:
     return seqs
 
 
+def write_sink_sweep(out: Path) -> int:
+    """Emit the sink-consequence sweep — a SEPARATE corpus from the divergence
+    pair.
+
+    It has to be separate. `corpus.jsonl` and `mirror-verdicts.json` are a frozen
+    pair: the mirror that produced the fixture has been deleted, so the corpus it
+    aligns with can never be regenerated. Growing it would desync the two and
+    invalidate the divergence evidence. This corpus answers a different question
+    and needs no mirror counterpart — the mirror never modelled sinks at all.
+
+    Each sink gets two traces: one where the session is tainted first, and one
+    clean control. Without the control, a denial cannot be attributed to the
+    taint rather than to the operation being disallowed outright.
+    """
+    path = out / "sink-sweep.jsonl"
+    with path.open("w") as f:
+        trace_id = 0
+        for tool in SINK_SWEEP:
+            for seq in (["get_webpage", tool], [tool]):
+                steps = []
+                for i, t in enumerate(seq):
+                    m = TOOL_MAPPING[t]
+                    step = {"step": i, "tool": t, "operation": m["operation"],
+                            "subject": f"{t}/{i}"}
+                    if m["ingest"]:
+                        step["ingest"] = m["ingest"]
+                        step["content"] = f"content-{t}"
+                    steps.append(step)
+                f.write(json.dumps({"trace": trace_id, "steps": steps}) + "\n")
+                trace_id += 1
+    print(f"wrote {trace_id} sink-sweep traces -> {path}")
+    return trace_id
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, required=True, help="output directory")
     ap.add_argument("--max-len", type=int, default=3)
+    ap.add_argument("--mode", choices=["divergence", "sink-sweep"],
+                    default="sink-sweep",
+                    help="'divergence' regenerates the frozen mirror pair and "
+                         "REQUIRES the deleted Python mirror to be present")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "sink-sweep":
+        write_sink_sweep(args.out)
+        return
+
+    if not (Path(__file__).parent / "portcullis_defense" / "exposure.py").exists():
+        raise SystemExit(
+            "divergence mode needs portcullis_defense/exposure.py, which was "
+            "DELETED. corpus.jsonl and mirror-verdicts.json are frozen evidence "
+            "of what that mirror decided and cannot be regenerated. Use "
+            "--mode sink-sweep."
+        )
 
     mirror = load_mirror()
     sequences = build_sequences(args.max_len)
