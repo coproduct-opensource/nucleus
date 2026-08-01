@@ -442,12 +442,15 @@ impl RealEffects {
         }
     }
 
-    /// Apply the configured working directory, if any.
-    fn in_git_dir(&self, mut cmd: std::process::Command) -> std::process::Command {
-        if let Some(dir) = &self.git_dir {
-            cmd.current_dir(dir);
-        }
-        cmd
+    /// The directory git subprocesses run in.
+    ///
+    /// Falls back to the process CWD (and to `.` if even that is unreadable),
+    /// which is the behaviour every caller had before `git_dir` existed.
+    fn git_cwd(&self) -> std::path::PathBuf {
+        self.git_dir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
     }
 }
 
@@ -740,10 +743,9 @@ impl NetEffect for RealEffects {
 impl GitEffect for RealEffects {
     fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
         // Stage all tracked modifications and commit.
-        let mut add_cmd = std::process::Command::new("git");
-        add_cmd.args(["add", "-u"]);
-        let add = self
-            .in_git_dir(add_cmd)
+        let add = std::process::Command::new("git")
+            .args(["add", "-u"])
+            .current_dir(self.git_cwd())
             .output()
             .map_err(|e| EffectError::Io(format!("git add: {e}")))?;
         if !add.status.success() {
@@ -752,10 +754,9 @@ impl GitEffect for RealEffects {
                 stderr: String::from_utf8_lossy(&add.stderr).into_owned(),
             });
         }
-        let mut commit_cmd = std::process::Command::new("git");
-        commit_cmd.args(["commit", "-m", message]);
-        let commit = self
-            .in_git_dir(commit_cmd)
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(self.git_cwd())
             .output()
             .map_err(|e| EffectError::Io(format!("git commit: {e}")))?;
         if !commit.status.success() {
@@ -770,10 +771,9 @@ impl GitEffect for RealEffects {
     }
 
     fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
-        let mut push_cmd = std::process::Command::new("git");
-        push_cmd.args(["push", remote, branch]);
-        let output = self
-            .in_git_dir(push_cmd)
+        let output = std::process::Command::new("git")
+            .args(["push", remote, branch])
+            .current_dir(self.git_cwd())
             .output()
             .map_err(|e| EffectError::Io(format!("git push: {e}")))?;
         if output.status.success() {
