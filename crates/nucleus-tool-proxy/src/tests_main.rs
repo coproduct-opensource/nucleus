@@ -352,7 +352,7 @@ fn test_lockdown_blocks_unknown_paths() {
 mod ifc_http_enforcement {
     use super::*;
 
-    fn permissive_kernel() -> Kernel {
+    pub(super) fn permissive_kernel() -> Kernel {
         Kernel::new(PermissionLattice::permissive())
     }
 
@@ -400,7 +400,7 @@ mod ifc_http_enforcement {
     /// Drive the live entry point and hand back both the mapped result and what
     /// the sink actually saw.
     #[allow(clippy::type_complexity)]
-    fn decide_capturing(
+    pub(super) fn decide_capturing(
         kernel: &mut Kernel,
         flow: &FlowTracker,
         operation: Operation,
@@ -871,4 +871,84 @@ fn an_unmapped_reason_keeps_its_text_instead_of_becoming_a_capability_claim() {
         !msg.contains("level is Never"),
         "not a capability claim: {msg}"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Command output is a taint source (transport parity)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `/v1/run` returned arbitrary subprocess stdout to the agent and observed
+// nothing, while every other HTTP handler returning external bytes observes
+// them. `NUCLEUS_PARANOID_TOOL_IO=1` covered MCP and not HTTP, so enabling it
+// bought partial coverage with no signal that half the surface was uncovered.
+//
+// These tests are on the OBSERVATION SEMANTICS rather than on the handler,
+// which needs an AppState with a live sandbox. The handler wiring is one call
+// at the single return site of `run_command`.
+mod command_output_taint {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    /// **What the handler actually observes** — asserted against the constant the
+    /// call site uses, not against a kind named again in the test. Naming it
+    /// twice is how a test passes while the handler observes something weaker;
+    /// perturbation confirmed exactly that before this test existed.
+    #[test]
+    fn command_output_is_observed_as_an_adversarial_kind() {
+        let label = nucleus_ifc_kernel::flow::intrinsic_label(crate::COMMAND_OUTPUT_NODE_KIND, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "command output is observed as {:?}, which cannot trip the egress gate",
+            crate::COMMAND_OUTPUT_NODE_KIND
+        );
+    }
+
+    /// The two transports must agree: one flag, one policy.
+    #[test]
+    fn http_and_mcp_observe_tool_output_identically() {
+        assert_eq!(
+            crate::COMMAND_OUTPUT_NODE_KIND,
+            NodeKind::McpToolResult,
+            "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
+        );
+    }
+
+    /// The point of observing at all: a session that has read command output
+    /// must be unable to take a privileged outbound action afterwards.
+    #[test]
+    fn observed_command_output_blocks_a_later_outbound_action() {
+        let mut kernel = permissive_kernel();
+        let mut flow = FlowTracker::new();
+
+        // Before: a clean session may act.
+        let (before, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(before.is_ok(), "clean session should allow the write");
+
+        // The command ran and its output entered the session.
+        flow.observe(NodeKind::McpToolResult)
+            .expect("observe command output");
+
+        let (after, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out2.txt");
+        let err = after.expect_err("post-command-output write must be denied");
+        assert!(
+            matches!(err, ApiError::IfcDenied(_)),
+            "expected IfcDenied, got {err:?}"
+        );
+    }
+
+    /// Without the observation the same sequence is permitted — which is what
+    /// the bug was, and what makes the test above load-bearing rather than a
+    /// restatement of the gate.
+    #[test]
+    fn unobserved_command_output_leaves_the_session_clean() {
+        let mut kernel = permissive_kernel();
+        let flow = FlowTracker::new();
+        // No observe call — the pre-fix behaviour of /v1/run.
+        let (after, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(
+            after.is_ok(),
+            "with no observation the session stays clean — this is the hole"
+        );
+    }
 }

@@ -2483,6 +2483,55 @@ async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
     }
 }
 
+/// The flow node kind command output is observed as.
+///
+/// Extracted to a constant so the CHOICE is pinned by a test rather than
+/// inferred. A test asserting that `McpToolResult` is adversarial, plus a test
+/// that an `McpToolResult` observation trips the gate, BOTH pass even if this
+/// call site observes something weaker — verified by perturbation: swapping in
+/// `ToolResponse` (Untrusted, not Adversarial) failed nothing until this
+/// constant existed to assert against.
+pub(crate) const COMMAND_OUTPUT_NODE_KIND: NodeKind = NodeKind::McpToolResult;
+
+/// Taint COMMAND OUTPUT as adversarial — the HTTP twin of
+/// `mcp::Server::observe_tool_result`.
+///
+/// `/v1/run` returns arbitrary subprocess stdout/stderr to the agent, which is
+/// external bytes by any definition: `curl` through bash is an ingest the proxy
+/// cannot distinguish from `ls`. Every other HTTP handler that returns external
+/// bytes observes them (`read_file`, `web_fetch`, `glob_search`, `grep_search`,
+/// `web_search`); this one did not, so bash-fetched content entered the session
+/// with no flow node at all.
+///
+/// The asymmetry was the real defect. `NUCLEUS_PARANOID_TOOL_IO=1` has always
+/// covered the MCP transport (`mcp.rs:675`) and never covered HTTP, so an
+/// operator who enabled it got partial coverage with nothing to indicate half
+/// their surface was uncovered — worse than the flag not existing, because it
+/// reads as a decision that was made.
+///
+/// Same env var, same default (OFF), same node kind, and the same reason for the
+/// default that `observe_tool_result` documents: blanket-tainting the proxy's own
+/// command output makes a session "one privileged action then locked"
+/// (run-tests → cannot commit). That is an operator's policy call, not ours.
+///
+/// Observed regardless of exit status: a failing command's stderr is still bytes
+/// the agent read. Called only after the command actually RAN, so a denied
+/// operation still leaks no taint.
+async fn http_observe_command_output(state: &AppState, stdout: &[u8], stderr: &[u8]) {
+    let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !paranoid {
+        return;
+    }
+    // Both streams in one node: they are one ingest event, and content-addressing
+    // them separately would imply two independent sources.
+    let mut bytes = Vec::with_capacity(stdout.len() + stderr.len());
+    bytes.extend_from_slice(stdout);
+    bytes.extend_from_slice(stderr);
+    http_observe_flow(state, COMMAND_OUTPUT_NODE_KIND, &bytes).await;
+}
+
 async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -3027,6 +3076,8 @@ async fn run_command(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    http_observe_command_output(&state, &output.stdout, &output.stderr).await;
+
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
