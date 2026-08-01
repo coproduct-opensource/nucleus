@@ -645,6 +645,29 @@ pub struct ExitReport {
     /// Whether the uninhabitable state was reached during execution.
     #[serde(default)]
     pub uninhabitable_reached: bool,
+
+    // ── Runtime verification (written by the tool proxy's TraceMonitor) ──
+    /// Decision-stream properties observed to be violated during execution,
+    /// as class labels (`OutcomeWithoutDecision`, `PermissionDiscontinuity`,
+    /// `ExposureRegressed`).
+    ///
+    /// These are *observations of what ran*, complementing
+    /// `observed_exposure_labels`: exposure says which capability legs the
+    /// session exercised, this says whether the mediation invariants held while
+    /// it did. An empty list on a session with a non-zero
+    /// `audit_entry_count` is the expected, healthy case.
+    ///
+    /// Detail fields are deliberately not carried across this boundary — the
+    /// class is enough to say which property broke without exporting the
+    /// session state that broke it.
+    #[serde(default)]
+    pub monitor_violations: Vec<String>,
+
+    /// Violations observed but not retained, because the in-memory cap was
+    /// reached. Non-zero means `monitor_violations` is truncated and its length
+    /// must not be read as the total.
+    #[serde(default)]
+    pub monitor_violations_dropped: u64,
 }
 
 /// Errors resolving policies.

@@ -3568,39 +3568,8 @@ impl NodeService for GrpcService {
         let manifest_hash =
             nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
 
-        // Compute v1 content hash: SHA-256 of canonical v1 fields.
-        //
-        // Trust model (Trail of Bits finding #4): this hash covers CONTENT
-        // (what happened), not IDENTITY (who attested). The executor's Ed25519
-        // signature is sent separately in the X-Nucleus-Executor-Sig header and
-        // signs the serialized session-complete body (which includes this hash).
-        // Verification is two-phase:
-        //   1. Trust-service validates v1_content_hash was pre-registered.
-        //   2. Trust-service verifies Ed25519 signature against executor's
-        //      registered public key.
-        // See also: AuditEntry::content_hash() in portcullis/src/audit.rs.
-        let v1_content_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(id.as_bytes());
-            hasher.update(report.workspace_hash.as_bytes());
-            hasher.update(report.audit_tail_hash.as_bytes());
-            hasher.update(report.audit_entry_count.to_le_bytes());
-            hasher.update(report.timestamp_unix.to_le_bytes());
-            hasher.update(manifest_hash.as_bytes());
-            // Commit exposure labels into the hash — without this, the hash
-            // can be valid while the labels are tampered with, defeating the
-            // content-hash binding that the SandboxAttested upgrade path relies on.
-            for label in &report.observed_exposure_labels {
-                hasher.update(label.as_bytes());
-            }
-            hasher.update(report.observed_risk_tier.as_bytes());
-            hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        };
+        let v1_content_hash =
+            trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
 
         // Extract trust metadata from pod labels (set during create_pod_internal)
         let trust_bracket = handle
@@ -3659,6 +3628,10 @@ impl NodeService for GrpcService {
                 report.observed_risk_tier.clone()
             },
             uninhabitable_reached: report.uninhabitable_reached,
+            // Runtime-verification findings from the tool proxy's TraceMonitor,
+            // written to .nucleus-exit-report.json at shutdown alongside exposure.
+            monitor_violations: report.monitor_violations.clone(),
+            monitor_violations_dropped: report.monitor_violations_dropped,
             // Cryptographic session identity — required for the SandboxAttested
             // upgrade path in the trust-service session-complete handler.
             sandbox_identity: if spiffe_id.is_empty() {

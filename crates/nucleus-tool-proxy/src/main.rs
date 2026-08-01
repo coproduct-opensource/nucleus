@@ -341,7 +341,14 @@ pub(crate) struct AppState {
     #[allow(dead_code)]
     session_id: String,
     /// Shared verdict sink for lockdown + telemetry convergence (HTTP + MCP).
+    ///
+    /// This IS the monitor below — `build_monitored_sink` returns one object
+    /// under two handles — so the field cannot hold an unmonitored sink.
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
+    /// Read handle on the runtime monitor wrapping `verdict_sink`, so the
+    /// process can report what the decision stream actually did — live at
+    /// `/v1/health`, and at shutdown in the exit report.
+    pub(crate) trace_monitor: Arc<portcullis::trace_monitor::TraceMonitor>,
     /// Kernel decision engine for complete mediation (HTTP path).
     pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
     /// Whether DLC-D verified admission was provisioned on this pod's kernels
@@ -1491,16 +1498,18 @@ async fn main() -> Result<(), ApiError> {
     let dlc_admission = dlc_admission::provision_from_env();
     let dlc_provisioned = dlc_admission.is_some();
 
-    let verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink> =
-        Arc::new(verdict_sink::ToolProxyVerdictSink::new(
-            file_lockdown.clone(),
-            stream_lockdown.clone(),
-            runtime.policy().capabilities.clone(),
-            exposure_guard.clone(),
-            policy_checksum.clone(),
-            session_id.clone(),
-            dlc_provisioned,
-        ));
+    // Runtime verification over the decision stream (#2141). The sink comes back
+    // already monitored — `build_monitored_sink` is the only constructor
+    // reachable from here — so there is no unmonitored chain to fall back to.
+    let (verdict_sink, trace_monitor) = verdict_sink::build_monitored_sink(
+        file_lockdown.clone(),
+        stream_lockdown.clone(),
+        runtime.policy().capabilities.clone(),
+        exposure_guard.clone(),
+        policy_checksum.clone(),
+        session_id.clone(),
+        dlc_provisioned,
+    );
 
     if dlc_provisioned {
         tracing::info!("DLC-D verified admission provisioned from NUCLEUS_DLC_* env");
@@ -1593,6 +1602,7 @@ async fn main() -> Result<(), ApiError> {
         policy_checksum,
         session_id,
         verdict_sink,
+        trace_monitor,
         kernel,
         flow_tracker,
         provenance_memory,
@@ -1713,6 +1723,7 @@ async fn main() -> Result<(), ApiError> {
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
+    let exit_monitor = state.trace_monitor.clone();
 
     let app = app
         .with_state(state.clone())
@@ -1728,7 +1739,7 @@ async fn main() -> Result<(), ApiError> {
 
     if let Some(vsock) = vsock_binding {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
-        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure, &exit_monitor).await;
         return Ok(());
     }
 
@@ -1770,7 +1781,7 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
-    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure, &exit_monitor).await;
 
     Ok(())
 }
@@ -1807,6 +1818,7 @@ async fn write_exit_report(
     audit: &AuditLog,
     work_dir_path: &Path,
     exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+    monitor: &portcullis::trace_monitor::TraceMonitor,
 ) {
     let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
         Ok(h) => h,
@@ -1817,7 +1829,15 @@ async fn write_exit_report(
     };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
-    let mut report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
+    let mut report =
+        exit_report::build_exit_report(workspace_hash, tail_hash, count, None, monitor);
+    if !report.monitor_violations.is_empty() || report.monitor_violations_dropped > 0 {
+        warn!(
+            violations = ?report.monitor_violations,
+            dropped = report.monitor_violations_dropped,
+            "exit report: decision-stream properties were violated during this session"
+        );
+    }
 
     // Extract verified exposure from the session guard
     if let Ok(guard_opt) = exposure_guard.read() {
@@ -2326,7 +2346,16 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "tier": state.sandbox_proof.tier(),
             "label": state.sandbox_proof.tier_label(),
         },
-        "dlc_admission": if state.dlc_provisioned { "provisioned" } else { "unprovisioned" }
+        "dlc_admission": if state.dlc_provisioned { "provisioned" } else { "unprovisioned" },
+        // Counts only, never labels or detail. Same reasoning as the DLC field
+        // above — a host needs to distinguish "the monitor saw nothing" from
+        // "the monitor was never armed" — but this endpoint is reachable from
+        // inside the sandbox, so it must not become a channel for reading back
+        // which invariant a probe just tripped.
+        "trace_monitor": {
+            "violations": state.trace_monitor.violations().len(),
+            "violations_dropped": state.trace_monitor.violations_dropped(),
+        }
     }))
 }
 

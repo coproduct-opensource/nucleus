@@ -706,6 +706,15 @@ pub struct ReceiptReport {
     pub observed_risk_tier: String,
     /// Whether the uninhabitable state was reached during execution.
     pub uninhabitable_reached: bool,
+    /// Decision-stream property violations observed by the tool proxy's
+    /// `TraceMonitor` (class labels), plus any dropped past the retention cap.
+    ///
+    /// Distinct from exposure: exposure says which capability legs the session
+    /// exercised, this says whether the mediation invariants held while it did.
+    pub monitor_violations: Vec<String>,
+    /// Violations observed but not retained. Non-zero means
+    /// `monitor_violations` is truncated.
+    pub monitor_violations_dropped: u64,
 
     // ── Cryptographic session identity ─────────────────────────────
     /// SPIFFE ID or pod identity from the sandbox. Sent as `sandbox_identity`
@@ -718,6 +727,57 @@ pub struct ReceiptReport {
     /// session-complete in secure mode; without it the handler returns 422
     /// when observed_exposure_labels are present.
     pub v1_content_hash: String,
+}
+
+/// Compute the v1 content hash over the canonical receipt fields.
+///
+/// # Trust model (Trail of Bits finding #4)
+///
+/// This hash covers CONTENT (what happened), not IDENTITY (who attested). The
+/// executor's Ed25519 signature travels separately in the
+/// `X-Nucleus-Executor-Sig` header and signs the serialized session-complete
+/// body, which includes this hash. Verification is two-phase: the trust service
+/// validates the hash was pre-registered, then verifies the signature against
+/// the executor's registered public key. See also `AuditEntry::content_hash()`
+/// in `portcullis/src/audit.rs`.
+///
+/// # What must be committed
+///
+/// **Every observation the trust service acts on.** A field the trust service
+/// reads but the hash does not cover can be stripped or rewritten in flight
+/// while the hash still validates — which defeats the binding the
+/// `SandboxAttested` upgrade path depends on. That is why the exposure labels,
+/// the risk tier, and the monitor's findings are all folded in here, and why a
+/// new observation field added to `ExitReport` must be added here too.
+///
+/// Extracted from `main.rs` so the preimage is testable: it was previously
+/// inline in a long handler and no test could reach it.
+pub(crate) fn compute_v1_content_hash(
+    pod_id: &str,
+    manifest_hash: &str,
+    report: &nucleus_spec::ExitReport,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(pod_id.as_bytes());
+    hasher.update(report.workspace_hash.as_bytes());
+    hasher.update(report.audit_tail_hash.as_bytes());
+    hasher.update(report.audit_entry_count.to_le_bytes());
+    hasher.update(report.timestamp_unix.to_le_bytes());
+    hasher.update(manifest_hash.as_bytes());
+    for label in &report.observed_exposure_labels {
+        hasher.update(label.as_bytes());
+    }
+    hasher.update(report.observed_risk_tier.as_bytes());
+    for label in &report.monitor_violations {
+        hasher.update(label.as_bytes());
+    }
+    hasher.update(report.monitor_violations_dropped.to_le_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Compute a continuous session quality score in [0.0, 1.0] from execution signals.
@@ -778,10 +838,19 @@ pub(crate) fn build_session_complete_body(report: &ReceiptReport) -> serde_json:
         "sandbox_identity": report.sandbox_identity,
         "success": report.success,
         "score": compute_session_score(report),
-        "had_issues": !report.success || report.uninhabitable_reached,
+        // A recorded effect that nothing authorised is an issue by any reading
+        // of the word. Deliberately NOT folded into `compute_session_score`:
+        // the weight a violation should carry against reputation is a policy
+        // question, and inventing one here would be a number nobody chose.
+        "had_issues": !report.success
+            || report.uninhabitable_reached
+            || !report.monitor_violations.is_empty()
+            || report.monitor_violations_dropped > 0,
         "hook_event_name": "ExecutionReceipt",
         "observed_exposure_labels": report.observed_exposure_labels,
         "observed_risk_tier": report.observed_risk_tier,
+        "monitor_violations": report.monitor_violations,
+        "monitor_violations_dropped": report.monitor_violations_dropped,
         "v1_content_hash": report.v1_content_hash,
     })
 }
@@ -1057,6 +1126,81 @@ pub async fn register_executor_pubkey(config: &TrustGateConfig, http_client: &re
 mod tests {
     use super::*;
 
+    fn sample_exit_report() -> nucleus_spec::ExitReport {
+        nucleus_spec::ExitReport {
+            workspace_hash: "ws".to_string(),
+            audit_tail_hash: "tail".to_string(),
+            audit_entry_count: 3,
+            timestamp_unix: 1_700_000_000,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cost_usd: 0.0,
+            observed_exposure_labels: vec!["PrivateData".to_string()],
+            observed_risk_tier: "medium".to_string(),
+            uninhabitable_reached: false,
+            monitor_violations: vec!["OutcomeWithoutDecision".to_string()],
+            monitor_violations_dropped: 2,
+        }
+    }
+
+    /// **Every observation the trust service acts on must be committed.** A
+    /// field it reads but the hash does not cover can be stripped in flight
+    /// while the hash still validates, which is precisely the tamper the
+    /// content-hash binding exists to prevent.
+    ///
+    /// Perturbing any field below must change the hash; a field that does not
+    /// appear here is one an attacker can rewrite for free.
+    #[test]
+    fn every_committed_field_changes_the_v1_content_hash() {
+        let base = sample_exit_report();
+        let baseline = compute_v1_content_hash("pod-1", "manifest", &base);
+
+        let mut mutations: Vec<(&str, nucleus_spec::ExitReport)> = Vec::new();
+        let mut m = base.clone();
+        m.workspace_hash = "other".into();
+        mutations.push(("workspace_hash", m));
+        let mut m = base.clone();
+        m.audit_tail_hash = "other".into();
+        mutations.push(("audit_tail_hash", m));
+        let mut m = base.clone();
+        m.audit_entry_count = 4;
+        mutations.push(("audit_entry_count", m));
+        let mut m = base.clone();
+        m.timestamp_unix += 1;
+        mutations.push(("timestamp_unix", m));
+        let mut m = base.clone();
+        m.observed_exposure_labels = vec!["ExfilVector".into()];
+        mutations.push(("observed_exposure_labels", m));
+        let mut m = base.clone();
+        m.observed_risk_tier = "safe".into();
+        mutations.push(("observed_risk_tier", m));
+        // The two added by the trace-monitor wiring. Stripping the violations is
+        // the interesting attack: a session that broke its mediation invariants
+        // filing a clean receipt.
+        let mut m = base.clone();
+        m.monitor_violations = Vec::new();
+        mutations.push(("monitor_violations", m));
+        let mut m = base.clone();
+        m.monitor_violations_dropped = 0;
+        mutations.push(("monitor_violations_dropped", m));
+
+        for (field, mutated) in mutations {
+            assert_ne!(
+                compute_v1_content_hash("pod-1", "manifest", &mutated),
+                baseline,
+                "{field} is not committed into v1_content_hash — it can be tampered with freely"
+            );
+        }
+
+        // The two arguments are committed too.
+        assert_ne!(
+            compute_v1_content_hash("pod-2", "manifest", &base),
+            baseline
+        );
+        assert_ne!(compute_v1_content_hash("pod-1", "other", &base), baseline);
+    }
+
     /// Helper to build a minimal ReceiptReport for body-structure tests.
     fn sample_receipt_report() -> ReceiptReport {
         ReceiptReport {
@@ -1073,6 +1217,8 @@ mod tests {
             observed_exposure_labels: vec!["NetworkEgress".to_string(), "WriteFiles".to_string()],
             observed_risk_tier: "medium".to_string(),
             uninhabitable_reached: false,
+            monitor_violations: Vec::new(),
+            monitor_violations_dropped: 0,
             sandbox_identity: "spiffe://nucleus/test-agent".to_string(),
             v1_content_hash: "cafebabe11223344556677889900aabbccddeeff".to_string(),
         }
@@ -1161,6 +1307,53 @@ mod tests {
             (score - 0.56).abs() < 0.001,
             "expected score ≈ 0.56 with uninhabitable penalty, got {score}"
         );
+    }
+
+    /// A monitor violation is a recorded effect that nothing authorised. A
+    /// session that produced one did not go cleanly, whatever its exit code —
+    /// and without this the exit report's new fields would be written by the
+    /// proxy and read by nothing, which is the defect they exist to detect.
+    #[test]
+    fn test_session_complete_body_had_issues_when_monitor_flagged() {
+        let mut report = sample_receipt_report();
+        report.success = true;
+        report.uninhabitable_reached = false;
+        assert_eq!(
+            build_session_complete_body(&report)["had_issues"].as_bool(),
+            Some(false),
+            "the control must be clean, or the assertion below proves nothing"
+        );
+
+        report.monitor_violations = vec!["OutcomeWithoutDecision".to_string()];
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["had_issues"].as_bool(),
+            Some(true),
+            "had_issues must be true when the monitor observed a violation"
+        );
+        assert_eq!(
+            body["monitor_violations"][0].as_str(),
+            Some("OutcomeWithoutDecision"),
+            "the violation classes must reach the trust service, not just the flag"
+        );
+    }
+
+    /// Truncation must not read as cleanliness: a session whose violations all
+    /// overflowed the retention cap still had issues.
+    #[test]
+    fn test_dropped_violations_alone_set_had_issues() {
+        let mut report = sample_receipt_report();
+        report.success = true;
+        report.monitor_violations = Vec::new();
+        report.monitor_violations_dropped = 7;
+
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["had_issues"].as_bool(),
+            Some(true),
+            "an empty-but-truncated violation list must not read as clean"
+        );
+        assert_eq!(body["monitor_violations_dropped"].as_u64(), Some(7));
     }
 
     /// Verify failure path: score drops significantly and had_issues is set.

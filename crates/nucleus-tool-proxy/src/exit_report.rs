@@ -6,6 +6,7 @@
 //! The host (nucleus-node) reads this to build an `ExecutionReceipt`.
 
 use nucleus_spec::{sha256_bytes_hex, ExitReport};
+use portcullis::trace_monitor::TraceMonitor;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -82,11 +83,18 @@ pub struct TokenUsage {
 }
 
 /// Build an exit report from the current state.
+///
+/// `monitor` is a required argument, not an optional enrichment applied by the
+/// caller afterwards. A report is the session's account of itself, and a session
+/// that recorded effects nothing authorised must not be able to produce a clean
+/// account by way of a caller forgetting a line. There is no signature here that
+/// omits the monitor.
 pub fn build_exit_report(
     workspace_hash: String,
     audit_tail_hash: String,
     audit_entry_count: u64,
     token_usage: Option<TokenUsage>,
+    monitor: &TraceMonitor,
 ) -> ExitReport {
     let timestamp_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -108,6 +116,13 @@ pub fn build_exit_report(
         observed_exposure_labels: Vec::new(),
         observed_risk_tier: String::new(),
         uninhabitable_reached: false,
+        // Class labels only — the detail stays in-process (Violation::label).
+        monitor_violations: monitor
+            .violations()
+            .iter()
+            .map(|v| v.label().to_string())
+            .collect(),
+        monitor_violations_dropped: monitor.violations_dropped(),
     }
 }
 
@@ -171,6 +186,93 @@ mod tests {
         assert_eq!(hash.len(), 64);
     }
 
+    /// A monitor that has observed nothing.
+    fn clean_monitor() -> TraceMonitor {
+        struct NullSink;
+        impl portcullis::verdict_sink::VerdictSink for NullSink {
+            fn record(
+                &self,
+                _c: portcullis::verdict_sink::VerdictContext,
+            ) -> Result<(), portcullis::verdict_sink::SinkError> {
+                Ok(())
+            }
+            fn preflight(
+                &self,
+                _o: portcullis::Operation,
+            ) -> Result<(), portcullis::verdict_sink::SinkError> {
+                Ok(())
+            }
+        }
+        TraceMonitor::new(std::sync::Arc::new(NullSink))
+    }
+
+    /// A monitor that has seen `n` unmediated effects: a terminal Allow with no
+    /// preceding kernel decision.
+    fn monitor_with_violations(n: usize) -> TraceMonitor {
+        use portcullis::verdict_sink::{
+            ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink,
+        };
+        let m = clean_monitor();
+        for _ in 0..n {
+            m.record(VerdictContext {
+                operation: portcullis::Operation::RunBash,
+                subject: "unmediated".to_string(),
+                outcome: VerdictOutcome::Allow,
+                actor: ActorIdentity::Unknown,
+                policy_rule: None,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            m.violations().len(),
+            n,
+            "fixture did not produce violations"
+        );
+        m
+    }
+
+    /// **The acceptance test for the exit-report half.** The report is the
+    /// session's account of itself; a session whose mediation invariants broke
+    /// must not be able to file a clean one.
+    ///
+    /// Perturbation: drop the `monitor_violations` population in
+    /// `build_exit_report` and this REDs — and because `build_exit_report` is
+    /// the function the live shutdown path calls, the test and the live path
+    /// cannot disagree.
+    #[test]
+    fn the_report_carries_what_the_monitor_observed() {
+        let clean = build_exit_report("w".into(), "t".into(), 1, None, &clean_monitor());
+        assert!(
+            clean.monitor_violations.is_empty(),
+            "a clean session must file a clean report, or the assertion below proves nothing"
+        );
+
+        let dirty = build_exit_report("w".into(), "t".into(), 1, None, &monitor_with_violations(2));
+        assert_eq!(
+            dirty.monitor_violations,
+            vec!["OutcomeWithoutDecision", "OutcomeWithoutDecision"],
+            "the report must carry the violations the monitor observed"
+        );
+    }
+
+    /// The report carries the violation CLASS and not the session state behind
+    /// it. Everything in this vector leaves the process.
+    #[test]
+    fn the_report_does_not_export_violation_detail() {
+        let report =
+            build_exit_report("w".into(), "t".into(), 1, None, &monitor_with_violations(1));
+        // Without this the loop below is vacuous on an empty vector — which is
+        // exactly what an unwired report produces.
+        assert_eq!(report.monitor_violations.len(), 1);
+        for label in &report.monitor_violations {
+            assert!(
+                !label.contains("unmediated"),
+                "the subject of the violating record escaped into the report: {label}"
+            );
+        }
+    }
+
     #[test]
     fn test_build_exit_report() {
         let report = build_exit_report(
@@ -178,6 +280,7 @@ mod tests {
             "audit_hash".to_string(),
             10,
             None,
+            &clean_monitor(),
         );
         assert_eq!(report.workspace_hash, "workspace_hash");
         assert_eq!(report.audit_tail_hash, "audit_hash");
@@ -195,7 +298,13 @@ mod tests {
             cache_read_tokens: 200,
             cost_usd: 0.42,
         };
-        let report = build_exit_report("hash".to_string(), "tail".to_string(), 5, Some(usage));
+        let report = build_exit_report(
+            "hash".to_string(),
+            "tail".to_string(),
+            5,
+            Some(usage),
+            &clean_monitor(),
+        );
         assert_eq!(report.input_tokens, 1500);
         assert_eq!(report.output_tokens, 500);
         assert_eq!(report.cache_read_tokens, 200);

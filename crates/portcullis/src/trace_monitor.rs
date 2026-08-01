@@ -66,6 +66,34 @@ pub enum Violation {
     },
 }
 
+impl Violation {
+    /// The violation's class, as a stable string.
+    ///
+    /// This is what crosses a process boundary (the exit report, `/v1/health`).
+    /// The detail fields stay in-process: a permission hash or an exposure count
+    /// is a fact about the session's internals, and a refusal explanation that
+    /// travels outward is a probing oracle. The class is enough to say *what*
+    /// property broke without saying which state broke it.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Violation::OutcomeWithoutDecision { .. } => "OutcomeWithoutDecision",
+            Violation::PermissionDiscontinuity { .. } => "PermissionDiscontinuity",
+            Violation::ExposureRegressed { .. } => "ExposureRegressed",
+        }
+    }
+}
+
+/// Violations retained in memory. A monitor on a long-running session must not
+/// grow without bound, and the count matters more than the tail: past this many,
+/// the process is not "slightly wrong", and the dropped counter carries the rest.
+const MAX_RETAINED_VIOLATIONS: usize = 256;
+
+#[derive(Default)]
+struct Violations {
+    retained: Vec<Violation>,
+    dropped: u64,
+}
+
 #[derive(Default)]
 struct State {
     /// Operations for which a kernel decision has been seen and no terminal
@@ -83,7 +111,7 @@ struct State {
 pub struct TraceMonitor {
     inner: Arc<dyn VerdictSink>,
     state: Mutex<State>,
-    violations: Mutex<Vec<Violation>>,
+    violations: Mutex<Violations>,
 }
 
 impl TraceMonitor {
@@ -92,18 +120,34 @@ impl TraceMonitor {
         Self {
             inner,
             state: Mutex::new(State::default()),
-            violations: Mutex::new(Vec::new()),
+            violations: Mutex::new(Violations::default()),
         }
     }
 
-    /// Everything the monitor has observed to be wrong.
+    /// Everything the monitor has observed to be wrong, up to
+    /// `MAX_RETAINED_VIOLATIONS`. Read `violations_dropped` alongside it: a
+    /// truncated list that looks like a bounded problem is worse than no list.
     pub fn violations(&self) -> Vec<Violation> {
-        self.violations.lock().expect("monitor lock").clone()
+        self.violations
+            .lock()
+            .expect("monitor lock")
+            .retained
+            .clone()
+    }
+
+    /// Violations observed but not retained, because the cap was reached.
+    pub fn violations_dropped(&self) -> u64 {
+        self.violations.lock().expect("monitor lock").dropped
     }
 
     fn flag(&self, v: Violation) {
         tracing::warn!(violation = ?v, "decision-stream property violated");
-        self.violations.lock().expect("monitor lock").push(v);
+        let mut vs = self.violations.lock().expect("monitor lock");
+        if vs.retained.len() < MAX_RETAINED_VIOLATIONS {
+            vs.retained.push(v);
+        } else {
+            vs.dropped += 1;
+        }
     }
 
     /// A record carrying `decision_sequence` is a KERNEL DECISION (#2127);
@@ -367,5 +411,55 @@ mod tests {
         let m = TraceMonitor::new(Arc::new(LockedSink));
         assert!(m.record(outcome(Operation::ReadFiles)).is_err());
         assert!(m.preflight(Operation::ReadFiles).is_err());
+    }
+
+    /// A monitor on a long-lived session must not grow without bound — and the
+    /// truncation must be VISIBLE, or a capped list reads as "only 256 things
+    /// went wrong" when the real number is unbounded.
+    #[test]
+    fn violations_are_capped_and_the_overflow_is_counted() {
+        let m = monitor();
+        let overflow = 5;
+        for _ in 0..(MAX_RETAINED_VIOLATIONS + overflow) {
+            m.record(outcome(Operation::RunBash)).unwrap();
+        }
+        assert_eq!(m.violations().len(), MAX_RETAINED_VIOLATIONS);
+        assert_eq!(m.violations_dropped(), overflow as u64);
+    }
+
+    /// The label is what crosses a process boundary, so each variant needs a
+    /// distinct one — a shared label would make two different defects
+    /// indistinguishable in the exit report.
+    #[test]
+    fn every_violation_class_has_a_distinct_label() {
+        let all = [
+            Violation::OutcomeWithoutDecision {
+                operation: Operation::RunBash,
+            },
+            Violation::PermissionDiscontinuity {
+                expected: "a".into(),
+                found: "b".into(),
+            },
+            Violation::ExposureRegressed { from: 3, to: 1 },
+        ];
+        let labels: BTreeSet<&str> = all.iter().map(|v| v.label()).collect();
+        assert_eq!(labels.len(), all.len(), "labels collide: {labels:?}");
+    }
+
+    /// The label must NOT carry the detail fields: a permission hash or an
+    /// exposure count travelling outward is session state leaking through an
+    /// error channel. Perturbing the detail must leave the label identical.
+    #[test]
+    fn the_label_does_not_carry_session_state() {
+        let a = Violation::PermissionDiscontinuity {
+            expected: "hash-of-real-permissions".into(),
+            found: "other".into(),
+        };
+        let b = Violation::PermissionDiscontinuity {
+            expected: "totally-different".into(),
+            found: "and-again".into(),
+        };
+        assert_eq!(a.label(), b.label());
+        assert!(!a.label().contains("hash-of-real-permissions"));
     }
 }

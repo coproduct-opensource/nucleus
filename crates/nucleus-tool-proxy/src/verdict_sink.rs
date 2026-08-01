@@ -9,6 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use portcullis::trace_monitor::TraceMonitor;
 use portcullis::verdict_sink::{
     ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink,
 };
@@ -35,9 +36,55 @@ pub struct ToolProxyVerdictSink {
     dlc_provisioned: bool,
 }
 
+/// Build the process's verdict sink, already wrapped in its monitor.
+///
+/// # Why this is the only constructor
+///
+/// `ToolProxyVerdictSink::new` is private to this module, so no caller can
+/// obtain an *unmonitored* sink. That is deliberate, and is the same move
+/// `mediation::decide_and_record` makes for the decision: the property "the
+/// live sink chain is monitored" holds because of a module boundary, not
+/// because a call site in `main.rs` remembers to wrap.
+///
+/// The alternative — construct the sink, then wrap it at the call site — is
+/// precisely the shape that has failed repeatedly here: an artifact attached to
+/// the live path by an edit that a later edit can silently undo, with every test
+/// still green. There is nothing to undo if there is nothing else to return.
+///
+/// Returns `(sink, monitor)`. Both handles refer to the same object; the second
+/// exists so the process can read violations back out at `/v1/health` and at
+/// exit.
+#[allow(clippy::too_many_arguments)]
+pub fn build_monitored_sink(
+    file_lockdown: Arc<AtomicBool>,
+    stream_lockdown: Arc<AtomicBool>,
+    capabilities: CapabilityLattice,
+    exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
+    policy_checksum: String,
+    session_id: String,
+    dlc_provisioned: bool,
+) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
+    let inner = Arc::new(ToolProxyVerdictSink::new(
+        file_lockdown,
+        stream_lockdown,
+        capabilities,
+        exposure_guard,
+        policy_checksum,
+        session_id,
+        dlc_provisioned,
+    ));
+    let monitor = Arc::new(TraceMonitor::new(inner));
+    (monitor.clone(), monitor)
+}
+
 impl ToolProxyVerdictSink {
     /// Build from the same fields already present on `AppState`.
-    pub fn new(
+    ///
+    /// Private: see [`build_monitored_sink`]. The unit tests below construct
+    /// bare sinks because their subject is the sink's own behaviour; the live
+    /// path cannot.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
         file_lockdown: Arc<AtomicBool>,
         stream_lockdown: Arc<AtomicBool>,
         capabilities: CapabilityLattice,
@@ -339,6 +386,74 @@ mod tests {
             "test-session".to_string(),
             false,
         )
+    }
+
+    fn built() -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
+        build_monitored_sink(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            CapabilityLattice::default(),
+            Arc::new(std::sync::RwLock::new(None)),
+            "test-checksum".to_string(),
+            "test-session".to_string(),
+            false,
+        )
+    }
+
+    /// **The acceptance test for the wiring.** Not "a TraceMonitor works" —
+    /// #2141 proved that — but "the sink this process actually uses is the
+    /// monitored one". It asserts on what the monitor OBSERVED, so it cannot
+    /// pass if the chain is unwired.
+    ///
+    /// Perturbation (run 2026-08-01): return the bare `ToolProxyVerdictSink`
+    /// from `build_monitored_sink` and this REDs on the count, naming the
+    /// defect.
+    #[test]
+    fn records_flowing_through_the_built_sink_reach_the_monitor() {
+        let (sink, monitor) = built();
+        assert!(
+            monitor.violations().is_empty(),
+            "a fresh monitor must be clean, or the assertion below proves nothing"
+        );
+
+        // A terminal Allow with no preceding kernel decision: an effect that
+        // nothing on the record authorised.
+        sink.record(VerdictContext {
+            operation: Operation::RunBash,
+            subject: "unmediated".to_string(),
+            outcome: VerdictOutcome::Allow,
+            actor: ActorIdentity::Unknown,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            monitor.violations().len(),
+            1,
+            "the sink handed to the process must be monitored; the monitor saw nothing"
+        );
+    }
+
+    /// Monitoring must not change what the sink does. A locked sink still
+    /// refuses through the wrapper, so wiring the monitor cannot have opened a
+    /// path that lockdown used to close.
+    #[test]
+    fn the_built_sink_still_enforces_lockdown() {
+        let locked = build_monitored_sink(
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            CapabilityLattice::default(),
+            Arc::new(std::sync::RwLock::new(None)),
+            "test-checksum".to_string(),
+            "test-session".to_string(),
+            false,
+        )
+        .0;
+        assert!(matches!(
+            locked.preflight(Operation::ReadFiles).unwrap_err(),
+            SinkError::Locked
+        ));
     }
 
     #[test]
