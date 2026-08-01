@@ -7,6 +7,7 @@ mod scan_mcp_config;
 mod scan_podspec;
 mod suggest;
 mod tool_pattern;
+mod verify_art12;
 mod verify_build;
 
 use std::collections::{HashMap, HashSet};
@@ -222,6 +223,23 @@ enum Command {
         /// Path to a JSON file containing a ZkFlowInput.
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Verify an EU AI Act Article 12 record-keeping log.
+    ///
+    /// Checks sequence continuity, hash chaining, and (with a secret) the HMAC
+    /// over each record's canonical preimage. Prints what was established AND
+    /// what was not — a chain proves no party lacking the secret altered the
+    /// file, not that the log is complete or that its signer is trustworthy.
+    VerifyArt12 {
+        /// Path to the JSONL Article 12 log.
+        #[arg(long)]
+        log: PathBuf,
+        /// Signing secret. Without it, only the hash chain is checked.
+        #[arg(long, env = "NUCLEUS_ART12_SECRET")]
+        secret: Option<String>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -582,6 +600,43 @@ fn main() -> Result<(), AuditError> {
                 .unwrap_or(Severity::Info);
             if worst <= Severity::High {
                 std::process::exit(1);
+            }
+        }
+        Command::VerifyArt12 { log, secret, json } => {
+            let report =
+                verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?
+                );
+            } else {
+                println!("Article 12 log: {}", log.display());
+                println!("  records:            {}", report.records);
+                println!("  chain head:         {}", report.chain_head);
+                println!(
+                    "  signatures checked: {}",
+                    if report.signatures_checked {
+                        "yes"
+                    } else {
+                        "NO"
+                    }
+                );
+                println!(
+                    "  identified actors:  {} of {}",
+                    report.identified_actors, report.records
+                );
+                for (verdict, n) in &report.verdicts {
+                    println!("  verdict {verdict:<18} {n}");
+                }
+                // Printed, not appended as a footnote a reader may skip: the
+                // point of the list is that "verified" is narrower than it
+                // sounds.
+                println!("\n  This run did NOT establish:");
+                for l in &report.limitations {
+                    println!("    - {l}");
+                }
             }
         }
         Command::VerifyNoninterference { input } => {
@@ -1030,7 +1085,7 @@ fn export_soc2_report(entries: &[serde_json::Value]) {
 
 // --- crypto helpers ---
 
-fn sign_message(secret: &[u8], message: &[u8]) -> String {
+pub(crate) fn sign_message(secret: &[u8], message: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
     mac.update(message);
     hex::encode(mac.finalize().into_bytes())
@@ -1040,7 +1095,7 @@ fn hmac_hex(secret: &[u8], message: &[u8]) -> String {
     sign_message(secret, message)
 }
 
-fn sha256_hex(message: &str) -> String {
+pub(crate) fn sha256_hex(message: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(message.as_bytes());
     hex::encode(hasher.finalize())
