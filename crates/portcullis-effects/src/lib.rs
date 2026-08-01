@@ -414,12 +414,40 @@ pub struct SearchResult {
 /// obtain one is through [`production_effects`] / [`production_effects_concrete`],
 /// which always wrap it in `PolicyEnforced` and require a policy.
 pub struct RealEffects {
+    /// Working directory for git subprocesses.
+    ///
+    /// `None` means the process CWD, which is the historical behaviour. Naming
+    /// it matters because `git commit` is not scoped by its arguments: it acts
+    /// on whatever repository the process happens to be standing in. A caller
+    /// that means "commit the agent's workspace" and a caller that means
+    /// "commit wherever I am" are different callers, and until this field
+    /// existed there was no way to be the first one.
+    git_dir: Option<std::path::PathBuf>,
     _private: (),
 }
 
 impl RealEffects {
     pub(crate) fn new() -> Self {
-        Self { _private: () }
+        Self {
+            git_dir: None,
+            _private: (),
+        }
+    }
+
+    /// Scope git operations to `dir` instead of the process CWD.
+    pub fn with_git_dir(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            git_dir: Some(dir.into()),
+            _private: (),
+        }
+    }
+
+    /// Apply the configured working directory, if any.
+    fn in_git_dir(&self, mut cmd: std::process::Command) -> std::process::Command {
+        if let Some(dir) = &self.git_dir {
+            cmd.current_dir(dir);
+        }
+        cmd
     }
 }
 
@@ -712,8 +740,10 @@ impl NetEffect for RealEffects {
 impl GitEffect for RealEffects {
     fn commit(&self, message: &str, _authority: Authority) -> Result<String, EffectError> {
         // Stage all tracked modifications and commit.
-        let add = std::process::Command::new("git")
-            .args(["add", "-u"])
+        let mut add_cmd = std::process::Command::new("git");
+        add_cmd.args(["add", "-u"]);
+        let add = self
+            .in_git_dir(add_cmd)
             .output()
             .map_err(|e| EffectError::Io(format!("git add: {e}")))?;
         if !add.status.success() {
@@ -722,8 +752,10 @@ impl GitEffect for RealEffects {
                 stderr: String::from_utf8_lossy(&add.stderr).into_owned(),
             });
         }
-        let commit = std::process::Command::new("git")
-            .args(["commit", "-m", message])
+        let mut commit_cmd = std::process::Command::new("git");
+        commit_cmd.args(["commit", "-m", message]);
+        let commit = self
+            .in_git_dir(commit_cmd)
             .output()
             .map_err(|e| EffectError::Io(format!("git commit: {e}")))?;
         if !commit.status.success() {
@@ -738,8 +770,10 @@ impl GitEffect for RealEffects {
     }
 
     fn push(&self, remote: &str, branch: &str, _authority: Authority) -> Result<(), EffectError> {
-        let output = std::process::Command::new("git")
-            .args(["push", remote, branch])
+        let mut push_cmd = std::process::Command::new("git");
+        push_cmd.args(["push", remote, branch]);
+        let output = self
+            .in_git_dir(push_cmd)
             .output()
             .map_err(|e| EffectError::Io(format!("git push: {e}")))?;
         if output.status.success() {
@@ -1146,6 +1180,19 @@ pub fn production_effects(
 pub fn production_effects_concrete(policy: CapabilityLattice) -> PolicyEnforced<RealEffects> {
     PolicyEnforced {
         inner: RealEffects::new(),
+        policy,
+        receipts: Arc::new(crate::receipt::ReceiptLog::new()),
+    }
+}
+
+/// As [`production_effects_concrete`], with git operations scoped to `git_dir`
+/// rather than the process working directory.
+pub fn production_effects_in(
+    policy: CapabilityLattice,
+    git_dir: impl Into<std::path::PathBuf>,
+) -> PolicyEnforced<RealEffects> {
+    PolicyEnforced {
+        inner: RealEffects::with_git_dir(git_dir),
         policy,
         receipts: Arc::new(crate::receipt::ReceiptLog::new()),
     }
