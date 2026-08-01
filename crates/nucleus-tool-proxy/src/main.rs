@@ -1516,27 +1516,20 @@ async fn main() -> Result<(), ApiError> {
     // the chain takes it by value and there must be no window in which decisions
     // are made against a chain that is missing it.
     let art12_log = match args.art12_log.as_ref() {
-        Some(path) => {
-            art12_sink::reject_workspace_path(path, &spec.spec.work_dir)
-                .map_err(|e| ApiError::Spec(e.to_string()))?;
-            let secret = args
-                .audit_secret
-                .as_ref()
-                .map_or_else(|| session_id.as_bytes().to_vec(), |s| s.as_bytes().to_vec());
-            // Anchored to the boot report's hash where one exists, so this chain
-            // continues the existing audit chain rather than starting fresh.
-            // The chain's anchor. A dedicated genesis string rather than a
-            // borrowed hash: the audit log is constructed later in this
-            // function, and reaching for a value that does not exist yet is how
-            // an anchor silently becomes the empty string.
-            let genesis = format!("art12-genesis:{session_id}");
-            let log = crate::art12::Art12Log::open(path, secret, genesis, false)
-                .map_err(|e| ApiError::Spec(format!("failed to open Article 12 log: {e:?}")))?;
-            info!(path = %path.display(), "Article 12 record-keeping log opened");
-            Some(Arc::new(log))
-        }
+        Some(path) => Some(
+            art12_sink::open_log(
+                path,
+                args.audit_secret.as_deref(),
+                &spec.spec.work_dir,
+                &session_id,
+            )
+            .map_err(ApiError::Spec)?,
+        ),
         None => None,
     };
+    if let Some(path) = args.art12_log.as_ref() {
+        info!(path = %path.display(), "Article 12 record-keeping log opened");
+    }
 
     let dlc_admission = dlc_admission::provision_from_env();
     let dlc_provisioned = dlc_admission.is_some();
@@ -2401,27 +2394,7 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "violations": state.trace_monitor.violations().len(),
             "violations_dropped": state.trace_monitor.violations_dropped(),
         },
-        // Article 12 record-keeping. `configured: false` says plainly that no
-        // log is being kept, rather than leaving a host to infer it from an
-        // absent field — the same reason `dlc_admission` reports
-        // "unprovisioned" instead of going quiet.
-        //
-        // The chain head is published so a host can tie the log it holds to the
-        // process that wrote it. It is a hash of records the runtime made about
-        // this session, not session content.
-        "art12": match &state.art12_log {
-            None => serde_json::json!({ "configured": false }),
-            Some(log) => {
-                let (head, records) = log.head().unwrap_or_else(|_| (String::new(), 0));
-                serde_json::json!({
-                    "configured": true,
-                    "degraded": log.is_degraded(),
-                    "records": records,
-                    "dropped": log.dropped(),
-                    "chain_head": head,
-                })
-            }
-        }
+        "art12": art12_sink::health_json(state.art12_log.as_ref())
     }))
 }
 

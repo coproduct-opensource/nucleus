@@ -115,6 +115,62 @@ pub(crate) fn reject_workspace_path(path: &Path, work_dir: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Open the Article 12 log for a session, refusing a workspace-local path.
+///
+/// Lives here rather than in `main.rs` so the startup sequence is one call: the
+/// path check, the secret choice and the genesis anchor are a single decision
+/// about evidence, and splitting them across a long `main` is how one of them
+/// gets edited without the others.
+///
+/// The secret defaults to a session-derived value when no audit secret is
+/// configured. That is weaker than an operator-held secret — a pod that derives
+/// its own signing key can re-sign a rewritten chain — and is reported as a
+/// limitation by the verifier rather than passed off as tamper-evidence.
+pub(crate) fn open_log(
+    path: &Path,
+    audit_secret: Option<&str>,
+    work_dir: &Path,
+    session_id: &str,
+) -> Result<Arc<Art12Log>, String> {
+    reject_workspace_path(path, work_dir).map_err(|e| e.to_string())?;
+    let secret = audit_secret.map_or_else(
+        || format!("art12:{session_id}").into_bytes(),
+        |s| s.as_bytes().to_vec(),
+    );
+    // A dedicated genesis string rather than a borrowed hash: the audit log is
+    // constructed later in startup, and reaching for a value that does not exist
+    // yet is how an anchor silently becomes the empty string.
+    let genesis = format!("art12-genesis:{session_id}");
+    let log = Art12Log::open(path, secret, genesis, false)
+        .map_err(|e| format!("failed to open Article 12 log: {e:?}"))?;
+    Ok(Arc::new(log))
+}
+
+/// The Article 12 log's state, for `/v1/health`.
+///
+/// `configured: false` says plainly that no log is being kept, rather than
+/// leaving a host to infer it from an absent field — the same reason
+/// `dlc_admission` reports "unprovisioned" instead of going quiet.
+///
+/// The chain head is published so a host can tie the log it holds to the process
+/// that wrote it. It is a hash of records the runtime made ABOUT this session,
+/// not session content.
+pub(crate) fn health_json(log: Option<&Arc<Art12Log>>) -> serde_json::Value {
+    match log {
+        None => serde_json::json!({ "configured": false }),
+        Some(log) => {
+            let (head, records) = log.head().unwrap_or_else(|_| (String::new(), 0));
+            serde_json::json!({
+                "configured": true,
+                "degraded": log.is_degraded(),
+                "records": records,
+                "dropped": log.dropped(),
+                "chain_head": head,
+            })
+        }
+    }
+}
+
 /// Appends an Article 12 record for every verdict, then delegates.
 pub(crate) struct Art12Sink {
     inner: Arc<dyn VerdictSink>,
