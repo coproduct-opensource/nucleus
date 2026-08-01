@@ -929,11 +929,14 @@ mod command_output_taint {
         flow.observe(NodeKind::McpToolResult)
             .expect("observe command output");
 
+        // Asserts the action is NOT PERMITTED, not that it is specifically denied:
+        // the property under test is that command output taints, and that holds
+        // whether the graded policy refuses or defers. Pinning `IfcDenied` here
+        // would make this test a hostage of a policy it is not about.
         let (after, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out2.txt");
-        let err = after.expect_err("post-command-output write must be denied");
         assert!(
-            matches!(err, ApiError::IfcDenied(_)),
-            "expected IfcDenied, got {err:?}"
+            after.is_err(),
+            "post-command-output write must not be permitted; got {after:?}"
         );
     }
 
@@ -949,6 +952,148 @@ mod command_output_taint {
         assert!(
             after.is_ok(),
             "with no observation the session stays clean — this is the hole"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Disk laundering: a round-trip through a file must not strip taint
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `NodeKind::FileRead` carries `IntegLevel::Trusted`, so reading a file yields a
+// trusted node no matter what is in it. An audit reported this as a mislabelled
+// constant; it is not. Changing the label is either a no-op (`Untrusted` — every
+// live consumer tests `== Adversarial` by EQUALITY, `ifc_api.rs:519,558,812`) or
+// unusable (`Adversarial` — the first file read taints every session forever).
+//
+// The real defect is a missing mechanism, and its REACHABILITY is the whole
+// story: by default, tainted bytes cannot reach disk at all, so the channel is
+// shut. It opens only when grading turns a write-denial into an approval.
+mod disk_laundering {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    fn tainted() -> FlowTracker {
+        let mut f = FlowTracker::new();
+        f.observe(NodeKind::WebContent)
+            .expect("observe web content");
+        f
+    }
+
+    /// **The precondition.** Ungraded, every route by which tainted bytes could
+    /// reach disk is denied — so the laundering channel is UNREACHABLE in the
+    /// default configuration. If this ever fails, the fix below stops being
+    /// defence-in-depth and becomes load-bearing.
+    #[test]
+    fn ungraded_tainted_bytes_cannot_reach_disk() {
+        let flow = tainted();
+        for op in [
+            Operation::WriteFiles,
+            Operation::EditFiles,
+            Operation::RunBash,
+        ] {
+            let mut kernel = permissive_kernel();
+            let r = decide_capturing(&mut kernel, &flow, op, "f.txt").0;
+            assert!(
+                matches!(r, Err(ApiError::IfcDenied(_))),
+                "{op:?} is no longer DENIED in a tainted session (got {r:?}).\n\
+                 This test is a TRIPWIRE, not a regression: it holds only in the \
+                 ungraded configuration. If it fires because NUCLEUS_GRADED_TAINT \
+                 is on, or because the default was flipped, then tainted bytes can \
+                 now reach disk via an approved write — the laundering channel is \
+                 REACHABLE and the tracked-path mechanism has become load-bearing \
+                 rather than defence-in-depth. Re-scope this test deliberately."
+            );
+        }
+    }
+
+    /// A shell stays denied even under grading, so there is no bash-written
+    /// blind spot — the tracked-path set does not need to see bash writes.
+    #[test]
+    fn bash_stays_denied_even_when_graded() {
+        assert_eq!(
+            portcullis::exposure_core::graded_taint_response(Operation::RunBash),
+            portcullis::exposure_core::TaintResponse::Deny,
+            "if bash ever becomes approvable, files it writes bypass the tracked set"
+        );
+    }
+
+    /// The laundered read must be observed as a kind that actually re-taints.
+    /// Asserted against the constant the read path uses, not a kind named again
+    /// here — naming it twice is how this test passes while the handler observes
+    /// something weaker.
+    #[test]
+    fn a_laundered_read_is_observed_as_a_retainting_kind() {
+        let label = nucleus_ifc_kernel::flow::intrinsic_label(crate::COMMAND_OUTPUT_NODE_KIND, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "a laundered read observed as {:?} would not restore the taint",
+            crate::COMMAND_OUTPUT_NODE_KIND
+        );
+    }
+
+    /// And the contrast that makes the above meaningful: an ORDINARY file read
+    /// stays trusted, so this does not blanket-taint every read.
+    #[test]
+    fn an_ordinary_file_read_is_still_trusted() {
+        let label = nucleus_ifc_kernel::flow::intrinsic_label(NodeKind::FileRead, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted,
+            "ordinary reads must stay trusted or every session locks on first read"
+        );
+    }
+
+    /// **What the read path actually selects** — asserted against the function
+    /// the handler calls. Without this, replacing the laundered arm with a plain
+    /// `FileRead` (a total no-op) passes every other test here; verified by
+    /// perturbation before this test existed.
+    #[test]
+    fn the_read_path_selects_a_retainting_kind_for_a_laundered_path() {
+        let laundered = nucleus_ifc_kernel::flow::intrinsic_label(crate::read_node_kind(true), 0);
+        assert_eq!(
+            laundered.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "laundered reads are observed as {:?}, which does not restore taint",
+            crate::read_node_kind(true)
+        );
+        let ordinary = nucleus_ifc_kernel::flow::intrinsic_label(crate::read_node_kind(false), 0);
+        assert_eq!(
+            ordinary.integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted,
+            "ordinary reads must stay trusted"
+        );
+    }
+
+    /// End to end on the flow tracker: re-observing a laundered read restores
+    /// the taint that the disk round-trip stripped.
+    #[test]
+    fn re_observing_a_laundered_read_restores_the_taint() {
+        // A plain file read leaves the session clean — the hole.
+        let mut clean = FlowTracker::new();
+        clean.observe(NodeKind::FileRead).expect("plain read");
+        assert!(
+            !clean.is_tainted(),
+            "a trusted read does not taint — the channel"
+        );
+
+        // The same read, recognised as laundered, does.
+        let mut fixed = FlowTracker::new();
+        fixed
+            .observe(crate::COMMAND_OUTPUT_NODE_KIND)
+            .expect("laundered read");
+        assert!(
+            fixed.is_tainted(),
+            "a laundered read must restore the taint"
+        );
+
+        // Not permitted — refused or deferred — for the same reason as above.
+        let mut kernel = permissive_kernel();
+        let r = decide_capturing(&mut kernel, &fixed, Operation::WriteFiles, "out.txt").0;
+        assert!(
+            r.is_err(),
+            "after a laundered read the session must not act outbound; got {r:?}"
         );
     }
 }

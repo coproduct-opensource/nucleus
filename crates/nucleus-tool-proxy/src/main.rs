@@ -357,6 +357,19 @@ pub(crate) struct AppState {
     /// blocks outbound for all); true multi-tenancy would require keying the
     /// kernel AND tracker together — out of scope here.
     pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Paths written while the session was integrity-tainted.
+    ///
+    /// Closes a disk-laundering channel: tainted bytes land in a file, the file
+    /// is read back, and the read produces a `FileRead` node whose intrinsic
+    /// integrity is `Trusted` — so the taint vanishes.
+    ///
+    /// This is EMPTY in the default configuration and cannot become non-empty:
+    /// with `NUCLEUS_GRADED_TAINT` off, `WriteFiles`/`EditFiles`/`RunBash` are
+    /// all DENIED in a tainted session, so tainted bytes never reach disk. The
+    /// channel opens only when grading converts those denials into approvals and
+    /// a human approves one. `RunBash` stays denied even when graded, so there
+    /// is no bash-written blind spot.
+    pub(crate) laundered_paths: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     /// Provenance-verified, taint-labeled agent memory (next-bet #1). A write
     /// goes through `verified_admit`; a recall observes the record's own label
     /// into `flow_tracker` so the IFC gate governs whether it may inform an
@@ -1546,6 +1559,7 @@ async fn main() -> Result<(), ApiError> {
     enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
 
     let state = AppState {
+        laundered_paths: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
         dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
@@ -2493,6 +2507,26 @@ async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
 /// constant existed to assert against.
 pub(crate) const COMMAND_OUTPUT_NODE_KIND: NodeKind = NodeKind::McpToolResult;
 
+/// Which flow node kind a file read is observed as.
+///
+/// Extracted so the CHOICE is assertable. Perturbation showed why: with the
+/// branch inlined in `read_file` — a handler that needs a live sandbox to
+/// exercise — replacing the laundered arm with a plain `FileRead` (making the
+/// whole fix a no-op) passed every test, because the tests asserted the
+/// constant's properties and the tracker's behaviour but never what the handler
+/// actually selects.
+pub(crate) fn read_node_kind(is_laundered: bool) -> NodeKind {
+    if is_laundered {
+        // A path written while tainted re-enters adversarial, restoring the
+        // taint a disk round-trip would otherwise strip.
+        COMMAND_OUTPUT_NODE_KIND
+    } else {
+        // Ordinary reads stay trusted — labelling all reads adversarial would
+        // lock every session on its first read.
+        NodeKind::FileRead
+    }
+}
+
 /// Taint COMMAND OUTPUT as adversarial — the HTTP twin of
 /// `mcp::Server::observe_tool_result`.
 ///
@@ -2564,6 +2598,8 @@ async fn read_file(
     let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
+    // Survives the sink record below, which consumes `path`.
+    let observed_path = path.clone();
 
     // Discharge the eight obligations for this read. Reads were previously
     // unmediated on this path: it went from `http_kernel_decide` straight to the
@@ -2661,7 +2697,14 @@ async fn read_file(
     }
     // IFC: a successful file read brings data into the session (#1633).
     // Brick 3: content-address the exact bytes read.
-    http_observe_flow(&state, NodeKind::FileRead, contents.as_bytes()).await;
+    // A path written during a tainted session re-enters as adversarial, not as a
+    // trusted file read — otherwise a round-trip through disk strips the taint.
+    let is_laundered = state.laundered_paths.lock().await.contains(&observed_path);
+    if is_laundered {
+        warn!(path = %observed_path, "reading a path written while tainted; observing as adversarial");
+    }
+    let read_kind = read_node_kind(is_laundered);
+    http_observe_flow(&state, read_kind, contents.as_bytes()).await;
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2699,6 +2742,8 @@ async fn write_file(
     let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
+    // Survives the sink record below, which consumes `path`.
+    let written_path = path.clone();
     let contents = req.contents.clone();
 
     // ─── Sealed discharge gate (B6, parity with the RunBash executor-proof gate
@@ -2840,6 +2885,22 @@ async fn write_file(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // If this write succeeded while the session was tainted, the bytes on disk
+    // may carry that taint. Record the path so a later read of it is not treated
+    // as a trusted file read. Only reachable under grading — see the field docs.
+    {
+        let tainted = state.flow_tracker.lock().await.is_tainted();
+        if tainted {
+            let mut laundered = state.laundered_paths.lock().await;
+            laundered.insert(written_path.clone());
+            warn!(
+                path = %written_path,
+                "write taken while session tainted; later reads of this path \
+                 will be treated as adversarial"
+            );
+        }
+    }
+
     Ok(Json(WriteResponse { ok: true }))
 }
 
