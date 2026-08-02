@@ -77,6 +77,12 @@ pub struct PodSpecInner {
     /// Optional VM image hints (Firecracker).
     #[serde(default)]
     pub image: Option<ImageSpec>,
+    /// Optional workload to run inside the pod under mediation.
+    ///
+    /// Absent means the pod serves its API and runs nothing of its own, which is
+    /// the historical behaviour.
+    #[serde(default)]
+    pub workload: Option<WorkloadSpec>,
     /// Optional vsock configuration for VM communication.
     #[serde(default)]
     pub vsock: Option<VsockSpec>,
@@ -692,6 +698,40 @@ pub struct ExitReport {
     pub art12_records: u64,
     #[serde(default)]
     pub art12_dropped: u64,
+}
+
+/// A process the pod runs under its own mediation.
+///
+/// # Why the runtime starts it, rather than the image
+///
+/// The workload's whole value is that every effect it attempts goes through the
+/// kernel. If it were started by the boot process alongside the proxy, there
+/// would be a window — however short — in which it is running and mediation is
+/// not, and anything it did in that window would be unmediated AND unrecorded.
+/// So the proxy spawns it, after its sink chain and kernel are live. See
+/// `spawn_workload`.
+///
+/// # Vendor neutrality
+///
+/// `command`, `args` and `env` are opaque. Nucleus does not know or care what
+/// agent this is; a vendor-aware orchestrator supplies the binary, its
+/// credentials (via `credentials.env`) and any endpoint it needs on the network
+/// allowlist. Nothing vendor-specific belongs in this struct or in the runtime
+/// that reads it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkloadSpec {
+    /// Executable to run. Resolved inside the guest, not on the host.
+    pub command: String,
+    /// Arguments, passed through verbatim.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment for the workload.
+    ///
+    /// Merged UNDER the runtime's own injected variables, so a spec cannot
+    /// redirect the workload away from the mediating proxy by setting the same
+    /// key — see `workload_env`.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Errors resolving policies.

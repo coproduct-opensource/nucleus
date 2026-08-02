@@ -83,6 +83,7 @@ fn container_driver_rejects_network_policy_fail_closed() {
             budget_model: None,
             resources: None,
             network,
+            workload: None,
             image: None,
             vsock: None,
             seccomp: None,

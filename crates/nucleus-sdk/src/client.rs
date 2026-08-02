@@ -109,6 +109,7 @@ impl Nucleus {
             resources: None,
             network: None,
             image: None,
+            workload: None,
             vsock: None,
             seccomp: None,
             cgroup: None,
