@@ -74,6 +74,9 @@ nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
 # the ONLY crate permitted to depend on it — see the `wrappers` entry in
 # deny.toml, which stops any policy crate reaching credential material.
 nucleus-cred-broker = { path = "../nucleus-cred-broker" }
+# Wire types only, and the guest links the same crate. Nothing here can hold a
+# secret — the host needs `PerformRequest` to READ what a guest asked for.
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }

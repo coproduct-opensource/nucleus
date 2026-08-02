@@ -52,17 +52,18 @@ pub(crate) fn header_value(spec: &CredentialedEgressSpec, credential: &str) -> S
 
 /// Build the upstream URL for a request path.
 ///
-/// The base comes from the spec and the path is appended. A path that tries to
-/// leave the upstream — by being absolute, or by containing `..` — is refused
-/// rather than normalised: the workload does not get to choose where the
-/// credential is sent, and "normalise it and hope" is how that becomes possible.
+/// # This used to be the implementation and is now a call
+///
+/// The same property — a caller-supplied path may not choose where the
+/// credential is sent — is now needed by the HOST too, which performs the call
+/// for a pod whose guest never receives the credential. One property should be
+/// one function: `CredentialedEgressSpec::url_for` is it, and it carries the
+/// traversal tests.
+///
+/// A second copy here would mean a traversal fix could land on one side and not
+/// the other, with both test suites green. This delegates so that cannot happen.
 pub(crate) fn upstream_url(spec: &CredentialedEgressSpec, path: &str) -> Option<String> {
-    if path.contains("..") || path.starts_with("http://") || path.starts_with("https://") {
-        return None;
-    }
-    let base = spec.upstream.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    Some(format!("{base}/{path}"))
+    spec.url_for(path)
 }
 
 /// The environment a workload is told about its upstreams.

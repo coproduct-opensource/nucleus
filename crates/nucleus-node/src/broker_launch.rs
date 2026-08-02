@@ -135,6 +135,103 @@ pub fn on_start_failure(rollout: BrokerRollout) -> StartFailure {
     }
 }
 
+/// Start the credential broker for a pod, if the rollout and the pod's identity
+/// both permit it.
+///
+/// Returns `Ok(None)` when no socket should exist — which is the default. The
+/// error case is deliberately narrow: a launch fails only when enforcement was
+/// requested dishonestly, or when the socket could not be created *and*
+/// credentials had already been withheld in exchange for it.
+#[cfg(target_os = "linux")]
+pub fn start_broker_for_pod(
+    state: &crate::NodeState,
+    spec: &nucleus_spec::PodSpec,
+    vsock_path: &std::path::Path,
+    registered: Option<&nucleus_identity::Identity>,
+    id: uuid::Uuid,
+) -> Result<Option<crate::broker_transport::BrokerListener>, crate::ApiError> {
+    let transport = if spec.spec.vsock.is_some() {
+        crate::broker_rollout::BrokerTransport::Vsock
+    } else {
+        crate::broker_rollout::BrokerTransport::None
+    };
+    let rollout = crate::broker_rollout::decide_rollout(
+        state.broker_enforcing,
+        state.broker_listen,
+        transport,
+    );
+    // The Firecracker rootfs carries the pod spec from image build time, so the
+    // node writes no guest spec and can withhold nothing from it. Passing `false`
+    // here is what turns `--broker-enforcing` into a refusal rather than a false
+    // claim; it becomes `true` when the split gains a call site.
+    let rollout = check_enforcement_is_honest(rollout, false)
+        .map_err(|e| crate::ApiError::Driver(e.to_string()))?;
+
+    let Some(identity) = broker_identity(rollout, registered) else {
+        return Ok(None);
+    };
+
+    // The policy the PDP will decide against is the pod's own resolved lattice.
+    // A pod whose policy will not resolve gets no broker: deciding against a
+    // default lattice would silently substitute a policy nobody wrote.
+    let policy = match spec.spec.resolve_policy() {
+        Ok(p) => std::sync::Arc::new(p),
+        Err(e) => {
+            tracing::warn!(
+                pod = %id,
+                error = %e,
+                "credential broker not started: the pod's policy did not resolve, and deciding \
+                 against a default lattice would substitute a policy nobody wrote"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Empty until `cred_split` has a call site on this driver. A broker with an
+    // empty store answers every request with a refusal, which is the correct
+    // behaviour for a pod whose credentials are not brokered yet — and is why
+    // enforcing is refused above rather than merely discouraged.
+    let store = std::sync::Arc::new(nucleus_cred_broker::CredentialStore::new());
+
+    // The upstreams the HOST may be asked to call, straight from the pod spec.
+    //
+    // This is the only source: a `PerformRequest` names an upstream, it does not
+    // describe one, so the base URL, the header and its prefix are all facts the
+    // operator wrote and the guest can only select among. An empty list — the
+    // ordinary case today — means every perform request is refused by name,
+    // which is the right answer for a pod whose operator configured none.
+    let upstreams = std::sync::Arc::new(spec.spec.credentialed_egress.clone());
+
+    match crate::broker_transport::BrokerListener::start(
+        vsock_path,
+        state.broker_vsock_port,
+        identity,
+        policy,
+        store,
+        upstreams,
+    ) {
+        Ok(listener) => {
+            tracing::info!(
+                "started credential broker at {} for pod {}",
+                listener.socket_path().display(),
+                id
+            );
+            Ok(Some(listener))
+        }
+        Err(e) => match on_start_failure(rollout) {
+            StartFailure::AbortLaunch => Err(crate::ApiError::Driver(format!(
+                "credential broker socket could not be created ({e}), and this pod's credentials \
+                 were withheld in exchange for it — refusing to launch a pod that has neither its \
+                 credentials nor a way to ask for them"
+            ))),
+            StartFailure::ContinueDegraded => {
+                tracing::warn!(pod = %id, error = %e, "credential broker socket not created");
+                Ok(None)
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

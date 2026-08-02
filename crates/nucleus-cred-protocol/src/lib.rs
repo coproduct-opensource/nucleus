@@ -35,7 +35,18 @@ use serde::{Deserialize, Serialize};
 /// to be told. Removing the field beats comparing it against the truth: a claim
 /// that cannot be expressed cannot be mishandled by a future caller who reaches
 /// for the field because it is there.
+/// # Unknown fields are refused, and that is load-bearing
+///
+/// The broker now also accepts [`PerformRequest`], which carries these three
+/// fields plus three more. Serde's default — ignore what you do not recognise —
+/// would let a perform request parse cleanly as a query, and a host that
+/// classified by trying types in some order would be one refactor away from
+/// answering "granted" to a request to ACT without acting.
+///
+/// `deny_unknown_fields` makes that impossible on the TYPE rather than in
+/// whichever function happens to do the classifying.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskRequestEnvelope {
     /// The operation being requested, as the policy layer names it.
     pub operation: String,

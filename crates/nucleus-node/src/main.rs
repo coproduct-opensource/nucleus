@@ -39,6 +39,7 @@ mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod broker;
 mod broker_launch;
+mod broker_perform;
 mod broker_rollout;
 mod broker_transport;
 mod cgroup;
@@ -1341,90 +1342,6 @@ impl ContainerPod {
             )
             .await;
         self.permit.lock().await.take();
-    }
-}
-
-/// Start the credential broker for a pod, if the rollout and the pod's identity
-/// both permit it.
-///
-/// Returns `Ok(None)` when no socket should exist — which is the default. The
-/// error case is deliberately narrow: a launch fails only when enforcement was
-/// requested dishonestly, or when the socket could not be created *and*
-/// credentials had already been withheld in exchange for it.
-#[cfg(target_os = "linux")]
-fn start_broker_for_pod(
-    state: &NodeState,
-    spec: &PodSpec,
-    vsock_path: &Path,
-    registered: Option<&nucleus_identity::Identity>,
-    id: Uuid,
-) -> Result<Option<broker_transport::BrokerListener>, ApiError> {
-    let transport = if spec.spec.vsock.is_some() {
-        broker_rollout::BrokerTransport::Vsock
-    } else {
-        broker_rollout::BrokerTransport::None
-    };
-    let rollout =
-        broker_rollout::decide_rollout(state.broker_enforcing, state.broker_listen, transport);
-    // The Firecracker rootfs carries the pod spec from image build time, so the
-    // node writes no guest spec and can withhold nothing from it. Passing `false`
-    // here is what turns `--broker-enforcing` into a refusal rather than a false
-    // claim; it becomes `true` when the split gains a call site.
-    let rollout = broker_launch::check_enforcement_is_honest(rollout, false)
-        .map_err(|e| ApiError::Driver(e.to_string()))?;
-
-    let Some(identity) = broker_launch::broker_identity(rollout, registered) else {
-        return Ok(None);
-    };
-
-    // The policy the PDP will decide against is the pod's own resolved lattice.
-    // A pod whose policy will not resolve gets no broker: deciding against a
-    // default lattice would silently substitute a policy nobody wrote.
-    let policy = match spec.spec.resolve_policy() {
-        Ok(p) => std::sync::Arc::new(p),
-        Err(e) => {
-            tracing::warn!(
-                pod = %id,
-                error = %e,
-                "credential broker not started: the pod's policy did not resolve, and deciding \
-                 against a default lattice would substitute a policy nobody wrote"
-            );
-            return Ok(None);
-        }
-    };
-
-    // Empty until `cred_split` has a call site on this driver. A broker with an
-    // empty store answers every request with a refusal, which is the correct
-    // behaviour for a pod whose credentials are not brokered yet — and is why
-    // enforcing is refused above rather than merely discouraged.
-    let store = std::sync::Arc::new(nucleus_cred_broker::CredentialStore::new());
-
-    match broker_transport::BrokerListener::start(
-        vsock_path,
-        state.broker_vsock_port,
-        identity,
-        policy,
-        store,
-    ) {
-        Ok(listener) => {
-            info!(
-                "started credential broker at {} for pod {}",
-                listener.socket_path().display(),
-                id
-            );
-            Ok(Some(listener))
-        }
-        Err(e) => match broker_launch::on_start_failure(rollout) {
-            broker_launch::StartFailure::AbortLaunch => Err(ApiError::Driver(format!(
-                "credential broker socket could not be created ({e}), and this pod's credentials \
-                 were withheld in exchange for it — refusing to launch a pod that has neither its \
-                 credentials nor a way to ask for them"
-            ))),
-            broker_launch::StartFailure::ContinueDegraded => {
-                tracing::warn!(pod = %id, error = %e, "credential broker socket not created");
-                Ok(None)
-            }
-        },
     }
 }
 
@@ -2867,7 +2784,13 @@ async fn spawn_firecracker_pod(
             None
         };
 
-        let broker = start_broker_for_pod(state, spec, &vsock_path, pod_identity.as_ref(), id)?;
+        let broker = broker_launch::start_broker_for_pod(
+            state,
+            spec,
+            &vsock_path,
+            pod_identity.as_ref(),
+            id,
+        )?;
 
         let handle = FirecrackerPod {
             jail: Mutex::new(jail_layout.clone()),
