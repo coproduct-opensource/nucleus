@@ -12,9 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::portcullis::escalation::{
-    EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
-};
+use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
@@ -35,6 +33,7 @@ mod broker_client;
 mod cert_bridge;
 mod dlc_admission;
 mod egress;
+mod escalate;
 mod exit_report;
 mod identity_fusion;
 mod ingest;
@@ -328,7 +327,7 @@ pub(crate) struct AppState {
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
-    /// Upstreams this pod may reach with a credential the workload never holds.
+    /// Upstreams reachable with a credential the workload never holds.
     pub(crate) credentialed_egress: Vec<nucleus_spec::CredentialedEgressSpec>,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
@@ -513,7 +512,7 @@ fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
     }
 }
 
-fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
+pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
     if let Some(ctx) = auth {
         if let Some(ref spiffe_id) = ctx.spiffe_id {
             ActorIdentity::Authenticated {
@@ -1009,7 +1008,7 @@ struct WebSearchResponse {
 
 /// Request to escalate permissions for an agent.
 #[derive(Debug, Deserialize)]
-struct EscalateRequest {
+pub(crate) struct EscalateRequest {
     /// The requesting agent's SPIFFE trace chain (serialized).
     requestor_chain: SerializedTraceChain,
     /// The approver's SPIFFE trace chain (serialized).
@@ -1064,7 +1063,7 @@ struct SerializedTraceLink {
 
 /// Response from an escalation request.
 #[derive(Debug, Serialize)]
-struct EscalateResponse {
+pub(crate) struct EscalateResponse {
     /// Whether the escalation was granted.
     granted: bool,
     /// The grant ID (if granted).
@@ -1548,8 +1547,7 @@ async fn main() -> Result<(), ApiError> {
         &session_id,
     );
 
-    // A proxy the workload can route around is a control that appears to work
-    // and does not. See `egress::reject_bypassable_upstreams`.
+    // See `egress::reject_bypassable_upstreams` for why this is fail-closed.
     egress::reject_bypassable_upstreams(&spec.spec.credentialed_egress, &dns_allow)
         .map_err(ApiError::Spec)?;
 
@@ -1773,7 +1771,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/memory/write", post(memory_write))
         .route("/v1/memory/recall", post(memory_recall))
         .route("/v1/approve", post(approve_operation))
-        .route("/v1/escalate", post(escalate_permissions));
+        .route("/v1/escalate", post(escalate::escalate_permissions));
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {
@@ -4013,262 +4011,6 @@ async fn approve_operation(
     Ok(Json(ApproveResponse { ok: true }))
 }
 
-/// Escalate permissions for an agent using SPIFFE trace chains.
-///
-/// This endpoint allows agents to request elevated permissions, bounded by:
-/// 1. The approver's ceiling (their trace chain's meet)
-/// 2. The escalation policy's max_grant
-/// 3. Time limits defined by the policy
-///
-/// The request must be made by an authenticated SPIFFE identity (via mTLS)
-/// that matches an approver pattern in the escalation policy.
-async fn escalate_permissions(
-    State(state): State<AppState>,
-    _headers: HeaderMap,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<EscalateRequest>,
-) -> Result<Json<EscalateResponse>, ApiError> {
-    let sink = &state.verdict_sink;
-    let operation = Operation::ManagePods; // meta-operation: escalation
-    let auth_ctx = auth.map(|e| e.0);
-    let actor = actor_from_auth(auth_ctx.as_ref());
-
-    // Rate limit escalation requests
-    if !state.approval_rate_limiter.try_acquire() {
-        return Err(ApiError::RateLimited);
-    }
-
-    // SECURITY: Validate nonce to prevent replay attacks
-    // This is critical - without nonce protection, an attacker can replay
-    // a captured escalation request within the drand tolerance window (~60s)
-    if req.nonce.is_empty() {
-        return Err(ApiError::Escalation(
-            "escalation nonce required".to_string(),
-        ));
-    }
-
-    let now = now_unix();
-    // Use a longer expiry for escalation nonces (5 minutes) since escalations
-    // are higher-value targets than regular approvals
-    let nonce_expiry = now + 300; // 5 minutes
-    if !state
-        .approval_nonces
-        .check_and_insert(&req.nonce, nonce_expiry, now)
-    {
-        tracing::warn!(
-            nonce = %req.nonce,
-            "REJECTING: escalation nonce already used (potential replay attack)"
-        );
-        return Err(ApiError::Escalation(
-            "escalation nonce already used (potential replay attack)".to_string(),
-        ));
-    }
-
-    // Check if escalation policies are configured
-    if !state.policy_engine.has_escalation_policies() {
-        return Err(ApiError::Escalation(
-            "no escalation policies configured".to_string(),
-        ));
-    }
-
-    // Extract approver's SPIFFE identity from mTLS
-    let approver_spiffe_id = auth_ctx
-        .as_ref()
-        .and_then(|a| a.spiffe_id.clone())
-        .ok_or_else(|| {
-            ApiError::Escalation("escalation requires SPIFFE mTLS authentication".to_string())
-        })?;
-
-    // Reconstruct the requestor's trace chain
-    let requestor_chain = deserialize_trace_chain(&req.requestor_chain)?;
-
-    // Reconstruct the approver's trace chain from the request
-    // SECURITY: The approver MUST submit their full chain - we don't construct it server-side
-    let approver_chain = deserialize_trace_chain(&req.approver_chain)?;
-
-    // SECURITY: Verify the submitted approver chain's leaf matches the mTLS identity
-    // This prevents an attacker from submitting someone else's chain
-    let approver_chain_leaf = approver_chain.current_spiffe_id().ok_or_else(|| {
-        ApiError::Escalation("approver chain must have at least one link".to_string())
-    })?;
-
-    if approver_chain_leaf != approver_spiffe_id {
-        tracing::warn!(
-            submitted_leaf = %approver_chain_leaf,
-            authenticated_id = %approver_spiffe_id,
-            "approver chain leaf does not match authenticated identity"
-        );
-        return Err(ApiError::Escalation(
-            "approver chain leaf must match authenticated SPIFFE identity".to_string(),
-        ));
-    }
-
-    // SECURITY: Verify the approver chain is valid (non-expired, monotonic)
-    if !approver_chain.verify() {
-        let result = approver_chain.verify_detailed();
-        let reason = match result {
-            portcullis::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,
-            _ => "unknown".to_string(),
-        };
-        tracing::warn!(
-            chain_id = %approver_chain.id,
-            reason = %reason,
-            "approver chain verification failed"
-        );
-        return Err(ApiError::Escalation(format!(
-            "approver chain is invalid: {}",
-            reason
-        )));
-    }
-
-    // Get the requested permissions
-    let requested = preset_to_permissions(&req.requested_preset);
-
-    // Fetch current drand round for cryptographic timestamping
-    let drand_round = if let Some(ref audit_log) = state.audit.drand_client {
-        match audit_log.current_round().await {
-            Ok(round) => round,
-            Err(e) => {
-                tracing::warn!("failed to fetch drand round for escalation: {e}");
-                return Err(ApiError::Escalation(
-                    "failed to fetch drand round for cryptographic timestamp".to_string(),
-                ));
-            }
-        }
-    } else {
-        return Err(ApiError::Escalation(
-            "drand anchoring required for escalation but not configured".to_string(),
-        ));
-    };
-
-    // Create the escalation request
-    let escalation_request = EscalationRequest::new(
-        requestor_chain.clone(),
-        requested,
-        &req.reason,
-        req.ttl_seconds,
-    );
-
-    // Validate against escalation policies
-    let policy_result = state
-        .policy_engine
-        .escalation_policies()
-        .validate_escalation(&escalation_request, &approver_chain);
-
-    let escalation_subject = format!(
-        "escalation:{} -> {} (ttl={}s)",
-        requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-        req.requested_preset,
-        req.ttl_seconds
-    );
-
-    match policy_result {
-        Ok(_policy) => {
-            // Create the grant
-            match EscalationGrant::new(&escalation_request, approver_chain, drand_round) {
-                Ok(grant) => {
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: escalation_subject,
-                        outcome: VerdictOutcome::Allow,
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-
-                    tracing::info!(
-                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                        approver = %approver_spiffe_id,
-                        preset = %req.requested_preset,
-                        ttl_seconds = %req.ttl_seconds,
-                        drand_round = %drand_round,
-                        grant_id = %grant.id,
-                        event = "escalation_granted",
-                        "escalation request approved"
-                    );
-
-                    Ok(Json(EscalateResponse {
-                        granted: true,
-                        grant_id: Some(grant.id.to_string()),
-                        granted_preset: Some(req.requested_preset.clone()),
-                        expires_at: Some(grant.expires_at.timestamp() as u64),
-                        drand_round: Some(drand_round),
-                        error: None,
-                    }))
-                }
-                Err(e) => {
-                    let error_msg = escalation_error_to_string(&e);
-
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: escalation_subject,
-                        outcome: VerdictOutcome::Deny {
-                            reason: error_msg.clone(),
-                        },
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-
-                    tracing::warn!(
-                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                        approver = %approver_spiffe_id,
-                        error = %error_msg,
-                        event = "escalation_denied",
-                        "escalation grant creation failed"
-                    );
-
-                    Ok(Json(EscalateResponse {
-                        granted: false,
-                        grant_id: None,
-                        granted_preset: None,
-                        expires_at: None,
-                        drand_round: None,
-                        error: Some(error_msg),
-                    }))
-                }
-            }
-        }
-        Err(e) => {
-            let error_msg = escalation_error_to_string(&e);
-
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: escalation_subject,
-                outcome: VerdictOutcome::Deny {
-                    reason: error_msg.clone(),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-
-            tracing::warn!(
-                requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                approver = %approver_spiffe_id,
-                error = %error_msg,
-                event = "escalation_denied",
-                "escalation request denied by policy"
-            );
-
-            Ok(Json(EscalateResponse {
-                granted: false,
-                grant_id: None,
-                granted_preset: None,
-                expires_at: None,
-                drand_round: None,
-                error: Some(error_msg),
-            }))
-        }
-    }
-}
-
 /// Deserialize a trace chain from the request format.
 ///
 /// SECURITY: UUIDs are ALWAYS generated server-side. Client-provided IDs are
@@ -4276,7 +4018,9 @@ async fn escalate_permissions(
 /// - Replay attacks using pre-computed IDs
 /// - Collision attacks on chain/link identifiers
 /// - ID prediction for future grants
-fn deserialize_trace_chain(chain: &SerializedTraceChain) -> Result<SpiffeTraceChain, ApiError> {
+pub(crate) fn deserialize_trace_chain(
+    chain: &SerializedTraceChain,
+) -> Result<SpiffeTraceChain, ApiError> {
     use chrono::{TimeZone, Utc};
 
     if chain.links.is_empty() {
@@ -4335,7 +4079,7 @@ fn deserialize_trace_chain(chain: &SerializedTraceChain) -> Result<SpiffeTraceCh
 }
 
 /// Convert an EscalationError to a user-friendly string.
-fn escalation_error_to_string(e: &EscalationError) -> String {
+pub(crate) fn escalation_error_to_string(e: &EscalationError) -> String {
     match e {
         EscalationError::RequestExpired => "escalation request has expired".to_string(),
         EscalationError::InvalidRequestorChain => "requestor's trace chain is invalid".to_string(),
@@ -4372,7 +4116,7 @@ fn escalation_error_to_string(e: &EscalationError) -> String {
 }
 
 /// Convert a preset name to a PermissionLattice (local helper, mirrors policy.rs).
-fn preset_to_permissions(preset: &str) -> PermissionLattice {
+pub(crate) fn preset_to_permissions(preset: &str) -> PermissionLattice {
     match preset.to_lowercase().as_str() {
         "codegen" => PermissionLattice::codegen(),
         "pr_review" | "pr-review" => PermissionLattice::pr_review(),
@@ -4805,7 +4549,7 @@ impl AuditLog {
     }
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
