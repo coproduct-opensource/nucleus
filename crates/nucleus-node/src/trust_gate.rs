@@ -742,24 +742,50 @@ pub use portcullis::art12_record::{
     art12_attestation_preimage, Art12Attestation, ART12_ATTESTATION_KIND,
 };
 
-/// Sign a pod's Article 12 chain head with the executor key.
+/// Sign the Article 12 chain head with the executor key.
 ///
-/// Returns `None` when the pod kept no Article 12 log — an attestation over an
-/// empty head would assert something about record-keeping that did not happen.
+/// # It signs what the HOST observed, not what the pod reported
+///
+/// `observed` comes from the node's own collected stream. Signing the pod's
+/// reported head would mean the executor vouches for a value the pod chose — an
+/// honest signature over a possibly dishonest input, which reads exactly like a
+/// trustworthy one.
+///
+/// When the pod also reported a head, both are carried. They can legitimately
+/// differ in ONE direction: the pod ships each record before appending it
+/// locally, so a pod that dies mid-write leaves the host holding one MORE than
+/// the pod kept. The other direction — the pod claiming more records than the
+/// host received — means records were made and never witnessed, and that is the
+/// finding this field exists to surface rather than reconcile.
+///
+/// Falls back to the pod-reported head when the host observed nothing, so a
+/// deployment without the evidence channel still gets the weaker-but-honest
+/// attestation it had before; `pod_reported_head` being equal to `chain_head`
+/// is the tell.
+///
+/// Returns `None` when neither side has a log — an attestation over an empty
+/// head would assert record-keeping that did not happen.
 #[must_use]
 pub fn attest_art12(
     report: &nucleus_spec::ExitReport,
+    observed: Option<&crate::art12_collector::ObservedChain>,
     session_id: &str,
     executor_id: &str,
     key: &SigningKey,
 ) -> Option<Art12Attestation> {
-    if report.art12_chain_head.is_empty() {
+    let (head, records) = match observed {
+        Some(o) => (o.head.clone(), o.records),
+        None => (report.art12_chain_head.clone(), report.art12_records),
+    };
+    if head.is_empty() {
         return None;
     }
+    let diverged = observed
+        .is_some_and(|o| o.head != report.art12_chain_head || o.records != report.art12_records);
     let preimage = art12_attestation_preimage(
         session_id,
-        &report.art12_chain_head,
-        report.art12_records,
+        &head,
+        records,
         report.art12_dropped,
         executor_id,
     );
@@ -767,12 +793,27 @@ pub fn attest_art12(
     Some(Art12Attestation {
         kind: ART12_ATTESTATION_KIND.to_string(),
         session_id: session_id.to_string(),
-        chain_head: report.art12_chain_head.clone(),
-        records: report.art12_records,
+        chain_head: head,
+        records,
         dropped: report.art12_dropped,
         executor_id: executor_id.to_string(),
+        pod_reported_head: diverged.then(|| report.art12_chain_head.clone()),
+        pod_records: diverged.then_some(report.art12_records),
         signature: hex::encode(sig.to_bytes()),
     })
+}
+
+impl TrustGateConfig {
+    /// The shared secret a pod signs Article 12 records with.
+    ///
+    /// `None` here means no secret was configured, and the collector must then
+    /// REFUSE every record rather than accept unauthenticated evidence. Returning
+    /// an empty key would make any signature verify against it, which is the
+    /// fail-open reading of the same situation.
+    #[must_use]
+    pub fn art12_secret(&self) -> Option<&[u8]> {
+        self.receipt_secret.as_ref().map(|s| s.as_slice())
+    }
 }
 
 /// Compute the v1 content hash over the canonical receipt fields.
@@ -1214,7 +1255,8 @@ mod tests {
             "no log means no attestation, or the assertion below proves nothing"
         );
 
-        report.art12_attestation = attest_art12(&sample_exit_report(), "sess", "exec-1", &key);
+        report.art12_attestation =
+            attest_art12(&sample_exit_report(), None, "sess", "exec-1", &key);
         let body = build_session_complete_body(&report);
         assert_eq!(
             body["art12_attestation"]["chain_head"].as_str(),
@@ -1237,7 +1279,7 @@ mod tests {
         use ed25519_dalek::{Signature, Verifier as _};
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let report = sample_exit_report();
-        let att = attest_art12(&report, "sess", "exec-1", &key).expect("a log was kept");
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).expect("a log was kept");
 
         let preimage = art12_attestation_preimage(
             "sess",
@@ -1253,6 +1295,97 @@ mod tests {
             .is_ok());
     }
 
+    fn observed(head: &str, records: u64) -> crate::art12_collector::ObservedChain {
+        crate::art12_collector::ObservedChain {
+            head: head.to_string(),
+            records,
+        }
+    }
+
+    /// **The attestation signs what the HOST saw, not what the pod said.**
+    /// Signing the pod's value would be an honest signature over a possibly
+    /// dishonest input, which reads exactly like a trustworthy one.
+    #[test]
+    fn the_host_observed_head_is_what_gets_signed() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_chain_head = "what-the-pod-claimed".into();
+        report.art12_records = 5;
+
+        let att = attest_art12(
+            &report,
+            Some(&observed("what-the-host-received", 5)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert_eq!(att.chain_head, "what-the-host-received");
+        assert_eq!(
+            att.pod_reported_head.as_deref(),
+            Some("what-the-pod-claimed"),
+            "the disagreement must be carried, not silently resolved"
+        );
+    }
+
+    /// Agreement carries no divergence fields — otherwise every ordinary session
+    /// would look like a finding and the real ones would be lost in it.
+    #[test]
+    fn agreement_records_no_divergence() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(
+            &report,
+            Some(&observed(&report.art12_chain_head, report.art12_records)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert!(att.pod_reported_head.is_none());
+        assert!(att.pod_records.is_none());
+    }
+
+    /// **The alarming direction.** A pod claiming MORE records than the host
+    /// received means decisions were made and never witnessed. The count must
+    /// survive into the attestation so a reader can tell which way it went.
+    #[test]
+    fn a_pod_claiming_more_records_than_the_host_saw_is_visible() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_records = 99;
+
+        let att = attest_art12(
+            &report,
+            Some(&observed(&report.art12_chain_head, 3)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert_eq!(att.records, 3, "the host attests what it received");
+        assert_eq!(
+            att.pod_records,
+            Some(99),
+            "and what the pod claimed, so the gap is legible"
+        );
+    }
+
+    /// Without the evidence channel the pod-reported head is still attested —
+    /// the weaker-but-honest configuration that existed before. Falling back to
+    /// nothing would make deployments without a channel silently unattested.
+    #[test]
+    fn with_no_host_observation_the_pod_head_is_still_attested() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).unwrap();
+        assert_eq!(att.chain_head, report.art12_chain_head);
+        assert!(
+            att.pod_reported_head.is_none(),
+            "with nothing to compare against there is no divergence to report"
+        );
+    }
+
     /// **A rewritten log cannot keep its attestation.** This is the property the
     /// export exists for: change the history, and the head no longer matches the
     /// one the executor signed.
@@ -1261,7 +1394,7 @@ mod tests {
         use ed25519_dalek::{Signature, Verifier as _};
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let report = sample_exit_report();
-        let att = attest_art12(&report, "sess", "exec-1", &key).unwrap();
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).unwrap();
 
         // The pod rewrites its log after the fact; the head moves.
         let forged = art12_attestation_preimage("sess", "different-head", 5, 0, "exec-1");
@@ -1313,7 +1446,7 @@ mod tests {
         let mut report = sample_exit_report();
         report.art12_chain_head = String::new();
         assert!(
-            attest_art12(&report, "sess", "exec-1", &key).is_none(),
+            attest_art12(&report, None, "sess", "exec-1", &key).is_none(),
             "an absent log must not produce an attestation that implies one"
         );
     }

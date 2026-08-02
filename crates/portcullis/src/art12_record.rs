@@ -191,6 +191,29 @@ pub struct Art12Attestation {
     pub dropped: u64,
     /// Executor identity, so a verifier knows which public key to check.
     pub executor_id: String,
+    /// The head the POD reported, when it differs from the head the host
+    /// observed.
+    ///
+    /// `None` means they agreed. `Some(_)` is a finding that must not be
+    /// averaged away: the pod's own log and the stream the host received
+    /// diverged. The direction matters — see `pod_records`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub pod_reported_head: Option<String>,
+    /// How many records the pod said it wrote.
+    ///
+    /// `records` is what the HOST received. The two can legitimately differ in
+    /// ONE direction: the pod ships each record before appending it locally, so
+    /// a pod that dies mid-write leaves the host holding one MORE than the pod
+    /// kept. `pod_records > records` is the alarming direction — records the pod
+    /// made and the host never saw.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub pod_records: Option<u64>,
     /// Ed25519 signature over [`art12_attestation_preimage`], hex-encoded.
     pub signature: String,
 }

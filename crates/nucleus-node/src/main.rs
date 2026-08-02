@@ -28,6 +28,7 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+mod art12_collector;
 mod auth;
 mod firecracker_config;
 mod grpc_tls;
@@ -699,6 +700,10 @@ async fn main() -> Result<(), ApiError> {
 
     // Routes that don't require auth (OIDC has its own token validation)
     let public_routes = Router::new()
+        .route(
+            "/v1/art12/{session_id}",
+            post(art12_collector::art12_append),
+        )
         .route("/v1/health", get(health))
         .route("/v1/oidc/github", post(oidc_github_exchange))
         .with_state(state.clone());
@@ -1536,6 +1541,8 @@ async fn spawn_local_pod(
         "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
         audit_path.to_string_lossy().as_ref(),
     );
+
+    art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
     // Pass audit sink config from PodSpec for deletion-resistant remote storage
     if let Some(ref sink) = spec.spec.audit_sink {
@@ -3637,6 +3644,8 @@ impl NodeService for GrpcService {
             // the pod can no longer move.
             art12_attestation: trust_gate::attest_art12(
                 &report,
+                // What the HOST received, not what the pod reported.
+                art12_collector::observed_chain(&self.state.state_dir, &id.to_string()).as_ref(),
                 &id.to_string(),
                 &self.state.trust_gate.executor_id,
                 &self.state.trust_gate.executor_signing_key,

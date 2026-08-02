@@ -175,6 +175,13 @@ pub(crate) fn health_json(log: Option<&Arc<Art12Log>>) -> serde_json::Value {
 pub(crate) struct Art12Sink {
     inner: Arc<dyn VerdictSink>,
     log: Arc<Art12Log>,
+    /// Streams each record to the host as it is produced, when configured.
+    ///
+    /// The local log stays regardless: it is the fast path and the thing the
+    /// chain head is computed over. The shipper is the copy the pod cannot
+    /// retract, which is what makes the host's attestation bind something it
+    /// observed rather than something the pod reported.
+    shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
     session_id: String,
     policy_checksum: String,
     dlc_provisioned: bool,
@@ -187,10 +194,12 @@ impl Art12Sink {
         session_id: String,
         policy_checksum: String,
         dlc_provisioned: bool,
+        shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
     ) -> Self {
         Self {
             inner,
             log,
+            shipper,
             session_id,
             policy_checksum,
             dlc_provisioned,
@@ -320,6 +329,20 @@ fn operation_name(op: Operation) -> &'static str {
 impl VerdictSink for Art12Sink {
     fn record(&self, ctx: VerdictContext) -> Result<(), SinkError> {
         let draft = self.project(&ctx);
+
+        // Ship BEFORE the local append. The record the host witnesses is the
+        // one built from this decision, and ordering it first means a pod that
+        // crashes between the two has told the host more than it kept, never
+        // less.
+        if let Some(shipper) = &self.shipper {
+            match serde_json::to_string(&draft) {
+                Ok(line) => shipper.submit(line),
+                Err(e) => {
+                    tracing::error!(error = %e, "could not serialize an Article 12 record for the host")
+                }
+            }
+        }
+
         if let Err(e) = self.log.append(draft) {
             // The log has latched `degraded` and counted the drop; the next
             // preflight fails closed. Do not fail this call: its effect may
@@ -331,6 +354,19 @@ impl VerdictSink for Art12Sink {
     }
 
     fn preflight(&self, operation: Operation) -> Result<(), SinkError> {
+        // The evidence channel failing is as disqualifying as the local log
+        // failing: in both cases the next operation would execute without its
+        // record reaching somewhere the pod cannot retract it.
+        if let Some(shipper) = &self.shipper {
+            if shipper.is_degraded() {
+                tracing::error!(
+                    ?operation,
+                    unshipped = shipper.unshipped(),
+                    "refusing: Article 12 records are not reaching the host"
+                );
+                return Err(SinkError::Locked);
+            }
+        }
         if self.log.is_degraded() {
             tracing::error!(
                 ?operation,
@@ -366,6 +402,7 @@ mod tests {
             "sess".to_string(),
             "checksum".to_string(),
             false,
+            None,
         )
     }
 

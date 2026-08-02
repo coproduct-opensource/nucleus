@@ -182,6 +182,8 @@ fn the_signed_head_round_trips_through_the_cli() {
         records: 1,
         dropped: 0,
         executor_id: "exec-1".into(),
+        pod_reported_head: None,
+        pod_records: None,
         signature: hex::encode(key.sign(preimage.as_bytes()).to_bytes()),
     };
     let att_path = dir.path().join("att.json");

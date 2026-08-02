@@ -27,6 +27,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod art12;
+mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
@@ -119,6 +120,10 @@ struct Args {
     /// report. Startup refuses rather than warns.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_LOG")]
     art12_log: Option<PathBuf>,
+    /// Host URL to stream Article 12 records to as they are produced.
+    /// See `art12_shipper` for why this is fail-closed and why it matters.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_SHIP_URL")]
+    art12_ship_url: Option<String>,
     /// Approval authority secret (separate from tool auth).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
     approval_secret: String,
@@ -1531,6 +1536,14 @@ async fn main() -> Result<(), ApiError> {
         info!(path = %path.display(), "Article 12 record-keeping log opened");
     }
 
+    // The Article 12 evidence channel. Absent means records live only in the
+    // pod, so the host can attest only a head the pod REPORTED.
+    let art12_shipper = art12_shipper::Art12Shipper::from_args(
+        args.art12_ship_url.as_ref(),
+        args.audit_secret.as_deref(),
+        &session_id,
+    );
+
     let dlc_admission = dlc_admission::provision_from_env();
     let dlc_provisioned = dlc_admission.is_some();
 
@@ -1546,6 +1559,7 @@ async fn main() -> Result<(), ApiError> {
         session_id.clone(),
         dlc_provisioned,
         art12_log.clone(),
+        art12_shipper.clone(),
     );
 
     if dlc_provisioned {

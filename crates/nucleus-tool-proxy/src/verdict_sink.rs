@@ -64,6 +64,7 @@ pub fn build_monitored_sink(
     session_id: String,
     dlc_provisioned: bool,
     art12_log: Option<Arc<crate::art12::Art12Log>>,
+    art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
 ) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
     let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
         file_lockdown,
@@ -85,6 +86,7 @@ pub fn build_monitored_sink(
             session_id,
             policy_checksum,
             dlc_provisioned,
+            art12_shipper,
         )) as Arc<dyn VerdictSink>,
         None => inner,
     };
@@ -449,6 +451,7 @@ mod tests {
             "test-session".to_string(),
             false,
             None,
+            None,
         )
     }
 
@@ -500,6 +503,7 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            None,
             None,
         )
         .0;

@@ -261,12 +261,15 @@ fn verify_here() -> Result<()> {
     check_forbidden_operation(&pod)?;
     check_admission_gate(&pod)?;
     check_guest_facts(&host, &pod)?;
+    check_art12_witnessed(&host, &pod)?;
 
     println!();
     println!("Tier 2 works on this host. A real nucleus pod booted, proved its");
     println!("identity to its own tool-proxy, served an allowed operation from");
     println!("inside the sandbox under an issuer-signed admission credential,");
-    println!("refused a forbidden one, and refused an uncredentialed operation");
+    println!("refused a forbidden one, refused an uncredentialed operation");
+    println!("at the verified-admission gate, and streamed both the allow and the");
+    println!("refusal to the host's own Article 12 log as they happened.");
     println!("at the verified-admission gate.");
     Ok(())
 }
@@ -669,6 +672,70 @@ fn check_forbidden_operation(pod: &Pod) -> Result<()> {
         );
     }
     println!("  [OK] forbidden operation denied by policy (kind={kind})");
+    Ok(())
+}
+
+/// The HOST's own Article 12 record of what this pod did.
+///
+/// # Why this is read from the host, not the pod
+///
+/// A pod-side log proves only what the pod chose to keep. This reads the file
+/// the NODE assembled from records streamed as each decision was made, so a pod
+/// that suppressed or rewrote its own copy cannot make this check pass.
+///
+/// # Why it asserts a DENIAL specifically
+///
+/// `check_forbidden_operation` above already proved the operation was refused.
+/// What that cannot show is that the refusal was RECORDED — and a record-keeping
+/// log containing only allows is non-empty, plausible, and wrong in the most
+/// dangerous direction. Every defect in this arc (an unwired sink, a producer
+/// with no consumer, a signed attestation nobody sent) was invisible to unit
+/// tests and would have been caught by this one check running once.
+fn check_art12_witnessed(host: &Tier2Host, pod: &Pod) -> Result<()> {
+    let log = format!("{HOST_STATE_DIR}/art12/{}.jsonl", pod.id);
+    if !host.test(&format!("test -s {log}")) {
+        bail!(
+            "the host collected no Article 12 records at {log}. The pod booted and\n             enforced policy, but nothing reached the host's evidence channel — so\n             the executor would attest a chain head the POD reported rather than one\n             the host observed."
+        );
+    }
+    let contents = host.sh(&format!("cat {log}"))?;
+
+    // Non-vacuity first, as in check_guest_facts: an empty file satisfies every
+    // "contains no wrong thing" check below while proving nothing.
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        bail!("the host's Article 12 log at {log} exists but is empty");
+    }
+
+    let mut denials = 0usize;
+    let mut allows = 0usize;
+    for line in &lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            bail!("the host stored a malformed Article 12 record: {line}");
+        };
+        match v.get("verdict").and_then(|x| x.as_str()) {
+            Some("deny") => denials += 1,
+            Some("allow") => allows += 1,
+            _ => {}
+        }
+    }
+
+    if denials == 0 {
+        bail!(
+            "the host witnessed {} Article 12 records but NOT the refusal it just\n             observed. A log of allows only is exactly the failure this check\n             exists to catch: it is non-empty, it verifies, and it is wrong.",
+            lines.len()
+        );
+    }
+    // Both legs, for the same reason check_forbidden_operation pairs with
+    // check_allowed_operation: a runtime that recorded a denial for everything
+    // would satisfy the assertion above while proving nothing.
+    if allows == 0 {
+        bail!(
+            "the host witnessed {denials} refusals and no allows, so the log does not\n             distinguish a working runtime from one that denies everything."
+        );
+    }
+
+    println!("  [OK] host witnessed {allows} allowed and {denials} refused decisions in its own Article 12 log");
     Ok(())
 }
 

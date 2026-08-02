@@ -516,6 +516,8 @@ mod tests {
             records: 2,
             dropped: 0,
             executor_id: "exec-1".into(),
+            pod_reported_head: None,
+            pod_records: None,
             signature: hex::encode(key.sign(preimage.as_bytes()).to_bytes()),
         }
     }
