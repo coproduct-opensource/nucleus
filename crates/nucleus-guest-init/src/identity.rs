@@ -109,6 +109,53 @@ pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, St
     }
 }
 
+/// Fetch this pod's credential-broker capability, once.
+///
+/// # Why this must happen before `exec_proxy`
+///
+/// The host serves this secret EXACTLY ONCE per pod. That one-shot is the whole
+/// security property: any guest process can open `AF_VSOCK` — permissions on
+/// `/dev/vsock` do not gate the socket family, which was verified by experiment
+/// — so a workload can reach the workload API too. What it cannot do is arrive
+/// first. Fetching here, before the proxy execs and long before it spawns any
+/// workload, is what makes "first" true.
+///
+/// # And why the value must not be logged
+///
+/// Possession of this IS the capability to speak to the credential broker as the
+/// mediating proxy. Unlike the task token (a scoped capability plus a public
+/// issuer key) there is no sense in which handing it out is harmless, so errors
+/// here name the failure and never the payload.
+pub fn fetch_broker_secret(port: u32) -> Result<String, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_BROKER_SECRET\n")
+        .map_err(|e| format!("failed to send FETCH_BROKER_SECRET: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read broker-secret response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        // Not `{e}` and not the body: a parse error that echoed the response
+        // would put the capability in the guest console log.
+        .map_err(|_| "broker-secret response was not valid JSON".to_string())?;
+    if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    parsed
+        .get("secret")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "broker-secret response had no `secret`".to_string())
+}
+
 pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;

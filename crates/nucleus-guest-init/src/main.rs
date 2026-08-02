@@ -130,6 +130,24 @@ fn run() -> Result<(), String> {
     //
     // Synchronous, and before `exec_proxy`, so the values are in the environment
     // before anything reads them.
+    // The broker capability, fetched BEFORE `exec_proxy` and therefore before any
+    // workload exists. The host serves it once; arriving first is the entire
+    // property, since any guest process can open AF_VSOCK.
+    //
+    // Not fatal when absent: a pod may have no broker at all, and the tool-proxy
+    // fails closed on its own (an unsigned envelope is refused host-side). Making
+    // it fatal would break every pod that never had one.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_broker_secret(port) {
+            Ok(secret) => {
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", secret);
+                // Presence only — never the value, and never its length.
+                eprintln!("fetched broker capability over vsock");
+            }
+            Err(err) => eprintln!("no broker capability over vsock: {err}"),
+        }
+    }
+
     let mut token_from_vsock = false;
     if let Some(port) = workload_api_port {
         match identity::fetch_task_token(port) {

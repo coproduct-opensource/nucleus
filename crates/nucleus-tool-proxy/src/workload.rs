@@ -238,6 +238,36 @@ mod tests {
         );
     }
 
+    /// **The broker capability must never reach the workload.** It is what lets
+    /// the host tell the mediating proxy from every other process in the guest;
+    /// a workload holding it could ask the broker to act directly, skipping the
+    /// kernel decision, taint ceiling and flow cross-check.
+    ///
+    /// Asserted rather than left to a grep: absence is easy to establish by
+    /// accident and easy to lose by accident, and the losing edit would look
+    /// like a helpful convenience.
+    #[test]
+    fn the_broker_capability_never_reaches_the_workload() {
+        let hostile = spec_with(&[("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "stolen")]);
+        let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret", &[]);
+        // A spec that names it gets it back — that value is the SPEC's, not the
+        // runtime's, and the runtime never puts its own there. The property is
+        // that nothing in `workload_env` SOURCES it from the runtime.
+        assert_eq!(
+            env.get("NUCLEUS_TOOL_PROXY_BROKER_SECRET")
+                .map(String::as_str),
+            Some("stolen"),
+            "spec env passes through; the point is the runtime adds nothing here"
+        );
+
+        // With a clean spec, the key must be absent entirely.
+        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", "s3cret", &[]);
+        assert!(
+            !env.contains_key("NUCLEUS_TOOL_PROXY_BROKER_SECRET"),
+            "the runtime must never place its broker capability in the workload's environment"
+        );
+    }
+
     /// The control: ordinary spec env still reaches the workload, so the
     /// precedence above is not simply discarding what the spec asked for.
     #[test]

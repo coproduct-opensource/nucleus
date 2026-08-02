@@ -79,6 +79,39 @@ pub enum WorkloadApiCommand {
     /// public keyset plus the pod's OWN capability grants; possession is
     /// exactly the authority intended.
     FetchDlcAdmission,
+    /// `FETCH_BROKER_SECRET` — request this pod's credential-broker capability.
+    ///
+    /// # Served exactly ONCE per pod, and that is the security property
+    ///
+    /// Its neighbours may be fetched repeatedly: a task token and an admission
+    /// keyset are per-pod material whose possession is the authority intended,
+    /// so serving them twice changes nothing. This one is different. It exists
+    /// to distinguish the mediating tool-proxy from every OTHER process in the
+    /// guest, and a secret served twice cannot do that.
+    ///
+    /// # What it defends against, concretely
+    ///
+    /// Any guest process can open `AF_VSOCK` — verified by experiment, and NOT
+    /// preventable by permissions on `/dev/vsock`, which does not gate the
+    /// socket family. So a workload can reach the broker directly. The broker
+    /// enforces the pod's capability lattice but has no taint state (the
+    /// `FlowTracker` lives in the tool-proxy), so a direct connection would
+    /// bypass the kernel decision, the session taint ceiling, the
+    /// lethal-trifecta guard and the flow cross-check.
+    ///
+    /// One-shot delivery closes that: `nucleus-guest-init` fetches this before
+    /// `exec_proxy`, so before any workload exists, and a workload that asks
+    /// later is refused. Combined with the uid boundary the tool-proxy already
+    /// requires when a credential is being withheld — same-uid processes can
+    /// read each other's `/proc/<pid>/environ` — the secret is reachable only by
+    /// the proxy.
+    ///
+    /// # Why not the kernel command line
+    ///
+    /// `/proc/cmdline` is world-readable in the guest, which is where
+    /// `nucleus.auth_secret` and `nucleus.approval_secret` arrive today. Neither
+    /// is a proxy-only capability for exactly that reason.
+    FetchBrokerSecret,
 }
 
 impl WorkloadApiCommand {
@@ -96,6 +129,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::Ping => "PING",
             WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
             WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
+            WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
         }
     }
 }
@@ -160,6 +194,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "PING" => Ok(WorkloadApiCommand::Ping),
         "FETCH_TASK_TOKEN" => Ok(WorkloadApiCommand::FetchTaskToken),
         "FETCH_DLC_ADMISSION" => Ok(WorkloadApiCommand::FetchDlcAdmission),
+        "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -329,12 +364,14 @@ mod tests {
                 WorkloadApiCommand::Ping => "PING",
                 WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
                 WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
+                WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
             }
         }
         for cmd in [
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::FetchDlcAdmission,
+            WorkloadApiCommand::FetchBrokerSecret,
             WorkloadApiCommand::Ping,
         ] {
             assert_eq!(assert_known(cmd), cmd.as_wire());

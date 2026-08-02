@@ -2734,28 +2734,35 @@ async fn spawn_firecracker_pod(
                 state.identity_vsock_port,
                 id,
                 manager.clone(),
-                // The same token that rides the kernel command line today.
-                // Serving it here is what lets the cmdline copy go: a value
-                // fetched after boot is not baked into a snapshot base.
-                task_token.clone(),
-                // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                // Served over the workload API rather than the cmdline:
-                // per-pod material survives snapshot restore correctly, and
-                // a credential set exceeds the cmdline capacity (observed
-                // live). Partial labels still provision — the proxy's
-                // parser fails CLOSED, so misconfiguration narrows.
-                {
-                    let l = &spec.metadata.labels;
-                    l.get("dlc_trusted_keys")
-                        .map(|keys| workload_api_vsock::DlcAdmissionMaterial {
-                            trusted_keys: keys.clone(),
-                            issuer: l.get("dlc_issuer").cloned().unwrap_or_default(),
-                            credentials: l.get("dlc_credentials").cloned().unwrap_or_default(),
+                workload_api_vsock::PodMaterial {
+                    // The same token that rides the kernel command line today.
+                    // Serving it here is what lets the cmdline copy go: a value
+                    // fetched after boot is not baked into a snapshot base.
+                    task_token: task_token.clone(),
+                    // Pod-scoped DLC-D admission provisioning (PodSpec labels).
+                    // Partial labels still provision — the proxy's parser fails
+                    // CLOSED, so misconfiguration narrows rather than widens.
+                    dlc_admission: {
+                        let l = &spec.metadata.labels;
+                        l.get("dlc_trusted_keys").map(|keys| {
+                            workload_api_vsock::DlcAdmissionMaterial {
+                                trusted_keys: keys.clone(),
+                                issuer: l.get("dlc_issuer").cloned().unwrap_or_default(),
+                                credentials: l.get("dlc_credentials").cloned().unwrap_or_default(),
+                            }
                         })
+                    },
+                    // The broker capability, minted per pod and served ONCE. See
+                    // `handle_fetch_broker_secret`: this is what lets the host
+                    // tell the mediating proxy from every other guest process.
+                    broker_secret: Some(uuid::Uuid::new_v4().simple().to_string()),
+                    broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    )),
                 },
-                // Only when jailed: unjailed Firecracker runs as this same
-                // user and can already connect. Passing an owner there would
-                // hand our own socket away for no reason.
+                // Only when jailed: unjailed Firecracker runs as this same user
+                // and can already connect. Passing an owner there would hand our
+                // own socket away for no reason.
                 jail_layout
                     .as_ref()
                     .map(|_| (state.jailer_uid, state.jailer_gid)),

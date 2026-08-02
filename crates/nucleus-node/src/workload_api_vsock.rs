@@ -72,6 +72,26 @@ impl std::fmt::Debug for WorkloadApiVsockBridge {
             .finish()
     }
 }
+/// The per-pod material a workload-API bridge serves.
+///
+/// Bundled rather than passed as six positional arguments: clippy's
+/// `too_many_arguments` fired when the broker capability was added, and it was
+/// right to. These four are one thing — everything the host holds ON BEHALF of
+/// one pod — and a struct makes a new item a named field at every construction
+/// site rather than another `None` in a row of them.
+#[derive(Default)]
+pub struct PodMaterial {
+    /// The pod's live-path session capability token.
+    pub task_token: Option<crate::session_mint::MintedTaskToken>,
+    /// DLC-D verified-admission provisioning.
+    pub dlc_admission: Option<DlcAdmissionMaterial>,
+    /// The credential-broker capability, served exactly once.
+    pub broker_secret: Option<String>,
+    /// Whether the capability has been served. SHARED across every connection
+    /// this listener accepts — a per-connection flag would make "once" mean
+    /// "once per connection", which is not a restriction.
+    pub broker_secret_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl WorkloadApiVsockBridge {
     /// Starts the Workload API vsock bridge for a specific pod.
@@ -98,10 +118,15 @@ impl WorkloadApiVsockBridge {
         port: u32,
         pod_id: uuid::Uuid,
         identity_manager: IdentityManager,
-        task_token: Option<crate::session_mint::MintedTaskToken>,
-        dlc_admission: Option<DlcAdmissionMaterial>,
+        material: PodMaterial,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<Self> {
+        let PodMaterial {
+            task_token,
+            dlc_admission,
+            broker_secret,
+            broker_secret_served,
+        } = material;
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
 
@@ -173,9 +198,16 @@ impl WorkloadApiVsockBridge {
                                 let manager = identity_manager.clone();
                                 let task_token = task_token.clone();
                                 let dlc_admission = dlc_admission.clone();
+                                let broker_secret = broker_secret.clone();
+                                // Arc, so the one-shot flag is SHARED across every
+                                // connection this listener accepts. A per-connection
+                                // flag would make "once" mean "once per connection",
+                                // which is not a restriction at all.
+                                let broker_secret_served = std::sync::Arc::clone(&broker_secret_served);
                                 tokio::spawn(async move {
                                     if let Err(err) = handle_connection(
                                         stream, manager, pod_id, task_token, dlc_admission,
+                                        broker_secret, broker_secret_served,
                                     )
                                     .await
                                     {
@@ -234,6 +266,42 @@ impl WorkloadApiVsockBridge {
 /// verify half treats a missing token and an invalid one differently.
 /// Serve the pod's DLC admission provisioning, or a JSON error when the pod
 /// was not provisioned (the ordinary case — the guest treats it as "inert").
+/// Serve the broker capability EXACTLY ONCE.
+///
+/// # The one-shot is the whole mechanism
+///
+/// This secret's job is to distinguish the mediating tool-proxy from every other
+/// process in the guest. Any guest process can open `AF_VSOCK` — that is not
+/// preventable by permissions on `/dev/vsock`, which does not gate the socket
+/// family — so a workload can reach this API too. What it cannot do is arrive
+/// FIRST: `nucleus-guest-init` fetches before `exec_proxy`, i.e. before any
+/// workload exists.
+///
+/// So a second request is not a retry to be tolerated, it is either a bug or an
+/// attempt, and either way the answer is no. Serving it twice would hand the
+/// capability to whoever asked second and silently reduce the broker to
+/// unauthenticated.
+///
+/// `Acquire`/`AcqRel` via `swap` rather than a load-then-store: two concurrent
+/// connections must not both observe "not yet served".
+fn handle_fetch_broker_secret(
+    secret: Option<&str>,
+    already_served: &std::sync::atomic::AtomicBool,
+) -> String {
+    use std::sync::atomic::Ordering;
+    let Some(secret) = secret else {
+        return r#"{"error":"no broker secret provisioned for this pod"}"#.to_string();
+    };
+    if already_served.swap(true, Ordering::AcqRel) {
+        tracing::warn!(
+            "refused a repeat FETCH_BROKER_SECRET — the capability is served once, before the \
+             workload exists; a second request is a bug or an attempt to obtain it"
+        );
+        return r#"{"error":"broker secret already served"}"#.to_string();
+    }
+    serde_json::json!({ "secret": secret }).to_string()
+}
+
 fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
     match material {
         Some(m) => serde_json::json!({
@@ -264,6 +332,8 @@ async fn handle_connection(
     pod_id: uuid::Uuid,
     task_token: Option<crate::session_mint::MintedTaskToken>,
     dlc_admission: Option<DlcAdmissionMaterial>,
+    broker_secret: Option<String>,
+    broker_secret_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -295,6 +365,12 @@ async fn handle_connection(
             Ok(WorkloadApiCommand::FetchDlcAdmission) => {
                 debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
                 handle_fetch_dlc_admission(dlc_admission.as_ref())
+            }
+            Ok(WorkloadApiCommand::FetchBrokerSecret) => {
+                // Value never logged, at any level: this is the one workload-API
+                // payload whose possession IS the capability.
+                debug!("workload API FETCH_BROKER_SECRET for pod {}", pod_id);
+                handle_fetch_broker_secret(broker_secret.as_deref(), &broker_secret_served)
             }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
@@ -495,8 +571,7 @@ mod tests {
             15012,
             pod_id,
             manager,
-            None,
-            None,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -542,8 +617,7 @@ mod tests {
             15012,
             pod_id,
             manager,
-            None,
-            None,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -578,10 +652,16 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
-        let bridge =
-            WorkloadApiVsockBridge::start(&vsock_uds_path, 8080, pod_id, manager, None, None, None)
-                .await
-                .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            8080,
+            pod_id,
+            manager,
+            PodMaterial::default(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // Verify Firecracker naming convention: {uds_path}_{port}
         let expected_path = temp_dir.path().join("pod-123").join("vsock.sock_8080");
@@ -602,8 +682,7 @@ mod tests {
             15012,
             pod_id,
             manager,
-            None,
-            None,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -671,8 +750,7 @@ mod tests {
             15012,
             pod1_id,
             manager.clone(),
-            None,
-            None,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -682,8 +760,7 @@ mod tests {
             15012,
             pod2_id,
             manager.clone(),
-            None,
-            None,
+            PodMaterial::default(),
             None,
         )
         .await
@@ -730,5 +807,56 @@ mod tests {
         let mut response = String::new();
         reader.read_line(&mut response).await.unwrap();
         response
+    }
+
+    use std::sync::atomic::AtomicBool;
+
+    /// **The one-shot IS the mechanism.** This secret distinguishes the
+    /// mediating tool-proxy from every other process in the guest. Any guest
+    /// process can open AF_VSOCK, so what the proxy has that a workload does not
+    /// is only that it asked FIRST — before `exec_proxy`, before a workload
+    /// exists. Serving twice hands the capability to whoever asks second.
+    #[test]
+    fn the_broker_secret_is_served_exactly_once() {
+        let served = AtomicBool::new(false);
+        let first = handle_fetch_broker_secret(Some("cap"), &served);
+        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["secret"], "cap", "the first request must be served");
+
+        let second = handle_fetch_broker_secret(Some("cap"), &served);
+        assert!(
+            second.contains("already served"),
+            "a second request must be refused: {second}"
+        );
+        assert!(
+            !second.contains("cap"),
+            "and must not leak the secret in the refusal: {second}"
+        );
+    }
+
+    /// A pod with no broker secret gets an explicit error, and — the part that
+    /// matters — the refusal must not consume the one-shot. Otherwise a
+    /// misconfigured pod could be made to burn its own capability before the
+    /// proxy ever asks.
+    #[test]
+    fn an_absent_secret_does_not_consume_the_one_shot() {
+        let served = AtomicBool::new(false);
+        let r = handle_fetch_broker_secret(None, &served);
+        assert!(r.contains("error"), "got: {r}");
+        assert!(
+            !served.load(std::sync::atomic::Ordering::Acquire),
+            "a refusal for an absent secret must not mark the capability as served"
+        );
+    }
+
+    /// `FETCH_BROKER_SECRET` must be a command the parser knows, or the guest
+    /// client would fail closed — correctly, but silently and far from the cause.
+    #[test]
+    fn the_broker_secret_command_round_trips_through_the_parser() {
+        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        assert_eq!(
+            parse_command(b"FETCH_BROKER_SECRET\n").unwrap(),
+            WorkloadApiCommand::FetchBrokerSecret
+        );
     }
 }
