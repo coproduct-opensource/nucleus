@@ -1811,33 +1811,11 @@ async fn main() -> Result<(), ApiError> {
         tokio::fs::write(path, addr.to_string()).await?;
     }
 
-    // The workload starts HERE and not earlier. Every effect it attempts must go
-    // through the kernel, and the listener it has to reach does not exist until
-    // this point — so `spawn_workload` takes the bound address, and the ordering
-    // is a property of the signature rather than of remembering.
-    //
-    // Held for the process lifetime: `kill_on_drop` means dropping this handle
-    // would kill the workload, and a workload that dies when the proxy stops
-    // paying attention is the correct coupling — the pod exists to run it under
-    // mediation, so neither should outlive the other.
-    let _workload = match spec.spec.workload.as_ref() {
-        Some(w) => {
-            let url = format!("http://{addr}");
-            match workload::spawn_workload(w, &url, &args.auth_secret, &spec.spec.work_dir) {
-                Ok(child) => Some(child),
-                Err(e) => {
-                    // Fatal, deliberately. A pod that was asked to run a workload
-                    // and did not is not a working pod, and returning success
-                    // leaves an operator waiting for output that never comes.
-                    return Err(ApiError::Spec(format!(
-                        "failed to start workload {:?}: {e}",
-                        w.command
-                    )));
-                }
-            }
-        }
-        None => None,
-    };
+    // Started HERE and not earlier: see `workload::spawn_workload`, which takes
+    // the bound address precisely so this cannot be called before mediation is
+    // live. Held for the process lifetime — `kill_on_drop` means dropping the
+    // handle kills the workload, which is the correct coupling.
+    let _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;

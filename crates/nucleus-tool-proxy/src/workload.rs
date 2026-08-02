@@ -82,6 +82,31 @@ pub(crate) fn spawn_workload(
     cmd.spawn()
 }
 
+/// Start the pod's workload if the spec asks for one.
+///
+/// Lives here rather than in `main` so the fatal-on-failure decision sits beside
+/// the reasoning for it: a pod that was asked to run a workload and did not is
+/// not a working pod, and returning success leaves an operator waiting for
+/// output that never comes.
+///
+/// # Errors
+/// If a workload is configured and cannot be started.
+pub(crate) fn start_if_configured(
+    spec: &nucleus_spec::PodSpec,
+    addr: std::net::SocketAddr,
+    auth_secret: &str,
+) -> Result<Option<tokio::process::Child>, crate::ApiError> {
+    let Some(w) = spec.spec.workload.as_ref() else {
+        return Ok(None);
+    };
+    let url = format!("http://{addr}");
+    spawn_workload(w, &url, auth_secret, &spec.spec.work_dir)
+        .map(Some)
+        .map_err(|e| {
+            crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
