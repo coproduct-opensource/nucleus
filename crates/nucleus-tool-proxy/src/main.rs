@@ -1811,10 +1811,7 @@ async fn main() -> Result<(), ApiError> {
         tokio::fs::write(path, addr.to_string()).await?;
     }
 
-    // Started HERE and not earlier: see `workload::spawn_workload`, which takes
-    // the bound address precisely so this cannot be called before mediation is
-    // live. Held for the process lifetime — `kill_on_drop` means dropping the
-    // handle kills the workload, which is the correct coupling.
+    // Started here and not earlier; `workload::start_if_configured` explains why.
     let _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
 
     let shutdown = async {

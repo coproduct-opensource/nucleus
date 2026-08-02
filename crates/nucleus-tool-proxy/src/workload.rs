@@ -84,6 +84,12 @@ pub(crate) fn spawn_workload(
 
 /// Start the pod's workload if the spec asks for one.
 ///
+/// Called AFTER the listener is bound: it takes the bound address, which does
+/// not exist until the server is up, so the ordering is a property of the
+/// signature. The returned handle must be held for the process lifetime —
+/// `kill_on_drop` means dropping it kills the workload, which is the correct
+/// coupling between a pod and the thing it exists to run.
+///
 /// Lives here rather than in `main` so the fatal-on-failure decision sits beside
 /// the reasoning for it: a pod that was asked to run a workload and did not is
 /// not a working pod, and returning success leaves an operator waiting for
