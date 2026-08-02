@@ -233,6 +233,59 @@ pub async fn read_frame_async(
     }
 }
 
+/// Split a signed frame into its signature and the payload it covers.
+///
+/// Wire form is `<hex-hmac> <payload-json>` — one space, signature first. Chosen
+/// over a JSON wrapper because the payload would then need escaping inside a
+/// JSON string, and a verifier that re-serialises to check a signature is
+/// checking its own serialiser (the same reasoning `Art12Record::canonical_preimage`
+/// gives).
+///
+/// Returns `None` for anything that is not exactly that shape. The caller must
+/// treat `None` as a refusal — an unsigned frame is not a frame with an empty
+/// signature.
+pub fn split_signed_frame(frame: &str) -> Option<(&str, &str)> {
+    let (sig, payload) = frame.split_once(' ')?;
+    if sig.is_empty() || payload.is_empty() {
+        return None;
+    }
+    Some((sig, payload))
+}
+
+/// Whether a frame was signed by the holder of this pod's broker capability.
+///
+/// # A missing secret refuses everything
+///
+/// `None` means no capability was provisioned for this pod, so the host cannot
+/// authenticate anything and therefore accepts nothing. Treating "no secret" as
+/// "no signature required" is the fail-OPEN reading, and it is the reading an
+/// attacker would prefer: it turns a provisioning failure into an open door.
+///
+/// # Constant-time
+///
+/// `verify_slice` rather than `==` on the hex: a byte-by-byte comparison leaks
+/// how much of a guessed signature was right, and a guest can retry freely.
+#[must_use]
+pub fn frame_is_authentic(frame: &str, secret: Option<&[u8]>) -> bool {
+    use hmac::{digest::KeyInit, Hmac, Mac};
+    use sha2::Sha256;
+
+    let Some(secret) = secret else {
+        return false;
+    };
+    let Some((sig_hex, payload)) = split_signed_frame(frame) else {
+        return false;
+    };
+    let Ok(sig) = hex::decode(sig_hex) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
+        return false;
+    };
+    mac.update(payload.as_bytes());
+    mac.verify_slice(&sig).is_ok()
+}
+
 /// Serve exactly one request on an already-accepted connection.
 ///
 /// Generic over the stream so it is testable with an in-memory pipe rather than
@@ -248,10 +301,19 @@ pub async fn serve_connection<S>(
     identity: &PodIdentity,
     policy: &PermissionLattice,
     store: &CredentialStore,
+    broker_secret: Option<&[u8]>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    serve_connection_with_timeout(stream, identity, policy, store, CONNECTION_TIMEOUT).await
+    serve_connection_with_timeout(
+        stream,
+        identity,
+        policy,
+        store,
+        broker_secret,
+        CONNECTION_TIMEOUT,
+    )
+    .await
 }
 
 /// As [`serve_connection`], with the deadline injectable so the timeout itself
@@ -269,6 +331,7 @@ pub async fn serve_connection_with_timeout<S>(
     identity: &PodIdentity,
     policy: &PermissionLattice,
     store: &CredentialStore,
+    broker_secret: Option<&[u8]>,
     deadline: Duration,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -277,7 +340,25 @@ pub async fn serve_connection_with_timeout<S>(
 
     let read = tokio::time::timeout(deadline, read_frame_async(reader, MAX_FRAME_BYTES)).await;
     let response = match read {
+        // An unsigned or wrongly-signed frame gets the SAME refusal a malformed
+        // one does, deliberately. The capability exists to tell the mediating
+        // proxy from every other process in the guest; a distinct reason would
+        // tell a workload whether it holds it, which is precisely the fact it
+        // is trying to learn.
+        Ok(Ok(ref frame)) if !frame_is_authentic(frame, broker_secret) => {
+            // "not permitted" — the SAME reason a policy denial gives, not
+            // "malformed request". The capability exists to tell the mediating
+            // proxy from every other process in the guest, so a caller must not
+            // be able to distinguish "I lack the capability" from "I have it and
+            // policy said no". A distinct reason would answer exactly the
+            // question a workload probing this socket is asking.
+            crate::broker::BrokerResponse::refused("not permitted")
+        }
         Ok(Ok(frame)) => {
+            // Authentic: decide against the PAYLOAD, not the signed wrapper.
+            let frame = split_signed_frame(&frame)
+                .map(|(_, payload)| payload.to_string())
+                .unwrap_or(frame);
             // Read once, here, rather than inside the decision functions: those
             // take the instant as a parameter so they are testable without a
             // clock, and so a single request is judged against ONE instant
@@ -321,14 +402,39 @@ mod serving_tests {
         s
     }
 
+    /// The capability these tests speak with. Real pods get a minted one.
+    const TEST_SECRET: &[u8] = b"test-broker-capability";
+
+    /// Sign a payload the way the tool-proxy will: `<hex-hmac> <payload>`.
+    fn sign(payload: &str, secret: &[u8]) -> String {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
+        mac.update(payload.as_bytes());
+        format!("{} {payload}\n", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// Send a SIGNED request. Every pre-existing test here sent an unsigned one
+    /// and is now routed through this, which is the point: unsigned frames are
+    /// refused, so a test that still passed unsigned would be asserting the
+    /// refusal path while claiming to assert the grant path.
     async fn round_trip(
+        request: &str,
+        policy: &PermissionLattice,
+        store: &CredentialStore,
+    ) -> String {
+        round_trip_raw(&sign(request.trim_end(), TEST_SECRET), policy, store).await
+    }
+
+    /// Send bytes verbatim, signed or not.
+    async fn round_trip_raw(
         request: &str,
         policy: &PermissionLattice,
         store: &CredentialStore,
     ) -> String {
         let (client, server) = tokio::io::duplex(64 * 1024);
         let id = who();
-        let serve = serve_connection(server, &id, policy, store);
+        let serve = serve_connection(server, &id, policy, store, Some(TEST_SECRET));
         let talk = async {
             let (r, mut w) = tokio::io::split(client);
             w.write_all(request.as_bytes()).await.unwrap();
@@ -339,6 +445,147 @@ mod serving_tests {
         };
         let (_, reply) = tokio::join!(serve, talk);
         reply
+    }
+
+    /// **The non-vacuity control, and it must come first.** Everything below
+    /// asserts that some frame is REFUSED. A broker that refused every frame
+    /// would pass all of them while being completely broken, so the first thing
+    /// to establish is that a correctly-signed request is still served.
+    #[tokio::test]
+    async fn a_correctly_signed_request_is_still_served() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "s3cret");
+        let reply = round_trip(
+            &serde_json::json!({
+                "operation": "WebFetch",
+                "target": "api.example.test",
+                "justification": "routine"
+            })
+            .to_string(),
+            &policy,
+            &store,
+        )
+        .await;
+        assert!(reply.contains("\"granted\":true"), "got {reply}");
+    }
+
+    /// **A host with no capability provisioned accepts NOTHING.**
+    ///
+    /// This is the fail-open case, and it was untested until a perturbation
+    /// (`return true` when the secret is `None`) passed the entire suite. Absent
+    /// a secret the host cannot authenticate anyone, so treating that as "no
+    /// signature required" would turn a provisioning failure into an open door —
+    /// and provisioning failures are exactly when nobody is watching.
+    #[tokio::test]
+    async fn with_no_capability_provisioned_even_a_signed_frame_is_refused() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "s3cret");
+        let payload = serde_json::json!({
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string();
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let id = who();
+        // No secret: nothing can be authentic, however well-formed.
+        let serve = serve_connection(server, &id, &policy, &store, None);
+        let signed = sign(&payload, TEST_SECRET);
+        let talk = async {
+            let (r, mut w) = tokio::io::split(client);
+            w.write_all(signed.as_bytes()).await.unwrap();
+            w.flush().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await.unwrap();
+            line
+        };
+        let (_, reply) = tokio::join!(serve, talk);
+        assert!(
+            reply.contains("\"granted\":false"),
+            "a host that cannot authenticate must accept nothing: {reply}"
+        );
+    }
+
+    /// **An unsigned frame is refused.** This is the bypass being closed: any
+    /// guest process can open AF_VSOCK, so reaching the socket cannot itself be
+    /// the authorisation.
+    #[tokio::test]
+    async fn an_unsigned_frame_is_refused() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "s3cret");
+        let raw = serde_json::json!({
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string()
+            + "\n";
+        let reply = round_trip_raw(&raw, &policy, &store).await;
+        assert!(
+            reply.contains("\"granted\":false"),
+            "an unsigned frame must not be granted: {reply}"
+        );
+    }
+
+    /// A frame signed with the wrong key is refused too — otherwise "signed"
+    /// would mean "has something in the signature position".
+    #[tokio::test]
+    async fn a_wrongly_signed_frame_is_refused() {
+        let policy = PermissionLattice::permissive();
+        let store = store_with("api.example.test", "s3cret");
+        let payload = serde_json::json!({
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string();
+        let reply = round_trip_raw(&sign(&payload, b"not-the-capability"), &policy, &store).await;
+        assert!(reply.contains("\"granted\":false"), "got {reply}");
+    }
+
+    /// **The refusal must be indistinguishable from a policy denial.** The
+    /// capability exists to tell the mediating proxy from every other process in
+    /// the guest; a distinct reason would tell a workload whether it holds one,
+    /// which is exactly the fact it is trying to learn.
+    #[tokio::test]
+    async fn an_authentication_refusal_looks_like_every_other_refusal() {
+        let store = store_with("api.example.test", "s3cret");
+        let payload = serde_json::json!({
+            "operation": "WebFetch",
+            "target": "api.example.test",
+            "justification": "routine"
+        })
+        .to_string();
+
+        let unsigned = round_trip_raw(
+            &(payload.clone() + "\n"),
+            &PermissionLattice::permissive(),
+            &store,
+        )
+        .await;
+        // A signed request the POLICY refuses. `default()` is not restrictive
+        // enough — it granted, which this test caught.
+        let mut deny = PermissionLattice::permissive();
+        deny.capabilities.web_fetch = portcullis::CapabilityLevel::Never;
+        let denied = round_trip(&payload, &deny, &store).await;
+        assert!(
+            denied.contains("\"granted\":false"),
+            "the fixture must actually deny, or the comparison below is vacuous: {denied}"
+        );
+
+        let reason = |s: &str| {
+            serde_json::from_str::<serde_json::Value>(s.trim())
+                .ok()
+                .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(str::to_string))
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            reason(&unsigned),
+            reason(&denied),
+            "an unauthenticated caller must not be able to tell itself apart from an \
+             unauthorised one"
+        );
     }
 
     /// End to end over a real (in-memory) stream: a permitted request is
@@ -384,6 +631,7 @@ mod serving_tests {
                 &who(),
                 &policy,
                 &store,
+                Some(TEST_SECRET),
                 Duration::from_millis(200),
             ),
         )
@@ -408,7 +656,7 @@ mod serving_tests {
         let (r, mut w) = tokio::io::split(client);
 
         let id = who();
-        let serve = serve_connection(server, &id, &policy, &store);
+        let serve = serve_connection(server, &id, &policy, &store, Some(TEST_SECRET));
         let talk = async {
             let _ = w.write_all(flood.as_bytes()).await;
             let mut line = String::new();
@@ -522,12 +770,16 @@ pub fn prepare_socket(path: &std::path::Path) -> io::Result<UnixListener> {
 /// VM, so a socket IS a pod. Binding it at the listener rather than per request
 /// means there is no point in the serving path where a guest could influence it.
 ///
+/// `broker_secret` is this pod's capability; `None` refuses every frame, because
+/// a host that cannot authenticate must not accept. See `frame_is_authentic`.
+///
 /// Runs until `shutdown` resolves.
 pub async fn serve_broker(
     listener: UnixListener,
     identity: PodIdentity,
     policy: Arc<PermissionLattice>,
     store: Arc<CredentialStore>,
+    broker_secret: Option<Arc<Vec<u8>>>,
     shutdown: impl std::future::Future<Output = ()>,
 ) {
     let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
@@ -545,8 +797,16 @@ pub async fn serve_broker(
                         let policy = Arc::clone(&policy);
                         let store = Arc::clone(&store);
                         let identity = identity.clone();
+                        let broker_secret = broker_secret.clone();
                         tokio::spawn(async move {
-                            serve_connection(stream, &identity, &policy, &store).await;
+                            serve_connection(
+                                stream,
+                                &identity,
+                                &policy,
+                                &store,
+                                broker_secret.as_deref().map(|v| v.as_slice()),
+                            )
+                            .await;
                             drop(permit);
                         });
                     }
@@ -616,7 +876,7 @@ impl BrokerListener {
         let listener = prepare_socket(&socket_path)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            serve_broker(listener, identity, policy, store, async {
+            serve_broker(listener, identity, policy, store, None, async {
                 let _ = rx.await;
             })
             .await;
@@ -807,6 +1067,18 @@ mod listener_lifecycle_tests {
 mod listener_tests {
     use super::*;
 
+    /// Same capability the serving tests use; a real pod gets a minted one.
+    const TEST_SECRET: &[u8] = b"test-broker-capability";
+
+    /// Sign as the tool-proxy will: `<hex-hmac> <payload>`.
+    fn sign(payload: &str) -> String {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET).expect("hmac key");
+        mac.update(payload.as_bytes());
+        format!("{} {payload}", hex::encode(mac.finalize().into_bytes()))
+    }
+
     fn who() -> PodIdentity {
         PodIdentity::observed_by_host("spiffe://nucleus/pod/abc")
     }
@@ -879,9 +1151,16 @@ mod listener_tests {
         let policy = Arc::new(PermissionLattice::permissive());
         let store = Arc::new(store_with("api.example.test", "super-secret-token"));
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(serve_broker(listener, who(), policy, store, async {
-            let _ = rx.await;
-        }));
+        let server = tokio::spawn(serve_broker(
+            listener,
+            who(),
+            policy,
+            store,
+            Some(std::sync::Arc::new(TEST_SECRET.to_vec())),
+            async {
+                let _ = rx.await;
+            },
+        ));
 
         let frame = serde_json::json!({
             "operation": "WebFetch",
@@ -889,7 +1168,9 @@ mod listener_tests {
             "justification": "routine"
         })
         .to_string();
-        let reply = request_over_socket(&path, &frame).await.expect("served");
+        let reply = request_over_socket(&path, &sign(&frame))
+            .await
+            .expect("served");
 
         assert!(reply.contains("\"granted\":true"), "reply: {reply}");
         assert!(
