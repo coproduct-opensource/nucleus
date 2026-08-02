@@ -36,6 +36,18 @@
 //! moment the broker gains a `perform` operation, that stops being true and an
 //! idempotency key becomes mandatory — recorded here so it is a decision rather
 //! than an omission.
+//!
+//! **That moment has arrived, and the promise was kept.** The broker performs
+//! calls now: `nucleus_cred_protocol::PerformRequest` carries a mandatory
+//! `idempotency_key` (a `String`, not an `Option` — an optional key is a
+//! suggestion), and the host claims it *before* the call rather than recording
+//! it after, so two frames carrying one key cannot both reach the upstream.
+//!
+//! What is written here still describes what THIS module sends: it builds
+//! queries only. The perform request is composed where the discharge is —
+//! whichever code path calls the broker for an action must do so past a minted
+//! `DischargedBundle`, because the host applies a coarse capability check and
+//! cannot see the flow state that makes a call safe or not.
 
 // Not yet called: the tool-proxy still reads credential values from its spec,
 // and switching it over is gated on `BrokerRollout::Enforcing` on the host.

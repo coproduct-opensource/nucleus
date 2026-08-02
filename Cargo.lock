@@ -7029,6 +7029,7 @@ dependencies = [
  "nucleus",
  "nucleus-client",
  "nucleus-cred-broker",
+ "nucleus-cred-protocol",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-proto",

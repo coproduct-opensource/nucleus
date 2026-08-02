@@ -26,18 +26,32 @@
 //!
 //! # What this is not, yet
 //!
-//! There is no transport here. The guest cannot yet submit an envelope over
-//! vsock and have the host perform a credential-bearing action on its behalf —
-//! that is the remaining Phase 2 work, and until it exists the guest still
-//! receives credentials the old way. This file is the decision core that
-//! transport will call, landed and tested first.
+//! This said "there is no transport here… the guest cannot yet submit an
+//! envelope over vsock and have the host perform a credential-bearing action on
+//! its behalf." **Half of that is now false.** `broker_transport` binds the
+//! socket from the launch path and `broker_perform` performs the call, and both
+//! call into this file — `pdp_decide` and `cdp_fetch` are on the live path.
+//!
+//! What remains missing is the GUEST half: `broker_client` builds and parses
+//! frames but has no vsock transport, so nothing submits one. And
+//! `CredentialStore` is still constructed empty, so a request that survived
+//! every check would still be refused for want of a credential.
+//!
+//! The distinction matters because the two failures look identical from inside
+//! the guest — everything is refused either way — and only one of them is the
+//! design working.
 
-// Not yet reachable from the launch path: nothing calls into the PDP -> CDP flow
-// during pod spawn, because the guest still has no way to submit an
-// envelope. CI denies warnings, and a bare dead_code warning here would
-// read as an oversight rather than a stated gap. The tests exercise every
-// item; `docs/production-delta.md` records the missing call site.
-#![cfg_attr(not(test), allow(dead_code))]
+// The blanket allow this replaced said "nothing calls into the PDP -> CDP flow
+// during pod spawn, because the guest still has no way to submit an envelope."
+// That is now FALSE: `serve_broker` is bound from `start_broker_for_pod`, and
+// `pdp_decide` / `cdp_fetch` / `authorize_and_fetch` are all on the live path.
+// Removing the allow and running Linux clippy is what established that — the
+// blanket allow was hiding one genuinely dead item while covering for four live
+// ones, and would have kept reading as an accurate description of the file.
+//
+// NON-LINUX ONLY, because the launch path is `cfg(target_os = "linux")` and a
+// macOS build compiles none of it. On Linux the detector stays live.
+#![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
 use nucleus_cred_broker::{
     AuthorizedRequest, BrokerError, Credential, CredentialStore, PodIdentity, TaskRequestEnvelope,
@@ -197,6 +211,11 @@ impl BrokerResponse {
 /// "policy said no" and "no such credential" would otherwise let a guest
 /// enumerate which credentials exist by watching which refusals differ. They are
 /// distinguished in the host's own logs, not in what goes back over the wire.
+// Dead on BOTH platforms: the transport now classifies a frame before deciding
+// on it and calls `decide_envelope` directly. Kept as the single-call form the
+// broker's own tests are written against — it is the composition this file
+// specifies, and inlining it into each test would spread the specification.
+#[allow(dead_code)]
 pub fn handle_frame(
     raw: &str,
     identity: &PodIdentity,
@@ -208,7 +227,24 @@ pub fn handle_frame(
         Ok(e) => e,
         Err(_) => return BrokerResponse::refused("malformed request"),
     };
-    match authorize_and_fetch(&envelope, identity, policy, store, now_unix) {
+    decide_envelope(&envelope, identity, policy, store, now_unix)
+}
+
+/// [`handle_frame`] with the parsing already done.
+///
+/// The transport now classifies a frame before deciding on it, because a frame
+/// can be a query or a request to ACT and the two take different paths. Parsing
+/// twice to keep one signature would mean the bytes the classifier judged and
+/// the bytes the decision ran on were separately derived — a shape worth
+/// avoiding on input from the sandbox even when both parses agree today.
+pub fn decide_envelope(
+    envelope: &TaskRequestEnvelope,
+    identity: &PodIdentity,
+    policy: &PermissionLattice,
+    store: &CredentialStore,
+    now_unix: u64,
+) -> BrokerResponse {
+    match authorize_and_fetch(envelope, identity, policy, store, now_unix) {
         Ok(_credential) => BrokerResponse::granted(),
         Err(_) => BrokerResponse::refused("not permitted"),
     }

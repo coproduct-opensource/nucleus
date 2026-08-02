@@ -739,6 +739,66 @@ pub struct CredentialedEgressSpec {
     pub value_prefix: String,
 }
 
+impl CredentialedEgressSpec {
+    /// Resolve a caller-supplied path against this upstream's FIXED base.
+    ///
+    /// # This is the fixity property, and it lives here so there is one of it
+    ///
+    /// Two different components now send a credential on a workload's behalf:
+    /// the in-guest proxy forwards to the upstream itself, and the host performs
+    /// the call for a pod whose guest never receives the credential at all. Both
+    /// take a path chosen by the agent, and both must refuse to let that path
+    /// decide *where the credential is sent*.
+    ///
+    /// That is one property, so it is one function. Two copies would be two
+    /// chances to fix a traversal bug in one place and not the other, and a
+    /// green test suite on either side would say nothing about the other's
+    /// copy — the caller-pins-its-own-use tests in each crate call THIS, rather
+    /// than restating it.
+    ///
+    /// # Refused, not normalised
+    ///
+    /// An absolute URL or any `..` is rejected outright rather than cleaned up.
+    /// Normalising is how "the workload cannot choose the upstream" quietly
+    /// stops being true: every normaliser is a small parser, and the agent
+    /// supplying the input gets unlimited attempts at finding the case it gets
+    /// wrong.
+    ///
+    /// # What is deliberately NOT checked, and why
+    ///
+    /// Protocol-relative (`//host/x`) and backslash paths look like traversal
+    /// and are not, *here*: the join trims leading `/` from the path and
+    /// trailing `/` from the base, so `//host/x` becomes `<base>/host/x` — a
+    /// path under the upstream, not a redirect away from it. Checks for them
+    /// were written and then removed rather than kept "just in case", because a
+    /// control that does nothing still reads to the next person as evidence that
+    /// the case was handled.
+    ///
+    /// The join is therefore load-bearing, and
+    /// `a_protocol_relative_path_stays_under_the_base` pins it: if the
+    /// concatenation ever changes so that a leading `//` survives, that test
+    /// fails and this comment stops being true at the same moment.
+    #[must_use]
+    pub fn url_for(&self, path: &str) -> Option<String> {
+        if path.contains("..")
+            || path.starts_with("http://")
+            || path.starts_with("https://")
+            // Percent-encoded dots, which is traversal that `..` does not see.
+            // The path is handed to the upstream verbatim, and an upstream that
+            // percent-decodes before it normalises resolves `%2e%2e/` exactly
+            // as it resolves `../` — reaching a path ABOVE the base this spec
+            // fixes. Same host, so it is not a redirect; it is still the guest
+            // choosing a path the operator did not grant.
+            || path.to_ascii_lowercase().contains("%2e")
+        {
+            return None;
+        }
+        let base = self.upstream.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        Some(format!("{base}/{path}"))
+    }
+}
+
 /// A process the pod runs under its own mediation.
 ///
 /// # Why the runtime starts it, rather than the image
@@ -796,6 +856,106 @@ pub enum PolicyError {
     /// The named profile was not found.
     #[error("unknown policy profile: {0}")]
     UnknownProfile(String),
+}
+
+#[cfg(test)]
+mod credentialed_egress_fixity {
+    use super::*;
+
+    fn spec() -> CredentialedEgressSpec {
+        CredentialedEgressSpec {
+            name: "model-api".into(),
+            upstream: "https://upstream.invalid/v1".into(),
+            credential_env: "NUCLEUS_TEST_EGRESS_CRED".into(),
+            header: "authorization".into(),
+            value_prefix: "Bearer ".into(),
+        }
+    }
+
+    /// **The control, first.** Everything below asserts a refusal, and an
+    /// implementation that refused every path would satisfy all of them while
+    /// being completely broken. This says the ordinary case still works.
+    #[test]
+    fn an_ordinary_path_resolves_under_the_configured_base() {
+        assert_eq!(
+            spec().url_for("/messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+        assert_eq!(
+            spec().url_for("messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+    }
+
+    /// **A caller cannot redirect where the credential is sent.** This is the
+    /// property; the guest picks the path and must not thereby pick the host.
+    #[test]
+    fn a_path_cannot_redirect_the_upstream() {
+        for hostile in [
+            "https://attacker.invalid/steal",
+            "http://attacker.invalid/steal",
+            "../../../other",
+            "messages/../../escape",
+        ] {
+            assert!(
+                spec().url_for(hostile).is_none(),
+                "{hostile:?} must not resolve to an upstream URL"
+            );
+        }
+    }
+
+    /// Percent-encoded traversal, which a plain `..` scan does not see.
+    ///
+    /// The path reaches the upstream verbatim, so an upstream that decodes
+    /// before it normalises treats `%2e%2e/` exactly as `../`. Same host, so
+    /// this is not a redirect — it is reaching a path above the base the
+    /// operator fixed, which the base exists to prevent.
+    #[test]
+    fn percent_encoded_traversal_is_refused_in_any_case() {
+        for hostile in [
+            "%2e%2e/admin",
+            "%2E%2E/admin",
+            "messages/%2e%2e/%2e%2e/admin",
+            "%2e%2E/admin",
+        ] {
+            assert!(
+                spec().url_for(hostile).is_none(),
+                "{hostile:?} decodes to traversal at an upstream that decodes first"
+            );
+        }
+    }
+
+    /// **The join is what makes protocol-relative paths harmless**, and the
+    /// docs say so — so this pins it rather than leaving the claim unchecked.
+    ///
+    /// `url_for` deliberately does NOT test for a leading `//`, because
+    /// trimming leading `/` from the path already puts it under the base. If
+    /// the concatenation ever changes so a leading `//` survives, the doc
+    /// comment silently becomes false; this test fails at that moment instead.
+    #[test]
+    fn a_protocol_relative_path_stays_under_the_base() {
+        let url = spec()
+            .url_for("//attacker.invalid/steal")
+            .expect("not refused — it is neutralised by the join, not rejected");
+        assert_eq!(url, "https://upstream.invalid/v1/attacker.invalid/steal");
+        assert!(
+            url.starts_with("https://upstream.invalid/v1/"),
+            "a protocol-relative path escaped the base: {url}"
+        );
+    }
+
+    /// A base with a trailing slash must not produce a doubled separator, and
+    /// more importantly must not produce `https://host//x` — which some proxies
+    /// and origin servers do not treat as `https://host/x`.
+    #[test]
+    fn a_trailing_slash_on_the_base_does_not_double_the_separator() {
+        let mut s = spec();
+        s.upstream = "https://upstream.invalid/v1/".into();
+        assert_eq!(
+            s.url_for("messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+    }
 }
 
 #[cfg(test)]
