@@ -76,6 +76,12 @@ pub(crate) fn spawn_workload(
     cmd.args(&spec.args)
         .current_dir(work_dir)
         .kill_on_drop(true);
+    // A uid boundary is what makes "the workload does not have the credential"
+    // true. Same-uid processes can read each other's `/proc/<pid>/environ`, so
+    // without this the workload reads the runtime's environment and helps itself.
+    if let Some(uid) = spec.uid {
+        cmd.uid(uid);
+    }
     for (k, v) in workload_env(spec, proxy_url, auth_secret, egress) {
         cmd.env(k, v);
     }
@@ -85,6 +91,62 @@ pub(crate) fn spawn_workload(
         "starting pod workload under mediation"
     );
     cmd.spawn()
+}
+
+/// Refuse a pod that withholds a credential from a workload that could read it.
+///
+/// # Not a warning
+///
+/// `credentialed_egress` keeps the credential out of the workload's environment.
+/// That achieves nothing if the workload runs as the runtime's user: Linux lets
+/// same-uid processes read `/proc/<pid>/environ`, so the workload reads the
+/// runtime's environment and takes it. The whole feature would be a comment.
+///
+/// So the two are coupled: configure credentialed egress and the workload MUST
+/// have a distinct uid, or the pod does not start. A guarantee that holds only
+/// when someone remembers a second setting is not one.
+///
+/// # Errors
+/// When credentialed egress is configured and the workload shares the runtime's uid.
+pub(crate) fn reject_credential_readable_workload(
+    workload: Option<&WorkloadSpec>,
+    egress: &[nucleus_spec::CredentialedEgressSpec],
+) -> Result<(), String> {
+    if egress.is_empty() {
+        return Ok(());
+    }
+    let Some(w) = workload else {
+        return Ok(());
+    };
+    match w.uid {
+        Some(uid) if uid != nix_getuid() => Ok(()),
+        Some(uid) => Err(format!(
+            "the workload's uid ({uid}) is the runtime's own, so it can read the runtime's \
+             environment via /proc and obtain the credentialed-egress secret. Give the workload a \
+             distinct unprivileged uid."
+        )),
+        None => Err(
+            "credentialed egress is configured but the workload has no `uid`, so it runs as the \
+             runtime's user and can read the credential from /proc/<pid>/environ. Set \
+             `workload.uid` to a distinct unprivileged uid."
+                .to_string(),
+        ),
+    }
+}
+
+/// The runtime's own uid.
+///
+/// Read from the environment of the running process via `std`, so this needs no
+/// new dependency — a credential-adjacent control is a poor place to widen the
+/// dependency surface, and the LiteLLM compromise is the reminder why.
+fn nix_getuid() -> u32 {
+    std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap_or_else(|_| {
+        // Not Linux, or no procfs. Fall back to a value that cannot equal a
+        // configured uid, so the check errs toward ACCEPTING an explicit
+        // distinct uid rather than refusing every pod on a platform where it
+        // cannot verify. The Linux guest is where this matters.
+        std::fs::metadata(".").expect("cwd always stat-able")
+    }))
 }
 
 /// Start the pod's workload if the spec asks for one.
@@ -130,6 +192,7 @@ mod tests {
         WorkloadSpec {
             command: "agent".into(),
             args: vec!["--flag".into()],
+            uid: None,
             env: env
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -189,5 +252,52 @@ mod tests {
             env.get("MODEL_ENDPOINT").map(String::as_str),
             Some("https://example.invalid")
         );
+    }
+
+    fn egress_spec() -> nucleus_spec::CredentialedEgressSpec {
+        nucleus_spec::CredentialedEgressSpec {
+            name: "api".into(),
+            upstream: "https://u.invalid".into(),
+            credential_env: "CRED".into(),
+            header: "authorization".into(),
+            value_prefix: String::new(),
+        }
+    }
+
+    /// **The guarantee is a uid boundary, not an environment variable.** A
+    /// workload sharing the runtime's uid reads `/proc/<pid>/environ` and takes
+    /// the credential, so credentialed egress without a distinct uid is a
+    /// comment rather than a control.
+    #[test]
+    fn credentialed_egress_without_a_workload_uid_is_refused() {
+        let err = reject_credential_readable_workload(Some(&spec_with(&[])), &[egress_spec()])
+            .expect_err("a same-uid workload must be refused");
+        assert!(err.contains("/proc"), "the mechanism must be named: {err}");
+        assert!(err.contains("uid"), "and the fix: {err}");
+    }
+
+    /// The control: a distinct uid is accepted, so the check is not refusing
+    /// every configuration.
+    #[test]
+    fn a_distinct_uid_is_accepted() {
+        let mut w = spec_with(&[]);
+        w.uid = Some(nix_getuid().wrapping_add(1));
+        assert!(reject_credential_readable_workload(Some(&w), &[egress_spec()]).is_ok());
+    }
+
+    /// The runtime's OWN uid is not a boundary, even when written explicitly.
+    #[test]
+    fn the_runtimes_own_uid_is_not_a_boundary() {
+        let mut w = spec_with(&[]);
+        w.uid = Some(nix_getuid());
+        assert!(reject_credential_readable_workload(Some(&w), &[egress_spec()]).is_err());
+    }
+
+    /// With no credential being withheld there is nothing to protect, so a
+    /// shared uid is fine — the coupling is to credentialed egress, not a
+    /// blanket rule.
+    #[test]
+    fn without_credentialed_egress_a_shared_uid_is_fine() {
+        assert!(reject_credential_readable_workload(Some(&spec_with(&[])), &[]).is_ok());
     }
 }

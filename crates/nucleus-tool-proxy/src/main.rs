@@ -1547,6 +1547,13 @@ async fn main() -> Result<(), ApiError> {
         &session_id,
     );
 
+    // Both fail-closed: a credential the workload can read, or an upstream it can
+    // reach directly, each turn credentialed egress into a comment.
+    workload::reject_credential_readable_workload(
+        spec.spec.workload.as_ref(),
+        &spec.spec.credentialed_egress,
+    )
+    .map_err(ApiError::Spec)?;
     // See `egress::reject_bypassable_upstreams` for why this is fail-closed.
     egress::reject_bypassable_upstreams(&spec.spec.credentialed_egress, &dns_allow)
         .map_err(ApiError::Spec)?;

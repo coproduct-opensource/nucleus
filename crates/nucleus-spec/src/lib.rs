@@ -771,6 +771,23 @@ pub struct WorkloadSpec {
     /// key — see `workload_env`.
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// UID to run the workload as.
+    ///
+    /// # Why this matters more than it looks
+    ///
+    /// The runtime and the workload share a guest. On Linux a process can read
+    /// `/proc/<pid>/environ` of any process with the SAME uid, so a workload
+    /// running as the runtime's user can simply read the runtime's environment —
+    /// including a credential that `credentialed_egress` exists to keep out of
+    /// its hands. "Not in the workload's environment" is not the same as "the
+    /// workload cannot get it", and only a uid boundary makes the second true.
+    ///
+    /// `None` means the workload runs as the runtime's user, which is fine when
+    /// no credential is being withheld from it. When `credentialed_egress` is
+    /// configured, a distinct uid is REQUIRED and the pod refuses to start
+    /// without one.
+    #[serde(default)]
+    pub uid: Option<u32>,
 }
 
 /// Errors resolving policies.
