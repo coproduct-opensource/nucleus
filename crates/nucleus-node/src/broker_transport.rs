@@ -24,11 +24,22 @@
 //! at the limit rather than after it. The two bounds are not redundant: one
 //! protects the parser, the other protects the reader that feeds it.
 
-// Not yet reachable: no accept loop binds this socket during pod spawn, so the
-// guest cannot submit an envelope and credentials still arrive the old way.
-// CI denies warnings, and a bare dead_code warning would read as an oversight
-// rather than a stated gap. Every item is exercised by the tests below.
-#![cfg_attr(not(test), allow(dead_code))]
+// The SERVING path is live: `spawn_firecracker_pod` binds this socket and spawns
+// `serve_broker`. What is still unreached is the CLIENT half — the guest has no
+// way to submit an envelope yet — so the three items that await it carry their
+// own `allow(dead_code)` naming what will use them, rather than a file-level
+// allow that would also exempt the serving path.
+//
+// That distinction is the point. If the spawn path ever stops binding the
+// socket, `serve_broker` goes dead and `-D warnings` says so ON LINUX. A blanket
+// allow would have hidden exactly that.
+//
+// The file-level allow below is therefore conditioned on NOT being Linux:
+// everything after the `#[cfg(target_os = "linux")]` guard in
+// `spawn_firecracker_pod` is not compiled on other hosts, so on macOS the whole
+// serving path is legitimately unreachable and warning about it would be noise.
+// On Linux the allow does not apply and the detector is live.
+#![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -75,6 +86,7 @@ pub enum ReadError {
 /// Returns the frame WITHOUT its trailing newline. Reads byte-at-a-time rather
 /// than with `read_line`, because `read_line` will happily grow its buffer to
 /// whatever the peer sends — which is exactly the behaviour being prevented.
+#[allow(dead_code)] // Awaiting the guest client — the guest-side submit path will read framed replies.
 pub fn read_frame_bounded(mut reader: impl BufRead, max: usize) -> Result<String, ReadError> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -96,6 +108,7 @@ pub fn read_frame_bounded(mut reader: impl BufRead, max: usize) -> Result<String
 }
 
 /// Read a frame using the module's default ceiling.
+#[allow(dead_code)] // Awaiting the guest client — as `read_frame_bounded`.
 pub fn read_frame(reader: impl BufRead) -> Result<String, ReadError> {
     read_frame_bounded(reader, MAX_FRAME_BYTES)
 }
@@ -674,6 +687,7 @@ impl BrokerListener {
     }
 }
 
+#[allow(dead_code)] // Awaiting the guest client — this IS the client half: the guest-side submit path.
 pub async fn request_over_socket(path: &std::path::Path, frame: &str) -> io::Result<String> {
     let stream = UnixStream::connect(path).await?;
     let (r, mut w) = tokio::io::split(stream);

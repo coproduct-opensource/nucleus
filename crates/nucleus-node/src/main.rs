@@ -2780,6 +2780,60 @@ async fn spawn_firecracker_pod(
                 }
             };
 
+            // The credential broker's listener. Every piece of this existed —
+            // framing, bounds, the accept loop, listener-bound identity — with
+            // nothing binding the socket at spawn, so the guest had no way to
+            // submit an envelope and `cred_split` had no call site. This is that
+            // binding.
+            //
+            // Identity comes from `broker_identity`, which returns `None` rather
+            // than a bool so a caller cannot get a socket decision without the
+            // identity that socket speaks for. The rollout is decided from the
+            // transport, so a driver with no per-pod vsock gets `Disabled`
+            // instead of a listener nobody can reach.
+            let broker_rollout = broker_rollout::decide_rollout(
+                state.broker_enforcing,
+                state.broker_listen,
+                broker_rollout::BrokerTransport::Vsock,
+            );
+            if let Some(broker_id) = broker_launch::broker_identity(broker_rollout, Some(&identity))
+            {
+                let path = broker_transport::broker_socket_path(
+                    &vsock_path,
+                    broker_transport::BROKER_VSOCK_PORT,
+                );
+                match broker_transport::prepare_socket(&path) {
+                    Ok(listener) => {
+                        let policy = Arc::new(spec.spec.resolve_policy().unwrap_or_default());
+                        let store = Arc::new(nucleus_cred_broker::CredentialStore::default());
+                        tokio::spawn(async move {
+                            broker_transport::serve_broker(
+                                listener,
+                                broker_id,
+                                policy,
+                                store,
+                                std::future::pending::<()>(),
+                            )
+                            .await;
+                        });
+                        info!("broker listening at {} for pod {}", path.display(), id);
+                    }
+                    Err(e) => match broker_launch::on_start_failure(broker_rollout) {
+                        // Credentials were withheld and the guest has no way to
+                        // ask: it cannot do its job, so failing the launch is
+                        // kinder than a pod that starts and cannot work.
+                        broker_launch::StartFailure::AbortLaunch => {
+                            return Err(ApiError::Driver(format!(
+                                "broker socket required but could not be created: {e}"
+                            )));
+                        }
+                        broker_launch::StartFailure::ContinueDegraded => {
+                            tracing::warn!("broker socket unavailable for pod {id}: {e}");
+                        }
+                    },
+                }
+            }
+
             info!(
                 "registered identity {} for pod {}",
                 identity.to_spiffe_uri(),
