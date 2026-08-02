@@ -635,6 +635,7 @@ fn build_local_pod_spec(
         resources: None,
         network: None,
         image: None,
+        credentialed_egress: Vec::new(),
         workload: None,
         vsock: None,
         seccomp: None,
@@ -749,6 +750,7 @@ fn build_pod_spec(
             read_only: args.rootfs_read_only,
             scratch_path: None,
         }),
+        credentialed_egress: Vec::new(),
         workload: None,
         vsock: Some(VsockSpec {
             guest_cid: args.vsock_cid,

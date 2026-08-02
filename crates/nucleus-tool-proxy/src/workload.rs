@@ -41,8 +41,12 @@ pub(crate) fn workload_env(
     spec: &WorkloadSpec,
     proxy_url: &str,
     auth_secret: &str,
+    egress: &[nucleus_spec::CredentialedEgressSpec],
 ) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
+    // Local forwarder addresses for each credentialed upstream. Names and URLs
+    // only — the credential stays in the runtime, which is the point.
+    env.extend(crate::egress::workload_egress_env(egress, proxy_url));
     env.insert("NUCLEUS_TOOL_PROXY_URL".to_string(), proxy_url.to_string());
     env.insert(
         "NUCLEUS_TOOL_PROXY_AUTH_SECRET".to_string(),
@@ -66,12 +70,13 @@ pub(crate) fn spawn_workload(
     proxy_url: &str,
     auth_secret: &str,
     work_dir: &std::path::Path,
+    egress: &[nucleus_spec::CredentialedEgressSpec],
 ) -> std::io::Result<tokio::process::Child> {
     let mut cmd = tokio::process::Command::new(&spec.command);
     cmd.args(&spec.args)
         .current_dir(work_dir)
         .kill_on_drop(true);
-    for (k, v) in workload_env(spec, proxy_url, auth_secret) {
+    for (k, v) in workload_env(spec, proxy_url, auth_secret, egress) {
         cmd.env(k, v);
     }
     tracing::info!(
@@ -106,11 +111,15 @@ pub(crate) fn start_if_configured(
         return Ok(None);
     };
     let url = format!("http://{addr}");
-    spawn_workload(w, &url, auth_secret, &spec.spec.work_dir)
-        .map(Some)
-        .map_err(|e| {
-            crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
-        })
+    spawn_workload(
+        w,
+        &url,
+        auth_secret,
+        &spec.spec.work_dir,
+        &spec.spec.credentialed_egress,
+    )
+    .map(Some)
+    .map_err(|e| crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command)))
 }
 
 #[cfg(test)]
@@ -132,7 +141,7 @@ mod tests {
     /// way to reach the only interface that is policed.
     #[test]
     fn the_workload_is_pointed_at_the_proxy() {
-        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", "s3cret");
+        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", "s3cret", &[]);
         assert_eq!(
             env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
             Some("http://127.0.0.1:8080")
@@ -153,7 +162,7 @@ mod tests {
             ("NUCLEUS_TOOL_PROXY_URL", "http://attacker.invalid"),
             ("NUCLEUS_TOOL_PROXY_AUTH_SECRET", "not-the-real-one"),
         ]);
-        let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret");
+        let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret", &[]);
         assert_eq!(
             env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
             Some("http://127.0.0.1:8080"),
@@ -174,6 +183,7 @@ mod tests {
             &spec_with(&[("MODEL_ENDPOINT", "https://example.invalid")]),
             "u",
             "s",
+            &[],
         );
         assert_eq!(
             env.get("MODEL_ENDPOINT").map(String::as_str),

@@ -334,6 +334,7 @@ fn build_shell_pod_spec(
         resources: None,
         network: None,
         image: None,
+        credentialed_egress: Vec::new(),
         workload: None,
         vsock: None,
         seccomp: None,

@@ -34,6 +34,7 @@ mod auth;
 mod broker_client;
 mod cert_bridge;
 mod dlc_admission;
+mod egress;
 mod exit_report;
 mod identity_fusion;
 mod ingest;
@@ -327,6 +328,8 @@ pub(crate) struct AppState {
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
+    /// Upstreams this pod may reach with a credential the workload never holds.
+    pub(crate) credentialed_egress: Vec<nucleus_spec::CredentialedEgressSpec>,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
     /// URL pattern allowlist for web_fetch. If non-empty, URLs must match.
@@ -1545,6 +1548,11 @@ async fn main() -> Result<(), ApiError> {
         &session_id,
     );
 
+    // A proxy the workload can route around is a control that appears to work
+    // and does not. See `egress::reject_bypassable_upstreams`.
+    egress::reject_bypassable_upstreams(&spec.spec.credentialed_egress, &dns_allow)
+        .map_err(ApiError::Spec)?;
+
     let dlc_admission = dlc_admission::provision_from_env();
     let dlc_provisioned = dlc_admission.is_some();
 
@@ -1653,6 +1661,7 @@ async fn main() -> Result<(), ApiError> {
         stream_lockdown,
         policy_checksum,
         session_id,
+        credentialed_egress: spec.spec.credentialed_egress.clone(),
         verdict_sink,
         art12_log,
         trace_monitor,
@@ -1749,6 +1758,10 @@ async fn main() -> Result<(), ApiError> {
     }
 
     let mut app = Router::new()
+        .route(
+            "/v1/egress/{name}/{*path}",
+            post(egress::credentialed_egress),
+        )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
         .route("/v1/write", post(write_file))

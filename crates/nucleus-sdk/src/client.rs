@@ -109,6 +109,7 @@ impl Nucleus {
             resources: None,
             network: None,
             image: None,
+            credentialed_egress: Vec::new(),
             workload: None,
             vsock: None,
             seccomp: None,
