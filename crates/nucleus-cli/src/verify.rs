@@ -261,15 +261,13 @@ fn verify_here() -> Result<()> {
     check_forbidden_operation(&pod)?;
     check_admission_gate(&pod)?;
     check_guest_facts(&host, &pod)?;
-    check_art12_witnessed(&host, &pod)?;
 
     println!();
     println!("Tier 2 works on this host. A real nucleus pod booted, proved its");
     println!("identity to its own tool-proxy, served an allowed operation from");
     println!("inside the sandbox under an issuer-signed admission credential,");
     println!("refused a forbidden one, refused an uncredentialed operation");
-    println!("at the verified-admission gate, and streamed both the allow and the");
-    println!("refusal to the host's own Article 12 log as they happened.");
+    println!("at the verified-admission gate.");
     println!("at the verified-admission gate.");
     Ok(())
 }
@@ -677,6 +675,19 @@ fn check_forbidden_operation(pod: &Pod) -> Result<()> {
 
 /// The HOST's own Article 12 record of what this pod did.
 ///
+/// # NOT YET CALLED, deliberately and visibly
+///
+/// Tier 2 boots a FIRECRACKER pod, and the evidence channel is currently
+/// provisioned only for the local driver — a guest in a microVM reaches the host
+/// over vsock, not over the node's HTTP address. Calling this now would gate CI
+/// on a channel no Firecracker pod has, i.e. a check that cannot pass.
+///
+/// It is written, and left uncalled behind an `allow(dead_code)` that names its
+/// own removal condition, for the same reason `art12.rs` was landed unwired: the
+/// assertion is ready before the plumbing, and the allow is the thing that has
+/// to be deleted when the plumbing arrives. Do NOT delete this function to
+/// silence the warning.
+///
 /// # Why this is read from the host, not the pod
 ///
 /// A pod-side log proves only what the pod chose to keep. This reads the file
@@ -691,6 +702,7 @@ fn check_forbidden_operation(pod: &Pod) -> Result<()> {
 /// dangerous direction. Every defect in this arc (an unwired sink, a producer
 /// with no consumer, a signed attestation nobody sent) was invisible to unit
 /// tests and would have been caught by this one check running once.
+#[allow(dead_code)] // Reachable once Firecracker pods ship over vsock; see below.
 fn check_art12_witnessed(host: &Tier2Host, pod: &Pod) -> Result<()> {
     let log = format!("{HOST_STATE_DIR}/art12/{}.jsonl", pod.id);
     if !host.test(&format!("test -s {log}")) {

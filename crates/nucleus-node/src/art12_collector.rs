@@ -132,7 +132,25 @@ pub fn observed_chain(state_dir: &Path, session_id: &str) -> Option<ObservedChai
     (records > 0).then_some(ObservedChain { head, records })
 }
 
-/// Configure a pod's Article 12 record-keeping.
+/// Configure a pod's Article 12 record-keeping — LOCAL DRIVER ONLY.
+///
+/// # This does not cover Firecracker pods, and that is not an oversight to
+/// # discover later
+///
+/// A guest inside a microVM cannot reach the node's HTTP listen address: it
+/// talks to the host over vsock, and its environment is set by
+/// `nucleus-guest-init`, not by a `Command` here. So the evidence channel is
+/// currently provisioned for the local driver only.
+///
+/// The musl build — the one that ships — compiles `spawn_local_pod` out
+/// entirely, so `-D warnings` reported this function as dead. That is the
+/// dead-code check doing exactly its job: the mechanism existed and nothing on
+/// the shipping path reached it.
+///
+/// Wiring Firecracker means shipping over vsock rather than HTTP. Until that
+/// lands, a Firecracker pod keeps a pod-side log and the executor attests the
+/// head the POD reported — the weaker guarantee, which `attest_art12` records
+/// honestly rather than disguising.
 ///
 /// The log lives in the pod's NODE-side directory, never in `work_dir`: it is
 /// the runtime's record ABOUT the session, and the tool proxy refuses a
@@ -145,6 +163,7 @@ pub fn observed_chain(state_dir: &Path, session_id: &str) -> Option<ObservedChai
 /// Both are set together, in one function, on purpose: a log with no channel is
 /// the weaker configuration, and it should not be reachable by forgetting a
 /// line at a call site.
+#[cfg(feature = "local-driver")]
 pub fn provision_pod_env(
     command: &mut tokio::process::Command,
     pod_dir: &Path,
