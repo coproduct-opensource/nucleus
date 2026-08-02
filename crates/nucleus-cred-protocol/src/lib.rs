@@ -65,6 +65,74 @@ pub struct BrokerReply {
     pub reason: String,
 }
 
+/// A request that the HOST perform an outbound call on the guest's behalf.
+///
+/// # Why a separate type from [`TaskRequestEnvelope`]
+///
+/// That one is a QUERY — "may I, and is a credential available" — and asking it
+/// twice changes nothing. This one has an effect, and the difference is not
+/// cosmetic: it is why `idempotency_key` exists and is not optional.
+///
+/// # The idempotency key is mandatory, and was promised before this type existed
+///
+/// `broker_client`'s module docs committed to it: *"the moment the broker gains
+/// a `perform` operation, [asking twice changing nothing] stops being true and
+/// an idempotency key becomes mandatory — recorded here so it is a decision
+/// rather than an omission."* Agents retry, and a timeout hides whether the call
+/// completed; without a key the host cannot tell a retry from a second request,
+/// so a network blip becomes a duplicate side effect at the upstream.
+///
+/// It is a plain `String` the GUEST chooses. That is safe because the host uses
+/// it only to deduplicate within one pod's own stream — it is not an
+/// authorisation input, and a guest that reuses a key can only affect its own
+/// requests.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformRequest {
+    /// The operation, as the policy layer names it.
+    pub operation: String,
+    /// The configured upstream this targets, by name. NOT a URL: the host holds
+    /// the base and the guest cannot redirect where the credential is sent.
+    pub target: String,
+    /// Free-text rationale. Auditable evidence, never an authorisation input.
+    pub justification: String,
+    /// Deduplicates retries. See the type docs — mandatory, not optional.
+    pub idempotency_key: String,
+    /// Path beneath the upstream's configured base.
+    pub path: String,
+    /// Request body, verbatim.
+    pub body: Vec<u8>,
+}
+
+/// What the host returns after performing the call.
+///
+/// # This one DOES carry content, and that is the whole point
+///
+/// [`BrokerReply`] has nowhere to put a credential because the guest is never
+/// meant to hold one. This type carries the upstream's RESPONSE — the result of
+/// an action taken with a credential, which is exactly what the guest is
+/// supposed to receive instead of the credential itself.
+///
+/// The distinction is worth stating because it looks like a weakening and is
+/// not: the credential still never crosses, only what it bought.
+///
+/// # The body is untrusted
+///
+/// It is whatever the upstream said, and on a model API it is also AI-authored.
+/// The caller must observe it as such; the taint does not propagate by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformReply {
+    /// Whether the host authorised, found a credential, and completed the call.
+    pub granted: bool,
+    /// Coarse, for the same enumeration reason as [`BrokerReply::reason`].
+    pub reason: String,
+    /// Upstream HTTP status, when the call was made.
+    #[serde(default)]
+    pub status: u16,
+    /// Upstream response body, when the call was made.
+    #[serde(default)]
+    pub body: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +192,47 @@ mod tests {
                  which socket accepted the connection, never from what the guest says"
             );
         }
+    }
+
+    /// **The idempotency key is mandatory, and this is what holds that.**
+    ///
+    /// `broker_client`'s docs promised it before this type existed: a `perform`
+    /// has an effect, so a retry the host cannot distinguish from a new request
+    /// becomes a duplicate side effect at the upstream. `Option<String>` would
+    /// let a caller omit it and would read as "supply one if convenient".
+    ///
+    /// Scans the DECLARATION rather than constructing a value, because the
+    /// property is about the type, and a constructed value proves only that this
+    /// test supplied a key.
+    #[test]
+    fn a_perform_request_cannot_omit_its_idempotency_key() {
+        let decls = declarations();
+        assert!(
+            decls.contains("pub idempotency_key: String"),
+            "PerformRequest must carry a mandatory idempotency key"
+        );
+        assert!(
+            !decls.contains("idempotency_key: Option"),
+            "an optional idempotency key is not a requirement, it is a suggestion"
+        );
+    }
+
+    /// A perform reply carries the RESULT of an action, which is the point —
+    /// but the fields must still be shaped so a credential has nowhere to go.
+    /// `status` and `body` are what an upstream returned; neither names a
+    /// secret, and `no_type_here_can_carry_a_credential` scans for those.
+    #[test]
+    fn a_perform_reply_round_trips_with_its_result() {
+        let reply = PerformReply {
+            granted: true,
+            reason: "granted".into(),
+            status: 200,
+            body: b"{\"ok\":true}".to_vec(),
+        };
+        let wire = serde_json::to_string(&reply).expect("serialises");
+        let back: PerformReply = serde_json::from_str(&wire).expect("round trips");
+        assert_eq!(back, reply);
+        assert_eq!(back.status, 200);
     }
 
     #[test]
