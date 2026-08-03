@@ -314,6 +314,21 @@ pub(crate) struct AppState {
     pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
+    /// Where a spent [`Authority`] records that it was exercised.
+    ///
+    /// Distinct from `audit` above: that is the pod's hash-chained audit surface,
+    /// this is the effect-discharge receipt log that
+    /// `portcullis_effects::authority::Authority::spend` writes to. `spend`
+    /// REFUSES an unwitnessed authority (`SpendError::Unwitnessed`), so without
+    /// this field the brokered-egress path would fail on every request — safe,
+    /// and inert, which is the failure shape this arc has already produced twice.
+    ///
+    /// **Limit, and it is the one already recorded for FM-3 rather than a new
+    /// one:** `ReceiptLog` is an in-memory `Vec`, so an append cannot fail and
+    /// "the effect is refused if the record cannot be written" is still not
+    /// expressible. It becomes real when the log gains durable backing. See
+    /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
+    receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
     auth: AuthConfig,
     approval_auth: AuthConfig,
     /// True when this server was started on a vsock listener that accepts only
@@ -1558,6 +1573,16 @@ async fn main() -> Result<(), ApiError> {
     egress::reject_bypassable_upstreams(&spec.spec.credentialed_egress, &dns_allow)
         .map_err(ApiError::Spec)?;
 
+    // Credentialed egress goes through the host broker and nowhere else, so a
+    // pod configured for it without a capability can never succeed. Refuse here
+    // rather than at the first request, where it would look like a transient
+    // upstream error minutes into a run.
+    egress::reject_egress_without_a_broker(
+        &spec.spec.credentialed_egress,
+        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").is_ok_and(|v| !v.is_empty()),
+    )
+    .map_err(ApiError::Spec)?;
+
     let dlc_admission = dlc_admission::provision_from_env();
     let dlc_provisioned = dlc_admission.is_some();
 
@@ -1634,7 +1659,9 @@ async fn main() -> Result<(), ApiError> {
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
     enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
 
+    let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
+        receipts: Arc::clone(&receipts),
         path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         dlc_provisioned,
         runtime: Arc::new(runtime),

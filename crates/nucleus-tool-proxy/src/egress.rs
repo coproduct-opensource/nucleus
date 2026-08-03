@@ -32,22 +32,53 @@
 
 use nucleus_spec::CredentialedEgressSpec;
 
-/// Resolve the credential for an upstream from the RUNTIME's environment.
+use std::sync::Arc;
+
+/// This pod's broker capability, from the environment `guest-init` prepared.
 ///
-/// `None` when unset. The caller must then refuse rather than forward
-/// unauthenticated: an upstream that rejects the call would be the lucky case,
-/// and one that accepts it anonymously is worse.
-#[must_use]
-pub(crate) fn credential_for(spec: &CredentialedEgressSpec) -> Option<String> {
-    std::env::var(&spec.credential_env)
-        .ok()
-        .filter(|v| !v.is_empty())
+/// # There is no `credential_for` any more, and that is the change
+///
+/// This module used to read the credential itself, with
+/// `std::env::var(&spec.credential_env)` — in the GUEST. That function and its
+/// header-building sibling are deleted rather than kept as a fallback: a broker
+/// that applies only when a credential happens to be absent is advisory, and an
+/// attacker who can arrange for one to be present restores the exposure the
+/// broker exists to remove. It was also dead weight on Firecracker, where the
+/// value never reached the guest at all.
+///
+/// Both halves or neither: a secret with no port can sign and not connect. They
+/// arrive together in one reply for exactly that reason, and are read together
+/// here.
+fn broker_capability() -> Option<crate::broker_client::Capability> {
+    let secret = std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").ok()?;
+    let port: u32 = std::env::var("NUCLEUS_TOOL_PROXY_BROKER_PORT")
+        .ok()?
+        .parse()
+        .ok()?;
+    (!secret.is_empty() && port != 0).then_some(crate::broker_client::Capability { secret, port })
 }
 
-/// The header value sent upstream.
-#[must_use]
-pub(crate) fn header_value(spec: &CredentialedEgressSpec, credential: &str) -> String {
-    format!("{}{}", spec.value_prefix, credential)
+/// The idempotency key for one logical upstream call.
+///
+/// Derived from what the request IS — upstream name, path, body — rather than
+/// randomly, so a retry of the same call carries the same key and the host's
+/// ledger recognises it as one operation. A fresh random key per attempt would
+/// leave the host unable to tell a retry from a new request, which is the exact
+/// thing the key exists to prevent; the machinery would still run and still be
+/// decorative.
+///
+/// Hashed rather than concatenated: the body can be large and the key is bounded
+/// by `MAX_FIELD_BYTES` on the host, and a delimiter-joined key would let a
+/// crafted path collide with a different (name, path) pair.
+fn idempotency_key(name: &str, path: &str, body: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    // Length-prefixed, so ("ab", "c") and ("a", "bc") cannot produce one digest.
+    for part in [name.as_bytes(), path.as_bytes(), body] {
+        h.update((part.len() as u64).to_be_bytes());
+        h.update(part);
+    }
+    hex::encode(h.finalize())
 }
 
 /// Build the upstream URL for a request path.
@@ -144,6 +175,53 @@ pub(crate) fn reject_bypassable_upstreams(
     ))
 }
 
+/// Refuse to start a pod that configures credentialed egress it cannot perform.
+///
+/// # Why at startup and not per request
+///
+/// Since the in-guest credential path was deleted, a credentialed upstream is
+/// callable ONLY through the host broker. A pod configured with upstreams but no
+/// broker capability will refuse every request at the moment the workload makes
+/// one — which surfaces as an application error, minutes into a run, four layers
+/// from the pod spec that caused it.
+///
+/// Refusing at startup names the cause once, before anything has been attempted.
+/// It is the same reasoning `reject_bypassable_upstreams` gives, and it sits
+/// beside it for that reason.
+///
+/// # The driver this affects
+///
+/// The container driver has no broker: `broker_identity` refuses a pod with no
+/// host-established identity, and that driver registers none. Giving it one is a
+/// design question rather than wiring — a Firecracker identity comes with an
+/// attested SVID and a default-deny netns, and a container has neither, so the
+/// identity would assert what the driver cannot back. So this refusal is what a
+/// container pod with `credentialed_egress` now gets, and saying so loudly beats
+/// a silent per-request failure.
+///
+/// # Errors
+/// Names the upstreams, so an operator sees what to remove or which driver to use.
+pub(crate) fn reject_egress_without_a_broker(
+    specs: &[CredentialedEgressSpec],
+    has_broker: bool,
+) -> Result<(), String> {
+    if specs.is_empty() || has_broker {
+        return Ok(());
+    }
+    Err(format!(
+        "this pod configures credentialed egress ({}) but has no credential-broker \
+         capability, so the upstream cannot be called on its behalf. The in-guest \
+         credential path was removed deliberately — a broker that applies only when a \
+         credential happens to be absent is advisory. Either run this pod on a driver \
+         that provides a broker, or remove the credentialed_egress entries.",
+        specs
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
 /// `POST /v1/egress/{name}/{*path}` — call an upstream on the workload's behalf.
 ///
 /// # Order of operations, and why it is this order
@@ -154,12 +232,13 @@ pub(crate) fn reject_bypassable_upstreams(
 /// 3. Kernel decision, exactly as `web_fetch` does. This is what makes a tainted
 ///    session's upstream call subject to the same egress gate as its tool calls,
 ///    and it is the half that a plain credential-injecting proxy does not have.
-/// 4. Inject the credential and forward.
+/// 4. Mint the discharge, then ask the HOST to perform the call. The credential
+///    is never read here — see `broker_capability`.
 /// 5. Observe the response as untrusted, AI-derived content, so anything the
 ///    workload does with it carries the taint.
 ///
-/// The credential is read here, in the runtime, and never appears in the
-/// workload's environment or in any response.
+/// The credential is in the NODE's environment and never enters this process.
+/// What crosses is a request to act; what comes back is the upstream's answer.
 pub(crate) async fn credentialed_egress(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Path((name, path)): axum::extract::Path<(String, String)>,
@@ -192,24 +271,17 @@ pub(crate) async fn credentialed_egress(
     // it differently would be the hole this whole module exists to close.
     let _decision = crate::http_kernel_decide(&state, Operation::WebFetch, &url).await?;
 
-    let Some(credential) = credential_for(&spec) else {
-        // Refused rather than forwarded unauthenticated: at best the upstream
-        // rejects it, at worst it accepts anonymously.
-        return Err(ApiError::Spec(format!(
-            "no credential in {} for upstream {name:?}",
-            spec.credential_env
-        )));
-    };
-
-    // Through the SEALED effect, exactly as `web_fetch` does — not a raw client.
+    // ── The credential is NOT read here, and cannot be ─────────────────────
     //
-    // The mediation gate caught the first version of this doing its own
-    // `.send()`. It was right to: the sealed `NetEffect::fetch` is reachable
-    // only past a minted `DischargedBundle`, so "no un-preflighted agent egress
-    // reaches the wire" is a property of what can be TYPED rather than of what
-    // was remembered. Credentialed egress is still agent egress; allowlisting it
-    // would have carved the one hole the gate exists to prevent.
-    use portcullis_effects::{NetCapability, NetEffect};
+    // This used to be `credential_for(&spec)` — a `std::env::var` in the GUEST.
+    // That path is gone, not kept as a fallback, and the deletion is the point:
+    // a broker that applies only when a credential happens to be absent is
+    // advisory, and an attacker who can arrange for it to be present restores
+    // the exposure. On Firecracker the value never reached the guest anyway, so
+    // the in-guest path could only ever fail closed there.
+    //
+    // What crosses to the host is a request to ACT. What comes back is the
+    // upstream's response. The credential stays in the node's environment.
 
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
@@ -228,33 +300,64 @@ pub(crate) async fn credentialed_egress(
         }
     };
 
-    let headers = vec![
-        (spec.header.clone(), header_value(&spec, &credential)),
-        ("content-type".to_string(), "application/json".to_string()),
-    ];
-    let effects = portcullis_effects::production_effects_concrete(crate::core_capabilities(
-        &state.runtime.policy().capabilities,
-    ));
-    let resp = effects
-        .fetch(
-            &state.web_client,
-            NetCapability::WebFetch,
-            reqwest::Method::POST,
-            reqwest::Url::parse(&url)
-                .map_err(|e| ApiError::Spec(format!("upstream url is not parseable: {e}")))?,
-            &headers,
-            Some(body.to_vec()),
-            None,
-            portcullis_effects::authority::Authority::new(discharge_bundle),
-        )
-        .await
-        .map_err(|e| ApiError::Spec(format!("upstream request failed: {e}")))?;
+    // The discharge is minted HERE and spent by `perform_line`. That is the
+    // whole reason the guest half exists: the host applies a coarse capability
+    // check and structurally cannot see `FlowTracker`, the session taint ceiling
+    // or the lethal-trifecta guard. Those live in this process, and a
+    // `PerformRequest` that was not composed past them would be egress the
+    // kernel never saw.
+    let authority = portcullis_effects::authority::Authority::new(discharge_bundle)
+        .witnessed_by(Arc::clone(&state.receipts));
 
-    let status = resp.status();
-    let bytes = resp
-        .bytes()
+    let Some(capability) = broker_capability() else {
+        // No capability means no broker. Refused, never forwarded another way —
+        // see `broker_client`'s header: a broker that can be bypassed by
+        // breaking it is not a boundary.
+        return Err(ApiError::Spec(
+            "this pod has no credential-broker capability, so the upstream cannot be \
+             called on its behalf"
+                .to_string(),
+        ));
+    };
+
+    let request = nucleus_cred_protocol::PerformRequest {
+        operation: "WebFetch".to_string(),
+        target: name.clone(),
+        justification: "credentialed egress".to_string(),
+        // Derived from what the request IS, so a retry of the same call carries
+        // the same key and the host's ledger sees one logical operation. A
+        // random key per attempt would make the idempotency machinery decorative.
+        idempotency_key: idempotency_key(&name, &path, &body),
+        path: path.clone(),
+        body: body.to_vec(),
+    };
+
+    let line =
+        crate::broker_client::perform_line(authority, capability.secret.as_bytes(), &request)
+            .map_err(|e| ApiError::IfcDenied(format!("authority not spendable: {e}")))?;
+
+    let reply_line = crate::broker_client::ask(capability.port, &line)
         .await
-        .map_err(|e| ApiError::Spec(format!("upstream response failed: {e}")))?;
+        .map_err(|e| ApiError::Spec(format!("the credential broker did not answer: {e}")))?;
+
+    let reply: nucleus_cred_protocol::PerformReply = serde_json::from_str(reply_line.trim_end())
+        .map_err(|_| {
+            ApiError::Spec("the credential broker sent an unreadable reply".to_string())
+        })?;
+
+    if !reply.granted {
+        // The host's reason is deliberately coarse — it must not let a guest
+        // enumerate which credentials exist — so it is passed through unchanged
+        // rather than elaborated here.
+        return Err(ApiError::IfcDenied(format!(
+            "the credential broker refused: {}",
+            reply.reason
+        )));
+    }
+
+    let status = axum::http::StatusCode::from_u16(reply.status)
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    let bytes = axum::body::Bytes::from(reply.body);
 
     // External AND model-authored. Observing it is what makes the taint real for
     // everything the workload does next.
@@ -341,22 +444,6 @@ mod tests {
         );
     }
 
-    /// An unset credential yields `None`, so the caller refuses. Forwarding
-    /// unauthenticated would at best fail upstream and at worst succeed
-    /// anonymously against something that does not require auth.
-    #[test]
-    fn an_unset_credential_is_absent_rather_than_empty() {
-        let sp = spec_named("NUCLEUS_TEST_EGRESS_CRED_UNSET");
-        std::env::remove_var(&sp.credential_env);
-        assert!(credential_for(&sp).is_none());
-        std::env::set_var(&sp.credential_env, "");
-        assert!(
-            credential_for(&sp).is_none(),
-            "an empty value is not a credential"
-        );
-        std::env::remove_var(&sp.credential_env);
-    }
-
     /// **A credentialed upstream that is also directly reachable is a control
     /// that appears to work and does not.** The workload would just call the API
     /// itself: same data out, no kernel decision, no IFC gate, no record.
@@ -393,8 +480,90 @@ mod tests {
         assert!(reject_bypassable_upstreams(&[spec()], &[]).is_ok());
     }
 
+    /// **A pod that cannot perform credentialed egress refuses to start.**
     #[test]
-    fn the_prefix_is_applied_to_the_header_value() {
-        assert_eq!(header_value(&spec(), "tok"), "Bearer tok");
+    fn credentialed_egress_without_a_broker_refuses_to_start() {
+        let err = reject_egress_without_a_broker(&[spec()], false)
+            .expect_err("no capability means the upstream can never be called");
+        assert!(err.contains("model-api"), "name the offender: {err}");
+        assert!(
+            err.contains("advisory"),
+            "and say why there is no fallback: {err}"
+        );
+    }
+
+    /// **The two controls, each doing its own job.** With a broker it starts; with
+    /// no upstreams configured it starts regardless. Without both of these the
+    /// refusal above is satisfied by a function that refuses everything.
+    #[test]
+    fn a_pod_that_can_perform_egress_is_not_refused() {
+        assert!(reject_egress_without_a_broker(&[spec()], true).is_ok());
+        assert!(
+            reject_egress_without_a_broker(&[], false).is_ok(),
+            "a pod configuring no credentialed egress needs no broker"
+        );
+    }
+
+    /// **The in-guest credential path is GONE, not merely unused.**
+    ///
+    /// Scans the source, because the property is about what this module CAN do.
+    /// A dead-but-present `credential_for` is one call site away from being a
+    /// fallback again, and a fallback is what makes a broker advisory: an
+    /// attacker who can arrange for the environment variable to be set restores
+    /// exactly the exposure the broker removes.
+    #[test]
+    fn this_module_cannot_read_a_credential_from_the_guest_environment() {
+        let src = include_str!("egress.rs");
+        // PRODUCTION half only. The test module below names `credential_env` in
+        // its fixtures and in this very assertion, and a scanner that counted
+        // those would fire on the explanation of the property it checks — the
+        // same scoping `nucleus_cred_protocol`'s `declarations()` helper needs.
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before tests");
+        let code: String = production
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("credential_env"),
+            "egress.rs reads `credential_env` again. That field names a variable in the \
+             NODE's environment now; a read of it HERE is a read inside the guest, which \
+             is the exposure this module was rewritten to remove."
+        );
+        assert!(
+            !code.contains("fn credential_for") && !code.contains("fn header_value"),
+            "the in-guest credential path is back"
+        );
+    }
+
+    /// The idempotency key is a function of the REQUEST, so a retry repeats it.
+    /// A random key per attempt would leave the host unable to recognise a retry
+    /// and the whole ledger would be decoration.
+    #[test]
+    fn the_same_call_produces_the_same_idempotency_key() {
+        let a = idempotency_key("model-api", "/messages", b"{}");
+        let b = idempotency_key("model-api", "/messages", b"{}");
+        assert_eq!(a, b);
+    }
+
+    /// Different calls must not collide, including under the delimiter attack a
+    /// concatenated key would admit.
+    #[test]
+    fn different_calls_produce_different_keys() {
+        let base = idempotency_key("model-api", "/messages", b"{}");
+        assert_ne!(base, idempotency_key("other-api", "/messages", b"{}"));
+        assert_ne!(base, idempotency_key("model-api", "/other", b"{}"));
+        assert_ne!(base, idempotency_key("model-api", "/messages", b"{ }"));
+        // Length-prefixing is what stops this pair colliding.
+        assert_ne!(
+            idempotency_key("ab", "c", b""),
+            idempotency_key("a", "bc", b"")
+        );
     }
 }
