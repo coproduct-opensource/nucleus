@@ -310,11 +310,31 @@ jobs:
           # release artifacts here would test a build nobody is proposing.
           nucleus setup --skip-verify --artifacts local
 
+      - name: Plant a canary in the NODE's environment
+        shell: bash
+        run: |
+          # The node's environment holds every HMAC secret the runtime has, and
+          # the guest is the thing the sandbox contains. This plants a value
+          # there so `verify --tier2` can assert it does NOT surface in the
+          # guest — an assertion that is meaningless without a real secret to
+          # look for, which is why the check REFUSES rather than skips when
+          # NUCLEUS_E2E_CANARY is unset.
+          #
+          # /etc/nucleus/node.env already exists at mode 0600 and is
+          # EnvironmentFile'd into the systemd unit — see provision::node_env_body.
+          CANARY="nucleus-e2e-canary-$(openssl rand -hex 12)"
+          echo "NUCLEUS_E2E_CANARY=$CANARY" | sudo tee -a /etc/nucleus/node.env >/dev/null
+          sudo systemctl restart nucleus-node || sudo nucleus start || true
+          # Exported for the verifier, NOT written anywhere the guest can read.
+          echo "NUCLEUS_E2E_CANARY=$CANARY" >> "$GITHUB_ENV"
+
       - name: Boot a real pod and assert what the guest did
+        shell: bash
         run: |
           # The whole point. Asserts, in order: the pod is created; a permitted
-          # command runs INSIDE the microVM; a forbidden command is DENIED; and
-          # the guest fetched its SVID and its task token over vsock.
+          # command runs INSIDE the microVM; a forbidden command is DENIED; the
+          # guest fetched its SVID and its task token over vsock; and no secret
+          # from the node's environment surfaced inside the guest.
           nucleus verify --tier2 --here
 
       - name: The in-guest posture probe actually ran (presence, not just verdict)
