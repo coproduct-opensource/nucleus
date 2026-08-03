@@ -261,6 +261,7 @@ fn verify_here() -> Result<()> {
     check_forbidden_operation(&pod)?;
     check_admission_gate(&pod)?;
     check_guest_facts(&host, &pod)?;
+    check_credential_absent_from_guest(&host, &pod)?;
 
     println!();
     println!("Tier 2 works on this host. A real nucleus pod booted, proved its");
@@ -379,6 +380,41 @@ struct CreatePodResponse {
 /// The DLC-D labels provision verified admission for THIS pod only (the node
 /// forwards them to the pod's tool-proxy as `NUCLEUS_DLC_*`); the issuer key
 /// doubles as its own trust anchor, matching dlc-d's principal convention.
+/// A value planted where the guest CAN legitimately see it.
+///
+/// The positive control for [`check_credential_absent_from_guest`]. Every
+/// assertion there is that the canary is ABSENT, and a dump that captured
+/// nothing satisfies all of them — so the sweep must first be shown to find
+/// something it is supposed to find.
+const DECOY: &str = "nucleus-e2e-decoy-6f21a0";
+
+/// What the pod's workload prints, and why it prints rather than searches.
+///
+/// # The guest must never learn the canary
+///
+/// The obvious design hands the workload the secret so it can `grep` for it —
+/// which puts the secret IN the guest and destroys the property the test exists
+/// to check. So the guest DUMPS and the host SEARCHES: the workload writes the
+/// enumerable places a node-held secret could surface, and
+/// `check_credential_absent_from_guest`, which knows the canary, greps that.
+///
+/// A whole-filesystem grep cannot work this way. These four are bounded and are
+/// where a leak would actually land: the kernel command line (where
+/// `nucleus.auth_secret` already rides), the workload's own environment, the
+/// mediating proxy's environment, and the pod spec baked into the rootfs.
+///
+/// Each section is fenced by a marker so a section that failed to run is
+/// distinguishable from a section that ran and found nothing — the difference
+/// between "no leak" and "no look".
+const LEAK_SITE_DUMP: &str = concat!(
+    "echo E2E-DUMP-BEGIN; ",
+    "echo E2E-CMDLINE; cat /proc/cmdline 2>/dev/null; ",
+    "echo E2E-WORKLOAD-ENV; env; ",
+    "echo E2E-PROXY-ENV; tr '\\0' '\\n' < /proc/1/environ 2>/dev/null; ",
+    "echo E2E-POD-SPEC; cat /etc/nucleus/pod.yaml 2>/dev/null; ",
+    "echo E2E-DUMP-END"
+);
+
 fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
     let secret = node_auth_secret(host)?;
     let issuer = &admission.issuer_hex;
@@ -394,7 +430,10 @@ fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
               "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
                         "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
                         "read_only":false}},
-              "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
+              "vsock":{{"guest_cid":3,"port":5005}},
+              "workload":{{"command":"/bin/sh",
+                "args":["-c","{LEAK_SITE_DUMP}"],
+                "env":{{"NUCLEUS_E2E_DECOY":"{DECOY}"}}}}}}}}"#
     );
 
     // Do NOT treat a 4xx as a transport error: ureq's default turns the response
@@ -756,6 +795,90 @@ fn check_art12_witnessed(host: &Tier2Host, pod: &Pod) -> Result<()> {
 /// Each line here corresponds to a defect found by booting in the last week; a
 /// check that only asserted "the pod started" would have passed through all of
 /// them.
+/// **A secret held in the NODE's environment does not surface in the guest.**
+///
+/// The node's environment carries every HMAC secret the runtime holds
+/// (`/etc/nucleus/node.env`, mode 0600, read by the systemd unit). The guest is
+/// the thing the sandbox exists to contain. Nothing in the first should reach
+/// the second, and until now nothing checked it.
+///
+/// # Non-vacuity is the whole difficulty
+///
+/// "The canary was not found" is satisfied by a sweep that looked nowhere, and a
+/// pod whose workload failed to start produces exactly that. So this asserts, in
+/// order: the dump RAN (its fences are present), it CAPTURED content (the decoy
+/// planted in the workload's environment is there), and only then that the
+/// canary is absent.
+///
+/// # A hit reports the PATH, never the value
+///
+/// A test that printed the secret into a CI log to prove the secret does not
+/// leak would be self-defeating.
+fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()> {
+    let canary = std::env::var("NUCLEUS_E2E_CANARY").unwrap_or_default();
+    if canary.is_empty() {
+        // Refuse rather than skip. A silent skip is how this check would rot
+        // into a no-op that still prints reassuringly.
+        bail!(
+            "NUCLEUS_E2E_CANARY is not set in this process, so there is no secret to \
+             look for and the absence assertion below would be trivially true. The CI \
+             job must export the same value it wrote into /etc/nucleus/node.env."
+        );
+    }
+
+    let log = format!("{HOST_STATE_DIR}/pods/{}/firecracker.log", pod.id);
+    let contents = host.sh(&format!("cat {log}"))?;
+    assess_leak_dump(&contents, &canary, DECOY)?;
+    println!("  [ok] no node-held secret surfaced in the guest (dump ran, decoy found)");
+    Ok(())
+}
+
+/// The decision, separated from the pod so it can be RUN rather than reasoned
+/// about.
+///
+/// A booted pod needs `/dev/kvm`, so on a dev machine the check above cannot
+/// execute and every claim about it would rest on reading. This half takes the
+/// log as a string and is exercised against each state a real run produces —
+/// including the two that used to be indistinguishable from success.
+fn assess_leak_dump(contents: &str, canary: &str, decoy: &str) -> Result<()> {
+    for fence in [
+        "E2E-DUMP-BEGIN",
+        "E2E-CMDLINE",
+        "E2E-WORKLOAD-ENV",
+        "E2E-DUMP-END",
+    ] {
+        if !contents.contains(fence) {
+            bail!(
+                "the guest log has no {fence} marker, so the leak-site dump did not run \
+                 to completion. 'the canary was not found' would mean 'nobody looked'."
+            );
+        }
+    }
+
+    if !contents.contains(decoy) {
+        bail!(
+            "the dump ran but did not capture the decoy planted in the workload's \
+             environment. It is not reading the places it claims to read, so its \
+             silence about the canary says nothing."
+        );
+    }
+
+    if contents.contains(canary) {
+        // The section, never the value.
+        let where_at = contents
+            .lines()
+            .take_while(|l| !l.contains(canary))
+            .filter(|l| l.starts_with("E2E-"))
+            .last()
+            .unwrap_or("<unknown section>");
+        bail!(
+            "a secret from the node's environment reached the guest, in the {where_at} \
+             section of the leak-site dump. The value is deliberately not printed here."
+        );
+    }
+    Ok(())
+}
+
 fn check_guest_facts(host: &Tier2Host, pod: &Pod) -> Result<()> {
     // Addressed by pod id, not found by timestamp. See `Pod::id`.
     let log = format!("{HOST_STATE_DIR}/pods/{}/firecracker.log", pod.id);
@@ -861,5 +984,71 @@ mod tests {
     #[test]
     fn artifact_paths_are_absolute_on_the_tier2_host() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
+    }
+}
+
+#[cfg(test)]
+mod leak_dump {
+    use super::*;
+
+    const CANARY: &str = "nucleus-e2e-canary-deadbeef";
+
+    fn clean_dump() -> String {
+        format!(
+            "E2E-DUMP-BEGIN\nE2E-CMDLINE\nconsole=ttyS0\nE2E-WORKLOAD-ENV\n\
+             NUCLEUS_E2E_DECOY={DECOY}\nPATH=/usr/bin\nE2E-PROXY-ENV\n\
+             E2E-POD-SPEC\nE2E-DUMP-END\n"
+        )
+    }
+
+    /// **The control, first.** Everything else asserts a refusal, and a function
+    /// that refused every dump would satisfy all of them while making the check
+    /// useless.
+    #[test]
+    fn a_clean_dump_passes() {
+        assert!(assess_leak_dump(&clean_dump(), CANARY, DECOY).is_ok());
+    }
+
+    /// The workload never started, so nothing was inspected. This is the state
+    /// that used to be indistinguishable from success.
+    #[test]
+    fn a_dump_that_never_ran_is_refused() {
+        let err = assess_leak_dump("some unrelated boot log\n", CANARY, DECOY)
+            .expect_err("no fences means nobody looked");
+        assert!(format!("{err}").contains("nobody looked"));
+    }
+
+    /// The dump ran but captured nothing — fences present, content absent.
+    #[test]
+    fn a_dump_that_captured_nothing_is_refused() {
+        let empty = "E2E-DUMP-BEGIN\nE2E-CMDLINE\nE2E-WORKLOAD-ENV\nE2E-DUMP-END\n";
+        let err = assess_leak_dump(empty, CANARY, DECOY)
+            .expect_err("no decoy means the dump read nowhere");
+        assert!(format!("{err}").contains("decoy"));
+    }
+
+    /// A truncated dump — the workload was killed partway — must not pass on
+    /// the strength of the sections that did run.
+    #[test]
+    fn a_truncated_dump_is_refused() {
+        let cut =
+            format!("E2E-DUMP-BEGIN\nE2E-CMDLINE\nE2E-WORKLOAD-ENV\nNUCLEUS_E2E_DECOY={DECOY}\n");
+        assert!(assess_leak_dump(&cut, CANARY, DECOY).is_err());
+    }
+
+    /// **The leak, caught — and the error must not become the leak.**
+    #[test]
+    fn a_leaked_canary_is_reported_without_printing_it() {
+        let leaked = clean_dump().replace("PATH=/usr/bin", &format!("SOME_VAR={CANARY}"));
+        let err = assess_leak_dump(&leaked, CANARY, DECOY).expect_err("the canary is present");
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains(CANARY),
+            "the failure printed the secret it exists to protect: {msg}"
+        );
+        assert!(
+            msg.contains("E2E-WORKLOAD-ENV"),
+            "it must name the section so the leak is actionable: {msg}"
+        );
     }
 }
