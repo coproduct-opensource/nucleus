@@ -229,25 +229,77 @@ jobs:
 
       - name: lake build (extracted core + theorem)
         working-directory: crates/portcullis-core/lean
+        # `shell: bash` is LOAD-BEARING, not style. GitHub's default `run` shell
+        # is `bash -e {0}` — `-e` WITHOUT pipefail — so `lake build X | tee log`
+        # reports TEE's exit status and a failed build passed this step. Naming
+        # the shell explicitly gets `bash --noprofile --norc -eo pipefail {0}`.
+        #
+        # Demonstrated rather than assumed:
+        #   bash -e         -c 'false | tee /dev/null; echo $?'  -> 0
+        #   bash -eo pipefail -c 'false | tee /dev/null; echo $?' -> 1
+        #
+        # Every target below is piped to `tee` so the axiom audit can read the
+        # log, so every one of them was affected.
+        shell: bash
         run: |
           lake build PortcullisCoreIFC
           lake build IntegrityNoninterferenceExtracted 2>&1 | tee /tmp/lake-ifc.log
           lake build ConfidentialityNoninterferenceExtracted 2>&1 | tee /tmp/lake-conf-ifc.log
           lake build MediationScopeExtracted 2>&1 | tee /tmp/lake-mediation.log
+          # These two were listed in this workflow's `paths:` triggers and built
+          # by NOTHING — editing either fired a job that did not compile it. They
+          # back docs/production-delta.md rows 9 (egress confinement) and 36
+          # (FM-1 credential noninterference), whose quoted axiom profiles were
+          # therefore transcribed rather than produced by a run.
+          lake build PortcullisCoreEgress
+          lake build EgressConfinementExtracted 2>&1 | tee /tmp/lake-egress.log
+          lake build PortcullisCoreCredential
+          lake build CredentialNoninterferenceExtracted 2>&1 | tee /tmp/lake-credential.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         working-directory: crates/portcullis-core/lean
+        shell: bash
         run: |
-          echo "=== #print axioms output (from build log) ==="
-          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-ifc.log || true
-          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-mediation.log || true
-          if grep -qE "sorryAx|External" /tmp/lake-ifc.log /tmp/lake-mediation.log; then
+          LOGS="/tmp/lake-ifc.log /tmp/lake-mediation.log /tmp/lake-egress.log /tmp/lake-credential.log"
+
+          # NON-VACUITY FIRST. Every check below is "the log does not contain a
+          # bad string", and an EMPTY log satisfies all of them — which is
+          # exactly what a failed or skipped build produces. So require positive
+          # evidence that `#print axioms` actually ran before believing its
+          # silence about sorryAx.
+          for log in $LOGS; do
+            if [ ! -s "$log" ]; then
+              echo "ERROR: $log is missing or empty. The build did not run, so the"
+              echo "axiom assertions below would pass by saying nothing."
+              exit 1
+            fi
+            if ! grep -qE "^'[^']+' depends on axioms|depends on axioms" "$log"; then
+              echo "ERROR: $log contains no '#print axioms' output. The theorems it"
+              echo "should audit were not elaborated, so this step is asserting"
+              echo "nothing about them."
+              exit 1
+            fi
+          done
+
+          echo "=== #print axioms output (from build logs) ==="
+          for log in $LOGS; do
+            echo "--- $log ---"
+            grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" "$log" || true
+          done
+
+          if grep -qE "sorryAx|External" $LOGS; then
             echo "ERROR: dirty axiom set — sorryAx or an opaque *External axiom is on the proof's critical path."
             exit 1
           fi
           echo "No sorryAx / opaque-External axiom detected in the axiom audit."
+          # FOLLOW-UP, stated rather than silently skipped: this asserts the
+          # absence of sorryAx/External, not that the printed axiom SET equals
+          # the one docs/production-delta.md quotes. Pinning the exact set needs
+          # the real output from a run — and the documented profiles have never
+          # been produced by one, so encoding them now would pin a transcription.
+          # The profiles printed above are that ground truth; pin them next.
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
@@ -261,8 +313,12 @@ jobs:
           if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
                IntegrityNoninterferenceExtracted.lean \
                MediationScopeExtracted.lean \
+               EgressConfinementExtracted.lean \
+               CredentialNoninterferenceExtracted.lean \
                generated-ifc/PortcullisCoreIFC/ \
-               generated-mediation/PortcullisCoreMediation/ --include='*.lean'; then
+               generated-mediation/PortcullisCoreMediation/ \
+               generated-egress/PortcullisCoreEgress/ \
+               generated-credential/PortcullisCoreCredential/ --include='*.lean'; then
             echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1
           fi
