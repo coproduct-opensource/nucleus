@@ -101,6 +101,19 @@ pub fn parse_reply(line: &str) -> BrokerOutcome {
     }
 }
 
+/// This pod's broker capability: the key to sign with and where to send it.
+///
+/// One type because they are one capability. Delivered together in a single
+/// one-shot reply, and read together, so a proxy cannot end up able to sign and
+/// unable to connect.
+#[derive(Debug, Clone)]
+pub struct Capability {
+    /// The HMAC key. Never logged.
+    pub secret: String,
+    /// The vsock port the host broker listens on.
+    pub port: u32,
+}
+
 /// Host CID for vsock. Always 2 in Firecracker.
 ///
 /// Linux-only because only the Linux arm of `ask` dials anything.
