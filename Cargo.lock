@@ -6707,8 +6707,11 @@ dependencies = [
 name = "nucleus-cred-protocol"
 version = "1.0.0"
 dependencies = [
+ "hex",
+ "hmac 0.13.0",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

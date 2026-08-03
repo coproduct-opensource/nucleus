@@ -36,6 +36,20 @@ use nucleus_spec::WorkloadSpec;
 /// `NUCLEUS_TOOL_PROXY_URL` itself would otherwise point its workload at some
 /// other endpoint — mediating nothing while looking mediated — and a pod spec is
 /// not necessarily written by the same party that owns the policy.
+/// The only variables a workload inherits from the runtime, by name.
+///
+/// Deliberately tiny, and deliberately a list rather than a filter: a
+/// deny-list of secret-looking names fails the moment somebody adds a secret
+/// whose name does not look like one, which is exactly how the broker
+/// capability got through in the first place.
+///
+/// Everything else a workload needs goes in `spec.env`, where an operator wrote
+/// it down. `PATH` is here because a command resolved without one fails in a way
+/// that looks like a missing binary rather than a missing variable; `HOME`,
+/// `LANG` and `TZ` because tools misbehave in confusing ways without them and
+/// none of the three can carry authority.
+pub(crate) const INHERITED_BY_NAME: [&str; 4] = ["PATH", "HOME", "LANG", "TZ"];
+
 #[must_use]
 pub(crate) fn workload_env(
     spec: &WorkloadSpec,
@@ -76,9 +90,39 @@ pub(crate) fn spawn_workload(
     cmd.args(&spec.args)
         .current_dir(work_dir)
         .kill_on_drop(true);
-    // A uid boundary is what makes "the workload does not have the credential"
-    // true. Same-uid processes can read each other's `/proc/<pid>/environ`, so
-    // without this the workload reads the runtime's environment and helps itself.
+
+    // ── The workload's environment is DECLARED, never inherited ──────────────
+    //
+    // `Command` passes the parent's environment to the child unless told
+    // otherwise, and this did not tell it otherwise. The proxy's own environment
+    // carries `NUCLEUS_TOOL_PROXY_BROKER_SECRET` — `nucleus-guest-init` sets it
+    // before exec'ing the proxy — so **the workload inherited the broker
+    // capability**. The one thing steps 1 and 2 of this arc exist to prevent:
+    // the capability distinguishes the mediating proxy from every other process
+    // in the guest, and it was being handed to the workload for free.
+    //
+    // The uid boundary below does NOT close this, and the comment that used to
+    // sit there claimed it did. A uid stops the workload READING
+    // `/proc/<proxy_pid>/environ`; it does nothing about a value already in the
+    // workload's own environment. Inheritance arrives before any permission
+    // check applies.
+    //
+    // `env_clear` first, then an explicit allowlist. The fail-closed direction:
+    // a new variable now has to be added on purpose, rather than reaching the
+    // workload because it happened to be in the proxy's environment. Anything a
+    // workload genuinely needs belongs in `spec.env`, where an operator wrote it
+    // and a reader can see it.
+    cmd.env_clear();
+    for key in INHERITED_BY_NAME {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+
+    // A uid boundary, for the DIFFERENT thing it actually buys: same-uid
+    // processes can read each other's `/proc/<pid>/environ`, so without this the
+    // workload could read the runtime's environment directly — which still holds
+    // the broker capability, whatever the workload's own environment says.
     if let Some(uid) = spec.uid {
         cmd.uid(uid);
     }
@@ -238,16 +282,84 @@ mod tests {
         );
     }
 
-    /// **The broker capability must never reach the workload.** It is what lets
-    /// the host tell the mediating proxy from every other process in the guest;
-    /// a workload holding it could ask the broker to act directly, skipping the
-    /// kernel decision, taint ceiling and flow cross-check.
+    /// **The capability does not reach a real child.** This is the property; the
+    /// map-level test above is a necessary half of it.
     ///
-    /// Asserted rather than left to a grep: absence is easy to establish by
-    /// accident and easy to lose by accident, and the losing edit would look
-    /// like a helpful convenience.
+    /// Spawns an actual process and reads the environment it actually got,
+    /// because the defect this covers lives entirely in the gap between the map
+    /// and the child: `Command` inherits the parent's environment, the proxy's
+    /// environment holds the capability, and no amount of checking the overlay
+    /// map can see that.
+    #[tokio::test]
+    async fn the_spawned_child_does_not_inherit_the_capability() {
+        // Put the capability in THIS process's environment, exactly as
+        // `guest-init` puts it in the proxy's before exec.
+        std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "leaked-capability");
+        std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", "1027");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dump = dir.path().join("child-env");
+        // Written to a FILE, not read from stdout: `spawn_workload` does not pipe
+        // stdout, so `wait_with_output` returns an empty buffer and every
+        // "does not contain the secret" assertion below would pass vacuously.
+        // The non-vacuity control at the end of this test is what caught that.
+        let spec = WorkloadSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), format!("env > {}", dump.display())],
+            uid: None,
+            env: std::collections::BTreeMap::new(),
+        };
+        let mut child = spawn_workload(&spec, "http://127.0.0.1:8080", "s3cret", dir.path(), &[])
+            .expect("sh must be spawnable");
+        let status = child.wait().await.expect("child ran");
+        assert!(status.success(), "the child must actually run: {status:?}");
+        let observed = std::fs::read_to_string(&dump).expect("the child wrote its environment");
+
+        std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET");
+        std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_PORT");
+
+        assert!(
+            !observed.contains("leaked-capability"),
+            "the workload inherited the broker capability from the proxy's environment. \
+             It can now sign broker frames directly, which is exactly what the capability \
+             exists to prevent. Child environment was:\n{observed}"
+        );
+        assert!(
+            !observed.contains("NUCLEUS_TOOL_PROXY_BROKER_PORT"),
+            "the workload was told where the broker listens:\n{observed}"
+        );
+
+        // **The non-vacuity control.** A child with an EMPTY environment would
+        // satisfy every assertion above while being completely broken, and
+        // `env_clear` makes that failure one line away.
+        assert!(
+            observed.contains("NUCLEUS_TOOL_PROXY_URL"),
+            "the workload must still be told where its proxy is, or the assertions \
+             above are satisfied by a child that got nothing:\n{observed}"
+        );
+        assert!(
+            observed.contains("PATH="),
+            "PATH must survive the clear, or a workload cannot resolve its own \
+             command:\n{observed}"
+        );
+    }
+
+    /// **`workload_env` does not SOURCE the capability from the runtime.**
+    ///
+    /// # This test was necessary and not sufficient, and the gap was a real hole
+    ///
+    /// It asserts a property of the overlay map. `spawn_workload` applies that
+    /// map with `cmd.env(k, v)` — additive — on top of an environment the child
+    /// INHERITS from the proxy, and the proxy's environment holds
+    /// `NUCLEUS_TOOL_PROXY_BROKER_SECRET` because `nucleus-guest-init` sets it
+    /// before exec. So the workload received the capability, this test passed,
+    /// and the two facts had nothing to do with each other.
+    ///
+    /// Renamed to what it actually checks. The property people want is in
+    /// `the_spawned_child_does_not_inherit_the_capability`, which asserts over a
+    /// real child's environment.
     #[test]
-    fn the_broker_capability_never_reaches_the_workload() {
+    fn workload_env_does_not_source_the_capability_from_the_runtime() {
         let hostile = spec_with(&[("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "stolen")]);
         let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret", &[]);
         // A spec that names it gets it back — that value is the SPEC's, not the
