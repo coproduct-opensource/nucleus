@@ -277,6 +277,104 @@ pub fn collect(
     })
 }
 
+/// What one boot leaves behind for collection.
+pub struct RunArtifacts {
+    /// Path to the machine configuration Firecracker was launched with.
+    pub config: std::path::PathBuf,
+    /// Path to the guest console log.
+    pub console: std::path::PathBuf,
+    /// The run-scoped facts to canonicalise against.
+    pub facts: RunFacts,
+}
+
+/// Why a 2-safety check failed.
+#[derive(Debug)]
+pub enum TwoSafetyError {
+    /// A boot or collection failed. Distinguished from a divergence because
+    /// "the experiment did not run" and "the experiment found a leak" are
+    /// different answers and only one is about the system.
+    Harness(String),
+    /// Two runs differing only in a secret produced different observations.
+    Leak(Divergence),
+    /// The positive control did NOT find a planted secret, so the comparison is
+    /// blind and every passing result above it is meaningless.
+    ControlDidNotFire,
+}
+
+impl fmt::Display for TwoSafetyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TwoSafetyError::Harness(m) => write!(f, "the 2-safety harness could not run: {m}"),
+            TwoSafetyError::Leak(d) => write!(f, "{d}"),
+            TwoSafetyError::ControlDidNotFire => write!(
+                f,
+                "the positive control did not fire: a secret planted directly in the kernel \
+                 command line was NOT detected. The comparison is blind, so a clean result \
+                 from it means nothing."
+            ),
+        }
+    }
+}
+
+/// Boot once with the given secret and hand back what it left.
+///
+/// Injected rather than called directly so the orchestration below is testable
+/// without `/dev/kvm` — the same reason `handle_perform` takes its upstream
+/// caller. Only the actual boot is CI-only; the logic is not.
+pub trait Boot {
+    /// Run a pod whose node environment carries `secret`, optionally planting it
+    /// into the kernel command line.
+    ///
+    /// # Errors
+    /// If the pod could not be booted or its artifacts are unavailable.
+    fn boot(&mut self, secret: &str, plant_in_cmdline: bool) -> std::io::Result<RunArtifacts>;
+}
+
+fn observe(b: &mut dyn Boot, secret: &str, plant: bool) -> Result<Canonical, TwoSafetyError> {
+    let a = b
+        .boot(secret, plant)
+        .map_err(|e| TwoSafetyError::Harness(e.to_string()))?;
+    let obs = collect(&a.config, &a.console).map_err(|e| TwoSafetyError::Harness(e.to_string()))?;
+    Ok(canonicalise(&obs, &a.facts))
+}
+
+/// **The positive control, and it runs FIRST.**
+///
+/// Plants the secret directly into the kernel command line — `image.boot_args`,
+/// which is host-consumed by `firecracker_config.rs` and reaches `/proc/cmdline`
+/// — and requires the comparison to find it.
+///
+/// Without this, a canonicaliser that erased too much, an observation that
+/// collected the wrong files, or a comparison with an inverted condition would
+/// all report "no leak" forever. Running it first means a blind harness is
+/// reported as blind rather than as clean.
+///
+/// # Errors
+/// [`TwoSafetyError::ControlDidNotFire`] if the planted secret is not detected.
+pub fn control(b: &mut dyn Boot) -> Result<(), TwoSafetyError> {
+    let a = observe(b, "twosafety-control-aaaaaaaa", true)?;
+    let c = observe(b, "twosafety-control-bbbbbbbb", true)?;
+    match compare(&a, &c) {
+        Err(_) => Ok(()),
+        Ok(()) => Err(TwoSafetyError::ControlDidNotFire),
+    }
+}
+
+/// The check itself: two runs differing only in a secret must be indistinguishable.
+///
+/// Enumerates no mechanisms. A channel nobody wrote down shows up as a
+/// difference, which is the whole reason this is a hyperproperty test and not
+/// another leak scan.
+///
+/// # Errors
+/// [`TwoSafetyError::Leak`] with the differing component, or `Harness` if a boot
+/// or collection failed.
+pub fn check(b: &mut dyn Boot) -> Result<(), TwoSafetyError> {
+    let a = observe(b, "twosafety-secret-aaaaaaaa", false)?;
+    let c = observe(b, "twosafety-secret-bbbbbbbb", false)?;
+    compare(&a, &c).map_err(TwoSafetyError::Leak)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,5 +670,117 @@ mod collection {
         let b = canonicalise(&collect(&cb, &lb).expect("b"), &fb);
         let dv = compare(&a, &b).expect_err("the planted secret differs");
         assert_eq!(dv.component, "machine_config");
+    }
+}
+
+#[cfg(test)]
+mod orchestration {
+    use super::*;
+    use std::io;
+
+    /// A booter backed by fixtures. `leak` decides whether the secret reaches
+    /// the console — i.e. whether the system under test is broken.
+    struct Fake {
+        dir: tempfile::TempDir,
+        n: u32,
+        leak: bool,
+        honour_plant: bool,
+    }
+
+    impl Fake {
+        fn new(leak: bool, honour_plant: bool) -> Self {
+            Fake {
+                dir: tempfile::tempdir().expect("tempdir"),
+                n: 0,
+                leak,
+                honour_plant,
+            }
+        }
+    }
+
+    impl Boot for Fake {
+        fn boot(&mut self, secret: &str, plant: bool) -> io::Result<RunArtifacts> {
+            self.n += 1;
+            let cid = 2 + self.n;
+            let cmd = if plant && self.honour_plant {
+                format!("console=ttyS0 nucleus.x={secret}")
+            } else {
+                "console=ttyS0".to_string()
+            };
+            let config = self.dir.path().join(format!("c{}.json", self.n));
+            std::fs::write(
+                &config,
+                format!("{{\"boot_args\":\"{cmd}\",\"vsock\":{{\"guest_cid\":{cid}}}}}"),
+            )?;
+            let console = self.dir.path().join(format!("l{}.log", self.n));
+            let body = if self.leak {
+                format!("[    0.1] boot\n[    0.2] cred={secret}")
+            } else {
+                format!("[    0.{}] boot\n[    0.2] ready", self.n)
+            };
+            std::fs::write(&console, body)?;
+            Ok(RunArtifacts {
+                config,
+                console,
+                facts: RunFacts {
+                    pod_id: format!("{:08}-0000-0000-0000-000000000000", self.n),
+                    guest_cid: cid,
+                },
+            })
+        }
+    }
+
+    /// **The control, first.** A sound system passes the check.
+    #[test]
+    fn a_system_that_does_not_leak_passes() {
+        let mut b = Fake::new(false, true);
+        assert!(check(&mut b).is_ok());
+    }
+
+    /// A system that puts the secret on the console fails, with no mechanism
+    /// named anywhere in this module.
+    #[test]
+    fn a_leak_to_the_console_is_caught() {
+        let mut b = Fake::new(true, true);
+        match check(&mut b) {
+            Err(TwoSafetyError::Leak(d)) => assert_eq!(d.component, "console"),
+            other => panic!("expected a Leak, got {other:?}"),
+        }
+    }
+
+    /// The positive control fires when the plant works.
+    #[test]
+    fn the_control_fires_on_a_planted_secret() {
+        let mut b = Fake::new(false, true);
+        assert!(control(&mut b).is_ok(), "a planted secret must be detected");
+    }
+
+    /// **The meta-check, and the reason `control` exists at all.** If planting is
+    /// broken, the control must report BLINDNESS rather than passing — otherwise
+    /// a harness that sees nothing looks exactly like a system that leaks
+    /// nothing.
+    #[test]
+    fn a_broken_plant_is_reported_as_blindness_not_as_clean() {
+        let mut b = Fake::new(false, /* honour_plant */ false);
+        match control(&mut b) {
+            Err(TwoSafetyError::ControlDidNotFire) => {}
+            other => panic!("a blind harness must not look clean, got {other:?}"),
+        }
+    }
+
+    /// A boot failure is a HARNESS error, not a clean result. "The experiment did
+    /// not run" and "the experiment found nothing" are different answers.
+    #[test]
+    fn a_failed_boot_is_not_a_pass() {
+        struct Broken;
+        impl Boot for Broken {
+            fn boot(&mut self, _: &str, _: bool) -> io::Result<RunArtifacts> {
+                Err(io::Error::other("no /dev/kvm"))
+            }
+        }
+        match check(&mut Broken) {
+            Err(TwoSafetyError::Harness(m)) => assert!(m.contains("kvm")),
+            other => panic!("expected Harness, got {other:?}"),
+        }
     }
 }
