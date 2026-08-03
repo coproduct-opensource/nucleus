@@ -321,7 +321,36 @@ jobs:
           # `|| true` because a grep matching nothing exits 1, and under pipefail
           # that would fail the assignment and RED a clean log — verified against
           # a clean log rather than assumed.
-          bad=$(grep -hoE "depends on axioms: \[[^]]*\]" $LOGS \
+          # FLATTEN NEWLINES FIRST. Lean WRAPS long axiom lists:
+          #
+          #   'thm' depends on axioms: [propext,
+          #    Classical.choice,
+          #    Quot.sound]
+          #
+          # A line-based `grep -o` never matches those — no closing `]` on the
+          # line — so it silently audits only the unwrapped ones. Measured on the
+          # real output: 3 of 7 credential theorems matched before this fix, and
+          # the step still reported success, because "found no bad axiom" is true
+          # of the four it never looked at.
+          #
+          # Every fixture I invented for this check was single-line. The real
+          # build is what found it.
+          flat=$(cat $LOGS | tr '\n' ' ')
+
+          # SELF-CONSISTENCY, which is what would have caught the above at once:
+          # the number of axiom lists EXTRACTED must equal the number PRINTED. A
+          # parser that silently drops entries fails here instead of passing.
+          printed=$(grep -hc "depends on axioms" $LOGS | paste -sd+ - | bc)
+          extracted=$(printf '%s' "$flat" | grep -oE "depends on axioms: \[[^]]*\]" | wc -l | tr -d ' ')
+          if [ "$printed" != "$extracted" ]; then
+            echo "ERROR: $printed theorems printed an axiom profile but only $extracted were"
+            echo "parsed. The extraction is dropping entries, so the audit below is"
+            echo "asserting nothing about the difference."
+            exit 1
+          fi
+          echo "Axiom profiles parsed: $extracted of $printed printed."
+
+          bad=$(printf '%s' "$flat" | grep -oE "depends on axioms: \[[^]]*\]" \
                 | sed -E 's/.*\[([^]]*)\]/\1/' | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
                 | grep -vE "^($ALLOWED)$" | grep -v '^$' | sort -u || true)
           if [ -n "$bad" ]; then
