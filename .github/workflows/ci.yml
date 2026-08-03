@@ -114,6 +114,21 @@ jobs:
       - name: Forbid raw agent-path effect primitives outside the discharge-gated API
         run: scripts/check-mediation.sh
 
+  # Every gate above is a claim that something is checked. This checks the claim.
+  #
+  # It needs full history and a clean tree because it PERTURBS real files and
+  # restores them, so it runs as its own job rather than sharing a checkout with
+  # a job that might have written into the tree.
+  gates-can-fail:
+    name: Gates must fail on their own subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Every gate REDs on a real violation and GREENs when restored
+        shell: bash
+        run: scripts/check-gates-can-fail.sh
+
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
     runs-on: ubuntu-latest
