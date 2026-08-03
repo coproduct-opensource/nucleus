@@ -161,34 +161,88 @@ pub fn on_start_failure(rollout: BrokerRollout) -> StartFailure {
 /// consumers provably the same secret rather than coincidentally the same
 /// secret. `mint_appears_exactly_once_on_the_spawn_path` covers the one hole
 /// this shape leaves: calling [`Self::mint`] twice.
-#[derive(Debug, Clone)]
-pub struct BrokerCapability {
+///
+/// # Affine, not linear — and the difference is worth stating
+///
+/// This derived `Clone` and handed out copies through `&self`, so it was freely
+/// duplicable: "one value with two projections" described the intent, not the
+/// type. It is now a PAIR of move-only tokens, neither `Clone` nor `Copy`, each
+/// consumed by value. Duplication is a compile error.
+///
+/// What Rust gives is AFFINE — used at most once. Linear — used *exactly* once,
+/// with the two tokens provably from the same mint — needs either an
+/// invariant-lifetime brand (which requires a closure-shaped scope the async pod
+/// spawn path does not naturally take) or a runtime check, which is not a proof.
+/// So the residual hole is calling [`Self::mint`] twice and handing one consumer
+/// a token from each; `mint_appears_exactly_once_on_the_spawn_path` covers it by
+/// counting, and that test survives precisely because the type cannot.
+///
+/// True linearity lives in the model, not here. That asymmetry is the reason a
+/// proved model↔code correspondence matters rather than being a nicety: it is
+/// what would let the Lean side's linearity say anything about this side's
+/// affineness.
+pub struct BrokerCapability;
+
+/// The token the workload API serves to the guest. Move-only, consumed once.
+#[must_use = "a ServeToken that is never served is a capability the guest never gets"]
+pub struct ServeToken {
     secret: String,
 }
 
+/// The token the broker listener verifies against. Move-only, consumed once.
+#[must_use = "a VerifyToken that is never installed leaves the verifier with nothing, \
+              which is exactly the defect BrokerCapability exists to prevent"]
+pub struct VerifyToken {
+    secret: String,
+}
+
+impl std::fmt::Debug for ServeToken {
+    /// Never the value, and never its length.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServeToken(<redacted>)")
+    }
+}
+
+impl std::fmt::Debug for VerifyToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifyToken(<redacted>)")
+    }
+}
+
+impl ServeToken {
+    /// Consume the token, yielding the value served to the guest exactly once.
+    #[must_use]
+    pub fn into_served(self) -> String {
+        self.secret
+    }
+}
+
+impl VerifyToken {
+    /// Consume the token, yielding the key the listener authenticates with.
+    #[must_use]
+    pub fn into_verifier(self) -> std::sync::Arc<Vec<u8>> {
+        std::sync::Arc::new(self.secret.into_bytes())
+    }
+}
+
 impl BrokerCapability {
-    /// Mint a fresh capability for one pod.
+    /// Mint a fresh capability for one pod, as a linked pair.
+    ///
+    /// Returns BOTH tokens because there is no use for one without the other:
+    /// a served capability no verifier holds is what made this inert, and a
+    /// verifier with a capability nobody was served refuses every frame.
     ///
     /// Per-pod and never reused: two pods sharing one would let either sign for
-    /// the other, and the listener's identity binding — one socket per VM — would
-    /// stop meaning anything.
-    #[must_use]
-    pub fn mint() -> Self {
-        Self {
-            secret: uuid::Uuid::new_v4().simple().to_string(),
-        }
-    }
-
-    /// The copy the workload API serves to the guest, exactly once.
-    #[must_use]
-    pub fn to_serve(&self) -> String {
-        self.secret.clone()
-    }
-
-    /// The copy the broker listener verifies signatures against.
-    #[must_use]
-    pub fn to_verify(&self) -> std::sync::Arc<Vec<u8>> {
-        std::sync::Arc::new(self.secret.as_bytes().to_vec())
+    /// the other, and the listener's identity binding — one socket per VM —
+    /// would stop meaning anything.
+    pub fn mint() -> (ServeToken, VerifyToken) {
+        let secret = uuid::Uuid::new_v4().simple().to_string();
+        (
+            ServeToken {
+                secret: secret.clone(),
+            },
+            VerifyToken { secret },
+        )
     }
 }
 
@@ -262,7 +316,7 @@ pub fn start_broker_for_pod(
     vsock_path: &std::path::Path,
     registered: Option<&nucleus_identity::Identity>,
     id: uuid::Uuid,
-    capability: &BrokerCapability,
+    capability: VerifyToken,
     jail_owner: Option<(u32, u32)>,
 ) -> Result<Option<crate::broker_transport::BrokerListener>, crate::ApiError> {
     let transport = if spec.spec.vsock.is_some() {
@@ -329,7 +383,7 @@ pub fn start_broker_for_pod(
             upstreams,
             // The SAME value the workload API serves the guest. Passing `None`
             // here is what made the capability inert; see `BrokerCapability`.
-            broker_secret: capability.to_verify(),
+            broker_secret: capability.into_verifier(),
         },
         jail_owner,
     ) {
@@ -364,10 +418,12 @@ mod broker_capability {
     /// the bridge minted its own and the listener got `None`.
     #[test]
     fn what_is_served_is_what_is_verified() {
-        let cap = BrokerCapability::mint();
+        let (serve, verify) = BrokerCapability::mint();
+        let served = serve.into_served();
+        let verifier = verify.into_verifier();
         assert_eq!(
-            cap.to_serve().as_bytes(),
-            cap.to_verify().as_slice(),
+            served.as_bytes(),
+            verifier.as_slice(),
             "the guest would hold a capability the verifier cannot recognise"
         );
     }
@@ -378,9 +434,59 @@ mod broker_capability {
     #[test]
     fn two_pods_do_not_share_a_capability() {
         assert_ne!(
-            BrokerCapability::mint().to_serve(),
-            BrokerCapability::mint().to_serve()
+            BrokerCapability::mint().0.into_served(),
+            BrokerCapability::mint().0.into_served()
         );
+    }
+
+    /// **The tokens cannot be duplicated, and the COMPILER says so.**
+    ///
+    /// This type derived `Clone` and served copies through `&self`, so "one value
+    /// with two projections" described the intent and not the property: any
+    /// holder could make as many capabilities as it liked.
+    ///
+    /// # This was a source scan, and it did not need to be
+    ///
+    /// The first version grepped the declarations for `Clone`/`Copy`, on the
+    /// belief that "does not implement a trait" is not assertable in Rust. That
+    /// is false. The `static_assertions` crate's `assert_not_impl_any!` does it
+    /// on stable via deliberate inference ambiguity, and the trick is ten lines,
+    /// so it is inlined here rather than adding a dependency to a crate that
+    /// links credential material.
+    ///
+    /// How it works: two blanket impls that overlap ONLY when `T: Clone`. If the
+    /// token is `Clone`, both apply, the type parameter cannot be inferred, and
+    /// the build fails. If it is not, exactly one applies and this resolves.
+    ///
+    /// The failure therefore moves from a test to the compiler — a grep enforcing
+    /// a type-level property was a confession, and this retires it.
+    ///
+    /// # What this does NOT establish
+    ///
+    /// Affine, not linear. Rust enforces at-most-once; it does not enforce that
+    /// the two tokens came from the SAME mint. That needs an invariant-lifetime
+    /// brand — reachable with `generativity`'s Drop-guard macro, which needs no
+    /// closure — so `mint_appears_exactly_once_on_the_spawn_path` below is
+    /// deletable debt rather than a permanent limit.
+    #[test]
+    fn the_tokens_are_move_only() {
+        trait AmbiguousIfClone<A> {
+            fn some_item() {}
+        }
+        impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+        impl<T: Clone> AmbiguousIfClone<u8> for T {}
+
+        // Each line fails to COMPILE if that token becomes duplicable.
+        let _ = <ServeToken as AmbiguousIfClone<_>>::some_item;
+        let _ = <VerifyToken as AmbiguousIfClone<_>>::some_item;
+
+        // NON-VACUITY, and it was run rather than assumed. A test cannot contain
+        // its own compile error, so the control is a perturbation: uncommenting
+        // the line below — `String` IS `Clone` — must fail to build. Measured:
+        // `error[E0283]: type annotations needed`, the same error that
+        // re-deriving `Clone` on a token produces. So the two assertions above
+        // are not passing by failing to work.
+        //   let _ = <String as AmbiguousIfClone<_>>::some_item;
     }
 
     /// **The hole this type's shape leaves, closed by counting.**

@@ -2595,7 +2595,7 @@ async fn spawn_firecracker_pod(
         // different blocks below, and this used to be exactly the gap they fell
         // into — the bridge minted its own while the listener got `None`, so the
         // guest held a capability the verifier had never seen.
-        let broker_capability = broker_launch::BrokerCapability::mint();
+        let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint();
 
         let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
             identity_source
@@ -2681,7 +2681,7 @@ async fn spawn_firecracker_pod(
                     // The broker capability, minted per pod and served ONCE. See
                     // `handle_fetch_broker_secret`: this is what lets the host
                     // tell the mediating proxy from every other guest process.
-                    broker_secret: Some(broker_capability.to_serve()),
+                    broker_secret: Some(broker_serve.into_served()),
                     // Served WITH the capability, not separately — the proxy
                     // needs both to reach the broker and neither is useful alone.
                     broker_port: state.broker_vsock_port,
@@ -2802,7 +2802,7 @@ async fn spawn_firecracker_pod(
             &vsock_path,
             pod_identity.as_ref(),
             id,
-            &broker_capability,
+            broker_verify,
             // The SAME expression the workload API bridge uses. That socket was
             // chowned and this one was not, which is why no guest could have
             // reached the broker under the jailer.
