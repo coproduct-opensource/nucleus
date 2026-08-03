@@ -173,15 +173,7 @@ impl WorkloadApiVsockBridge {
         // chown, not chmod: only the jailed Firecracker should be able to
         // connect. Widening the mode would open the workload API — which serves
         // SVIDs and task tokens — to every user on the host.
-        #[cfg(target_os = "linux")]
-        if let Some((uid, gid)) = jail_owner {
-            std::os::unix::fs::chown(&socket_path, Some(uid), Some(gid)).map_err(|e| {
-                std::io::Error::other(format!(
-                    "cannot give {} to the jailed uid {uid}:{gid}: {e}",
-                    socket_path.display()
-                ))
-            })?;
-        }
+        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
         #[cfg(not(target_os = "linux"))]
         let _ = jail_owner;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();

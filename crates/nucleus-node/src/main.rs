@@ -45,6 +45,7 @@ mod broker_transport;
 mod cgroup;
 mod cred_split;
 mod envelope_frame;
+mod guest_socket;
 mod net;
 mod session_mint;
 mod signed_proxy;
@@ -2802,6 +2803,12 @@ async fn spawn_firecracker_pod(
             pod_identity.as_ref(),
             id,
             &broker_capability,
+            // The SAME expression the workload API bridge uses. That socket was
+            // chowned and this one was not, which is why no guest could have
+            // reached the broker under the jailer.
+            jail_layout
+                .as_ref()
+                .map(|_| (state.jailer_uid, state.jailer_gid)),
         )?;
 
         let handle = FirecrackerPod {

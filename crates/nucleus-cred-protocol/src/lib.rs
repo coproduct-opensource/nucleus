@@ -18,6 +18,94 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Wire framing for authenticated broker frames.
+///
+/// # Why the codec lives here and not on either side
+///
+/// The guest SIGNS and the host VERIFIES. Written separately those are two
+/// implementations of one format, each testable in isolation, each passing, and
+/// wrong together the moment one changes — the same shape as the defect one
+/// increment ago, where the capability was minted in one file and the verifier
+/// was handed `None` in another. Both sides call the functions below.
+///
+/// Nothing here holds anything. `sign` takes a key by reference and returns a
+/// digest; the crate's guarantee — that no *type* here can carry credential
+/// material — is untouched, and `no_type_here_can_carry_a_credential` still
+/// scans for it.
+///
+/// # The wire form
+///
+/// `<hex-hmac-sha256> <payload-json>` — one space, signature first, newline
+/// terminated by the transport. Not a JSON wrapper: the payload would need
+/// escaping inside a JSON string, and a verifier that re-serialises in order to
+/// check a signature is checking its own serialiser rather than what arrived.
+pub mod frame {
+    /// Sign `payload` under `key`, producing the wire form.
+    ///
+    /// No trailing newline — framing belongs to the transport, which is the only
+    /// layer that knows whether it is writing to a socket or a buffer.
+    #[must_use]
+    pub fn sign(key: &[u8], payload: &str) -> String {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key)
+            // HMAC accepts a key of any length, so this cannot fail for any
+            // `&[u8]`. Expressed as a fallback rather than an unwrap because a
+            // panic here would take down the proxy over a frame.
+            .expect("HMAC-SHA256 accepts keys of any length");
+        mac.update(payload.as_bytes());
+        format!("{} {payload}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// Split a signed frame into its signature and the payload it covers.
+    ///
+    /// `None` for anything that is not exactly that shape. A caller must treat
+    /// `None` as a refusal — an unsigned frame is not a frame with an empty
+    /// signature.
+    #[must_use]
+    pub fn split(frame: &str) -> Option<(&str, &str)> {
+        let (sig, payload) = frame.split_once(' ')?;
+        if sig.is_empty() || payload.is_empty() {
+            return None;
+        }
+        Some((sig, payload))
+    }
+
+    /// Whether `frame` was signed under `key`.
+    ///
+    /// # A missing key verifies nothing
+    ///
+    /// `None` means no capability was provisioned, so nothing can be
+    /// authenticated and therefore nothing is accepted. Treating "no key" as "no
+    /// signature required" is the fail-OPEN reading, and it turns a provisioning
+    /// failure into an open door at the moment nobody is watching.
+    ///
+    /// # Constant-time
+    ///
+    /// `verify_slice`, not `==` on the hex: a byte-by-byte compare leaks how
+    /// much of a guessed signature was right, and a guest can retry freely.
+    #[must_use]
+    pub fn is_authentic(frame: &str, key: Option<&[u8]>) -> bool {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+
+        let Some(key) = key else {
+            return false;
+        };
+        let Some((sig_hex, payload)) = split(frame) else {
+            return false;
+        };
+        let Ok(sig) = hex::decode(sig_hex) else {
+            return false;
+        };
+        let Ok(mut mac) = <Hmac<Sha256> as KeyInit>::new_from_slice(key) else {
+            return false;
+        };
+        mac.update(payload.as_bytes());
+        mac.verify_slice(&sig).is_ok()
+    }
+}
+
 /// A CB4A **Task Request Envelope**: what a guest submits to ask for an action.
 ///
 /// Every field crosses from the guest, so every field is untrusted input.
@@ -142,6 +230,96 @@ pub struct PerformReply {
     /// Upstream response body, when the call was made.
     #[serde(default)]
     pub body: Vec<u8>,
+}
+
+#[cfg(test)]
+mod frame_codec {
+    use super::frame;
+
+    const KEY: &[u8] = b"a-pod-broker-capability";
+
+    /// **The property the shared codec exists for.** What `sign` produces,
+    /// `is_authentic` accepts. Two implementations could pass their own tests
+    /// and disagree with each other; this cannot.
+    #[test]
+    fn what_is_signed_verifies() {
+        let f = frame::sign(KEY, r#"{"operation":"WebFetch"}"#);
+        assert!(frame::is_authentic(&f, Some(KEY)));
+    }
+
+    /// **The non-vacuity control.** Everything below asserts a refusal, and an
+    /// `is_authentic` that returned `false` always would satisfy all of it while
+    /// making the broker unusable. Paired with the test above deliberately.
+    #[test]
+    fn a_wrong_key_is_refused_and_the_right_one_is_not() {
+        let f = frame::sign(KEY, "payload");
+        assert!(!frame::is_authentic(&f, Some(b"not-the-capability")));
+        assert!(
+            frame::is_authentic(&f, Some(KEY)),
+            "the refusal above must be about the KEY, not about refusing everything"
+        );
+    }
+
+    /// An unsigned frame is not a frame with an empty signature.
+    #[test]
+    fn an_unsigned_frame_is_refused() {
+        assert!(!frame::is_authentic(
+            r#"{"operation":"WebFetch"}"#,
+            Some(KEY)
+        ));
+        assert!(!frame::is_authentic(" payload", Some(KEY)));
+        assert!(!frame::is_authentic("deadbeef ", Some(KEY)));
+        assert!(!frame::is_authentic("", Some(KEY)));
+    }
+
+    /// No key means nothing is accepted — the fail-CLOSED reading. The
+    /// alternative turns a provisioning failure into an open door.
+    #[test]
+    fn no_key_accepts_nothing() {
+        let f = frame::sign(KEY, "payload");
+        assert!(!frame::is_authentic(&f, None));
+    }
+
+    /// A payload altered after signing must not verify. Signing covers the
+    /// payload, not merely accompanies it.
+    #[test]
+    fn a_tampered_payload_is_refused() {
+        let f = frame::sign(KEY, r#"{"target":"allowed"}"#);
+        let (sig, _) = frame::split(&f).expect("well formed");
+        let tampered = format!("{sig} {}", r#"{"target":"attacker"}"#);
+        assert!(!frame::is_authentic(&tampered, Some(KEY)));
+    }
+
+    /// The payload survives the round trip byte for byte, including the spaces
+    /// that the frame format also uses as its delimiter — `split_once` takes the
+    /// FIRST space, so a payload containing spaces must still verify.
+    #[test]
+    fn a_payload_containing_spaces_round_trips() {
+        let payload = r#"{"justification":"because the agent asked nicely"}"#;
+        let f = frame::sign(KEY, payload);
+        assert_eq!(frame::split(&f).map(|(_, p)| p), Some(payload));
+        assert!(frame::is_authentic(&f, Some(KEY)));
+    }
+
+    /// Signing is deterministic, so a retry of the same request is byte-identical
+    /// and the host's idempotency ledger sees one logical operation rather than
+    /// two frames it cannot relate.
+    #[test]
+    fn signing_is_deterministic() {
+        assert_eq!(frame::sign(KEY, "payload"), frame::sign(KEY, "payload"));
+    }
+
+    /// The signature comes FIRST. If the order ever flipped, every existing
+    /// frame would still be well formed and none would verify — a change that
+    /// looks cosmetic and is not.
+    #[test]
+    fn the_signature_is_the_first_field() {
+        let f = frame::sign(KEY, "payload");
+        let (sig, payload) = frame::split(&f).expect("well formed");
+        assert_eq!(payload, "payload");
+        assert_eq!(sig.len(), 64, "hex-encoded SHA-256 is 64 characters: {sig}");
+        assert!(hex::decode(sig).is_ok());
+    }
 }
 
 #[cfg(test)]
