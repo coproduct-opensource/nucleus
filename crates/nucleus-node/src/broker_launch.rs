@@ -263,6 +263,7 @@ pub fn start_broker_for_pod(
     registered: Option<&nucleus_identity::Identity>,
     id: uuid::Uuid,
     capability: &BrokerCapability,
+    jail_owner: Option<(u32, u32)>,
 ) -> Result<Option<crate::broker_transport::BrokerListener>, crate::ApiError> {
     let transport = if spec.spec.vsock.is_some() {
         crate::broker_rollout::BrokerTransport::Vsock
@@ -321,13 +322,16 @@ pub fn start_broker_for_pod(
     match crate::broker_transport::BrokerListener::start(
         vsock_path,
         state.broker_vsock_port,
-        identity,
-        policy,
-        store,
-        upstreams,
-        // The SAME value the workload API serves the guest. Passing `None` here
-        // is what made the capability inert; see `BrokerCapability`.
-        capability.to_verify(),
+        crate::broker_transport::PodBrokerConfig {
+            identity,
+            policy,
+            store,
+            upstreams,
+            // The SAME value the workload API serves the guest. Passing `None`
+            // here is what made the capability inert; see `BrokerCapability`.
+            broker_secret: capability.to_verify(),
+        },
+        jail_owner,
     ) {
         Ok(listener) => {
             tracing::info!(

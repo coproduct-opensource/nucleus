@@ -256,55 +256,31 @@ pub async fn read_frame_async(
 
 /// Split a signed frame into its signature and the payload it covers.
 ///
-/// Wire form is `<hex-hmac> <payload-json>` — one space, signature first. Chosen
-/// over a JSON wrapper because the payload would then need escaping inside a
-/// JSON string, and a verifier that re-serialises to check a signature is
-/// checking its own serialiser (the same reasoning `Art12Record::canonical_preimage`
-/// gives).
-///
-/// Returns `None` for anything that is not exactly that shape. The caller must
-/// treat `None` as a refusal — an unsigned frame is not a frame with an empty
-/// signature.
+/// Delegates to [`nucleus_cred_protocol::frame::split`]. The guest builds these
+/// frames and the host reads them, so the format is defined once, in the crate
+/// both sides link, rather than twice in crates that agree until one changes.
 pub fn split_signed_frame(frame: &str) -> Option<(&str, &str)> {
-    let (sig, payload) = frame.split_once(' ')?;
-    if sig.is_empty() || payload.is_empty() {
-        return None;
-    }
-    Some((sig, payload))
+    nucleus_cred_protocol::frame::split(frame)
 }
 
 /// Whether a frame was signed by the holder of this pod's broker capability.
 ///
-/// # A missing secret refuses everything
+/// # One implementation, not two that agree
 ///
-/// `None` means no capability was provisioned for this pod, so the host cannot
-/// authenticate anything and therefore accepts nothing. Treating "no secret" as
-/// "no signature required" is the fail-OPEN reading, and it is the reading an
-/// attacker would prefer: it turns a provisioning failure into an open door.
+/// This was a local HMAC verification, and the guest client was going to grow a
+/// local HMAC signing to match it. Two implementations of one format, in
+/// different crates, each testable in isolation and each passing — which is the
+/// exact shape of the defect that made the capability inert one increment ago.
+/// Both sides now call [`nucleus_cred_protocol::frame`], where `sign` and
+/// `is_authentic` are pinned to each other by a round-trip test.
 ///
-/// # Constant-time
-///
-/// `verify_slice` rather than `==` on the hex: a byte-by-byte comparison leaks
-/// how much of a guessed signature was right, and a guest can retry freely.
+/// The properties are unchanged and are documented at the definition: `None`
+/// accepts NOTHING (the fail-open reading turns a provisioning failure into an
+/// open door), and verification is constant-time (a byte-by-byte compare leaks
+/// how much of a guessed signature was right, and a guest can retry freely).
 #[must_use]
 pub fn frame_is_authentic(frame: &str, secret: Option<&[u8]>) -> bool {
-    use hmac::{digest::KeyInit, Hmac, Mac};
-    use sha2::Sha256;
-
-    let Some(secret) = secret else {
-        return false;
-    };
-    let Some((sig_hex, payload)) = split_signed_frame(frame) else {
-        return false;
-    };
-    let Ok(sig) = hex::decode(sig_hex) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
-        return false;
-    };
-    mac.update(payload.as_bytes());
-    mac.verify_slice(&sig).is_ok()
+    nucleus_cred_protocol::frame::is_authentic(frame, secret)
 }
 
 /// Serve exactly one request on an already-accepted connection.
@@ -356,6 +332,26 @@ pub type UpstreamCaller = Arc<
         > + Send
         + Sync,
 >;
+
+/// What an operator configured for one pod, before the listener exists.
+///
+/// Distinct from [`PodBroker`], which is what the SERVING task holds: this has no
+/// caller, because `start` decides that (and refuses to perform at all when no
+/// crypto provider is installed). Grouping is not only clippy's argument count —
+/// every field is per-pod, and a listener assembled from a mixture of two pods'
+/// values is the failure this arc has already produced once.
+pub struct PodBrokerConfig {
+    /// Bound at the listener, never read from a frame.
+    pub identity: PodIdentity,
+    /// This pod's policy.
+    pub policy: Arc<PermissionLattice>,
+    /// This pod's credentials, from the node's environment.
+    pub store: Arc<CredentialStore>,
+    /// The upstreams the operator configured.
+    pub upstreams: Arc<Vec<CredentialedEgressSpec>>,
+    /// The capability the guest is served and this listener verifies.
+    pub broker_secret: Arc<Vec<u8>>,
+}
 
 /// One pod's broker, owned, as the listener task needs it.
 ///
@@ -1276,14 +1272,24 @@ impl BrokerListener {
     pub fn start(
         uds_path: &std::path::Path,
         port: u32,
-        identity: PodIdentity,
-        policy: Arc<PermissionLattice>,
-        store: Arc<CredentialStore>,
-        upstreams: Arc<Vec<CredentialedEgressSpec>>,
-        broker_secret: Arc<Vec<u8>>,
+        pod: PodBrokerConfig,
+        jail_owner: Option<(u32, u32)>,
     ) -> io::Result<Self> {
+        let PodBrokerConfig {
+            identity,
+            policy,
+            store,
+            upstreams,
+            broker_secret,
+        } = pod;
         let socket_path = broker_socket_path(uds_path, port);
         let listener = prepare_socket(&socket_path)?;
+        // Without this the node binds, logs "started credential broker at …",
+        // passes every launch check, and no jailed guest can ever connect: the
+        // socket lands root-owned and `connect()` needs write permission on it.
+        // The workload API socket in this same directory has always done this;
+        // this one did not. See `guest_socket` for the post-mortem.
+        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         // One client for the pod's lifetime, so connections to the upstream are
         // pooled rather than rebuilt per request. Its TLS trust is the HOST's,
@@ -1462,11 +1468,14 @@ mod listener_lifecycle_tests {
         let first = BrokerListener::start(
             &uds,
             9999,
-            PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
-            policy(),
-            store("api.example.test", "v"),
-            Arc::new(Vec::new()),
-            Arc::new(TEST_SECRET.to_vec()),
+            PodBrokerConfig {
+                identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
+                policy: policy(),
+                store: store("api.example.test", "v"),
+                upstreams: Arc::new(Vec::new()),
+                broker_secret: Arc::new(TEST_SECRET.to_vec()),
+            },
+            None,
         )
         .expect("first listener binds");
         let path = first.socket_path().to_path_buf();
@@ -1486,11 +1495,14 @@ mod listener_lifecycle_tests {
         let second = BrokerListener::start(
             &uds,
             9999,
-            PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
-            policy(),
-            store("api.example.test", "v"),
-            Arc::new(Vec::new()),
-            Arc::new(TEST_SECRET.to_vec()),
+            PodBrokerConfig {
+                identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
+                policy: policy(),
+                store: store("api.example.test", "v"),
+                upstreams: Arc::new(Vec::new()),
+                broker_secret: Arc::new(TEST_SECRET.to_vec()),
+            },
+            None,
         )
         .expect("a second listener must be able to bind the freed path");
         assert_eq!(second.socket_path(), path);
@@ -1518,11 +1530,14 @@ mod listener_lifecycle_tests {
         let listener = BrokerListener::start(
             &uds,
             9998,
-            PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
-            policy(),
-            store("api.example.test", "v"),
-            Arc::new(Vec::new()),
-            Arc::new(TEST_SECRET.to_vec()),
+            PodBrokerConfig {
+                identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
+                policy: policy(),
+                store: store("api.example.test", "v"),
+                upstreams: Arc::new(Vec::new()),
+                broker_secret: Arc::new(TEST_SECRET.to_vec()),
+            },
+            None,
         )
         .expect("binds");
 
