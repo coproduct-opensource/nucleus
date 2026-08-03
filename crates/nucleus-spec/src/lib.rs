@@ -729,8 +729,27 @@ pub struct CredentialedEgressSpec {
     pub name: String,
     /// Absolute upstream base URL. Fixed here; a request cannot change it.
     pub upstream: String,
-    /// Environment variable, in the RUNTIME's environment, holding the
-    /// credential. Never placed in the workload's environment.
+    /// Environment variable **in the NODE's environment** holding the credential.
+    ///
+    /// # It is the node's, not the guest's, and not the pod spec's
+    ///
+    /// This said "the RUNTIME's environment" when the runtime that held the
+    /// credential was the in-guest proxy. The host holds it now, and the
+    /// distinction is load-bearing rather than a rename:
+    ///
+    /// * **Not the pod spec.** On Firecracker `build-rootfs.sh` copies the pod
+    ///   spec into the image at BUILD time, so a credential taken from
+    ///   `credentials.env` would be written into the guest rootfs — the exact
+    ///   opposite of what this type exists to arrange.
+    /// * **Not the guest.** That is the whole point: the guest receives the
+    ///   RESULT of a call made with this, never this.
+    ///
+    /// `nucleus_node::broker_launch::store_from_node_environment` cannot reach a
+    /// `PodSpec` at all, so the first of those is a property of a signature
+    /// rather than a rule someone has to remember.
+    ///
+    /// An unset or empty variable registers nothing and the broker refuses that
+    /// upstream by absence.
     pub credential_env: String,
     /// Header the credential is injected as (e.g. `authorization`).
     pub header: String,

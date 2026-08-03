@@ -2588,6 +2588,14 @@ async fn spawn_firecracker_pod(
         // The refusal is at the source rather than the advertisement.
         let identity_source =
             net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
+        // ONE capability, TWO consumers: the workload API serves it to the guest
+        // (once, before any workload exists) and the broker listener verifies
+        // signatures against it. Minted here because those two are started in
+        // different blocks below, and this used to be exactly the gap they fell
+        // into — the bridge minted its own while the listener got `None`, so the
+        // guest held a capability the verifier had never seen.
+        let broker_capability = broker_launch::BrokerCapability::mint();
+
         let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
             identity_source
         {
@@ -2672,7 +2680,10 @@ async fn spawn_firecracker_pod(
                     // The broker capability, minted per pod and served ONCE. See
                     // `handle_fetch_broker_secret`: this is what lets the host
                     // tell the mediating proxy from every other guest process.
-                    broker_secret: Some(uuid::Uuid::new_v4().simple().to_string()),
+                    broker_secret: Some(broker_capability.to_serve()),
+                    // Served WITH the capability, not separately — the proxy
+                    // needs both to reach the broker and neither is useful alone.
+                    broker_port: state.broker_vsock_port,
                     broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                         false,
                     )),
@@ -2790,6 +2801,7 @@ async fn spawn_firecracker_pod(
             &vsock_path,
             pod_identity.as_ref(),
             id,
+            &broker_capability,
         )?;
 
         let handle = FirecrackerPod {

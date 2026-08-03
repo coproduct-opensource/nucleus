@@ -139,10 +139,18 @@ fn run() -> Result<(), String> {
     // it fatal would break every pod that never had one.
     if let Some(port) = workload_api_port {
         match identity::fetch_broker_secret(port) {
-            Ok(secret) => {
-                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", secret);
-                // Presence only — never the value, and never its length.
-                eprintln!("fetched broker capability over vsock");
+            Ok(cap) => {
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
+                // The port is NOT a secret — it is where to connect — so unlike
+                // the key it is safe to log, and worth logging: a proxy that
+                // cannot reach the broker looks identical to one that was never
+                // given a capability.
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
+                // Presence only for the secret — never the value, never its length.
+                eprintln!(
+                    "fetched broker capability over vsock (broker port {})",
+                    cap.port
+                );
             }
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
