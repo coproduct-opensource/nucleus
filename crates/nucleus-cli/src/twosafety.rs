@@ -228,6 +228,55 @@ fn first_difference(component: &'static str, x: &str, y: &str) -> Option<Diverge
     }
 }
 
+/// Read an [`Observation`] off a pod the host has already run.
+///
+/// # The two components, and where they come from
+///
+/// * `config.json` inside the jail — the machine configuration Firecracker was
+///   launched with (`--config-file`, see `firecracker_config.rs`). It carries the
+///   kernel command line, the drives, and the vsock device: everything the guest
+///   is handed at boot.
+/// * `firecracker.log` under the pod's state directory — what the guest actually
+///   emitted, which is the channel `check_guest_facts` already reads.
+///
+/// # A missing component is an ERROR, never an empty string
+///
+/// An observation that silently defaulted to `""` would compare equal to another
+/// empty one, and two failed boots would report "no divergence" — the
+/// absence-satisfied-by-silence shape that has produced four separate defects in
+/// this repo. If a component cannot be read, this fails and says which.
+///
+/// # Errors
+/// If either component is missing or unreadable.
+pub fn collect(
+    config_path: &std::path::Path,
+    console_path: &std::path::Path,
+) -> std::io::Result<Observation> {
+    let read = |p: &std::path::Path, what: &str| -> std::io::Result<String> {
+        let body = std::fs::read_to_string(p).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("cannot read the {what} at {}: {e}", p.display()),
+            )
+        })?;
+        if body.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "the {what} at {} is empty; an empty observation compares equal to \
+                     another empty one, so two failed boots would report no divergence",
+                    p.display()
+                ),
+            ));
+        }
+        Ok(body)
+    };
+    Ok(Observation {
+        machine_config: read(config_path, "machine config")?,
+        console: read(console_path, "guest console")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,5 +490,87 @@ mod tests {
         let d = compare(&a, &b).expect_err("differs");
         assert!(d.excerpt.chars().count() <= EXCERPT_BYTES + 1, "bounded");
         assert!(format!("{d}").contains("console"), "names the component");
+    }
+}
+
+#[cfg(test)]
+mod collection {
+    use super::*;
+
+    fn write(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).expect("write fixture");
+        p
+    }
+
+    /// The control: a complete pair reads back exactly.
+    #[test]
+    fn a_complete_pair_is_collected() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let c = write(d.path(), "config.json", "{\"boot_args\":\"console=ttyS0\"}");
+        let l = write(d.path(), "firecracker.log", "[    0.1] boot");
+        let o = collect(&c, &l).expect("both present");
+        assert!(o.machine_config.contains("boot_args"));
+        assert!(o.console.contains("boot"));
+    }
+
+    /// **A missing component must fail, not default to empty.** Two failed boots
+    /// both yielding `""` would compare equal and report no divergence — which is
+    /// the failure shape this whole harness exists to avoid.
+    #[test]
+    fn a_missing_component_is_an_error() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let l = write(d.path(), "firecracker.log", "boot");
+        let err = collect(&d.path().join("absent.json"), &l).expect_err("no config");
+        assert!(
+            format!("{err}").contains("machine config"),
+            "names which: {err}"
+        );
+    }
+
+    /// An EMPTY component is the same hazard wearing a different hat: the file
+    /// exists, so a naive read succeeds, and the comparison goes quiet.
+    #[test]
+    fn an_empty_component_is_an_error() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let c = write(d.path(), "config.json", "   \n");
+        let l = write(d.path(), "firecracker.log", "boot");
+        let err = collect(&c, &l).expect_err("empty config");
+        assert!(
+            format!("{err}").contains("no divergence"),
+            "says why: {err}"
+        );
+    }
+
+    /// End to end on fixtures: two runs differing only in a planted secret are
+    /// collected, canonicalised, and the divergence is found. This is S4's
+    /// positive control at the file level — the booted-pod version lands with
+    /// the harness.
+    #[test]
+    fn a_planted_secret_is_found_end_to_end() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let mk = |n: &str, secret: &str, cid: u32| {
+            let c = write(
+                d.path(),
+                &format!("config{n}.json"),
+                &format!("{{\"boot_args\":\"console=ttyS0 nucleus.x={secret}\",\"vsock\":{{\"guest_cid\":{cid}}}}}"),
+            );
+            let l = write(d.path(), &format!("log{n}.log"), "[    0.1] boot");
+            (c, l)
+        };
+        let (ca, la) = mk("a", "secret-aaaa", 3);
+        let (cb, lb) = mk("b", "secret-bbbb", 4);
+        let fa = RunFacts {
+            pod_id: "aaaaaaaa-0000-0000-0000-000000000000".into(),
+            guest_cid: 3,
+        };
+        let fb = RunFacts {
+            pod_id: "bbbbbbbb-0000-0000-0000-000000000000".into(),
+            guest_cid: 4,
+        };
+        let a = canonicalise(&collect(&ca, &la).expect("a"), &fa);
+        let b = canonicalise(&collect(&cb, &lb).expect("b"), &fb);
+        let dv = compare(&a, &b).expect_err("the planted secret differs");
+        assert_eq!(dv.component, "machine_config");
     }
 }
