@@ -87,6 +87,14 @@ pub struct PodMaterial {
     pub dlc_admission: Option<DlcAdmissionMaterial>,
     /// The credential-broker capability, served exactly once.
     pub broker_secret: Option<String>,
+    /// The vsock port the broker listens on, served WITH the capability.
+    ///
+    /// Together and not separately, deliberately: knowing where to connect and
+    /// being able to sign are one capability, and delivering them through two
+    /// mechanisms would let a proxy end up holding one without the other — able
+    /// to sign but not to find the socket, or the reverse. Both arrive in the
+    /// same one-shot reply or neither does.
+    pub broker_port: u32,
     /// Whether the capability has been served. SHARED across every connection
     /// this listener accepts — a per-connection flag would make "once" mean
     /// "once per connection", which is not a restriction.
@@ -126,6 +134,7 @@ impl WorkloadApiVsockBridge {
             dlc_admission,
             broker_secret,
             broker_secret_served,
+            broker_port,
         } = material;
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
@@ -207,7 +216,11 @@ impl WorkloadApiVsockBridge {
                                 tokio::spawn(async move {
                                     if let Err(err) = handle_connection(
                                         stream, manager, pod_id, task_token, dlc_admission,
-                                        broker_secret, broker_secret_served,
+                                        BrokerHandout {
+                                            secret: broker_secret,
+                                            port: broker_port,
+                                            served: broker_secret_served,
+                                        },
                                     )
                                     .await
                                     {
@@ -284,8 +297,22 @@ impl WorkloadApiVsockBridge {
 ///
 /// `Acquire`/`AcqRel` via `swap` rather than a load-then-store: two concurrent
 /// connections must not both observe "not yet served".
+/// The broker capability as one connection sees it.
+///
+/// Three fields that are one thing: the secret, where to use it, and whether it
+/// has already been handed out. Grouping them is not only clippy's argument
+/// count — it is that delivering any of them without the others produces a proxy
+/// that can sign but not connect, or connect but not sign, and the one-shot flag
+/// must be the SAME flag across every connection or "once" means "once each".
+struct BrokerHandout {
+    secret: Option<String>,
+    port: u32,
+    served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 fn handle_fetch_broker_secret(
     secret: Option<&str>,
+    port: u32,
     already_served: &std::sync::atomic::AtomicBool,
 ) -> String {
     use std::sync::atomic::Ordering;
@@ -299,7 +326,7 @@ fn handle_fetch_broker_secret(
         );
         return r#"{"error":"broker secret already served"}"#.to_string();
     }
-    serde_json::json!({ "secret": secret }).to_string()
+    serde_json::json!({ "secret": secret, "port": port }).to_string()
 }
 
 fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
@@ -332,8 +359,7 @@ async fn handle_connection(
     pod_id: uuid::Uuid,
     task_token: Option<crate::session_mint::MintedTaskToken>,
     dlc_admission: Option<DlcAdmissionMaterial>,
-    broker_secret: Option<String>,
-    broker_secret_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    broker: BrokerHandout,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -370,7 +396,7 @@ async fn handle_connection(
                 // Value never logged, at any level: this is the one workload-API
                 // payload whose possession IS the capability.
                 debug!("workload API FETCH_BROKER_SECRET for pod {}", pod_id);
-                handle_fetch_broker_secret(broker_secret.as_deref(), &broker_secret_served)
+                handle_fetch_broker_secret(broker.secret.as_deref(), broker.port, &broker.served)
             }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
@@ -819,11 +845,11 @@ mod tests {
     #[test]
     fn the_broker_secret_is_served_exactly_once() {
         let served = AtomicBool::new(false);
-        let first = handle_fetch_broker_secret(Some("cap"), &served);
+        let first = handle_fetch_broker_secret(Some("cap"), 1027, &served);
         let v: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(v["secret"], "cap", "the first request must be served");
 
-        let second = handle_fetch_broker_secret(Some("cap"), &served);
+        let second = handle_fetch_broker_secret(Some("cap"), 1027, &served);
         assert!(
             second.contains("already served"),
             "a second request must be refused: {second}"
@@ -834,6 +860,32 @@ mod tests {
         );
     }
 
+    /// **The port travels with the secret.** A proxy given one and not the other
+    /// can sign but not connect, or connect but not sign — a capability that
+    /// looks held and is not, which is the shape of the defect
+    /// `BrokerCapability` was introduced to remove one file over.
+    #[test]
+    fn the_reply_carries_the_port_as_well_as_the_secret() {
+        let served = AtomicBool::new(false);
+        let reply = handle_fetch_broker_secret(Some("cap"), 4242, &served);
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["secret"], "cap");
+        assert_eq!(
+            v["port"], 4242,
+            "the guest cannot reach the broker without being told where it is: {reply}"
+        );
+    }
+
+    /// The port is the CONFIGURED one, not a constant re-derived guest-side. An
+    /// operator who moves the broker port must not have to move it twice.
+    #[test]
+    fn the_served_port_is_whatever_the_node_was_configured_with() {
+        let served = AtomicBool::new(false);
+        let reply = handle_fetch_broker_secret(Some("cap"), 9999, &served);
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["port"], 9999);
+    }
+
     /// A pod with no broker secret gets an explicit error, and — the part that
     /// matters — the refusal must not consume the one-shot. Otherwise a
     /// misconfigured pod could be made to burn its own capability before the
@@ -841,7 +893,7 @@ mod tests {
     #[test]
     fn an_absent_secret_does_not_consume_the_one_shot() {
         let served = AtomicBool::new(false);
-        let r = handle_fetch_broker_secret(None, &served);
+        let r = handle_fetch_broker_secret(None, 1027, &served);
         assert!(r.contains("error"), "got: {r}");
         assert!(
             !served.load(std::sync::atomic::Ordering::Acquire),

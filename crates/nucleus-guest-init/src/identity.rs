@@ -126,7 +126,14 @@ pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, St
 /// mediating proxy. Unlike the task token (a scoped capability plus a public
 /// issuer key) there is no sense in which handing it out is harmless, so errors
 /// here name the failure and never the payload.
-pub fn fetch_broker_secret(port: u32) -> Result<String, String> {
+pub struct BrokerCapability {
+    /// The HMAC key the proxy signs broker frames with.
+    pub secret: String,
+    /// The vsock port the broker listens on.
+    pub port: u32,
+}
+
+pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -149,11 +156,24 @@ pub fn fetch_broker_secret(port: u32) -> Result<String, String> {
     if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
         return Err(err.to_string());
     }
-    parsed
+    let secret = parsed
         .get("secret")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .ok_or_else(|| "broker-secret response had no `secret`".to_string())
+        .ok_or_else(|| "broker-secret response had no `secret`".to_string())?;
+    // Both or neither. A secret with no port leaves the proxy able to sign and
+    // unable to connect — a capability that looks held and is not, which is the
+    // failure shape this whole arc keeps producing.
+    let broker_port = parsed
+        .get("port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .ok_or_else(|| "broker-secret response had no usable `port`".to_string())?;
+    Ok(BrokerCapability {
+        secret,
+        port: broker_port,
+    })
 }
 
 pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {

@@ -1280,6 +1280,7 @@ impl BrokerListener {
         policy: Arc<PermissionLattice>,
         store: Arc<CredentialStore>,
         upstreams: Arc<Vec<CredentialedEgressSpec>>,
+        broker_secret: Arc<Vec<u8>>,
     ) -> io::Result<Self> {
         let socket_path = broker_socket_path(uds_path, port);
         let listener = prepare_socket(&socket_path)?;
@@ -1315,7 +1316,12 @@ impl BrokerListener {
                     identity,
                     policy,
                     store,
-                    broker_secret: None,
+                    // NOT `None`. This used to be `None` while the workload
+                    // API served the guest a freshly minted secret, so the
+                    // guest held a capability the verifier had never seen and
+                    // every signed frame was refused. Both halves now come from
+                    // one `BrokerCapability`.
+                    broker_secret: Some(broker_secret),
                     upstreams,
                     caller,
                 },
@@ -1402,6 +1408,12 @@ mod listener_lifecycle_tests {
     use super::*;
     use nucleus_cred_broker::Credential;
 
+    /// These tests are about socket lifecycle, not authentication, so the value
+    /// is arbitrary — but it must not be absent. `start` takes the capability
+    /// now precisely because passing `None` there is what made the guest's
+    /// fetched secret useless.
+    const TEST_SECRET: &[u8] = b"lifecycle-test-capability";
+
     fn policy() -> Arc<PermissionLattice> {
         Arc::new(PermissionLattice::default())
     }
@@ -1454,6 +1466,7 @@ mod listener_lifecycle_tests {
             policy(),
             store("api.example.test", "v"),
             Arc::new(Vec::new()),
+            Arc::new(TEST_SECRET.to_vec()),
         )
         .expect("first listener binds");
         let path = first.socket_path().to_path_buf();
@@ -1477,14 +1490,27 @@ mod listener_lifecycle_tests {
             policy(),
             store("api.example.test", "v"),
             Arc::new(Vec::new()),
+            Arc::new(TEST_SECRET.to_vec()),
         )
         .expect("a second listener must be able to bind the freed path");
         assert_eq!(second.socket_path(), path);
         assert_eq!(second.shutdown().await, ShutdownOutcome::Stopped);
     }
 
-    /// The listener actually answers on the path it reports — a socket that
-    /// exists but serves nothing would pass the test above while being useless.
+    /// The listener answers on the path it reports **and honours the capability
+    /// it was handed**.
+    ///
+    /// # What this test used to assert, and why that was nothing
+    ///
+    /// It sent an UNSIGNED frame and asserted `reply.contains("granted")` —
+    /// which `"granted":false` satisfies. So it passed whether the listener used
+    /// its capability or refused every frame on earth. A perturbation restoring
+    /// `broker_secret: None` in `start` — the original defect, where the guest
+    /// held a secret the verifier had never seen — left all 275 tests green.
+    ///
+    /// It now signs under the capability `start` was given and requires
+    /// `"granted":true`. That is only reachable if the value survives the trip
+    /// from `start` into `PodBroker` into `frame_is_authentic`.
     #[tokio::test]
     async fn the_listener_answers_on_the_path_it_reports() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1496,22 +1522,32 @@ mod listener_lifecycle_tests {
             policy(),
             store("api.example.test", "v"),
             Arc::new(Vec::new()),
+            Arc::new(TEST_SECRET.to_vec()),
         )
         .expect("binds");
 
-        let frame = serde_json::json!({
+        let payload = serde_json::json!({
             "operation": "WebFetch",
             "target": "api.example.test",
             "justification": "routine"
         })
-        .to_string()
-            + "\n";
+        .to_string();
+        // Signed under the SAME capability `start` was handed above.
+        let frame = {
+            use hmac::{digest::KeyInit, Hmac, Mac};
+            use sha2::Sha256;
+            let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET).expect("hmac key");
+            mac.update(payload.as_bytes());
+            format!("{} {payload}\n", hex::encode(mac.finalize().into_bytes()))
+        };
         let reply = request_over_socket(listener.socket_path(), &frame)
             .await
             .expect("the listener must answer");
         assert!(
-            reply.contains("granted"),
-            "expected a broker reply, got {reply:?}"
+            reply.contains("\"granted\":true"),
+            "a frame signed under the capability `start` was given must be SERVED. Got \
+             {reply:?} — if this is a refusal, the listener is not using the capability it \
+             was handed, and the guest holds a secret the verifier has never seen."
         );
         assert_eq!(listener.shutdown().await, ShutdownOutcome::Stopped);
     }
