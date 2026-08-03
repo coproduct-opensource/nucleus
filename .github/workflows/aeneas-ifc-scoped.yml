@@ -376,7 +376,29 @@ jobs:
           # (a real hole shows up as `sorryAx`); this is belt-and-suspenders and
           # must NOT false-positive on the file's own honest prose discussing
           # `sorryAx` / "sorry-free" (a plain substring grep does, and did).
-          if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
+          # `native_decide` now shares the TACTIC-CONTEXT guard with sorry/admit.
+          # It did not, and the comment above already knew why that matters: this
+          # step fired on the two files' own prose EXPLAINING that native_decide
+          # is NOT used —
+          #
+          #   EgressConfinementExtracted.lean:268  `native_decide` ... is not used
+          #   CredentialNoninterferenceExtracted.lean:146  `native_decide` was
+          #     written first ... and then removed
+          #
+          # A gate that fires on the explanation of the property it checks is the
+          # same defect as one that never fires: neither is about the code.
+          #
+          # `^` was INSIDE the alternation group, where it does not anchor — so a
+          # bare tactic on its own line was missed entirely:
+          #
+          #     theorem t : True := by
+          #       sorry            <- NOT caught by the previous pattern
+          #
+          # That hole predates this change and applied to sorry/admit too. It is
+          # mitigated — a real hole shows up as `sorryAx` in the axiom audit above,
+          # which is the authoritative check — but a backstop that misses the most
+          # ordinary formatting of the thing it looks for is not backstopping.
+          if grep -rnE '((:=|=>|\bby\b|<;>|·|;)[[:space:]]*|^[[:space:]]*)(sorry|admit|native_decide)\b' \
                IntegrityNoninterferenceExtracted.lean \
                MediationScopeExtracted.lean \
                EgressConfinementExtracted.lean \
