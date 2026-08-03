@@ -150,6 +150,33 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # Doctests, split out of `test` because they were 82% of its wall clock.
+  #
+  # WHY THIS JOB IS REQUIRED, NOT OPTIONAL
+  #
+  # Splitting a slow check into its own job is one edit away from dropping it:
+  # make it `continue-on-error`, or forget to add it to the required set, and the
+  # documented examples stop being verified while the board stays green. This
+  # repo has already produced that exact shape — two Lean proofs that appeared in
+  # a workflow's `paths:` triggers and were compiled by no job at all (#2162).
+  #
+  # Doctests are the ONLY thing checking that the examples in this codebase's
+  # documentation still compile, and the documentation is where most of its
+  # reasoning lives. They must fail the build.
+  doctests:
+    name: Doctests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: cargo test --doc
+        run: cargo test --all-features --doc
+
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -166,8 +193,21 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
-      - name: cargo test
-        run: cargo test --all-features
+      # `--lib --bins --tests` EXCLUDES doctests, which run in the `doctests` job
+      # below. Measured on this workspace, warm cache:
+      #
+      #   --lib --bins --tests   152s
+      #   --doc                  702s   <- 82% of the time
+      #
+      # Every doctest is a separate rustc invocation linking the whole crate
+      # against 927 resolved packages, so ~113 doc code blocks cost ~8s each.
+      # That is not pathological, it is what doctests cost at this size — but it
+      # is not per-iteration work, and it was being paid on every run.
+      #
+      # SPLIT, NOT DROPPED. The doctests job below is required; see its comment
+      # for why that distinction is load-bearing.
+      - name: cargo test (lib, bins, tests — doctests run separately)
+        run: cargo test --all-features --lib --bins --tests
       # Node tests run the WASM bindings against the cross-language golden seal
       # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
       # just on publish, so a binding-layer drift from the proven kernels is caught
