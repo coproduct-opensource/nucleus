@@ -46,6 +46,11 @@ mod shell;
 mod start;
 mod stop;
 mod token;
+// Completeness by 2-safety. Not yet called from a command: the comparison logic
+// lands first so it is reviewable on its own, exactly as the broker's decision
+// core did. The harness that boots twice needs /dev/kvm and lands next.
+#[allow(dead_code)]
+mod twosafety;
 mod verify;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)

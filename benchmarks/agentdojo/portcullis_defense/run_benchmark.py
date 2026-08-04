@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 """Run AgentDojo benchmark with Portcullis exposure-lattice defense.
 
+The harness is model-agnostic: it speaks the chat-completions protocol to
+whatever endpoint `LLM_API_BASE` names, and never branches on a provider.
+
+    export LLM_API_BASE=https://your-endpoint.example/v1
+    export LLM_API_TOKEN=...        # omit for unauthenticated local endpoints
+    export LLM_MODEL=your-model-id
+
 Usage:
-    # Dry run — verify tool mapping coverage (no LLM calls)
+    # Dry run — verify tool mapping coverage (no LLM calls, no endpoint needed)
     python -m portcullis_defense.run_benchmark --dry-run
 
     # Run a single suite
-    python -m portcullis_defense.run_benchmark --suite workspace --model gpt-4o-2024-05-13
+    python -m portcullis_defense.run_benchmark --suite workspace
 
     # Run all suites
-    python -m portcullis_defense.run_benchmark --all --model gpt-4o-2024-05-13
+    python -m portcullis_defense.run_benchmark --all
 
     # Run without defense (baseline comparison)
-    python -m portcullis_defense.run_benchmark --suite workspace --model gpt-4o-2024-05-13 --no-defense
+    python -m portcullis_defense.run_benchmark --suite workspace --no-defense
+
+    # Override the model for one run
+    python -m portcullis_defense.run_benchmark --suite workspace --model your-model-id
 
     # Specific attack type
-    python -m portcullis_defense.run_benchmark --suite workspace --model gpt-4o-2024-05-13 --attack important_instructions
+    python -m portcullis_defense.run_benchmark --suite workspace --attack important_instructions
 """
 
 from __future__ import annotations
@@ -77,58 +87,67 @@ def check_tool_coverage() -> None:
         print(f"  Neutral: {neutral}")
 
 
-def _get_anthropic_client():
-    """Get an Anthropic client from ANTHROPIC_API_KEY env var."""
+def make_llm_element(model: str | None = None):
+    """Create an LLM pipeline element from environment configuration.
+
+    The harness speaks ONE wire protocol — chat-completions — to whatever
+    endpoint it is pointed at. It does not know, branch on, or name any model
+    provider: the endpoint may be self-hosted (vLLM, Ollama, llama.cpp) or a
+    managed service, and swapping between them is a change of `LLM_API_BASE`,
+    not a change of code.
+
+    This is deliberate. Nucleus is vendor-agnostic by project policy, and a
+    benchmark harness that dispatched on model-name prefixes and read
+    provider-specific credential variables would encode exactly the coupling
+    the rest of the project refuses.
+
+    Configuration:
+        LLM_API_BASE   endpoint URL (required)
+        LLM_API_TOKEN  bearer token (optional — omit for unauthenticated local endpoints)
+        LLM_MODEL      model identifier as the endpoint names it (required unless --model given)
+    """
     import os
 
-    import anthropic
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    base_url = os.environ.get("LLM_API_BASE")
+    if not base_url:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. Get one at https://console.anthropic.com"
+            "LLM_API_BASE not set — point it at any chat-completions-compatible "
+            "endpoint (self-hosted or managed). See --help."
         )
-    return anthropic.Anthropic()
 
+    model = model or os.environ.get("LLM_MODEL")
+    if not model:
+        raise RuntimeError("No model given: pass --model or set LLM_MODEL.")
 
-def make_llm_element(model: str):
-    """Create an LLM pipeline element for the given model."""
-    if model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
-        import openai
+    try:
+        from openai import OpenAI as ChatCompletionsClient
+    except ImportError as exc:  # pragma: no cover - environment-dependent
+        raise RuntimeError(
+            "A chat-completions protocol client is required to run the "
+            "benchmark. Install the harness's optional 'llm' extra."
+        ) from exc
 
-        from agentdojo.agent_pipeline import OpenAILLM
+    from agentdojo.agent_pipeline import OpenAILLM as ChatCompletionsLLM
 
-        client = openai.OpenAI()
-        return OpenAILLM(client, model)
-    elif model.startswith("claude-"):
-        from agentdojo.agent_pipeline import AnthropicLLM
-
-        client = _get_anthropic_client()
-        return AnthropicLLM(client, model)
-    elif model.startswith("gemini-"):
-        import os
-
-        import google.genai as genai
-
-        from agentdojo.agent_pipeline import GoogleLLM
-
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY or GEMINI_API_KEY not set")
-        client = genai.Client(api_key=api_key)
-        return GoogleLLM(model=model, client=client)
-    else:
-        print(f"Unknown model prefix: {model}", file=sys.stderr)
-        sys.exit(1)
+    # No default token: an unauthenticated local endpoint is a first-class case,
+    # and the client requires *some* value.
+    client = ChatCompletionsClient(
+        base_url=base_url,
+        api_key=os.environ.get("LLM_API_TOKEN") or "unused",
+    )
+    return ChatCompletionsLLM(client, model)
 
 
 def run_suite(
     suite_name: str,
-    model: str,
+    model: str | None,
     attack_name: str,
     with_defense: bool = True,
     logdir: Path | None = None,
 ) -> dict[str, Any]:
     """Run a single AgentDojo suite with or without Portcullis defense."""
+    import os
+
     from agentdojo.agent_pipeline import (
         AgentPipeline,
         InitQuery,
@@ -139,6 +158,10 @@ def run_suite(
     from agentdojo.benchmark import benchmark_suite_with_injections
     from agentdojo.task_suite import get_suite
 
+    # Resolve the model up front so the run name and the summary record what was
+    # ACTUALLY exercised — a result labelled with a null model is unusable
+    # evidence, and this harness exists to produce comparable numbers.
+    model = model or os.environ.get("LLM_MODEL")
     suite = get_suite("v1", suite_name)
     llm = make_llm_element(model)
 
@@ -226,7 +249,8 @@ def main() -> None:
     )
     parser.add_argument("--suite", type=str, choices=SUITE_NAMES, help="Suite to run")
     parser.add_argument("--all", action="store_true", help="Run all suites")
-    parser.add_argument("--model", type=str, default="gpt-4o-2024-05-13")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Model identifier as the endpoint names it (default: $LLM_MODEL)")
     parser.add_argument("--attack", type=str, default="important_instructions",
                         help="Attack type (important_instructions, tool_knowledge, etc.)")
     parser.add_argument("--dry-run", action="store_true", help="Check tool coverage only")

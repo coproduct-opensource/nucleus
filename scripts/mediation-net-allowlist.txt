@@ -21,3 +21,11 @@ file:crates/nucleus-tool-proxy/src/node_client.rs
 # handlers): audit-trail delivery to operator-configured sinks.
 .send() // net-infra: audit S3 append (aws_sdk_s3, operator sink — not agent egress)
 .send() // net-infra: audit webhook (operator-configured URL — not agent egress)
+
+# Whole-file infra: the Article 12 evidence channel. The URL is
+# operator-configured (`--art12-ship-url`), nothing an agent does can influence
+# it, and what it carries is the runtime's record OF the agent — evidence
+# flowing outward, not agent data. It is a whole-file entry because the file
+# exists for nothing else; a `.send(` appearing here that is not this is a file
+# that has grown a second purpose and should be split.
+file:crates/nucleus-tool-proxy/src/art12_shipper.rs
