@@ -151,9 +151,12 @@ echo "lean_lib coverage: $total declared, $covered covered (named target, defaul
 # false green in the gate written to find false greens. Portable constructs are
 # not pedantry here; the gate must run wherever it is probed.
 ALLOWED_UNBUILT=(
+    # CONFIRMED by direct build, not inherited from the workflow comment that
+    # asserts it: a clean rebuild fails with `unknown namespace
+    # PortcullisCoreBridge` plus ~12 unsynthesized instances. It was also the
+    # CONTROL that validated the triage of the two libraries below — without a
+    # library known to fail, "it compiles" is not a measurement.
     "CategoryProofs|does not compile — Mathlib order-refactor drift / unbound auto-implicits; Tier 3 (STALE) in CONJECTURES.md, excluded by name in portcullis-core-proven-lean.yml"
-    "AssuranceCoverage|unbuilt and unnoticed until 2026-08-04 — NOT a deliberate exclusion, needs triage"
-    "UniversalDetection|unbuilt and unnoticed until 2026-08-04 — NOT a deliberate exclusion, needs triage"
     "AugmentedBorromeanTheorems|research spike, never wired"
     "BraidObstruction|research spike, never wired"
     "BraidEmpirical|research spike, never wired"
