@@ -7035,6 +7035,7 @@ dependencies = [
  "nucleus-cred-protocol",
  "nucleus-identity",
  "nucleus-ifc-kernel",
+ "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-spec",
