@@ -12,7 +12,8 @@ use clap::Parser;
 #[cfg(feature = "insecure-dev")]
 use nucleus_control_plane::MockJobRunner;
 use nucleus_control_plane_server::{
-    build_app, registry::RunnerRegistry, resolve_spiffe_auth, state::build_state,
+    build_app, registry::RunnerRegistry, require_auth_or_insecure, resolve_spiffe_auth,
+    state::build_state,
 };
 use nucleus_lineage::{
     Ed25519Witness, EdgeSigner, JsonlSink, MerkleConfig, MerkleSink, SigningProvider, TreeWitness,
@@ -45,8 +46,8 @@ struct Cli {
     /// HTTP bind address (host:port).
     #[arg(long, default_value = "127.0.0.1:8080", env = "NUCLEUS_BIND")]
     bind: String,
-    /// gRPC bind address (host:port). Per workspace CLAUDE.md the
-    /// convention is `HTTP port + 1000`. Set to empty string to
+    /// gRPC bind address (host:port). Per workspace convention the
+    /// gRPC port is `HTTP port + 1000`. Set to empty string to
     /// disable the gRPC surface (default: 0.0.0.0:9080).
     #[arg(long, default_value = "0.0.0.0:9080", env = "NUCLEUS_GRPC_BIND")]
     grpc_bind: String,
@@ -195,8 +196,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Register agent drivers. Real drivers (claude-code, openhands) register
-    // themselves from downstream crates — keeping nucleus vendor-neutral. The
+    // Register agent drivers. Real drivers register themselves from downstream
+    // crates via the driver registry — keeping nucleus vendor-neutral. The
     // mock driver is dev/test only; a production registry is empty and every job
     // fails closed with "unknown agent driver" until a real driver registers.
     let runners = RunnerRegistry::new();
@@ -215,10 +216,12 @@ async fn main() -> Result<()> {
     state.merkle_prover = Some(merkle_sink.clone());
     state.witness_pubkey = Some(witness_pubkey);
 
-    // SPIFFE auth wiring. fail-loud on partial config; warn loud when
-    // auth is disabled so operators don't ship demo-mode to prod by
-    // omission.
-    match cli_spiffe_auth(&cli)? {
+    // SPIFFE auth wiring. fail-loud on partial config; fail-CLOSED when auth is
+    // unconfigured in a production build (require_auth_or_insecure) so the
+    // orchestration API never boots open — mirroring the lineage-signer
+    // discipline above (most-paranoid #6). Only `--features insecure-dev` may
+    // boot without auth.
+    match require_auth_or_insecure(cli_spiffe_auth(&cli)?)? {
         Some(cfg) => {
             tracing::info!(
                 audience = %cfg.allowed_audience,
@@ -229,10 +232,11 @@ async fn main() -> Result<()> {
             state.spiffe_auth = Some(Arc::new(cfg));
         }
         None => {
+            // Reachable ONLY under `--features insecure-dev` — a production build
+            // returns Err(AuthRequiredInProduction) above and never reaches here.
             tracing::warn!(
-                "SPIFFE JWT-SVID auth DISABLED — every endpoint is open. \
-                 Set --spiffe-trust-jwks-path / --spiffe-allowed-audience / \
-                 --spiffe-allowed-subject-prefix in production."
+                "SPIFFE JWT-SVID auth DISABLED (insecure-dev build) — every endpoint is OPEN. \
+                 This build must never run in production."
             );
         }
     }

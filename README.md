@@ -31,7 +31,9 @@ _First-party only (excludes `.lake/` Mathlib + worktrees). A theorem count is no
 
 > **Assume the agent is compromised. Constrain what it can do anyway. Prove the constraints hold.**
 
-At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session **through a mediated ingest channel**, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+
+The qualifier is load-bearing, so it is stated here rather than in a footnote: the guarantee covers content the runtime *observes*. Fetches through `web_fetch`/`web_search`, file reads, and memory recalls are observed. Bytes an agent obtains by running a command — `curl` inside `run` — are observed only when `NUCLEUS_PARANOID_TOOL_IO=1`, because the runtime cannot tell `curl` from `ls` in a command's output and tainting all of it makes a session "one privileged action then locked". That is an operator's policy call, and until it is made, command output is an unmediated ingest channel.
 
 This is the **[lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)** — private data + untrusted content + an exfiltration sink — made safe by **non-interference**: attacker-tainted data cannot reach a consequential action, so a compromised agent cannot be turned into a *confused deputy*. We don't *detect* the prompt injection; we make its consequence impossible — and prove it. (Detection-based guardrails are probabilistic; this is a structural guarantee.)
 
@@ -76,6 +78,68 @@ cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
 nucleus audit [PATH]                # Tier 0: scan agent configs, no runtime (CI exit codes)
 nucleus run --local "your task"     # Tier 1: run with enforced permissions (process-level, no VM)
 ```
+
+### Tier 2 — real microVM isolation (macOS)
+
+Tier 1 is process-level. For kernel-level isolation you need a Linux VM with
+**nested virtualization**, because Firecracker is a KVM-based VMM — without
+`/dev/kvm` it does not run slowly, it does not run at all.
+
+```bash
+nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
+                               # installs Firecracker + kernel + rootfs + node
+                               # from pinned digests, then BOOTS A REAL NUCLEUS
+                               # POD and asserts what the guest did
+```
+
+Guest artifacts come from the pinned release **v2.1.0**, the first one able to
+boot a pod at all — everything up to 2.0.2 ships a rootfs with no CA bundle, on
+which the guest panics as PID 1, and `tier2_artifacts::GUEST_RELEASE_FLOOR`
+refuses those rather than installing one. **Measured 48.7 s** from a deleted VM to
+a booted pod, with Sigstore build provenance verified on every downloaded
+artifact.
+
+`--install-deps` is opt-in — without it, setup prints the one command to run
+(`brew install lima`) rather than installing software unasked. Setup ends with
+`nucleus verify --tier2`; if that fails, setup fails, because every other check
+only verifies a precondition. `--skip-verify` opts out and says so.
+
+The check is a **real nucleus pod**, not a stock rootfs. It asserts the guest
+reached sandbox-proof **tier 2 (`spiffe-identity`)**, that an allowed operation
+is served from inside the sandbox and a forbidden one is refused **by policy**,
+and that the guest fetched its SVID and its session task token over vsock. It
+drives the tool-proxy directly rather than `nucleus run`, which would pull in a
+specific vendor's assistant CLI.
+
+Requires Apple Silicon **M3 or newer** and **macOS 15+**. There is no emulation
+fallback: without nested virtualisation there is no `/dev/kvm`, and Firecracker
+does not run slowly — it does not run. `nucleus doctor` reads `/dev/kvm` directly
+rather than inferring from the chip name.
+
+<details>
+<summary>Verified on Apple M5 Pro / macOS 26.6 (what a working setup looks like)</summary>
+
+**51 seconds** from `limactl delete nucleus` to a booted, identity-proving pod:
+
+```
+  [OK] pod created in 7620 ms, tool-proxy at http://127.0.0.1:42149
+  [OK] guest proved itself to its proxy: tier 2 (spiffe-identity)
+  [OK] allowed operation served from the guest sandbox
+  [OK] forbidden operation denied by policy (kind=kernel_denied)
+  [OK] SPIFFE identity fetched
+  [OK] task token fetched over vsock
+  [OK] Firecracker is running under a seccomp filter
+```
+
+Firecracker + jailer 1.16.1, kernel digest-pinned against a compiled-in constant.
+</details>
+
+### Linux, or just want the checks
+
+You do not need a VM for most development. A privileged Linux container gives
+network namespaces and `iptables`, which is enough to run the egress
+conformance check (`scripts/egress-conformance.sh`) and to compile the
+Linux-only code paths. Only the VMM work needs KVM.
 
 Every tool call flows through the permission kernel. `nucleus run` tracks data provenance and blocks dangerous combinations — like writing code derived from untrusted web content.
 
@@ -375,7 +439,7 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 - **`nucleus-policy` is an orphan crate.** It has a full Cargo.toml but is not a workspace member and is not wired into anything — it must be integrated or documented as a stub.
 - **The constitutional kernel is a library, not yet runtime-wired.** It decides admissibility in isolation; it does not yet gate the live sandbox, and signature enforcement is opt-in.
 - **The public verifier service is not hosted.** It is self-hostable and deploy-ready (`fly.toml`; 26 integration / 70 total tests); no hosted endpoint resolves today. The `@coproduct/verify` npm package and `/verify/` demo are publish-gated.
-- **Tier 2 isolation is Linux + KVM only.** macOS test passes do not imply a live VM boot.
+- **Tier 2 isolation needs KVM.** A macOS host reaches it through a Lima VM with nested virtualisation (M3+/macOS 15+); a passing `cargo test` on macOS does not imply a live VM boot, which is what `nucleus verify --tier2` is for. CI boots a real pod on **x86_64** only — GitHub has no hosted arm64 runner with `/dev/kvm` — so the aarch64 boot is verified by hand before a release.
 - **`bash -c` bypasses command-level checks.** Firecracker network policy is the real defense.
 - **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real; C2PA verification is feature-gated.
 - **Issuance/signing of identities is demo-only.** `LocalIssuer` is `dev`-feature-gated; there is no SPIRE-backed JWT-SVID issuer in this repo.
@@ -389,6 +453,8 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 **Protects against:** prompt-injection side effects, invisible Unicode injection, misconfigured permissions, network policy drift, budget exhaustion, privilege escalation via delegation, audit-log tampering, memory poisoning, substitution/truncation of provenance bundles, and silent policy widening (constitutional kernel).
 
 **Does not protect against:** compromised host/kernel, malicious human approvals, side-channel attacks, VM kernel escapes — nor does a green provenance verification imply the agent *behaved well* or that any computation was *correct*.
+
+**Unmediated by default:** bytes an agent obtains by running a command (`curl` inside `run`) are not observed as an ingest unless `NUCLEUS_PARANOID_TOOL_IO=1`, so they do not taint the session and the information-flow guarantee above does not cover them. Setting that variable closes the channel on both the HTTP and MCP transports at the cost of a session becoming "one privileged action then locked".
 
 > **Versioning:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 

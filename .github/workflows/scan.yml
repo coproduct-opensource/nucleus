@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
-      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: true
 
@@ -114,7 +114,7 @@ jobs:
 
       - name: Scan safe PodSpec
         # v1.0.8
-        uses: coproduct-opensource/nucleus/scan@ce007fc7215003212ded61979faf7e76df28e86e
+        uses: coproduct-opensource/nucleus/scan@68c0b122a4fb2fd184747b45d054751436ebc381
         id: safe
         with:
           pod-spec: examples/podspecs/safe-pr-fixer.yaml

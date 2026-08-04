@@ -1,0 +1,35 @@
+# Allowlist for scripts/check-verify-strict.sh (audit finding M-3).
+#
+# Each non-comment line below is an EXACT (whitespace-trimmed) source line
+# that is permitted to contain a `.verify(msg, &sig)`-shaped call inside a
+# file that also imports `ed25519_dalek`, even though it is NOT a non-strict
+# dalek trust-path re-verify. Precede every entry with a comment giving the
+# file and the reason it is safe.
+#
+# Add an entry ONLY when the call provably does not reach
+# `ed25519_dalek::VerifyingKey::verify` (e.g. a `ring`/`p256` call that lives
+# beside dalek code, or a same-named wrapper on a different type). When in
+# doubt, convert the site to `verify_strict` instead of allowlisting it.
+#
+# Most wrapper `.verify(...)` methods (`Receipt::verify(&vk)`,
+# `SignedTreeHead::verify(&witness)`, ...) are single-argument and do not match
+# the gate's two-argument pattern. The one exception below is a THREE-argument
+# wrapper whose final argument is a `&nonce`, which happens to match `, &`.
+#
+# crates/portcullis-effects/src/runtime.rs (PR2, #2032):
+# `SignedTaskRef::verify(&self, root_issuer, now, expected_nonce)` is a wrapper
+# on the `SignedTaskRef` type (nucleus-provenance-memory), NOT a dalek leaf
+# call. Its implementation performs the actual dalek re-verify with
+# `VerifyingKey::verify_strict` (see taskref_token.rs). This line is in scope
+# only because runtime.rs now imports `ed25519_dalek::SigningKey`. Safe.
+let scope = signed.verify(&root_issuer, now, &expected_nonce)?.clone();
+#
+# crates/nucleus-tool-proxy/src/session_token.rs (live-path PR-2):
+# The startup session-token verify is the SAME `SignedTaskRef::verify(root_issuer,
+# now, expected_nonce)` wrapper on the `SignedTaskRef` type
+# (nucleus-provenance-memory), NOT a dalek leaf call. Its implementation performs
+# the actual dalek re-verify with `VerifyingKey::verify_strict` (taskref_token.rs).
+# rustfmt splits the call across lines, so the matched line is the `.verify(...)`
+# fragment below. This file is in scope only because its tests import
+# `ed25519_dalek::SigningKey`. Safe.
+.verify(&root_issuer, now_unix, &expected_nonce)

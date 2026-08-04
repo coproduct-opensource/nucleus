@@ -710,7 +710,7 @@ mod llm05_output_handling {
     #[test]
     fn shell_metacharacters_blocked_in_restrictive() {
         // Restrictive (default) profiles block metacharacters.
-        // Permissive allows them for Claude Code compatibility.
+        // Permissive allows them for agent-CLI compatibility.
         let lattice = CommandLattice::default();
 
         let metachar_commands = [

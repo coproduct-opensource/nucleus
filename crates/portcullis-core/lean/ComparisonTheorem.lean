@@ -1,6 +1,6 @@
 /-
 ████████████████████████████████████████████████████████████████████████████
-  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 7 `sorry`)
+  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 3 `sorry`)
 
   Nothing in this file is kernel-checked or formally verified. Do NOT cite any
   result here as "proven", "verified", or "kernel-checked". This file is part of
@@ -1651,26 +1651,33 @@ the augmentation check. -/
 theorem borromean_reduced_h0 :
     reducedCechDim borromeanSite borromeanReducedIndices 0 = 2 := by native_decide
 
-/-! ### Borromean H¹ and H² (pre-computed in Python)
+/-! ### Borromean H¹ and H² (kernel-evaluated via `native_decide`)
 
 The full GF(2) computation for H¹ and H² on the Borromean poset
-(6-element secret type, 64 propositions, 4 covering members) takes
-~15 minutes in Lean due to the matrix sizes. We state the values
-as theorems with sorry, verified by the Python cohomology_detector.
+(6-element secret type, 64 propositions, 4 covering members) is
+discharged directly by `native_decide`: the compiled GF(2) Gaussian
+elimination runs in ~102 s (H¹) and ~12 s (H²) on a release build.
+Earlier notes claiming a ~33 min / heartbeat-limited compile predate
+the current toolchain; `maxHeartbeats 0` removes the elaboration-side
+limit and the native run dominates.
 
-A future optimization (sparse matrices or incremental rank) could
-bring this under the native_decide timeout. -/
+Like every `native_decide` in this file (`borromean_reduced_h0`,
+`diamond_h2_trivial`, `dimension_hierarchy`), these add the
+`native_decide` (`ofReduceBool`) axiom — disclosed Tier-2b in
+`CONJECTURES.md`, not a `sorry` proof hole. The values match the
+Python `cohomology_detector.py` reference. -/
 
+set_option maxHeartbeats 0 in
 /-- **Borromean H¹ = 90** (pairwise obstructions).
 
     90 independent pairwise obstruction directions on a 64-prop space.
-    Verified by Python `cohomology_detector.py` (matching GF(2) Gaussian
-    elimination). The Lean `native_decide` exceeds the heartbeat limit
-    due to the 64-prop × 4-level matrix sizes (~33 min compile). -/
+    Discharged by `native_decide` (~102 s); cross-checked against the
+    Python `cohomology_detector.py` GF(2) Gaussian elimination. -/
 theorem borromean_reduced_h1 :
     reducedCechDim borromeanSite borromeanReducedIndices 1 = 90 := by
-  sorry -- Python-verified; native_decide exceeds 200000 heartbeats
+  native_decide
 
+set_option maxHeartbeats 0 in
 /-- **Borromean H² = 64** — THE BORROMEAN OBSTRUCTION.
 
     64 independent triple-inconsistency directions. Each represents
@@ -1680,15 +1687,16 @@ theorem borromean_reduced_h1 :
     **Significance**: H² detects attacks that H¹ misses — attacks
     where every pairwise audit passes but the triple fails.
 
-    Verified by Python `cohomology_detector.py`. -/
+    Discharged by `native_decide` (~12 s); cross-checked against the
+    Python `cohomology_detector.py` reference. -/
 theorem borromean_reduced_h2 :
     reducedCechDim borromeanSite borromeanReducedIndices 2 = 64 := by
-  sorry -- Python-verified; native_decide exceeds heartbeat limit
+  native_decide
 
 /-- **Borromean has H² > 0**: triple obstruction detected. -/
 theorem borromean_h2_nontrivial :
     reducedCechDim borromeanSite borromeanReducedIndices 2 > 0 := by
-  sorry -- follows from borromean_reduced_h2
+  have h := borromean_reduced_h2; omega
 
 /-- **Diamond has H² = 0**: no Borromean obstruction on a 4-element poset. -/
 theorem diamond_h2_trivial :
@@ -1705,11 +1713,11 @@ theorem dimension_hierarchy :
   constructor <;> native_decide
 
 /-- Borromean: H¹ > 0 AND H² > 0 (pairwise + triple).
-    Python-verified; Lean native_decide exceeds heartbeat limit. -/
+    Derived from the `native_decide`-evaluated values above. -/
 theorem borromean_hierarchy :
     reducedCechDim borromeanSite borromeanReducedIndices 1 > 0 ∧
     reducedCechDim borromeanSite borromeanReducedIndices 2 > 0 := by
-  constructor <;> sorry -- Python-verified
+  have h1 := borromean_reduced_h1; have h2 := borromean_reduced_h2; omega
 
 /-! ### Practical implications
 

@@ -27,6 +27,12 @@ lean_lib «PortcullisCore» where
   roots := #[`PortcullisCore.Types, `PortcullisCore.CoreFuns, `PortcullisCore.FunsExternal]
   srcDir := "generated"
 
+-- Assurance coverage: the gate suite as a covering family. Vocabulary ported
+-- from olog/claim-calculus (Lean 4.32 there, 4.30 here — see the file header for
+-- why it is copied rather than required). Mathlib-free and dependency-free.
+lean_lib «AssuranceCoverage» where
+  roots := #[`AssuranceCoverage]
+
 -- HeytingAlgebra bridge proof + function correspondence theorems
 lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]
@@ -59,6 +65,39 @@ lean_lib «PortcullisCoreCapQuantale» where
 lean_lib «CapabilityResiduatedQuantaleProofs» where
   roots := #[`CapabilityResiduatedQuantaleProofs]
 
+-- Aeneas-generated scope-binding core (from real Rust:
+-- crates/nucleus-ifc-kernel/src/extracted/mediation.rs). UNMODIFIED Aeneas
+-- output (only the inter-module import in Funs.lean was retargeted from
+-- NucleusIfcKernel.Types to PortcullisCoreMediation.Types so this lib does not
+-- collide with the other generated libs).
+lean_lib «PortcullisCoreMediation» where
+  roots := #[`PortcullisCoreMediation.Types, `PortcullisCoreMediation.Funs]
+  srcDir := "generated-mediation"
+
+-- Scope binding proven OVER the Aeneas-generated core above: a discharge
+-- authorizes the action it was earned for and nothing else (first half of
+-- complete mediation).
+lean_lib «MediationScopeExtracted» where
+  roots := #[`MediationScopeExtracted]
+
+lean_lib «PortcullisCoreEgress» where
+  roots := #[`PortcullisCoreEgress.Types, `PortcullisCoreEgress.Funs]
+  srcDir := "generated-egress"
+
+-- Egress confinement proven OVER the Aeneas-generated matcher above: the
+-- network policy is the real enforcement boundary for shell effects.
+lean_lib «EgressConfinementExtracted» where
+  roots := #[`EgressConfinementExtracted]
+
+lean_lib «PortcullisCoreCredential» where
+  roots := #[`PortcullisCoreCredential.Types, `PortcullisCoreCredential.Funs]
+  srcDir := "generated-credential"
+
+-- FM-1: a credential never reaches the guest, proven over the extracted
+-- delivery relation as a corollary of the confidentiality axis.
+lean_lib «CredentialNoninterferenceExtracted» where
+  roots := #[`CredentialNoninterferenceExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where
@@ -87,6 +126,12 @@ lean_lib «DecidePureProofs» where
 -- Declassification rule safety proofs
 lean_lib «DeclassifyProofs» where
   roots := #[`DeclassifyProofs]
+
+lean_lib «SessionCeilingProofs» where
+  roots := #[`SessionCeilingProofs]
+
+lean_lib «ReceiptChainProofs» where
+  roots := #[`ReceiptChainProofs]
 
 -- FlowGraph causal DAG proofs (label monotonicity, taint preservation)
 lean_lib «FlowGraphProofs» where

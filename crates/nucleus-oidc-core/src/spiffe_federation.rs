@@ -82,14 +82,14 @@ use crate::jwks::Jwks;
 /// silently downgraded). This is a transitive-dependency capability gap,
 /// not a security decision; revisit if the backend gains P-521.
 pub const ALLOWED_ALGS: &[Algorithm] = &[
-    Algorithm::RS256,
-    Algorithm::RS384,
-    Algorithm::RS512,
-    Algorithm::ES256,
-    Algorithm::ES384,
-    Algorithm::PS256,
-    Algorithm::PS384,
-    Algorithm::PS512,
+    Algorithm::RS256, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::RS384, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::RS512, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::ES256, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::ES384, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::PS256, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::PS384, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
+    Algorithm::PS512, // alg-pin-allow: JWT-SVID verification allowlist, not OP signing — EdDSA is out of spec for JWT-SVID (see the doc comment above); the T04 EdDSA-exclusive rule governs what the OP SIGNS, not what a federated SPIFFE issuer may have signed.
 ];
 
 /// Default refresh poll period when a bundle carries no
@@ -352,7 +352,7 @@ impl FederationStore {
     pub fn endpoint_for(&self, trust_domain: &str) -> Option<(String, Profile)> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| (d.cfg.bundle_endpoint_url.clone(), d.cfg.profile))
     }
@@ -361,7 +361,7 @@ impl FederationStore {
     pub fn refresh_period(&self, trust_domain: &str) -> Option<Duration> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| d.refresh_period)
     }
@@ -371,7 +371,7 @@ impl FederationStore {
     pub fn served_key_count(&self, trust_domain: &str) -> Option<usize> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .map(|d| d.keys.len())
     }
@@ -380,7 +380,7 @@ impl FederationStore {
     pub fn last_accepted_seq(&self, trust_domain: &str) -> Option<u64> {
         self.domains
             .lock()
-            .expect("federation store mutex")
+            .ok()?
             .get(trust_domain)
             .and_then(|d| d.last_accepted_seq)
     }

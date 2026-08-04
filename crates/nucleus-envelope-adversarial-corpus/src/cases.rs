@@ -197,3 +197,37 @@ pub fn c08_session_root_not_pod() -> (Bundle, TrustAnchor) {
     bundle.envelope.session_root = call_id;
     (bundle, fixture::fixture_anchor())
 }
+
+/// C09 — Confused deputy: a peer's edge grafted onto another's chain.
+///
+/// The 2026 multi-agent literature reports inter-agent trust exploitation
+/// succeeding at 82.4% — models execute commands from a PEER agent that they
+/// refuse from a human — and coordination-channel attacks at 82.9%
+/// (AgentLeak, arXiv 2602.11510). The named root cause is the absence of
+/// mandatory access control over agent-to-agent interactions: a low-privilege
+/// peer manipulates a high-privilege one into acting on its behalf.
+///
+/// C07 already covers a parent OUTSIDE the session root — cross-session
+/// contamination, caught by `OutsideRoot`. This case is the harder one, and the
+/// one the literature actually describes: the forged parent is a legitimate
+/// SIBLING *inside* the same session root. The `Write` edge is rewritten to
+/// claim it was delegated by the peer `Read` call rather than by the pod, so
+/// every id involved is one the trust boundary already admits.
+///
+/// If authority were derived from "is this id inside my session?" this would be
+/// accepted. It must be rejected because the parent set is covered by the
+/// edge's canonical bytes, so the delegation is bound to the actual delegator
+/// and not merely to a member of the session.
+pub fn c09_sibling_graft_confused_deputy() -> (Bundle, TrustAnchor) {
+    let mut bundle = fixture::known_good_bundle();
+    let pod = fixture::fixture_pod();
+    // A legitimate peer operation inside the same session root — NOT a foreign
+    // pod. This is what makes it a confused deputy rather than contamination.
+    let peer_call = pod
+        .derive_tool("Read", Some(b"input-A"))
+        .expect("sibling Read call id constructs");
+    if let Some(first) = bundle.envelope.edges[2].parents.first_mut() {
+        *first = peer_call;
+    }
+    (bundle, fixture::fixture_anchor())
+}

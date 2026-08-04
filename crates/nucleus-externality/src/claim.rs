@@ -34,7 +34,7 @@
 //! `u64` — no floats anywhere.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -134,7 +134,7 @@ pub fn verify_claim(
     buf.copy_from_slice(&sig_bytes);
     let sig = Signature::from_bytes(&buf);
     oracle_vk
-        .verify(&canonical_claim_bytes(claim), &sig)
+        .verify_strict(&canonical_claim_bytes(claim), &sig)
         .map_err(|e| ClaimError::SignatureInvalid(e.to_string()))?;
 
     // 2. Freshness window.

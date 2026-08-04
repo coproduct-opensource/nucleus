@@ -36,6 +36,173 @@ struct BundleResponse {
     bundle_pem: String,
 }
 
+/// Where [`fetch_identity`] writes the SVID certificate chain.
+///
+/// Exposed so the caller can advertise it to the tool-proxy via
+/// `NUCLEUS_IDENTITY_CERT`. Fetching the cert and not naming it leaves Tier 1/2
+/// reporting "no identity cert" with the cert sitting on disk.
+pub fn svid_cert_path() -> String {
+    format!("{IDENTITY_DIR}/svid.pem")
+}
+
+/// The three values a session capability token comprises.
+///
+/// Named to match what the tool-proxy reads from its environment —
+/// `NUCLEUS_TASK_TOKEN{,_NONCE,_ISSUER}` — because a mismatch here fails at
+/// proxy startup rather than at use, which is far from the cause.
+#[derive(Debug, serde::Deserialize)]
+pub struct TaskTokenResponse {
+    pub token: String,
+    pub nonce: String,
+    pub issuer: String,
+}
+
+/// Fetch this pod's session capability token from the host.
+///
+/// # Why over vsock rather than the kernel command line
+///
+/// The token rides `nucleus.task_token_hex`/`_nonce`/`_issuer` today. It is not
+/// a secret — a scoped capability plus a public issuer key — so this is not
+/// about confidentiality. It is that **per-pod material baked into a boot
+/// artifact survives a snapshot**: every clone restored from one base would
+/// carry a single pod's token. Fetching after boot is what makes a snapshot base
+/// reusable, and three of the five keys blocking one are these.
+///
+/// Fetched synchronously here, before the tool-proxy is exec'd, so the values
+/// are in the environment before anything reads them. That ordering is the whole
+/// risk of moving delivery off the command line, and it is structural rather
+/// than hoped-for: `main` calls this and only then calls `exec_proxy`.
+/// This pod's DLC-D verified-admission provisioning, from `FETCH_DLC_ADMISSION`.
+#[derive(serde::Deserialize)]
+pub struct DlcAdmissionResponse {
+    /// Comma-separated hex trusted issuer public keys.
+    pub trusted_keys: String,
+    /// Hex public key of the issuer whose credentials this pod presents.
+    pub issuer: String,
+    /// Comma-separated `operation=hex_signature` credentials.
+    pub credentials: String,
+}
+
+/// Fetch this pod's DLC admission provisioning from the host. `Ok(None)` is the
+/// ordinary unprovisioned case (the host answers `{"error": ...}`); only a
+/// transport failure is an `Err`.
+pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_DLC_ADMISSION\n")
+        .map_err(|e| format!("failed to send FETCH_DLC_ADMISSION: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read dlc admission response: {e}"))?;
+
+    match serde_json::from_str::<DlcAdmissionResponse>(&response) {
+        Ok(material) => Ok(Some(material)),
+        // The unprovisioned host answers {"error": ...}: not a failure.
+        Err(_) => Ok(None),
+    }
+}
+
+/// Fetch this pod's credential-broker capability, once.
+///
+/// # Why this must happen before `exec_proxy`
+///
+/// The host serves this secret EXACTLY ONCE per pod. That one-shot is the whole
+/// security property: any guest process can open `AF_VSOCK` — permissions on
+/// `/dev/vsock` do not gate the socket family, which was verified by experiment
+/// — so a workload can reach the workload API too. What it cannot do is arrive
+/// first. Fetching here, before the proxy execs and long before it spawns any
+/// workload, is what makes "first" true.
+///
+/// # And why the value must not be logged
+///
+/// Possession of this IS the capability to speak to the credential broker as the
+/// mediating proxy. Unlike the task token (a scoped capability plus a public
+/// issuer key) there is no sense in which handing it out is harmless, so errors
+/// here name the failure and never the payload.
+pub struct BrokerCapability {
+    /// The HMAC key the proxy signs broker frames with.
+    pub secret: String,
+    /// The vsock port the broker listens on.
+    pub port: u32,
+}
+
+pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_BROKER_SECRET\n")
+        .map_err(|e| format!("failed to send FETCH_BROKER_SECRET: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read broker-secret response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        // Not `{e}` and not the body: a parse error that echoed the response
+        // would put the capability in the guest console log.
+        .map_err(|_| "broker-secret response was not valid JSON".to_string())?;
+    if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+        return Err(err.to_string());
+    }
+    let secret = parsed
+        .get("secret")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "broker-secret response had no `secret`".to_string())?;
+    // Both or neither. A secret with no port leaves the proxy able to sign and
+    // unable to connect — a capability that looks held and is not, which is the
+    // failure shape this whole arc keeps producing.
+    let broker_port = parsed
+        .get("port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .ok_or_else(|| "broker-secret response had no usable `port`".to_string())?;
+    Ok(BrokerCapability {
+        secret,
+        port: broker_port,
+    })
+}
+
+pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_TASK_TOKEN\n")
+        .map_err(|e| format!("failed to send FETCH_TASK_TOKEN: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read task token response: {e}"))?;
+
+    // The host answers a pod with no minted token with `{"error": ...}` rather
+    // than an empty token, so a parse failure here is a real protocol problem
+    // and not the ordinary "this pod has none" case.
+    serde_json::from_str::<TaskTokenResponse>(&response).map_err(|e| {
+        format!(
+            "failed to parse task token response ({e}): {}",
+            response.trim()
+        )
+    })
+}
+
 /// Fetches the workload certificate from the host via vsock.
 ///
 /// This connects to the host's Workload API server, fetches the X.509 SVID,

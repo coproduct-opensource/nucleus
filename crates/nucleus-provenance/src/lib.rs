@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -227,7 +227,7 @@ fn signed_by_trusted(att: &SignedAttestation, trusted: &[TrustedKey]) -> bool {
             continue;
         };
         let signature = Signature::from_bytes(&sig_arr);
-        if vk.verify(&msg, &signature).is_ok() {
+        if vk.verify_strict(&msg, &signature).is_ok() {
             return true;
         }
     }

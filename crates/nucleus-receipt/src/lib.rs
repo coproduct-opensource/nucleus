@@ -63,7 +63,7 @@
 //!   projections; they instantiate this envelope, they don't define it.
 
 use base64::Engine;
-use ed25519_dalek::{Signer, Verifier};
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
 pub const RECEIPT_VERSION: u32 = 1;
@@ -184,7 +184,7 @@ impl Receipt {
             .try_into()
             .map_err(|_| ReceiptError::InvalidSignatureEncoding("len != 64".into()))?;
         let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
-        vk.verify(&canonical, &sig)
+        vk.verify_strict(&canonical, &sig)
             .map_err(|e| ReceiptError::SignatureMismatch(e.to_string()))?;
         Ok(())
     }
@@ -287,6 +287,57 @@ mod tests {
             receipt.verify(&vk_b),
             Err(ReceiptError::SignatureMismatch(_))
         ));
+    }
+
+    /// Ed25519 identity/neutral-point key encoding: y = 1, x = 0, sign 0.
+    /// A small-order (order-1) verifying key.
+    fn identity_vk_bytes() -> [u8; 32] {
+        let mut id = [0u8; 32];
+        id[0] = 1;
+        id
+    }
+
+    /// The "identity triple" signature: R = identity encoding, s = 0.
+    /// For A = R = identity and s = 0 the cofactored verification
+    /// equation `[s]B == R + [k]A` reduces to `identity == identity` for
+    /// EVERY message, so non-strict `verify()` ACCEPTS it under the
+    /// identity key — a key-substitution / weak-binding forgery. Strict
+    /// `verify_strict()` rejects it because it refuses small-order A/R.
+    fn identity_sig_bytes() -> [u8; 64] {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&identity_vk_bytes()); // R = identity, s = 0
+        sig
+    }
+
+    /// M-2 strong-binding regression (site: `Receipt::verify`, the
+    /// `vk.verify_strict` call). Proves the receipt trust path rejects a
+    /// small-order-key forgery that non-strict `vk.verify` would ACCEPT.
+    /// If line 187 is reverted to `vk.verify(...)`, assertion (ii) fails.
+    #[test]
+    fn small_order_key_is_rejected_by_verify_strict() {
+        // (i) No regression: an honest keypair still verifies end-to-end.
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let honest_vk: [u8; 32] = sk.verifying_key().to_bytes();
+        let honest = Receipt::sign(dummy_session(), dummy_projections(), &sk);
+        honest
+            .verify(&honest_vk)
+            .expect("honest receipt must still verify through verify_strict");
+
+        // (ii) Strong binding: take a well-formed receipt (correct root
+        // hash over session+projections), swap in the identity-triple
+        // signature, and verify against the small-order identity key.
+        // Non-strict `verify` accepts this; `verify_strict` rejects it.
+        let mut forged = Receipt::sign(dummy_session(), dummy_projections(), &sk);
+        forged.signature_b64 =
+            base64::engine::general_purpose::STANDARD.encode(identity_sig_bytes());
+        assert!(
+            matches!(
+                forged.verify(&identity_vk_bytes()),
+                Err(ReceiptError::SignatureMismatch(_))
+            ),
+            "small-order identity key must be REJECTED by verify_strict; \
+             a revert to non-strict verify() would ACCEPT this forgery"
+        );
     }
 
     #[test]

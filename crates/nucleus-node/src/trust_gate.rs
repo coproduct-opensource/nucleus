@@ -55,6 +55,15 @@ pub struct TrustGateConfig {
     pub executor_signing_key: Arc<SigningKey>,
     /// Executor identity sent as X-Nucleus-Executor-Id on receipt POSTs.
     pub executor_id: String,
+    /// Dedicated Ed25519 key that signs live-path **session capability tokens**
+    /// ([`SignedTaskRef`](nucleus_provenance_memory::SignedTaskRef)) minted at
+    /// pod spawn. Deliberately DISTINCT from `executor_signing_key` (role
+    /// separation): the executor key signs executor decisions and is the
+    /// executor's receipt identity, so reusing it as the token root issuer
+    /// would conflate two trust roles. Only the PUBLIC half is ever injected
+    /// into a pod (as `NUCLEUS_TASK_TOKEN_ISSUER`); the private key never leaves
+    /// the node.
+    pub task_issuer_signing_key: Arc<SigningKey>,
 }
 
 impl Default for TrustGateConfig {
@@ -66,6 +75,7 @@ impl Default for TrustGateConfig {
             receipt_secret: None,
             executor_signing_key: Arc::new(generate_signing_key()),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
+            task_issuer_signing_key: Arc::new(generate_signing_key()),
         }
     }
 }
@@ -87,6 +97,11 @@ fn uuid_hex() -> String {
 
 /// Filename (under `state_dir`) holding the persisted executor signing key.
 const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
+
+/// Filename (under `state_dir`) holding the persisted **task-issuer** signing
+/// key — the root that signs live-path session capability tokens. DISTINCT from
+/// [`EXECUTOR_KEY_FILE`] so the two trust roles never share a key.
+const TASK_ISSUER_KEY_FILE: &str = "task_issuer_signing_key.der";
 
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
@@ -117,25 +132,45 @@ fn generate_signing_key() -> SigningKey {
 /// replaced rather than crashing the node (fail-open on *availability*, not on
 /// identity — a corrupt key was never a valid enrollment anyway).
 pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
-    let path = state_dir.join(EXECUTOR_KEY_FILE);
+    load_or_create_key_file(state_dir, EXECUTOR_KEY_FILE, "executor signing key")
+}
+
+/// Load the dedicated **task-issuer** Ed25519 signing key from `state_dir`,
+/// creating and persisting a fresh one on first run.
+///
+/// Uses the identical persistence discipline as
+/// [`load_or_create_signing_key`] (PKCS#8 DER, `0o400`, fail-open on
+/// availability) but a DISTINCT file ([`TASK_ISSUER_KEY_FILE`]). This is the
+/// root that signs live-path session capability tokens; keeping it separate
+/// from the executor key enforces role separation — a compromise or rotation
+/// of one identity does not implicate the other, and the executor key (which
+/// is also the executor's receipt identity) never doubles as a token root.
+pub fn load_or_create_task_issuer_signing_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(state_dir, TASK_ISSUER_KEY_FILE, "task issuer signing key")
+}
+
+/// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
+/// the basename under `state_dir`; `label` is used only in log lines.
+fn load_or_create_key_file(state_dir: &Path, filename: &str, label: &str) -> SigningKey {
+    let path = state_dir.join(filename);
 
     if path.exists() {
         match std::fs::read(&path) {
             Ok(bytes) => match SigningKey::from_pkcs8_der(&bytes) {
                 Ok(key) => {
-                    debug!(path = %path.display(), "loaded persisted executor signing key");
+                    debug!(path = %path.display(), "loaded persisted {label}");
                     return key;
                 }
                 Err(e) => warn!(
                     path = %path.display(),
                     error = %e,
-                    "executor signing key file is unreadable; regenerating"
+                    "{label} file is unreadable; regenerating"
                 ),
             },
             Err(e) => warn!(
                 path = %path.display(),
                 error = %e,
-                "failed to read executor signing key file; regenerating"
+                "failed to read {label} file; regenerating"
             ),
         }
     }
@@ -147,13 +182,13 @@ pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    "failed to persist executor signing key; identity will not survive restart"
+                    "failed to persist {label}; identity will not survive restart"
                 );
             } else {
-                info!(path = %path.display(), "generated and persisted new executor signing key");
+                info!(path = %path.display(), "generated and persisted new {label}");
             }
         }
-        Err(e) => warn!(error = %e, "failed to PKCS#8-encode executor signing key; not persisting"),
+        Err(e) => warn!(error = %e, "failed to PKCS#8-encode {label}; not persisting"),
     }
     key
 }
@@ -190,6 +225,8 @@ impl TrustGateConfig {
             .map(Arc::new);
 
         let executor_signing_key = load_or_create_signing_key(state_dir);
+        // Role-separated key that signs live-path session capability tokens.
+        let task_issuer_signing_key = load_or_create_task_issuer_signing_key(state_dir);
 
         // Prefer an explicit id; otherwise derive a stable one from the
         // persistent key (not a fresh uuid per process — #1636).
@@ -206,6 +243,7 @@ impl TrustGateConfig {
             receipt_secret,
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
+            task_issuer_signing_key: Arc::new(task_issuer_signing_key),
         }
     }
 
@@ -270,6 +308,7 @@ struct Brackets {
 ///
 /// If the trust API is unreachable or returns an error, falls back to
 /// the default bracket (never blocks execution due to trust API failure).
+#[tracing::instrument(skip_all, fields(boot.stage = "trust_gate.verify"))]
 pub async fn verify_agent_trust(
     config: &TrustGateConfig,
     spec: &PodSpec,
@@ -668,6 +707,19 @@ pub struct ReceiptReport {
     pub observed_risk_tier: String,
     /// Whether the uninhabitable state was reached during execution.
     pub uninhabitable_reached: bool,
+    /// The host's signature over the pod's Article 12 chain head, when the pod
+    /// kept a log. `None` means no Article 12 record-keeping happened, which is
+    /// reported rather than left to inference.
+    pub art12_attestation: Option<Art12Attestation>,
+    /// Decision-stream property violations observed by the tool proxy's
+    /// `TraceMonitor` (class labels), plus any dropped past the retention cap.
+    ///
+    /// Distinct from exposure: exposure says which capability legs the session
+    /// exercised, this says whether the mediation invariants held while it did.
+    pub monitor_violations: Vec<String>,
+    /// Violations observed but not retained. Non-zero means
+    /// `monitor_violations` is truncated.
+    pub monitor_violations_dropped: u64,
 
     // ── Cryptographic session identity ─────────────────────────────
     /// SPIFFE ID or pod identity from the sandbox. Sent as `sandbox_identity`
@@ -680,6 +732,145 @@ pub struct ReceiptReport {
     /// session-complete in secure mode; without it the handler returns 422
     /// when observed_exposure_labels are present.
     pub v1_content_hash: String,
+}
+
+// `Art12Attestation` and `art12_attestation_preimage` live in
+// `portcullis::art12_record`, beside `Art12Record`, so this signer and the
+// verifier in `nucleus-audit` share ONE definition of the preimage. Two
+// renderings that agree today break the first time either side gains a field —
+// and they break by rejecting authentic evidence, which is the worst direction.
+pub use portcullis::art12_record::{
+    art12_attestation_preimage, Art12Attestation, ART12_ATTESTATION_KIND,
+};
+
+/// Sign the Article 12 chain head with the executor key.
+///
+/// # It signs what the HOST observed, not what the pod reported
+///
+/// `observed` comes from the node's own collected stream. Signing the pod's
+/// reported head would mean the executor vouches for a value the pod chose — an
+/// honest signature over a possibly dishonest input, which reads exactly like a
+/// trustworthy one.
+///
+/// When the pod also reported a head, both are carried. They can legitimately
+/// differ in ONE direction: the pod ships each record before appending it
+/// locally, so a pod that dies mid-write leaves the host holding one MORE than
+/// the pod kept. The other direction — the pod claiming more records than the
+/// host received — means records were made and never witnessed, and that is the
+/// finding this field exists to surface rather than reconcile.
+///
+/// Falls back to the pod-reported head when the host observed nothing, so a
+/// deployment without the evidence channel still gets the weaker-but-honest
+/// attestation it had before; `pod_reported_head` being equal to `chain_head`
+/// is the tell.
+///
+/// Returns `None` when neither side has a log — an attestation over an empty
+/// head would assert record-keeping that did not happen.
+#[must_use]
+pub fn attest_art12(
+    report: &nucleus_spec::ExitReport,
+    observed: Option<&crate::art12_collector::ObservedChain>,
+    session_id: &str,
+    executor_id: &str,
+    key: &SigningKey,
+) -> Option<Art12Attestation> {
+    let (head, records) = match observed {
+        Some(o) => (o.head.clone(), o.records),
+        None => (report.art12_chain_head.clone(), report.art12_records),
+    };
+    if head.is_empty() {
+        return None;
+    }
+    let diverged = observed
+        .is_some_and(|o| o.head != report.art12_chain_head || o.records != report.art12_records);
+    let preimage = art12_attestation_preimage(
+        session_id,
+        &head,
+        records,
+        report.art12_dropped,
+        executor_id,
+    );
+    let sig = key.sign(preimage.as_bytes());
+    Some(Art12Attestation {
+        kind: ART12_ATTESTATION_KIND.to_string(),
+        session_id: session_id.to_string(),
+        chain_head: head,
+        records,
+        dropped: report.art12_dropped,
+        executor_id: executor_id.to_string(),
+        pod_reported_head: diverged.then(|| report.art12_chain_head.clone()),
+        pod_records: diverged.then_some(report.art12_records),
+        signature: hex::encode(sig.to_bytes()),
+    })
+}
+
+impl TrustGateConfig {
+    /// The shared secret a pod signs Article 12 records with.
+    ///
+    /// `None` here means no secret was configured, and the collector must then
+    /// REFUSE every record rather than accept unauthenticated evidence. Returning
+    /// an empty key would make any signature verify against it, which is the
+    /// fail-open reading of the same situation.
+    #[must_use]
+    pub fn art12_secret(&self) -> Option<&[u8]> {
+        self.receipt_secret.as_ref().map(|s| s.as_slice())
+    }
+}
+
+/// Compute the v1 content hash over the canonical receipt fields.
+///
+/// # Trust model (Trail of Bits finding #4)
+///
+/// This hash covers CONTENT (what happened), not IDENTITY (who attested). The
+/// executor's Ed25519 signature travels separately in the
+/// `X-Nucleus-Executor-Sig` header and signs the serialized session-complete
+/// body, which includes this hash. Verification is two-phase: the trust service
+/// validates the hash was pre-registered, then verifies the signature against
+/// the executor's registered public key. See also `AuditEntry::content_hash()`
+/// in `portcullis/src/audit.rs`.
+///
+/// # What must be committed
+///
+/// **Every observation the trust service acts on.** A field the trust service
+/// reads but the hash does not cover can be stripped or rewritten in flight
+/// while the hash still validates — which defeats the binding the
+/// `SandboxAttested` upgrade path depends on. That is why the exposure labels,
+/// the risk tier, and the monitor's findings are all folded in here, and why a
+/// new observation field added to `ExitReport` must be added here too.
+///
+/// Extracted from `main.rs` so the preimage is testable: it was previously
+/// inline in a long handler and no test could reach it.
+pub(crate) fn compute_v1_content_hash(
+    pod_id: &str,
+    manifest_hash: &str,
+    report: &nucleus_spec::ExitReport,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(pod_id.as_bytes());
+    hasher.update(report.workspace_hash.as_bytes());
+    hasher.update(report.audit_tail_hash.as_bytes());
+    hasher.update(report.audit_entry_count.to_le_bytes());
+    hasher.update(report.timestamp_unix.to_le_bytes());
+    hasher.update(manifest_hash.as_bytes());
+    for label in &report.observed_exposure_labels {
+        hasher.update(label.as_bytes());
+    }
+    hasher.update(report.observed_risk_tier.as_bytes());
+    for label in &report.monitor_violations {
+        hasher.update(label.as_bytes());
+    }
+    hasher.update(report.monitor_violations_dropped.to_le_bytes());
+    // Same reasoning again: an attestation the receipt hash does not cover can
+    // be stripped in flight while the hash still validates, and a stripped
+    // attestation reads as "this pod kept no Article 12 log".
+    hasher.update(report.art12_chain_head.as_bytes());
+    hasher.update(report.art12_records.to_le_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Compute a continuous session quality score in [0.0, 1.0] from execution signals.
@@ -740,10 +931,23 @@ pub(crate) fn build_session_complete_body(report: &ReceiptReport) -> serde_json:
         "sandbox_identity": report.sandbox_identity,
         "success": report.success,
         "score": compute_session_score(report),
-        "had_issues": !report.success || report.uninhabitable_reached,
+        // A recorded effect that nothing authorised is an issue by any reading
+        // of the word. Deliberately NOT folded into `compute_session_score`:
+        // the weight a violation should carry against reputation is a policy
+        // question, and inventing one here would be a number nobody chose.
+        "had_issues": !report.success
+            || report.uninhabitable_reached
+            || !report.monitor_violations.is_empty()
+            || report.monitor_violations_dropped > 0,
         "hook_event_name": "ExecutionReceipt",
         "observed_exposure_labels": report.observed_exposure_labels,
         "observed_risk_tier": report.observed_risk_tier,
+        "monitor_violations": report.monitor_violations,
+        "monitor_violations_dropped": report.monitor_violations_dropped,
+        // Present iff the pod kept an Article 12 log. The trust service can
+        // check this against the executor's registered public key WITHOUT
+        // holding the pod's HMAC secret — which is the whole point.
+        "art12_attestation": report.art12_attestation,
         "v1_content_hash": report.v1_content_hash,
     })
 }
@@ -1019,6 +1223,292 @@ pub async fn register_executor_pubkey(config: &TrustGateConfig, http_client: &re
 mod tests {
     use super::*;
 
+    fn sample_exit_report() -> nucleus_spec::ExitReport {
+        nucleus_spec::ExitReport {
+            workspace_hash: "ws".to_string(),
+            audit_tail_hash: "tail".to_string(),
+            audit_entry_count: 3,
+            timestamp_unix: 1_700_000_000,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cost_usd: 0.0,
+            observed_exposure_labels: vec!["PrivateData".to_string()],
+            observed_risk_tier: "medium".to_string(),
+            uninhabitable_reached: false,
+            monitor_violations: vec!["OutcomeWithoutDecision".to_string()],
+            monitor_violations_dropped: 2,
+            art12_chain_head: "head".to_string(),
+            art12_records: 5,
+            art12_dropped: 0,
+        }
+    }
+
+    /// **The attestation must reach the trust service.** Signing it and then
+    /// dropping it on the floor is the defect this whole line of work is about:
+    /// a mechanism that exists, a claim about it, and nothing joining the two.
+    #[test]
+    fn the_attestation_reaches_the_session_complete_body() {
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let mut report = sample_receipt_report();
+        assert!(
+            build_session_complete_body(&report)["art12_attestation"].is_null(),
+            "no log means no attestation, or the assertion below proves nothing"
+        );
+
+        report.art12_attestation =
+            attest_art12(&sample_exit_report(), None, "sess", "exec-1", &key);
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["art12_attestation"]["chain_head"].as_str(),
+            Some("head"),
+            "the executor's attestation must travel with the receipt"
+        );
+        assert!(
+            body["art12_attestation"]["signature"]
+                .as_str()
+                .is_some_and(|s| s.len() == 128),
+            "an Ed25519 signature is 64 bytes hex-encoded"
+        );
+    }
+
+    /// **The attestation binds the head with a key the pod does not hold.**
+    /// That is the whole point: an HMAC'd chain proves nothing against a pod
+    /// that holds its own signing secret.
+    #[test]
+    fn an_attestation_verifies_under_the_executor_public_key() {
+        use ed25519_dalek::{Signature, Verifier as _};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).expect("a log was kept");
+
+        let preimage = art12_attestation_preimage(
+            "sess",
+            &report.art12_chain_head,
+            report.art12_records,
+            report.art12_dropped,
+            "exec-1",
+        );
+        let bytes: [u8; 64] = hex::decode(&att.signature).unwrap().try_into().unwrap();
+        assert!(key
+            .verifying_key()
+            .verify(preimage.as_bytes(), &Signature::from_bytes(&bytes))
+            .is_ok());
+    }
+
+    fn observed(head: &str, records: u64) -> crate::art12_collector::ObservedChain {
+        crate::art12_collector::ObservedChain {
+            head: head.to_string(),
+            records,
+        }
+    }
+
+    /// **The attestation signs what the HOST saw, not what the pod said.**
+    /// Signing the pod's value would be an honest signature over a possibly
+    /// dishonest input, which reads exactly like a trustworthy one.
+    #[test]
+    fn the_host_observed_head_is_what_gets_signed() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_chain_head = "what-the-pod-claimed".into();
+        report.art12_records = 5;
+
+        let att = attest_art12(
+            &report,
+            Some(&observed("what-the-host-received", 5)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert_eq!(att.chain_head, "what-the-host-received");
+        assert_eq!(
+            att.pod_reported_head.as_deref(),
+            Some("what-the-pod-claimed"),
+            "the disagreement must be carried, not silently resolved"
+        );
+    }
+
+    /// Agreement carries no divergence fields — otherwise every ordinary session
+    /// would look like a finding and the real ones would be lost in it.
+    #[test]
+    fn agreement_records_no_divergence() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(
+            &report,
+            Some(&observed(&report.art12_chain_head, report.art12_records)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert!(att.pod_reported_head.is_none());
+        assert!(att.pod_records.is_none());
+    }
+
+    /// **The alarming direction.** A pod claiming MORE records than the host
+    /// received means decisions were made and never witnessed. The count must
+    /// survive into the attestation so a reader can tell which way it went.
+    #[test]
+    fn a_pod_claiming_more_records_than_the_host_saw_is_visible() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_records = 99;
+
+        let att = attest_art12(
+            &report,
+            Some(&observed(&report.art12_chain_head, 3)),
+            "sess",
+            "exec-1",
+            &key,
+        )
+        .unwrap();
+        assert_eq!(att.records, 3, "the host attests what it received");
+        assert_eq!(
+            att.pod_records,
+            Some(99),
+            "and what the pod claimed, so the gap is legible"
+        );
+    }
+
+    /// Without the evidence channel the pod-reported head is still attested —
+    /// the weaker-but-honest configuration that existed before. Falling back to
+    /// nothing would make deployments without a channel silently unattested.
+    #[test]
+    fn with_no_host_observation_the_pod_head_is_still_attested() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).unwrap();
+        assert_eq!(att.chain_head, report.art12_chain_head);
+        assert!(
+            att.pod_reported_head.is_none(),
+            "with nothing to compare against there is no divergence to report"
+        );
+    }
+
+    /// **A rewritten log cannot keep its attestation.** This is the property the
+    /// export exists for: change the history, and the head no longer matches the
+    /// one the executor signed.
+    #[test]
+    fn a_rewritten_chain_head_breaks_the_attestation() {
+        use ed25519_dalek::{Signature, Verifier as _};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let report = sample_exit_report();
+        let att = attest_art12(&report, None, "sess", "exec-1", &key).unwrap();
+
+        // The pod rewrites its log after the fact; the head moves.
+        let forged = art12_attestation_preimage("sess", "different-head", 5, 0, "exec-1");
+        let bytes: [u8; 64] = hex::decode(&att.signature).unwrap().try_into().unwrap();
+        assert!(
+            key.verifying_key()
+                .verify(forged.as_bytes(), &Signature::from_bytes(&bytes))
+                .is_err(),
+            "a moved chain head must not verify under the original signature"
+        );
+    }
+
+    /// Every field in the preimage must be bound, or it can be rewritten freely
+    /// while the signature still checks.
+    #[test]
+    fn every_attestation_field_is_bound_by_the_signature() {
+        let base = art12_attestation_preimage("sess", "head", 5, 0, "exec-1");
+        for (field, other) in [
+            (
+                "session_id",
+                art12_attestation_preimage("other", "head", 5, 0, "exec-1"),
+            ),
+            (
+                "chain_head",
+                art12_attestation_preimage("sess", "other", 5, 0, "exec-1"),
+            ),
+            (
+                "records",
+                art12_attestation_preimage("sess", "head", 6, 0, "exec-1"),
+            ),
+            (
+                "dropped",
+                art12_attestation_preimage("sess", "head", 5, 1, "exec-1"),
+            ),
+            (
+                "executor_id",
+                art12_attestation_preimage("sess", "head", 5, 0, "exec-2"),
+            ),
+        ] {
+            assert_ne!(base, other, "{field} is not in the signed preimage");
+        }
+    }
+
+    /// A session that kept no log must NOT get an attestation — signing an empty
+    /// head would assert record-keeping that did not happen.
+    #[test]
+    fn no_log_means_no_attestation() {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let mut report = sample_exit_report();
+        report.art12_chain_head = String::new();
+        assert!(
+            attest_art12(&report, None, "sess", "exec-1", &key).is_none(),
+            "an absent log must not produce an attestation that implies one"
+        );
+    }
+
+    /// **Every observation the trust service acts on must be committed.** A
+    /// field it reads but the hash does not cover can be stripped in flight
+    /// while the hash still validates, which is precisely the tamper the
+    /// content-hash binding exists to prevent.
+    ///
+    /// Perturbing any field below must change the hash; a field that does not
+    /// appear here is one an attacker can rewrite for free.
+    #[test]
+    fn every_committed_field_changes_the_v1_content_hash() {
+        let base = sample_exit_report();
+        let baseline = compute_v1_content_hash("pod-1", "manifest", &base);
+
+        let mut mutations: Vec<(&str, nucleus_spec::ExitReport)> = Vec::new();
+        let mut m = base.clone();
+        m.workspace_hash = "other".into();
+        mutations.push(("workspace_hash", m));
+        let mut m = base.clone();
+        m.audit_tail_hash = "other".into();
+        mutations.push(("audit_tail_hash", m));
+        let mut m = base.clone();
+        m.audit_entry_count = 4;
+        mutations.push(("audit_entry_count", m));
+        let mut m = base.clone();
+        m.timestamp_unix += 1;
+        mutations.push(("timestamp_unix", m));
+        let mut m = base.clone();
+        m.observed_exposure_labels = vec!["ExfilVector".into()];
+        mutations.push(("observed_exposure_labels", m));
+        let mut m = base.clone();
+        m.observed_risk_tier = "safe".into();
+        mutations.push(("observed_risk_tier", m));
+        // The two added by the trace-monitor wiring. Stripping the violations is
+        // the interesting attack: a session that broke its mediation invariants
+        // filing a clean receipt.
+        let mut m = base.clone();
+        m.monitor_violations = Vec::new();
+        mutations.push(("monitor_violations", m));
+        let mut m = base.clone();
+        m.monitor_violations_dropped = 0;
+        mutations.push(("monitor_violations_dropped", m));
+
+        for (field, mutated) in mutations {
+            assert_ne!(
+                compute_v1_content_hash("pod-1", "manifest", &mutated),
+                baseline,
+                "{field} is not committed into v1_content_hash — it can be tampered with freely"
+            );
+        }
+
+        // The two arguments are committed too.
+        assert_ne!(
+            compute_v1_content_hash("pod-2", "manifest", &base),
+            baseline
+        );
+        assert_ne!(compute_v1_content_hash("pod-1", "other", &base), baseline);
+    }
+
     /// Helper to build a minimal ReceiptReport for body-structure tests.
     fn sample_receipt_report() -> ReceiptReport {
         ReceiptReport {
@@ -1035,6 +1525,9 @@ mod tests {
             observed_exposure_labels: vec!["NetworkEgress".to_string(), "WriteFiles".to_string()],
             observed_risk_tier: "medium".to_string(),
             uninhabitable_reached: false,
+            monitor_violations: Vec::new(),
+            monitor_violations_dropped: 0,
+            art12_attestation: None,
             sandbox_identity: "spiffe://nucleus/test-agent".to_string(),
             v1_content_hash: "cafebabe11223344556677889900aabbccddeeff".to_string(),
         }
@@ -1125,6 +1618,53 @@ mod tests {
         );
     }
 
+    /// A monitor violation is a recorded effect that nothing authorised. A
+    /// session that produced one did not go cleanly, whatever its exit code —
+    /// and without this the exit report's new fields would be written by the
+    /// proxy and read by nothing, which is the defect they exist to detect.
+    #[test]
+    fn test_session_complete_body_had_issues_when_monitor_flagged() {
+        let mut report = sample_receipt_report();
+        report.success = true;
+        report.uninhabitable_reached = false;
+        assert_eq!(
+            build_session_complete_body(&report)["had_issues"].as_bool(),
+            Some(false),
+            "the control must be clean, or the assertion below proves nothing"
+        );
+
+        report.monitor_violations = vec!["OutcomeWithoutDecision".to_string()];
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["had_issues"].as_bool(),
+            Some(true),
+            "had_issues must be true when the monitor observed a violation"
+        );
+        assert_eq!(
+            body["monitor_violations"][0].as_str(),
+            Some("OutcomeWithoutDecision"),
+            "the violation classes must reach the trust service, not just the flag"
+        );
+    }
+
+    /// Truncation must not read as cleanliness: a session whose violations all
+    /// overflowed the retention cap still had issues.
+    #[test]
+    fn test_dropped_violations_alone_set_had_issues() {
+        let mut report = sample_receipt_report();
+        report.success = true;
+        report.monitor_violations = Vec::new();
+        report.monitor_violations_dropped = 7;
+
+        let body = build_session_complete_body(&report);
+        assert_eq!(
+            body["had_issues"].as_bool(),
+            Some(true),
+            "an empty-but-truncated violation list must not read as clean"
+        );
+        assert_eq!(body["monitor_violations_dropped"].as_u64(), Some(7));
+    }
+
     /// Verify failure path: score drops significantly and had_issues is set.
     #[test]
     fn test_session_complete_body_failure_score() {
@@ -1165,6 +1705,47 @@ mod tests {
             "executor signing key must be stable across restarts"
         );
         assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
+    }
+
+    /// Role separation: the task-issuer key must be a DIFFERENT key from the
+    /// executor key in the same state_dir (distinct files), yet each must be
+    /// stable across restarts. Reusing the executor key as the token root would
+    /// conflate the executor identity with the capability-token issuer.
+    #[test]
+    fn test_task_issuer_key_is_distinct_from_executor_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let exec = load_or_create_signing_key(dir.path());
+        let issuer = load_or_create_task_issuer_signing_key(dir.path());
+        assert_ne!(
+            exec.verifying_key().as_bytes(),
+            issuer.verifying_key().as_bytes(),
+            "task-issuer key must not equal the executor key (role separation)"
+        );
+
+        // Distinct files on disk.
+        assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
+        assert!(dir.path().join(TASK_ISSUER_KEY_FILE).exists());
+
+        // Stable across a "restart" (second load from the same dir).
+        let issuer2 = load_or_create_task_issuer_signing_key(dir.path());
+        assert_eq!(
+            issuer.verifying_key().as_bytes(),
+            issuer2.verifying_key().as_bytes(),
+            "task-issuer key must be stable across restarts"
+        );
+    }
+
+    /// `from_env` provisions BOTH keys and they are role-separated.
+    #[test]
+    fn test_from_env_provisions_role_separated_task_issuer_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = TrustGateConfig::from_env(dir.path());
+        assert_ne!(
+            config.executor_signing_key.verifying_key().as_bytes(),
+            config.task_issuer_signing_key.verifying_key().as_bytes(),
+            "from_env must provision a task-issuer key distinct from the executor key"
+        );
     }
 
     #[test]
@@ -1417,6 +1998,8 @@ mod tests {
             resources: None,
             network: None,
             image: None,
+            credentialed_egress: Vec::new(),
+            workload: None,
             vsock: None,
             seccomp: None,
             cgroup: None,
@@ -1485,6 +2068,8 @@ mod tests {
             resources: None,
             network: None,
             image: None,
+            credentialed_egress: Vec::new(),
+            workload: None,
             vsock: None,
             seccomp: None,
             cgroup: None,
@@ -1549,6 +2134,8 @@ mod tests {
             resources: None,
             network: None,
             image: None,
+            credentialed_egress: Vec::new(),
+            workload: None,
             vsock: None,
             seccomp: None,
             cgroup: None,
@@ -1619,6 +2206,8 @@ mod tests {
             resources: None,
             network: None,
             image: None,
+            credentialed_egress: Vec::new(),
+            workload: None,
             vsock: None,
             seccomp: None,
             cgroup: None,

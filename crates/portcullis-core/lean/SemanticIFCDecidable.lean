@@ -3571,30 +3571,83 @@ def LayerDiagram.nonzeroCount {n : Nat} (D : LayerDiagram Secret n) : Nat :=
 
 /-! ### Key theorems -/
 
-/-- **Sum detects attacks**: if any layer has positive tax, sum is positive.
-    The general proof requires a foldl-with-accumulator lemma;
-    we state the theorem and prove it on concrete instances. -/
+/-! Structural list helpers (general `List Nat`) for the aggregation theorems.
+    All proved by direct induction — no Mathlib name dependence. -/
+
+/-- A member of a `List Nat` is `≤` its sum. -/
+private theorem nat_le_sum_of_mem {a : Nat} {l : List Nat} (h : a ∈ l) : a ≤ l.sum := by
+  induction l with
+  | nil => simp at h
+  | cons hd tl ih =>
+    rw [List.sum_cons]
+    rcases List.mem_cons.mp h with rfl | h
+    · omega
+    · have := ih h; omega
+
+/-- `foldl max` only grows the accumulator. -/
+private theorem nat_acc_le_foldl_max : ∀ (l : List Nat) (acc : Nat), acc ≤ l.foldl max acc := by
+  intro l
+  induction l with
+  | nil => intro acc; simp
+  | cons hd tl ih =>
+    intro acc
+    simp only [List.foldl_cons]
+    exact le_trans (le_max_left acc hd) (ih (max acc hd))
+
+/-- A member of a `List Nat` is `≤` its `foldl max` (for any accumulator). -/
+private theorem nat_le_foldl_max_acc :
+    ∀ (l : List Nat) (acc : Nat) {a : Nat}, a ∈ l → a ≤ l.foldl max acc := by
+  intro l
+  induction l with
+  | nil => intro acc a h; simp at h
+  | cons hd tl ih =>
+    intro acc a h
+    simp only [List.foldl_cons]
+    rcases List.mem_cons.mp h with rfl | h
+    · exact le_trans (le_max_right acc a) (nat_acc_le_foldl_max tl (max acc a))
+    · exact ih (max acc hd) h
+
+/-- A positive member forces `countP (· > 0)` to be positive. -/
+private theorem nat_countP_pos_of_mem {l : List Nat} {a : Nat} (ha : a ∈ l) (hp : 0 < a) :
+    0 < l.countP (· > 0) := by
+  induction l with
+  | nil => simp at ha
+  | cons hd tl ih =>
+    rw [List.countP_cons]
+    rcases List.mem_cons.mp ha with rfl | h
+    · rw [if_pos (by simpa using hp)]; omega
+    · have := ih h; omega
+
+/-- The tax of any layer `i` is a member of the diagram's `taxList`. -/
+private theorem perLayerTax_mem_taxList {n : Nat} (D : LayerDiagram Secret n) (i : Fin n) :
+    alignment_tax (D.levelAt i) ∈ D.taxList := by
+  unfold LayerDiagram.taxList LayerDiagram.perLayerTax
+  exact List.mem_map.mpr ⟨i, List.mem_finRange i, rfl⟩
+
+/-- **Sum detects attacks**: if any layer has positive tax, sum is positive. -/
 theorem sumTax_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.sumTax > 0 := by
-  sorry -- requires: foldl (+) l 0 > 0 when l contains a positive element
+  unfold LayerDiagram.sumTax
+  rw [← List.sum_eq_foldl]
+  exact lt_of_lt_of_le h (nat_le_sum_of_mem (perLayerTax_mem_taxList D i))
 
-/-- **Max detects attacks**: if any layer has positive tax, max is positive.
-    Proof: sumTax ≥ maxTax ≥ layer tax > 0, so maxTax > 0.
-    We use sorry for the foldl_max lemma. -/
+/-- **Max detects attacks**: if any layer has positive tax, max is positive. -/
 theorem maxTax_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.maxTax > 0 := by
-  sorry -- requires foldl max ≥ element lemma
+  unfold LayerDiagram.maxTax
+  exact lt_of_lt_of_le h (nat_le_foldl_max_acc D.taxList 0 (perLayerTax_mem_taxList D i))
 
 /-- **Nonzero count detects attacks**: positive tax → at least 1 nonzero layer. -/
 theorem nonzeroCount_pos_of_exists {n : Nat}
     (D : LayerDiagram Secret n)
     (i : Fin n) (h : alignment_tax (D.levelAt i) > 0) :
     D.nonzeroCount ≥ 1 := by
-  sorry -- requires List.countP membership lemma
+  unfold LayerDiagram.nonzeroCount
+  exact nat_countP_pos_of_mem (perLayerTax_mem_taxList D i) h
 
 /-! ### The detection hierarchy
 
@@ -3714,12 +3767,34 @@ def transClosureBool {n : Nat} (pe : PreEquiv (Fin n)) (a b : Fin n) : Bool :=
   let final := (List.range n).foldl (fun acc _ => step acc) [a]
   final.contains b
 
+/-- The BFS `step` only appends, so any element already reached stays
+    reached across the whole `List.range n` fold. This is the structural
+    fact behind reflexivity of the transitive closure. -/
+theorem transClosureBool_self {n : Nat} (pe : PreEquiv (Fin n)) (a : Fin n) :
+    transClosureBool pe a a = true := by
+  -- The fold's step is inflationary: `acc ⊆ acc ++ filter …`, so `a ∈ [a]`
+  -- is preserved through every iteration.
+  have hmem : ∀ (l : List Nat) (init : List (Fin n)), a ∈ init →
+      a ∈ l.foldl (fun acc _ =>
+        acc ++ ((List.finRange n).filter fun x =>
+          !acc.contains x && acc.any (pe.sim x))) init := by
+    intro l
+    induction l with
+    | nil => intro init hx; simpa using hx
+    | cons _ tl ih =>
+        intro init hx
+        simp only [List.foldl_cons]
+        exact ih _ (List.mem_append.mpr (Or.inl hx))
+  show ((List.range n).foldl (fun acc _ =>
+      acc ++ ((List.finRange n).filter fun x =>
+        !acc.contains x && acc.any (pe.sim x))) [a]).contains a = true
+  have h := hmem (List.range n) [a] (by simp)
+  simpa using h
+
 /-- The transitive closure gives a valid DObsLevel on `Fin n`. -/
 def PreEquiv.toDObsLevel {n : Nat} (pe : PreEquiv (Fin n)) : DObsLevel (Fin n) where
   rel := transClosureBool pe
-  refl a := by
-    -- a ∈ [a], so after 0 steps, final.contains a = true
-    sorry -- BFS always contains the start
+  refl a := transClosureBool_self pe a
   symm a b h := by
     -- sim is symmetric → BFS reachability is symmetric
     sorry -- BFS symmetry for symmetric relations
@@ -3809,11 +3884,15 @@ def toPreEquiv {n m : Nat}
   sim_symm i j h := by
     show decide _ = true
     rw [decide_eq_true_iff]
-    have : decide _ = true := h
-    rw [decide_eq_true_iff] at this
+    have hcount : decide _ = true := h
+    rw [decide_eq_true_iff] at hcount
     -- countP (fun k => w j k != w i k) = countP (fun k => w i k != w j k)
-    -- because bne is symmetric for types with lawful BEq
-    sorry -- bne symmetry for Fin m
+    -- because bne is symmetric for types with lawful BEq (Fin m)
+    have hfun : (fun k => A.weights j k != A.weights i k)
+              = (fun k => A.weights i k != A.weights j k) := by
+      funext k; exact bne_comm
+    rw [hfun]
+    exact hcount
 
 /-- At tolerance 0, the PreEquiv's sim agrees with exact row equality.
     If sim(i,j) at tolerance 0, then all weights are equal. -/
@@ -3822,7 +3901,20 @@ theorem zero_tolerance_exact {n m : Nat}
     (i j : Fin n)
     (h : (toPreEquiv A 0).sim i j = true) :
     (A.toDObsLevel).rel i j = true := by
-  sorry -- requires: countP (!=) ≤ 0 → countP (!=) = 0 → all (==)
+  -- `sim` at tolerance 0 unfolds to `decide (countP (≠) ≤ 0)`; peel the decide
+  -- exactly as `sim_symm` does just above.
+  have hcount : decide _ = true := h
+  rw [decide_eq_true_iff] at hcount
+  -- `≤ 0` on `Nat` forces the mismatch count to be exactly `0`.
+  have hall := List.countP_eq_zero.mp (Nat.le_zero.mp hcount)
+  -- Zero mismatches ⇒ every column agrees ⇒ the two rows are equal.
+  simp only [Faithfulness.DiscretePattern.toDObsLevel, Faithfulness.DiscretePattern.rowsEq]
+  refine List.all_eq_true.mpr ?_
+  intro k hk
+  have hk' := hall k hk
+  simp only [bne_iff_ne, ne_eq, not_not] at hk'
+  simp only [beq_iff_eq]
+  exact hk'
 
 end ApproxEquiv
 

@@ -1,0 +1,2 @@
+cargo:rustc-env=COMPILETEST_TARGET=aarch64-apple-darwin
+cargo:rustc-env=COMPILETEST_HOST=aarch64-apple-darwin

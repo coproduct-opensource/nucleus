@@ -91,9 +91,20 @@ impl SignedProxy {
         let listen_addr = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let drand_client = drand_config
-            .filter(|c| c.enabled)
-            .map(|c| Arc::new(DrandClient::new(c)));
+        let drand_client =
+            drand_config
+                .filter(|c| c.enabled)
+                .and_then(|c| match DrandClient::new(c) {
+                    Ok(client) => Some(Arc::new(client)),
+                    Err(why) => {
+                        // The node is not PID 1, so it degrades rather than exiting.
+                        // Escalation still refuses without drand — see the `else`
+                        // arm in the tool-proxy's escalation handler — so this is a
+                        // loud degradation, not a silent bypass.
+                        tracing::error!("drand disabled for signed proxy: {why}");
+                        None
+                    }
+                });
 
         let state = SignedProxyState {
             target,

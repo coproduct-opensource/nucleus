@@ -1,8 +1,7 @@
 //! MCP server for The Vault CTF.
 //!
-//! Exposes the CTF engine as MCP tools so any AI agent (ChatGPT, Claude,
-//! Gemini, etc.) can play the security challenge via the Model Context
-//! Protocol.
+//! Exposes the CTF engine as MCP tools so any AI agent can play the
+//! security challenge via the Model Context Protocol.
 //!
 //! Tools:
 //!   - list_levels: Get metadata for all 7 CTF levels
@@ -62,7 +61,7 @@ struct ToolCallParam {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ChallengeParams {
-    #[schemars(description = "Who is playing (e.g. 'chatgpt-4o', 'claude-opus', 'human')")]
+    #[schemars(description = "Who is playing (e.g. 'agent-a', 'model-x', 'human')")]
     player: String,
     #[schemars(
         description = "Array of attacks, one per level. Each: {\"level\": 5, \"tool_calls\": [...]}"

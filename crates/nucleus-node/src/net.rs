@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use ipnet::IpNet;
+use nucleus_ifc_kernel::extracted::egress::Rule as EgressRule;
 use nucleus_spec::NetworkSpec;
 use tokio::io::AsyncWriteExt;
 use tokio::net::lookup_host;
@@ -51,7 +52,10 @@ impl NetworkAllocator {
     pub fn allocate(&self, pod_id: Uuid, netns: String) -> Result<NetPlan, ApiError> {
         // Try to reuse a released index first
         let index = {
-            let mut available = self.available.lock().unwrap();
+            let mut available = self
+                .available
+                .lock()
+                .map_err(|_| ApiError::Driver("network allocator lock poisoned".to_string()))?;
             if let Some(idx) = available.pop() {
                 idx
             } else {
@@ -184,17 +188,23 @@ impl NetnsPlan {
     }
 }
 
+/// Whether a chain rule accepts or drops. Public because `egress_chain`
+/// returns the chain as a value for the confinement proof's correspondence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuleKind {
+pub enum RuleKind {
     Allow,
     Deny,
 }
 
+/// One filter rule as nucleus decides it, before iptables formatting.
 #[derive(Clone, Debug)]
-struct NetRule {
-    kind: RuleKind,
-    net: IpNet,
-    port: Option<u16>,
+pub struct NetRule {
+    /// Accept or drop.
+    pub kind: RuleKind,
+    /// Destination network.
+    pub net: IpNet,
+    /// Destination port, or any port when `None`.
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +260,7 @@ pub fn validate_policy(policy: &NetworkSpec) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.dns_proxy"))]
 pub async fn start_dns_proxy(
     plan: &mut NetPlan,
     policy: &NetworkSpec,
@@ -269,17 +280,7 @@ pub async fn start_dns_proxy(
     let config_path = pod_dir.join("dnsmasq.conf");
     let log_path = pod_dir.join("dnsmasq.log");
 
-    let mut config = String::new();
-    config.push_str("no-resolv\n");
-    config.push_str("no-hosts\n");
-    config.push_str("bind-interfaces\n");
-    config.push_str(&format!("listen-address={}\n", plan.gateway_ip));
-    config.push_str("port=53\n");
-    for entry in &entries {
-        for ip in &entry.ips {
-            config.push_str(&format!("address=/{}/{}\n", entry.host, ip));
-        }
-    }
+    let config = dnsmasq_config(plan.gateway_ip, &entries);
     tokio::fs::write(&config_path, config).await?;
 
     let log_file = std::fs::OpenOptions::new()
@@ -290,7 +291,8 @@ pub async fn start_dns_proxy(
 
     let mut command = tokio::process::Command::new("ip");
     command
-        .args(["netns", "exec", &plan.netns, "--"])
+        // No `--`: iproute2 would exec it as the command. See `run_netns`.
+        .args(["netns", "exec", &plan.netns])
         .arg("dnsmasq")
         .arg("--no-daemon")
         .arg("--conf-file")
@@ -314,6 +316,7 @@ pub async fn start_dns_proxy(
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.create_netns"))]
 pub async fn create_netns(name: &str) -> Result<(), ApiError> {
     ensure_command("ip")?;
     let status = Command::new("ip")
@@ -339,6 +342,7 @@ pub async fn create_netns(_name: &str) -> Result<(), ApiError> {
 /// This must be called BEFORE spawning any process in the netns to prevent
 /// race conditions where a process could exfiltrate data before policy applies.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.default_deny"))]
 pub async fn apply_default_deny(netns: &str) -> Result<(), ApiError> {
     ensure_command("iptables")?;
 
@@ -435,6 +439,7 @@ pub async fn cleanup_netns(_name: &str) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.setup"))]
 pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     ensure_command("ip")?;
     ensure_command("iptables")?;
@@ -570,6 +575,82 @@ pub async fn setup_network(_plan: &NetPlan) -> Result<(), ApiError> {
     ))
 }
 
+/// The policy segment of the netns egress chain, **as an ordered value**.
+///
+/// # Why this function exists
+///
+/// The ruleset used to exist only as a sequence of `iptables` subprocess calls
+/// spread across two loops inside `apply_host_policy`. Nothing could be stated
+/// about it, because it was never a thing — only an effect. `EgressConfinement`
+/// in `crates/portcullis-core/lean` proves that a chain evaluated first-match-
+/// wins over a DROP policy drops anything no rule admits; for that proof to be
+/// about THIS system rather than about an intention, the list it folds has to be
+/// the list that is actually appended. That is what this returns.
+///
+/// The order is load-bearing and is the property `deny_precedes_allow_in_the_chain`
+/// pins: **every Deny, then every Allow**. Under first-match-wins that makes a
+/// deny strictly override a later allow. Reverse the two loops and an
+/// `allow: 10.0.0.0/8` silently re-opens a `deny: 10.0.0.7/32`.
+pub fn egress_chain(
+    policy: &NetworkSpec,
+    dns_entries: Option<&[ResolvedDnsEntry]>,
+) -> Result<Vec<NetRule>, ApiError> {
+    let parsed = parse_rules(policy)?;
+    let mut resolved: Vec<NetRule> = Vec::new();
+    if let Some(entries) = dns_entries {
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            for ip in &entry.ips {
+                if seen.insert((*ip, entry.port)) {
+                    resolved.push(NetRule {
+                        kind: RuleKind::Allow,
+                        net: IpNet::from(IpAddr::V4(*ip)),
+                        port: entry.port,
+                    });
+                }
+            }
+        }
+    }
+
+    // Deny first, then allow — including the DNS-resolved allows, which are
+    // allows like any other and must not outrank a deny.
+    let mut chain: Vec<NetRule> = Vec::with_capacity(parsed.len() + resolved.len());
+    chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Deny).cloned());
+    chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Allow).cloned());
+    chain.extend(resolved);
+    Ok(chain)
+}
+
+/// A chain rule in the representation the Lean confinement theorem is stated
+/// over, or `None` when it falls outside that model.
+///
+/// `None` means IPv6: the extracted matcher is IPv4-only (`parse_entry` yields
+/// IPv4 in practice and the guest cmdline carries `ipv6.disable=1`). Returning
+/// `None` rather than a lossy conversion keeps "the model does not cover this"
+/// distinct from "the model says this is fine" — the second would be a claim
+/// nobody proved.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn model_rule(rule: &NetRule) -> Option<EgressRule> {
+    let IpNet::V4(v4) = rule.net else {
+        return None;
+    };
+    Some(EgressRule {
+        net: u32::from(v4.network()),
+        prefix: v4.prefix_len(),
+        port_specific: rule.port.is_some(),
+        port: rule.port.unwrap_or(0),
+        allow: rule.kind == RuleKind::Allow,
+    })
+}
+
+/// The whole chain in the proof's representation, or `None` if any rule is
+/// outside it. All-or-nothing: a partially-modelled chain would licence a
+/// confinement claim over a chain that has rules the model never saw.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn model_chain(chain: &[NetRule]) -> Option<Vec<EgressRule>> {
+    chain.iter().map(model_rule).collect()
+}
+
 #[cfg(target_os = "linux")]
 pub async fn apply_host_policy(
     pid: u32,
@@ -579,22 +660,10 @@ pub async fn apply_host_policy(
 ) -> Result<(), ApiError> {
     ensure_command("nsenter")?;
     ensure_command("iptables")?;
-    let mut rules = parse_rules(policy)?;
-    if let Some(entries) = dns_entries {
-        let mut seen = BTreeSet::new();
-        for entry in entries {
-            for ip in &entry.ips {
-                let key = (*ip, entry.port);
-                if seen.insert(key) {
-                    rules.push(NetRule {
-                        kind: RuleKind::Allow,
-                        net: IpNet::from(IpAddr::V4(*ip)),
-                        port: entry.port,
-                    });
-                }
-            }
-        }
-    }
+    // The chain is decided as a value, then applied in exactly that order. The
+    // ordering guarantee the Lean theorem relies on lives in `egress_chain`,
+    // not scattered through the application loop below.
+    let chain = egress_chain(policy, dns_entries)?;
 
     run_nsenter(pid, &["iptables", "-w", "-F"]).await?;
     run_nsenter(pid, &["iptables", "-w", "-X"]).await?;
@@ -670,13 +739,18 @@ pub async fn apply_host_policy(
         apply_rule(pid, "INPUT", &rule, "ACCEPT").await?;
     }
 
-    for rule in rules.iter().filter(|rule| rule.kind == RuleKind::Deny) {
-        apply_rule(pid, "OUTPUT", rule, "DROP").await?;
-        apply_rule(pid, "FORWARD", rule, "DROP").await?;
-    }
-    for rule in rules.iter().filter(|rule| rule.kind == RuleKind::Allow) {
-        apply_rule(pid, "OUTPUT", rule, "ACCEPT").await?;
-        apply_rule(pid, "FORWARD", rule, "ACCEPT").await?;
+    // ONE pass, in chain order. Two filtered passes would re-encode the
+    // deny-before-allow ordering here as well as in `egress_chain`, and the two
+    // copies could drift — which is exactly the kind of gap the proof is
+    // supposed to close rather than depend on.
+    for rule in &chain {
+        let verdict = if rule.kind == RuleKind::Allow {
+            "ACCEPT"
+        } else {
+            "DROP"
+        };
+        apply_rule(pid, "OUTPUT", rule, verdict).await?;
+        apply_rule(pid, "FORWARD", rule, verdict).await?;
     }
 
     Ok(())
@@ -967,16 +1041,42 @@ async fn run_ip(args: &[&str]) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+/// Run a command inside a named network namespace.
+///
+/// # No `--` here, and it is not a style choice
+///
+/// `ip netns exec NAME -- cmd` does **not** mean "end of options" to iproute2.
+/// `ip` takes everything after NAME as the command vector, so the `--` becomes
+/// argv[0] and the exec fails:
+///
+/// ```text
+/// # ip netns exec nuctest -- iptables -w -F
+/// exec of "--" failed: No such file or directory
+/// ```
+///
+/// Measured on iproute2 6.1 (Ubuntu 24.04). Since `apply_default_deny` is the
+/// first thing the Firecracker driver does for a pod with a netns — the
+/// **default** — this made every launch fail on a default install, reported as
+/// `iptables -F failed with exit status: 1`. The two `nsenter` call sites in
+/// this file keep their `--`, because util-linux really does accept it there;
+/// the separators are not interchangeable and this is why.
+///
+/// Stderr is captured rather than inherited, because inheriting it is how the
+/// one line that identified this bug got lost: the driver reported an exit
+/// status while `exec of "--" failed` went to the node's stdout stream,
+/// unattached to the error that mattered.
 async fn run_netns(netns: &str, args: &[&str]) -> Result<(), ApiError> {
-    let status = tokio::process::Command::new("ip")
-        .args(["netns", "exec", netns, "--"])
+    let output = tokio::process::Command::new("ip")
+        .args(["netns", "exec", netns])
         .args(args)
-        .status()
+        .output()
         .await?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ApiError::Driver(format!(
-            "ip netns exec {netns:?} {:?} failed with {status}",
-            args
+            "ip netns exec {netns:?} {args:?} failed with {}: {}",
+            output.status,
+            stderr.trim()
         )));
     }
     Ok(())
@@ -1094,6 +1194,53 @@ async fn apply_rule(pid: u32, chain: &str, rule: &NetRule, verdict: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ip netns exec NAME -- cmd` execs the literal `--` and fails. This test
+    /// reads the source rather than running `ip`, because the bug is in the argv
+    /// we construct and the CI runner that would catch it at runtime is the one
+    /// place this code is hardest to exercise.
+    ///
+    /// Non-vacuity first: if the scan finds no `ip netns exec` call sites at all,
+    /// the "none of them has a `--`" conclusion would be equally true of a file
+    /// that had been renamed out from under it.
+    #[test]
+    fn no_ip_netns_exec_passes_a_double_dash_separator() {
+        let source = include_str!("net.rs");
+        let call_sites: Vec<&str> = source
+            .lines()
+            .filter(|l| l.contains("\"netns\", \"exec\""))
+            .collect();
+        assert!(
+            call_sites.len() >= 2,
+            "expected to find the ip-netns-exec call sites; found {} — has this \
+             code moved? A scan that matches nothing proves nothing.",
+            call_sites.len()
+        );
+        for line in call_sites {
+            assert!(
+                !line.contains("\"--\""),
+                "`ip netns exec` must not be given a `--` separator; iproute2 \
+                 execs it as the command:\n  {}",
+                line.trim()
+            );
+        }
+    }
+
+    /// The `nsenter` sites are the counterexample: util-linux does accept `--`
+    /// there, so a blanket "no `--` anywhere" rule would be wrong. Pinning both
+    /// halves keeps a future cleanup from removing the correct one too.
+    #[test]
+    fn nsenter_keeps_its_double_dash_separator() {
+        let source = include_str!("net.rs");
+        let nsenter_sites = source
+            .lines()
+            .filter(|l| l.contains("--net=/proc/"))
+            .count();
+        assert!(
+            nsenter_sites >= 2,
+            "expected the nsenter call sites; found {nsenter_sites}"
+        );
+    }
 
     #[test]
     fn parse_ipv4_with_port() {
@@ -1260,4 +1407,206 @@ COMMIT
             }
         }
     }
+}
+
+// ── Identity is gated on egress confinement ───────────────────────────────
+
+/// IPv4 ranges that are not globally routable. A workload confined to these
+/// cannot present a credential to the open internet.
+///
+/// RFC1918 private, loopback, link-local, and CGNAT (RFC6598). Deliberately not
+/// exhaustive over every reserved block — anything unlisted is treated as
+/// PUBLIC, which is the conservative direction for a check whose `false` grants
+/// an identity.
+const NON_ROUTABLE_V4: &[(Ipv4Addr, u8)] = &[
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+    (Ipv4Addr::new(127, 0, 0, 0), 8),
+    (Ipv4Addr::new(169, 254, 0, 0), 16),
+    (Ipv4Addr::new(100, 64, 0, 0), 10),
+];
+
+/// Whether `net` can reach any globally-routable address.
+///
+/// True unless the whole range sits inside one of [`NON_ROUTABLE_V4`]. A range
+/// straddling private and public space counts as public, which is correct: it
+/// admits public destinations.
+///
+/// IPv6 returns `true` — the ranges above are IPv4 and nucleus disables IPv6 in
+/// the guest, so an IPv6 allow rule is not something to reason about and is
+/// treated as reaching the internet rather than assumed contained.
+pub fn reaches_public_internet(net: IpNet) -> bool {
+    let IpNet::V4(v4) = net else {
+        return true;
+    };
+    !NON_ROUTABLE_V4.iter().any(|(base, prefix)| {
+        ipnet::Ipv4Net::new(*base, *prefix)
+            .map(|block| block.contains(&v4))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether a pod may be given a workload identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityGrant {
+    /// Egress is confined; an SVID may be issued.
+    Granted,
+    /// Egress is unconfined; issuing would produce a credential presentable to
+    /// destinations nobody can name.
+    Denied {
+        /// The allow entry responsible, for an actionable error.
+        offending: String,
+    },
+}
+
+impl IdentityGrant {
+    /// Whether an SVID may be issued.
+    pub fn is_granted(&self) -> bool {
+        matches!(self, IdentityGrant::Granted)
+    }
+}
+
+impl std::fmt::Display for IdentityGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityGrant::Granted => write!(f, "granted"),
+            IdentityGrant::Denied { offending } => write!(
+                f,
+                "workload identity refused: network policy allows {offending}, which reaches \
+                 public address space without naming a specific host. A SPIFFE SVID bounds how \
+                 LONG a credential is useful; egress confinement is what bounds WHERE it can be \
+                 presented. With unbounded egress the second bound is absent, so the identity \
+                 would be presentable to any endpoint including an attacker's. Narrow the \
+                 allowlist to specific hosts (/32, or use dns_allow), or run without an identity."
+            ),
+        }
+    }
+}
+
+/// Decide whether a pod's egress policy is confined enough to hold an identity.
+///
+/// # The rule
+///
+/// Every `allow` entry must either stay inside non-routable space, or name a
+/// single host (`/32`). "Some private network" is fine at any breadth; "some
+/// slice of the internet" is not, unless you can say which host.
+///
+/// `dns_allow` is unaffected by construction — it resolves to `/32` entries.
+///
+/// # Why absence of a policy GRANTS
+///
+/// No policy means `NetnsPlan::decide` still creates the netns and applies
+/// default-deny, with no allow rules at all — the most confined state there is,
+/// not the least. Refusing there would invert the incentive the gate exists to
+/// create.
+pub fn decide_identity_grant(network: Option<&NetworkSpec>) -> IdentityGrant {
+    let Some(policy) = network else {
+        return IdentityGrant::Granted;
+    };
+    for entry in &policy.allow {
+        let Ok((net, _port)) = parse_entry(entry) else {
+            // Unparseable entries are rejected upstream by `validate_policy`.
+            // Refuse here too rather than skip: an entry nobody could parse is
+            // not an entry anyone can vouch for.
+            return IdentityGrant::Denied {
+                offending: entry.clone(),
+            };
+        };
+        let names_one_host = net.prefix_len() == net.max_prefix_len();
+        if reaches_public_internet(net) && !names_one_host {
+            return IdentityGrant::Denied {
+                offending: entry.clone(),
+            };
+        }
+    }
+    IdentityGrant::Granted
+}
+
+/// The vsock port to advertise to the guest for the workload API, or `None`.
+///
+/// Pulled out of `spawn_firecracker_pod` so the composition that actually
+/// enforces the trade is testable without booting a VM. `None` means the guest
+/// is never told where the workload API lives, so nothing in it can fetch an
+/// SVID through the ordinary path.
+///
+/// Residual, and worth stating: this withholds the ENDPOINT, it does not refuse
+/// to serve. A guest that guessed the port could still reach the listener. The
+/// defence-in-depth version refuses at the serving side too, keyed on the pod's
+/// grant; that is not implemented.
+pub fn workload_api_port_for(
+    identity_enabled: bool,
+    grant: &IdentityGrant,
+    port: u32,
+) -> Option<u32> {
+    if identity_enabled && grant.is_granted() {
+        Some(port)
+    } else {
+        None
+    }
+}
+
+/// The identity manager to register a pod with, or `None`.
+///
+/// Serving-side mirror of [`workload_api_port_for`]. Withholding the port hides
+/// the endpoint; withholding the REGISTRATION means there is nothing to serve
+/// even to a guest that found it anyway — `WorkloadApiServer` issues against
+/// registered connections, so an unregistered pod has nothing to fetch.
+///
+/// Generic over the manager type so this composition is compiled and tested on
+/// any host, rather than living only inside the Linux-gated spawn path where a
+/// dev machine never type-checks it.
+pub fn identity_registration<'a, T>(
+    manager: Option<&'a T>,
+    grant: &IdentityGrant,
+) -> Option<&'a T> {
+    manager.filter(|_| grant.is_granted())
+}
+
+// ── The DNS proxy is a static map, not a resolver ─────────────────────────
+
+/// dnsmasq directives that would give the proxy an upstream nameserver.
+///
+/// Any one of these turns a static map into a *forwarder*, and a forwarder is
+/// what makes DNS tunnelling work: the agent encodes data in query labels, the
+/// resolver dutifully forwards them to the attacker's authoritative server, and
+/// the data has left the host without a single packet going anywhere the egress
+/// allowlist would notice. Nothing in the iptables policy sees it, because the
+/// query goes to the allowed resolver.
+///
+/// The property that closes it is simply that there IS no upstream. Kept as an
+/// explicit denylist so `the_dns_proxy_has_no_upstream_and_cannot_forward` fails
+/// loudly if one is ever added.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const DNS_FORWARDING_DIRECTIVES: &[&str] = &[
+    "server=",
+    "resolv-file",
+    "all-servers",
+    "strict-order",
+    "rev-server",
+    "local=/",
+];
+
+/// The dnsmasq configuration for a pod's DNS proxy.
+///
+/// Pure so the security property above is testable without spawning dnsmasq.
+/// Answers come only from the static `address=` map built from `dns_allow`;
+/// `no-resolv` plus the absence of any `server=` means there is no upstream to
+/// forward an unmatched query to, so an unlisted name fails locally rather than
+/// travelling.
+pub fn dnsmasq_config(gateway: Ipv4Addr, entries: &[ResolvedDnsEntry]) -> String {
+    let mut config = String::new();
+    // no-resolv: ignore /etc/resolv.conf. Without it dnsmasq would inherit the
+    // host's nameservers and become a forwarder.
+    config.push_str("no-resolv\n");
+    config.push_str("no-hosts\n");
+    config.push_str("bind-interfaces\n");
+    config.push_str(&format!("listen-address={gateway}\n"));
+    config.push_str("port=53\n");
+    for entry in entries {
+        for ip in &entry.ips {
+            config.push_str(&format!("address=/{}/{}\n", entry.host, ip));
+        }
+    }
+    config
 }

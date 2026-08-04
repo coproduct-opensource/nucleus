@@ -1,5 +1,12 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Upper bound on the vsock CONNECT handshake (connect + request + `OK` line).
+/// The guest is untrusted, so a hung or unresponsive peer must not be able to
+/// wedge a bridge task forever. The post-handshake `copy_bidirectional` tunnel
+/// is intentionally left unbounded — it is the long-lived data path.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixStream};
@@ -80,40 +87,50 @@ async fn handle_connection(
     uds_path: &Path,
     guest_port: u32,
 ) -> std::io::Result<()> {
-    let mut vsock = UnixStream::connect(uds_path).await?;
-    let connect_line = format!("CONNECT {guest_port}\n");
-    vsock.write_all(connect_line.as_bytes()).await?;
-    vsock.flush().await?;
+    // Bound the connect + handshake so an unresponsive guest cannot hang the
+    // bridge task indefinitely (γ_bound). Only the handshake is guarded; the
+    // tunnel below is deliberately unbounded.
+    let mut vsock = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let mut vsock = UnixStream::connect(uds_path).await?;
+        let connect_line = format!("CONNECT {guest_port}\n");
+        vsock.write_all(connect_line.as_bytes()).await?;
+        vsock.flush().await?;
 
-    let mut response = Vec::new();
-    loop {
-        let mut buf = [0u8; 1];
-        let read = vsock.read(&mut buf).await?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "vsock handshake EOF",
-            ));
+        let mut response = Vec::new();
+        loop {
+            let mut buf = [0u8; 1];
+            let read = vsock.read(&mut buf).await?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "vsock handshake EOF",
+                ));
+            }
+            response.push(buf[0]);
+            if buf[0] == b'\n' {
+                break;
+            }
+            if response.len() > 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "vsock handshake too long",
+                ));
+            }
         }
-        response.push(buf[0]);
-        if buf[0] == b'\n' {
-            break;
-        }
-        if response.len() > 1024 {
+
+        let response_str = String::from_utf8_lossy(&response);
+        if !response_str.starts_with("OK ") {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "vsock handshake too long",
+                format!("vsock handshake failed: {response_str}"),
             ));
         }
-    }
-
-    let response_str = String::from_utf8_lossy(&response);
-    if !response_str.starts_with("OK ") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("vsock handshake failed: {response_str}"),
-        ));
-    }
+        Ok::<UnixStream, std::io::Error>(vsock)
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, "vsock handshake timed out")
+    })??;
 
     let _ = tokio::io::copy_bidirectional(&mut inbound, &mut vsock).await?;
     Ok(())

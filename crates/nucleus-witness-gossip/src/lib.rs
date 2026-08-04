@@ -46,7 +46,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use nucleus_witness::WitnessKey;
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +116,7 @@ pub fn verify_head(head: &SignedWitnessHead, trusted_pubkey: &[u8; 32]) -> bool 
     };
     let msg = WitnessKey::cosignature_message(head.timestamp, &head.note_body);
     let sig = Signature::from_bytes(&head.sig);
-    vk.verify(&msg, &sig).is_ok()
+    vk.verify_strict(&msg, &sig).is_ok()
 }
 
 /// Verify all heads and collect the witness names whose signatures

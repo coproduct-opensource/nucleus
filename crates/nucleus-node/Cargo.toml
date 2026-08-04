@@ -19,6 +19,11 @@ path = "src/main.rs"
 default = []
 # Enable local driver (no VM isolation). DO NOT enable in production.
 local-driver = []
+# OTLP span export for boot-stage tracing (tool-proxy precedent: off by
+# default, and even when built in it is inert unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set). All OTel deps come through the
+# bootstrap crate — no version lines here.
+otel = ["dep:nucleus-otel-bootstrap"]
 
 [dependencies]
 axum = { workspace = true }
@@ -49,10 +54,12 @@ jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 rustls = { workspace = true }
 webpki-roots = "1.0"
-base64 = "0.22"
+base64 = { workspace = true }
 # `alloc` is required (alongside `pkcs8`) for the EncodePrivateKey/DecodePrivateKey
 # (`to_pkcs8_der`/`from_pkcs8_der`) impls — dalek 3 split alloc out of `pkcs8`.
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core", "pkcs8", "alloc"] }
+# Version comes from the workspace pin (=3.0.0-pre.7); only the extra features
+# are declared here.
+ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "alloc"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 # X.509 certificate parsing for SPIFFE ID extraction
@@ -63,9 +70,21 @@ bollard = "0.21"
 
 nucleus = { path = "../nucleus" }
 nucleus-identity = { path = "../nucleus-identity" }
+nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
+# The extracted egress matcher the Lean confinement theorem is stated over, so
+# `model_rule` targets the proof's own types rather than a restatement.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
+# The CB4A Credential Delivery Point. nucleus-node is the composition root and
+# the ONLY crate permitted to depend on it — see the `wrappers` entry in
+# deny.toml, which stops any policy crate reaching credential material.
+nucleus-cred-broker = { path = "../nucleus-cred-broker" }
+# Wire types only, and the guest links the same crate. Nothing here can hold a
+# secret — the host needs `PerformRequest` to READ what a guest asked for.
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 portcullis = { path = "../portcullis", features = ["serde"] }
 
 uuid = { workspace = true, features = ["serde"] }

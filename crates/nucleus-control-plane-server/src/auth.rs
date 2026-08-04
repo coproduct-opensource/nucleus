@@ -37,7 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::FromRequestParts;
 use axum::http::{header, request::Parts, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use nucleus_oidc_core::{JwkPublicKey, Jwks};
 use serde::Deserialize;
 use thiserror::Error;
@@ -256,7 +256,7 @@ pub fn verify_jwt_svid(
     let signature = Signature::from_bytes(&sig_array);
 
     let signed_input = format!("{header_b64}.{payload_b64}");
-    vk.verify(signed_input.as_bytes(), &signature)
+    vk.verify_strict(signed_input.as_bytes(), &signature)
         .map_err(|_| AuthError::BadSignature)?;
 
     let payload_bytes = B64URL
@@ -311,6 +311,17 @@ pub enum SpiffeConfigError {
          trust_jwks/allowed_audience/allowed_subject_prefix, or NONE. Got {set_count}/3."
     )]
     Partial { set_count: usize },
+
+    /// Production build booted with SPIFFE auth UNCONFIGURED. The orchestration
+    /// API (submit/get/cancel/stream job) must not run open — fail-closed
+    /// (most-paranoid #6), mirroring the lineage-signer discipline in main.rs.
+    #[error(
+        "SPIFFE JWT-SVID auth is REQUIRED in production but is unconfigured — set \
+         --spiffe-trust-jwks-path / --spiffe-allowed-audience / --spiffe-allowed-subject-prefix \
+         (or build with `--features insecure-dev` to run WITHOUT auth, which is dangerous and \
+         must never be used in production)"
+    )]
+    AuthRequiredInProduction,
 }
 
 /// Resolve SPIFFE auth config from optional inputs. `None` from all
@@ -344,6 +355,31 @@ pub fn resolve_spiffe_auth(
             Ok(Some(SpiffeAuthConfig::new(jwks, aud, prefix)))
         }
         _ => Err(SpiffeConfigError::Partial { set_count }),
+    }
+}
+
+/// Fail-closed gate (most-paranoid #6): a PRODUCTION build REQUIRES SPIFFE
+/// JWT-SVID auth. Given the resolved config, returns it when present; when it is
+/// ABSENT (`None` — no SPIFFE flags set), a production build returns
+/// `Err(AuthRequiredInProduction)` so the server refuses to boot with the
+/// orchestration API open. Only a build with `--features insecure-dev` may boot
+/// without auth (`Ok(None)`). Mirrors the lineage-signer fail-closed discipline
+/// in `main.rs` (production `anyhow::bail!` when no signing key is configured).
+pub fn require_auth_or_insecure(
+    resolved: Option<SpiffeAuthConfig>,
+) -> Result<Option<SpiffeAuthConfig>, SpiffeConfigError> {
+    match resolved {
+        Some(c) => Ok(Some(c)),
+        None => {
+            #[cfg(not(feature = "insecure-dev"))]
+            {
+                Err(SpiffeConfigError::AuthRequiredInProduction)
+            }
+            #[cfg(feature = "insecure-dev")]
+            {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -391,6 +427,35 @@ mod tests {
     use ed25519_dalek::{Signer as _, SigningKey, SECRET_KEY_LENGTH};
     use nucleus_oidc_core::Jwk;
     use serde_json::json;
+
+    /// Fail-closed: a PRODUCTION build (no `insecure-dev`) must REFUSE to boot
+    /// when SPIFFE auth is unconfigured. On main the `None` branch only warned
+    /// and booted the orchestration API open — this is the RED→GREEN.
+    #[cfg(not(feature = "insecure-dev"))]
+    #[test]
+    fn production_fails_closed_without_spiffe_auth() {
+        assert!(
+            matches!(
+                require_auth_or_insecure(None),
+                Err(SpiffeConfigError::AuthRequiredInProduction)
+            ),
+            "production must fail closed when SPIFFE auth is unconfigured"
+        );
+    }
+
+    /// The escape hatch: an `insecure-dev` build may boot without auth.
+    #[cfg(feature = "insecure-dev")]
+    #[test]
+    fn insecure_dev_permits_no_auth() {
+        assert!(matches!(require_auth_or_insecure(None), Ok(None)));
+    }
+
+    /// No regression: a configured auth always passes through, in any build.
+    #[test]
+    fn configured_auth_always_passes() {
+        let f = Fixture::new();
+        assert!(require_auth_or_insecure(Some(config(f.jwks()))).is_ok());
+    }
 
     /// Helpers for building a signed JWT-SVID against a known signing key.
     struct Fixture {
@@ -470,6 +535,73 @@ mod tests {
             "spiffe://prod.example.com/ns/agents/sa/coder"
         );
         assert!(principal.authenticated);
+    }
+
+    /// M-3 strong-binding regression for the control-plane JWT-SVID trust
+    /// root (site: `verify_jwt_svid`, the `vk.verify_strict(...)` call). The
+    /// Ed25519 identity/neutral key (`[1, 0, ..., 0]`) with the identity-
+    /// triple signature (R = identity encoding, s = 0) satisfies the
+    /// COFACTORED verification equation for EVERY message, so non-strict
+    /// `verify()` ACCEPTS it. The crafted JWT below is otherwise fully valid
+    /// (matching subject prefix + audience, fresh exp) and the identity key
+    /// is the sole trusted JWKS key, so under non-strict `verify()`
+    /// authentication SUCCEEDS for a FORGED principal. `verify_strict()`
+    /// rejects the small-order key → `BadSignature`. If the site reverts to
+    /// `vk.verify(...)`, assertion (ii) sees `Ok(..)` and fails.
+    #[test]
+    fn small_order_key_is_rejected_by_verify_strict() {
+        // (i) No regression: an honest JWT-SVID still authenticates.
+        let f = Fixture::new();
+        let token = f.mint(
+            "spiffe://prod.example.com/ns/agents/sa/coder",
+            "https://control.nucleus.local/api",
+            600,
+        );
+        verify_jwt_svid(&token, &config(f.jwks()))
+            .expect("honest JWT-SVID must still authenticate through verify_strict");
+
+        // (ii) Strong binding: trust the small-order identity key and present
+        //      a JWT "signed" with the identity triple.
+        let mut id = [0u8; 32];
+        id[0] = 1; // identity/neutral point encoding — a small-order key
+        let kid = "id-key".to_string();
+        let jwks = Jwks {
+            keys: vec![Jwk {
+                kty: "OKP".to_string(),
+                kid: kid.clone(),
+                alg: Some("EdDSA".to_string()),
+                use_: Some("sig".to_string()),
+                crv: Some("Ed25519".to_string()),
+                x: Some(B64URL.encode(id)),
+                y: None,
+                n: None,
+                e: None,
+            }],
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let header_json = format!(r#"{{"alg":"EdDSA","kid":"{kid}"}}"#);
+        let payload = json!({
+            "sub": "spiffe://prod.example.com/ns/agents/sa/coder",
+            "aud": "https://control.nucleus.local/api",
+            "exp": (now + 600) as u64,
+            "iat": now,
+        });
+        let header_b64 = B64URL.encode(header_json.as_bytes());
+        let payload_b64 = B64URL.encode(payload.to_string().as_bytes());
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&id); // R = identity, s = 0
+        let sig_b64 = B64URL.encode(sig);
+        let forged = format!("{header_b64}.{payload_b64}.{sig_b64}");
+        let err = verify_jwt_svid(&forged, &config(jwks)).unwrap_err();
+        assert!(
+            matches!(err, AuthError::BadSignature),
+            "identity-triple JWT-SVID must be REFUSED by verify_strict; a \
+             revert to non-strict verify() would authenticate a forged \
+             principal (got {err:?})"
+        );
     }
 
     #[test]

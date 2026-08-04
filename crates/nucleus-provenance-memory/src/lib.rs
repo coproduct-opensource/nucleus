@@ -78,6 +78,7 @@ pub mod ifc;
 pub mod lineage;
 pub mod recompute;
 pub mod record;
+pub mod taskref_token;
 
 pub use crdt::ProvenanceMemorySet;
 pub use declassify::{declassify, DeclassifyError, DeclassifyWitness, SignedDeclassify};
@@ -86,6 +87,7 @@ pub use ifc::memory_ifc_label;
 pub use lineage::memory_lineage_edge;
 pub use recompute::{RecomputeMemory, RecomputeVerdict, TransformRegistry};
 pub use record::{MemoryDerivation, MemoryRecord, TransformId};
+pub use taskref_token::{BlockClaim, SignedBlock, SignedTaskRef, TokenError, TokenScope};
 
 // Re-export the portcullis-core memory types this crate's API surfaces, so
 // consumers (e.g. the tool-proxy memory endpoints) get one import home.

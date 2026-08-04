@@ -60,7 +60,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # for the `dlc` bridge. no_std + zero-dep (only core/alloc), the Aeneas→Lean
 # translation target carrying T1–T4 — so depending on it keeps THIS crate a
 # leaf. Git-pinned like the other cross-repo upstreams.
-dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "bc7bc35ff79226267c906a2e1f1317cae6e918bb", optional = true }
+dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a", optional = true }
 # Portcullis capability lattice + delegation certificates, for the `portcullis`
 # bridge. `default-features = false` drops `ring`/`cedar` (we only need the
 # always-compiled data types — VerifiedPermissions / PermissionLattice). Now an

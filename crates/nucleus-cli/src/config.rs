@@ -4,6 +4,34 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// The one directory nucleus keeps host-side state in, on every platform.
+///
+/// Deliberately **not** `dirs::config_dir()`, which is `~/Library/Application
+/// Support` on macOS while `main.rs` defaults `--config` to
+/// `~/.config/nucleus/config.toml`. `nucleus setup` wrote the first and the CLI
+/// read the second, so a freshly configured Mac was reading an empty config —
+/// measured on 2026-07-29, and invisible because a missing config silently
+/// falls back to `Config::default()`.
+///
+/// On Linux the two were already the same path, so this changes nothing there.
+/// On macOS an existing install's `config.toml` and artifact cache move; secrets
+/// are unaffected, because they live in the Keychain and not in a file.
+pub fn nucleus_dir() -> Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    Ok(home.join(".config").join("nucleus"))
+}
+
+/// The config file both `setup` writes and the CLI reads.
+pub fn default_config_path() -> Result<PathBuf> {
+    Ok(nucleus_dir()?.join("config.toml"))
+}
+
+/// The same path as [`default_config_path`], in the tilde form clap needs for a
+/// `default_value`. `the_cli_default_and_setups_output_are_the_same_file` is
+/// what keeps the two from drifting apart again.
+pub const DEFAULT_CONFIG_ARG: &str = "~/.config/nucleus/config.toml";
+
 /// Main configuration file
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -257,9 +285,7 @@ impl Config {
 
     /// Get the artifacts directory path
     pub fn artifacts_dir() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-        Ok(config_dir.join("nucleus").join("artifacts"))
+        Ok(nucleus_dir()?.join("artifacts"))
     }
 
     /// Get absolute path to kernel
@@ -346,4 +372,39 @@ pub fn show(config_path: &str) -> Result<()> {
     println!("  timeout_seconds = {}", config.time.timeout_seconds);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defect this pins: `setup` wrote `~/Library/Application
+    /// Support/nucleus/config.toml` (`dirs::config_dir()`) while the CLI read
+    /// `~/.config/nucleus/config.toml` (the clap default). Neither was wrong on
+    /// its own; together they meant a freshly configured Mac read an empty
+    /// config and silently used `Config::default()`.
+    #[test]
+    fn the_cli_default_and_setups_output_are_the_same_file() {
+        let from_arg = PathBuf::from(shellexpand::tilde(DEFAULT_CONFIG_ARG).to_string());
+        let from_code = default_config_path().expect("home directory");
+        assert_eq!(
+            from_arg, from_code,
+            "the --config default and default_config_path() disagree; \
+             one of them is the file nobody reads"
+        );
+    }
+
+    /// Artifacts must sit beside the config, not under a second root.
+    #[test]
+    fn artifacts_live_under_the_same_nucleus_directory_as_the_config() {
+        let dir = nucleus_dir().expect("home directory");
+        assert_eq!(
+            Config::artifacts_dir().expect("home"),
+            dir.join("artifacts")
+        );
+        assert_eq!(
+            default_config_path().expect("home").parent().unwrap(),
+            dir.as_path()
+        );
+    }
 }

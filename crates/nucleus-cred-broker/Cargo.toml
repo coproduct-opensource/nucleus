@@ -1,0 +1,32 @@
+[package]
+name = "nucleus-cred-broker"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CB4A Credential Delivery Point: holds credentials, makes no policy decisions"
+
+# SEPARATION OF DUTIES IS A DEPENDENCY FACT.
+#
+# CB4A requires that "the component that dispenses credentials (CDP) MUST never
+# make policy decisions". Here that is enforced by what this crate is allowed to
+# link against, not by discipline: no `portcullis*`, no `nucleus-policy-*`, no
+# `nucleus`. `the_cdp_does_not_link_against_any_policy_crate` reads this manifest
+# and fails if one appears.
+#
+# The converse — the PDP must never touch credential material — is enforced in
+# deny.toml, where this crate is listed with `wrappers`, so only the composition
+# root may depend on it.
+[dependencies]
+# The shared wire shapes. One definition of the envelope, so the host cannot
+# drift from what the guest sends. Carries no credential material itself.
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+serde = { workspace = true }
+# Wipe credential bytes on drop. A credential that lingers in freed memory is a
+# credential a later allocation can read.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

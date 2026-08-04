@@ -7,6 +7,7 @@ mod scan_mcp_config;
 mod scan_podspec;
 mod suggest;
 mod tool_pattern;
+mod verify_art12;
 mod verify_build;
 
 use std::collections::{HashMap, HashSet};
@@ -228,6 +229,33 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Verify an EU AI Act Article 12 record-keeping log.
+    ///
+    /// Checks sequence continuity, hash chaining, and (with a secret) the HMAC
+    /// over each record's canonical preimage. Prints what was established AND
+    /// what was not — a chain proves no party lacking the secret altered the
+    /// file, not that the log is complete or that its signer is trustworthy.
+    VerifyArt12 {
+        /// Path to the JSONL Article 12 log.
+        #[arg(long)]
+        log: PathBuf,
+        /// Signing secret. Without it, only the hash chain is checked.
+        #[arg(long, env = "NUCLEUS_ART12_SECRET")]
+        secret: Option<String>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Executor attestation JSON, as sent with the session-complete receipt.
+        ///
+        /// Supplying it (with --executor-pubkey) is what turns "no third party
+        /// altered this file" into evidence about the pod: the executor key
+        /// lives on the node and the pod never holds it.
+        #[arg(long, requires = "executor_pubkey")]
+        attestation: Option<PathBuf>,
+        /// The executor's Ed25519 public key, hex-encoded (32 bytes).
+        #[arg(long, requires = "attestation")]
+        executor_pubkey: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -255,6 +283,22 @@ struct ToolProxyEntry {
     prev_hash: String,
     hash: String,
     signature: String,
+    /// Drand round the writer anchored this entry to, when a drand client is
+    /// configured. **Load-bearing for verification**: the writer folds
+    /// `|drand:{round}` into the signed message
+    /// (`nucleus-tool-proxy/src/main.rs`, `AuditLog::log`), so omitting it here
+    /// made every drand-anchored log fail with "signature mismatch".
+    #[serde(default)]
+    drand_round: Option<u64>,
+    /// Carried by the writer; not part of the signed preimage. Parsed so a log
+    /// containing it does not fail deserialization.
+    #[serde(default)]
+    #[allow(dead_code)]
+    spiffe_id: Option<String>,
+    /// Carried by the writer; not part of the signed preimage.
+    #[serde(default)]
+    #[allow(dead_code)]
+    policy_rule: Option<String>,
 }
 
 /// Signed line from FileAuditBackend.
@@ -573,6 +617,86 @@ fn main() -> Result<(), AuditError> {
                 std::process::exit(1);
             }
         }
+        Command::VerifyArt12 {
+            log,
+            secret,
+            json,
+            attestation,
+            executor_pubkey,
+        } => {
+            let mut report =
+                verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
+
+            if let (Some(att_path), Some(pubkey_hex)) = (attestation, executor_pubkey) {
+                let att: portcullis::art12_record::Art12Attestation =
+                    serde_json::from_str(&std::fs::read_to_string(&att_path)?)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?;
+                let key_bytes: [u8; 32] = hex::decode(&pubkey_hex)
+                    .ok()
+                    .and_then(|v| v.try_into().ok())
+                    .ok_or_else(|| AuditError::Invalid {
+                        line: 0,
+                        message: "--executor-pubkey must be 32 hex-encoded bytes".to_string(),
+                    })?;
+                let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).map_err(|_| {
+                    AuditError::Invalid {
+                        line: 0,
+                        message: "--executor-pubkey is not a valid Ed25519 public key".to_string(),
+                    }
+                })?;
+                verify_art12::check_attestation(&att, &report.chain_head, &key)?;
+                report.attestation_checked = true;
+                report
+                    .limitations
+                    .retain(|l| !l.contains("holder of the secret"));
+                report.limitations.push(
+                    "The executor attestation binds this log's HEAD, not its content: a pod that \
+                     recorded nothing would export a validly signed empty log."
+                        .to_string(),
+                );
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?
+                );
+            } else {
+                println!("Article 12 log: {}", log.display());
+                println!("  records:            {}", report.records);
+                println!("  chain head:         {}", report.chain_head);
+                println!(
+                    "  signatures checked: {}",
+                    if report.signatures_checked {
+                        "yes"
+                    } else {
+                        "NO"
+                    }
+                );
+                println!(
+                    "  identified actors:  {} of {}",
+                    report.identified_actors, report.records
+                );
+                println!(
+                    "  executor attested:  {}",
+                    if report.attestation_checked {
+                        "yes"
+                    } else {
+                        "NO"
+                    }
+                );
+                for (verdict, n) in &report.verdicts {
+                    println!("  verdict {verdict:<18} {n}");
+                }
+                // Printed, not appended as a footnote a reader may skip: the
+                // point of the list is that "verified" is narrower than it
+                // sounds.
+                println!("\n  This run did NOT establish:");
+                for l in &report.limitations {
+                    println!("    - {l}");
+                }
+            }
+        }
         Command::VerifyNoninterference { input } => {
             let data = std::fs::read_to_string(&input)?;
             let zk_input: portcullis_core::flow::ZkFlowInput =
@@ -722,9 +846,23 @@ fn verify_tool_proxy_log(path: &Path, secret: &[u8]) -> Result<usize, AuditError
             });
         }
         let actor = entry.actor.clone().unwrap_or_default();
+        // MUST mirror the writer's preimage exactly (`AuditLog::log` in
+        // nucleus-tool-proxy): the drand round, when present, is appended as
+        // `|drand:{round}` and IS signed. Reconstructing without it is what made
+        // every drand-anchored log fail verification.
+        let drand_part = entry
+            .drand_round
+            .map(|r| format!("|drand:{r}"))
+            .unwrap_or_default();
         let message = format!(
-            "{}|{}|{}|{}|{}|{}",
-            entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
+            "{}|{}|{}|{}|{}|{}{}",
+            entry.timestamp_unix,
+            actor,
+            entry.event,
+            entry.subject,
+            entry.result,
+            prev_hash,
+            drand_part
         );
         let signature = sign_message(secret, message.as_bytes());
         if signature != entry.signature {
@@ -1005,7 +1143,7 @@ fn export_soc2_report(entries: &[serde_json::Value]) {
 
 // --- crypto helpers ---
 
-fn sign_message(secret: &[u8], message: &[u8]) -> String {
+pub(crate) fn sign_message(secret: &[u8], message: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
     mac.update(message);
     hex::encode(mac.finalize().into_bytes())
@@ -1015,7 +1153,7 @@ fn hmac_hex(secret: &[u8], message: &[u8]) -> String {
     sign_message(secret, message)
 }
 
-fn sha256_hex(message: &str) -> String {
+pub(crate) fn sha256_hex(message: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(message.as_bytes());
     hex::encode(hasher.finalize())
@@ -1982,6 +2120,152 @@ fn check_zkvm_receipt(
 
 #[cfg(test)]
 mod tests {
+
+    /// Build a tool-proxy audit line exactly as `AuditLog::log` does
+    /// (nucleus-tool-proxy), optionally drand-anchored.
+    /// The mutable parts of a synthetic entry. Grouped into a struct because the
+    /// flat form tripped clippy's 7-argument limit — and because a test helper
+    /// whose call sites are eight positional values is unreadable anyway.
+    struct LineSpec<'a> {
+        ts: u64,
+        event: &'a str,
+        subject: &'a str,
+        prev_hash: &'a str,
+        drand_round: Option<u64>,
+    }
+
+    fn tool_proxy_line(secret: &[u8], spec: LineSpec<'_>) -> (String, String) {
+        let LineSpec {
+            ts,
+            event,
+            subject,
+            prev_hash,
+            drand_round,
+        } = spec;
+        // Fixed across these fixtures; the writer signs them all the same way.
+        let actor = "n";
+        let result = "ok";
+        let drand_part = drand_round
+            .map(|r| format!("|drand:{r}"))
+            .unwrap_or_default();
+        let message = format!("{ts}|{actor}|{event}|{subject}|{result}|{prev_hash}{drand_part}");
+        let signature = sign_message(secret, message.as_bytes());
+        let hash = sha256_hex(&format!("{message}|{signature}"));
+        let mut obj = serde_json::json!({
+            "timestamp_unix": ts,
+            "actor": actor,
+            "event": event,
+            "subject": subject,
+            "result": result,
+            "prev_hash": prev_hash,
+            "hash": hash,
+            "signature": signature,
+        });
+        if let Some(r) = drand_round {
+            obj["drand_round"] = serde_json::json!(r);
+        }
+        (obj.to_string(), hash)
+    }
+
+    /// ★ Regression: a DRAND-ANCHORED log must verify. The writer folds
+    /// `|drand:{round}` into the signed preimage; the verifier used to omit it,
+    /// so every drand-anchored log failed with "signature mismatch" — i.e. the
+    /// verifier rejected authentic evidence. Perturbation-shaped: the same log
+    /// WITHOUT the round must still verify, so this test fails if the fix were
+    /// to unconditionally append the suffix instead of conditionally.
+    #[test]
+    fn verify_tool_proxy_log_accepts_drand_anchored_entries() {
+        let secret = b"art12-regression-secret";
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Drand-anchored chain of two entries.
+        let path = dir.path().join("anchored.log");
+        let (l1, h1) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s1",
+                prev_hash: "",
+                drand_round: Some(42),
+            },
+        );
+        let (l2, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 101,
+                event: "call",
+                subject: "s2",
+                prev_hash: &h1,
+                drand_round: Some(43),
+            },
+        );
+        std::fs::write(&path, format!("{l1}\n{l2}\n")).expect("write");
+        assert_eq!(
+            verify_tool_proxy_log(&path, secret).expect("drand-anchored log must verify"),
+            2
+        );
+
+        // Un-anchored chain must still verify (the suffix is conditional).
+        let path2 = dir.path().join("plain.log");
+        let (p1, ph1) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s1",
+                prev_hash: "",
+                drand_round: None,
+            },
+        );
+        let (p2, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 101,
+                event: "call",
+                subject: "s2",
+                prev_hash: &ph1,
+                drand_round: None,
+            },
+        );
+        std::fs::write(&path2, format!("{p1}\n{p2}\n")).expect("write");
+        assert_eq!(
+            verify_tool_proxy_log(&path2, secret).expect("plain log must verify"),
+            2
+        );
+    }
+
+    /// The verifier must still REJECT a tampered drand-anchored entry — the fix
+    /// must not have been "ignore the round".
+    #[test]
+    fn verify_tool_proxy_log_rejects_tampered_drand_round() {
+        let secret = b"art12-regression-secret";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tampered.log");
+        let (line, _) = tool_proxy_line(
+            secret,
+            LineSpec {
+                ts: 100,
+                event: "boot",
+                subject: "s",
+                prev_hash: "",
+                drand_round: Some(42),
+            },
+        );
+        // Re-anchor the entry to a different round, leaving the signature intact.
+        let tampered = line.replace("\"drand_round\":42", "\"drand_round\":43");
+        assert_ne!(tampered, line, "the round must actually have changed");
+        std::fs::write(&path, format!("{tampered}\n")).expect("write");
+        match verify_tool_proxy_log(&path, secret) {
+            Err(AuditError::Invalid { message, .. }) => {
+                assert!(
+                    message.contains("signature mismatch"),
+                    "expected a signature mismatch, got: {message}"
+                );
+            }
+            other => panic!("tampered drand round must be rejected, got {other:?}"),
+        }
+    }
     use super::*;
 
     fn write_pod_spec(dir: &Path, name: &str, content: &str) -> PathBuf {

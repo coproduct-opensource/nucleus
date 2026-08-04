@@ -212,7 +212,7 @@ pub enum ProofObligation {
     /// Requested authority stays within the session ceiling.
     WithinDelegationCeiling,
     /// Target path is allowed by the path lattice.
-    PathAllowed,
+    FsPathAllowed,
     /// Verified outputs must not depend on AI-derived or opaque inputs.
     VerifiedSinkCompatible,
 }
@@ -250,7 +250,7 @@ impl ActionTerm {
     ///   (`AIDerived`, `Mixed`, or `OpaqueExternal`).
     /// - `InputsAuthorized` — when the claimed capability exceeds `LowRisk`
     ///   (high-risk operations require explicit content-addressing of all inputs).
-    /// - `PathAllowed` — when the action writes to the filesystem (`EditFile`).
+    /// - `FsPathAllowed` — when the action writes to the filesystem (`EditFile`).
     /// - `VerifiedSinkCompatible` — when the proposed effect targets a verified sink.
     pub fn derive_obligations(&self) -> Vec<ProofObligation> {
         let mut obs: Vec<ProofObligation> = Vec::new();
@@ -289,7 +289,7 @@ impl ActionTerm {
                 | PrimitiveAction::WriteFile { .. }
                 | PrimitiveAction::GlobSearch { .. }
         ) {
-            obs.push(ProofObligation::PathAllowed);
+            obs.push(ProofObligation::FsPathAllowed);
         }
 
         // Verified sink compatibility: required when the effect targets a verified sink.
@@ -323,7 +323,7 @@ impl ActionTerm {
                 ProofObligation::InputsAuthorized,
                 ProofObligation::NoAdversarialAncestry,
                 ProofObligation::WithinDelegationCeiling,
-                ProofObligation::PathAllowed,
+                ProofObligation::FsPathAllowed,
             ],
         }
     }
@@ -642,7 +642,7 @@ pub fn preflight_action(term: &ActionTerm, ctx: &PreflightContext<'_>) -> Prefli
                     result.satisfied_obligations.push(obligation.clone());
                 }
             }
-            ProofObligation::PathAllowed => {
+            ProofObligation::FsPathAllowed => {
                 if let Some(path) = term.action_path() {
                     if !ctx.permissions.paths.can_access(std::path::Path::new(path)) {
                         push_failure(
@@ -912,12 +912,12 @@ mod tests {
         );
         assert!(edit
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
 
         let run = ActionTerm::run_command(None, "ls", vec![], EffectDisposition::Proposed);
         assert!(!run
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
     }
 
     #[test]
@@ -1073,7 +1073,7 @@ mod tests {
         );
         assert!(read
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
 
         let write = make_term(
             PrimitiveAction::WriteFile {
@@ -1083,7 +1083,7 @@ mod tests {
         );
         assert!(write
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
 
         let glob = make_term(
             PrimitiveAction::GlobSearch {
@@ -1093,7 +1093,7 @@ mod tests {
         );
         assert!(glob
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
     }
 
     #[test]
@@ -1106,7 +1106,7 @@ mod tests {
         );
         assert!(!fetch
             .derive_obligations()
-            .contains(&ProofObligation::PathAllowed));
+            .contains(&ProofObligation::FsPathAllowed));
     }
 
     #[test]

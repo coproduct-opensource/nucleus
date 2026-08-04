@@ -118,7 +118,11 @@ A claim that any of these is "proven" is a claim to watch for and correct.
 
 The deepest gap is between a *proven Lean model* and the *running Rust*. Two ways we close it, and where each applies:
 
-- **Extraction (strongest).** Aeneas (`rustc → Charon → LLBC → a functional model → Lean`) emits the model *from* the Rust, so the theorem is about the real code, not a hand-written mirror. **This is already done for IFC**: `integrity_sink_never_admitted` is proven over Charon-generated definitions (§1b). The natural next targets are the **pure-integer econ kernels** — `settlement.rs` (`seller_gross`/`refund`/`classify`) and `commons.rs` (`route_to_commons`) — which sit inside the Aeneas-supported subset (safe, sequential, non-nested loops, integer arithmetic).
+- **Extraction (strongest available, but read the boundary).** Aeneas (`rustc → Charon → LLBC → a functional model → Lean`) emits the Lean model *from* Rust, so no one hand-writes the Lean. **This is done for IFC**: `integrity_sink_never_admitted` is proven over Charon-generated definitions (§1b).
+
+  What this does NOT mean is that the theorem is about the production function. Aeneas cannot translate the whole crate, so the extraction roots live in `crates/nucleus-ifc-kernel/src/extracted/`, which its own module doc describes as *"pure, `String`-free **restatements**"* that are each a *"byte-faithful **mirror** of the corresponding clause in the production ... code in `lib.rs`, ... bound to that production code by exhaustive parity tests."*
+
+  So extraction removes the model↔Lean gap and **relocates** the model↔code gap into Rust, where it is closed by exhaustive testing rather than by proof. That is a real and unusual strength — the mirror is in the same language, same types, and diffable — but "the theorem is about the real code" overstates it by one link. Compare seL4, whose refinement chain reaches the compiled binary. The natural next targets are the **pure-integer econ kernels** — `settlement.rs` (`seller_gross`/`refund`/`classify`) and `commons.rs` (`route_to_commons`) — which sit inside the Aeneas-supported subset (safe, sequential, non-nested loops, integer arithmetic).
 - **Golden-vector parity (current floor for the rest).** Where extraction is *not* yet feasible — `run_vcg` (HashMap + sort + SHA-256 tie-break) and all crypto — the seal (§2) pins output bytes instead. This is TESTED, not PROVEN, and that is the honest label until extraction lands.
 
 **Aeneas supported / unsupported (so the boundary is not hand-waved):**

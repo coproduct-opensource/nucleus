@@ -513,7 +513,7 @@ impl AuditLog {
     /// Sets the entry's `prev_hash` to the hash of the most recent entry,
     /// forming a tamper-evident chain. Returns the sequence number assigned.
     pub fn record(&self, mut entry: AuditEntry) -> u64 {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
 
         let sequence = inner.next_sequence;
         entry.sequence = sequence;
@@ -546,7 +546,7 @@ impl AuditLog {
     /// in the batch (or the current tail for the first entry).
     /// Returns the sequence numbers assigned.
     pub fn record_batch(&self, entries: Vec<AuditEntry>) -> Vec<u64> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
 
         let sequences: Vec<u64> = entries
             .into_iter()
@@ -578,7 +578,7 @@ impl AuditLog {
 
     /// Get all entries for a specific identity.
     pub fn entries_for_identity(&self, identity: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -589,7 +589,7 @@ impl AuditLog {
 
     /// Get entries within a time window.
     pub fn entries_in_window(&self, start: SystemTime, end: SystemTime) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -600,7 +600,7 @@ impl AuditLog {
 
     /// Get all deviation events.
     pub fn deviations(&self) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -611,7 +611,7 @@ impl AuditLog {
 
     /// Get deviations for a specific identity.
     pub fn deviations_for_identity(&self, identity: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -622,13 +622,13 @@ impl AuditLog {
 
     /// Count total entries.
     pub fn total_entries(&self) -> usize {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner.entries.len()
     }
 
     /// Count entries for a specific identity.
     pub fn entries_count_for_identity(&self, identity: &str) -> usize {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -638,7 +638,7 @@ impl AuditLog {
 
     /// Get entries by correlation ID.
     pub fn entries_by_correlation(&self, correlation_id: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -649,7 +649,7 @@ impl AuditLog {
 
     /// Get the latest N entries.
     pub fn latest(&self, n: usize) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner
             .entries
             .iter()
@@ -684,7 +684,7 @@ impl AuditLog {
 
     /// Export all entries (for backup/analysis).
     pub fn export(&self) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner.entries.clone()
     }
 
@@ -694,7 +694,7 @@ impl AuditLog {
     /// use retention policies to manage log size.
     #[cfg(any(test, feature = "testing"))]
     pub fn clear(&self) {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         inner.entries.clear();
         inner.tail_hash = None;
     }
@@ -703,7 +703,7 @@ impl AuditLog {
     ///
     /// Returns `None` if the log is empty.
     pub fn tail_hash(&self) -> Option<String> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         inner.tail_hash.clone()
     }
 
@@ -713,7 +713,7 @@ impl AuditLog {
     /// the `content_hash()` of the preceding entry. Returns `Ok(())` if
     /// the chain is valid, or an error describing the first broken link.
     pub fn verify_chain(&self) -> Result<(), ChainVerificationError> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let entries = &inner.entries;
 
         if entries.is_empty() {
@@ -909,6 +909,53 @@ mod tests {
         assert_eq!(seq1, 1);
         assert_eq!(seq2, 2);
         assert_eq!(log.total_entries(), 2);
+    }
+
+    /// Audit H-3 — AUDIT lock class is RECOVER-and-continue (NOT fail-closed).
+    ///
+    /// Audit runs AFTER the guarded action; a poisoned audit lock must not brick
+    /// recording — losing accountability is strictly worse here than reusing the
+    /// recovered guard (the audit chain is append-only; a torn write cannot
+    /// fabricate or suppress a security decision). This is the deliberate
+    /// contrast to the DECISION locks in guard.rs, which fail CLOSED.
+    #[test]
+    fn test_audit_lock_poison_recovers_and_records() {
+        let log = AuditLog::in_memory();
+
+        // Seed one entry so there is pre-existing chained state.
+        let seq1 = log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "seed".to_string(),
+                state_risk: StateRisk::Low,
+            },
+        ));
+        assert_eq!(seq1, 1);
+        assert_eq!(log.total_entries(), 1);
+
+        // Poison the audit lock: hold the write guard, then panic (without
+        // aborting the test process).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = log.inner.write().expect("first write not poisoned");
+            panic!("intentional panic while holding audit write lock (H-3)");
+        }));
+        assert!(result.is_err(), "the fault-injection closure must panic");
+        assert!(log.inner.is_poisoned(), "audit lock must now be poisoned");
+
+        // record() must STILL work — recover-and-continue, NEVER panic.
+        let seq2 = log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "after-poison".to_string(),
+                state_risk: StateRisk::Low,
+            },
+        ));
+        assert_eq!(seq2, 2, "record must keep assigning sequence numbers");
+        assert_eq!(
+            log.total_entries(),
+            2,
+            "the post-poison entry must be recorded (accountability preserved)"
+        );
     }
 
     #[test]

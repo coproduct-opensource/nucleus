@@ -60,6 +60,18 @@ config_patch = []                              # Config changes: no extra proofs
 controller_patch = ["build_pass", "test_pass"] # Source changes: must build + test
 evaluator_patch = ["build_pass"]               # Test changes: must build
 
+# ── Dependency-update SLA ────────────────────────────────────────────────
+# Read by the merge-gate dependabot reconciler (a level-triggered loop that
+# drives open dependabot PRs toward "merged within the budget"). Orthogonal to
+# the monotonicity checks below — ck-types ignores this table, so it does not
+# affect admission. Auto-merge stays bounded to patch/minor; majors escalate to
+# a human, and a PR the constitutional gate rejected is never auto-merged.
+[dependabot_sla]
+enabled = true
+max_open_hours = 48          # budget: a dependabot PR older than this has breached
+escalate_after_hours = 36    # warn band for PRs that can't auto-merge
+auto_merge = "patch_minor"   # none | patch | patch_minor | all
+
 # ── Rules for amending this constitution ─────────────────────────────────
 [amendment_rules]
 may_modify = ["crates/", "examples/", "docs/", "benchmarks/", "README.md"]

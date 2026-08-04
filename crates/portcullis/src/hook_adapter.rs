@@ -1,7 +1,7 @@
-//! Verified hook adapter — pure decision pipeline for Claude Code hooks.
+//! Verified hook adapter — pure decision pipeline for agent tool-call hooks.
 //!
 //! This module extracts the security-critical decision logic from the
-//! nucleus-claude-hook binary into pure functions that can be:
+//! agent hook binary into pure functions that can be:
 //! 1. Unit tested in isolation
 //! 2. Targeted by Kani bounded model checking
 //! 3. Eventually translated to Lean 4 via Aeneas
@@ -22,7 +22,7 @@
 use portcullis_core::flow::NodeKind;
 use portcullis_core::{default_sink_class, Operation, SinkClass};
 
-/// Classify a Claude Code tool name to a portcullis Operation.
+/// Classify an agent tool name to a portcullis Operation.
 ///
 /// This is the first step in the decision pipeline. Every tool
 /// is mapped to an Operation — no passthrough.

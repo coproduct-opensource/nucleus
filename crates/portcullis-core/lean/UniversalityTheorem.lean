@@ -130,11 +130,13 @@ theorem cost_invariant_of_spec_equivalent
     No finer invariant is needed: all operational distinguishability
     is captured by the single natural number `rank H¹`.
 
-    **Status**: research target. This is the deep half — provable via
-    constructing for each cost value `k` a *canonical* realising set
-    of size `k`, showing every spec of cost `k` aligns on exactly that
-    set (an Eilenberg–MacLane-style classifying-space argument
-    specialized to the attention-sheaf category). -/
+    **Status: DISPROVEN** (see `universality_hard_direction_is_false` below).
+    This conjecture is FALSE — `cost` (rank H¹) is *not* a complete invariant.
+    The `sorry` is therefore unfillable and is retained only because the
+    downstream `cost_classifies_up_to_equivalence` (also false) still cites it;
+    do not attempt to prove it. The Brown-representability analogy breaks because
+    `RealisesH1` depends on the covering's full boundary structure (`reducedC1`,
+    `declassRow`), not merely on the rank number. -/
 theorem universality_hard_direction
     {S₁ S₂ : AlignmentSpec Secret} (h_model : S₁.model = S₂.model)
     (h_cost : cost S₁ = cost S₂) :
@@ -158,6 +160,36 @@ theorem cost_classifies_up_to_equivalence
     SpecEquivalent S₁ S₂ ↔ cost S₁ = cost S₂ :=
   ⟨cost_invariant_of_spec_equivalent,
    universality_hard_direction h_model⟩
+
+/-- **REFUTATION of the universality conjecture.** `cost` (rank H¹) is **not**
+    a complete invariant: there exist two specs over the *same* model with
+    **equal cost** that are nonetheless operationally **distinguishable**. Hence
+    `universality_hard_direction` (and the `←` direction of
+    `cost_classifies_up_to_equivalence`) is false.
+
+    **Witness** (kernel-checked by `native_decide`): the diamond site with
+    coverings `[1,2]` and `[1,2,3]` — both have `cost = rank H¹ = 2`, yet the
+    size-2 example set `[(1→2 @ prop 3), (1→3 @ prop 0)]` aligns the larger
+    covering but not the smaller (its index-3 edges are invisible to `C¹[1,2]`).
+
+    **Why the analogy fails**: `RealisesH1 P indices E` is
+    `|C¹| ≤ rank(δ⁰ ++ E-rows-against-C¹) + rank δ¹`, and the `declassRow`s are
+    built against *that covering's* `reducedC1`. So operational equivalence
+    depends on the full boundary geometry of the covering, not just its H¹ rank
+    — exactly as, classically, rank H¹ fails to distinguish the torus, the
+    wedge `S¹∨S¹`, and `S¹∨S¹∨S²` (all rank 2). -/
+theorem universality_hard_direction_is_false :
+    ¬ ∀ (S₁ S₂ : AlignmentSpec SemanticIFC.ThreeSecret),
+        S₁.model = S₂.model → cost S₁ = cost S₂ → SpecEquivalent S₁ S₂ := by
+  intro H
+  have hne := H ⟨AlexandrovSite.diamondSite, [1, 2]⟩
+                ⟨AlexandrovSite.diamondSite, [1, 2, 3]⟩ rfl (by native_decide)
+  have hiff := hne [⟨1, 2, 3⟩, ⟨1, 3, 0⟩]
+  have h2 : AlignedAfter AlexandrovSite.diamondSite [1, 2, 3] [⟨1, 2, 3⟩, ⟨1, 3, 0⟩] := by
+    unfold AlignedAfter RealisesH1; native_decide
+  have h1 : ¬ AlignedAfter AlexandrovSite.diamondSite [1, 2] [⟨1, 2, 3⟩, ⟨1, 3, 0⟩] := by
+    unfold AlignedAfter RealisesH1; native_decide
+  exact h1 (hiff.mpr h2)
 
 /- **Shannon-analog arc completion (narrative)**: combining the
     results in this arc we obtain:

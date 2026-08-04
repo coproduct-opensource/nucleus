@@ -1,33 +1,54 @@
-# Lima VM template for Nucleus on Intel Mac
-# This template uses QEMU for x86_64 emulation (slower than Apple Silicon native).
+# Lima VM template for Nucleus on an Intel Mac (x86_64).
 #
-# Compatible with Lima v1.x and v2.0+ (CNCF incubating).
+# WHAT THIS FILE OWNS, AND WHAT IT DOES NOT
+#
+# It owns the SHAPE of the VM: image, resources, mounts, ports, and the OS
+# packages Firecracker needs. It deliberately owns NO artifact versions, URLs or
+# digests — those live in `nucleus_spec::guest_artifacts` and are installed by
+# `nucleus setup`. See the aarch64 template for why: this file pinned a kernel
+# URL that returns HTTP 404 (verified 2026-07-29), as did its aarch64 sibling,
+# and neither was noticed because nothing in CI boots a microVM.
+#
+# READ THIS BEFORE EXPECTING TIER 2 TO WORK HERE
+#
+# Firecracker is a KVM-based VMM: with no /dev/kvm it does not run slowly, it
+# does not run. An Intel Mac has no nested virtualisation — QEMU's HVF
+# accelerator virtualises the guest but does not expose KVM inside it — so this
+# VM will not have /dev/kvm and `nucleus verify --tier2` will fail on it. The
+# previous version of this file said "Firecracker will run but performance will
+# be slower", which is not a performance caveat; it is Tier 2 being unavailable.
+#
+# This template is kept so an Intel Mac can still run the Tier 0/1 surface and
+# the Linux-only code paths in a VM. For Tier 2 you need Apple Silicon M3+ on
+# macOS 15+, or a Linux host with KVM.
 #
 # Usage:
-#   limactl create --name nucleus nucleus-x86_64.yaml
+#   limactl create --name nucleus scripts/lima/nucleus-x86_64.yaml
 #   limactl start nucleus
 
-# Ubuntu 24.04 LTS cloud image for x86_64
 images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
     arch: "x86_64"
 
-# VM resources - adjust based on workload
+# Defaults for standalone use. `nucleus setup` overrides these with `--set`
+# rather than rewriting the file, so the template stays valid on its own.
 cpus: 4
 memory: "8GiB"
 disk: "50GiB"
 
-# Use QEMU for Intel Mac (Apple vz only supports ARM64)
+# Apple Virtualization.framework only supports the host architecture, so an
+# x86_64 guest on an Intel Mac goes through QEMU.
 vmType: "qemu"
 
-# Mount the host filesystem read-only by default
+# Mount the host home at the SAME path, read-only. Same path matters: with the
+# home mounted elsewhere, every `limactl shell` opens with
+# `cd: /Users/...: No such file or directory` before running anything.
 mounts:
   - location: "~"
     writable: false
   - location: "/tmp/lima"
     writable: true
 
-# Port forwarding for nucleus services
 portForwards:
   # nucleus-node HTTP API
   - guestPort: 8080
@@ -35,21 +56,31 @@ portForwards:
   # nucleus-node metrics
   - guestPort: 9080
     hostPort: 9080
-  # gRPC port (HTTP + 1000)
-  - guestPort: 4002
-    hostPort: 4002
+  # nucleus-node gRPC (HTTP port + 1000, matching config.toml's grpc_url)
+  - guestPort: 9180
+    hostPort: 9180
 
-# Provision the VM with required packages
+# Lima installs rootless containerd + BuildKit by default. A Firecracker host
+# needs neither, and installing them is not free: on a fresh VM it pushed first
+# boot past `limactl start`'s timeout, so setup failed with "Lima VM failed to
+# start" while the VM was in fact running and finishing provisioning. Measured
+# 2026-07-29 — a 10-minute failure caused entirely by software nothing here uses.
+#
+# The config this template replaced disabled containerd; dropping the block was a
+# regression, and `the_templates_disable_containerd` now pins it.
+containerd:
+  system: false
+  user: false
+
 provision:
   - mode: system
     script: |
       #!/bin/bash
       set -euo pipefail
 
-      # Update package lists
       apt-get update
 
-      # Install required packages
+      # ca-certificates is load-bearing, not hygiene — see the aarch64 template.
       apt-get install -y \
         ca-certificates \
         curl \
@@ -58,41 +89,17 @@ provision:
         dnsmasq \
         e2fsprogs
 
-      # Create nucleus directories
-      mkdir -p /var/lib/nucleus/artifacts
-      mkdir -p /var/lib/nucleus/pods
-      mkdir -p /var/log/nucleus
+      mkdir -p /var/lib/nucleus/artifacts /var/lib/nucleus/pods /var/log/nucleus
 
-      # Download Firecracker if not present
-      if [ ! -f /usr/local/bin/firecracker ]; then
-        FIRECRACKER_VERSION="v1.14.0"
-        curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-x86_64.tgz" | \
-          tar -xz -C /tmp
-        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/firecracker-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/firecracker
-        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/jailer-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/jailer
-        chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
-        rm -rf /tmp/release-${FIRECRACKER_VERSION}-x86_64
-      fi
+      # Firecracker, the kernel, the rootfs and nucleus-node are installed by
+      # `nucleus setup` from the digests pinned in nucleus_spec::guest_artifacts.
 
-      # Download kernel if not present
-      if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
-        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/x86_64/vmlinux-6.1" \
-          -o /var/lib/nucleus/artifacts/vmlinux
-      fi
-
-# Message shown after VM creation
 message: |
-  Nucleus Lima VM created successfully!
+  Nucleus Lima VM created.
 
-  NOTE: Intel Mac uses QEMU emulation. Firecracker will run but performance
-  will be slower than on Apple Silicon with hardware-accelerated KVM.
+  Tier 2 (Firecracker microVMs) will NOT work in this VM: an Intel Mac has no
+  nested virtualisation, so the guest has no /dev/kvm. Check for yourself:
+    limactl shell nucleus -- ls -l /dev/kvm
 
-  To complete setup:
-    1. Copy nucleus-node binary:
-       limactl cp nucleus-node nucleus:/usr/local/bin/
-
-    2. Copy rootfs image:
-       limactl cp rootfs.ext4 nucleus:/var/lib/nucleus/artifacts/
-
-    3. Start nucleus-node:
-       limactl shell nucleus -- sudo nucleus-node
+  Tier 0/1 and the Linux-only code paths work here. For Tier 2, use Apple
+  Silicon M3+ on macOS 15+, or a Linux host with KVM.

@@ -68,4 +68,52 @@ ignore = [
     # heapless 0.8+. Informational/unmaintained only — same class as the paste/
     # proc-macro-error/bincode/derivative ignores above.
     "RUSTSEC-2023-0089",
+
+    # quick-xml 0.39.4 quadratic runtime on duplicate XML attribute names
+    # (RUSTSEC-2026-0194). Transitive via plist←netdev←netwatch←iroh; no
+    # patched path exists (plist 1.9.0, the latest, pins quick-xml ^0.39).
+    # Exposure is macOS network-interface plist parsing, not
+    # attacker-controlled XML. REVISIT when plist releases >1.9.0.
+    "RUSTSEC-2026-0194",
+
+    # quick-xml 0.39.4 NsReader unbounded namespace-declaration allocation
+    # (RUSTSEC-2026-0195, memory-exhaustion DoS). Same unpatchable chain and
+    # exposure as RUSTSEC-2026-0194 above: transitive via plist 1.9.0 (pins
+    # ^0.39); local macOS plist parsing, not attacker-controlled XML.
+    # REVISIT when plist releases >1.9.0.
+    "RUSTSEC-2026-0195",
+
+    # event-listener 5.4.1 unsound: `!Send` tags can cross thread boundaries
+    # via `StackSlot` (RUSTSEC-2026-0221, filed 2026-07-13; hit CI when the
+    # advisory DB refreshed — the tree didn't change). No fixed release yet
+    # (5.4.1 is latest). Transitive via sqlx-core in nucleus-verifier-service
+    # only — not in the enforcement path — and sqlx does not use the unsound
+    # StackSlot API with !Send tags. REVISIT when event-listener releases a
+    # fix or sqlx bumps past it.
+    "RUSTSEC-2026-0221",
+
+    # wasmtime 45.0.3 — "Stores can mix up type indices between engines"
+    # (RUSTSEC-2026-0222, filed 2026-07-31, severity 3.8 LOW). Advisory-DB
+    # refresh; the tree did not change. NO FIX EXISTS IN THE 45.x LINE — the
+    # patched ranges (>=24.0.12<25, >=36.0.13<37, >=46.0.2<47, >=47.0.3) skip 45
+    # entirely, so clearing this requires a MAJOR bump of wasmtime, coordinated
+    # with portcullis-core's `wasm-sandbox` pin (workspace dep convergence).
+    # Exposure is narrow: wasmtime is optional and reachable only via
+    # portcullis-wasi's non-default `host` feature (`default = []`), i.e. it is
+    # absent from every default build and enters only under --all-features; the
+    # bug requires mixing Stores across two distinct Engines, which that host
+    # does not do. REVISIT as its own PR — a major engine bump does not belong
+    # inside unrelated work.
+    "RUSTSEC-2026-0222",
+
+    # rkyv 0.7.46 out-of-bounds reads validating Rc/Arc archives
+    # (RUSTSEC-2026-0235). Advisory-DB refresh red — hit unrelated PRs the
+    # same day with no tree change. rkyv is orphan lockfile residue: it backs
+    # rust_decimal's optional `rkyv` feature, which nothing enables —
+    # `cargo tree -i rkyv --all-features --target all` finds no path, so the
+    # crate is never compiled, same class as the RUSTSEC-2026-0104 orphan
+    # entry. The fix line (rkyv >=0.8.17) is unreachable until rust_decimal
+    # migrates off the 0.7 API. Drops if rust_decimal bumps or the lock stops
+    # recording the unused optional dep. REVISIT with rust_decimal updates.
+    "RUSTSEC-2026-0235",
 ]

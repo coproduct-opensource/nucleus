@@ -946,6 +946,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-ifc-kernel"
+version = "1.0.0"
+
+[[package]]
 name = "nucleus-lineage"
 version = "1.0.0"
 dependencies = [
@@ -984,6 +988,7 @@ dependencies = [
  "nucleus-econ-kernels",
  "nucleus-ifc",
  "nucleus-receipt",
+ "portcullis-core",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1140,6 +1145,9 @@ dependencies = [
 [[package]]
 name = "portcullis-core"
 version = "1.0.0"
+dependencies = [
+ "nucleus-ifc-kernel",
+]
 
 [[package]]
 name = "powerfmt"

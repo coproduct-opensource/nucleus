@@ -27,7 +27,11 @@
 
 use std::path::{Path, PathBuf};
 
-use portcullis_core::discharge::{preflight_action, ActionTerm, DischargedBundle, PreflightResult};
+use ed25519_dalek::SigningKey;
+use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
+use portcullis_core::discharge::{
+    preflight_action, ActionTerm, DischargedBundle, PreflightResult, VerifiedScope,
+};
 use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
 use portcullis_core::labeled::{self, Labeled};
@@ -37,6 +41,80 @@ use crate::{
     production_effects, AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect,
     ShellOutput, WebEffect,
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VerifiedTaskRef — typestate proof that a task token verified (PR2, #2032)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A [`SignedTaskRef`] that has passed [`SignedTaskRef::verify`], paired with
+/// the verified **effective** [`TokenScope`] and the root trust anchor it was
+/// pinned against.
+///
+/// This is a **typestate**: the only constructor is [`VerifiedTaskRef::verify`],
+/// which returns `Err` unless the token verifies fail-closed (correct root
+/// issuer, strict signatures, intact lineage, attenuation-only on every block,
+/// unexpired, and effective nonce equal to the caller-supplied `expected_nonce`).
+/// Consequently an *unverified* token inside a [`NucleusRuntime`] is
+/// unrepresentable — if `task_token` is `Some`, verification provably happened.
+///
+/// Fields are private: callers read the granted authority through
+/// [`scope`](Self::scope) but can never fabricate a `VerifiedTaskRef` with a
+/// scope the signature chain did not authorize.
+#[derive(Debug, Clone)]
+pub struct VerifiedTaskRef {
+    /// The owned, verified token chain (retained so a parent can attenuate it
+    /// for a child; re-verified on every hop).
+    token: SignedTaskRef,
+    /// The effective (most-attenuated) scope, cloned out of `verify`'s borrow.
+    scope: TokenScope,
+    /// The root issuer key this token was pinned to — reused as the trust
+    /// anchor when re-verifying attenuated children.
+    root_issuer: [u8; 32],
+}
+
+impl VerifiedTaskRef {
+    /// Verify `signed` and, on success, capture it as a `VerifiedTaskRef`.
+    ///
+    /// Fail-closed: any verification failure (bad/wrong-issuer/expired/widened/
+    /// truncated token, or an effective nonce ≠ `expected_nonce`) returns
+    /// `Err(TokenError)` — never a silently unverified value.
+    ///
+    /// `root_issuer`, `now`, and `expected_nonce` are the caller's (host/parent)
+    /// out-of-band inputs. In particular `expected_nonce` MUST come from a
+    /// host/kernel-pinned channel the holding agent cannot read or influence —
+    /// that is the truncation defense documented on [`SignedTaskRef::verify`].
+    pub fn verify(
+        signed: SignedTaskRef,
+        root_issuer: [u8; 32],
+        now: u64,
+        expected_nonce: [u8; 16],
+    ) -> Result<Self, TokenError> {
+        // Clone the effective scope out of the borrowed verify result, then the
+        // borrow ends and we can move `signed` into the owned typestate.
+        let scope = signed.verify(&root_issuer, now, &expected_nonce)?.clone();
+        Ok(Self {
+            token: signed,
+            scope,
+            root_issuer,
+        })
+    }
+
+    /// The verified effective (most-attenuated) scope this token grants.
+    pub fn scope(&self) -> &TokenScope {
+        &self.scope
+    }
+
+    /// The owned token chain (for parent-side attenuation). Crate-internal so
+    /// the raw, re-presentable token is not handed to agent code.
+    pub(crate) fn token(&self) -> &SignedTaskRef {
+        &self.token
+    }
+
+    /// The pinned root trust anchor (reused when re-verifying children).
+    pub(crate) fn root_issuer(&self) -> &[u8; 32] {
+        &self.root_issuer
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UnmediatedAccess — sealed token for escape hatch (#1264)
@@ -363,6 +441,19 @@ pub enum RuntimeError {
     Io(String),
     /// The runtime was not configured correctly.
     Config(String),
+    /// The supplied [`DischargedBundle`] was earned for a different action.
+    ///
+    /// Obligations are discharged for one `(Operation, SinkClass)` pair. Passing
+    /// a bundle to a different effect would let an action whose own discharge
+    /// would fail proceed under one that succeeded for something cheaper — the
+    /// confused deputy. The bundle carries the pair it was earned for precisely
+    /// so this can be refused.
+    ScopeMismatch {
+        /// Which effect the caller attempted (e.g. "write file").
+        attempted: String,
+        /// The mismatch, naming both the authority held and the action tried.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -380,6 +471,15 @@ impl std::fmt::Display for RuntimeError {
             }
             Self::Io(msg) => write!(f, "I/O error: {msg}"),
             Self::Config(msg) => write!(f, "configuration error: {msg}"),
+            Self::ScopeMismatch { attempted, reason } => {
+                writeln!(f, "discharge scope mismatch")?;
+                writeln!(f, "  attempted: {attempted}")?;
+                writeln!(f, "  reason: {reason}")?;
+                write!(
+                    f,
+                    "  fix: discharge this action with its own preflight_* call"
+                )
+            }
         }
     }
 }
@@ -441,6 +541,11 @@ pub struct NucleusRuntime {
     policy: CapabilityLattice,
     effects: crate::PolicyEnforced<crate::RealEffects>,
     task: String,
+    /// Verified capability token for this session (PR2). `Some` iff a token was
+    /// supplied to the builder AND passed `SignedTaskRef::verify` — see
+    /// [`VerifiedTaskRef`]. Distinct from `task: String` (agent-facing prose):
+    /// no token material is ever derived from `task`.
+    task_token: Option<VerifiedTaskRef>,
     flow_tracker: FlowTracker,
     allowed_write_paths: Vec<PathBuf>,
 }
@@ -452,8 +557,22 @@ impl NucleusRuntime {
             profile: PolicyProfile::Strict,
             custom_policy: None,
             task: String::new(),
+            task_token: None,
             allowed_write_paths: Vec::new(),
+            git_dir: None,
         }
+    }
+
+    /// The receipt log for this runtime's effects.
+    ///
+    /// Delegates to the effect layer rather than holding its own. That is not an
+    /// implementation detail: `PolicyEnforced::gate` calls `witnessed`, which
+    /// REPLACES whatever log an authority already carried, so a second log
+    /// attached upstream would be silently discarded. Attempting exactly that
+    /// is how this accessor came to exist — the runtime-held log recorded
+    /// nothing, and the reason was the override downstream.
+    pub fn receipts(&self) -> &crate::receipt::ReceiptLog {
+        self.effects.receipts()
     }
 
     /// The active policy profile.
@@ -469,6 +588,18 @@ impl NucleusRuntime {
     /// The task description (for audit trails and scope enforcement).
     pub fn task(&self) -> &str {
         &self.task
+    }
+
+    /// The verified effective task-token scope, if a token was supplied and
+    /// verified at builder time (PR2, #2032).
+    ///
+    /// `Some` guarantees the scope came from a token that passed
+    /// [`SignedTaskRef::verify`] (typestate [`VerifiedTaskRef`]); `None` means
+    /// this session runs with no capability token (unchanged legacy behavior).
+    /// This is the verified scope reachable on the term-building path — see
+    /// [`build_term_scoped`](Self::build_term_scoped).
+    pub fn task_scope(&self) -> Option<&TokenScope> {
+        self.task_token.as_ref().map(VerifiedTaskRef::scope)
     }
 
     /// Access the IFC flow tracker for observing data flow.
@@ -512,7 +643,7 @@ impl NucleusRuntime {
     ///
     /// 1. an [`UnmediatedAccess`] token (builder opt-in, auditable),
     /// 2. a [`DischargedBundle`] from [`preflight_unmediated`] — proof that all
-    ///    five policy obligations passed for the strictest egress sink, and
+    ///    eight policy obligations passed for the strictest egress sink, and
     /// 3. a FlowTracker observation: the grant is recorded as an
     ///    [`NodeKind::OutboundAction`] node, so the IFC graph reflects that an
     ///    unmediated bundle was issued (`flow_tracker().node_count()` advances).
@@ -526,9 +657,22 @@ impl NucleusRuntime {
     /// ```rust
     /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
     /// use portcullis_effects::FileEffect;
+    /// use nucleus_provenance_memory::{SignedTaskRef, TokenScope};
+    /// use ed25519_dalek::SigningKey;
+    /// use portcullis_core::Operation;
+    ///
+    /// // PR-B: discharge now requires a verified task token whose scope
+    /// // authorizes the operation (`InScopeWithTask`, fail-closed).
+    /// let root = SigningKey::from_bytes(&[9u8; 32]);
+    /// let root_vk = root.verifying_key().to_bytes();
+    /// let nonce = [0u8; 16];
+    /// let scope = TokenScope::new(vec![Operation::WebFetch], vec!["/**".to_string()]);
+    /// let signed = SignedTaskRef::issue("task", scope, nonce, 1_000, 1_000_000, &root);
     ///
     /// let (builder, token) = NucleusRuntime::builder()
     ///     .profile(PolicyProfile::Codegen)
+    ///     .task_token(signed, root_vk, 1_001, nonce)
+    ///     .expect("token verifies")
     ///     .allow_unmediated_access();
     /// let mut rt = builder.build();
     ///
@@ -546,11 +690,20 @@ impl NucleusRuntime {
     pub fn unmediated_effects(
         &mut self,
         _token: &UnmediatedAccess,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<
         impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect,
         RuntimeError,
     > {
+        // `preflight_unmediated` discharges against the strictest egress sink,
+        // so the grant is only as cheap as the hardest thing it hands out.
+        // Substituting a laxer bundle would undo that.
+        Self::require_scope_for(
+            &proof,
+            Operation::WebFetch,
+            SinkClass::HTTPEgress,
+            "obtain unmediated effects",
+        )?;
         // FlowTracker update: record the unmediated grant in the causal DAG.
         // Without this observe(), node_count would not advance and the grant
         // would be invisible to audit — the hole this fix closes.
@@ -584,11 +737,21 @@ impl NucleusRuntime {
     pub fn read_file(
         &mut self,
         path: &Path,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<ReadOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::ReadFiles,
+            SinkClass::AuditLogAppend,
+            "read file",
+        )?;
+        // The runtime check above yields the precise `ScopeMismatch` error; the
+        // effect layer re-checks when it spends the authority. Both are cheap,
+        // and the effect-level one also covers callers that bypass the runtime.
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
         let data = fx
-            .read(path)
+            .read(path, authority)
             .map_err(|e| self.translate_error(e, "read file", path))?;
 
         let node_id = self
@@ -614,10 +777,21 @@ impl NucleusRuntime {
         &mut self,
         path: &Path,
         content: &[u8],
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<(), RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::WriteFiles,
+            SinkClass::WorkspaceWrite,
+            "write file",
+        )?;
+        // Re-checked here, not only in `preflight_write`. The allowlist is a
+        // property of THIS write, and a bundle minted by a different preflight
+        // would otherwise never encounter the check.
+        self.check_path_allowed(path)?;
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
-        fx.write(path, content)
+        fx.write(path, content, authority)
             .map_err(|e| self.translate_error(e, "write file", path))
     }
 
@@ -640,10 +814,17 @@ impl NucleusRuntime {
     pub fn fetch_url(
         &mut self,
         url: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<FetchOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::WebFetch,
+            SinkClass::HTTPEgress,
+            "fetch url",
+        )?;
         let fx = &self.effects;
-        let data = fx.fetch(url).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let data = fx.fetch(url, authority).map_err(RuntimeError::from)?;
 
         let node_id = self
             .flow_tracker
@@ -666,10 +847,17 @@ impl NucleusRuntime {
     pub fn run_shell(
         &mut self,
         cmd: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<ShellResult, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::RunBash,
+            SinkClass::BashExec,
+            "run shell command",
+        )?;
         let fx = &self.effects;
-        let output = fx.run(cmd).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let output = fx.run(cmd, authority).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
         })
@@ -685,10 +873,17 @@ impl NucleusRuntime {
     pub fn git_commit(
         &mut self,
         message: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<CommitOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::GitCommit,
+            SinkClass::GitCommit,
+            "git commit",
+        )?;
         let fx = &self.effects;
-        let hash = fx.commit(message).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let hash = fx.commit(message, authority).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
         })
@@ -705,13 +900,36 @@ impl NucleusRuntime {
         &mut self,
         remote: &str,
         branch: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<(), RuntimeError> {
+        Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
-        fx.push(remote, branch).map_err(RuntimeError::from)
+        let authority = crate::authority::Authority::new(proof);
+        fx.push(remote, branch, authority)
+            .map_err(RuntimeError::from)
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
+
+    /// Refuse a bundle that was earned for a different action.
+    ///
+    /// Every mediated method calls this with the same `(Operation, SinkClass)`
+    /// pair its matching `preflight_*` builds. Without it the bundle proves only
+    /// that *a* preflight ran, never that a preflight ran for **this** action —
+    /// the eight obligations are then defeated by substituting a bundle earned
+    /// for something cheaper. `DischargedBundle` carries the pair for exactly
+    /// this check; see `crate::require_scope`.
+    fn require_scope_for(
+        proof: &DischargedBundle,
+        op: Operation,
+        sink: SinkClass,
+        attempted: &str,
+    ) -> Result<(), RuntimeError> {
+        crate::require_scope(proof, op, sink).map_err(|reason| RuntimeError::ScopeMismatch {
+            attempted: attempted.to_string(),
+            reason,
+        })
+    }
 
     /// Build an `ActionTerm` with real IFC labels from the FlowTracker (#1346).
     ///
@@ -720,11 +938,45 @@ impl NucleusRuntime {
     /// (IntegrityGate, NoAdversarialAncestry, DerivationClear) operate on
     /// actual session state, not fabricated defaults.
     fn build_term(&self, operation: Operation, sink_class: SinkClass) -> ActionTerm {
-        // Collect source labels from all tracked nodes
+        // Back-compat shim: the discharge `ActionTerm` shape is unchanged. The
+        // verified task scope (PR2) is discarded here; callers that need it use
+        // `build_term_scoped`.
+        self.build_term_scoped(operation, sink_class).0
+    }
+
+    /// Build an `ActionTerm` **and** surface the verified task scope on the same
+    /// path (PR2, #2032).
+    ///
+    /// Identical to [`build_term`](Self::build_term) for the `ActionTerm`, but
+    /// additionally returns `Some(scope)` when this runtime holds a verified
+    /// [`VerifiedTaskRef`]. The scope is **read-only** today: a later,
+    /// review-gated PR consults it to mint `Discharged<InScopeWithTask>`. It is
+    /// deliberately NOT folded into `ActionTerm` (that would touch the sealed
+    /// discharge types). When there is no token, the second element is `None`
+    /// and behavior is exactly as before.
+    ///
+    /// `subject` is still set from `self.task` (agent prose); the task token and
+    /// its nonce are never read from `task`.
+    fn build_term_scoped(
+        &self,
+        operation: Operation,
+        sink_class: SinkClass,
+    ) -> (ActionTerm, Option<TokenScope>) {
+        // Collect source labels from all tracked nodes. In the same pass, collect
+        // the per-node content hash (InputsAuthorized bricks 1+3): one
+        // `ContentHash` per source node that carries a recorded digest. The
+        // channel is always `Some(..)` here — a real runtime-built term is always
+        // plumbed — so `InputsAuthorized` is minted (nodes without a recorded
+        // hash are simply omitted; an empty vec = no inputs = vacuously
+        // authorized). `None` (deny) is reserved for un-plumbed callers only.
         let mut source_labels = Vec::new();
+        let mut content_addressed_inputs = Vec::new();
         for node_id in 1..=self.flow_tracker.node_count() as u64 {
             if let Some(label) = self.flow_tracker.label(node_id) {
                 source_labels.push(*label);
+            }
+            if let Some(hash) = self.flow_tracker.content_hash(node_id) {
+                content_addressed_inputs.push(hash);
             }
         }
 
@@ -738,19 +990,83 @@ impl NucleusRuntime {
                 .fold(source_labels[0], |acc, l| acc.join(*l))
         };
 
-        ActionTerm {
+        // PR2: read the verified effective scope (allowed_operations /
+        // allowed_paths). `None` preserves the legacy no-token behavior.
+        let verified_scope = self.task_token.as_ref().map(|t| t.scope().clone());
+
+        // PR-B: convert the verified `TokenScope` into the kernel's local
+        // `VerifiedScope` carrier so `preflight_action` can mint
+        // `Discharged<InScopeWithTask>`. The kernel is the dependency-free
+        // Aeneas target and cannot depend on `nucleus-provenance-memory` (that
+        // would cycle back through `portcullis-core`), so the scope is copied
+        // field-for-field here at the seam. `None` → `InScopeWithTask` is
+        // denied fail-closed by `preflight_action` (NO-VACUOUS-WITNESS).
+        let term_scope = verified_scope.as_ref().map(|s| VerifiedScope {
+            allowed_operations: s.allowed_operations.clone(),
+            allowed_paths: s.allowed_paths.clone(),
+        });
+
+        let term = ActionTerm {
             operation,
             sink_class,
             source_labels,
             artifact_label,
             subject: self.task.clone(),
             estimated_cost_micro_usd: 0,
+            // PR-B: WithinDelegationCeiling inputs. Both the ceiling and the
+            // request are `level_for(op)`: the runtime is an honest caller that
+            // requests exactly the authority the policy grants for the op and
+            // never over-claims, so `requested ≤ ceiling` holds by construction
+            // (a truthful, non-vacuous witness minted from the *present* policy
+            // level — not from absent evidence). The obligation still bites on
+            // any term that over-claims (`requested > ceiling` → DENY, exercised
+            // by the kernel guard tests) and is fail-closed on `None`; like
+            // `BudgetNotExceeded` it is sound-but-dormant on runtime-built terms.
+            // Actual per-op capability enforcement remains the PolicyEnforced
+            // effect layer's job (unchanged). Mirrors upstream's
+            // `requested_level > available → deny` with the runtime's honest
+            // no-escalation claim.
+            capability_ceiling: Some(self.level_for(operation)),
+            requested_capability: Some(self.level_for(operation)),
+            verified_scope: term_scope,
+            // PR-5: InputsAuthorized inputs. Always `Some(..)` on a runtime-built
+            // term (the channel is plumbed from the FlowTracker), so the
+            // obligation is minted; `None` (fail-closed deny) is reserved for
+            // un-plumbed callers. Sound-but-dormant like `WithinDelegationCeiling`.
+            content_addressed_inputs: Some(content_addressed_inputs),
+        };
+
+        (term, verified_scope)
+    }
+
+    /// The capability level the session policy grants for `op`.
+    ///
+    /// Mirrors `portcullis::CapabilityLattice::level_for` over
+    /// `portcullis_core::CapabilityLattice` (the kernel lattice, which exposes
+    /// the per-dimension fields but not `level_for`). Used to source the
+    /// `WithinDelegationCeiling` ceiling in [`build_term_scoped`].
+    fn level_for(&self, op: Operation) -> CapabilityLevel {
+        let p = &self.policy;
+        match op {
+            Operation::ReadFiles => p.read_files,
+            Operation::WriteFiles => p.write_files,
+            Operation::EditFiles => p.edit_files,
+            Operation::RunBash => p.run_bash,
+            Operation::GlobSearch => p.glob_search,
+            Operation::GrepSearch => p.grep_search,
+            Operation::WebSearch => p.web_search,
+            Operation::WebFetch => p.web_fetch,
+            Operation::GitCommit => p.git_commit,
+            Operation::GitPush => p.git_push,
+            Operation::CreatePr => p.create_pr,
+            Operation::ManagePods => p.manage_pods,
+            Operation::SpawnAgent => p.spawn_agent,
         }
     }
 
     /// Run `preflight_action` and return the `DischargedBundle` on success.
     ///
-    /// The bundle is proof that all 5 obligations passed. Callers should
+    /// The bundle is proof that all 8 obligations passed. Callers should
     /// thread it to effect functions rather than discarding (#1360).
     fn discharge(&self, term: &ActionTerm) -> Result<DischargedBundle, RuntimeError> {
         match preflight_action(term) {
@@ -902,6 +1218,90 @@ impl NucleusRuntime {
         Ok(child)
     }
 
+    /// Spawn a child runtime **and** propagate an attenuated capability token
+    /// (PR2, #2032).
+    ///
+    /// This is [`spawn_child`](Self::spawn_child) plus token minting. It runs
+    /// the identical capability-ceiling attenuation (child ≤ parent on every
+    /// dimension, inherited taint/confidentiality) and, alongside it, the parent
+    /// mints the child's [`SignedTaskRef`] by **attenuation**: it appends a block
+    /// granting `child_scope`, signs it with the parent-held `attenuator` key,
+    /// and pins the child's effective nonce to the parent-generated
+    /// `child_nonce`. The freshly minted token is then re-verified under the
+    /// parent's own root anchor with `expected_nonce = child_nonce`.
+    ///
+    /// ## The locked invariant (why this method exists)
+    ///
+    /// Every token input is **host/parent-controlled**: `child_scope`,
+    /// `child_nonce`, `issued_at`, `ttl`, `now`, and `attenuator` are arguments
+    /// supplied by the spawning host; the trust anchor (`root_issuer`) is read
+    /// from the parent's already-verified token. **None is read from `task` or
+    /// any agent-facing field.** In particular the child can neither choose nor
+    /// observe its `expected_nonce`. That is the truncation defense from
+    /// [`SignedTaskRef::verify`]'s module docs: a child that drops its own
+    /// attenuation block to recover the parent's wider scope ends on a block
+    /// whose nonce ≠ `child_nonce`, so re-verification fails
+    /// `TokenError::NonceMismatch`.
+    ///
+    /// Because the mint is re-verified fail-closed, a **widening** `child_scope`
+    /// (⊋ the parent's effective scope) is rejected (`Err`) — no child runtime
+    /// carrying an out-of-scope token can be constructed.
+    ///
+    /// Requires the parent to hold a verified task token; otherwise returns
+    /// [`RuntimeError::Config`] (use [`spawn_child`](Self::spawn_child) for
+    /// capability-only delegation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_child_with_token(
+        &self,
+        child_profile: PolicyProfile,
+        task: impl Into<String>,
+        child_scope: TokenScope,
+        child_nonce: [u8; 16],
+        issued_at: u64,
+        ttl: u64,
+        now: u64,
+        attenuator: &SigningKey,
+    ) -> Result<NucleusRuntime, RuntimeError> {
+        // The parent must hold a verified token to attenuate from.
+        let parent_token = self.task_token.as_ref().ok_or_else(|| {
+            RuntimeError::Config(
+                "spawn_child_with_token requires the parent to hold a verified task \
+                 token; use spawn_child for capability-only delegation"
+                    .to_string(),
+            )
+        })?;
+
+        // Capability-level attenuation (child ≤ parent) + taint inheritance +
+        // build. Reuses the audited spawn_child path so the ceiling check is not
+        // duplicated. This is the existing child ≤ parent point.
+        let mut child = self.spawn_child(child_profile, task)?;
+
+        // Token attenuation ALONGSIDE the capability attenuation. `child_scope`
+        // is the parent-supplied tightening; the re-verify below enforces
+        // child_scope ⊆ parent effective scope (any widening → Err).
+        let child_token =
+            parent_token
+                .token()
+                .attenuate(child_scope, child_nonce, issued_at, ttl, attenuator);
+
+        // Re-verify under the SAME pinned root anchor, with expected_nonce set
+        // to the parent-generated child_nonce (never agent-chosen). Fail-closed:
+        // widened / expired / spliced / truncated → Err, so `child.task_token`
+        // is `Some` only for a token that provably verified as ⊆ parent.
+        let verified =
+            VerifiedTaskRef::verify(child_token, *parent_token.root_issuer(), now, child_nonce)
+                .map_err(|e| RuntimeError::Denied {
+                    attempted: format!("mint attenuated task token for child {child_profile}"),
+                    reason: format!("attenuated token failed verification: {e}"),
+                    suggestion: "ensure child_scope ⊆ the parent's verified scope and the \
+                         token is unexpired"
+                        .to_string(),
+                })?;
+
+        child.task_token = Some(verified);
+        Ok(child)
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // Typed context bridge — opt-in compile-time capability checking
     // ═══════════════════════════════════════════════════════════════════
@@ -952,6 +1352,7 @@ impl std::fmt::Debug for NucleusRuntime {
         f.debug_struct("NucleusRuntime")
             .field("profile", &self.profile)
             .field("task", &self.task)
+            .field("has_task_token", &self.task_token.is_some())
             .field("node_count", &self.flow_tracker.node_count())
             .field("is_tainted", &self.flow_tracker.is_tainted())
             .field("allowed_write_paths", &self.allowed_write_paths)
@@ -1031,10 +1432,24 @@ pub struct NucleusRuntimeBuilder {
     profile: PolicyProfile,
     custom_policy: Option<CapabilityLattice>,
     task: String,
+    task_token: Option<VerifiedTaskRef>,
     allowed_write_paths: Vec<PathBuf>,
+    /// Working directory for git effects; `None` = the process CWD.
+    git_dir: Option<PathBuf>,
 }
 
 impl NucleusRuntimeBuilder {
+    /// Scope git effects to `dir` instead of the process working directory.
+    ///
+    /// `git commit` acts on whichever repository the process is standing in,
+    /// not on anything named in its arguments. A runtime that means to commit a
+    /// specific workspace must say so; leaving this unset keeps the historical
+    /// process-CWD behaviour.
+    pub fn git_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.git_dir = Some(dir.into());
+        self
+    }
+
     /// Set the policy profile.
     ///
     /// This is the recommended way to configure capabilities. If you also
@@ -1078,6 +1493,35 @@ impl NucleusRuntimeBuilder {
         self
     }
 
+    /// Supply a signed capability token, **verifying it eagerly** (PR2, #2032).
+    ///
+    /// The token is verified immediately via [`SignedTaskRef::verify`] and, on
+    /// success, stored as a [`VerifiedTaskRef`] so that `.build()` stays
+    /// infallible. This is **fail-closed**: a bad, wrong-issuer, expired,
+    /// widened, or truncated token returns `Err(TokenError)` here — never a
+    /// silent `None`.
+    ///
+    /// `root_issuer`, `now`, and `expected_nonce` are **host-provided** builder
+    /// inputs and are threaded straight into `verify`. They are NOT read from
+    /// `task` or any agent-facing field; in particular `expected_nonce` is the
+    /// host/parent-pinned anti-truncation nonce and must originate from a channel
+    /// the holding agent cannot read or influence.
+    pub fn task_token(
+        mut self,
+        signed: SignedTaskRef,
+        root_issuer: [u8; 32],
+        now: u64,
+        expected_nonce: [u8; 16],
+    ) -> Result<Self, TokenError> {
+        self.task_token = Some(VerifiedTaskRef::verify(
+            signed,
+            root_issuer,
+            now,
+            expected_nonce,
+        )?);
+        Ok(self)
+    }
+
     /// Restrict file writes to these paths (and their descendants).
     ///
     /// Empty = no path restriction beyond the capability lattice.
@@ -1106,12 +1550,16 @@ impl NucleusRuntimeBuilder {
             .custom_policy
             .unwrap_or_else(|| self.profile.to_lattice());
 
-        let effects = crate::production_effects_concrete(policy.clone());
+        let effects = match self.git_dir {
+            Some(dir) => crate::production_effects_in(policy.clone(), dir),
+            None => crate::production_effects_concrete(policy.clone()),
+        };
         NucleusRuntime {
             profile: self.profile,
             policy,
             effects,
             task: self.task,
+            task_token: self.task_token,
             flow_tracker: FlowTracker::new(),
             allowed_write_paths: self.allowed_write_paths,
         }
@@ -1125,6 +1573,59 @@ impl NucleusRuntimeBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── PR-B token helpers ──────────────────────────────────────────────
+    //
+    // Widening the bundle to 8 obligations makes `InScopeWithTask` mandatory:
+    // `preflight_action` denies fail-closed unless the session carries a
+    // verified task token whose scope authorizes the operation. These helpers
+    // mint a broad-scope verified token so the capability/flow/effect tests
+    // below exercise the SAME behavior they did before PR-B (coverage preserved:
+    // the token supplies the now-required in-scope evidence, nothing is
+    // asserted-away). Token semantics themselves are covered by the dedicated
+    // `task_token` submodule.
+
+    /// A verified full-scope task token: (signed, root_vk, now, nonce).
+    /// Scope authorizes every core operation; paths are unconstrained (the
+    /// discharge term carries no path, so `allowed_paths` is not enforced).
+    fn full_scope_token() -> (SignedTaskRef, [u8; 32], u64, [u8; 16]) {
+        let root = SigningKey::from_bytes(&[9u8; 32]);
+        let root_vk = root.verifying_key().to_bytes();
+        let nonce = [0u8; 16];
+        let issued_at = 1_000;
+        let ttl = 1_000_000;
+        let now = 1_001;
+        let scope = TokenScope::new(
+            vec![
+                Operation::ReadFiles,
+                Operation::WriteFiles,
+                Operation::EditFiles,
+                Operation::RunBash,
+                Operation::GlobSearch,
+                Operation::GrepSearch,
+                Operation::WebSearch,
+                Operation::WebFetch,
+                Operation::GitCommit,
+                Operation::GitPush,
+                Operation::CreatePr,
+                Operation::ManagePods,
+                Operation::SpawnAgent,
+            ],
+            vec!["/**".to_string()],
+        );
+        let token = SignedTaskRef::issue("test-task", scope, nonce, issued_at, ttl, &root);
+        (token, root_vk, now, nonce)
+    }
+
+    /// A runtime for `profile` carrying a verified full-scope task token.
+    fn rt_tok(profile: PolicyProfile) -> NucleusRuntime {
+        let (token, root_vk, now, nonce) = full_scope_token();
+        NucleusRuntime::builder()
+            .profile(profile)
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build()
+    }
 
     #[test]
     fn builder_defaults_to_strict() {
@@ -1277,15 +1778,25 @@ mod tests {
     fn effects_respect_policy() {
         use crate::FileEffect;
 
+        let (task_token, root_vk, now, nonce) = full_scope_token();
         let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
+            .task_token(task_token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
             .allow_unmediated_access();
         let mut rt = builder.build();
         let proof = rt.preflight_unmediated().unwrap();
         let fx = rt.unmediated_effects(&token, proof).unwrap();
 
         // Write should be policy-denied (capability levels still enforced)
-        let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
+        let result = fx.write(
+            std::path::Path::new("/tmp/test"),
+            b"data",
+            crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+                Operation::WriteFiles,
+                SinkClass::WorkspaceWrite,
+            )),
+        );
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
     }
 
@@ -1295,8 +1806,11 @@ mod tests {
     /// the bundle was handed out with no IFC trace — `node_count` stayed 0.
     #[test]
     fn unmediated_effects_advances_flow_tracker() {
+        let (task_token, root_vk, now, nonce) = full_scope_token();
         let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
+            .task_token(task_token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
             .allow_unmediated_access();
         let mut rt = builder.build();
         assert_eq!(rt.flow_tracker().node_count(), 0);
@@ -1355,8 +1869,11 @@ mod tests {
                 PolicyProfile::Permissive,
             ][profile_idx];
 
+            let (task_token, root_vk, now, nonce) = full_scope_token();
             let (builder, token) = NucleusRuntime::builder()
                 .profile(profile)
+                .task_token(task_token, root_vk, now, nonce)
+                .expect("full-scope test token verifies")
                 .allow_unmediated_access();
             let mut rt = builder.build();
 
@@ -1425,9 +1942,7 @@ mod tests {
 
     #[test]
     fn write_file_denied_by_read_only_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::ReadOnly)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::ReadOnly);
         let result = {
             let p = rt
                 .preflight_write(std::path::Path::new("/tmp/test.txt"))
@@ -1456,9 +1971,7 @@ mod tests {
     #[test]
     fn write_file_empty_allowlist_permits_any_path() {
         // Empty allowlist = no path restriction (only policy governs)
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         // This will fail on discharge (IFCLabel default is Untrusted integrity)
         // or on the actual I/O, but NOT on path checking
         let result = {
@@ -1473,11 +1986,150 @@ mod tests {
         }
     }
 
+    // ── Discharge scope binding ──────────────────────────────────────────
+    //
+    // A `DischargedBundle` is earned for ONE (Operation, SinkClass) pair, and
+    // `DischargedBundle` carries both so the pair can be checked. These tests
+    // pin that the mediated methods actually check it.
+    //
+    // Without the check the eight obligations are defeated by substitution: an
+    // action whose OWN discharge would fail is performed under a discharge that
+    // succeeded for something cheaper. The coarse `PolicyEnforced` lattice gate
+    // still applies, so this is not a total bypass — what a substituted bundle
+    // buys is every obligation `preflight_action` is responsible for.
+
+    /// The confused deputy at the runtime layer: a read authority must not buy
+    /// a write. `preflight_read` discharges `ReadFiles`/`AuditLogAppend`;
+    /// `write_file` is `WriteFiles`/`WorkspaceWrite`.
+    #[test]
+    fn a_read_bundle_will_not_authorize_a_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("substituted.txt");
+
+        let mut rt = rt_tok(PolicyProfile::Permissive);
+        let read_bundle = rt.preflight_read().expect("read discharges");
+
+        let err = rt
+            .write_file(&target, b"written under a read authority", read_bundle)
+            .expect_err("a read bundle must not authorize a write");
+
+        assert!(
+            matches!(err, RuntimeError::ScopeMismatch { .. }),
+            "expected a scope mismatch, got: {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "the write must be refused BEFORE the effect runs, but the file was created"
+        );
+    }
+
+    /// A correctly-scoped write bundle must not be redirected to a different path.
+    ///
+    /// This is NOT caught by the scope check: `preflight_write` and `write_file`
+    /// agree on `WriteFiles`/`WorkspaceWrite` regardless of which path was
+    /// preflighted, so the bundle is in scope. The path is not part of the
+    /// scope, which is why `write_file` has to re-run `check_path_allowed`
+    /// rather than trusting that `preflight_write` already did.
+    #[test]
+    fn a_write_bundle_for_one_path_does_not_authorize_a_write_to_another() {
+        let allowed = tempfile::tempdir().expect("tempdir");
+        let permitted = allowed.path().join("permitted.txt");
+        let forbidden = tempfile::tempdir().expect("tempdir");
+        let outside = forbidden.path().join("outside-the-allowlist.txt");
+
+        // Both must exist before the check runs: `check_path_allowed`
+        // canonicalizes, and on macOS a non-existent path silently falls back to
+        // its uncanonicalized form (`/var/...`) while an existing allowlist entry
+        // resolves through the symlink (`/private/var/...`), so the prefix
+        // comparison would fail for the wrong reason.
+        std::fs::write(&permitted, b"").expect("seed permitted");
+        std::fs::write(&outside, b"").expect("seed outside");
+
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Permissive)
+            .allowed_write_paths([allowed.path()])
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+
+        // Earned honestly, for a path inside the allowlist.
+        let bundle = rt
+            .preflight_write(&permitted)
+            .expect("a permitted write discharges");
+
+        // Redirected to a path outside it. Same scope, different target.
+        let err = rt
+            .write_file(&outside, b"redirected", bundle)
+            .expect_err("a bundle earned for one path must not write to another");
+
+        // The file was seeded empty; the refusal has to happen before the effect,
+        // so it must still be empty rather than holding the redirected content.
+        assert!(
+            std::fs::read(&outside)
+                .expect("seeded file readable")
+                .is_empty(),
+            "the write must be refused before the effect runs, but content landed: {err:?}"
+        );
+    }
+
+    /// The in-scope path must keep working — a scope check that rejects
+    /// everything would pass the tests above and break the runtime.
+    #[test]
+    fn a_write_bundle_still_authorizes_its_own_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("in-scope.txt");
+
+        let mut rt = rt_tok(PolicyProfile::Permissive);
+        let write_bundle = rt.preflight_write(&target).expect("write discharges");
+
+        // The effect itself may still fail on I/O; what must NOT happen is a
+        // scope rejection of a correctly-scoped bundle.
+        if let Err(err) = rt.write_file(&target, b"in scope", write_bundle) {
+            assert!(
+                !matches!(err, RuntimeError::ScopeMismatch { .. }),
+                "a correctly-scoped bundle was rejected: {err:?}"
+            );
+        }
+    }
+
+    /// **The behavioural complement to the source scan.** The scan proves the
+    /// witness is WIRED at every site; it cannot prove the wiring works. A
+    /// `witnessed_by` that attached a log nobody appended to would satisfy the
+    /// scan and record nothing — which is materially the state this whole
+    /// change fixes, so it is the failure mode most worth a real test.
+    #[test]
+    fn a_real_effect_leaves_a_real_receipt() {
+        let mut rt = rt_tok(PolicyProfile::Codegen);
+        assert_eq!(
+            rt.receipts().len(),
+            0,
+            "a fresh runtime should have recorded nothing yet"
+        );
+
+        let result = {
+            let p = rt.preflight_read().unwrap();
+            rt.read_file(std::path::Path::new("Cargo.toml"), p)
+        };
+        assert!(result.is_ok(), "the read should succeed: {result:?}");
+
+        let entries = rt.receipts().entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "one authorised effect must leave exactly one receipt, got {entries:?}"
+        );
+        assert_eq!(entries[0].operation, Operation::ReadFiles);
+        assert_eq!(
+            entries[0].outcome,
+            crate::receipt::EffectOutcome::Allowed,
+            "an effect that succeeded must be recorded as allowed"
+        );
+    }
+
     #[test]
     fn read_file_updates_flow_tracker() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
         // Read a file that exists
@@ -1505,9 +2157,7 @@ mod tests {
 
     #[test]
     fn fetch_url_updates_flow_tracker_with_adversarial() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Research)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Research);
 
         // fetch will fail (stub) but we can test that it gets past discharge
         let result = {
@@ -1527,14 +2177,16 @@ mod tests {
                 // Should not be denied by policy — Research has WebFetch
                 panic!("unexpected denial: {reason}");
             }
+            Err(RuntimeError::ScopeMismatch { reason, .. }) => {
+                // The bundle came from `preflight_fetch`, so it is in scope.
+                panic!("unexpected scope mismatch: {reason}");
+            }
         }
     }
 
     #[test]
     fn run_shell_denied_by_research_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Research)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Research);
         let result = {
             let p = rt.preflight_shell().unwrap();
             rt.run_shell("echo hello", p)
@@ -1545,9 +2197,7 @@ mod tests {
 
     #[test]
     fn git_push_denied_by_codegen_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_push().unwrap();
             rt.git_push("origin", "main", p)
@@ -1558,9 +2208,7 @@ mod tests {
 
     #[test]
     fn denied_error_mentions_capability() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::ReadOnly)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::ReadOnly);
         let result = {
             let p = rt.preflight_shell().unwrap();
             rt.run_shell("echo hello", p)
@@ -1682,9 +2330,7 @@ mod tests {
     #[test]
     fn git_push_denied_by_codegen_profile_via_discharge() {
         // Codegen has git_commit but NOT git_push
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_push().unwrap();
             rt.git_push("origin", "main", p)
@@ -1692,12 +2338,46 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A scratch git repository with one staged change, so a commit here is a
+    /// real commit that touches nothing outside the temp dir.
+    fn scratch_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "test"]);
+        std::fs::write(dir.path().join("f.txt"), b"one").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        std::fs::write(dir.path().join("f.txt"), b"two").unwrap();
+        dir
+    }
+
     #[test]
     fn git_commit_allowed_by_codegen_profile() {
+        // This test drives the REAL git effect. Before the runtime could be
+        // scoped, it ran `git add -u && git commit` in the process CWD — which
+        // under `cargo test` is the repository root, so running the suite
+        // committed the developer's staged work to their branch. Observed
+        // twice on 2026-08-01. The comment it used to carry ("may fail on I/O
+        // (no repo)") assumed a condition that is false exactly where it
+        // matters.
+        let repo = scratch_repo();
+        let (token, root_vk, now, nonce) = full_scope_token();
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
             .build();
-        // git_commit may fail on I/O (no repo) but should NOT fail on policy
+
         let result = {
             let p = rt.preflight_commit().unwrap();
             rt.git_commit("test commit", p)
@@ -1705,13 +2385,55 @@ mod tests {
         if let Err(RuntimeError::Denied { .. }) = &result {
             panic!("git_commit should not be denied by Codegen profile");
         }
+        assert!(
+            result.is_ok(),
+            "the scratch commit should succeed: {result:?}"
+        );
+    }
+
+    /// **The property that makes the suite safe to run.** A runtime scoped to a
+    /// directory must commit THERE — otherwise the scoping is decorative and the
+    /// test above is back to mutating whatever repository it is run from.
+    ///
+    /// Perturbation: drop `current_dir` in `RealEffects::in_git_dir` and this
+    /// REDs on the scratch repo's commit count.
+    #[test]
+    fn a_scoped_runtime_commits_only_in_its_own_repo() {
+        let repo = scratch_repo();
+        let count = |dir: &std::path::Path| -> usize {
+            let out = std::process::Command::new("git")
+                .args(["rev-list", "--count", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+        };
+        assert_eq!(
+            count(repo.path()),
+            1,
+            "fixture should start with one commit"
+        );
+
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+        let p = rt.preflight_commit().unwrap();
+        rt.git_commit("scoped", p).expect("commit should succeed");
+
+        assert_eq!(
+            count(repo.path()),
+            2,
+            "the commit did not land in the scoped repository -- it went somewhere else"
+        );
     }
 
     #[test]
     fn run_shell_allowed_by_codegen_profile() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         // run_shell may fail on I/O but should NOT fail on policy
         let result = {
             let p = rt.preflight_shell().unwrap();
@@ -1724,9 +2446,7 @@ mod tests {
 
     #[test]
     fn read_file_returns_labeled_with_correct_tags() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         let result = {
             let p = rt.preflight_read().unwrap();
             rt.read_file(std::path::Path::new("Cargo.toml"), p)
@@ -1745,9 +2465,7 @@ mod tests {
 
     #[test]
     fn session_tracks_taint_after_operations() {
-        let mut rt = NucleusRuntime::builder()
-            .profile(PolicyProfile::Codegen)
-            .build();
+        let mut rt = rt_tok(PolicyProfile::Codegen);
         assert!(!rt.is_tainted());
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
@@ -1884,5 +2602,278 @@ mod tests {
             .build();
         let child = parent.spawn_child(PolicyProfile::Research, "more research");
         assert!(child.is_ok());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // TaskRef capability-token runtime wiring (PR2, #2032)
+    //
+    // The point of PR2: the anti-truncation nonce (`expected_nonce`) is
+    // host/parent-pinned and NEVER agent-controlled. These tests prove it.
+    // ════════════════════════════════════════════════════════════════════
+    mod task_token {
+        use super::*;
+        use ed25519_dalek::SigningKey;
+        use nucleus_provenance_memory::{SignedTaskRef, TokenError, TokenScope};
+        use portcullis_core::Operation;
+
+        // Deterministic keys — from_bytes is decode-only (no CSPRNG); production
+        // keys come from SPIRE. Same discipline as taskref_token's own tests.
+        fn key(seed: u8) -> SigningKey {
+            SigningKey::from_bytes(&[seed; 32])
+        }
+
+        const ROOT_NONCE: [u8; 16] = [0u8; 16];
+        const CHILD_NONCE: [u8; 16] = [7u8; 16]; // N' — parent-pinned
+        const NOW: u64 = 1_200;
+        const ISSUED_AT: u64 = 1_000;
+        const TTL: u64 = 500;
+
+        // The root granted scope S.
+        fn scope_s() -> TokenScope {
+            TokenScope::new(
+                vec![Operation::ReadFiles, Operation::EditFiles],
+                vec!["src/**".to_string()],
+            )
+        }
+
+        // A strict subset S' ⊆ S (drop EditFiles, narrow the path).
+        fn scope_s_prime() -> TokenScope {
+            TokenScope::new(vec![Operation::ReadFiles], vec!["src/lib.rs".to_string()])
+        }
+
+        // A root token granting S, signed by `root`.
+        fn root_token(root: &SigningKey) -> SignedTaskRef {
+            SignedTaskRef::issue("task-1", scope_s(), ROOT_NONCE, ISSUED_AT, TTL, root)
+        }
+
+        // A parent runtime holding a verified token for scope S.
+        fn parent_with_token(root: &SigningKey) -> NucleusRuntime {
+            let root_vk = root.verifying_key().to_bytes();
+            NucleusRuntime::builder()
+                .profile(PolicyProfile::Codegen)
+                .task("parent task prose — NOT token material")
+                .task_token(root_token(root), root_vk, NOW, ROOT_NONCE)
+                .expect("honest root token verifies")
+                .build()
+        }
+
+        // 1. Parent(scope S) → spawn_child_with_token → child token S' ⊆ S with
+        //    pinned nonce N'; child builds (attenuated_token, N') → Ok, and the
+        //    verified scope reachable at build_term is S'.
+        #[test]
+        fn spawn_child_mints_pinned_subset_token() {
+            let root = key(1);
+            let parent = parent_with_token(&root);
+            assert_eq!(parent.task_scope(), Some(&scope_s()));
+
+            let attenuator = key(2); // parent-held attenuation key
+            let child = parent
+                .spawn_child_with_token(
+                    PolicyProfile::ReadOnly,
+                    "child task",
+                    scope_s_prime(),
+                    CHILD_NONCE,
+                    ISSUED_AT,
+                    TTL,
+                    NOW,
+                    &attenuator,
+                )
+                .expect("subset attenuation must mint + verify");
+
+            // The verified scope reachable on the term-building path is S'.
+            assert_eq!(child.task_scope(), Some(&scope_s_prime()));
+            let (_term, scope_at_build_term) =
+                child.build_term_scoped(Operation::ReadFiles, SinkClass::AuditLogAppend);
+            assert_eq!(scope_at_build_term, Some(scope_s_prime()));
+        }
+
+        // 2. A WIDENED child token (scope ⊋ S') → verify returns Err (subset
+        //    check) → no runtime with a widened scope can be constructed.
+        #[test]
+        fn widened_child_token_is_rejected() {
+            let root = key(1);
+            let parent = parent_with_token(&root);
+            let attenuator = key(2);
+
+            // RunBash + "etc/**" are OUTSIDE the parent scope S → widening.
+            let widened = TokenScope::new(
+                vec![Operation::ReadFiles, Operation::RunBash],
+                vec!["etc/**".to_string()],
+            );
+            let result = parent.spawn_child_with_token(
+                PolicyProfile::ReadOnly,
+                "child task",
+                widened,
+                CHILD_NONCE,
+                ISSUED_AT,
+                TTL,
+                NOW,
+                &attenuator,
+            );
+            assert!(
+                matches!(result, Err(RuntimeError::Denied { .. })),
+                "widening child scope must be rejected, got {result:?}"
+            );
+        }
+
+        // 3. A TRUNCATED token (child drops its attenuation block to recover the
+        //    parent scope S) → effective nonce ≠ N' → verify fails on the pinned
+        //    nonce → Err. This is the load-bearing truncation defense.
+        #[test]
+        fn truncated_token_fails_on_pinned_nonce() {
+            let root = key(1);
+            let attenuator = key(2);
+            let root_vk = root.verifying_key().to_bytes();
+
+            // Parent mints the honest child token (root S → child S', nonce N').
+            let honest_child = root_token(&root).attenuate(
+                scope_s_prime(),
+                CHILD_NONCE,
+                ISSUED_AT,
+                TTL,
+                &attenuator,
+            );
+            // Sanity: the honest child verifies under the pinned nonce.
+            assert!(
+                VerifiedTaskRef::verify(honest_child.clone(), root_vk, NOW, CHILD_NONCE).is_ok()
+            );
+
+            // The malicious holder TRUNCATES: drop the child block, present just
+            // the root (which alone grants the wider scope S).
+            let mut truncated = honest_child;
+            truncated.blocks.truncate(1);
+            assert_eq!(
+                truncated.blocks.len(),
+                1,
+                "truncated back to the root block"
+            );
+
+            // Attempt to build a runtime pinned to N' with the truncated token:
+            // the effective (root) block's nonce is ROOT_NONCE ≠ CHILD_NONCE, so
+            // verify fails NonceMismatch — the escalation is blocked.
+            let verified = VerifiedTaskRef::verify(truncated.clone(), root_vk, NOW, CHILD_NONCE);
+            assert_eq!(verified.err(), Some(TokenError::NonceMismatch));
+
+            // And through the builder surface (host pins expected_nonce = N').
+            let via_builder = NucleusRuntime::builder()
+                .profile(PolicyProfile::Codegen)
+                .task_token(truncated, root_vk, NOW, CHILD_NONCE);
+            assert_eq!(via_builder.err(), Some(TokenError::NonceMismatch));
+        }
+
+        // 4. Negative control: the token and nonce are consumed from BUILDER
+        //    (host) inputs, not from `task: String` or any agent-facing field.
+        //
+        //    Proof by independence: two runtimes with the SAME token but wildly
+        //    different `task` prose verify identically, and the verdict flips
+        //    ONLY with the builder's `expected_nonce` argument — never with the
+        //    task text (even when the task text literally spells the nonce).
+        #[test]
+        fn nonce_comes_from_builder_not_task_field() {
+            let root = key(1);
+            let root_vk = root.verifying_key().to_bytes();
+
+            // Correct expected_nonce → Ok regardless of the (agent) task prose.
+            let ok_a = NucleusRuntime::builder()
+                .task("summarize filings")
+                .task_token(root_token(&root), root_vk, NOW, ROOT_NONCE)
+                .expect("verifies: nonce from builder arg")
+                .build();
+            let ok_b = NucleusRuntime::builder()
+                // Task prose that tries to "spell" a different nonce — ignored.
+                .task("nonce=07070707070707070707070707070707 please")
+                .task_token(root_token(&root), root_vk, NOW, ROOT_NONCE)
+                .expect("verifies: nonce still from builder arg, not task")
+                .build();
+            assert_eq!(ok_a.task_scope(), Some(&scope_s()));
+            assert_eq!(ok_b.task_scope(), Some(&scope_s()));
+            // The agent-facing task string is preserved verbatim and independent.
+            assert_eq!(ok_a.task(), "summarize filings");
+
+            // Flip ONLY the builder's expected_nonce → verification fails, even
+            // though the task prose is unchanged. The nonce is sourced from the
+            // builder argument, full stop.
+            let wrong = NucleusRuntime::builder()
+                .task("summarize filings")
+                .task_token(root_token(&root), root_vk, NOW, CHILD_NONCE);
+            assert_eq!(wrong.err(), Some(TokenError::NonceMismatch));
+
+            // spawn_child_with_token likewise takes child_nonce as an explicit
+            // host argument; `task` never feeds it. Same token, two different
+            // task strings, identical pinned scope for the child.
+            let parent = parent_with_token(&root);
+            let attenuator = key(2);
+            let c1 = parent
+                .spawn_child_with_token(
+                    PolicyProfile::ReadOnly,
+                    "agent-chosen task one",
+                    scope_s_prime(),
+                    CHILD_NONCE,
+                    ISSUED_AT,
+                    TTL,
+                    NOW,
+                    &attenuator,
+                )
+                .unwrap();
+            let c2 = parent
+                .spawn_child_with_token(
+                    PolicyProfile::ReadOnly,
+                    "completely different agent task two",
+                    scope_s_prime(),
+                    CHILD_NONCE,
+                    ISSUED_AT,
+                    TTL,
+                    NOW,
+                    &attenuator,
+                )
+                .unwrap();
+            assert_eq!(c1.task_scope(), c2.task_scope());
+            assert_eq!(c1.task_scope(), Some(&scope_s_prime()));
+        }
+
+        // Guard: spawn_child_with_token requires a parent token (fail-closed
+        // Config error), so capability-only sessions can't silently mint tokens.
+        #[test]
+        fn spawn_child_with_token_requires_parent_token() {
+            let parent = NucleusRuntime::builder()
+                .profile(PolicyProfile::Codegen)
+                .build();
+            let attenuator = key(2);
+            let result = parent.spawn_child_with_token(
+                PolicyProfile::ReadOnly,
+                "child",
+                scope_s_prime(),
+                CHILD_NONCE,
+                ISSUED_AT,
+                TTL,
+                NOW,
+                &attenuator,
+            );
+            assert!(matches!(result, Err(RuntimeError::Config(_))));
+        }
+
+        // Guard: plain spawn_child does NOT propagate the token (strictly less
+        // authority — safe default, unchanged behavior).
+        #[test]
+        fn plain_spawn_child_does_not_propagate_token() {
+            let root = key(1);
+            let parent = parent_with_token(&root);
+            let child = parent
+                .spawn_child(PolicyProfile::ReadOnly, "child")
+                .unwrap();
+            assert_eq!(child.task_scope(), None);
+        }
+
+        // Guard: a wrong-root token is rejected at the builder (fail-closed, not
+        // a silent None).
+        #[test]
+        fn wrong_root_issuer_is_rejected_at_builder() {
+            let root = key(1);
+            let attacker = key(9);
+            let wrong_vk = attacker.verifying_key().to_bytes();
+            let result =
+                NucleusRuntime::builder().task_token(root_token(&root), wrong_vk, NOW, ROOT_NONCE);
+            assert_eq!(result.err(), Some(TokenError::RootIssuerMismatch));
+        }
     }
 }
