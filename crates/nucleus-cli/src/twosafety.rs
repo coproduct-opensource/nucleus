@@ -860,10 +860,9 @@ fn erase_number_array(slot: Option<&mut serde_json::Value>, marker: &str) {
         // `nonce` a fixed 16 bytes, so an unbounded "all numbers" test was a
         // channel of unbounded width. An Ed25519 signature is 64 bytes; the bound
         // is the widest field this erases, so anything larger is not one of them.
-        if value
-            .as_array()
-            .is_some_and(|a| a.len() <= MAX_ERASED_ARRAY_LEN && a.iter().all(serde_json::Value::is_number))
-        {
+        if value.as_array().is_some_and(|a| {
+            a.len() <= MAX_ERASED_ARRAY_LEN && a.iter().all(serde_json::Value::is_number)
+        }) {
             *value = serde_json::Value::String(marker.to_string());
         }
     }
@@ -1856,23 +1855,30 @@ mod tests {
         // for the boring reason that the rule never fires at all.
         let real = "audit: type=2000 audit(0.310:1): state=initialized";
         let out = scrub(real, &f, None);
-        assert!(out.contains("<BOOT-CLOCK>"), "the real header must normalise: {out}");
+        assert!(
+            out.contains("<BOOT-CLOCK>"),
+            "the real header must normalise: {out}"
+        );
         assert!(out.contains(":1)"), "the serial stays compared: {out}");
 
         // RTC: unanchored head, and an unbounded epoch.
-        let rtc_forged = format!("fetched identity: setting system clock to 2026-08-04T10:45:20 UTC ({long})");
+        let rtc_forged =
+            format!("fetched identity: setting system clock to 2026-08-04T10:45:20 UTC ({long})");
         assert_eq!(
             scrub(&rtc_forged, &f, None),
             rtc_forged,
             "the rtc rule must require the driver name"
         );
-        let rtc_wide = format!("rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC ({long})");
+        let rtc_wide = format!(
+            "rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC ({long})"
+        );
         assert_eq!(
             scrub(&rtc_wide, &f, None),
             rtc_wide,
             "an unbounded epoch is not a Unix second"
         );
-        let rtc_real = "rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC (1785840320)";
+        let rtc_real =
+            "rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC (1785840320)";
         assert!(
             scrub(rtc_real, &f, None).contains("<RTC-WALL-CLOCK>"),
             "the real rtc line must normalise"
@@ -1896,9 +1902,7 @@ mod tests {
             guest_cid: 3,
         };
         let dup = |smuggled: &str| {
-            let json = format!(
-                "{{\"task_id\":\"{smuggled}\",\"task_id\":\"t\",\"blocks\":[]}}"
-            );
+            let json = format!("{{\"task_id\":\"{smuggled}\",\"task_id\":\"t\",\"blocks\":[]}}");
             format!("console=ttyS0 {TOKEN_HEX_KEY}{}", hex::encode(json))
         };
         let a = scrub(&dup("canary-aaaa"), &f, None);
