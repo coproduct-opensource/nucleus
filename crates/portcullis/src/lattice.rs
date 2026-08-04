@@ -482,6 +482,28 @@ impl PermissionLattice {
         self.obligations.requires(op)
     }
 
+    /// The operations this policy actually permits — every core [`Operation`]
+    /// whose capability level is **strictly above** [`CapabilityLevel::Never`].
+    ///
+    /// This is **the trust choke point** for minting a session capability
+    /// token: a [`TokenScope`](crate) built from `granted_operations()` is a
+    /// subset of the policy *by construction*, because an operation is present
+    /// here **iff** `level_for(op) > Never`. Equivalently, every op excluded
+    /// here is exactly one with `level_for(op) == Never` (fully denied), so the
+    /// minted scope can never grant an operation the policy denies.
+    ///
+    /// Enumeration is over [`Operation::ALL`] (the 13 statically-known core
+    /// operations), so the ordering is **deterministic** — it follows the
+    /// enum's declaration order. `ExtensionOperation`s are intentionally
+    /// excluded: they are string-keyed, out of the formally-verified core, and
+    /// not part of the token vocabulary.
+    pub fn granted_operations(&self) -> Vec<Operation> {
+        Operation::ALL
+            .into_iter()
+            .filter(|&op| self.capabilities.level_for(op) > CapabilityLevel::Never)
+            .collect()
+    }
+
     /// Delegate permissions to a subagent.
     ///
     /// The resulting permissions are `self ∧ requested`, ensuring:
@@ -1462,6 +1484,122 @@ mod tests {
         assert!(
             serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&good).unwrap())
                 .is_ok()
+        );
+    }
+
+    /// LOAD-BEARING (live-path mint brick, acceptance (a)): for EVERY policy
+    /// profile, `granted_operations()` is exactly the set of operations whose
+    /// capability level is strictly above `Never`. Concretely:
+    ///
+    /// 1. no granted op is `Never` (a minted scope never grants a denied op);
+    /// 2. every op with `level_for(op) == Never` is excluded;
+    /// 3. the granted set == the `> Never` set (nothing dropped either way);
+    /// 4. ordering is deterministic (follows `Operation::ALL`).
+    ///
+    /// This is the by-construction guarantee that a token scope minted from
+    /// `granted_operations()` is a subset of the policy.
+    #[test]
+    fn granted_operations_excludes_every_never_op_for_all_profiles() {
+        let profiles: Vec<(&str, PermissionLattice)> = vec![
+            ("default", PermissionLattice::default()),
+            ("permissive", PermissionLattice::permissive()),
+            ("restrictive", PermissionLattice::restrictive()),
+            ("read_only", PermissionLattice::read_only()),
+            (
+                "filesystem_readonly",
+                PermissionLattice::filesystem_readonly(),
+            ),
+            ("network_only", PermissionLattice::network_only()),
+            ("web_research", PermissionLattice::web_research()),
+            ("code_review", PermissionLattice::code_review()),
+            ("edit_only", PermissionLattice::edit_only()),
+            ("local_dev", PermissionLattice::local_dev()),
+            ("fix_issue", PermissionLattice::fix_issue()),
+            ("safe_pr_fixer", PermissionLattice::safe_pr_fixer()),
+            ("release", PermissionLattice::release()),
+            ("database_client", PermissionLattice::database_client()),
+            ("demo", PermissionLattice::demo()),
+            ("pr_review", PermissionLattice::pr_review()),
+            ("codegen", PermissionLattice::codegen()),
+            ("pr_approve", PermissionLattice::pr_approve()),
+            ("orchestrator", PermissionLattice::orchestrator()),
+        ];
+
+        for (name, policy) in &profiles {
+            let granted = policy.granted_operations();
+
+            // (1)+(2)+(3): granted == { op | level_for(op) > Never }.
+            let expected: Vec<Operation> = Operation::ALL
+                .into_iter()
+                .filter(|&op| policy.capabilities.level_for(op) > CapabilityLevel::Never)
+                .collect();
+            assert_eq!(
+                granted, expected,
+                "profile {name}: granted_operations must equal the >Never set"
+            );
+
+            // (1) restated as a direct denial check: no granted op is Never.
+            for op in &granted {
+                assert_ne!(
+                    policy.capabilities.level_for(*op),
+                    CapabilityLevel::Never,
+                    "profile {name}: granted op {op:?} must not be Never"
+                );
+            }
+            // (2) restated: every Never op is absent from the granted set.
+            for op in Operation::ALL {
+                if policy.capabilities.level_for(op) == CapabilityLevel::Never {
+                    assert!(
+                        !granted.contains(&op),
+                        "profile {name}: denied (Never) op {op:?} leaked into granted set"
+                    );
+                }
+            }
+
+            // (4) deterministic ordering: granted is a subsequence of ALL.
+            let mut all_iter = Operation::ALL.into_iter();
+            for op in &granted {
+                assert!(
+                    all_iter.by_ref().any(|a| a == *op),
+                    "profile {name}: granted ops must follow Operation::ALL order"
+                );
+            }
+        }
+    }
+
+    /// A fully-locked-down policy (every capability `Never`) grants NO
+    /// operations — an empty scope, not a wildcard. In particular `RunBash` is
+    /// absent, so a token minted from it later DENIES bash (acceptance (b)).
+    #[test]
+    fn granted_operations_empty_for_all_never_policy() {
+        // read_only already has run_bash = Never; build a stricter one where
+        // every capability is Never to prove the empty-scope case exactly.
+        let mut locked = PermissionLattice::read_only();
+        locked.capabilities = CapabilityLattice {
+            read_files: CapabilityLevel::Never,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Never,
+            grep_search: CapabilityLevel::Never,
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::Never,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
+            #[cfg(not(kani))]
+            extensions: std::collections::BTreeMap::new(),
+        };
+        let granted = locked.granted_operations();
+        assert!(
+            granted.is_empty(),
+            "an all-Never policy must grant an EMPTY operation set, got {granted:?}"
+        );
+        assert!(
+            !granted.contains(&Operation::RunBash),
+            "RunBash must never appear in an all-Never policy's granted ops"
         );
     }
 

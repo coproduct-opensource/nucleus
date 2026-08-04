@@ -11,7 +11,7 @@
 //! The signing/verification follows the same pattern as `receipt_sign.rs`.
 
 #[cfg(feature = "crypto")]
-use ring::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
+use ring::signature::Ed25519KeyPair;
 
 use portcullis_core::declassify::DeclassificationToken;
 use portcullis_core::receipt::SignatureError;
@@ -44,10 +44,16 @@ pub fn verify_token(
     }
 
     let content = token.canonical_bytes();
-    let public_key = UnparsedPublicKey::new(&signature::ED25519, public_key_bytes);
 
-    public_key
-        .verify(&content, &token.signature)
+    // verify_strict — see receipt_sign.rs rationale (#16): rejects small-order keys /
+    // non-canonical S that ring's cofactored verify accepts. Signing stays on `ring`.
+    let vk_bytes: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| SignatureError::InvalidSignature)?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes)
+        .map_err(|_| SignatureError::InvalidSignature)?;
+    let sig = ed25519_dalek::Signature::from_bytes(&token.signature);
+    vk.verify_strict(&content, &sig)
         .map_err(|_| SignatureError::InvalidSignature)
 }
 

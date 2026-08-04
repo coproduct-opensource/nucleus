@@ -16,7 +16,7 @@ nucleus-lineage = { path = "../nucleus-lineage" }
 # `ed25519` / `signature` crate versions transitively. nucleus-node
 # stays on 2.x intentionally (issue #1643 — migrate when 3.0 stable).
 ed25519-dalek = "=3.0.0-pre.7"
-base64 = "0.22"
+base64 = "0.23"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -28,7 +28,7 @@ hex = { workspace = true }
 # the lean dep tree is preserved for callers who don't need EU AI Act
 # Article 50 interop. `rust_native_crypto` swaps OpenSSL for pure-Rust
 # signing to keep our supply chain consistent with the rest of nucleus.
-c2pa = { version = "0.89", default-features = false, features = ["rust_native_crypto"], optional = true }
+c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"], optional = true }
 
 [features]
 default = []

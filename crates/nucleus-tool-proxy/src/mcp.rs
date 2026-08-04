@@ -18,6 +18,14 @@ use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, Ve
 use portcullis::{
     CapabilityLevel, FlowTracker, GradedExposureGuard, NodeKind, Operation, ToolCallGuard,
 };
+// Sealed discharge preflight (#2038): the live RunBash path must mint a
+// `DischargedBundle` before it may spawn. The bundle-minting itself
+// (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
+// handler); here we only need the result/bundle types it returns.
+use nucleus_ifc_kernel::discharge::PreflightResult;
+// Sealed net-egress effect home (B5): the `.fetch()` trait method that performs
+// the one raw reqwest send lives behind this trait in `portcullis-effects`.
+use portcullis_effects::NetEffect;
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -153,7 +161,15 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
-        let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(policy.clone())));
+        let kernel = Arc::new(tokio::sync::Mutex::new({
+            let mut k = Kernel::new(policy.clone());
+            // Same NUCLEUS_DLC_* provisioning as the HTTP path's kernel —
+            // verified admission gates both transports or neither.
+            if let Some(admission) = crate::dlc_admission::provision_from_env() {
+                k.set_dlc_admission(admission);
+            }
+            k
+        }));
 
         let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 
@@ -180,9 +196,15 @@ impl NucleusMcpServer {
     /// fails, the data-ingest node would be silently dropped — leaving taint
     /// untracked — so we poison the session instead, causing every subsequent
     /// kernel decision to deny until a human-authorized cleanse.
-    async fn observe_flow(&self, kind: NodeKind) {
+    ///
+    /// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*.
+    /// Their SHA-256 is recomputed here (never read from an agent field) and
+    /// recorded on the node via `observe_with_content_hash`. Label/taint behaviour
+    /// is identical to the old bare `observe` — only the content hash is added.
+    async fn observe_flow(&self, kind: NodeKind, bytes: &[u8]) {
+        let hash = crate::ingest_content_hash(bytes);
         let mut flow = self.flow_tracker.lock().await;
-        if let Err(e) = flow.observe(kind) {
+        if let Err(e) = flow.observe_with_content_hash(kind, hash) {
             flow.poison();
             warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
         }
@@ -198,12 +220,17 @@ impl NucleusMcpServer {
     /// "one privileged action then locked" (run-tests → can't commit) — a policy
     /// choice an operator should make deliberately. The human-authorized
     /// `cleanse` path clears the taint when on.
-    async fn observe_tool_result(&self) {
+    ///
+    /// Brick 3: `result_bytes` are the *actual tool-result bytes* ingested into
+    /// the session; their SHA-256 is content-addressed onto the `McpToolResult`
+    /// node (recomputed from the real bytes, never an agent field).
+    async fn observe_tool_result(&self, result_bytes: &[u8]) {
         let paranoid = std::env::var("NUCLEUS_PARANOID_TOOL_IO")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if paranoid {
-            self.observe_flow(NodeKind::McpToolResult).await;
+            self.observe_flow(NodeKind::McpToolResult, result_bytes)
+                .await;
         }
     }
 
@@ -224,7 +251,27 @@ impl NucleusMcpServer {
         // are denied with `IfcUnsafe` before the normal decision path.
         let flow = self.flow_tracker.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
+        // Same second opinion the HTTP path takes (`mediation::cross_check_flow`),
+        // computed before the tracker lock is released. Both transports route
+        // through the same kernel, so both owe the same evidence.
+        let flow_check = crate::mediation::cross_check_flow(&flow, &decision, operation);
         drop(flow);
+        drop(kernel);
+
+        // ★ Record the kernel decision — allows AND refusals — BEFORE the match
+        // below returns. The HTTP path had the same hole: every refusal returned
+        // early, so the sink observed successes only and any evidence built on
+        // it would have shown an all-allow history.
+        crate::verdict_sink::record_kernel_decision(
+            self.sink.as_ref(),
+            &decision,
+            operation,
+            subject,
+            ActorIdentity::StdioGuest,
+            "mcp",
+            flow_check,
+        );
+
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
             Verdict::Deny(ref reason) => {
@@ -257,13 +304,28 @@ impl NucleusMcpServer {
     /// in telemetry. Previously errors were silently discarded with `let _ =`,
     /// making audit backend failures invisible (Trail of Bits finding #3).
     fn record_verdict(&self, operation: Operation, subject: &str, outcome: VerdictOutcome) {
+        self.record_verdict_ext(operation, subject, outcome, BTreeMap::new());
+    }
+
+    /// Record a verdict with domain-specific `extensions` metadata.
+    ///
+    /// Used by the live RunBash gate (#2038) to thread the sealed
+    /// `DischargedBundle` witness into the audit record so the bundle is consumed
+    /// (not dead) and the discharge proof is durable in telemetry.
+    fn record_verdict_ext(
+        &self,
+        operation: Operation,
+        subject: &str,
+        outcome: VerdictOutcome,
+        extensions: BTreeMap<String, String>,
+    ) {
         if let Err(e) = self.sink.record(VerdictContext {
             operation,
             subject: subject.to_string(),
             outcome,
             actor: ActorIdentity::StdioGuest,
             policy_rule: None,
-            extensions: BTreeMap::new(),
+            extensions,
         }) {
             warn!(error = %e, ?operation, subject, "verdict recording failed — audit gap");
         }
@@ -308,12 +370,41 @@ impl NucleusMcpServer {
             }
         };
 
+        // Discharge the eight obligations for the read. Previously this path
+        // went straight to the sandbox with only the guard proof, so a read
+        // never cleared the obligations `FileEffect::read` enforces.
+        let read_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let fs_ceiling = self.state.runtime.policy().capabilities.read_files;
+            let flow = self.flow_tracker.lock().await;
+            let result =
+                crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(path = %params.path, %reason, "discharge preflight DENIED read — no read");
+                    self.record_verdict(
+                        Operation::ReadFiles,
+                        &params.path,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let read_authority = portcullis_effects::authority::Authority::new(read_bundle);
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
-                self.state
-                    .runtime
-                    .sandbox()
-                    .read_to_string(&params.path, &decision_token)
+                self.state.runtime.sandbox().read_to_string(
+                    &params.path,
+                    &decision_token,
+                    read_authority,
+                )
             })
         }) {
             Ok(contents) => {
@@ -321,7 +412,9 @@ impl NucleusMcpServer {
                 // IFC: a file read brings data into the session (Trusted
                 // integrity — does not by itself taint, but contributes to the
                 // confidentiality ceiling). (#1633)
-                self.observe_flow(NodeKind::FileRead).await;
+                // Brick 3: content-address the exact bytes read.
+                self.observe_flow(NodeKind::FileRead, contents.as_bytes())
+                    .await;
                 Ok(CallToolResult::success(vec![Content::text(contents)]))
             }
             Err(e) => {
@@ -379,12 +472,49 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (B6, parity with the MCP RunBash/web handlers)
+        // PRECONDITION for the `_proof`-gated `Sandbox::write`: mint the sealed
+        // 8-witness `DischargedBundle` via `preflight_fs`. Fail closed — a
+        // Missing/Invalid session task token gives `verified_scope == None` ⇒
+        // `InScopeWithTask` denies; an out-of-scope op denies. No bundle ⇒ the
+        // handler returns its error and NEVER writes (cap-std is never reached).
+        let discharge_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let fs_ceiling = self.state.runtime.policy().capabilities.write_files;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_fs(
+                Operation::WriteFiles,
+                verified_scope,
+                fs_ceiling,
+                &params.path,
+                &flow,
+            );
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(path = %params.path, %reason, "discharge preflight DENIED write — no write");
+                    self.record_verdict(
+                        Operation::WriteFiles,
+                        &params.path,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let _discharge_note = discharge_witness(&discharge_bundle);
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.sandbox().write(
                     &params.path,
                     params.contents.as_bytes(),
                     &decision_token,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
             })
         }) {
@@ -459,6 +589,63 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (#2038, F8/F9/F6 dual-stack) ──────────────
+        // PRECONDITION for `run_args`: mint the sealed 8-witness `DischargedBundle`.
+        // Fail-closed on a Missing/Invalid session task token (verified_scope
+        // None ⇒ InScopeWithTask denies) — never substitutes a permissive scope.
+        // This runs ALONGSIDE the sink/kernel/guard checks above (not instead of
+        // them). The `DischargedBundle` can only be built by `preflight_action`,
+        // so reaching `run_args` past the `Allowed` arm is a compile-time-checked
+        // authorization proof.
+        let (discharge_note, discharge_bundle) = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let run_bash_ceiling = self.state.runtime.policy().capabilities.run_bash;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => {
+                    // Keep the sealed bundle ALIVE: it is now the type-level proof
+                    // required by `run_args` (executor-proof gate), and its
+                    // `#[must_use]` is satisfied by both the audit witness and the
+                    // spawn call below. Record the durable witness, then hand the
+                    // bundle down to the spawn.
+                    let note = discharge_witness(&bundle);
+                    (note, bundle)
+                }
+                PreflightResult::Denied { reason, .. } => {
+                    warn!(
+                        subject = %subject,
+                        %reason,
+                        "discharge preflight DENIED RunBash — no run_args"
+                    );
+                    self.record_verdict(
+                        Operation::RunBash,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+                PreflightResult::RequiresApproval { reason } => {
+                    warn!(
+                        subject = %subject,
+                        %reason,
+                        "discharge preflight requires approval for RunBash — no run_args"
+                    );
+                    self.record_verdict(
+                        Operation::RunBash,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge requires approval: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge requires approval: {reason}")));
+                }
+            }
+        };
+
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
                 self.state.runtime.executor().run_args(
@@ -466,29 +653,41 @@ impl NucleusMcpServer {
                     params.stdin.as_deref(),
                     params.directory.as_deref(),
                     &decision_token,
+                    // Executor-proof gate (#2038 → PR-2): the sealed bundle minted
+                    // by `preflight_runbash` above is the type-level authorization.
+                    // Reaching this spawn requires it, so no un-preflighted spawn
+                    // can compile.
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
                 )
             })
         }) {
             Ok(output) => {
-                self.record_verdict(Operation::RunBash, &subject, VerdictOutcome::Allow);
-                // Most-paranoid #2: command output may carry injected instructions;
-                // taint it (opt-in) so it can't drive a later privileged action.
-                self.observe_tool_result().await;
+                self.record_verdict_ext(
+                    Operation::RunBash,
+                    &subject,
+                    VerdictOutcome::Allow,
+                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
+                );
                 let run_result = RunResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                 };
                 let json = serde_json::to_string_pretty(&run_result).unwrap_or_default();
+                // Most-paranoid #2: command output may carry injected instructions;
+                // taint it (opt-in) so it can't drive a later privileged action.
+                // Brick 3: content-address the exact tool-result bytes ingested.
+                self.observe_tool_result(json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => {
-                self.record_verdict(
+                self.record_verdict_ext(
                     Operation::RunBash,
                     &subject,
                     VerdictOutcome::Error {
                         error: format!("{e}"),
                     },
+                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
                 );
                 Ok(err_result(e))
             }
@@ -601,10 +800,11 @@ impl NucleusMcpServer {
         }) {
             Ok(paths) => {
                 self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
-                self.observe_flow(NodeKind::FileRead).await; // (#1633)
-                Ok(CallToolResult::success(vec![Content::text(
-                    paths.join("\n"),
-                )]))
+                // Brick 3: content-address the exact match listing ingested.
+                let listing = paths.join("\n");
+                self.observe_flow(NodeKind::FileRead, listing.as_bytes())
+                    .await; // (#1633)
+                Ok(CallToolResult::success(vec![Content::text(listing)]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -745,7 +945,37 @@ impl NucleusMcpServer {
                         Ok(r) => r,
                         Err(_) => continue,
                     };
-                    let contents = match state.runtime.sandbox().read_to_string_for_search(relative)
+                    // One discharge per file: an `Authority` buys one read, so a
+                    // search over N files needs N of them. Minting outside the
+                    // loop would be the replay the by-value cutover removed.
+                    let search_authority = {
+                        let verified_scope = state.session_task_token.verified_scope();
+                        let ceiling = state.runtime.policy().capabilities.grep_search;
+                        // `blocking_lock` rather than `.await`: this loop runs
+                        // inside `block_in_place`, which exists precisely to allow
+                        // blocking calls off the async executor.
+                        let flow = state.flow_tracker.blocking_lock();
+                        let r = crate::run_gate::preflight_grep_fs(
+                            verified_scope,
+                            ceiling,
+                            &relative.display().to_string(),
+                            &flow,
+                        );
+                        drop(flow);
+                        match r {
+                            PreflightResult::Allowed(b) => {
+                                portcullis_effects::authority::Authority::new(b)
+                            }
+                            // A file this session may not read is skipped, exactly
+                            // as an unreadable one is — the search returns fewer
+                            // hits rather than failing the whole request.
+                            _ => continue,
+                        }
+                    };
+                    let contents = match state
+                        .runtime
+                        .sandbox()
+                        .read_to_string_for_search(relative, search_authority)
                     {
                         Ok(c) => c,
                         Err(_) => continue, // Skip binary/unreadable files
@@ -789,7 +1019,9 @@ impl NucleusMcpServer {
         }) {
             Ok(matches) => {
                 self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
-                self.observe_flow(NodeKind::FileRead).await; // (#1633)
+                // Brick 3: content-address the exact grep output ingested.
+                self.observe_flow(NodeKind::FileRead, matches.as_bytes())
+                    .await; // (#1633)
                 Ok(CallToolResult::success(vec![Content::text(matches)]))
             }
             Err(e) => {
@@ -935,13 +1167,11 @@ impl NucleusMcpServer {
         }
 
         let method = params.method.as_deref().unwrap_or("GET");
-        let client = &self.state.web_client;
-
-        let request = match method.to_uppercase().as_str() {
-            "GET" => client.get(&params.url),
-            "POST" => client.post(&params.url),
-            "PUT" => client.put(&params.url),
-            "DELETE" => client.delete(&params.url),
+        let req_method = match method.to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
             _ => {
                 let msg = format!("unsupported method: {method}");
                 self.record_verdict(
@@ -955,6 +1185,42 @@ impl NucleusMcpServer {
             }
         };
 
+        // ─── Sealed discharge gate (B5, parity with the MCP RunBash handler) ──
+        // PRECONDITION for the sealed `NetEffect::fetch`: mint the sealed
+        // 8-witness `DischargedBundle` via `preflight_web`. Fail closed — a
+        // Missing/Invalid session task token gives `verified_scope == None` ⇒
+        // `InScopeWithTask` denies; an out-of-scope op denies. No bundle ⇒ the
+        // handler returns its error and NEVER fetches (no wire egress).
+        let discharge_bundle = {
+            let verified_scope = self.state.session_task_token.verified_scope();
+            let web_ceiling = self.state.runtime.policy().capabilities.web_fetch;
+            let flow = self.flow_tracker.lock().await;
+            let result = preflight_web(
+                Operation::WebFetch,
+                verified_scope,
+                web_ceiling,
+                &subject,
+                &flow,
+            );
+            drop(flow);
+            match result {
+                PreflightResult::Allowed(bundle) => bundle,
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    warn!(subject = %subject, %reason, "discharge preflight DENIED web_fetch — no fetch");
+                    self.record_verdict(
+                        Operation::WebFetch,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: format!("discharge denied: {reason}"),
+                        },
+                    );
+                    return Ok(err_result(format!("discharge denied: {reason}")));
+                }
+            }
+        };
+        let _discharge_note = discharge_witness(&discharge_bundle);
+
         // Perform async fetch with full security controls.
         // NOTE: The fetch happens before execute_and_record() intentionally.
         // execute_and_record's purpose is TOCTOU detection (checking if exposure
@@ -963,9 +1229,24 @@ impl NucleusMcpServer {
         let max_bytes = self.state.web_fetch_max_bytes;
         let dns_allow = self.state.dns_allow.clone();
         let url_allow = self.state.url_allow.clone();
+        // The raw reqwest send now lives in the sealed home (`NetEffect::fetch`);
+        // the bundle minted above is the type-level authorization, and
+        // `PolicyEnforced` re-checks `web_fetch` inside it.
+        let effects = portcullis_effects::production_effects_concrete(crate::core_capabilities(
+            &self.state.runtime.policy().capabilities,
+        ));
         let fetch_result: Result<String, String> = async {
-            let resp = request
-                .send()
+            let resp = effects
+                .fetch(
+                    &self.state.web_client,
+                    portcullis_effects::NetCapability::WebFetch,
+                    req_method,
+                    parsed_url,
+                    &[],
+                    None,
+                    None,
+                    portcullis_effects::authority::Authority::new(discharge_bundle),
+                )
                 .await
                 .map_err(|e| format!("fetch failed: {e}"))?;
             let status = resp.status().as_u16();
@@ -983,12 +1264,12 @@ impl NucleusMcpServer {
                 .unwrap_or("");
             crate::web_fetch_policy::check_mime_type(content_type)?;
 
-            let bytes = resp
-                .bytes()
+            // Bounded streaming read: never allocate the whole upstream body, so a
+            // malicious page cannot OOM-kill the enforcement process (audit H-1).
+            let (bytes, truncated) = crate::read_body_capped(resp, max_bytes)
                 .await
                 .map_err(|e| format!("body read failed: {e}"))?;
-            let truncated = bytes.len() > max_bytes;
-            let body = String::from_utf8_lossy(&bytes[..std::cmp::min(bytes.len(), max_bytes)]);
+            let body = String::from_utf8_lossy(&bytes);
             let suffix = if truncated { "\n(truncated)" } else { "" };
             Ok(format!("HTTP {status}\n\n{body}{suffix}"))
         }
@@ -1000,7 +1281,9 @@ impl NucleusMcpServer {
                 // IFC: web content is adversarial-integrity — observing it
                 // taints the session, so subsequent outbound actions are denied
                 // with `IfcUnsafe` (lethal-trifecta guard). (#1633)
-                self.observe_flow(NodeKind::WebContent).await;
+                // Brick 3: content-address the exact fetched response ingested.
+                self.observe_flow(NodeKind::WebContent, response.as_bytes())
+                    .await;
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
             Err(e) => {
@@ -1058,6 +1341,13 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
     ActionTerm::from_operation(operation, subject)
 }
 
+// The sealed discharge preflight (`preflight_runbash`) and its audit-witness
+// helper (`discharge_witness`) now live in the always-compiled `crate::run_gate`
+// module, so the non-feature-gated HTTP `/v1/run` handler can share them with
+// this feature-gated MCP handler. Re-imported here so the local call sites and
+// the `#[cfg(test)]` module below resolve them unchanged.
+use crate::run_gate::{discharge_witness, preflight_fs, preflight_runbash, preflight_web};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests — enforcement boundary coverage (#1295)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1065,6 +1355,9 @@ fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The `preflight_runbash` scope tests build `TokenScope`s directly; its home
+    // crate import is test-only now that the mint helper moved to `run_gate`.
+    use nucleus_provenance_memory::TokenScope;
 
     // ── build_action_term coverage ──────────────────────────────────────
 
@@ -1145,8 +1438,8 @@ mod tests {
         let obs = term.derive_obligations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
-            "ReadFiles should derive PathAllowed"
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::FsPathAllowed)),
+            "ReadFiles should derive FsPathAllowed"
         );
     }
 
@@ -1156,8 +1449,8 @@ mod tests {
         let obs = term.derive_obligations();
         assert!(
             !obs.iter()
-                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
-            "WebFetch should NOT derive PathAllowed"
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::FsPathAllowed)),
+            "WebFetch should NOT derive FsPathAllowed"
         );
     }
 
@@ -1187,5 +1480,83 @@ mod tests {
                 "{op:?} should derive WithinDelegationCeiling"
             );
         }
+    }
+
+    // ── Live RunBash discharge gate (#2038) ─────────────────────────────────
+    //
+    // `preflight_runbash` is the sole precondition standing between a RunBash
+    // request and `Executor::run_args`: the handler only spawns past its
+    // `Allowed` arm. Anything other than `Allowed` means the handler returns
+    // early and NEVER calls `run_args` (no process is spawned). These tests
+    // exercise that decision directly at all three cases. A clean session
+    // (`FlowTracker::new()`) is used so the five original obligations are
+    // vacuously satisfied and `InScopeWithTask` is the discriminating gate.
+
+    /// The RunBash policy ceiling supplied by the handler; its exact value is
+    /// immaterial to these tests because `requested == ceiling` (honest
+    /// no-escalation) makes `WithinDelegationCeiling` pass for any level.
+    const RUN_BASH_CEILING: CapabilityLevel = CapabilityLevel::LowRisk;
+
+    // (a) Missing/Invalid session token ⇒ verified_scope() is None ⇒ the gate
+    //     DENIES fail-closed (no-vacuous-witness) ⇒ run_args is never reached.
+    #[test]
+    fn runbash_denies_when_session_token_missing_or_invalid() {
+        let flow = FlowTracker::new();
+        // `SessionTaskToken::Missing` and `::Invalid` both return `None` from
+        // `verified_scope()` (see session_token.rs) — modeled here as `None`.
+        let result = preflight_runbash(None, RUN_BASH_CEILING, "rm -rf /", &flow);
+        assert!(
+            result.is_denied(),
+            "no verified scope must DENY RunBash (fail-closed), got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be the InScopeWithTask no-vacuous-witness guard: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no run_args");
+    }
+
+    // (b) A verified token whose scope does NOT include RunBash ⇒ InScopeWithTask
+    //     DENIES ⇒ run_args is never reached.
+    #[test]
+    fn runbash_denies_when_out_of_token_scope() {
+        let flow = FlowTracker::new();
+        // Verified, but RunBash ∉ allowed_operations.
+        let scope = TokenScope::new(
+            vec![Operation::ReadFiles, Operation::GlobSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        assert!(
+            result.is_denied(),
+            "RunBash out of token scope must DENY, got {result:?}"
+        );
+        assert!(
+            result.denial_reason().unwrap().contains("InScopeWithTask"),
+            "denial must be InScopeWithTask: {result:?}"
+        );
+        assert!(!result.is_allowed(), "must not mint a bundle ⇒ no run_args");
+    }
+
+    // (c) A verified, in-scope token ⇒ the gate ALLOWS and mints the sealed
+    //     `DischargedBundle` ⇒ the handler proceeds to run_args.
+    #[test]
+    fn runbash_succeeds_with_valid_in_scope_token() {
+        let flow = FlowTracker::new();
+        let scope = TokenScope::new(
+            vec![Operation::RunBash, Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_runbash(Some(&scope), RUN_BASH_CEILING, "cargo test", &flow);
+        assert!(
+            result.is_allowed(),
+            "valid in-scope token must ALLOW RunBash (reach run_args), got {result:?}"
+        );
+        // The Allowed bundle is the sealed 8-witness proof the handler consumes.
+        let bundle = result.unwrap_bundle();
+        assert!(
+            discharge_witness(&bundle).contains("in_scope_with_task"),
+            "bundle must carry the InScopeWithTask witness"
+        );
     }
 }

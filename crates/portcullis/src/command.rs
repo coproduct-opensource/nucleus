@@ -216,13 +216,73 @@ impl CommandLattice {
 
         let program = &words[0];
 
-        // Structured blocked rules take precedence
+        // Structured blocked rules take precedence. Match against the program's
+        // BASENAME so a path-qualified interpreter (`/bin/bash -c …`,
+        // `/usr/bin/python3 -c …`) cannot bypass a bare-name block rule
+        // (SECURITY_TODO #4). Applied to BLOCKING only — never widens the
+        // allowlist. Interpreter rules only match on their dangerous arg-patterns
+        // (`-c`/`-e`/`-Command`/`-r`), so honest path-qualified programs are
+        // unaffected.
+        let words_basename: Vec<String> = {
+            let mut w = words.clone();
+            let base = w[0].rsplit('/').next().unwrap_or(w[0].as_str()).to_string();
+            w[0] = base;
+            w
+        };
         if self
             .blocked_rules
             .iter()
-            .any(|rule| rule_matches(rule, &words))
+            .any(|rule| rule_matches(rule, &words_basename))
         {
             return false;
+        }
+
+        // Unwrap a leading `env [flags] [NAME=VALUE]...` wrapper and re-check the
+        // block rules against the REAL wrapped program (basename-normalized), so
+        // `env bash -c …`, `env FOO=bar bash -c …`, `/usr/bin/env python3 -c …`,
+        // and `env -S 'bash -c …'` cannot bypass interpreter blocks (SECURITY_TODO
+        // #4). Documented bypass class (OpenClaw GHSA env -S/--split-string
+        // interpretation mismatch): skip all flags conservatively; re-split -S.
+        if let Some(unwrapped) = unwrap_env_prefix(&words) {
+            if let Some(first) = unwrapped.first() {
+                let mut u = unwrapped.clone();
+                u[0] = first
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(first.as_str())
+                    .to_string();
+                if self.blocked_rules.iter().any(|rule| rule_matches(rule, &u)) {
+                    return false;
+                }
+            }
+        }
+
+        // Living-off-the-land hardening: apply the block checks to EVERY pipeline
+        // / chain stage, not just the first program. In permissive mode `|`, `&&`,
+        // `;` are allowed, so a dangerous interpreter or exec-form after one of
+        // them (`… | xargs sh`, `x && bash -c y`) would otherwise evade the
+        // word[0]-only checks above. Each stage is basename-normalized (so a
+        // path-qualified program cannot bypass) before matching.
+        for stage in split_pipeline(&words) {
+            if stage.is_empty() {
+                continue;
+            }
+            let mut stage_bn = stage.clone();
+            stage_bn[0] = stage_bn[0]
+                .rsplit('/')
+                .next()
+                .unwrap_or(stage_bn[0].as_str())
+                .to_string();
+            if self
+                .blocked_rules
+                .iter()
+                .any(|rule| rule_matches(rule, &stage_bn))
+            {
+                return false;
+            }
+            if is_dangerous_exec_form(&stage_bn[0], &stage_bn[1..]) {
+                return false;
+            }
         }
 
         // Check blocked patterns against:
@@ -489,11 +549,25 @@ fn default_blocked_rules() -> Vec<CommandPattern> {
             ],
         });
     }
-    for program in ["python", "python3"] {
+    for program in ["python", "python3", "python2", "pypy", "pypy3"] {
         rules.push(CommandPattern {
             program: program.to_string(),
             args: vec![
                 ArgPattern::Exact("-c".to_string()),
+                ArgPattern::AnyRemaining,
+            ],
+        });
+    }
+    // Additional interpreters with an inline-eval form (arbitrary code from a
+    // string, like `node -e`). `deno eval` is intentionally omitted here — it is
+    // already caught by the "eval" substring in the default blocked set — and
+    // `bun run` / `lua script.lua` / `Rscript file.R` (running a local target)
+    // are deliberately NOT blocked; only the `-e`/inline form is.
+    for (program, flag) in [("bun", "-e"), ("lua", "-e"), ("Rscript", "-e")] {
+        rules.push(CommandPattern {
+            program: program.to_string(),
+            args: vec![
+                ArgPattern::Exact(flag.to_string()),
                 ArgPattern::AnyRemaining,
             ],
         });
@@ -544,6 +618,66 @@ fn default_blocked_rules() -> Vec<CommandPattern> {
     rules
 }
 
+/// True if `tok` is a shell `NAME=VALUE` environment assignment.
+fn is_env_assignment(tok: &str) -> bool {
+    match tok.find('=') {
+        Some(eq) if eq > 0 => {
+            let name = &tok[..eq];
+            name.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// If `words` is an `env`-wrapped invocation, return the effective command (real
+/// program + its args) after stripping `env`, its option flags, and `NAME=VALUE`
+/// assignments; `None` otherwise. `-S`/`--split-string` re-splits the smuggled
+/// command string. All other `-`-flags are skipped conservatively so an unknown
+/// flag cannot hide the wrapped interpreter.
+fn unwrap_env_prefix(words: &[String]) -> Option<Vec<String>> {
+    let prog = words.first()?;
+    if prog.rsplit('/').next().unwrap_or(prog.as_str()) != "env" {
+        return None;
+    }
+    let mut i = 1;
+    while i < words.len() {
+        let tok = words[i].as_str();
+        if tok == "-S" || tok == "--split-string" {
+            let val = words.get(i + 1)?;
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 2..]);
+            return Some(split);
+        }
+        if let Some(val) = tok.strip_prefix("--split-string=") {
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 1..]);
+            return Some(split);
+        }
+        if let Some(val) = tok.strip_prefix("-S") {
+            let mut split = shell_words::split(val).ok()?;
+            split.extend_from_slice(&words[i + 1..]);
+            return Some(split);
+        }
+        if matches!(tok, "-u" | "--unset" | "-C" | "--chdir") {
+            i += 2; // flag consumes its value
+            continue;
+        }
+        if tok.starts_with('-') {
+            i += 1; // any other flag (-i, -0, -P, --null, unknown)
+            continue;
+        }
+        if is_env_assignment(tok) {
+            i += 1;
+            continue;
+        }
+        return Some(words[i..].to_vec()); // first real program onward
+    }
+    None
+}
+
 fn rule_matches(rule: &CommandPattern, words: &[String]) -> bool {
     if words.is_empty() {
         return false;
@@ -573,6 +707,76 @@ fn rule_matches(rule: &CommandPattern, words: &[String]) -> bool {
         }
     }
     true
+}
+
+/// Split a parsed command line into its pipeline / chain stages on the shell
+/// control operators `|`, `||`, `&&`, `;`, `&`. `shell_words` keeps these as
+/// standalone tokens, so a dangerous interpreter or exec-form after one of them
+/// (`… | xargs sh`, `x && bash -c y`) is otherwise invisible to a check that
+/// only inspects `words[0]`. Empty stages (e.g. a trailing `;`) are dropped.
+fn split_pipeline(words: &[String]) -> Vec<Vec<String>> {
+    let mut stages = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    for w in words {
+        if matches!(w.as_str(), "|" | "||" | "&&" | ";" | "&") {
+            if !cur.is_empty() {
+                stages.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(w.clone());
+        }
+    }
+    if !cur.is_empty() {
+        stages.push(cur);
+    }
+    stages
+}
+
+/// Position-independent detection of GTFOBins "living-off-the-land" exec forms
+/// whose danger comes from a flag or embedded program text at a *variable*
+/// position, so it cannot be expressed as a positional `CommandPattern`.
+/// `program` is the command basename (the caller path-normalizes first).
+///
+/// Best-effort by nature — program text can be obfuscated — so the sandbox and
+/// uninhabitable-state gates remain the containment of last resort. Blocking
+/// here means a legitimate need (e.g. `find -exec`) must be explicitly
+/// allowlisted, consistent with how `bash -c` is treated.
+fn is_dangerous_exec_form(program: &str, args: &[String]) -> bool {
+    match program {
+        // find/gfind -exec/-execdir/-ok/-okdir run an arbitrary command per match.
+        // (-exec/-execdir are also caught by the "exec" substring block; -ok/-okdir
+        // were not — this covers all four uniformly.)
+        "find" | "gfind" => args
+            .iter()
+            .any(|a| matches!(a.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")),
+        // awk family can shell out via `system(...)` or `"cmd" | getline`.
+        "awk" | "gawk" | "mawk" | "nawk" => args
+            .iter()
+            .any(|a| a.contains("system(") || a.contains("|getline") || a.contains("| getline")),
+        // Direct `xargs <interpreter>` builds + runs an arbitrary command. (Piped
+        // `… | xargs <interp>` is caught by segmenting the pipeline before this.)
+        "xargs" => args.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "bash"
+                    | "sh"
+                    | "zsh"
+                    | "fish"
+                    | "python"
+                    | "python2"
+                    | "python3"
+                    | "pypy"
+                    | "pypy3"
+                    | "node"
+                    | "deno"
+                    | "bun"
+                    | "ruby"
+                    | "perl"
+                    | "php"
+            )
+        }),
+        _ => false,
+    }
 }
 
 fn meet_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
@@ -756,6 +960,123 @@ mod tests {
         assert!(lattice.can_execute("npm test"));
         assert!(lattice.can_execute("python script.py"));
         assert!(!lattice.can_execute("sudo rm -rf /")); // But blocks dangerous
+    }
+
+    /// SECURITY_TODO #4: a path-qualified interpreter must not bypass a bare-name
+    /// interpreter block rule. Before the basename-normalization fix, the three
+    /// path-qualified asserts RED (rule_matches compares exact program name, so
+    /// `/bin/bash` != `bash`) — a direct exfiltration-sink bypass.
+    #[test]
+    fn path_qualified_interpreter_cannot_bypass_block() {
+        let lattice = CommandLattice::permissive();
+        // Baseline: the bare interpreter form is blocked.
+        assert!(!lattice.can_execute("bash -c 'echo hi'"));
+        // The path-qualified forms MUST be blocked too (RED pre-fix).
+        assert!(
+            !lattice.can_execute("/bin/bash -c 'echo hi'"),
+            "path-qualified /bin/bash -c must NOT bypass the bash -c block"
+        );
+        assert!(
+            !lattice.can_execute("/usr/bin/python3 -c 'print(1)'"),
+            "path-qualified python3 -c must NOT bypass"
+        );
+        assert!(
+            !lattice.can_execute("/usr/local/bin/node -e 'x'"),
+            "path-qualified node -e must NOT bypass"
+        );
+        // No over-block: an honest path-qualified non-interpreter is still allowed.
+        assert!(lattice.can_execute("/usr/bin/git status"));
+    }
+
+    /// SECURITY_TODO #4: an `env` wrapper must not smuggle a blocked interpreter
+    /// past the block rules. `env bash -c …` has words[0]="env", so neither the
+    /// exact nor the basename match reaches the wrapped interpreter. Documented
+    /// bypass class (OpenClaw GHSA env -S/--split-string). REDs pre-fix.
+    #[test]
+    fn env_wrapper_cannot_bypass_interpreter_block() {
+        let lattice = CommandLattice::permissive();
+        assert!(
+            !lattice.can_execute("env bash -c 'echo hi'"),
+            "env bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env FOO=bar bash -c 'echo hi'"),
+            "env NAME=VALUE bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env -i bash -c 'echo hi'"),
+            "env -i bash -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("/usr/bin/env python3 -c 'print(1)'"),
+            "path-qualified env python3 -c must not bypass"
+        );
+        assert!(
+            !lattice.can_execute("env -S 'bash -c \"echo hi\"'"),
+            "env -S split-string must not smuggle bash -c"
+        );
+        // No over-block: honest env usage still allowed.
+        assert!(lattice.can_execute("env FOO=bar make test"));
+        assert!(lattice.can_execute("env python3 script.py"));
+    }
+
+    /// GTFOBins / living-off-the-land: interpreters with an inline-code form
+    /// (`-c`/`-e`) beyond the ones already ruled. Payloads deliberately avoid the
+    /// incidental "eval"/"exec" substring block so each assert isolates the NEW
+    /// rule (RED on main: python2/pypy/bun/lua/Rscript are unruled there).
+    #[test]
+    fn additional_interpreters_cannot_bypass_block() {
+        let l = CommandLattice::permissive();
+        assert!(!l.can_execute("python2 -c 'import os; os.system(\"id\")'"));
+        assert!(!l.can_execute("pypy -c 'print(1)'"));
+        assert!(!l.can_execute("pypy3 -c 'print(1)'"));
+        assert!(!l.can_execute("/usr/bin/python2 -c 'print(1)'")); // path-qualified
+        assert!(!l.can_execute("bun -e 'process.exit(1)'"));
+        assert!(!l.can_execute("lua -e 'os.exit()'"));
+        assert!(!l.can_execute("Rscript -e 'q()'"));
+        // NOT over-blocked: running a local script/target is legitimate.
+        assert!(l.can_execute("bun run build"));
+        assert!(l.can_execute("python3 script.py"));
+        assert!(l.can_execute("lua script.lua"));
+    }
+
+    /// GTFOBins exec-forms whose danger is a flag / embedded program text at a
+    /// variable position (not expressible as a positional CommandPattern).
+    /// `find -ok/-okdir`, `awk system()`, direct `xargs <interp>` are genuinely
+    /// unblocked on main (RED); `-exec/-execdir` were only incidentally caught by
+    /// the "exec" substring — now covered explicitly (defense-in-depth).
+    #[test]
+    fn gtfobins_exec_forms_are_blocked() {
+        let l = CommandLattice::permissive();
+        assert!(!l.can_execute("find . -name f -ok rm x ;"));
+        assert!(!l.can_execute("find . -okdir touch x ;"));
+        assert!(!l.can_execute("/usr/bin/find . -ok id ;")); // path-qualified
+        assert!(!l.can_execute("find . -exec id ;"));
+        assert!(!l.can_execute("find / -execdir id ;"));
+        assert!(!l.can_execute("awk 'BEGIN{system(\"id\")}'"));
+        assert!(!l.can_execute("gawk 'BEGIN{system(\"id\")}'"));
+        assert!(!l.can_execute("xargs -a /dev/null sh"));
+        // NOT over-blocked: ordinary find/awk/xargs usage stays allowed.
+        assert!(l.can_execute("find . -name '*.rs'"));
+        assert!(l.can_execute("find . -type f"));
+        assert!(l.can_execute("awk '{print $1}'"));
+        assert!(l.can_execute("xargs echo"));
+    }
+
+    /// Living-off-the-land via a pipeline/chain: a dangerous interpreter or
+    /// exec-form after `|`, `&&`, `||`, `;` currently evades the word[0]-only
+    /// checks (RED on main). Every STAGE is now checked.
+    #[test]
+    fn piped_and_chained_lolbins_are_blocked() {
+        let l = CommandLattice::permissive();
+        assert!(!l.can_execute("find . -type f | xargs sh"));
+        assert!(!l.can_execute("echo x | python2 -c 'print(1)'"));
+        assert!(!l.can_execute("ls && bash -c 'id'"));
+        assert!(!l.can_execute("true ; awk 'BEGIN{system(\"id\")}'"));
+        // NOT over-blocked: ordinary pipelines/chains stay allowed.
+        assert!(l.can_execute("ls | grep foo"));
+        assert!(l.can_execute("cargo build && cargo test"));
+        assert!(l.can_execute("find . -type f | xargs rm")); // rm is not an interpreter
     }
 
     #[test]

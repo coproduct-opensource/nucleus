@@ -139,8 +139,14 @@ pub fn memory_recall_core(
 
     // Observe with the record's OWN (possibly promoted) label — never the fixed
     // intrinsic memory label, which would launder an adversarial record.
+    //
+    // Brick 3: content-address the *actual recalled bytes* (`record.value`),
+    // recomputed here from the real record — NEVER the agent-supplied
+    // `req.content_hash` lookup key, which is only used to locate the record and
+    // must not be trusted as the ingested content's digest.
     let ifc = memory_ifc_label(&effective_label, now);
-    flow.observe_with_label(NodeKind::MemoryRead, ifc, &[])
+    let content_hash = crate::ingest_content_hash(record.value.as_bytes());
+    flow.observe_with_label_and_content_hash(NodeKind::MemoryRead, ifc, &[], content_hash)
         .map_err(|e| ApiError::IfcDenied(format!("flow observe failed: {e}")))?;
 
     Ok(MemoryRecallResp {
@@ -148,4 +154,140 @@ pub fn memory_recall_core(
         label: effective_label,
         declassified,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nucleus_provenance_memory::{recompute::derive_label, SourceClass, TransformRegistry};
+    use sha2::{Digest, Sha256};
+
+    fn sha256(bytes: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize().into()
+    }
+
+    /// Build an admitted (honest-but-poisoned web) record carrying `value`.
+    fn admit_record(set: &mut ProvenanceMemorySet, value: &str) -> MemoryRecord {
+        let d = MemoryDerivation::RawIngest {
+            source_class: SourceClass::Web,
+            source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
+        };
+        let label = derive_label(&d, &[]);
+        let rec = MemoryRecord::new(value, SchemaType::String, label, d);
+        assert!(
+            set.verified_admit(&rec, &TransformRegistry::new())
+                .is_match(),
+            "honest web record must be admitted"
+        );
+        rec
+    }
+
+    /// (a) A recalled record produces a MemoryRead node whose content hash equals
+    /// the SHA-256 of the exact recalled bytes (`record.value`) — recomputed from
+    /// the real record, NOT the agent-supplied `req.content_hash` lookup key.
+    #[test]
+    fn recall_content_addresses_the_recalled_bytes() {
+        let mut set = ProvenanceMemorySet::new();
+        let rec = admit_record(&mut set, "the recalled value bytes");
+        let req = MemoryRecallReq {
+            content_hash: rec.content_hash().to_hex(),
+            declassify: None,
+        };
+
+        let mut flow = FlowTracker::new();
+        let resp = memory_recall_core(&set, &mut flow, &[], 0, 0, req).unwrap();
+
+        // Node 1 is the MemoryRead we just observed.
+        let node_hash = flow
+            .content_hash(1)
+            .expect("MemoryRead node carries a hash");
+        assert_eq!(
+            node_hash.as_bytes(),
+            &sha256(resp.value.as_bytes()),
+            "node hash must equal SHA-256 of the exact recalled bytes"
+        );
+        // And it is NOT the agent-supplied lookup key's digest.
+        assert_ne!(
+            node_hash.as_bytes(),
+            rec.content_hash().as_bytes(),
+            "the ingest hash is over the value bytes, not the record address"
+        );
+    }
+
+    /// (b) Non-forgeable: two records with different values recall to different
+    /// node hashes — poisoned content cannot collide with benign content.
+    #[test]
+    fn recall_hash_is_non_forgeable() {
+        let mut set = ProvenanceMemorySet::new();
+        let a = admit_record(&mut set, "benign value");
+        let b = admit_record(&mut set, "benign value.");
+
+        let mut flow = FlowTracker::new();
+        memory_recall_core(
+            &set,
+            &mut flow,
+            &[],
+            0,
+            0,
+            MemoryRecallReq {
+                content_hash: a.content_hash().to_hex(),
+                declassify: None,
+            },
+        )
+        .unwrap();
+        memory_recall_core(
+            &set,
+            &mut flow,
+            &[],
+            0,
+            0,
+            MemoryRecallReq {
+                content_hash: b.content_hash().to_hex(),
+                declassify: None,
+            },
+        )
+        .unwrap();
+
+        assert_ne!(
+            flow.content_hash(1),
+            flow.content_hash(2),
+            "distinct recalled bytes must produce distinct node hashes"
+        );
+    }
+
+    /// (c) Label/taint behaviour is unchanged: the hashed recall yields the exact
+    /// same node label as the pre-brick `observe_with_label` path — the record's
+    /// OWN (adversarial) label is preserved, never laundered.
+    #[test]
+    fn recall_hash_does_not_change_label_or_taint() {
+        let mut set = ProvenanceMemorySet::new();
+        let rec = admit_record(&mut set, "poisoned note");
+        let req = MemoryRecallReq {
+            content_hash: rec.content_hash().to_hex(),
+            declassify: None,
+        };
+
+        // New hashed path.
+        let mut flow_new = FlowTracker::new();
+        memory_recall_core(&set, &mut flow_new, &[], 0, 0, req).unwrap();
+
+        // Old label-only path (what the site did before brick 3).
+        let mut flow_old = FlowTracker::new();
+        flow_old
+            .observe_with_label(NodeKind::MemoryRead, memory_ifc_label(&rec.label, 0), &[])
+            .unwrap();
+
+        assert_eq!(
+            flow_new.label(1),
+            flow_old.label(1),
+            "label must be identical to the pre-hash path"
+        );
+        assert_eq!(flow_new.is_tainted(), flow_old.is_tainted());
+        assert!(flow_new.is_tainted(), "adversarial record still taints");
+        // The only difference is the added hash.
+        assert!(flow_new.content_hash(1).is_some());
+        assert_eq!(flow_old.content_hash(1), None);
+    }
 }

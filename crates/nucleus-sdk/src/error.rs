@@ -81,6 +81,11 @@ pub fn from_error_payload(status: u16, payload: &Value) -> Error {
         | "sandbox_escape"
         | "uninhabitable_blocked"
         | "insufficient_capability"
+        // The permission kernel refused for a reason that is not a capability
+        // level — a delegation ceiling, an isolation gate, an expired session.
+        // It is an access denial like the rest; without this arm it would fall
+        // through to the generic `Request` error and lose that classification.
+        | "kernel_denied"
         | "dns_not_allowed" => Error::AccessDenied {
             kind: kind.to_string(),
             message,
@@ -117,6 +122,7 @@ mod tests {
             "sandbox_escape",
             "uninhabitable_blocked",
             "insufficient_capability",
+            "kernel_denied",
             "dns_not_allowed",
         ] {
             let payload = json!({

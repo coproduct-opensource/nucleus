@@ -292,15 +292,39 @@ pub fn full_access_context(
 /// Read a file — requires `HasFileRead` capability.
 ///
 /// The compiler rejects calls from contexts missing file read access.
-pub fn read_file<C: HasFileRead>(ctx: &Context<C>, path: &str) -> Result<String, String> {
-    let full = ctx.work_dir().join(path);
-    std::fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))
+///
+/// **Stub, deliberately.** This used to perform a real `std::fs::read_to_string`,
+/// which made it a third filesystem path — and the weakest one: a phantom-type
+/// capability check with no obligation discharge, no `FlowTracker` update, and no
+/// path allowlist, reachable from `NucleusRuntime::with_typed_context`. Six of the
+/// eight operations in this module were already stubs; these two silently were not,
+/// and the `mediated` lint found them.
+///
+/// The typed context demonstrates COMPILE-TIME capability checking. It is not an
+/// effect path, and it should not quietly become one: use `NucleusRuntime` or the
+/// `FileEffect` traits, where a scoped `Authority` is required.
+pub fn read_file<C: HasFileRead>(_ctx: &Context<C>, _path: &str) -> Result<String, String> {
+    Err(
+        "read_file is not an effect path in portcullis-core; use NucleusRuntime::read_file \
+         (preflight + Authority) or the FileEffect trait"
+            .into(),
+    )
 }
 
 /// Write a file — requires `HasFileWrite` capability.
-pub fn write_file<C: HasFileWrite>(ctx: &Context<C>, path: &str, data: &str) -> Result<(), String> {
-    let full = ctx.work_dir().join(path);
-    std::fs::write(&full, data).map_err(|e| format!("{}: {e}", full.display()))
+///
+/// **Stub, deliberately** — see [`read_file`] for why. A real write here would be an
+/// unmediated write reachable from the runtime.
+pub fn write_file<C: HasFileWrite>(
+    _ctx: &Context<C>,
+    _path: &str,
+    _data: &str,
+) -> Result<(), String> {
+    Err(
+        "write_file is not an effect path in portcullis-core; use NucleusRuntime::write_file \
+         (preflight + Authority) or the FileEffect trait"
+            .into(),
+    )
 }
 
 /// Search files by pattern — requires `HasGlobSearch` capability.

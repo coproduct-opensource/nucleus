@@ -45,8 +45,8 @@ pub mod webhook;
 
 pub use app::build_app;
 pub use auth::{
-    resolve_spiffe_auth, verify_jwt_svid, AuthenticatedPrincipal, RequireSpiffeAuth,
-    SpiffeAuthConfig, SpiffeConfigError,
+    require_auth_or_insecure, resolve_spiffe_auth, verify_jwt_svid, AuthenticatedPrincipal,
+    RequireSpiffeAuth, SpiffeAuthConfig, SpiffeConfigError,
 };
 pub use error::ApiError;
 pub use registry::{InMemoryRegistry, JobRegistry, JobRegistryError, RunnerRegistry};

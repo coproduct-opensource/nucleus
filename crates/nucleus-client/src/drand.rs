@@ -335,14 +335,45 @@ mod async_client {
     impl DrandClient {
         /// Create a new drand client with the given configuration.
         ///
+        /// # Errors
+        ///
+        /// Returns the builder error if the HTTP client cannot be constructed.
+        ///
+        /// **This does not make construction panic-free.** `reqwest`'s builder
+        /// panics internally when no rustls crypto provider has been installed,
+        /// before it can return an error — so a binary that has not installed
+        /// one will still die here. That is a separate hazard from the one this
+        /// signature addresses, and it is stated rather than implied because the
+        /// two look identical from a call site.
+        /// The common cause is **no system CA store**, which is the normal state
+        /// of a minimal guest rootfs — `scripts/firecracker/build-rootfs.sh`
+        /// builds from `debian:bookworm-slim`, which ships none.
+        ///
+        /// This used to be `.expect("failed to build HTTP client")`. In a
+        /// microVM the tool-proxy is **PID 1**, so that panic did not fail one
+        /// subsystem — it killed init and panicked the kernel, taking the whole
+        /// guest down with a message that named reqwest rather than the missing
+        /// CA store. Observed on real hardware, not inferred: booting a pod from
+        /// this repository's own rootfs script reproduced it every time.
+        ///
+        /// Returning the error lets the caller decide, and the decision is
+        /// already designed — [`DrandFailMode::Strict`] is the default and means
+        /// reject rather than proceed.
+        ///
         /// # Panics
         ///
         /// Panics if the public key is configured but invalid.
-        pub fn new(config: DrandConfig) -> Self {
+        pub fn new(config: DrandConfig) -> Result<Self, String> {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
-                .expect("failed to build HTTP client");
+                .map_err(|e| {
+                    format!(
+                        "failed to build the drand HTTP client: {e}. The usual cause is that \
+                         the image has no system CA store; install `ca-certificates`, or run \
+                         with drand disabled if this workload does not need anchored approvals."
+                    )
+                })?;
 
             // Parse the public key for BLS verification
             let pubkey = config.public_key.as_ref().map(|pk_hex| {
@@ -356,12 +387,12 @@ mod async_client {
                 .expect("invalid drand public key")
             });
 
-            Self {
+            Ok(Self {
                 config,
                 client,
                 cache: RwLock::new(None),
                 pubkey,
-            }
+            })
         }
 
         /// Get the configuration.
@@ -532,6 +563,40 @@ mod async_client {
 
 #[cfg(feature = "async-drand")]
 pub use async_client::DrandClient;
+
+// Gated on the same feature as the client it tests — `DrandClient` lives in
+// `async_client`, which only exists under `async-drand`.
+#[cfg(all(test, feature = "async-drand"))]
+mod constructor_tests {
+    use super::async_client::DrandClient;
+    use super::DrandConfig;
+
+    /// **The constructor must be fallible.** This is a compile-time guard as
+    /// much as a test: `DrandClient::new` returning `Result` is what stops the
+    /// `.expect("failed to build HTTP client")` from coming back.
+    ///
+    /// That expect took down a whole microVM. The tool-proxy is PID 1 in a
+    /// guest, so a panic in it kills init and panics the kernel — and the
+    /// message named reqwest rather than the actual cause, which was that a
+    /// minimal rootfs has no system CA store. Every unit test passed throughout,
+    /// because the test host has one.
+    /// Asserted as a SIGNATURE rather than by calling it, deliberately.
+    ///
+    /// Calling it here would not test what it claims: `reqwest`'s builder
+    /// **panics internally** when no rustls crypto provider is installed — which
+    /// is this crate's own test configuration — so the call dies inside reqwest
+    /// before any `Result` is produced. That panic is a real residual hazard and
+    /// is documented on [`DrandClient::new`]; it is NOT what this change closed.
+    ///
+    /// What this change closed is the observed one: a missing system CA store,
+    /// which reqwest reports as an `Err`, and which the old `.expect` turned
+    /// into a kernel panic. Binding the function to its type is what keeps that
+    /// `.expect` from coming back.
+    #[test]
+    fn the_constructor_hands_failure_back_instead_of_expecting() {
+        let _shape: fn(DrandConfig) -> Result<DrandClient, String> = DrandClient::new;
+    }
+}
 
 #[cfg(test)]
 mod tests {

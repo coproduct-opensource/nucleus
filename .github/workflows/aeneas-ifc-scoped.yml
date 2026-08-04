@@ -15,8 +15,17 @@ name: Aeneas IFC (scoped extraction + noninterference)
 #   to a dependency-free subgraph with `--start-from`, so Aeneas only translates
 #   the slice we prove over. This job does exactly that.
 #
-# This job is LINUX-ONLY: the macOS local aeneas build is broken (charon-ml
-# skew), so extraction is reproducible only on CI.
+# THIS JOB RUNS ON LINUX for reproducibility (pinned charon/aeneas releases),
+# but the extraction is NOT macOS-only-broken. A previous version of this
+# comment claimed "the macOS local aeneas build is broken (charon-ml skew)";
+# that was checked and is false. On macOS 15 / aarch64 with charon 0.1.223 and
+# aeneas d71d2e3 from ~/.cargo/bin, the scoped extraction of
+# extracted::egress ran clean — 4/4 functions translated, 0 opaque.
+#
+# The one real gotcha, which is what a stale build looks like: `charon cargo`
+# exits 0 and emits NOTHING when cargo has nothing to recompile. Run
+# `cargo clean -p nucleus-ifc-kernel` first. The .llbc lands at the REPO ROOT,
+# not in the crate directory.
 
 on:
   push:
@@ -25,6 +34,14 @@ on:
       - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
+      - "crates/portcullis-core/lean/generated-mediation/**"
+      - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/generated-cap-quantale/**"
+      - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
+      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -33,6 +50,14 @@ on:
       - "crates/nucleus-ifc-kernel/src/extracted/**"
       - "crates/portcullis-core/lean/generated-ifc/**"
       - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/MediationScopeExtracted.lean"
+      - "crates/portcullis-core/lean/generated-mediation/**"
+      - "crates/portcullis-core/lean/generated-egress/**"
+      - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/generated-cap-quantale/**"
+      - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
+      - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
       - ".github/workflows/aeneas-ifc-scoped.yml"
@@ -49,7 +74,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits,nucleus_ifc_kernel::extracted::capability_quantale::caprank,nucleus_ifc_kernel::extracted::capability_quantale::capunit,nucleus_ifc_kernel::extracted::capability_quantale::capbot,nucleus_ifc_kernel::extracted::capability_quantale::capmeet,nucleus_ifc_kernel::extracted::capability_quantale::capjoin,nucleus_ifc_kernel::extracted::capability_quantale::capleq,nucleus_ifc_kernel::extracted::capability_quantale::capresidual"
 
 jobs:
   aeneas-ifc-scoped:
@@ -169,6 +194,97 @@ jobs:
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreIFC.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
+      - name: Canonicalize generated-mediation from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-mediation/PortcullisCoreMediation
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          # Same single disclosed hand-edit as generated-ifc: only the
+          # inter-module import is retargeted so the lib name does not collide.
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreMediation.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-mediation/ canonicalized from the fresh extraction."
+
+      # generated-egress and generated-credential were NOT canonicalized here
+      # until now, and the omission was invisible: both appear in this workflow's
+      # `paths:` triggers, so editing them starts the run, and the build steps
+      # below compile EgressConfinementExtracted and
+      # CredentialNoninterferenceExtracted — against the COMMITTED copies. The
+      # theorems verified a model nothing re-derived from the Rust, so changing
+      # `egress::rule_admits` or `credential::cred_may_deliver` left them green
+      # while describing code that no longer existed. A `paths:` trigger reads as
+      # coverage and is not coverage.
+      #
+      # No new extraction is needed: EXTRACT_ROOTS already names every
+      # egress::* and credential::* root, so ci-generated-ifc/ — one Aeneas run
+      # over the whole scoped slice — contains these definitions too. Same single
+      # disclosed hand-edit as the two steps above: only the inter-module import
+      # is retargeted so the lib names do not collide.
+      - name: Canonicalize generated-egress from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-egress/PortcullisCoreEgress
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-egress $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreEgress.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-egress/ canonicalized from the fresh extraction; theorem builds against it."
+
+      - name: Canonicalize generated-credential from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-credential/PortcullisCoreCredential
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-credential $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreCredential.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-credential/ canonicalized from the fresh extraction; theorem builds against it."
+
+      # generated-cap-quantale is the SIXTH extracted model and the last one that
+      # nothing re-derived. Unlike egress and credential, it needed new
+      # EXTRACT_ROOTS — `capability_quantale` was absent from the scoped
+      # extraction entirely, so the slice did not contain these definitions at
+      # all.
+      #
+      # It also could not be fixed by canonicalizing alone. CapabilityResiduatedQuantaleProofs
+      # is built by portcullis-core-proven-lean.yml, a DIFFERENT workflow with a
+      # different checkout and no charon/aeneas — so a fresh model produced here
+      # would never reach the job proving over it. Canonicalization is
+      # per-checkout; the proof has to be built where the fresh model exists.
+      # That is why the lake build step below gained two targets rather than this
+      # being a one-line addition.
+      - name: Canonicalize generated-cap-quantale from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-cap-quantale/PortcullisCoreCapQuantale
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-cap-quantale $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreCapQuantale.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-cap-quantale/ canonicalized from the fresh extraction; theorem builds against it."
+
       - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
           echo "CANONICAL-TYPES-START"
@@ -193,23 +309,151 @@ jobs:
 
       - name: lake build (extracted core + theorem)
         working-directory: crates/portcullis-core/lean
+        # `shell: bash` is LOAD-BEARING, not style. GitHub's default `run` shell
+        # is `bash -e {0}` — `-e` WITHOUT pipefail — so `lake build X | tee log`
+        # reports TEE's exit status and a failed build passed this step. Naming
+        # the shell explicitly gets `bash --noprofile --norc -eo pipefail {0}`.
+        #
+        # Demonstrated rather than assumed:
+        #   bash -e         -c 'false | tee /dev/null; echo $?'  -> 0
+        #   bash -eo pipefail -c 'false | tee /dev/null; echo $?' -> 1
+        #
+        # Every target below is piped to `tee` so the axiom audit can read the
+        # log, so every one of them was affected.
+        shell: bash
         run: |
           lake build PortcullisCoreIFC
           lake build IntegrityNoninterferenceExtracted 2>&1 | tee /tmp/lake-ifc.log
           lake build ConfidentialityNoninterferenceExtracted 2>&1 | tee /tmp/lake-conf-ifc.log
+          lake build MediationScopeExtracted 2>&1 | tee /tmp/lake-mediation.log
+          # These two were listed in this workflow's `paths:` triggers and built
+          # by NOTHING — editing either fired a job that did not compile it. They
+          # back docs/production-delta.md rows 9 (egress confinement) and 36
+          # (FM-1 credential noninterference), whose quoted axiom profiles were
+          # therefore transcribed rather than produced by a run.
+          lake build PortcullisCoreEgress
+          lake build EgressConfinementExtracted 2>&1 | tee /tmp/lake-egress.log
+          lake build PortcullisCoreCredential
+          lake build CredentialNoninterferenceExtracted 2>&1 | tee /tmp/lake-credential.log
+          # portcullis-core-proven-lean.yml also builds these two, but against the
+          # COMMITTED generated-cap-quantale — it runs no extraction, and
+          # canonicalization only affects the checkout that performs it. Building
+          # them here is what makes the residuation adjunction a claim about the
+          # CURRENT Rust rather than about a snapshot. Both jobs now build them;
+          # only this one proves over a freshly derived model.
+          lake build PortcullisCoreCapQuantale
+          lake build CapabilityResiduatedQuantaleProofs 2>&1 | tee /tmp/lake-capquantale.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         working-directory: crates/portcullis-core/lean
+        shell: bash
         run: |
-          echo "=== #print axioms output (from build log) ==="
-          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-ifc.log || true
-          if grep -qE "sorryAx|External" /tmp/lake-ifc.log; then
+          LOGS="/tmp/lake-ifc.log /tmp/lake-mediation.log /tmp/lake-egress.log /tmp/lake-credential.log"
+
+          # NON-VACUITY FIRST. Every check below is "the log does not contain a
+          # bad string", and an EMPTY log satisfies all of them — which is
+          # exactly what a failed or skipped build produces. So require positive
+          # evidence that `#print axioms` actually ran before believing its
+          # silence about sorryAx.
+          for log in $LOGS; do
+            if [ ! -s "$log" ]; then
+              echo "ERROR: $log is missing or empty. The build did not run, so the"
+              echo "axiom assertions below would pass by saying nothing."
+              exit 1
+            fi
+            if ! grep -qE "^'[^']+' depends on axioms|depends on axioms" "$log"; then
+              echo "ERROR: $log contains no '#print axioms' output. The theorems it"
+              echo "should audit were not elaborated, so this step is asserting"
+              echo "nothing about them."
+              exit 1
+            fi
+          done
+
+          echo "=== #print axioms output (from build logs) ==="
+          for log in $LOGS; do
+            echo "--- $log ---"
+            grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" "$log" || true
+          done
+
+          if grep -qE "sorryAx|External" $LOGS; then
             echo "ERROR: dirty axiom set — sorryAx or an opaque *External axiom is on the proof's critical path."
             exit 1
           fi
           echo "No sorryAx / opaque-External axiom detected in the axiom audit."
+
+          # EVERY axiom named must be on the clean-Lean allowlist.
+          #
+          # An ALLOWLIST (subset), not the expected SET (equality). The two are
+          # not the same decision and only one of them is safe to make today:
+          #
+          # * Equality would pin what docs/production-delta.md QUOTES — and those
+          #   profiles have never been produced by a run, so pinning them encodes
+          #   a transcription. If reality differs CI reds for the wrong reason,
+          #   and the natural response is to edit the gate to match, which trains
+          #   people to silence gates rather than read them.
+          # * Subset needs no ground truth: it passes whichever subset is really
+          #   printed. It cannot red for the wrong reason, and it still catches
+          #   everything the grep above misses.
+          #
+          # What the grep above does NOT catch and this does: `Lean.ofReduceBool`
+          # (introduced by `native_decide`), which matches neither `sorryAx` nor
+          # `External`. The textual scan below covers these four proof files and
+          # their generated dirs; a `native_decide` in a dependency OUTSIDE those
+          # paths would land in the profile and pass unremarked without this.
+          #
+          # These three are the standard clean-Lean axiom set, so the allowlist
+          # is not a guess about these particular files.
+          ALLOWED="propext|Classical.choice|Quot.sound"
+          # `|| true` because a grep matching nothing exits 1, and under pipefail
+          # that would fail the assignment and RED a clean log — verified against
+          # a clean log rather than assumed.
+          # FLATTEN NEWLINES FIRST. Lean WRAPS long axiom lists:
+          #
+          #   'thm' depends on axioms: [propext,
+          #    Classical.choice,
+          #    Quot.sound]
+          #
+          # A line-based `grep -o` never matches those — no closing `]` on the
+          # line — so it silently audits only the unwrapped ones. Measured on the
+          # real output: 3 of 7 credential theorems matched before this fix, and
+          # the step still reported success, because "found no bad axiom" is true
+          # of the four it never looked at.
+          #
+          # Every fixture I invented for this check was single-line. The real
+          # build is what found it.
+          flat=$(cat $LOGS | tr '\n' ' ')
+
+          # SELF-CONSISTENCY, which is what would have caught the above at once:
+          # the number of axiom lists EXTRACTED must equal the number PRINTED. A
+          # parser that silently drops entries fails here instead of passing.
+          printed=$(grep -hc "depends on axioms" $LOGS | paste -sd+ - | bc)
+          extracted=$(printf '%s' "$flat" | grep -oE "depends on axioms: \[[^]]*\]" | wc -l | tr -d ' ')
+          if [ "$printed" != "$extracted" ]; then
+            echo "ERROR: $printed theorems printed an axiom profile but only $extracted were"
+            echo "parsed. The extraction is dropping entries, so the audit below is"
+            echo "asserting nothing about the difference."
+            exit 1
+          fi
+          echo "Axiom profiles parsed: $extracted of $printed printed."
+
+          bad=$(printf '%s' "$flat" | grep -oE "depends on axioms: \[[^]]*\]" \
+                | sed -E 's/.*\[([^]]*)\]/\1/' | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
+                | grep -vE "^($ALLOWED)$" | grep -v '^$' | sort -u || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: axiom(s) outside the clean set on a proof's critical path:"
+            echo "$bad" | sed 's/^/  /'
+            echo "Allowed: propext, Classical.choice, Quot.sound."
+            echo "If one of these is genuinely intended, widening the allowlist is a"
+            echo "decision to record in docs/production-delta.md, not a CI edit."
+            exit 1
+          fi
+          echo "Every axiom named is on the clean-Lean allowlist."
+
+          # STILL NOT DONE, and deliberately: asserting the set EQUALS what the
+          # docs quote. That needs ground truth from a run. The profiles printed
+          # above are it — pin them in a follow-up, with a real log as input.
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
@@ -220,9 +464,37 @@ jobs:
           # (a real hole shows up as `sorryAx`); this is belt-and-suspenders and
           # must NOT false-positive on the file's own honest prose discussing
           # `sorryAx` / "sorry-free" (a plain substring grep does, and did).
-          if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
+          # `native_decide` now shares the TACTIC-CONTEXT guard with sorry/admit.
+          # It did not, and the comment above already knew why that matters: this
+          # step fired on the two files' own prose EXPLAINING that native_decide
+          # is NOT used —
+          #
+          #   EgressConfinementExtracted.lean:268  `native_decide` ... is not used
+          #   CredentialNoninterferenceExtracted.lean:146  `native_decide` was
+          #     written first ... and then removed
+          #
+          # A gate that fires on the explanation of the property it checks is the
+          # same defect as one that never fires: neither is about the code.
+          #
+          # `^` was INSIDE the alternation group, where it does not anchor — so a
+          # bare tactic on its own line was missed entirely:
+          #
+          #     theorem t : True := by
+          #       sorry            <- NOT caught by the previous pattern
+          #
+          # That hole predates this change and applied to sorry/admit too. It is
+          # mitigated — a real hole shows up as `sorryAx` in the axiom audit above,
+          # which is the authoritative check — but a backstop that misses the most
+          # ordinary formatting of the thing it looks for is not backstopping.
+          if grep -rnE '((:=|=>|\bby\b|<;>|·|;)[[:space:]]*|^[[:space:]]*)(sorry|admit|native_decide)\b' \
                IntegrityNoninterferenceExtracted.lean \
-               generated-ifc/PortcullisCoreIFC/ --include='*.lean'; then
+               MediationScopeExtracted.lean \
+               EgressConfinementExtracted.lean \
+               CredentialNoninterferenceExtracted.lean \
+               generated-ifc/PortcullisCoreIFC/ \
+               generated-mediation/PortcullisCoreMediation/ \
+               generated-egress/PortcullisCoreEgress/ \
+               generated-credential/PortcullisCoreCredential/ --include='*.lean'; then
             echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1
           fi

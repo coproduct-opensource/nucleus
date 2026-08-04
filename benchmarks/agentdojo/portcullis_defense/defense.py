@@ -34,9 +34,24 @@ from agentdojo.functions_runtime import (
 )
 from agentdojo.types import ChatMessage
 
-from .exposure import ExposureSet, apply_record, should_deny
-
 logger = logging.getLogger("portcullis")
+
+_MIRROR_REMOVED = """\
+The pure-Python exposure mirror this defense used has been REMOVED, and is not
+coming back. It reimplemented `exposure_core::should_deny`, a function with no
+live-path callers — the production IFC gate is `ifc_egress_denial`, reached via
+`Kernel::decide_term_with_flow` — and its policy did not match that function
+either. Measured over a 430-decision corpus it disagreed with the real kernel on
+4.2% of decisions, in both directions: it allowed a destructive write in a
+tainted session 15 times, and blocked reads the kernel permits 3 times.
+
+Numbers produced through it would describe a policy nucleus does not run.
+
+To run this benchmark, route tool calls through the `nucleus-flow-replay` crate,
+which drives the real kernel decision path. See
+`crates/nucleus-flow-replay/tests/kernel_vs_mirror.rs` for the divergence
+evidence and `corpus/mirror-verdicts.json` for what the mirror used to decide.
+"""
 
 
 @dataclass
@@ -55,7 +70,7 @@ class GuardedRuntime(FunctionsRuntime):
     triangle. If so, returns an error. Otherwise delegates to the real runtime.
     """
 
-    def __init__(self, inner: FunctionsRuntime, stats: PortcullisStats, exposure: ExposureSet):
+    def __init__(self, inner: FunctionsRuntime, stats: PortcullisStats, exposure: object):
         # Copy the functions registry from the inner runtime
         super().__init__(inner.functions.values())
         self._inner = inner
@@ -63,7 +78,7 @@ class GuardedRuntime(FunctionsRuntime):
         self._exposure = exposure
 
     @property
-    def exposure(self) -> ExposureSet:
+    def exposure(self) -> object:
         return self._exposure
 
     def run_function(
@@ -73,25 +88,11 @@ class GuardedRuntime(FunctionsRuntime):
         kwargs: Mapping[str, FunctionCallArgTypes],
         raise_on_error: bool = False,
     ) -> tuple[FunctionReturnType, str | None]:
-        if should_deny(self._exposure, function):
-            self._stats.blocked += 1
-            self._stats.blocked_tools.append(function)
-            logger.info("BLOCKED %s (exposure: %s)", function, self._exposure)
-            error_msg = (
-                f"SecurityError: tool '{function}' was blocked by Portcullis security policy. "
-                f"The current exposure state would become uninhabitable."
-            )
-            if raise_on_error:
-                raise RuntimeError(error_msg)
-            return "", error_msg
-
-        # Allow — execute and record exposure
-        result, error = self._inner.run_function(env, function, kwargs, raise_on_error)
-        if error is None:
-            self._stats.allowed += 1
-            self._exposure = apply_record(self._exposure, function)
-            self._stats.exposure_trajectory.append(repr(self._exposure))
-        return result, error
+        # Fail loudly rather than degrade to "allow everything". A defense
+        # that silently stops defending is the worst outcome available here:
+        # the benchmark would report a security score for a pipeline that has
+        # no gate in it at all.
+        raise NotImplementedError(_MIRROR_REMOVED)
 
 
 class PortcullisDefense(BasePipelineElement):
@@ -103,23 +104,21 @@ class PortcullisDefense(BasePipelineElement):
     """
 
     def __init__(self) -> None:
-        self._stats = PortcullisStats()
-        self._exposure = ExposureSet.empty()
-        self._guarded: GuardedRuntime | None = None
+        # Refuse at construction, not at the first tool call: a pipeline that
+        # builds successfully and then dies mid-episode wastes a benchmark run
+        # and produces a partial result that looks like data.
+        raise NotImplementedError(_MIRROR_REMOVED)
 
     @property
     def stats(self) -> PortcullisStats:
         return self._stats
 
     @property
-    def exposure(self) -> ExposureSet:
-        if self._guarded is not None:
-            return self._guarded.exposure
-        return self._exposure
+    def exposure(self) -> object:
+        return self._guarded.exposure if self._guarded is not None else None
 
     def reset(self) -> None:
         self._stats = PortcullisStats()
-        self._exposure = ExposureSet.empty()
         self._guarded = None
 
     def query(

@@ -1,0 +1,22 @@
+# Mediation gate — VSOCK allowlist.
+#
+# Credentialed egress asks the HOST to perform a call, over vsock. A vsock
+# `write_all` is invisible to the `.send()` net pattern, so without this pattern
+# that egress left the gate's view at exactly the moment it began working.
+#
+# WHY THIS IS NOT REDUNDANT WITH THE TYPESTATE
+#
+# `broker_client::perform_line` takes an `Authority`, which is constructible only
+# from a `DischargedBundle` whose constructor is private to the discharge module.
+# So a TYPED perform with no discharge does not compile.
+#
+# That signature cannot see a hand-rolled frame: code that opens its own
+# VsockStream, formats the JSON itself and writes it never touches `perform_line`
+# and never needs an `Authority`. The typestate covers the typed path; this
+# covers the raw-primitive escape. Neither subsumes the other, and each is
+# perturbed on its own — a green from both together would otherwise say nothing
+# about which one is load-bearing.
+#
+# ONE ENTRY, and it should stay that way. A second sanctioned vsock client on the
+# agent path is a second thing that must remember to spend an authority.
+file:crates/nucleus-tool-proxy/src/broker_client.rs

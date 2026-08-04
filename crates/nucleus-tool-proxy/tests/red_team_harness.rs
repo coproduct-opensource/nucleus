@@ -39,6 +39,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nucleus::Sandbox;
+// Sanctioned test-only sealed bundle for the `_proof`-gated `Sandbox::write` (B6).
+use nucleus_ifc_kernel::discharge::test_helpers::allowed_bundle;
 use portcullis::kernel::Kernel;
 use portcullis::{
     CapabilityLevel, ExecuteError, GradedExposureGuard, Operation, PermissionLattice, StateRisk,
@@ -382,10 +384,18 @@ impl ToolDispatcher {
         };
 
         // Layer 2: Sandbox read (cap-std + PathLattice) + atomic record
-        match self
-            .guard
-            .execute_and_record(proof, || self.sandbox.read_to_string(path, &decision_token))
-        {
+        match self.guard.execute_and_record(proof, || {
+            self.sandbox.read_to_string(
+                path,
+                &decision_token,
+                portcullis_effects::authority::Authority::new(
+                    nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                        nucleus_ifc_kernel::Operation::ReadFiles,
+                        nucleus_ifc_kernel::SinkClass::AuditLogAppend,
+                    ),
+                ),
+            )
+        }) {
             Ok(contents) => (contents, false),
             Err(ExecuteError::OperationFailed(e)) => (format!("BLOCKED by sandbox: {e}"), true),
             Err(ExecuteError::TocTouDenied { reason }) => {
@@ -415,9 +425,17 @@ impl ToolDispatcher {
             kernel.issue_approved_token(Operation::WriteFiles, &format!("write {path}"))
         };
 
+        // B6: `Sandbox::write` is `_proof`-gated. This red-team harness models a
+        // handler that has already passed the discharge preflight, so it earns a
+        // sanctioned test-only bundle (WriteFiles/WorkspaceWrite term).
+        let discharge_bundle = allowed_bundle();
         match self.guard.execute_and_record(proof, || {
-            self.sandbox
-                .write(path, contents.as_bytes(), &decision_token)
+            self.sandbox.write(
+                path,
+                contents.as_bytes(),
+                &decision_token,
+                portcullis_effects::authority::Authority::new(discharge_bundle),
+            )
         }) {
             Ok(()) => ("ok".into(), false),
             Err(ExecuteError::OperationFailed(e)) => (format!("BLOCKED by sandbox: {e}"), true),

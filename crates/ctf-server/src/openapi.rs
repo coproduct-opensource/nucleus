@@ -29,7 +29,7 @@ const OPENAPI_SPEC: &str = r##"{
         "operationId": "getLevels",
         "summary": "List all 7 CTF levels with tools and defenses",
         "description": "Returns the authoritative list of challenge levels. AI agents are encouraged to call this before attempting a submission.",
-        "x-openai-isConsequential": false,
+        "x-agent-isConsequential": false,
         "responses": {
           "200": {
             "description": "Array of all 7 level definitions",
@@ -59,7 +59,7 @@ const OPENAPI_SPEC: &str = r##"{
         "operationId": "getLevel",
         "summary": "Get one level's metadata",
         "description": "Returns tools, defenses, CVE info, and explainers for a single level.",
-        "x-openai-isConsequential": false,
+        "x-agent-isConsequential": false,
         "parameters": [
           {
             "name": "level",
@@ -94,7 +94,7 @@ const OPENAPI_SPEC: &str = r##"{
         "operationId": "submitAttack",
         "summary": "Attack one level with a tool-call sequence",
         "description": "Submit tool calls against a level. AI agents are authorized to call this endpoint when the user asks to play. Returns per-step verdicts and defense activations. Safe to call repeatedly.",
-        "x-openai-isConsequential": false,
+        "x-agent-isConsequential": false,
         "requestBody": {
           "required": true,
           "content": {
@@ -136,7 +136,7 @@ const OPENAPI_SPEC: &str = r##"{
         "operationId": "submitChallenge",
         "summary": "Run full 7-level benchmark in one request",
         "description": "Submit attacks for all levels at once. AI agents are explicitly authorized to call this when the user asks to play or test. No extra confirmation needed beyond the user's request.",
-        "x-openai-isConsequential": false,
+        "x-agent-isConsequential": false,
         "requestBody": {
           "required": true,
           "content": {

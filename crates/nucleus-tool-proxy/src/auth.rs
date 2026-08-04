@@ -111,6 +111,13 @@ pub enum AuthMethod {
     HmacDrand,
     /// SPIFFE mTLS certificate (no shared secrets).
     SpiffeMtls,
+    /// The request arrived on a vsock listener that accepts only the host.
+    ///
+    /// No shared secret and no certificate: the guest kernel sets the peer CID
+    /// on an accepted AF_VSOCK connection and a guest process cannot forge it,
+    /// so "this came from the host" is enforced below the application rather
+    /// than asserted by it. See `pod_mgmt::peer_is_host`.
+    HostVsock,
 }
 
 /// How the request's identity was bound to its permissions.
@@ -322,6 +329,40 @@ pub fn verify_http_with_drand(
     })
 }
 
+/// Authenticate a request purely from the transport it arrived on.
+///
+/// # Why this needs no secret
+///
+/// `pod_mgmt::VsockAxumListener` drops every peer whose CID is not
+/// `VMADDR_CID_HOST`, and the guest kernel — not the caller — sets that CID.
+/// So a request that reaches the router over that listener has already been
+/// proven to come from the host, by a mechanism no guest process can influence.
+///
+/// This replaces `verify_http`'s HMAC on the vsock path. The HMAC key travelled
+/// on the kernel command line, where the agent could read it out of
+/// `/proc/cmdline` and sign its own requests — a trust boundary drawn inside a
+/// single trust domain, which cannot hold. Verified empirically on a real
+/// kernel: an in-guest loopback peer arrives as CID 1, never CID 2.
+///
+/// Deliberately NOT a fallback. It is selected only when the server was started
+/// on a host-verified vsock listener; every other transport keeps its existing
+/// mechanism.
+pub fn verify_host_vsock() -> AuthContext {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    AuthContext {
+        actor: Some("host".to_string()),
+        timestamp: now,
+        drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::HostVsock,
+        identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
 /// Verify a request using SPIFFE mTLS identity.
 ///
 /// This function validates that a SPIFFE identity was extracted from the
@@ -355,6 +396,45 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
         spiffe_id: Some(spiffe_id.to_string()),
         auth_method: AuthMethod::SpiffeMtls,
         identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
+/// Which authentication mechanism a request should be judged by.
+///
+/// Extracted from the request handler so the PRECEDENCE is unit-testable. The
+/// order is security-critical and easy to get wrong invisibly: if
+/// [`AuthTier::HostVsock`] were consulted after the HMAC fallback it would be
+/// dead code, and every request would still need a key the agent can read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthTier {
+    /// A client certificate was presented — strongest, and independent of how
+    /// the server was bound.
+    SpiffeMtls,
+    /// The approval endpoint, which has its own drand-anchored HMAC.
+    ApprovalHmacDrand,
+    /// The transport already proved the peer is the host.
+    HostVsock,
+    /// Shared-secret HMAC. The residual path, for transports that prove nothing.
+    Hmac,
+}
+
+/// Choose the tier from facts about the request and the binding.
+///
+/// `host_verified_transport` is a property of how the server was STARTED, never
+/// of the request — see `AppState::host_verified_transport`.
+pub fn select_auth_tier(
+    has_spiffe_identity: bool,
+    is_approval_path: bool,
+    host_verified_transport: bool,
+) -> AuthTier {
+    if has_spiffe_identity {
+        AuthTier::SpiffeMtls
+    } else if is_approval_path {
+        AuthTier::ApprovalHmacDrand
+    } else if host_verified_transport {
+        AuthTier::HostVsock
+    } else {
+        AuthTier::Hmac
     }
 }
 
@@ -670,5 +750,112 @@ mod tests {
         let ctx = verify_http_with_drand(&headers, body, &auth).unwrap();
         assert_eq!(ctx.auth_method, AuthMethod::HmacDrand);
         assert!(ctx.spiffe_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod host_vsock_auth_tests {
+    use super::*;
+
+    /// Transport-derived auth carries no secret and no certificate — the
+    /// transport itself is the evidence.
+    #[test]
+    fn host_vsock_context_names_its_method_and_holds_no_credential() {
+        let ctx = verify_host_vsock();
+        assert_eq!(ctx.auth_method, AuthMethod::HostVsock);
+        assert_eq!(ctx.actor.as_deref(), Some("host"));
+        assert!(ctx.spiffe_id.is_none(), "no certificate is involved");
+        assert!(ctx.drand_round.is_none(), "no drand anchoring is involved");
+    }
+
+    /// `HostVsock` must be a DISTINCT method, not an alias of the HMAC path.
+    /// Collapsing them would make an audit record unable to say whether a
+    /// request was proven by the kernel or by a key the agent could read.
+    #[test]
+    fn host_vsock_is_distinguishable_from_the_secret_based_methods() {
+        let ctx = verify_host_vsock();
+        assert_ne!(ctx.auth_method, AuthMethod::Hmac);
+        assert_ne!(ctx.auth_method, AuthMethod::HmacDrand);
+        assert_ne!(ctx.auth_method, AuthMethod::SpiffeMtls);
+    }
+
+    /// It takes NO arguments. That is the security property in the signature:
+    /// there is no header, token or field a request could supply to select this
+    /// method — it is chosen from how the server was bound, never from input.
+    /// If this ever grows a parameter derived from the request, the guarantee
+    /// is gone.
+    #[test]
+    fn host_vsock_cannot_be_influenced_by_request_data() {
+        let a = verify_host_vsock();
+        let b = verify_host_vsock();
+        assert_eq!(a.auth_method, b.auth_method);
+        assert_eq!(a.actor, b.actor);
+    }
+}
+
+#[cfg(test)]
+mod auth_tier_precedence_tests {
+    use super::*;
+
+    /// THE ORDERING PROPERTY. On a host-verified transport, a plain request
+    /// must reach `HostVsock` and NOT fall through to the shared-secret HMAC.
+    /// If the tiers were reordered, this is what fails.
+    #[test]
+    fn a_host_verified_transport_skips_the_shared_secret_hmac() {
+        assert_eq!(
+            select_auth_tier(false, false, true),
+            AuthTier::HostVsock,
+            "a request on a host-only vsock listener must not need the HMAC key"
+        );
+    }
+
+    /// Without a host-verified transport the HMAC remains — this change removes
+    /// a secret where the transport replaces it, it does not remove auth.
+    #[test]
+    fn other_transports_still_require_the_hmac() {
+        assert_eq!(select_auth_tier(false, false, false), AuthTier::Hmac);
+    }
+
+    /// A certificate outranks the transport: mTLS identifies WHO, the transport
+    /// only identifies WHERE FROM. Losing the SPIFFE identity would discard the
+    /// stronger claim.
+    #[test]
+    fn mtls_outranks_the_transport() {
+        assert_eq!(select_auth_tier(true, false, true), AuthTier::SpiffeMtls);
+        assert_eq!(select_auth_tier(true, true, true), AuthTier::SpiffeMtls);
+    }
+
+    /// The approval path keeps its drand anchoring even on a host-verified
+    /// transport. Being from the host proves origin, not freshness — drand is
+    /// what stops pre-computation, and the transport says nothing about that.
+    #[test]
+    fn the_approval_path_keeps_drand_even_on_a_host_verified_transport() {
+        assert_eq!(
+            select_auth_tier(false, true, true),
+            AuthTier::ApprovalHmacDrand,
+            "origin is not freshness — approvals must stay drand-anchored"
+        );
+    }
+
+    /// Exhaustive over all eight inputs, so no combination is unconsidered.
+    #[test]
+    fn every_combination_is_pinned() {
+        let cases = [
+            ((false, false, false), AuthTier::Hmac),
+            ((false, false, true), AuthTier::HostVsock),
+            ((false, true, false), AuthTier::ApprovalHmacDrand),
+            ((false, true, true), AuthTier::ApprovalHmacDrand),
+            ((true, false, false), AuthTier::SpiffeMtls),
+            ((true, false, true), AuthTier::SpiffeMtls),
+            ((true, true, false), AuthTier::SpiffeMtls),
+            ((true, true, true), AuthTier::SpiffeMtls),
+        ];
+        for ((spiffe, approval, host), expected) in cases {
+            assert_eq!(
+                select_auth_tier(spiffe, approval, host),
+                expected,
+                "spiffe={spiffe} approval={approval} host_verified={host}"
+            );
+        }
     }
 }

@@ -252,6 +252,16 @@ fn verify_signature(secret: &[u8], message: &[u8], signature_hex: &str) -> Resul
         .map_err(|_| AuthError::InvalidSignature)
 }
 
+/// Public wrapper so the Article 12 collector can authenticate a body without
+/// duplicating the HMAC comparison — one implementation, constant-time compare.
+pub fn verify_signature_pub(
+    secret: &[u8],
+    message: &[u8],
+    signature_hex: &str,
+) -> Result<(), AuthError> {
+    verify_signature(secret, message, signature_hex)
+}
+
 #[allow(dead_code)]
 pub fn sign_message(secret: &[u8], message: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");

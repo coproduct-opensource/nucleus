@@ -1,0 +1,23 @@
+[package]
+name = "nucleus-flow-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay recorded tool-call traces through the real kernel decision path"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+portcullis = { path = "../portcullis", features = ["serde"] }
+portcullis-core = { path = "../portcullis-core", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[lib]
+name = "nucleus_flow_replay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nucleus-flow-replay"
+path = "src/main.rs"

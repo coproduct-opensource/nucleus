@@ -83,6 +83,8 @@ jobs:
             CompartmentProofs \
             DelegationProofs \
             DerivationProofs \
+            SessionCeilingProofs \
+            ReceiptChainProofs \
             IFCSemilatticeProofs \
             DelegationCategoryProofs \
             GaloisConnectionProofs \
@@ -96,7 +98,9 @@ jobs:
             RepairAlgebraProofs \
             MatrixBridge \
             PortcullisCoreCapQuantale \
-            CapabilityResiduatedQuantaleProofs
+            CapabilityResiduatedQuantaleProofs \
+            AssuranceCoverage \
+            UniversalDetection
           # CapabilityResiduatedQuantaleProofs: the residuation adjunction
           # (a⊗b≤c ⟺ b≤a⊸c) for capability, proven over the Aeneas-extracted
           # capability_quantale slice — the enriching value V of the
@@ -177,15 +181,21 @@ jobs:
           cat > PrintAxioms.lean <<'EOF'
           import FlowProofs
           import DeclassifyProofs
+          import SessionCeilingProofs
+          import ReceiptChainProofs
           import DecidePureProofs
           import CompartmentProofs
           import DelegationProofs
           import ExposureProofs
           import IntegrityNoninterferenceExtracted
           import CapabilityResiduatedQuantaleProofs
+          import AssuranceCoverage
+          import UniversalDetection
           #print axioms FlowProofs.authority_confinement_left
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
+          #print axioms Nucleus.Assurance.suite_not_full
+          #print axioms PortcullisCore.UniversalDetection.universal_detection_impossibility
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
           echo "$AXIOMS"

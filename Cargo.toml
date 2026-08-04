@@ -3,6 +3,8 @@ members = [
     "crates/portcullis",  # Policy: quotient lattice types
     "crates/nucleus-policy-kernel", # PCA: reference monitor (decide / governance_monotone)
     "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)
+    "crates/nucleus-cred-broker",   # CB4A: Credential Delivery Point (holds creds, decides nothing)
+    "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
     "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
@@ -25,6 +27,7 @@ members = [
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF
     "crates/ctf-mcp",                  # MCP server: lets any AI agent play The Vault CTF
+    "crates/nucleus-flow-replay",   # Replay traces through the real kernel decision path
     "crates/nucleus-ifc-kernel",         # IFC admission core: dependency-free reference monitor (Aeneas target)
     "crates/portcullis-core",            # Aeneas verification target: dependency-free lattice types
     "crates/portcullis-effects",         # Sealed effect traits — I/O only through policy-enforced channels
@@ -116,7 +119,7 @@ serde_yaml = "0.9"
 toml = "1.1"
 
 # Content provenance (EU AI Act)
-c2pa = "0.89"
+c2pa = "0.90"
 
 # Error handling
 thiserror = "2.0"
@@ -127,7 +130,7 @@ anyhow = "1.0"
 # NOT drag in a second ed25519-dalek (v2) / sha2 (0.10) line — letting the whole
 # workspace converge on ed25519-dalek 3 + sha2 0.11. Supports the full alg set
 # (RS/PS/ES/EdDSA) we verify. See docs/PROOFS.md and scripts/check-dep-ceiling.sh.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 async-trait = "0.1"
 
 # Async runtime
@@ -143,9 +146,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # OpenTelemetry (opt-in via feature flags)
-# Pinned to 0.31 because tracing-opentelemetry 0.32.1 (latest) still depends on
-# opentelemetry ^0.31; bumping to 0.32 here introduces a Tracer-trait mismatch.
-# Revisit when tracing-opentelemetry releases a 0.32-compatible version.
+# opentelemetry 0.32 pairs with tracing-opentelemetry 0.33 (the 0.33 line is
+# the one built against opentelemetry ^0.32); bump the pair together.
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "trace"] }
@@ -190,7 +192,7 @@ shell-words = "1.1"
 regex = "1.12"
 
 # Encoding
-base64 = "0.22"
+base64 = "0.23"
 
 # Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Pinned to the
 # exact prerelease iroh requires (=3.0.0-pre.7) so the WHOLE workspace resolves a

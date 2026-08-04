@@ -20,6 +20,8 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 [features]
 default = []
 serde = ["dep:serde", "dep:toml", "nucleus-ifc-kernel/serde"]
+# Passthrough: exposes discharge::test_helpers. Dev-dependencies only.
+test-helpers = ["nucleus-ifc-kernel/test-helpers"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
 c2pa-manifest = ["dep:c2pa", "artifact"]

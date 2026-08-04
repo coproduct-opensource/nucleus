@@ -62,7 +62,7 @@ toml = { workspace = true }
 # File-backed keystore — age v1 format is stable and widely deployed
 # (SOPS, rage). The crate version is pre-1.0 (API still stabilizing)
 # but the on-disk format is fixed at age-encryption.org/v1.
-age = "0.11"
+age = "0.12"
 
 # Zeroize the passphrase wrapper. `zeroize_derive` lets future types
 # in this crate opt in declaratively.

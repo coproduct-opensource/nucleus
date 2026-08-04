@@ -1,0 +1,31 @@
+# Mediation gate — NET egress by-file / by-line INFRA allowlist (brick B5).
+#
+# The net pattern (`.send(`) forbids a raw reqwest agent egress on the agent
+# effect path: an agent web_fetch / web_search must go through the sealed
+# `NetEffect::fetch` in portcullis-effects (minted `DischargedBundle`), never a
+# raw `web_client…send()`. INFRA egress (operator/host authority, no agent
+# session/token) is exempt below. Unlike the spawn allowlist this is NOT
+# shrinking debt — these are permanent infra sinks.
+#
+# Two entry kinds:
+#   file:<path>   → whole-file exemption (every `.send(` in the file is infra).
+#   <snippet>     → exact TRIMMED-line exemption embedded in an agent-path file
+#                   (distinctive trailing markers keep a planted bare `.send()`
+#                   from matching).
+
+# Whole-file infra: the tool-proxy's HTTP client to nucleus-node (control plane,
+# operator-provisioned endpoint) — never agent-controlled egress.
+file:crates/nucleus-tool-proxy/src/node_client.rs
+
+# Per-line infra embedded in main.rs (mixed with the — now relocated — agent
+# handlers): audit-trail delivery to operator-configured sinks.
+.send() // net-infra: audit S3 append (aws_sdk_s3, operator sink — not agent egress)
+.send() // net-infra: audit webhook (operator-configured URL — not agent egress)
+
+# Whole-file infra: the Article 12 evidence channel. The URL is
+# operator-configured (`--art12-ship-url`), nothing an agent does can influence
+# it, and what it carries is the runtime's record OF the agent — evidence
+# flowing outward, not agent data. It is a whole-file entry because the file
+# exists for nothing else; a `.send(` appearing here that is not this is a file
+# that has grown a second purpose and should be split.
+file:crates/nucleus-tool-proxy/src/art12_shipper.rs
