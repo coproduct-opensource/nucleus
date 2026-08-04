@@ -327,6 +327,9 @@ fn strip_leading_timestamp(line: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 /// The literal that opens an audit record header.
+/// An Ed25519 signature is 64 bytes, the widest number array this erases.
+const MAX_ERASED_ARRAY_LEN: usize = 64;
+
 const AUDIT_OPEN: &str = "audit(";
 
 /// The literal a kernel audit record line begins with. The rule is anchored to
@@ -603,7 +606,26 @@ fn canonicalise_task_token_hex(line: &str) -> String {
     rewrite_hex_valued_key(line, TOKEN_HEX_KEY, |hex_value| {
         let bytes = hex::decode(hex_value).ok()?;
         let text = String::from_utf8(bytes).ok()?;
-        let mut token: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let token: serde_json::Value = serde_json::from_str(&text).ok()?;
+        // ROUND-TRIP FIDELITY, checked BEFORE any erasure.
+        //
+        // Decoding through `serde_json::Value` silently discards the entire
+        // ENCODING layer: key order, whitespace, escape form, and — the one that
+        // matters — DUPLICATE KEYS, of which the last silently wins. A token
+        // carrying `{"task_id":"CANARY-AAAA","task_id":"t",...}` re-serialised
+        // to the same bytes as one carrying CANARY-BBBB, so a secret smuggled
+        // into the first of two duplicate keys was invisible in exactly the
+        // fields this rule decodes the token in order to KEEP compared.
+        //
+        // So: re-serialise the UNMODIFIED token and require it to be byte-equal
+        // to what was decoded. A token this runtime minted round-trips (it was
+        // produced by the same serialiser); one that does not is carrying
+        // information in its encoding, and this declines rather than erase it.
+        // Fail-closed: declining leaves the raw hex COMPARED.
+        if serde_json::to_string(&token).ok()? != text {
+            return None;
+        }
+        let mut token = token;
         erase_run_scoped_token_fields(&mut token);
         // Compact serialisation: no interior newline can ever be produced (JSON
         // escapes them inside strings), so the line structure the whole
@@ -734,9 +756,26 @@ fn hex_value_of_key(text: &str, key: &str) -> Option<String> {
 fn rewrite_hex_valued_key(line: &str, key: &str, f: impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
+    let mut consumed = 0usize;
     while let Some(i) = rest.find(key) {
         let (head, tail) = rest.split_at(i + key.len());
         out.push_str(head);
+        // POSITIONAL ANCHOR. The key must start a command-line token — i.e. sit
+        // at the start of the line or immediately after a delimiter — rather
+        // than appear anywhere inside one. Unanchored, `...=x nucleus.task_token_hex=`
+        // occurring INSIDE another value was eligible, so the erasure composed
+        // across a line an attacker partly controls.
+        let abs = consumed + i;
+        let preceded_ok = abs == 0
+            || line[..abs]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c == ' ' || c == '"' || c == '\t');
+        consumed = abs + key.len();
+        if !preceded_ok {
+            rest = tail;
+            continue;
+        }
         let end = tail
             .find(|c: char| !c.is_ascii_hexdigit())
             .unwrap_or(tail.len());
@@ -745,6 +784,7 @@ fn rewrite_hex_valued_key(line: &str, key: &str, f: impl Fn(&str) -> Option<Stri
             Some(replacement) => out.push_str(&replacement),
             None => out.push_str(value),
         }
+        consumed += value.len();
         rest = after;
     }
     out.push_str(rest);
@@ -783,9 +823,13 @@ fn erase_run_scoped_token_fields(token: &mut serde_json::Value) {
 /// an object, a mixed array) is left compared.
 fn erase_number_array(slot: Option<&mut serde_json::Value>, marker: &str) {
     if let Some(value) = slot {
+        // WIDTH-BOUNDED. `sig` is a `Vec<u8>` — unbounded at the type level — and
+        // `nonce` a fixed 16 bytes, so an unbounded "all numbers" test was a
+        // channel of unbounded width. An Ed25519 signature is 64 bytes; the bound
+        // is the widest field this erases, so anything larger is not one of them.
         if value
             .as_array()
-            .is_some_and(|a| a.iter().all(serde_json::Value::is_number))
+            .is_some_and(|a| a.len() <= MAX_ERASED_ARRAY_LEN && a.iter().all(serde_json::Value::is_number))
         {
             *value = serde_json::Value::String(marker.to_string());
         }
@@ -1799,6 +1843,99 @@ mod tests {
         assert!(
             scrub(rtc_real, &f, None).contains("<RTC-WALL-CLOCK>"),
             "the real rtc line must normalise"
+        );
+    }
+
+    /// **The encoding-layer channel, as a test.**
+    ///
+    /// Decoding through `serde_json::Value` discards key order, whitespace and
+    /// DUPLICATE KEYS — last wins. So a token carrying
+    /// `{"task_id":"CANARY-AAAA","task_id":"t",...}` re-serialised to the same
+    /// bytes as one carrying CANARY-BBBB, and the secret was invisible in
+    /// exactly the field this rule decodes the token in order to KEEP compared.
+    ///
+    /// The round-trip fidelity check declines any token whose encoding carries
+    /// information, leaving the raw hex compared. Fail-closed.
+    #[test]
+    fn a_secret_in_a_duplicate_key_is_not_swallowed() {
+        let f = RunFacts {
+            pod_id: "aeb31452-ce64-468b-abf4-ea5f23378519".into(),
+            guest_cid: 3,
+        };
+        let dup = |smuggled: &str| {
+            let json = format!(
+                "{{\"task_id\":\"{smuggled}\",\"task_id\":\"t\",\"blocks\":[]}}"
+            );
+            format!("console=ttyS0 {TOKEN_HEX_KEY}{}", hex::encode(json))
+        };
+        let a = scrub(&dup("canary-aaaa"), &f, None);
+        let b = scrub(&dup("canary-bbbb"), &f, None);
+        assert_ne!(
+            a, b,
+            "a secret in the FIRST of two duplicate keys must stay compared; the \
+             re-serialisation drops it and both runs collapse to the same bytes"
+        );
+    }
+
+    /// An oversized number array is not one of the fields this erases.
+    #[test]
+    fn an_oversized_number_array_is_not_erased() {
+        let f = RunFacts {
+            pod_id: "aeb31452-ce64-468b-abf4-ea5f23378519".into(),
+            guest_cid: 3,
+        };
+        let wide = |seed: u16| {
+            let nums: Vec<String> = (0..200).map(|i| ((i + seed) % 251).to_string()).collect();
+            let json = format!(
+                "{{\"blocks\":[{{\"sig\":[{}],\"claim\":{{}}}}]}}",
+                nums.join(",")
+            );
+            format!("console=ttyS0 {TOKEN_HEX_KEY}{}", hex::encode(json))
+        };
+        assert_ne!(
+            scrub(&wide(1), &f, None),
+            scrub(&wide(2), &f, None),
+            "a 200-element array is not a signature and must stay compared"
+        );
+    }
+
+    /// **Two rules each correct alone, wrong composed.**
+    ///
+    /// Rule 3 decodes the task token so `scope.allowed_paths` stays COMPARED —
+    /// that is the whole reason it decodes rather than blanks. Rule 1 then runs
+    /// over the same line, and before it was anchored it would eat a
+    /// `digits.digits` span inside those very paths, re-introducing the
+    /// blindness rule 3 exists to avoid.
+    ///
+    /// The `audit: ` anchor added to rule 1 fixes this for free: a decoded token
+    /// rides a command-line, never a kernel audit record, so rule 1 cannot reach
+    /// it. This pins that the composition stays safe.
+    #[test]
+    fn rule_1_does_not_eat_paths_that_rule_3_decoded_to_keep() {
+        let f = RunFacts {
+            pod_id: "aeb31452-ce64-468b-abf4-ea5f23378519".into(),
+            guest_cid: 3,
+        };
+        let with_path = |p: &str| {
+            let json = format!(
+                "{{\"blocks\":[{{\"claim\":{{\"scope\":{{\"allowed_paths\":[\"{p}\"]}}}}}}]}}"
+            );
+            format!("console=ttyS0 {TOKEN_HEX_KEY}{}", hex::encode(json))
+        };
+        // The secret must sit INSIDE the span rule 1 erases, or this test passes
+        // for the boring reason. A first version used "/data/audit(0.310:aaaa"
+        // — no closing paren, so rule 1 declined whether or not it was anchored,
+        // and removing the anchor did not turn the test red. The clock field
+        // itself is the erased span, so that is where the secret goes.
+        let a = scrub(&with_path("/data/audit(1.111:1)"), &f, None);
+        let b = scrub(&with_path("/data/audit(2.222:1)"), &f, None);
+        assert_ne!(
+            a, b,
+            "rule 1 must not reach inside a decoded token's allowed_paths"
+        );
+        assert!(
+            !a.contains("<BOOT-CLOCK>"),
+            "the boot-clock erasure fired inside a token path: {a}"
         );
     }
 
