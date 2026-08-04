@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "repo": "nucleus",
+  "lean": {
+    "first_party_files": 84,
+    "theorems_lemmas": 891,
+    "sorry_bearing_files": 11,
+    "sorries": 35,
+    "decorative_stubs": 1
+  }
+}
