@@ -9,6 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use portcullis::trace_monitor::TraceMonitor;
 use portcullis::verdict_sink::{
     ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink,
 };
@@ -27,17 +28,88 @@ pub struct ToolProxyVerdictSink {
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
     policy_checksum: String,
     session_id: String,
+    /// Whether DLC-D verified admission is provisioned on this pod's kernels.
+    /// When true, every `Allow` this sink records has — by kernel construction
+    /// (the dlc gate is consulted before any Allow can emerge from
+    /// `decide_term_with_flow`, and complete mediation routes every tool call
+    /// through the kernel) — passed the issuer-credential check.
+    dlc_provisioned: bool,
+}
+
+/// Build the process's verdict sink, already wrapped in its monitor.
+///
+/// # Why this is the only constructor
+///
+/// `ToolProxyVerdictSink::new` is private to this module, so no caller can
+/// obtain an *unmonitored* sink. That is deliberate, and is the same move
+/// `mediation::decide_and_record` makes for the decision: the property "the
+/// live sink chain is monitored" holds because of a module boundary, not
+/// because a call site in `main.rs` remembers to wrap.
+///
+/// The alternative — construct the sink, then wrap it at the call site — is
+/// precisely the shape that has failed repeatedly here: an artifact attached to
+/// the live path by an edit that a later edit can silently undo, with every test
+/// still green. There is nothing to undo if there is nothing else to return.
+///
+/// Returns `(sink, monitor)`. Both handles refer to the same object; the second
+/// exists so the process can read violations back out at `/v1/health` and at
+/// exit.
+#[allow(clippy::too_many_arguments)]
+pub fn build_monitored_sink(
+    file_lockdown: Arc<AtomicBool>,
+    stream_lockdown: Arc<AtomicBool>,
+    capabilities: CapabilityLattice,
+    exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
+    policy_checksum: String,
+    session_id: String,
+    dlc_provisioned: bool,
+    art12_log: Option<Arc<crate::art12::Art12Log>>,
+    art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
+) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
+    let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
+        file_lockdown,
+        stream_lockdown,
+        capabilities,
+        exposure_guard,
+        policy_checksum.clone(),
+        session_id.clone(),
+        dlc_provisioned,
+    ));
+
+    // Article 12 record-keeping, when configured. INSIDE the monitor, so the
+    // monitor still observes every record; and inside this constructor, so
+    // there is no way to assemble a chain that skips it.
+    let inner = match art12_log {
+        Some(log) => Arc::new(crate::art12_sink::Art12Sink::new(
+            inner,
+            log,
+            session_id,
+            policy_checksum,
+            dlc_provisioned,
+            art12_shipper,
+        )) as Arc<dyn VerdictSink>,
+        None => inner,
+    };
+
+    let monitor = Arc::new(TraceMonitor::new(inner));
+    (monitor.clone(), monitor)
 }
 
 impl ToolProxyVerdictSink {
     /// Build from the same fields already present on `AppState`.
-    pub fn new(
+    ///
+    /// Private: see [`build_monitored_sink`]. The unit tests below construct
+    /// bare sinks because their subject is the sink's own behaviour; the live
+    /// path cannot.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
         file_lockdown: Arc<AtomicBool>,
         stream_lockdown: Arc<AtomicBool>,
         capabilities: CapabilityLattice,
         exposure_guard: Arc<std::sync::RwLock<Option<Arc<GradedExposureGuard>>>>,
         policy_checksum: String,
         session_id: String,
+        dlc_provisioned: bool,
     ) -> Self {
         Self {
             file_lockdown,
@@ -46,6 +118,7 @@ impl ToolProxyVerdictSink {
             exposure_guard,
             policy_checksum,
             session_id,
+            dlc_provisioned,
         }
     }
 
@@ -134,8 +207,18 @@ impl VerdictSink for ToolProxyVerdictSink {
         } else {
             match &ctx.outcome {
                 VerdictOutcome::Allow => ("allow", String::new()),
+                // A deferral is NOT a refusal — kept distinct so the Article 14
+                // human-oversight event is legible in telemetry and evidence.
+                VerdictOutcome::RequiresApproval { reason } => {
+                    ("requires_approval", reason.clone())
+                }
                 VerdictOutcome::Deny { reason } => ("deny", reason.clone()),
                 VerdictOutcome::Error { error } => ("error", error.clone()),
+                // `VerdictOutcome` is #[non_exhaustive]. An outcome this build
+                // does not know must not silently read as "allow": record it as
+                // an error naming the gap, so unclassified evidence is visible
+                // rather than flattering.
+                other => ("error", format!("unclassified verdict outcome: {other:?}")),
             }
         };
 
@@ -144,6 +227,19 @@ impl VerdictSink for ToolProxyVerdictSink {
         let actor = Self::actor_str(&ctx.actor);
         let operation = Self::operation_name(ctx.operation);
         let is_ok = verdict_str == "allow";
+        // Attestation of the verified-admission state, per tool call: "admitted"
+        // is only ever emitted when admission is provisioned AND the kernel
+        // allowed (see the `dlc_provisioned` field docs for why that implies
+        // the credential check passed); otherwise the span says so honestly.
+        let dlc_admission = if self.dlc_provisioned {
+            if is_ok {
+                "admitted"
+            } else {
+                "not-admitted"
+            }
+        } else {
+            "unprovisioned"
+        };
 
         // 2. Emit a proper span (not an event) so it has duration and
         //    propagates trace context.  When the `otel` layer is active,
@@ -178,6 +274,7 @@ impl VerdictSink for ToolProxyVerdictSink {
             exposure.exfil_vector = exposure.exfil_vector,
             exposure.uninhabitable = exposure.is_uninhabitable,
             // Context
+            nucleus.dlc_admission = dlc_admission,
             nucleus.lockdown_active = lockdown_active,
             nucleus.lattice_checksum = %self.policy_checksum,
             nucleus.session_id = %self.session_id,
@@ -202,6 +299,131 @@ impl VerdictSink for ToolProxyVerdictSink {
     }
 }
 
+/// Emit one evidence record for a kernel decision — **the single
+/// implementation, used by both transports.**
+///
+/// EU AI Act Article 12 requires post-hoc reconstruction of an individual
+/// decision, so the kernel fields ride `VerdictContext.extensions`: which
+/// permissions were in force before and after, whether a dynamic exposure gate
+/// fired, the machine-stable refusal code, and the decision sequence that joins
+/// this record to the terminal outcome for the same operation.
+///
+/// # Why one function rather than one per transport
+///
+/// The HTTP and MCP paths reach the kernel through different chokepoints, and
+/// implementing this twice is how the two evidence streams silently diverge —
+/// the same failure mode as a duplicated canonical preimage. The transport is a
+/// parameter, not a copy.
+///
+/// Best-effort by design: a failure to record must not fail the call, because at
+/// most call sites the effect has already happened and returning an error would
+/// invite a retry that doubles it. The gap is surfaced as a warning and, once
+/// the durable log is wired, counted so it is explicit rather than silent.
+///
+/// `flow_check` is the causal DAG's independent opinion of the same decision
+/// (`mediation::cross_check_flow`), `None` when the session is untainted and the
+/// answer is fixed. It is a REQUIRED parameter rather than something a caller
+/// may attach: the check exists to be visible in evidence, and a check whose
+/// result only reaches a log line is one a later edit can delete with every test
+/// still green. Passing it here means the call cannot be removed without the
+/// build failing.
+pub(crate) fn record_kernel_decision(
+    sink: &dyn VerdictSink,
+    decision: &portcullis::kernel::Decision,
+    operation: Operation,
+    subject: &str,
+    actor: ActorIdentity,
+    transport: &str,
+    flow_check: Option<crate::mediation::FlowCrossCheck>,
+) {
+    use portcullis::gate_class;
+    use portcullis::kernel::Verdict;
+    use std::collections::BTreeMap;
+
+    let mut extensions = BTreeMap::new();
+    extensions.insert("transport".to_string(), transport.to_string());
+    extensions.insert(
+        "decision_sequence".to_string(),
+        decision.sequence.to_string(),
+    );
+    extensions.insert(
+        "gate_class".to_string(),
+        gate_class::classify(&decision.verdict, &decision.exposure_transition)
+            .as_str()
+            .to_string(),
+    );
+    extensions.insert(
+        "pre_permissions_hash".to_string(),
+        decision.pre_permissions_hash.clone(),
+    );
+    extensions.insert(
+        "post_permissions_hash".to_string(),
+        decision.post_permissions_hash.clone(),
+    );
+    // The DAG's second opinion. `confirmed` / `unconfirmed:<kind>` rather than
+    // the full result: which node broke the flow is session state, and this
+    // record crosses a process boundary.
+    if let Some(check) = &flow_check {
+        extensions.insert(
+            "flow_cross_check".to_string(),
+            match check {
+                crate::mediation::FlowCrossCheck::SkippedGraphTooLarge => {
+                    // Neither a confirmation nor a finding: the check did not run.
+                    "skipped:graph_too_large".to_string()
+                }
+                crate::mediation::FlowCrossCheck::Checked(v) => match v {
+                    portcullis::flow::VerificationResult::Confirmed => "confirmed".to_string(),
+                    portcullis::flow::VerificationResult::Mismatch { .. } => {
+                        "unconfirmed:mismatch".to_string()
+                    }
+                    portcullis::flow::VerificationResult::ActionNodeNotFound => {
+                        "unconfirmed:action_node_not_found".to_string()
+                    }
+                    portcullis::flow::VerificationResult::BrokenParentRef { .. } => {
+                        "unconfirmed:broken_parent_ref".to_string()
+                    }
+                },
+            },
+        );
+    }
+    extensions.insert(
+        "dynamic_gate_applied".to_string(),
+        decision
+            .exposure_transition
+            .dynamic_gate_applied
+            .to_string(),
+    );
+
+    let outcome = match &decision.verdict {
+        Verdict::Allow => VerdictOutcome::Allow,
+        Verdict::RequiresApproval => VerdictOutcome::RequiresApproval {
+            reason: "approval required before this operation may proceed".to_string(),
+        },
+        Verdict::Deny(reason) => {
+            // The machine-stable serde tag, never `Debug` — an auditor's saved
+            // query keys on this, and `Debug` shifts when a variant changes.
+            extensions.insert(
+                "deny_code".to_string(),
+                gate_class::deny_code(reason).to_string(),
+            );
+            VerdictOutcome::Deny {
+                reason: format!("{reason:?}"),
+            }
+        }
+    };
+
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome,
+        actor,
+        policy_rule: None,
+        extensions,
+    }) {
+        tracing::warn!(error = %e, ?operation, subject, "kernel-decision recording failed -- audit gap");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,7 +437,200 @@ mod tests {
             Arc::new(std::sync::RwLock::new(None)),
             "test-checksum".to_string(),
             "test-session".to_string(),
+            false,
         )
+    }
+
+    fn built() -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
+        build_monitored_sink(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            CapabilityLattice::default(),
+            Arc::new(std::sync::RwLock::new(None)),
+            "test-checksum".to_string(),
+            "test-session".to_string(),
+            false,
+            None,
+            None,
+        )
+    }
+
+    /// **The acceptance test for the wiring.** Not "a TraceMonitor works" —
+    /// #2141 proved that — but "the sink this process actually uses is the
+    /// monitored one". It asserts on what the monitor OBSERVED, so it cannot
+    /// pass if the chain is unwired.
+    ///
+    /// Perturbation (run 2026-08-01): return the bare `ToolProxyVerdictSink`
+    /// from `build_monitored_sink` and this REDs on the count, naming the
+    /// defect.
+    #[test]
+    fn records_flowing_through_the_built_sink_reach_the_monitor() {
+        let (sink, monitor) = built();
+        assert!(
+            monitor.violations().is_empty(),
+            "a fresh monitor must be clean, or the assertion below proves nothing"
+        );
+
+        // A terminal Allow with no preceding kernel decision: an effect that
+        // nothing on the record authorised.
+        sink.record(VerdictContext {
+            operation: Operation::RunBash,
+            subject: "unmediated".to_string(),
+            outcome: VerdictOutcome::Allow,
+            actor: ActorIdentity::Unknown,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            monitor.violations().len(),
+            1,
+            "the sink handed to the process must be monitored; the monitor saw nothing"
+        );
+    }
+
+    /// Monitoring must not change what the sink does. A locked sink still
+    /// refuses through the wrapper, so wiring the monitor cannot have opened a
+    /// path that lockdown used to close.
+    #[test]
+    fn the_built_sink_still_enforces_lockdown() {
+        let locked = build_monitored_sink(
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            CapabilityLattice::default(),
+            Arc::new(std::sync::RwLock::new(None)),
+            "test-checksum".to_string(),
+            "test-session".to_string(),
+            false,
+            None,
+            None,
+        )
+        .0;
+        assert!(matches!(
+            locked.preflight(Operation::ReadFiles).unwrap_err(),
+            SinkError::Locked
+        ));
+    }
+
+    /// A sink that keeps what it was handed, so a test can assert on what the
+    /// recording RECEIVED rather than on what was available to it.
+    #[derive(Default)]
+    struct CapturingSink(std::sync::Mutex<Vec<VerdictContext>>);
+    impl VerdictSink for CapturingSink {
+        fn record(&self, ctx: VerdictContext) -> Result<(), SinkError> {
+            self.0.lock().unwrap().push(ctx);
+            Ok(())
+        }
+        fn preflight(&self, _op: Operation) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+
+    fn sample_decision() -> portcullis::kernel::Decision {
+        portcullis::kernel::Decision {
+            id: uuid::Uuid::nil(),
+            sequence: 7,
+            operation: Operation::WebFetch,
+            subject: "s".to_string(),
+            verdict: portcullis::kernel::Verdict::Allow,
+            timestamp: chrono::Utc::now(),
+            pre_permissions_hash: "pre".to_string(),
+            post_permissions_hash: "post".to_string(),
+            exposure_transition: portcullis::kernel::ExposureTransition {
+                pre_count: 0,
+                post_count: 0,
+                contributed_label: None,
+                state_uninhabitable: false,
+                dynamic_gate_applied: false,
+            },
+            flow_node_id: None,
+            action_term: None,
+            preflight_result: None,
+        }
+    }
+
+    /// **The cross-check must reach evidence, not just a log line.** This is why
+    /// `flow_check` is a parameter: a check whose only output is `tracing::warn`
+    /// can be deleted with every test still green, which is the defect the whole
+    /// exercise is about.
+    #[test]
+    fn the_flow_cross_check_reaches_the_record() {
+        let sink = CapturingSink::default();
+        record_kernel_decision(
+            &sink,
+            &sample_decision(),
+            Operation::WebFetch,
+            "s",
+            ActorIdentity::Unknown,
+            "http",
+            Some(crate::mediation::FlowCrossCheck::Checked(
+                portcullis::flow::VerificationResult::Mismatch {
+                    computed: portcullis::flow::FlowVerdict::Deny(
+                        portcullis::flow::FlowDenyReason::IntegrityViolation,
+                    ),
+                    expected: portcullis::flow::FlowVerdict::Allow,
+                },
+            )),
+        );
+        let recorded = sink.0.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0]
+                .extensions
+                .get("flow_cross_check")
+                .map(String::as_str),
+            Some("unconfirmed:mismatch"),
+            "the DAG's disagreement with the kernel must be in the record"
+        );
+    }
+
+    /// An untainted session is not checked, and the record says nothing rather
+    /// than claiming confirmation it never obtained.
+    #[test]
+    fn an_unchecked_decision_claims_nothing() {
+        let sink = CapturingSink::default();
+        record_kernel_decision(
+            &sink,
+            &sample_decision(),
+            Operation::WebFetch,
+            "s",
+            ActorIdentity::Unknown,
+            "http",
+            None,
+        );
+        let recorded = sink.0.lock().unwrap();
+        assert!(
+            !recorded[0].extensions.contains_key("flow_cross_check"),
+            "absent must read as 'not checked', never as 'confirmed'"
+        );
+    }
+
+    /// The record carries the verification CLASS, not which node broke the flow.
+    /// Everything in `extensions` crosses a process boundary.
+    #[test]
+    fn the_record_does_not_export_which_node_broke_the_flow() {
+        let sink = CapturingSink::default();
+        record_kernel_decision(
+            &sink,
+            &sample_decision(),
+            Operation::WebFetch,
+            "s",
+            ActorIdentity::Unknown,
+            "http",
+            Some(crate::mediation::FlowCrossCheck::Checked(
+                portcullis::flow::VerificationResult::BrokenParentRef {
+                    node_id: 41,
+                    parent_id: 42,
+                },
+            )),
+        );
+        let recorded = sink.0.lock().unwrap();
+        let v = recorded[0].extensions.get("flow_cross_check").unwrap();
+        assert!(
+            !v.contains("41") && !v.contains("42"),
+            "node ids leaked: {v}"
+        );
     }
 
     #[test]

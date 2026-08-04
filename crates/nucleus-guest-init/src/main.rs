@@ -93,14 +93,87 @@ fn run() -> Result<(), String> {
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
 
     // Fetch SPIFFE identity from host if configured
-    if let Some(port) = identity::parse_workload_api_port(&cmdline) {
+    let workload_api_port = identity::parse_workload_api_port(&cmdline);
+    if let Some(port) = workload_api_port {
         match identity::fetch_identity(port) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
+                // POINT THE PROXY AT WHAT WE JUST FETCHED.
+                //
+                // Without this the fetch is decorative: `fetch_identity` writes
+                // the SVID to /etc/nucleus/identity, and the tool-proxy looks
+                // for `--identity-cert` / `NUCLEUS_IDENTITY_CERT`, which nobody
+                // set — so the cert existed on disk and Tier 1/2 still reported
+                // "no identity cert" and the guest died as a naked process.
+                //
+                // Observed on real hardware once the workload API bridge started
+                // early enough for the fetch to SUCCEED. Before that the fetch
+                // always failed, so this gap was invisible: the pod died one
+                // step earlier for a different reason.
+                std::env::set_var("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");
                 // Continue without identity - not fatal for now
+            }
+        }
+    }
+
+    // Session capability token, preferred over the kernel command line.
+    //
+    // Fetching it here rather than reading `nucleus.task_token_hex` is what lets
+    // the command-line copy go, and the command line is what blocks a snapshot
+    // base: per-pod material baked into a boot artifact is inherited by every
+    // clone restored from it. The token is not a secret — a scoped capability
+    // plus a public issuer key — so this is about uniqueness surviving a
+    // restore, not confidentiality.
+    //
+    // Synchronous, and before `exec_proxy`, so the values are in the environment
+    // before anything reads them.
+    // The broker capability, fetched BEFORE `exec_proxy` and therefore before any
+    // workload exists. The host serves it once; arriving first is the entire
+    // property, since any guest process can open AF_VSOCK.
+    //
+    // Not fatal when absent: a pod may have no broker at all, and the tool-proxy
+    // fails closed on its own (an unsigned envelope is refused host-side). Making
+    // it fatal would break every pod that never had one.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_broker_secret(port) {
+            Ok(cap) => {
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
+                // The port is NOT a secret — it is where to connect — so unlike
+                // the key it is safe to log, and worth logging: a proxy that
+                // cannot reach the broker looks identical to one that was never
+                // given a capability.
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
+                // Presence only for the secret — never the value, never its length.
+                eprintln!(
+                    "fetched broker capability over vsock (broker port {})",
+                    cap.port
+                );
+            }
+            Err(err) => eprintln!("no broker capability over vsock: {err}"),
+        }
+    }
+
+    let mut token_from_vsock = false;
+    if let Some(port) = workload_api_port {
+        match identity::fetch_task_token(port) {
+            Ok(t) => {
+                std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
+                token_from_vsock = true;
+                eprintln!("fetched session task token over vsock");
+            }
+            Err(err) => {
+                // Not fatal, and deliberately so: the command-line path below is
+                // still in place, so a node that has not been updated still
+                // works. When the cmdline copy is removed this must become the
+                // only source, and THEN a failure here should be fatal — the
+                // tool-proxy would otherwise start with no token and fail closed
+                // later, far from the cause.
+                eprintln!("failed to fetch session task token over vsock: {err}");
             }
         }
     }
@@ -125,6 +198,24 @@ fn run() -> Result<(), String> {
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
     // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
+    // DLC-D verified-admission provisioning → the in-VM tool-proxy, over the
+    // workload API like the task token (the cmdline lacks the capacity for a
+    // credential set, and per-pod material must not bake into snapshot bases).
+    // Unprovisioned is the ordinary case and stays quiet; the proxy is inert
+    // without these.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_dlc_admission(port) {
+            Ok(Some(m)) => {
+                std::env::set_var("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
+                std::env::set_var("NUCLEUS_DLC_ISSUER", &m.issuer);
+                std::env::set_var("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
+                eprintln!("fetched DLC admission provisioning over the workload API");
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("failed to fetch DLC admission provisioning: {err}"),
+        }
+    }
+
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
         .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
     {
@@ -138,7 +229,12 @@ fn run() -> Result<(), String> {
     // the tool-proxy verify half expects and forward all three as env vars. If
     // the token is absent or the hex is malformed we simply do not set them —
     // the tool-proxy then records Missing/Invalid and fails closed.
-    if let Some(token_hex) = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex") {
+    let cmdline_token = if token_from_vsock {
+        None
+    } else {
+        parse_cmdline_secret(&cmdline, "nucleus.task_token_hex")
+    };
+    if let Some(token_hex) = cmdline_token {
         match hex::decode(&token_hex)
             .ok()
             .and_then(|b| String::from_utf8(b).ok())

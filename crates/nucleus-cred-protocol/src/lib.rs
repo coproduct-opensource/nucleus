@@ -18,6 +18,94 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Wire framing for authenticated broker frames.
+///
+/// # Why the codec lives here and not on either side
+///
+/// The guest SIGNS and the host VERIFIES. Written separately those are two
+/// implementations of one format, each testable in isolation, each passing, and
+/// wrong together the moment one changes — the same shape as the defect one
+/// increment ago, where the capability was minted in one file and the verifier
+/// was handed `None` in another. Both sides call the functions below.
+///
+/// Nothing here holds anything. `sign` takes a key by reference and returns a
+/// digest; the crate's guarantee — that no *type* here can carry credential
+/// material — is untouched, and `no_type_here_can_carry_a_credential` still
+/// scans for it.
+///
+/// # The wire form
+///
+/// `<hex-hmac-sha256> <payload-json>` — one space, signature first, newline
+/// terminated by the transport. Not a JSON wrapper: the payload would need
+/// escaping inside a JSON string, and a verifier that re-serialises in order to
+/// check a signature is checking its own serialiser rather than what arrived.
+pub mod frame {
+    /// Sign `payload` under `key`, producing the wire form.
+    ///
+    /// No trailing newline — framing belongs to the transport, which is the only
+    /// layer that knows whether it is writing to a socket or a buffer.
+    #[must_use]
+    pub fn sign(key: &[u8], payload: &str) -> String {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key)
+            // HMAC accepts a key of any length, so this cannot fail for any
+            // `&[u8]`. Expressed as a fallback rather than an unwrap because a
+            // panic here would take down the proxy over a frame.
+            .expect("HMAC-SHA256 accepts keys of any length");
+        mac.update(payload.as_bytes());
+        format!("{} {payload}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// Split a signed frame into its signature and the payload it covers.
+    ///
+    /// `None` for anything that is not exactly that shape. A caller must treat
+    /// `None` as a refusal — an unsigned frame is not a frame with an empty
+    /// signature.
+    #[must_use]
+    pub fn split(frame: &str) -> Option<(&str, &str)> {
+        let (sig, payload) = frame.split_once(' ')?;
+        if sig.is_empty() || payload.is_empty() {
+            return None;
+        }
+        Some((sig, payload))
+    }
+
+    /// Whether `frame` was signed under `key`.
+    ///
+    /// # A missing key verifies nothing
+    ///
+    /// `None` means no capability was provisioned, so nothing can be
+    /// authenticated and therefore nothing is accepted. Treating "no key" as "no
+    /// signature required" is the fail-OPEN reading, and it turns a provisioning
+    /// failure into an open door at the moment nobody is watching.
+    ///
+    /// # Constant-time
+    ///
+    /// `verify_slice`, not `==` on the hex: a byte-by-byte compare leaks how
+    /// much of a guessed signature was right, and a guest can retry freely.
+    #[must_use]
+    pub fn is_authentic(frame: &str, key: Option<&[u8]>) -> bool {
+        use hmac::{digest::KeyInit, Hmac, Mac};
+        use sha2::Sha256;
+
+        let Some(key) = key else {
+            return false;
+        };
+        let Some((sig_hex, payload)) = split(frame) else {
+            return false;
+        };
+        let Ok(sig) = hex::decode(sig_hex) else {
+            return false;
+        };
+        let Ok(mut mac) = <Hmac<Sha256> as KeyInit>::new_from_slice(key) else {
+            return false;
+        };
+        mac.update(payload.as_bytes());
+        mac.verify_slice(&sig).is_ok()
+    }
+}
+
 /// A CB4A **Task Request Envelope**: what a guest submits to ask for an action.
 ///
 /// Every field crosses from the guest, so every field is untrusted input.
@@ -35,7 +123,18 @@ use serde::{Deserialize, Serialize};
 /// to be told. Removing the field beats comparing it against the truth: a claim
 /// that cannot be expressed cannot be mishandled by a future caller who reaches
 /// for the field because it is there.
+/// # Unknown fields are refused, and that is load-bearing
+///
+/// The broker now also accepts [`PerformRequest`], which carries these three
+/// fields plus three more. Serde's default — ignore what you do not recognise —
+/// would let a perform request parse cleanly as a query, and a host that
+/// classified by trying types in some order would be one refactor away from
+/// answering "granted" to a request to ACT without acting.
+///
+/// `deny_unknown_fields` makes that impossible on the TYPE rather than in
+/// whichever function happens to do the classifying.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskRequestEnvelope {
     /// The operation being requested, as the policy layer names it.
     pub operation: String,
@@ -63,6 +162,164 @@ pub struct BrokerReply {
     /// "no such credential" would let a guest enumerate which credentials exist
     /// by watching which refusals differ.
     pub reason: String,
+}
+
+/// A request that the HOST perform an outbound call on the guest's behalf.
+///
+/// # Why a separate type from [`TaskRequestEnvelope`]
+///
+/// That one is a QUERY — "may I, and is a credential available" — and asking it
+/// twice changes nothing. This one has an effect, and the difference is not
+/// cosmetic: it is why `idempotency_key` exists and is not optional.
+///
+/// # The idempotency key is mandatory, and was promised before this type existed
+///
+/// `broker_client`'s module docs committed to it: *"the moment the broker gains
+/// a `perform` operation, [asking twice changing nothing] stops being true and
+/// an idempotency key becomes mandatory — recorded here so it is a decision
+/// rather than an omission."* Agents retry, and a timeout hides whether the call
+/// completed; without a key the host cannot tell a retry from a second request,
+/// so a network blip becomes a duplicate side effect at the upstream.
+///
+/// It is a plain `String` the GUEST chooses. That is safe because the host uses
+/// it only to deduplicate within one pod's own stream — it is not an
+/// authorisation input, and a guest that reuses a key can only affect its own
+/// requests.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformRequest {
+    /// The operation, as the policy layer names it.
+    pub operation: String,
+    /// The configured upstream this targets, by name. NOT a URL: the host holds
+    /// the base and the guest cannot redirect where the credential is sent.
+    pub target: String,
+    /// Free-text rationale. Auditable evidence, never an authorisation input.
+    pub justification: String,
+    /// Deduplicates retries. See the type docs — mandatory, not optional.
+    pub idempotency_key: String,
+    /// Path beneath the upstream's configured base.
+    pub path: String,
+    /// Request body, verbatim.
+    pub body: Vec<u8>,
+}
+
+/// What the host returns after performing the call.
+///
+/// # This one DOES carry content, and that is the whole point
+///
+/// [`BrokerReply`] has nowhere to put a credential because the guest is never
+/// meant to hold one. This type carries the upstream's RESPONSE — the result of
+/// an action taken with a credential, which is exactly what the guest is
+/// supposed to receive instead of the credential itself.
+///
+/// The distinction is worth stating because it looks like a weakening and is
+/// not: the credential still never crosses, only what it bought.
+///
+/// # The body is untrusted
+///
+/// It is whatever the upstream said, and on a model API it is also AI-authored.
+/// The caller must observe it as such; the taint does not propagate by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformReply {
+    /// Whether the host authorised, found a credential, and completed the call.
+    pub granted: bool,
+    /// Coarse, for the same enumeration reason as [`BrokerReply::reason`].
+    pub reason: String,
+    /// Upstream HTTP status, when the call was made.
+    #[serde(default)]
+    pub status: u16,
+    /// Upstream response body, when the call was made.
+    #[serde(default)]
+    pub body: Vec<u8>,
+}
+
+#[cfg(test)]
+mod frame_codec {
+    use super::frame;
+
+    const KEY: &[u8] = b"a-pod-broker-capability";
+
+    /// **The property the shared codec exists for.** What `sign` produces,
+    /// `is_authentic` accepts. Two implementations could pass their own tests
+    /// and disagree with each other; this cannot.
+    #[test]
+    fn what_is_signed_verifies() {
+        let f = frame::sign(KEY, r#"{"operation":"WebFetch"}"#);
+        assert!(frame::is_authentic(&f, Some(KEY)));
+    }
+
+    /// **The non-vacuity control.** Everything below asserts a refusal, and an
+    /// `is_authentic` that returned `false` always would satisfy all of it while
+    /// making the broker unusable. Paired with the test above deliberately.
+    #[test]
+    fn a_wrong_key_is_refused_and_the_right_one_is_not() {
+        let f = frame::sign(KEY, "payload");
+        assert!(!frame::is_authentic(&f, Some(b"not-the-capability")));
+        assert!(
+            frame::is_authentic(&f, Some(KEY)),
+            "the refusal above must be about the KEY, not about refusing everything"
+        );
+    }
+
+    /// An unsigned frame is not a frame with an empty signature.
+    #[test]
+    fn an_unsigned_frame_is_refused() {
+        assert!(!frame::is_authentic(
+            r#"{"operation":"WebFetch"}"#,
+            Some(KEY)
+        ));
+        assert!(!frame::is_authentic(" payload", Some(KEY)));
+        assert!(!frame::is_authentic("deadbeef ", Some(KEY)));
+        assert!(!frame::is_authentic("", Some(KEY)));
+    }
+
+    /// No key means nothing is accepted — the fail-CLOSED reading. The
+    /// alternative turns a provisioning failure into an open door.
+    #[test]
+    fn no_key_accepts_nothing() {
+        let f = frame::sign(KEY, "payload");
+        assert!(!frame::is_authentic(&f, None));
+    }
+
+    /// A payload altered after signing must not verify. Signing covers the
+    /// payload, not merely accompanies it.
+    #[test]
+    fn a_tampered_payload_is_refused() {
+        let f = frame::sign(KEY, r#"{"target":"allowed"}"#);
+        let (sig, _) = frame::split(&f).expect("well formed");
+        let tampered = format!("{sig} {}", r#"{"target":"attacker"}"#);
+        assert!(!frame::is_authentic(&tampered, Some(KEY)));
+    }
+
+    /// The payload survives the round trip byte for byte, including the spaces
+    /// that the frame format also uses as its delimiter — `split_once` takes the
+    /// FIRST space, so a payload containing spaces must still verify.
+    #[test]
+    fn a_payload_containing_spaces_round_trips() {
+        let payload = r#"{"justification":"because the agent asked nicely"}"#;
+        let f = frame::sign(KEY, payload);
+        assert_eq!(frame::split(&f).map(|(_, p)| p), Some(payload));
+        assert!(frame::is_authentic(&f, Some(KEY)));
+    }
+
+    /// Signing is deterministic, so a retry of the same request is byte-identical
+    /// and the host's idempotency ledger sees one logical operation rather than
+    /// two frames it cannot relate.
+    #[test]
+    fn signing_is_deterministic() {
+        assert_eq!(frame::sign(KEY, "payload"), frame::sign(KEY, "payload"));
+    }
+
+    /// The signature comes FIRST. If the order ever flipped, every existing
+    /// frame would still be well formed and none would verify — a change that
+    /// looks cosmetic and is not.
+    #[test]
+    fn the_signature_is_the_first_field() {
+        let f = frame::sign(KEY, "payload");
+        let (sig, payload) = frame::split(&f).expect("well formed");
+        assert_eq!(payload, "payload");
+        assert_eq!(sig.len(), 64, "hex-encoded SHA-256 is 64 characters: {sig}");
+        assert!(hex::decode(sig).is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +381,47 @@ mod tests {
                  which socket accepted the connection, never from what the guest says"
             );
         }
+    }
+
+    /// **The idempotency key is mandatory, and this is what holds that.**
+    ///
+    /// `broker_client`'s docs promised it before this type existed: a `perform`
+    /// has an effect, so a retry the host cannot distinguish from a new request
+    /// becomes a duplicate side effect at the upstream. `Option<String>` would
+    /// let a caller omit it and would read as "supply one if convenient".
+    ///
+    /// Scans the DECLARATION rather than constructing a value, because the
+    /// property is about the type, and a constructed value proves only that this
+    /// test supplied a key.
+    #[test]
+    fn a_perform_request_cannot_omit_its_idempotency_key() {
+        let decls = declarations();
+        assert!(
+            decls.contains("pub idempotency_key: String"),
+            "PerformRequest must carry a mandatory idempotency key"
+        );
+        assert!(
+            !decls.contains("idempotency_key: Option"),
+            "an optional idempotency key is not a requirement, it is a suggestion"
+        );
+    }
+
+    /// A perform reply carries the RESULT of an action, which is the point —
+    /// but the fields must still be shaped so a credential has nowhere to go.
+    /// `status` and `body` are what an upstream returned; neither names a
+    /// secret, and `no_type_here_can_carry_a_credential` scans for those.
+    #[test]
+    fn a_perform_reply_round_trips_with_its_result() {
+        let reply = PerformReply {
+            granted: true,
+            reason: "granted".into(),
+            status: 200,
+            body: b"{\"ok\":true}".to_vec(),
+        };
+        let wire = serde_json::to_string(&reply).expect("serialises");
+        let back: PerformReply = serde_json::from_str(&wire).expect("round trips");
+        assert_eq!(back, reply);
+        assert_eq!(back.status, 200);
     }
 
     #[test]

@@ -28,6 +28,7 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+mod art12_collector;
 mod auth;
 mod firecracker_config;
 mod grpc_tls;
@@ -36,13 +37,16 @@ mod oidc;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
+mod boot_trace;
 mod broker;
 mod broker_launch;
+mod broker_perform;
 mod broker_rollout;
 mod broker_transport;
 mod cgroup;
 mod cred_split;
 mod envelope_frame;
+mod guest_socket;
 mod net;
 mod session_mint;
 mod signed_proxy;
@@ -533,10 +537,7 @@ async fn main() -> Result<(), ApiError> {
         .install_default()
         .map_err(|_| ApiError::Driver("failed to install rustls crypto provider".to_string()))?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .json()
-        .init();
+    let _tracing_guard = boot_trace::init_tracing().map_err(ApiError::Driver)?;
 
     let args = Args::parse();
     tokio::fs::create_dir_all(&args.state_dir).await?;
@@ -699,6 +700,10 @@ async fn main() -> Result<(), ApiError> {
 
     // Routes that don't require auth (OIDC has its own token validation)
     let public_routes = Router::new()
+        .route(
+            "/v1/art12/{session_id}",
+            post(art12_collector::art12_append),
+        )
         .route("/v1/health", get(health))
         .route("/v1/oidc/github", post(oidc_github_exchange))
         .with_state(state.clone());
@@ -990,6 +995,7 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
+#[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty))]
 async fn create_pod_internal(
     state: &NodeState,
     mut spec: PodSpec,
@@ -997,6 +1003,7 @@ async fn create_pod_internal(
     raw_yaml: Option<String>,
 ) -> Result<(Uuid, Option<String>), ApiError> {
     let id = Uuid::new_v4();
+    tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
     // ── Trust Gate: verify agent reputation, scope permissions ──────
@@ -1017,11 +1024,11 @@ async fn create_pod_internal(
             spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await?
         }
     };
+    boot_trace::log_guest_console_timeline(&log_path).await;
 
     // Write lifecycle audit event so even direct-task pods have an audit trail.
-    let audit_path = pod_dir.join("audit.log");
     write_lifecycle_audit(
-        &audit_path,
+        &pod_dir,
         "pod_started",
         &id.to_string(),
         &format!("driver={:?}", state.driver),
@@ -1340,90 +1347,6 @@ impl ContainerPod {
     }
 }
 
-/// Start the credential broker for a pod, if the rollout and the pod's identity
-/// both permit it.
-///
-/// Returns `Ok(None)` when no socket should exist — which is the default. The
-/// error case is deliberately narrow: a launch fails only when enforcement was
-/// requested dishonestly, or when the socket could not be created *and*
-/// credentials had already been withheld in exchange for it.
-#[cfg(target_os = "linux")]
-fn start_broker_for_pod(
-    state: &NodeState,
-    spec: &PodSpec,
-    vsock_path: &Path,
-    registered: Option<&nucleus_identity::Identity>,
-    id: Uuid,
-) -> Result<Option<broker_transport::BrokerListener>, ApiError> {
-    let transport = if spec.spec.vsock.is_some() {
-        broker_rollout::BrokerTransport::Vsock
-    } else {
-        broker_rollout::BrokerTransport::None
-    };
-    let rollout =
-        broker_rollout::decide_rollout(state.broker_enforcing, state.broker_listen, transport);
-    // The Firecracker rootfs carries the pod spec from image build time, so the
-    // node writes no guest spec and can withhold nothing from it. Passing `false`
-    // here is what turns `--broker-enforcing` into a refusal rather than a false
-    // claim; it becomes `true` when the split gains a call site.
-    let rollout = broker_launch::check_enforcement_is_honest(rollout, false)
-        .map_err(|e| ApiError::Driver(e.to_string()))?;
-
-    let Some(identity) = broker_launch::broker_identity(rollout, registered) else {
-        return Ok(None);
-    };
-
-    // The policy the PDP will decide against is the pod's own resolved lattice.
-    // A pod whose policy will not resolve gets no broker: deciding against a
-    // default lattice would silently substitute a policy nobody wrote.
-    let policy = match spec.spec.resolve_policy() {
-        Ok(p) => std::sync::Arc::new(p),
-        Err(e) => {
-            tracing::warn!(
-                pod = %id,
-                error = %e,
-                "credential broker not started: the pod's policy did not resolve, and deciding \
-                 against a default lattice would substitute a policy nobody wrote"
-            );
-            return Ok(None);
-        }
-    };
-
-    // Empty until `cred_split` has a call site on this driver. A broker with an
-    // empty store answers every request with a refusal, which is the correct
-    // behaviour for a pod whose credentials are not brokered yet — and is why
-    // enforcing is refused above rather than merely discouraged.
-    let store = std::sync::Arc::new(nucleus_cred_broker::CredentialStore::new());
-
-    match broker_transport::BrokerListener::start(
-        vsock_path,
-        state.broker_vsock_port,
-        identity,
-        policy,
-        store,
-    ) {
-        Ok(listener) => {
-            info!(
-                "started credential broker at {} for pod {}",
-                listener.socket_path().display(),
-                id
-            );
-            Ok(Some(listener))
-        }
-        Err(e) => match broker_launch::on_start_failure(rollout) {
-            broker_launch::StartFailure::AbortLaunch => Err(ApiError::Driver(format!(
-                "credential broker socket could not be created ({e}), and this pod's credentials \
-                 were withheld in exchange for it — refusing to launch a pod that has neither its \
-                 credentials nor a way to ask for them"
-            ))),
-            broker_launch::StartFailure::ContinueDegraded => {
-                tracing::warn!(pod = %id, error = %e, "credential broker socket not created");
-                Ok(None)
-            }
-        },
-    }
-}
-
 /// Resolve the pod's policy and mint a fresh live-path session capability
 /// token scoped to its granted operations.
 ///
@@ -1538,6 +1461,8 @@ async fn spawn_local_pod(
         audit_path.to_string_lossy().as_ref(),
     );
 
+    art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
+
     // Pass audit sink config from PodSpec for deletion-resistant remote storage
     if let Some(ref sink) = spec.spec.audit_sink {
         command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET", &sink.s3_bucket);
@@ -1581,6 +1506,23 @@ async fn spawn_local_pod(
         command.env("NUCLEUS_TASK_TOKEN", &minted.token_json);
         command.env("NUCLEUS_TASK_TOKEN_NONCE", &minted.nonce_hex);
         command.env("NUCLEUS_TASK_TOKEN_ISSUER", &minted.issuer_hex);
+    }
+
+    // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
+    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads
+    // (crates/nucleus-tool-proxy/src/dlc_admission.rs). Node-global env still
+    // inherits (Command does not env_clear); labels let a single pod — e.g.
+    // `nucleus verify --tier2`'s — run under admission without touching host
+    // config. Values are NOT validated here: the proxy's parser owns that and
+    // fails CLOSED (partial/garbage config provisions deny-all).
+    for (label, env) in [
+        ("dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
+        ("dlc_issuer", "NUCLEUS_DLC_ISSUER"),
+        ("dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
+    ] {
+        if let Some(value) = spec.metadata.labels.get(label) {
+            command.env(env, value);
+        }
     }
 
     // Detect orchestrator pod: inject pod management env vars
@@ -2039,6 +1981,7 @@ async fn wait_for_container_announce(
 /// is never compiled or tested on a macOS dev host. `vmm_preflight_refuses_*`
 /// exercise it here.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[tracing::instrument(skip_all, fields(boot.stage = "vmm.preflight"))]
 async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
     use nucleus_spec::vmm_version::{judge, VmmVerdict};
 
@@ -2378,14 +2321,38 @@ async fn spawn_firecracker_pod(
             cmd.args(["netns", "exec", name, "--"]);
             cmd.arg(&state.firecracker_path);
             cmd.arg("--config-file").arg(&config_path);
+            // Per-pod, for the same reason as the plain branch below. A netns
+            // isolates the network, not the filesystem, so the default API
+            // socket path is still shared with every other pod on the host.
+            cmd.arg("--api-sock")
+                .arg(pod_dir.join("firecracker.socket"));
             cmd
         } else {
             let mut cmd = Command::new(&state.firecracker_path);
             cmd.arg("--config-file").arg(&config_path);
+            // WITHOUT THIS, ONE POD AT A TIME. Firecracker defaults its API
+            // socket to the global `/run/firecracker.socket`, so a second
+            // concurrent launch fails to bind it and exits immediately.
+            //
+            // The jailed path never hit this because the jailer chroots each
+            // pod, which is why it went unnoticed: the default configuration is
+            // fine and the unjailed one silently serialises.
+            //
+            // The failure is also badly misleading. Firecracker exits before
+            // creating its vsock socket, so the node reports "vsock socket not
+            // found"; and if the node gets far enough to check seccomp it reads
+            // the mode of a process that has already died and reports
+            // "seccomp mode 0 (expected 2 = filter)" — a fail-closed security
+            // check stating a true fact about the wrong process. Both were
+            // observed and both cost real time before the cause was understood.
+            cmd.arg("--api-sock")
+                .arg(pod_dir.join("firecracker.socket"));
             cmd
         };
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
-        let mut child = match command.stdout(log_stdout).stderr(log_stderr).spawn() {
+        let mut child = match boot_trace::time_sync("firecracker.spawn", || {
+            command.stdout(log_stdout).stderr(log_stderr).spawn()
+        }) {
             Ok(child) => child,
             Err(err) => {
                 cleanup_net_resources(
@@ -2596,9 +2563,182 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
+        // IDENTITY BEFORE HEALTH, and the order is the point.
+        //
+        // This block used to sit AFTER `wait_for_proxy_health`, which made the
+        // guest's SVID source start only once the guest was already healthy —
+        // while the guest needs that source IN ORDER to become healthy. The
+        // dependency ran backwards.
+        //
+        // It was survivable only because `nucleus.sandbox_token` gave the guest a
+        // Tier 3 proof that needs nothing from the host, so it passed the health
+        // check and fetched its SVID afterwards. The moment that token was made
+        // conditional (#2107), identity-bearing pods had no proof at the only
+        // moment that mattered and every launch failed with "proxy health check
+        // timed out" — observed on real hardware, invisible to every unit test,
+        // because the omission is correct in isolation and only wrong in
+        // composition with this ordering.
+        //
+        // Moved here so the composition is right rather than compensated for.
+        // The block is self-contained: it reads the spec, the image paths and
+        // the minted token, and touches nothing the health check creates.
+        // Create and register SPIFFE identity if identity management is enabled
+        // AND the pod's egress is confined enough to hold one.
+        //
+        // DEFENCE IN DEPTH FOR THE IDENTITY GATE. Withholding the vsock port
+        // above only removes the signpost — a guest that guessed the port could
+        // still reach the listener. Not registering the pod means there is no
+        // identity to serve even then: `WorkloadApiServer` issues against
+        // registered connections, so an unregistered pod has nothing to fetch.
+        // The refusal is at the source rather than the advertisement.
+        let identity_source =
+            net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
+        // ONE capability, TWO consumers: the workload API serves it to the guest
+        // (once, before any workload exists) and the broker listener verifies
+        // signatures against it. Minted here because those two are started in
+        // different blocks below, and this used to be exactly the gap they fell
+        // into — the bridge minted its own while the listener got `None`, so the
+        // guest held a capability the verifier had never seen.
+        let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint();
+
+        let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
+            identity_source
+        {
+            // Use pod metadata for namespace/service_account context
+            let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
+            let service_account = spec.metadata.name.as_deref().unwrap_or("");
+            let identity = manager.identity_for_pod(id, namespace, service_account);
+
+            // Register the pod identity
+            manager.register_pod(id.to_string(), identity.clone()).await;
+
+            // Compute launch attestation for this pod
+            // This captures integrity measurements of kernel, rootfs, and config
+            let pod_id_str = id.to_string();
+            let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
+            match manager
+                .compute_attestation(
+                    &pod_id_str,
+                    &image.kernel_path,
+                    &image.rootfs_path,
+                    &config_bytes,
+                )
+                .await
+            {
+                Ok(attestation) => {
+                    info!(
+                        "computed launch attestation for pod {}: {}",
+                        id,
+                        attestation.to_hex_summary()
+                    );
+                    // Fetch attested certificate (includes attestation in X.509 extension)
+                    if let Err(e) = manager
+                        .fetch_attested_certificate(&identity, &pod_id_str)
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to fetch attested certificate for pod {}: {}",
+                            id,
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to compute attestation for pod {}, using standard certificate: {}",
+                        id,
+                        e
+                    );
+                    // Fall back to standard certificate without attestation
+                    if let Err(e) = manager.prefetch_certificate(&identity).await {
+                        tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
+                    }
+                }
+            }
+
+            // Start workload API vsock bridge for this pod
+            // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
+            // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
+            let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
+                &vsock_path,
+                state.identity_vsock_port,
+                id,
+                manager.clone(),
+                workload_api_vsock::PodMaterial {
+                    // The same token that rides the kernel command line today.
+                    // Serving it here is what lets the cmdline copy go: a value
+                    // fetched after boot is not baked into a snapshot base.
+                    task_token: task_token.clone(),
+                    // Pod-scoped DLC-D admission provisioning (PodSpec labels).
+                    // Partial labels still provision — the proxy's parser fails
+                    // CLOSED, so misconfiguration narrows rather than widens.
+                    dlc_admission: {
+                        let l = &spec.metadata.labels;
+                        l.get("dlc_trusted_keys").map(|keys| {
+                            workload_api_vsock::DlcAdmissionMaterial {
+                                trusted_keys: keys.clone(),
+                                issuer: l.get("dlc_issuer").cloned().unwrap_or_default(),
+                                credentials: l.get("dlc_credentials").cloned().unwrap_or_default(),
+                            }
+                        })
+                    },
+                    // The broker capability, minted per pod and served ONCE. See
+                    // `handle_fetch_broker_secret`: this is what lets the host
+                    // tell the mediating proxy from every other guest process.
+                    broker_secret: Some(broker_serve.into_served()),
+                    // Served WITH the capability, not separately — the proxy
+                    // needs both to reach the broker and neither is useful alone.
+                    broker_port: state.broker_vsock_port,
+                    broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    )),
+                },
+                // Only when jailed: unjailed Firecracker runs as this same user
+                // and can already connect. Passing an owner there would hand our
+                // own socket away for no reason.
+                jail_layout
+                    .as_ref()
+                    .map(|_| (state.jailer_uid, state.jailer_gid)),
+            )
+            .await
+            {
+                Ok(b) => {
+                    info!(
+                        "started workload API vsock bridge at {} for pod {}",
+                        b.socket_path().display(),
+                        id
+                    );
+                    Some(b)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to start workload API vsock bridge for pod {}: {}",
+                        id,
+                        e
+                    );
+                    None
+                }
+            };
+
+            info!(
+                "registered identity {} for pod {}",
+                identity.to_spiffe_uri(),
+                id
+            );
+
+            (Some(identity), Some(manager.clone()), bridge)
+        } else {
+            (None, None, None)
+        };
+
         if let Err(err) = wait_for_proxy_health(health_addr).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
+            }
+            // Started above, so this path now owns it. A workload API bridge
+            // left behind would hold a per-pod socket for a pod that never ran.
+            if let Some(api) = workload_api_bridge {
+                api.shutdown().await;
             }
             bridge.shutdown().await;
             let _ = child.kill().await;
@@ -2660,112 +2800,20 @@ async fn spawn_firecracker_pod(
             None
         };
 
-        // Create and register SPIFFE identity if identity management is enabled
-        // AND the pod's egress is confined enough to hold one.
-        //
-        // DEFENCE IN DEPTH FOR THE IDENTITY GATE. Withholding the vsock port
-        // above only removes the signpost — a guest that guessed the port could
-        // still reach the listener. Not registering the pod means there is no
-        // identity to serve even then: `WorkloadApiServer` issues against
-        // registered connections, so an unregistered pod has nothing to fetch.
-        // The refusal is at the source rather than the advertisement.
-        let identity_source =
-            net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
-        let (pod_identity, identity_manager, workload_api_bridge) =
-            if let Some(manager) = identity_source {
-                // Use pod metadata for namespace/service_account context
-                let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
-                let service_account = spec.metadata.name.as_deref().unwrap_or("");
-                let identity = manager.identity_for_pod(id, namespace, service_account);
-
-                // Register the pod identity
-                manager.register_pod(id.to_string(), identity.clone()).await;
-
-                // Compute launch attestation for this pod
-                // This captures integrity measurements of kernel, rootfs, and config
-                let pod_id_str = id.to_string();
-                let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
-                match manager
-                    .compute_attestation(
-                        &pod_id_str,
-                        &image.kernel_path,
-                        &image.rootfs_path,
-                        &config_bytes,
-                    )
-                    .await
-                {
-                    Ok(attestation) => {
-                        info!(
-                            "computed launch attestation for pod {}: {}",
-                            id,
-                            attestation.to_hex_summary()
-                        );
-                        // Fetch attested certificate (includes attestation in X.509 extension)
-                        if let Err(e) = manager
-                            .fetch_attested_certificate(&identity, &pod_id_str)
-                            .await
-                        {
-                            tracing::warn!(
-                                "failed to fetch attested certificate for pod {}: {}",
-                                id,
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                        "failed to compute attestation for pod {}, using standard certificate: {}",
-                        id,
-                        e
-                    );
-                        // Fall back to standard certificate without attestation
-                        if let Err(e) = manager.prefetch_certificate(&identity).await {
-                            tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
-                        }
-                    }
-                }
-
-                // Start workload API vsock bridge for this pod
-                // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
-                // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
-                let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
-                    &vsock_path,
-                    state.identity_vsock_port,
-                    id,
-                    manager.clone(),
-                )
-                .await
-                {
-                    Ok(b) => {
-                        info!(
-                            "started workload API vsock bridge at {} for pod {}",
-                            b.socket_path().display(),
-                            id
-                        );
-                        Some(b)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to start workload API vsock bridge for pod {}: {}",
-                            id,
-                            e
-                        );
-                        None
-                    }
-                };
-
-                info!(
-                    "registered identity {} for pod {}",
-                    identity.to_spiffe_uri(),
-                    id
-                );
-
-                (Some(identity), Some(manager.clone()), bridge)
-            } else {
-                (None, None, None)
-            };
-
-        let broker = start_broker_for_pod(state, spec, &vsock_path, pod_identity.as_ref(), id)?;
+        let broker = broker_launch::start_broker_for_pod(
+            state,
+            spec,
+            &vsock_path,
+            pod_identity.as_ref(),
+            id,
+            broker_verify,
+            // The SAME expression the workload API bridge uses. That socket was
+            // chowned and this one was not, which is why no guest could have
+            // reached the broker under the jailer.
+            jail_layout
+                .as_ref()
+                .map(|_| (state.jailer_uid, state.jailer_gid)),
+        )?;
 
         let handle = FirecrackerPod {
             jail: Mutex::new(jail_layout.clone()),
@@ -2865,11 +2913,22 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Write a lifecycle audit event to a pod's audit.log from the node side.
+/// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
 ///
-/// This ensures every pod (including direct-task pods that don't run a tool-proxy)
-/// has at least start/stop audit entries in its audit.log file.
-async fn write_lifecycle_audit(audit_path: &Path, event: &str, pod_id: &str, detail: &str) {
+/// Ensures every pod — including direct-task pods that never run a tool-proxy —
+/// has at least start/stop entries.
+///
+/// **Deliberately NOT `audit.log`.** These entries are unsigned and unchained;
+/// `audit.log` is the tool-proxy's HMAC-chained log, and interleaving unsigned
+/// lines into it made every local- and container-driver log fail
+/// `nucleus-audit verify` (its `ToolProxyEntry` requires
+/// `prev_hash`/`hash`/`signature`). Keeping the two files separate preserves a
+/// verifiable chain; the lifecycle file is folded into an evidence bundle as
+/// explicitly-unsigned context. The filename lives here, in one place, so the
+/// two cannot drift back together.
+async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &str, detail: &str) {
+    let audit_path = pod_dir.join("lifecycle.log");
+    let audit_path = audit_path.as_path();
     let entry = serde_json::json!({
         "timestamp_unix": now_unix(),
         "actor": "nucleus-node",
@@ -2973,12 +3032,8 @@ fn start_pod_reaper(state: NodeState) {
                         }
                         _ => "unknown".to_string(),
                     };
-                    let audit_path = pod
-                        .log_path
-                        .parent()
-                        .unwrap_or(Path::new("."))
-                        .join("audit.log");
-                    write_lifecycle_audit(&audit_path, "pod_exited", &pod.id.to_string(), &detail)
+                    let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
+                    write_lifecycle_audit(pod_dir, "pod_exited", &pod.id.to_string(), &detail)
                         .await;
 
                     exited_ids.push(pod.id);
@@ -3010,6 +3065,7 @@ fn start_pod_reaper(state: NodeState) {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "vsock.wait"))]
 async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(3) {
@@ -3025,34 +3081,157 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// How long to wait for the guest's tool-proxy to answer.
+///
+/// # Why this is not five seconds any more
+///
+/// Five was chosen when the guest could prove itself with material already on
+/// its kernel command line: boot, read the cmdline, serve. The guest now fetches
+/// its SVID **and** its session token from the host over vsock before it serves
+/// anything, so its readiness includes two host round-trips that did not exist
+/// when the budget was set.
+///
+/// Measured on real hardware: with the budget at five seconds the node started
+/// the workload API bridge and tore it down 5.08s later, having never seen the
+/// guest — the guest was still starting, and the log showed it had successfully
+/// fetched both artifacts. The launch failed with "proxy health check timed out"
+/// for a pod that was working.
+///
+/// Tunable because the right value depends on the image: a heavier rootfs boots
+/// slower, and an operator who knows theirs should not have to patch the node.
+///
+/// # This is necessary but NOT sufficient, and saying so matters
+///
+/// Raising it to thirty did not make the launch succeed. The guest reaches a
+/// healthy state — the pod log shows it fetching its SVID and its session token
+/// and then serving, with no error — and the check still times out, so something
+/// in the HOST chain (signed proxy to vsock bridge to guest) is not completing.
+/// That is a separate defect and is not yet isolated.
+///
+/// The budget change stands on its own: five seconds predates the guest doing
+/// host round-trips during startup, and would be wrong even once the host chain
+/// is fixed. It is not a workaround for that defect and should not be read as
+/// one.
+const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
+    wait_for_proxy_health_within(
+        addr,
+        Duration::from_secs(
+            std::env::var("NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(PROXY_HEALTH_TIMEOUT_SECS_DEFAULT),
+        ),
+    )
+    .await
+}
+
+/// What the last health probe actually saw.
+///
+/// # Why this type exists
+///
+/// The probe used to discard every outcome into one message: "proxy health check
+/// timed out". A refused connection, a guest that answered `401`, a bridge that
+/// answered `502`, and a guest that never came up were indistinguishable — to an
+/// operator and to whoever was debugging it. That is the same defect class as a
+/// panic naming `reqwest` when the real cause was a missing CA store: the
+/// information existed and the code threw it away.
+// Only reachable from the Firecracker spawn path, which is Linux-gated — same
+// reason the sibling health helpers carry this.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone)]
+enum HealthProbe {
+    /// Nothing has been attempted yet.
+    NotAttempted,
+    /// The TCP connection to the signed proxy was refused or failed.
+    ConnectFailed(String),
+    /// Connected, but the request could not be written.
+    WriteFailed(String),
+    /// Request sent, but no readable response came back.
+    ReadFailed(String),
+    /// The guest answered — with something other than 200.
+    ///
+    /// This is the case worth separating most: it means the whole chain WORKS
+    /// (signed proxy, bridge, guest) and the guest is refusing, which is a
+    /// completely different investigation from "nothing is listening".
+    NotOk { status: String },
+}
+
+impl std::fmt::Display for HealthProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealthProbe::NotAttempted => write!(f, "no probe completed"),
+            HealthProbe::ConnectFailed(e) => write!(
+                f,
+                "could not connect to the signed proxy ({e}) — the host-side proxy is not \
+                 accepting, so the guest was never reached"
+            ),
+            HealthProbe::WriteFailed(e) => {
+                write!(f, "connected but could not send the request ({e})")
+            }
+            HealthProbe::ReadFailed(e) => write!(
+                f,
+                "sent the request but got no response ({e}) — the signed proxy accepted and \
+                 then failed to complete, so look at the vsock bridge rather than the guest"
+            ),
+            HealthProbe::NotOk { status } => write!(
+                f,
+                "the guest ANSWERED with `{status}` instead of 200 — the chain works end to \
+                 end and the guest is refusing, so this is an authorization or routing \
+                 question, not a liveness one"
+            ),
+        }
+    }
+}
+
+async fn wait_for_proxy_health_within(addr: SocketAddr, budget: Duration) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     let host = addr.ip();
-    while start.elapsed() < Duration::from_secs(5) {
-        if let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await {
-            let request = format!(
-                "GET /v1/health HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n"
-            );
-            if stream.write_all(request.as_bytes()).await.is_err() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
+    let mut last = HealthProbe::NotAttempted;
+    while start.elapsed() < budget {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(mut stream) => {
+                let request =
+                    format!("GET /v1/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+                if let Err(e) = stream.write_all(request.as_bytes()).await {
+                    last = HealthProbe::WriteFailed(e.to_string());
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
 
-            let mut buf = Vec::new();
-            if stream.read_to_end(&mut buf).await.is_err() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
+                let mut buf = Vec::new();
+                if let Err(e) = stream.read_to_end(&mut buf).await {
+                    last = HealthProbe::ReadFailed(e.to_string());
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                let response = String::from_utf8_lossy(&buf);
+                if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
+                    return Ok(());
+                }
+                // Keep only the status line. The body may carry guest-influenced
+                // text, and this string ends up in an API error and the node log.
+                let status = response.lines().next().unwrap_or("<empty response>");
+                last = HealthProbe::NotOk {
+                    status: status.chars().take(120).collect(),
+                };
             }
-            let response = String::from_utf8_lossy(&buf);
-            if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
-                return Ok(());
-            }
+            Err(e) => last = HealthProbe::ConnectFailed(e.to_string()),
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    Err(ApiError::Driver("proxy health check timed out".to_string()))
+    Err(ApiError::Driver(format!(
+        "proxy health check timed out after {}s: {last}. The guest fetches its SVID and \
+         session token from the host over vsock before it serves, so a slow image can \
+         legitimately exceed this; raise NUCLEUS_NODE_PROXY_HEALTH_TIMEOUT_SECS if the pod \
+         log shows the guest still starting.",
+        budget.as_secs()
+    )))
 }
 
 async fn serve_grpc(
@@ -3351,39 +3530,8 @@ impl NodeService for GrpcService {
         let manifest_hash =
             nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
 
-        // Compute v1 content hash: SHA-256 of canonical v1 fields.
-        //
-        // Trust model (Trail of Bits finding #4): this hash covers CONTENT
-        // (what happened), not IDENTITY (who attested). The executor's Ed25519
-        // signature is sent separately in the X-Nucleus-Executor-Sig header and
-        // signs the serialized session-complete body (which includes this hash).
-        // Verification is two-phase:
-        //   1. Trust-service validates v1_content_hash was pre-registered.
-        //   2. Trust-service verifies Ed25519 signature against executor's
-        //      registered public key.
-        // See also: AuditEntry::content_hash() in portcullis/src/audit.rs.
-        let v1_content_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(id.as_bytes());
-            hasher.update(report.workspace_hash.as_bytes());
-            hasher.update(report.audit_tail_hash.as_bytes());
-            hasher.update(report.audit_entry_count.to_le_bytes());
-            hasher.update(report.timestamp_unix.to_le_bytes());
-            hasher.update(manifest_hash.as_bytes());
-            // Commit exposure labels into the hash — without this, the hash
-            // can be valid while the labels are tampered with, defeating the
-            // content-hash binding that the SandboxAttested upgrade path relies on.
-            for label in &report.observed_exposure_labels {
-                hasher.update(label.as_bytes());
-            }
-            hasher.update(report.observed_risk_tier.as_bytes());
-            hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        };
+        let v1_content_hash =
+            trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
 
         // Extract trust metadata from pod labels (set during create_pod_internal)
         let trust_bracket = handle
@@ -3442,6 +3590,21 @@ impl NodeService for GrpcService {
                 report.observed_risk_tier.clone()
             },
             uninhabitable_reached: report.uninhabitable_reached,
+            // Runtime-verification findings from the tool proxy's TraceMonitor,
+            // written to .nucleus-exit-report.json at shutdown alongside exposure.
+            monitor_violations: report.monitor_violations.clone(),
+            monitor_violations_dropped: report.monitor_violations_dropped,
+            // Signed with the executor key, which the pod never sees. Taken at
+            // pod exit — after the pod has stopped — so the head it binds is one
+            // the pod can no longer move.
+            art12_attestation: trust_gate::attest_art12(
+                &report,
+                // What the HOST received, not what the pod reported.
+                art12_collector::observed_chain(&self.state.state_dir, &id.to_string()).as_ref(),
+                &id.to_string(),
+                &self.state.trust_gate.executor_id,
+                &self.state.trust_gate.executor_signing_key,
+            ),
             // Cryptographic session identity — required for the SandboxAttested
             // upgrade path in the trust-service session-complete handler.
             sandbox_identity: if spiffe_id.is_empty() {
@@ -3578,13 +3741,9 @@ impl NodeService for GrpcService {
                     operator = %req.operator_id,
                     "lockdown: pod affected"
                 );
-                let audit_path = pod
-                    .log_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join("audit.log");
+                let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
                 write_lifecycle_audit(
-                    &audit_path,
+                    pod_dir,
                     action,
                     &pod.id.to_string(),
                     &format!("reason={}, operator={}", reason, req.operator_id),

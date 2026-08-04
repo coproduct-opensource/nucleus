@@ -1,0 +1,284 @@
+# Boot a real nucleus pod, and check the artifact pins still resolve.
+#
+# WHY THIS EXISTS
+#
+# Before this workflow, `firecracker` appeared in exactly one file under
+# .github/workflows — release.yml, which BUILDS a rootfs and never boots one.
+# Nothing in CI started a microVM, so nothing in CI could notice that:
+#
+#   * both published Lima templates pinned a kernel URL returning HTTP 404;
+#   * `nucleus setup` installed neither nucleus-node nor a rootfs;
+#   * the systemd unit it wrote named three environment variables the node does
+#     not read, and none of the three secrets the node requires;
+#   * `nucleus doctor` printed "All checks passed" in the same minute
+#     `nucleus start` exited 1.
+#
+# Every one of those was found by a human running the quickstart by hand on
+# 2026-07-29. This workflow is what would have caught them.
+#
+# WHAT IS AND IS NOT COVERED — READ BEFORE TRUSTING A GREEN TICK
+#
+# The boot job runs on **x86_64**, because GitHub's hosted arm64 runners do not
+# support nested virtualisation and so have no /dev/kvm; there is no arm64
+# runner tier that does. So this gates the *nucleus* half of the quickstart —
+# guest-init, identity, the task token, and enforcement — on every change, and
+# it does NOT gate the Apple-Silicon-specific half: Lima, the vz driver, nested
+# virtualisation, and the aarch64 rootfs.
+#
+# Those are verified by a human running `nucleus verify --tier2` on an Apple
+# Silicon Mac before a release. This file says so rather than letting a green
+# tick imply coverage that does not exist.
+
+name: quickstart-boot
+
+on:
+  pull_request:
+    paths:
+      - "crates/nucleus-cli/**"
+      - "crates/nucleus-node/**"
+      - "crates/nucleus-spec/**"
+      - "crates/nucleus-guest-init/**"
+      - "crates/nucleus-tool-proxy/**"
+      - "scripts/firecracker/**"
+      - "scripts/lima/**"
+      - ".github/workflows/quickstart-boot.yml"
+  push:
+    branches: [main]
+  schedule:
+    # The pins point at other people's servers. A weekly run catches an artifact
+    # moving or disappearing before a user does.
+    - cron: "17 6 * * 1"
+  # So the aarch64 job can be exercised on demand instead of only on the weekly
+  # cron — a gate nobody can trigger is a gate nobody validates.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins-resolve:
+    name: pinned artifacts still resolve
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+      - name: Print the pin manifest
+        id: pins
+        run: |
+          cargo run -q -p nucleus-cli -- verify --pins > pins.json
+          cat pins.json
+
+      - name: Kernels must resolve and match their baked digest
+        run: |
+          set -euo pipefail
+          fail=0
+          # Read from a redirect, NOT `... | while read`: a pipeline runs the loop
+          # in a SUBSHELL, so `fail=1` set inside it is lost and the final
+          # `exit $fail` always sees 0. That is a gate that cannot go red — the
+          # exact defect this workflow exists to catch, and the first version of
+          # this step had it.
+          jq -r 'map(select(.kind == "kernel")) | .[] | "\(.arch)\t\(.url)\t\(.sha256)"' \
+            pins.json > kernels.tsv
+          # Non-vacuity: an empty list would satisfy every check below.
+          test -s kernels.tsv || { echo "::error::no kernel pins found"; exit 1; }
+          while IFS=$'\t' read -r arch url want; do
+            echo "::group::kernel $arch"
+            if ! curl -fsSL -o kernel.bin "$url"; then
+              echo "::error::pinned kernel for $arch does not resolve: $url"
+              fail=1
+            else
+              got=$(sha256sum kernel.bin | cut -d' ' -f1)
+              if [ "$got" != "$want" ]; then
+                echo "::error::kernel digest mismatch for $arch: want $want got $got"
+                fail=1
+              else
+                echo "ok: $arch $got"
+              fi
+              rm -f kernel.bin
+            fi
+            echo "::endgroup::"
+          done < kernels.tsv
+          exit $fail
+
+      - name: Release assets — missing is an error, unpublished is a notice
+        run: |
+          set -euo pipefail
+          version=$(jq -r 'map(select(.release)) | .[0].release' pins.json)
+          # Two states, deliberately distinguished. "The pinned release has not
+          # been cut yet" is known and tracked, and must not be reported as rot;
+          # "the release exists but an asset is gone" is exactly the rot this job
+          # is for.
+          if ! curl -fsSL -o release.json \
+              "https://api.github.com/repos/coproduct-opensource/nucleus/releases/tags/v${version}"; then
+            echo "::notice::pinned guest release v${version} is not published yet; the clean-machine quickstart cannot install release artifacts until it is. Build locally with: nucleus setup --artifacts local"
+            exit 0
+          fi
+          fail=0
+          jq -r 'map(select(.release)) | .[] | .url | split("/") | last' pins.json | sort -u > wanted.txt
+          test -s wanted.txt || { echo "::error::no release-asset pins found"; exit 1; }
+          while read -r name; do
+            if jq -e --arg n "$name" '.assets[] | select(.name == $n)' release.json >/dev/null; then
+              echo "ok: $name"
+            else
+              echo "::error::release v${version} is missing asset $name"
+              fail=1
+            fi
+          done < wanted.txt
+          exit $fail
+
+  # Weekly aarch64 coverage, on hardware that can actually boot a microVM.
+  #
+  # WHY THIS IS SEPARATE, WEEKLY, AND OFF BY DEFAULT
+  #
+  # The x86_64 job below gates the nucleus half of the quickstart on every change.
+  # What it cannot cover is anything aarch64-SPECIFIC: the arm64 kernel digest and
+  # the arm64 rootfs build. No GitHub-hosted runner can — arm64 runners have no
+  # /dev/kvm, macOS runners cannot nest (Virtualization.framework), and EC2's
+  # nested-virt-on-VMs launch is Intel-only. arm64 + KVM means bare metal.
+  #
+  # So this runs on a self-hosted ephemeral arm64 metal runner, WEEKLY rather than
+  # per-PR: the arm-specific risk is narrow, and a per-PR metal instance is ~20
+  # minutes of billed time per run for coverage that changes rarely.
+  #
+  # It is INERT until `vars.ARM64_METAL_RUNNER` is set to the runner label. With
+  # the variable unset the job is skipped, so this file does not fail for anyone
+  # who has not provisioned one.
+  #
+  # WHAT IT STILL DOES NOT COVER — and no amount of money would
+  #
+  # The Apple Silicon layer: Lima, the `vz` driver, and macOS nested
+  # virtualisation. That exists only on Apple hardware and no hosted Apple runner
+  # exposes nesting, so `nucleus verify --tier2` on an Apple Silicon Mac remains a
+  # human pre-release step. This job narrows the gap; it does not close it.
+  boot-a-real-pod-aarch64:
+    name: a real nucleus pod boots and is enforced (aarch64, weekly)
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.ARM64_METAL_RUNNER != '' }}
+    runs-on: ${{ vars.ARM64_METAL_RUNNER }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-musl
+
+      # Asserted, because the architecture IS the point of this job. A silently
+      # x86 runner would duplicate the job below and report aarch64 coverage that
+      # never happened.
+      - name: This runner must be arm64 with KVM and vsock
+        run: |
+          test "$(uname -m)" = "aarch64" || {
+            echo "::error::expected an aarch64 runner, got $(uname -m)"; exit 1; }
+          test -e /dev/kvm || { echo "::error::no /dev/kvm on this runner"; exit 1; }
+          sudo modprobe vhost_vsock || true
+          test -e /dev/vhost-vsock || { echo "::error::no /dev/vhost-vsock"; exit 1; }
+          sudo chmod 666 /dev/kvm
+
+      - name: Build the guest and host binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools e2fsprogs
+          rustup target add aarch64-unknown-linux-musl
+          rustup target list --installed | grep -q aarch64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-musl \
+            -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
+            -p nucleus-tool-proxy -p nucleus-net-probe
+
+      - name: Build the guest rootfs
+        run: |
+          ARCH=aarch64 bash ./scripts/firecracker/build-rootfs.sh
+          test -s build/firecracker/aarch64/rootfs.ext4
+
+      - name: Install this build as the Tier 2 host
+        run: |
+          sudo cp target/aarch64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
+          nucleus setup --skip-verify --artifacts local
+
+      - name: Boot a real pod and assert what the guest did
+        run: nucleus verify --tier2 --here
+
+      - name: Show the guest log on failure
+        if: failure()
+        run: |
+          sudo find /var/lib/nucleus/state -name firecracker.log -exec tail -50 {} \; || true
+          sudo journalctl -u nucleus-node --no-pager -n 50 || true
+
+  boot-a-real-pod:
+    name: a real nucleus pod boots and is enforced (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
+          # is what would otherwise supply it, and a SHA carries no tag.
+          #
+          # The `targets:` input is deliberately NOT used here. It installs the
+          # target for the toolchain the ACTION selects, but `rust-toolchain.toml`
+          # pins the channel cargo actually uses (1.96.1) — so the target landed
+          # on `stable` and the build ran on 1.96.1 without it, failing with
+          # "can't find crate for `std`". Added explicitly below instead, against
+          # whichever toolchain the pin resolves to.
+          toolchain: stable
+
+      - name: This runner must actually have KVM
+        run: |
+          # Asserted, not assumed. Without /dev/kvm Firecracker does not start,
+          # and every later step would fail for a reason that looks like nucleus.
+          test -e /dev/kvm || { echo "::error::no /dev/kvm on this runner"; exit 1; }
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+          # Firecracker's vsock device needs vhost-vsock, and the guest fetches
+          # its SVID and task token over that channel. Asserted, not assumed:
+          # without it the pod fails at device setup, far from anything that
+          # names vsock.
+          sudo modprobe vhost_vsock
+          test -e /dev/vhost-vsock || { echo "::error::no /dev/vhost-vsock"; exit 1; }
+          ls -l /dev/vhost-vsock
+
+      - name: Build the guest and host binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools e2fsprogs
+          # Against the toolchain `rust-toolchain.toml` selects, not the one the
+          # setup action installed. Asserted, because a missing target fails deep
+          # in a dependency build with a message about `std` rather than about
+          # the target.
+          rustup target add x86_64-unknown-linux-musl
+          rustup target list --installed | grep -q x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
+            -p nucleus-tool-proxy -p nucleus-net-probe
+
+      - name: Build the guest rootfs
+        run: |
+          # The CA bundle this installs is load-bearing: without it the
+          # tool-proxy's drand client fails and, as PID 1, takes the guest
+          # kernel with it (#2110).
+          # `bash <script>`, not `./<script>`: the file is mode 100644 in git, so
+          # executing it directly fails with "Permission denied" (exit 126).
+          # release.yml chmods it first; invoking the interpreter avoids mutating
+          # the tree to work around a file mode.
+          ARCH=x86_64 bash ./scripts/firecracker/build-rootfs.sh
+          test -s build/firecracker/x86_64/rootfs.ext4
+
+      - name: Install this build as the Tier 2 host
+        run: |
+          sudo cp target/x86_64-unknown-linux-musl/release/nucleus /usr/local/bin/nucleus
+          # --artifacts local: gate THIS commit, not the last release. Using
+          # release artifacts here would test a build nobody is proposing.
+          nucleus setup --skip-verify --artifacts local
+
+      - name: Boot a real pod and assert what the guest did
+        run: |
+          # The whole point. Asserts, in order: the pod is created; a permitted
+          # command runs INSIDE the microVM; a forbidden command is DENIED; and
+          # the guest fetched its SVID and its task token over vsock.
+          nucleus verify --tier2 --here
+
+      - name: Show the guest log on failure
+        if: failure()
+        run: |
+          sudo find /var/lib/nucleus/state -name firecracker.log -exec tail -50 {} \; || true
+          sudo journalctl -u nucleus-node --no-pager -n 50 || true

@@ -288,6 +288,7 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
 /// The vsock socket is deliberately absent: Firecracker CREATES it at `uds_path`
 /// inside the jail, and the host reaches it through `layout.host_path(VSOCK)`.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "prepare_jail"))]
 pub(crate) fn prepare_jail(
     layout: &JailLayout,
     image: &nucleus_spec::ImageSpec,
@@ -697,6 +698,23 @@ impl FirecrackerConfig {
         // condition rather than a removal: a node with identity management off,
         // or a pod whose grant was denied, has Tier 3 as its ONLY proof, and the
         // tool-proxy exits fatally when no tier succeeds.
+        //
+        // # This deadlocked every launch once, and what changed
+        //
+        // The condition shipped while `spawn_firecracker_pod` started the
+        // workload API bridge AFTER `wait_for_proxy_health`. An identity-bearing
+        // pod then had no proof at the only moment that mattered: the SVID
+        // source did not exist yet, Tier 3 was gone, the guest exited as PID 1,
+        // and every launch failed with "proxy health check timed out". Observed
+        // on real hardware and invisible to every unit test, because the
+        // omission is correct in isolation and wrong only in composition with
+        // that ordering.
+        //
+        // The bridge now starts BEFORE the health check, which is what makes
+        // this safe — not any improvement in the reasoning above.
+        // `the_workload_api_bridge_starts_before_the_health_check` pins that
+        // precondition, so if the bridge moves back this fails rather than
+        // deadlocking a fleet.
         if workload_api_port.is_none() {
             use sha2::{Digest, Sha256};
             let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
@@ -970,6 +988,7 @@ pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
 /// deciding it is fine — see the rule in `check-failclosed-verifiers.sh`. A
 /// verifier may never SUCCEED when it cannot check; it may take a moment to look.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "seccomp.wait"))]
 pub(crate) async fn verify_seccomp_active_within(
     pid: u32,
     timeout: std::time::Duration,
@@ -1078,6 +1097,35 @@ mod tests {
             !args.contains("nucleus.sandbox_token"),
             "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
              not need the Tier 3 token: {args}"
+        );
+    }
+
+    /// **The precondition that makes the omission above safe**, pinned against
+    /// the source rather than trusted.
+    ///
+    /// The first attempt at that omission deadlocked every launch: the guest's
+    /// SVID source started after the health check that needed it, so an
+    /// identity-bearing pod had no proof at all. Nothing caught it, because each
+    /// half is correct alone.
+    ///
+    /// Not gated on Linux: the ordering is a property of the source text, and
+    /// gating it would mean the guard does not run on the machine where the
+    /// change is usually made.
+    #[test]
+    fn the_workload_api_bridge_starts_before_the_health_check() {
+        let src = include_str!("main.rs");
+        let bridge = src
+            .find("WorkloadApiVsockBridge::start")
+            .expect("the bridge start site");
+        let health = src
+            .find("wait_for_proxy_health(health_addr)")
+            .expect("the health check site");
+        assert!(
+            bridge < health,
+            "the workload API bridge must start BEFORE the proxy health check — the guest \
+             needs its SVID in order to become healthy, so producing it afterwards is the \
+             wrong order. An identity-bearing pod has no Tier 3 fallback, so this ordering \
+             is the only thing letting it prove itself at all."
         );
     }
 

@@ -567,6 +567,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::CedarDenied { detail } => {
             format!("cedar policy denied: {detail}")
         }
+        DenyReason::DlcAdmissionDenied { detail } => {
+            format!("verified admission denied: {detail}")
+        }
     }
 }
 

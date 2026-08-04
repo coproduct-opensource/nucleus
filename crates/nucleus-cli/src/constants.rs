@@ -3,20 +3,6 @@
 //! This module centralizes constants used across multiple CLI commands
 //! to maintain consistency and simplify version/configuration updates.
 
-/// Version of Firecracker to download.
-///
-/// Used by `setup` to build the release download URL. **Not** the acceptance
-/// check — `doctor` and the node judge an installed build against
-/// [`nucleus_spec::vmm_version`], which is a floor plus a known-vulnerable
-/// denylist rather than an equality test. Keeping the two apart matters: the
-/// previous code compared installed-vs-pinned with `String::contains`, so a
-/// newer *patched* Firecracker was reported as wrong exactly like an older
-/// vulnerable one.
-///
-/// Update by changing `vmm_version::PINNED`; this string is derived from it, so
-/// the installer and the acceptance check cannot drift apart.
-pub const FIRECRACKER_VERSION: &str = nucleus_spec::vmm_version::PINNED_STR;
-
 /// The agent's BUILT-IN tools that MUST be disabled when launching the assistant
 /// under nucleus enforcement, so the agent can only act through the nucleus MCP
 /// tools (each routed through the `PermissionLattice`). Passed verbatim as

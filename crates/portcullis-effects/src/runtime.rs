@@ -559,6 +559,7 @@ impl NucleusRuntime {
             task: String::new(),
             task_token: None,
             allowed_write_paths: Vec::new(),
+            git_dir: None,
         }
     }
 
@@ -1433,9 +1434,22 @@ pub struct NucleusRuntimeBuilder {
     task: String,
     task_token: Option<VerifiedTaskRef>,
     allowed_write_paths: Vec<PathBuf>,
+    /// Working directory for git effects; `None` = the process CWD.
+    git_dir: Option<PathBuf>,
 }
 
 impl NucleusRuntimeBuilder {
+    /// Scope git effects to `dir` instead of the process working directory.
+    ///
+    /// `git commit` acts on whichever repository the process is standing in,
+    /// not on anything named in its arguments. A runtime that means to commit a
+    /// specific workspace must say so; leaving this unset keeps the historical
+    /// process-CWD behaviour.
+    pub fn git_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.git_dir = Some(dir.into());
+        self
+    }
+
     /// Set the policy profile.
     ///
     /// This is the recommended way to configure capabilities. If you also
@@ -1536,7 +1550,10 @@ impl NucleusRuntimeBuilder {
             .custom_policy
             .unwrap_or_else(|| self.profile.to_lattice());
 
-        let effects = crate::production_effects_concrete(policy.clone());
+        let effects = match self.git_dir {
+            Some(dir) => crate::production_effects_in(policy.clone(), dir),
+            None => crate::production_effects_concrete(policy.clone()),
+        };
         NucleusRuntime {
             profile: self.profile,
             policy,
@@ -2321,10 +2338,46 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A scratch git repository with one staged change, so a commit here is a
+    /// real commit that touches nothing outside the temp dir.
+    fn scratch_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "test"]);
+        std::fs::write(dir.path().join("f.txt"), b"one").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        std::fs::write(dir.path().join("f.txt"), b"two").unwrap();
+        dir
+    }
+
     #[test]
     fn git_commit_allowed_by_codegen_profile() {
-        let mut rt = rt_tok(PolicyProfile::Codegen);
-        // git_commit may fail on I/O (no repo) but should NOT fail on policy
+        // This test drives the REAL git effect. Before the runtime could be
+        // scoped, it ran `git add -u && git commit` in the process CWD — which
+        // under `cargo test` is the repository root, so running the suite
+        // committed the developer's staged work to their branch. Observed
+        // twice on 2026-08-01. The comment it used to carry ("may fail on I/O
+        // (no repo)") assumed a condition that is false exactly where it
+        // matters.
+        let repo = scratch_repo();
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+
         let result = {
             let p = rt.preflight_commit().unwrap();
             rt.git_commit("test commit", p)
@@ -2332,6 +2385,50 @@ mod tests {
         if let Err(RuntimeError::Denied { .. }) = &result {
             panic!("git_commit should not be denied by Codegen profile");
         }
+        assert!(
+            result.is_ok(),
+            "the scratch commit should succeed: {result:?}"
+        );
+    }
+
+    /// **The property that makes the suite safe to run.** A runtime scoped to a
+    /// directory must commit THERE — otherwise the scoping is decorative and the
+    /// test above is back to mutating whatever repository it is run from.
+    ///
+    /// Perturbation: drop `current_dir` in `RealEffects::in_git_dir` and this
+    /// REDs on the scratch repo's commit count.
+    #[test]
+    fn a_scoped_runtime_commits_only_in_its_own_repo() {
+        let repo = scratch_repo();
+        let count = |dir: &std::path::Path| -> usize {
+            let out = std::process::Command::new("git")
+                .args(["rev-list", "--count", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+        };
+        assert_eq!(
+            count(repo.path()),
+            1,
+            "fixture should start with one commit"
+        );
+
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+        let p = rt.preflight_commit().unwrap();
+        rt.git_commit("scoped", p).expect("commit should succeed");
+
+        assert_eq!(
+            count(repo.path()),
+            2,
+            "the commit did not land in the scoped repository -- it went somewhere else"
+        );
     }
 
     #[test]
