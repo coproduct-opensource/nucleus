@@ -114,6 +114,28 @@ jobs:
       - name: Forbid raw agent-path effect primitives outside the discharge-gated API
         run: scripts/check-mediation.sh
 
+  # `discharge::test_helpers::bundle_for` mints a DischargedBundle with no
+  # preflight. It is gated behind a `test-helpers` feature that only
+  # [dev-dependencies] enable — and Cargo unifies features per build, so one line
+  # moving to [dependencies] makes the proof mintable from production code with
+  # every test still green, because tests already have the feature on.
+  #
+  # This needs cargo (it reads the resolved no-dev feature graph rather than
+  # grepping manifests, which would miss transitive enabling), so it gets a
+  # toolchain rather than riding along with the grep-only gates above.
+  test-helpers-seal:
+    name: test-helpers is not reachable from a shipping build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: The discharge seal is not reachable from any shipping build
+        shell: bash
+        run: scripts/check-test-helpers-not-in-production.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and

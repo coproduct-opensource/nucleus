@@ -73,6 +73,23 @@ probe() {
 
     # The invocation must match the workflows, or this script is testing
     # something CI does not run.
+    #
+    # FIRST: is it run by CI AT ALL? The flag comparison below cannot answer
+    # that — a gate no workflow mentions yields an empty `in_ci`, which equals
+    # the common `ci_flags=""` and passes. So "CI runs it with no flags" and "CI
+    # never runs it" were the same result, and an unwired gate probed as green.
+    # That is how `check-test-helpers-not-in-production.sh` shipped invoked by
+    # zero workflows. Absence of a match is not evidence of a bare invocation.
+    local workflow_hits
+    workflow_hits="$(grep -rl "scripts/$gate" .github/workflows/ 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "$workflow_hits" -eq 0 ]]; then
+        echo "  FAIL  $gate — no workflow under .github/workflows/ invokes it"
+        echo "        The gate can fail locally and never run. A gate CI does not"
+        echo "        call enforces nothing, however carefully it is written."
+        failures=$((failures + 1))
+        return
+    fi
+
     local in_ci
     in_ci="$(grep -rhoE "scripts/$gate[^\"']*" .github/workflows/ 2>/dev/null | head -1 | sed "s|scripts/$gate||" | xargs || true)"
     if [[ "$in_ci" != "$ci_flags" ]]; then
@@ -169,6 +186,29 @@ perturb_ingest_hashed() {
     append_line "$1" 'fn _gate_of_gates_ingest(f: &mut FlowTracker) { f.observe(NodeKind::WebFetch); }'
 }
 
+perturb_test_helpers_in_prod() {
+    # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
+    # subject: with it on, `discharge::test_helpers::bundle_for` mints a
+    # DischargedBundle with no preflight from production code.
+    #
+    # nucleus-ifc-kernel is ALREADY a normal [dependencies] edge of
+    # nucleus-tool-proxy, so this only adds a feature to an existing edge — it
+    # creates no new dependency and therefore no Cargo.lock change (features are
+    # not recorded in the lockfile). That is why this gate is probeable and the
+    # other two are not; they need a genuine graph change.
+    sed -i.gate-bak \
+        's|^nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }$|nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0", features = ["test-helpers"] }|' \
+        "$1"
+    rm -f "$1.gate-bak"
+    # If the manifest line is reworded, the sed above silently no-ops and the
+    # probe reports the gate as broken when the gate is fine. Fail loudly instead.
+    if ! grep -q 'nucleus-ifc-kernel.*features = \["test-helpers"\]' "$1"; then
+        echo "  ERROR: the nucleus-ifc-kernel dependency line changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
 perturb_trusted_base() {
     # A manifest entry pinned by a test that does not exist — the gate's whole
     # subject is that `pinned_by:` is prose until something confirms the test.
@@ -192,18 +232,19 @@ probe check-ingest-hashed.sh  "" crates/nucleus-tool-proxy/src/egress.rs \
       "an unwitnessed .observe() ingest"      perturb_ingest_hashed
 probe check-sandbox-trusted-base.sh "" sandbox-trusted-base.txt \
       "a pinned_by naming a nonexistent test" perturb_trusted_base
+probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo.toml \
+      "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
-# A perturbation for these needs cargo resolution or a manifest edit, which this
-# script deliberately does not do — it must not leave a lockfile behind.
+# A perturbation for these needs a duplicate crate version or a non-wasm
+# dependency — a real lockfile change, which this script will not make.
 UNCOVERED=(
     "check-dep-ceiling.sh          needs a real duplicate crate version"
     "check-wasm-closure.sh         needs a non-wasm dependency added"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
-# at. The remaining two need a Cargo.toml/lockfile edit, which this script will
-# not do — it must not leave a lockfile behind.
+# at. The remaining two need a Cargo.lock change, which this script will not make.
 UNCOVERED_CEILING=2
 
 echo
@@ -216,6 +257,71 @@ if [[ "${#UNCOVERED[@]}" -gt "$UNCOVERED_CEILING" ]]; then
     echo "VIOLATION: uncovered gate count rose above $UNCOVERED_CEILING."
     echo "A new gate was added without a perturbation proving it can fail."
     failures=$((failures + 1))
+fi
+
+# ── The ratchet's own completeness ────────────────────────────────────────
+#
+# The ceiling above compares UNCOVERED against itself, which is not a check of
+# anything: UNCOVERED is a hand-maintained list, so a gate that is NEITHER
+# probed NOR listed is invisible to it and the count does not move. That is not
+# hypothetical — `check-test-helpers-not-in-production.sh` arrived in the broker
+# arc and this script did not notice, because nothing here ever asked what gates
+# exist.
+#
+# "Nothing references X" is also true when X is not in the domain being searched.
+# So derive the domain instead of declaring it: glob the gates, subtract the ones
+# probed above and the ones listed as uncovered, and fail on the remainder. Now
+# adding a gate forces a decision — write a perturbation, or say why you cannot.
+declare -a UNACCOUNTED=()
+declare -a UNWIRED=()
+for path in scripts/check-*.sh; do
+    gate="$(basename "$path")"
+    # This script is the prober, not a subject; it has no perturbation of itself.
+    [[ "$gate" == "check-gates-can-fail.sh" ]] && continue
+
+    # Wiring is checked for EVERY gate, not just the probed ones. probe() also
+    # checks this, but it only sees gates that have a perturbation — an
+    # UNCOVERED gate could be unwired and nothing would say so.
+    if [[ "$(grep -rl "scripts/$gate" .github/workflows/ 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ]]; then
+        UNWIRED+=("$gate")
+    fi
+
+    grep -qE "^probe[[:space:]]+$gate([[:space:]]|$)" "$0" && continue
+    printf '%s\n' "${UNCOVERED[@]}" | grep -q "^$gate[[:space:]]" && continue
+    UNACCOUNTED+=("$gate")
+done
+
+if [[ "${#UNWIRED[@]}" -gt 0 ]]; then
+    echo
+    echo "VIOLATION: ${#UNWIRED[@]} gate(s) are not invoked by any workflow:"
+    for g in "${UNWIRED[@]}"; do echo "    $g"; done
+    echo "A gate that CI never calls enforces nothing. Add it to a workflow, or"
+    echo "delete it — an uncalled script in scripts/ reads as protection that"
+    echo "is not there."
+    failures=$((failures + 1))
+fi
+
+if [[ "${#UNACCOUNTED[@]}" -gt 0 ]]; then
+    echo
+    echo "VIOLATION: ${#UNACCOUNTED[@]} gate(s) are neither probed nor listed as uncovered:"
+    for g in "${UNACCOUNTED[@]}"; do echo "    $g"; done
+    echo "Add a probe() for it, or add it to UNCOVERED with the reason a"
+    echo "perturbation is not available. An unaccounted gate is one this script"
+    echo "silently exempted, which is the exact failure it exists to catch."
+    failures=$((failures + 1))
+fi
+
+# NON-VACUITY of the accounting itself: if the glob matched nothing, or the
+# `probe` grep matched everything, the loop above would report a clean sheet
+# without having examined anything.
+gate_count=$(ls scripts/check-*.sh 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$gate_count" -lt 2 ]]; then
+    echo
+    echo "ERROR: found $gate_count gate script(s) under scripts/. The glob is wrong,"
+    echo "so the accounting above examined nothing and proved nothing."
+    failures=$((failures + 1))
+else
+    echo "accounting: $gate_count gate script(s) found, $covered probed, ${#UNCOVERED[@]} listed uncovered, ${#UNACCOUNTED[@]} unaccounted"
 fi
 
 echo
