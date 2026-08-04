@@ -136,6 +136,23 @@ jobs:
         shell: bash
         run: scripts/check-test-helpers-not-in-production.sh
 
+  # A `lean_lib` that no workflow builds is a theorem statement nothing
+  # elaborates — it can be false, ill-typed, or carry a `sorry`, and
+  # `#print axioms` cannot report it because the constant never comes into
+  # existence. #2162 fixed the two such libraries that had been noticed; this
+  # asks for the whole set instead of a list someone maintains by hand.
+  #
+  # Pure grep over lakefiles and workflows, so no toolchain and no Lean build.
+  lean-lib-coverage:
+    name: Every lean_lib is type-checked by something
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: No lean_lib is built by nothing
+        shell: bash
+        run: scripts/check-lean-libs-built.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and

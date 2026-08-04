@@ -186,6 +186,18 @@ perturb_ingest_hashed() {
     append_line "$1" 'fn _gate_of_gates_ingest(f: &mut FlowTracker) { f.observe(NodeKind::WebFetch); }'
 }
 
+perturb_lean_lib_unbuilt() {
+    # A `lean_lib` no workflow builds, nothing imports, and that is not on the
+    # gate's allowlist — the gate's exact subject. Appended to a lakefile whose
+    # package declares no `@[default_target]`, so a bare `lake build` would not
+    # cover it either.
+    cat >> "$1" <<'LEAN'
+
+lean_lib «GateOfGatesUnbuiltProbe» where
+  roots := #[`GateOfGatesUnbuiltProbe]
+LEAN
+}
+
 perturb_test_helpers_in_prod() {
     # `test-helpers` reachable from a SHIPPING build, which is the gate's whole
     # subject: with it on, `discharge::test_helpers::bundle_for` mints a
@@ -234,6 +246,8 @@ probe check-sandbox-trusted-base.sh "" sandbox-trusted-base.txt \
       "a pinned_by naming a nonexistent test" perturb_trusted_base
 probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo.toml \
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
+probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
+      "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
