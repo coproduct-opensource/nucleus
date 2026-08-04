@@ -181,7 +181,11 @@ where
         let (stage, dur_ms, offset_ms) = {
             let ext = span.extensions();
             match ext.get::<StageStart>() {
-                Some(s) => (s.stage.clone(), s.started.elapsed().as_millis(), s.offset_ms),
+                Some(s) => (
+                    s.stage.clone(),
+                    s.started.elapsed().as_millis(),
+                    s.offset_ms,
+                ),
                 None => return,
             }
         };
@@ -190,7 +194,10 @@ where
         if is_root {
             // Take the accumulator out (extension locks dropped) before
             // emitting, so the event dispatch never re-enters a held lock.
-            let agg = span.extensions_mut().remove::<RootAgg>().unwrap_or_default();
+            let agg = span
+                .extensions_mut()
+                .remove::<RootAgg>()
+                .unwrap_or_default();
             let (measured_ms, unaccounted_ms, stages) = summarize(&agg.records, dur_ms);
             tracing::info!(
                 target: "boot_trace",
@@ -234,11 +241,7 @@ where
 fn summarize(records: &[StageRecord], wall_ms: u128) -> (u128, i64, String) {
     let mut ordered: Vec<&StageRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.offset_ms);
-    let measured: u128 = ordered
-        .iter()
-        .filter(|r| !r.nested)
-        .map(|r| r.dur_ms)
-        .sum();
+    let measured: u128 = ordered.iter().filter(|r| !r.nested).map(|r| r.dur_ms).sum();
     let unaccounted = wall_ms as i64 - measured as i64;
     let stages = ordered
         .iter()
@@ -349,10 +352,7 @@ fn guest_timeline(console: &str) -> String {
             if line.contains(marker) {
                 match ts {
                     Some(t) => out.push(format!("'{marker}'@{t:.3}")),
-                    None => out.push(format!(
-                        "'{marker}'@>={:.3}",
-                        last_ts.unwrap_or(0.0)
-                    )),
+                    None => out.push(format!("'{marker}'@>={:.3}", last_ts.unwrap_or(0.0))),
                 }
             }
         }
@@ -429,7 +429,10 @@ mod tests {
 
     #[test]
     fn kernel_timestamp_parses_and_rejects() {
-        assert_eq!(parse_kernel_ts("[    0.123456] Linux version"), Some(0.123456));
+        assert_eq!(
+            parse_kernel_ts("[    0.123456] Linux version"),
+            Some(0.123456)
+        );
         assert_eq!(parse_kernel_ts("[   12.5] foo"), Some(12.5));
         assert_eq!(parse_kernel_ts("[WARN] not a timestamp"), None);
         assert_eq!(parse_kernel_ts("no brackets"), None);

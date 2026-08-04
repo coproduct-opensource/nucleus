@@ -89,6 +89,15 @@ ignore = [
   # RUSTSEC-2026-0114 entry above. REVISIT as its own PR — a major engine bump
   # does not belong inside unrelated work.
   "RUSTSEC-2026-0222",
+
+  # rkyv 0.7.46 OOB reads validating Rc/Arc archives (RUSTSEC-2026-0235).
+  # Advisory-DB refresh red on unrelated PRs the same day. Orphan lockfile
+  # residue: backs rust_decimal's optional `rkyv` feature, which nothing
+  # enables — `cargo tree -i rkyv --all-features --target all` finds no path,
+  # so it never compiles (same class as RUSTSEC-2026-0104). Fix line
+  # (rkyv >=0.8.17) unreachable until rust_decimal migrates off 0.7.
+  # REVISIT with rust_decimal updates.
+  "RUSTSEC-2026-0235",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
