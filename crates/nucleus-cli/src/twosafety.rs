@@ -152,13 +152,97 @@ const EXCERPT_BYTES: usize = 120;
 /// is the most likely place for a real leak.
 #[must_use]
 pub fn canonicalise(obs: &Observation, facts: &RunFacts) -> Canonical {
+    // The warrant is derived from the machine config and ONLY from the machine
+    // config, because that is the component the guest cannot write. See
+    // [`Warrant`] for why that asymmetry is the whole point.
+    let warrant = Warrant::from_host(&obs.machine_config);
     Canonical {
-        machine_config: scrub(&obs.machine_config, facts),
-        console: scrub(&obs.console, facts),
+        // The host-authored component IS the warrant's source, so it needs none.
+        machine_config: scrub(&obs.machine_config, facts, None),
+        console: scrub(&obs.console, facts, Some(&warrant)),
     }
 }
 
-fn scrub(s: &str, facts: &RunFacts) -> String {
+/// The high-integrity facts that authorise erasing something from the
+/// comparison — and the reason rule 3c cannot be written wrongly again.
+///
+/// # Every canonicalisation rule is a declassification
+///
+/// A rule decides that some bytes will not be compared, which is a deliberate
+/// release of the harness from noticing them. Robust declassification
+/// (Zdancewic & Myers 2001) asks for exactly one thing of such a decision: an
+/// attacker may influence **neither the decision to declassify nor the choice of
+/// what is declassified**. The enforcement they give is to require the
+/// *decision* to have **high integrity**.
+///
+/// # The rule that violated it
+///
+/// `normalise_truncated_cmdline_echo` erased the kernel's echo of the command
+/// line on the strength of `line.starts_with("Kernel command line: ")`. The
+/// console is **guest-writable** — real logs carry unprefixed guest lines such
+/// as `fetched identity: spiffe://...` — so the guest chose whether the erasure
+/// fired, and could hide an arbitrary value behind a forged prefix. That is not
+/// a pattern that was too broad. It is a declassification whose trigger the
+/// attacker controls.
+///
+/// # What this type does about it
+///
+/// A `Warrant` is constructible **only** from the machine configuration, which
+/// only the node writes into the jail. There is no constructor taking console
+/// text, so a rule cannot base its firing decision on guest-authored bytes by
+/// reaching for one — the value it would need does not exist on that path.
+///
+/// The asymmetry is the invariant, so it is worth stating plainly:
+///
+/// * `machine_config` — written by `firecracker_config.rs`, inside the jail,
+///   before the guest exists. HIGH integrity. May authorise an erasure.
+/// * `console` — whatever came off `console=ttyS0`, which includes anything the
+///   guest chose to print. LOW integrity. May be erased, may never authorise.
+///
+/// # What it still does not do
+///
+/// It does not stop a future rule pattern-matching guest text directly; the
+/// line is still a `&str`. What it removes is the *need* to, and it makes the
+/// wrong version visibly wrong — a rule that erases guest bytes without
+/// consulting a warrant is now the odd one out rather than the norm.
+/// `a_guest_forged_cmdline_echo_is_not_erased` pins the specific attack.
+struct Warrant {
+    /// The session task token exactly as the HOST wrote it into `boot_args`.
+    ///
+    /// `None` when the config carries no token, in which case every rule that
+    /// needs one declines — failing closed, so a missing warrant erases less
+    /// rather than more.
+    task_token_hex: Option<String>,
+}
+
+impl Warrant {
+    /// Derive the warrant from the host-authored machine configuration.
+    ///
+    /// Deliberately the only constructor, and deliberately private.
+    fn from_host(machine_config: &str) -> Self {
+        Warrant {
+            task_token_hex: hex_value_of_key(machine_config, TOKEN_HEX_KEY),
+        }
+    }
+
+    /// Is `candidate` the kernel's echo of the token the HOST wrote?
+    ///
+    /// A byte-exact prefix, because that is what a truncated echo of a value is
+    /// and what a forgery is not. Verified on real artifacts: the kernel echoes
+    /// 968 of the token's 1762 bytes, and the echo is a byte-exact prefix of the
+    /// value in `boot_args`.
+    ///
+    /// Empty candidates are refused: the empty string is a prefix of everything,
+    /// which would authorise erasing anything.
+    fn authorises_cmdline_echo(&self, candidate: &str) -> bool {
+        match &self.task_token_hex {
+            Some(token) => !candidate.is_empty() && token.starts_with(candidate),
+            None => false,
+        }
+    }
+}
+
+fn scrub(s: &str, facts: &RunFacts, warrant: Option<&Warrant>) -> String {
     s.lines()
         .map(|line| {
             let line = strip_leading_timestamp(line);
@@ -172,7 +256,7 @@ fn scrub(s: &str, facts: &RunFacts) -> String {
             // Only reachable when the rule above DECLINED, i.e. the token was
             // truncated by the kernel's own echo. A complete token is decoded
             // and compared field-wise; this never sees it.
-            let line = normalise_truncated_cmdline_echo(&line);
+            let line = normalise_truncated_cmdline_echo(&line, warrant);
             let line = canonicalise_task_token_nonce(&line);
             // The pod UUID is long and structurally unique, so a plain
             // replacement is safe.
@@ -507,9 +591,6 @@ fn canonicalise_task_token_nonce(line: &str) -> String {
     })
 }
 
-/// The literal the guest kernel uses to echo its own command line.
-const CMDLINE_ECHO: &str = "Kernel command line: ";
-
 /// Normalise the task token in the guest kernel's **truncated** command-line
 /// echo. Measured cause of the single residual difference left after rule 3.
 ///
@@ -560,13 +641,41 @@ const CMDLINE_ECHO: &str = "Kernel command line: ";
 /// truncate. Nothing about the token's own content, which `machine_config`
 /// compares untruncated. If you would rather not buy that, delete this rule; the
 /// residual becomes exactly one line and the other three rules are unaffected.
-fn normalise_truncated_cmdline_echo(line: &str) -> String {
-    if !line.starts_with(CMDLINE_ECHO) {
+fn normalise_truncated_cmdline_echo(line: &str, warrant: Option<&Warrant>) -> String {
+    // NO WARRANT, NO ERASURE. The host-authored component is scrubbed without
+    // one — it is the warrant's own source — and nothing there needs this rule,
+    // because a complete token is decoded and compared field-wise upstream.
+    let Some(warrant) = warrant else {
         return line.to_string();
-    }
+    };
+    // The `starts_with` that used to gate this rule is deliberately gone. It was
+    // a guest-forgeable string prefix, and the console is guest-writable, so it
+    // let the guest decide whether the erasure fired. The gate is now the
+    // warrant: does this hex match what the HOST actually wrote? A guest-authored
+    // blob is not a prefix of the host's token, so the rule declines and the
+    // line stays compared — which is the failure mode we want, since a line that
+    // is compared can at worst produce a divergence to investigate, while a line
+    // that is erased is invisible forever.
     rewrite_hex_valued_key(line, TOKEN_HEX_KEY, |hex_value| {
-        (!hex_value.is_empty()).then(|| "<TRUNCATED-CMDLINE-TOKEN-ECHO>".to_string())
+        warrant
+            .authorises_cmdline_echo(hex_value)
+            .then(|| "<TRUNCATED-CMDLINE-TOKEN-ECHO>".to_string())
     })
+}
+
+/// The first `key=<hex…>` value in `text`, using the same delimiting rule as
+/// [`rewrite_hex_valued_key`].
+///
+/// Reads rather than rewrites, so a [`Warrant`] can be built from the
+/// host-authored config without that config being modified.
+fn hex_value_of_key(text: &str, key: &str) -> Option<String> {
+    let i = text.find(key)?;
+    let tail = &text[i + key.len()..];
+    let end = tail
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(tail.len());
+    let value = &tail[..end];
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Rewrite the value of every `key=<hex…>` occurrence in `line`.
@@ -958,6 +1067,17 @@ pub fn check_all(b: &mut dyn Boot) -> Result<(), CheckFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The literal the guest kernel uses to echo its own command line.
+    ///
+    /// TEST-ONLY, and that it is test-only is the point. It used to gate rule
+    /// 3c in production code — `line.starts_with(CMDLINE_ECHO)` — which handed
+    /// the guest the decision to declassify, since the guest can print this
+    /// prefix. The gate is now the [`Warrant`], so the literal survives only as
+    /// scaffolding for building realistic console lines. The dead-code gate is
+    /// what forced it here, which is the wiring check confirming the forgeable
+    /// trigger really left the decision path rather than merely being bypassed.
+    const CMDLINE_ECHO: &str = "Kernel command line: ";
 
     const SECRET_A: &str = "nucleus-e2e-canary-aaaaaaaaaaaa";
     const SECRET_B: &str = "nucleus-e2e-canary-bbbbbbbbbbbb";
@@ -1352,10 +1472,12 @@ mod tests {
         let a = scrub(
             &cmdline_with_token(&fa.pod_id, 0x8e, 1_785_445_717, 0xd0, ""),
             &fa,
+            None,
         );
         let b = scrub(
             &cmdline_with_token(&fb.pod_id, 0x30, 1_785_840_318, 0x89, ""),
             &fb,
+            None,
         );
         assert_eq!(a, b, "only run-scoped token fields differed");
         assert!(a.contains("<TASK-TOKEN-NONCE>"), "nonce erased: {a}");
@@ -1381,10 +1503,12 @@ mod tests {
         let a = scrub(
             &cmdline_with_token(&fa.pod_id, 0x8e, 1_785_445_717, 0xd0, "\"/x/canary-aaaa\""),
             &fa,
+            None,
         );
         let b = scrub(
             &cmdline_with_token(&fb.pod_id, 0x30, 1_785_840_318, 0x89, "\"/x/canary-bbbb\""),
             &fb,
+            None,
         );
         assert!(
             a.contains("canary-aaaa"),
@@ -1412,7 +1536,7 @@ mod tests {
     #[test]
     fn decoding_the_token_first_is_what_lets_the_pod_id_rule_reach_it() {
         let f = facts();
-        let out = scrub(&cmdline_with_token(&f.pod_id, 1, 1, 1, ""), &f);
+        let out = scrub(&cmdline_with_token(&f.pod_id, 1, 1, 1, ""), &f, None);
         assert!(
             out.contains("\"task_id\":\"<POD-ID>\""),
             "the pod UUID inside the decoded token must be normalised: {out}"
@@ -1476,7 +1600,7 @@ mod tests {
             "{CMDLINE_ECHO}{}",
             cmdline_with_token(&f.pod_id, 1, 1, 1, "\"/x/canary-aaaa\"")
         );
-        let out = scrub(&complete, &f);
+        let out = scrub(&complete, &f, None);
         assert!(
             out.contains("canary-aaaa"),
             "a COMPLETE echoed token must still be compared field-wise: {out}"
@@ -1486,13 +1610,16 @@ mod tests {
             "rule 3c must not fire on a complete token: {out}"
         );
 
-        // Truncated: the hex is cut mid-JSON, so rule 3 declines and 3c fires.
+        // Truncated: the hex is cut mid-JSON, so rule 3 declines and 3c fires —
+        // but ONLY under a warrant derived from what the host actually wrote.
         let hex = hex::encode(token_json(&f.pod_id, 1, 1, 1, ""));
+        let host_cfg = format!("\"boot_args\":\"{TOKEN_HEX_KEY}{hex}\"");
+        let w = Warrant::from_host(&host_cfg);
         let truncated = format!(
             "{CMDLINE_ECHO}console=ttyS0 {TOKEN_HEX_KEY}{}",
             &hex[..hex.len() / 2]
         );
-        let out = scrub(&truncated, &f);
+        let out = scrub(&truncated, &f, Some(&w));
         assert!(
             out.contains("<TRUNCATED-CMDLINE-TOKEN-ECHO>"),
             "a truncated token must be normalised: {out}"
@@ -1502,13 +1629,71 @@ mod tests {
             "the rest of the echo stays compared: {out}"
         );
 
-        // Not the echo line: the same truncated hex elsewhere stays compared.
-        let elsewhere = format!("some other line {TOKEN_HEX_KEY}{}", &hex[..hex.len() / 2]);
-        assert_eq!(
-            scrub(&elsewhere, &f),
-            elsewhere,
-            "rule 3c is bound to the kernel's echo literal"
+        // WITHOUT the warrant the rule declines. The host-authored component is
+        // scrubbed with `None`, and failing closed there means erasing less.
+        assert!(
+            !scrub(&truncated, &f, None).contains("<TRUNCATED-CMDLINE-TOKEN-ECHO>"),
+            "no warrant must mean no erasure"
         );
+    }
+
+    /// **The attack rule 3c used to permit, as a test.**
+    ///
+    /// The console is guest-writable — real logs carry unprefixed guest lines
+    /// such as `fetched identity: spiffe://...` — and the old rule fired on
+    /// `line.starts_with("Kernel command line: ")`, a string prefix the guest
+    /// can forge. So a guest could emit that prefix followed by
+    /// `nucleus.task_token_hex=<hex of anything>` and have its bytes erased
+    /// from the comparison. Two runs carrying DIFFERENT smuggled values
+    /// canonicalised IDENTICALLY, which is a leak the harness is blind to by
+    /// construction.
+    ///
+    /// Robust declassification names the defect exactly: the decision to
+    /// declassify must have high integrity, and a guest-authored prefix has
+    /// none. The rule now asks the [`Warrant`] — derived only from the
+    /// host-written machine config — whether the hex is a prefix of the token
+    /// the host actually wrote. A forged blob is not, so the rule declines and
+    /// the line stays compared.
+    ///
+    /// The two runs below differ ONLY in the smuggled value. If they
+    /// canonicalise equal, the attack works.
+    #[test]
+    fn a_guest_forged_cmdline_echo_is_not_erased() {
+        let f = facts();
+        let real = hex::encode(token_json(&f.pod_id, 1, 1, 1, ""));
+        let host_cfg = format!("\"boot_args\":\"{TOKEN_HEX_KEY}{real}\"");
+        let w = Warrant::from_host(&host_cfg);
+
+        // Guest-authored: the echo literal is forged, and the "token" is the
+        // secret. `6161…`/`6262…` are hex for "aaaa…"/"bbbb…".
+        let forged = |smuggled: &str| {
+            format!(
+                "{CMDLINE_ECHO}{TOKEN_HEX_KEY}{}",
+                hex::encode(smuggled.as_bytes())
+            )
+        };
+        let a = scrub(&forged("canary-aaaa"), &f, Some(&w));
+        let b = scrub(&forged("canary-bbbb"), &f, Some(&w));
+
+        assert_ne!(
+            a, b,
+            "a guest-forged echo must stay COMPARED; erasing it hides whatever the \
+             guest chose to put there"
+        );
+        assert!(
+            !a.contains("<TRUNCATED-CMDLINE-TOKEN-ECHO>"),
+            "the erasure must not fire on a value the host never wrote: {a}"
+        );
+    }
+
+    /// The warrant refuses the empty string, which is a prefix of everything and
+    /// would therefore authorise erasing anything.
+    #[test]
+    fn an_empty_candidate_is_not_warranted() {
+        let w = Warrant::from_host("\"boot_args\":\"nucleus.task_token_hex=abcdef\"");
+        assert!(!w.authorises_cmdline_echo(""));
+        assert!(w.authorises_cmdline_echo("abc"));
+        assert!(!w.authorises_cmdline_echo("abd"));
     }
 
     /// **NON-VACUITY OF RULE 3c.** Everything on the echoed command line other
@@ -1523,7 +1708,7 @@ mod tests {
              nucleus.leak=canary-bbbb {TOKEN_HEX_KEY}{}",
             &hex[..hex.len() / 2]
         );
-        let out = scrub(&line, &f);
+        let out = scrub(&line, &f, None);
         assert!(
             out.contains("canary-aaaa") && out.contains("canary-bbbb"),
             "rule 3c erased more than the token value: {out}"
@@ -1538,6 +1723,7 @@ mod tests {
         let out = scrub(
             &cmdline_with_token(&f.pod_id, 1, 1, 1, "\"/etc/nonce/canary-aaaa\",\"/sig\""),
             &f,
+            None,
         );
         assert!(
             out.contains("/etc/nonce/canary-aaaa") && out.contains("/sig"),
