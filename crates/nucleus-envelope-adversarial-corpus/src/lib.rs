@@ -24,6 +24,24 @@
 //!
 //! Existing cases are inspired by the standard CT-log / X.509
 //! transparency attack catalogue + the OIDC OP audit's HIGH findings.
+//!
+//! # What this corpus structurally CANNOT cover
+//!
+//! Every case here asserts REJECTION, so the corpus can only express attacks
+//! that produce an invalid bundle. One important class does not:
+//!
+//! **Replay.** A complete, unmodified, internally-valid bundle presented in a
+//! context it was not issued for WILL verify, and should — `verify_bundle`
+//! answers "is this bundle internally consistent", never "is this bundle for
+//! me". Authenticity without freshness is the textbook replay gap, and 2026
+//! measurements put replay success in agentic environments at 66%.
+//!
+//! That is not a defect in the verifier; it is an obligation on its CALLERS,
+//! who must check the bundle's `session_root` against the session they expect
+//! and apply their own freshness window. Writing it here because a corpus that
+//! looks exhaustive is worse than one that says what it does not reach — a
+//! reader would otherwise take "every adversarial case is rejected" to mean
+//! more than it does.
 
 use nucleus_envelope::{Bundle, TrustAnchor};
 use nucleus_lineage::Jwks;
@@ -121,6 +139,19 @@ pub fn corpus() -> Vec<AdversarialCase> {
                       (a call id, not a pod root); must reject as malformed.",
             expected_kind_substr: "SessionRootNotPod",
             build: cases::c08_session_root_not_pod,
+        },
+        AdversarialCase {
+            name: "C09_sibling_graft_confused_deputy",
+            summary: "A peer's edge grafted onto another's chain: the Write edge \
+                      is rewritten to claim the sibling Read call as its parent. \
+                      Every id is INSIDE the session root, so OutsideRoot does not \
+                      fire — this is the confused-deputy class the 2026 multi-agent \
+                      literature reports at 82.4%. Must reject because the parent \
+                      set is covered by the edge's canonical bytes, binding \
+                      delegation to the actual delegator rather than to session \
+                      membership.",
+            expected_kind_substr: "Chain",
+            build: cases::c09_sibling_graft_confused_deputy,
         },
     ]
 }

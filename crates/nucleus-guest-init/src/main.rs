@@ -20,12 +20,18 @@ struct MsFlags;
 #[allow(dead_code)]
 impl MsFlags {
     const MS_NOSUID: MsFlags = MsFlags;
+    const MS_NOEXEC: MsFlags = MsFlags;
     const MS_NODEV: MsFlags = MsFlags;
     const MS_REMOUNT: MsFlags = MsFlags;
     const MS_RDONLY: MsFlags = MsFlags;
     fn empty() -> MsFlags {
         MsFlags
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl std::ops::BitOrAssign for MsFlags {
+    fn bitor_assign(&mut self, _rhs: MsFlags) {}
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -56,11 +62,9 @@ fn run() -> Result<(), String> {
     ensure_dir("/etc/nucleus")?;
     ensure_dir("/work")?;
 
-    mount_fs("proc", "/proc", "proc", MsFlags::empty(), None);
-    mount_fs("sys", "/sys", "sysfs", MsFlags::empty(), None);
-    mount_fs("dev", "/dev", "devtmpfs", MsFlags::empty(), None);
-    mount_fs("tmpfs", "/tmp", "tmpfs", MsFlags::empty(), None);
-    mount_fs("tmpfs", "/run", "tmpfs", MsFlags::empty(), None);
+    for m in GUEST_MOUNTS {
+        mount_fs(m.source, m.target, m.fstype, m.ms_flags(), None);
+    }
 
     if Path::new("/dev/vdb").exists() {
         mount_fs(
@@ -89,10 +93,24 @@ fn run() -> Result<(), String> {
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
 
     // Fetch SPIFFE identity from host if configured
-    if let Some(port) = identity::parse_workload_api_port(&cmdline) {
+    let workload_api_port = identity::parse_workload_api_port(&cmdline);
+    if let Some(port) = workload_api_port {
         match identity::fetch_identity(port) {
             Ok(spiffe_id) => {
                 eprintln!("fetched identity: {spiffe_id}");
+                // POINT THE PROXY AT WHAT WE JUST FETCHED.
+                //
+                // Without this the fetch is decorative: `fetch_identity` writes
+                // the SVID to /etc/nucleus/identity, and the tool-proxy looks
+                // for `--identity-cert` / `NUCLEUS_IDENTITY_CERT`, which nobody
+                // set — so the cert existed on disk and Tier 1/2 still reported
+                // "no identity cert" and the guest died as a naked process.
+                //
+                // Observed on real hardware once the workload API bridge started
+                // early enough for the fetch to SUCCEED. Before that the fetch
+                // always failed, so this gap was invisible: the pod died one
+                // step earlier for a different reason.
+                std::env::set_var("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");
@@ -101,22 +119,103 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // Session capability token, preferred over the kernel command line.
+    //
+    // Fetching it here rather than reading `nucleus.task_token_hex` is what lets
+    // the command-line copy go, and the command line is what blocks a snapshot
+    // base: per-pod material baked into a boot artifact is inherited by every
+    // clone restored from it. The token is not a secret — a scoped capability
+    // plus a public issuer key — so this is about uniqueness surviving a
+    // restore, not confidentiality.
+    //
+    // Synchronous, and before `exec_proxy`, so the values are in the environment
+    // before anything reads them.
+    // The broker capability, fetched BEFORE `exec_proxy` and therefore before any
+    // workload exists. The host serves it once; arriving first is the entire
+    // property, since any guest process can open AF_VSOCK.
+    //
+    // Not fatal when absent: a pod may have no broker at all, and the tool-proxy
+    // fails closed on its own (an unsigned envelope is refused host-side). Making
+    // it fatal would break every pod that never had one.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_broker_secret(port) {
+            Ok(cap) => {
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
+                // The port is NOT a secret — it is where to connect — so unlike
+                // the key it is safe to log, and worth logging: a proxy that
+                // cannot reach the broker looks identical to one that was never
+                // given a capability.
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
+                // Presence only for the secret — never the value, never its length.
+                eprintln!(
+                    "fetched broker capability over vsock (broker port {})",
+                    cap.port
+                );
+            }
+            Err(err) => eprintln!("no broker capability over vsock: {err}"),
+        }
+    }
+
+    let mut token_from_vsock = false;
+    if let Some(port) = workload_api_port {
+        match identity::fetch_task_token(port) {
+            Ok(t) => {
+                std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
+                std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
+                token_from_vsock = true;
+                eprintln!("fetched session task token over vsock");
+            }
+            Err(err) => {
+                // Not fatal, and deliberately so: the command-line path below is
+                // still in place, so a node that has not been updated still
+                // works. When the cmdline copy is removed this must become the
+                // only source, and THEN a failure here should be fatal — the
+                // tool-proxy would otherwise start with no token and fail closed
+                // later, far from the cause.
+                eprintln!("failed to fetch session task token over vsock: {err}");
+            }
+        }
+    }
+
+    // OPTIONAL. On the Firecracker path the tool-proxy is bound to a vsock
+    // listener that accepts only the host (`pod_mgmt::peer_is_host`), and the
+    // guest kernel — not the caller — sets the peer CID. The HMAC tier is
+    // unreachable there, so requiring a key would put a world-readable secret
+    // on /proc/cmdline for nothing. `enforce_hmac_key_quality` in the proxy
+    // still refuses an empty key on every transport that can reach that tier.
     let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
-        .or_else(|| read_secret("/etc/nucleus/auth.secret"))
-        .ok_or_else(|| {
-            "missing auth secret (set nucleus.auth_secret in boot args or /etc/nucleus/auth.secret)"
-                .to_string()
-        })?;
+        .or_else(|| read_secret("/etc/nucleus/auth.secret"));
 
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
         .or_else(|| read_secret("/etc/nucleus/approval.secret"))
         .ok_or_else(|| "missing approval secret (set nucleus.approval_secret in boot args or /etc/nucleus/approval.secret)".to_string())?;
 
-    std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+    if let Some(auth_secret) = auth_secret {
+        std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+    }
     std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
     // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
+    // DLC-D verified-admission provisioning → the in-VM tool-proxy, over the
+    // workload API like the task token (the cmdline lacks the capacity for a
+    // credential set, and per-pod material must not bake into snapshot bases).
+    // Unprovisioned is the ordinary case and stays quiet; the proxy is inert
+    // without these.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_dlc_admission(port) {
+            Ok(Some(m)) => {
+                std::env::set_var("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
+                std::env::set_var("NUCLEUS_DLC_ISSUER", &m.issuer);
+                std::env::set_var("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
+                eprintln!("fetched DLC admission provisioning over the workload API");
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("failed to fetch DLC admission provisioning: {err}"),
+        }
+    }
+
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
         .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
     {
@@ -130,7 +229,12 @@ fn run() -> Result<(), String> {
     // the tool-proxy verify half expects and forward all three as env vars. If
     // the token is absent or the hex is malformed we simply do not set them —
     // the tool-proxy then records Missing/Invalid and fails closed.
-    if let Some(token_hex) = parse_cmdline_secret(&cmdline, "nucleus.task_token_hex") {
+    let cmdline_token = if token_from_vsock {
+        None
+    } else {
+        parse_cmdline_secret(&cmdline, "nucleus.task_token_hex")
+    };
+    if let Some(token_hex) = cmdline_token {
         match hex::decode(&token_hex)
             .ok()
             .and_then(|b| String::from_utf8(b).ok())
@@ -196,11 +300,105 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_REPORT", report);
     }
 
-    remount_root_ro();
+    remount_root_ro()?;
 
     exec_proxy(&spec_path);
     Ok(())
 }
+
+/// One guest mount, with its hardening flags as PLAIN BOOLS.
+///
+/// Bools rather than `MsFlags` so the table is inspectable on any host — the
+/// same reason `firecracker_config`'s lowering seams are not gated behind
+/// `target_os = "linux"`. A hardening table that can only be read on the machine
+/// it runs on is a hardening table nobody checks.
+pub(crate) struct GuestMount {
+    pub source: &'static str,
+    pub target: &'static str,
+    pub fstype: &'static str,
+    /// SUID/SGID bits are not honoured — blocks a dropped setuid binary.
+    pub nosuid: bool,
+    /// Device nodes cannot be created — blocks a crafted /dev/mem or /dev/sda.
+    pub nodev: bool,
+    /// Binaries cannot be executed from here.
+    pub noexec: bool,
+}
+
+impl GuestMount {
+    fn ms_flags(&self) -> MsFlags {
+        let mut f = MsFlags::empty();
+        if self.nosuid {
+            f |= MsFlags::MS_NOSUID;
+        }
+        if self.nodev {
+            f |= MsFlags::MS_NODEV;
+        }
+        if self.noexec {
+            f |= MsFlags::MS_NOEXEC;
+        }
+        f
+    }
+}
+
+/// The guest's pseudo-filesystem mounts, hardened.
+///
+/// Every one of these was mounted with `MsFlags::empty()` — no nosuid, no
+/// nodev, no noexec — while `/work`, the data volume mounted a few lines below,
+/// already carried `MS_NOSUID | MS_NODEV`. The pattern was known and the
+/// pseudo-filesystems simply missed it.
+///
+/// Standard practice for microVMs is a read-only rootfs with writable layers
+/// marked noexec/nodev/nosuid. `/tmp` and `/run` are the writable tmpfs layers
+/// and the classic staging ground for a dropped payload; `/proc` and `/sys`
+/// have no business carrying setuid bits, device nodes or executables.
+///
+/// `/dev` keeps `nodev = false` for the obvious reason — it IS the device tree —
+/// and keeps `noexec = false` deliberately rather than by omission: tightening a
+/// mount the guest boots from, with no end-to-end test available here, risks the
+/// mount failing and `mount_fs` continuing without it, which would be a worse
+/// outcome than the flag's absence.
+pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
+    GuestMount {
+        source: "proc",
+        target: "/proc",
+        fstype: "proc",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "sys",
+        target: "/sys",
+        fstype: "sysfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "dev",
+        target: "/dev",
+        fstype: "devtmpfs",
+        nosuid: true,
+        nodev: false,
+        noexec: false,
+    },
+    GuestMount {
+        source: "tmpfs",
+        target: "/tmp",
+        fstype: "tmpfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+    GuestMount {
+        source: "tmpfs",
+        target: "/run",
+        fstype: "tmpfs",
+        nosuid: true,
+        nodev: true,
+        noexec: true,
+    },
+];
 
 fn ensure_dir(path: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("create {path}: {err}"))
@@ -220,19 +418,40 @@ fn mount_fs(source: &str, target: &str, fstype: &str, flags: MsFlags, data: Opti
     }
 }
 
-fn remount_root_ro() {
+/// Remount the guest root read-only, and FAIL THE BOOT if it does not take.
+///
+/// This logged the failure and carried on, so a guest whose rootfs did not go
+/// read-only booted anyway — silently losing the read-only-rootfs posture that
+/// the whole image is built around, with nothing above it any the wiser.
+///
+/// The repo already states the rule for the analogous case one layer up, in
+/// nucleus-node's seccomp verification: "a process whose seccomp filter cannot
+/// be confirmed active is killed and the launch is aborted rather than left
+/// running unconfined. The previous behavior only logged a warning and continued
+/// (fail-open)." The same applies here. The Linux kernel itself panics rather
+/// than continue when it cannot mount root.
+///
+/// Returning `Result` rather than panicking so the caller aborts BEFORE
+/// `exec_proxy` — a controlled refusal with a legible message, not a panic
+/// midway through boot.
+fn remount_root_ro() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        if let Err(err) = mount::<str, str, str, str>(
+        mount::<str, str, str, str>(
             None,
             "/",
             None,
             MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
             None,
-        ) {
-            eprintln!("remount / ro failed: {err}");
-        }
+        )
+        .map_err(|err| {
+            format!(
+                "remount / read-only failed: {err} — refusing to start the \
+                     workload rather than run it on a writable rootfs"
+            )
+        })?;
     }
+    Ok(())
 }
 
 fn resolve_pod_spec() -> Result<String, String> {
@@ -397,6 +616,55 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Every guest pseudo-filesystem is hardened, and `/tmp` and `/run`
+    /// especially.**
+    ///
+    /// All five were mounted with `MsFlags::empty()` while `/work`, the data
+    /// volume a few lines below, already carried `MS_NOSUID | MS_NODEV`. The
+    /// pattern was known; the pseudo-filesystems missed it.
+    ///
+    /// Standard microVM practice is a read-only rootfs with writable layers
+    /// marked nosuid/nodev/noexec. `/tmp` and `/run` are those writable layers
+    /// and the classic staging ground for a dropped payload.
+    ///
+    /// Runs on any host because the table stores plain bools rather than
+    /// `MsFlags` — a hardening table readable only on the machine it runs on is
+    /// one nobody checks.
+    #[test]
+    fn guest_mounts_are_hardened() {
+        for m in super::GUEST_MOUNTS {
+            assert!(
+                m.nosuid,
+                "{} must be nosuid — a setuid binary dropped there is a \
+                 privilege-escalation primitive",
+                m.target
+            );
+        }
+
+        for target in ["/tmp", "/run"] {
+            let m = super::GUEST_MOUNTS
+                .iter()
+                .find(|m| m.target == target)
+                .unwrap_or_else(|| panic!("{target} must be in the mount table"));
+            assert!(
+                m.nodev && m.noexec,
+                "{target} is writable: needs nodev + noexec"
+            );
+        }
+
+        // /dev is the device tree, so nodev would defeat its purpose. Asserted
+        // rather than left implicit, so flipping it reads as a deliberate change.
+        let dev = super::GUEST_MOUNTS
+            .iter()
+            .find(|m| m.target == "/dev")
+            .unwrap();
+        assert!(
+            !dev.nodev,
+            "/dev must permit device nodes — it is the device tree"
+        );
+    }
+
     use super::*;
 
     #[test]

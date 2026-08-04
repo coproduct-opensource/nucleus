@@ -1,412 +1,199 @@
-# macOS Quickstart
+# macOS Quickstart (Tier 2 — real microVM isolation)
 
-This guide walks you through setting up Nucleus on macOS with full Firecracker microVM isolation.
-
-## One-Line Install (Recommended)
-
-For M3/M4 Mac with macOS 15+, get started instantly:
+One command takes an Apple Silicon Mac from nothing to a booted nucleus pod:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install.sh | bash
 ```
 
-This will:
-- Install Lima (if not present)
-- Download pre-built binaries and rootfs
-- Create a Lima VM with nested virtualization
-- Configure secrets in macOS Keychain
-- Start nucleus-node
+or, if you already have the `nucleus` binary:
 
-After installation, verify with:
 ```bash
-nucleus doctor
-nucleus run "uname -a"  # Should print: Linux ... aarch64 GNU/Linux
+nucleus setup
 ```
+
+> **The one-liner still needs a full release.** `install.sh` resolves the CLI
+> version from GitHub's `/releases/latest`, which correctly excludes prereleases —
+> and the newest artifacts able to boot a pod are `v2.1.0`
+> (every release up to 2.0.2 ships a rootfs with no CA bundle, on which the guest
+> panics as PID 1). So today: build the CLI from a clone, then `setup` installs
+> the rest from the published RC.
+>
+> ```bash
+> cargo build --release -p nucleus-cli
+> ./target/release/nucleus setup            # pulls the pinned RC artifacts
+> ```
+>
+> **Measured 2026-07-29: 48.7 s** from `limactl delete nucleus` to a booted,
+> identity-proving pod, with `gh attestation verify` passing on every downloaded
+> artifact. `--artifacts local` uses this working tree's build instead.
 
 ---
 
-## Manual Installation
+## Requirements, stated plainly
 
-If you prefer manual setup or need to customize the installation, follow the steps below.
+| | |
+|---|---|
+| Chip | Apple **M3 or newer** |
+| macOS | **15 (Sequoia)** or newer |
+| Lima | 2.0+ (`brew install lima`, or `nucleus setup --install-deps`) |
 
-## Prerequisites
+**There is no emulation fallback, and earlier versions of this page were wrong to
+imply one.** Firecracker is a KVM-based VMM. Nested virtualisation on Apple
+Silicon requires M3+ on macOS 15+; without it the Lima guest has no `/dev/kvm`,
+and Firecracker does not run slowly — it does not run. The same applies to Intel
+Macs, where QEMU's HVF accelerator virtualises the guest but cannot expose KVM
+inside it.
 
-### All Macs
+On hardware that cannot do Tier 2, `nucleus setup` still configures Tier 0/1 and
+says so; `nucleus verify --tier2` then fails, which is the truth rather than a
+warning you can mistake for a caveat about speed.
 
-- **macOS 13+** (macOS 15+ recommended for nested virtualization)
-- **Lima 2.0+** (`brew install lima`) - required for nested virtualization support
-- **Rust toolchain** (for building nucleus binaries)
-- **cross** (`cargo install cross`) for cross-compiling Linux binaries
+`nucleus doctor` reads `/dev/kvm` directly rather than inferring from the chip
+name. If the probe says available, Tier 2 works, whatever else the output guesses.
 
-> **Note**: Docker Desktop is **not required**. Lima VMs include Docker, so rootfs images are built inside the VM.
+## What `nucleus setup` does
 
-Verify Lima version:
+1. Creates a Lima VM from `scripts/lima/nucleus-<arch>.yaml` (Ubuntu 24.04,
+   `vz`, nested virtualisation on).
+2. Installs, into that VM, from digests pinned in
+   `nucleus_spec::tier2_artifacts` and `nucleus_spec::vmm_version`:
+   Firecracker + jailer, the guest kernel (SHA-256 verified against a constant
+   compiled into the binary), the nucleus rootfs, `nucleus-node`, and the Linux
+   `nucleus` CLI.
+3. Generates three HMAC secrets in the macOS Keychain and writes them to a
+   root-owned `0600` `/etc/nucleus/node.env` in the VM, along with a systemd unit
+   that reads it.
+4. Boots a real pod and verifies it (below).
+
+The VM template names **no** artifact versions or URLs. Those live in one place
+in the code, so the template cannot drift from what the node enforces — which is
+how the published template came to pin a kernel URL that returns HTTP 404.
+
+> **Keychain prompt.** The first run of a new or rebuilt `nucleus` binary makes
+> macOS ask permission to read the secrets it stored. Setup waits at that dialog.
+> It prints a line before touching the Keychain so a pause there is explicable.
+
+## The proof: `nucleus verify --tier2`
+
+```
+$ nucleus verify --tier2
+
+Tier 2 verification: booting a real nucleus pod
+================================================
+  [OK] /dev/kvm
+  [OK] /dev/vhost-vsock
+  [OK] firecracker
+  [OK] guest kernel
+  [OK] nucleus rootfs
+  [OK] nucleus-node + secrets
+  [OK] nucleus-node is answering on http://127.0.0.1:8080
+  [OK] pod created in 7620 ms, tool-proxy at http://127.0.0.1:42149
+  [OK] guest proved itself to its proxy: tier 2 (spiffe-identity)
+  [OK] allowed operation served from the guest sandbox
+       glob "*" -> {"matches":["audit"]}
+  [OK] forbidden operation denied by policy (kind=kernel_denied)
+  [OK] SPIFFE identity fetched
+  [OK] task token fetched over vsock
+  [OK] no PID-1 panic
+  [OK] Firecracker is running under a seccomp filter
+```
+
+Measured on Apple M5 Pro / macOS 26.6 / Lima 2.2.0 / Firecracker 1.16.1,
+2026-07-29.
+
+Each line is there because it has failed:
+
+| Assertion | What its absence looked like |
+|---|---|
+| tier 2 (spiffe-identity) | a silent fall back to the kernel-cmdline token |
+| forbidden operation denied | the pod ran commands with no policy enforced |
+| SPIFFE identity fetched | `Connection reset by peer` from a socket the node owned |
+| task token over vsock | the guest reading it off `/proc/cmdline` instead |
+| no PID-1 panic | a rootfs with no CA store panicking the guest kernel |
+| seccomp filter | a fail-closed check reading the mode of a dead process |
+
+This runs **inside** the Lima VM: the per-pod tool-proxy binds an ephemeral port
+on the VM's loopback, which the workstation has no route to. `nucleus setup`
+installs the Linux CLI there for that reason.
+
+### Why not `nucleus run`?
+
+`nucleus run` in enforced mode spawns a specific vendor's assistant CLI. Making
+the quickstart's proof depend on a vendor binary would break this project's
+vendor-neutrality rule and fail on any machine without it. `verify --tier2` drives
+the tool-proxy directly — the same enforcement path, no vendor in it.
+
+## Where guest artifacts come from
+
+`nucleus setup --artifacts <auto|local|release>`:
+
+- **`auto`** (default) — use this working tree's build output if it is complete,
+  otherwise the pinned release.
+- **`local`** — require the working tree's build (`scripts/firecracker/build-rootfs.sh`
+  plus musl builds of `nucleus-node`, `nucleus-cli`).
+- **`release`** — require the pinned release.
+
+Releases at or below **2.0.2 cannot boot**: their rootfs contains no CA bundle
+anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1,
+takes the guest kernel with it. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses
+them rather than installing a pod that cannot start.
+
+The pinned release is **`2.1.0`**, the first build carrying the CA bundle,
+the `ip netns exec` separator fix and the workload-API socket chown. Each
+downloaded asset is checked against the release API digest and, when `gh` is on
+PATH, against its Sigstore build provenance — the output says which of the two
+happened rather than implying both.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `no /dev/kvm` in the VM | chip older than M3, or macOS older than 15 | no fix on that hardware; use a Linux host with KVM |
+| `no /dev/vhost-vsock` | the host vsock module is not loaded | `sudo modprobe vhost_vsock` — the guest fetches its SVID and task token over vsock, so without it a pod fails at device setup |
+| setup pauses with no output after "Setting up secrets" | macOS Keychain dialog awaiting an answer | answer it; it recurs when the binary changes |
+| `nucleus-node did not become healthy` | a missing secret — the node exits at startup without all three | `nucleus setup` rewrites `/etc/nucleus/node.env`; the error quotes the node's own log |
+| `pinned guest release ... is not published yet` | `GUEST_RELEASE` points past the newest release | `nucleus setup --artifacts local` |
+| `ip netns exec ... failed` | fixed — iproute2 execs a `--` separator as the command | update; regression-guarded in `net.rs` |
+| pod created but `Connection reset by peer` in the guest log | fixed — the workload API socket was root-owned while Firecracker runs jailed | update; the node now chowns it to the jailer uid |
+
+Diagnose with:
+
 ```bash
-limactl --version
-# Should show: limactl version 2.0.0 or higher
+nucleus doctor                                   # are the components installed?
+nucleus verify --tier2                           # does a pod actually boot?
+limactl shell nucleus -- sudo journalctl -u nucleus-node -n 50
 ```
 
-### Intel Mac Additional Requirements
-
-Intel Macs require QEMU for the Lima VM (Apple Virtualization.framework only supports ARM64):
-
-```bash
-# Install QEMU
-brew install qemu
-
-# Fix cross-rs toolchain issue (required for cross-compilation)
-rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
-```
-
-**Note**: Intel Macs cannot use hardware-accelerated nested virtualization. Firecracker microVMs will run via QEMU emulation, which is slower but fully functional.
-
-### Optimal Setup (Apple Silicon M3/M4)
-
-For the best experience with native nested virtualization:
-- **Apple M3 or M4** chip
-- **macOS 15 (Sequoia)** or newer
-
-This combination provides hardware-accelerated KVM inside the Lima VM, giving near-native performance for Firecracker microVMs.
-
-## Native Testing on M3/M4 (Recommended)
-
-If you have an M3 or M4 Mac running macOS 15+, you get native Firecracker performance with full KVM acceleration.
-
-### Verify Your Setup
-
-```bash
-nucleus doctor
-```
-
-Look for these indicators of full native support:
-```
-Platform
---------
-[OK] Operating System: macos (aarch64)
-[OK] Apple Chip: M4 (nested virt supported)
-[OK] macOS Version: 15.2 (nested virt supported)
-
-Lima VM
--------
-[OK] Lima installed: yes
-[OK] nucleus VM: running
-[OK] KVM in VM: /dev/kvm available (native Firecracker performance)
-[OK] Firecracker: Firecracker v1.14.1
-```
-
-If you see `[WARN] KVM in VM: /dev/kvm not available`, you're running in emulation mode.
-
-### Why M3/M4 Matters
-
-| Feature | M1/M2 | M3/M4 + macOS 15+ |
-|---------|-------|-------------------|
-| Lima VM | Native (vz) | Native (vz) |
-| /dev/kvm | Emulated | Hardware accelerated |
-| Firecracker boot | ~2-3 seconds | ~100-200ms |
-| microVM performance | Emulated | Near-native |
-
-### Testing the Full Stack
-
-```bash
-# 1. Setup (creates Lima VM with nested virt)
-nucleus setup
-
-# 2. Verify KVM is available (should show "native Firecracker performance")
-limactl shell nucleus -- ls -la /dev/kvm
-# Should show: crw-rw-rw- 1 root kvm ...
-
-# 3. Start nucleus
-nucleus start
-
-# 4. Run test workload
-nucleus run "uname -a"
-# Should show: Linux ... aarch64 GNU/Linux
-
-# 5. Verify Firecracker process (if you have tasks running)
-limactl shell nucleus -- ps aux | grep firecracker
-```
-
-### Troubleshooting M3/M4
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| KVM not available | macOS < 15 | Upgrade to macOS 15 (Sequoia) |
-| KVM not available | Lima using QEMU | Delete VM and run `nucleus setup --force` |
-| Slow microVM start | Falling back to emulation | Check `limactl info nucleus` shows `vmType: vz` |
-| Nested virt disabled | Lima config issue | Verify `nestedVirtualization: true` in lima.yaml |
-
-### Verifying Nested Virtualization
-
-```bash
-# Check Lima VM configuration
-limactl info nucleus | grep -E "(vmType|nestedVirt)"
-# Should show:
-#   vmType: vz
-#   nestedVirtualization: true
-
-# Check KVM inside VM
-limactl shell nucleus -- test -c /dev/kvm && echo "KVM OK" || echo "KVM missing"
-```
+`nucleus doctor` checks components **inside the VM**, which is where they are
+used, and exits non-zero when one is missing. It previously checked the
+workstation's own directories and graded every miss a warning, so it printed
+"All checks passed" in the same minute `nucleus start` exited 1.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  macOS Host                                                     │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │  Lima VM (Apple Virtualization.framework)                 │ │
-│  │  ┌─────────────────────────────────────────────────────┐ │ │
-│  │  │  nucleus-node (orchestrator)                        │ │ │
-│  │  │    ↓                                                │ │ │
-│  │  │  ┌─────────────┐  ┌─────────────┐                  │ │ │
-│  │  │  │ Firecracker │  │ Firecracker │  ... (microVMs)  │ │ │
-│  │  │  │ ┌─────────┐ │  │ ┌─────────┐ │                  │ │ │
-│  │  │  │ │guest-   │ │  │ │guest-   │ │                  │ │ │
-│  │  │  │ │init →   │ │  │ │init →   │ │                  │ │ │
-│  │  │  │ │tool-    │ │  │ │tool-    │ │                  │ │ │
-│  │  │  │ │proxy    │ │  │ │proxy    │ │                  │ │ │
-│  │  │  │ └─────────┘ │  │ └─────────┘ │                  │ │ │
-│  │  │  └─────────────┘  └─────────────┘                  │ │ │
-│  │  └─────────────────────────────────────────────────────┘ │ │
-│  │  /dev/kvm (nested virtualization)                        │ │
-│  └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+macOS host
+└── Lima VM (Apple Virtualization.framework, nestedVirtualization: true)
+    ├── /dev/kvm
+    ├── nucleus-node ──── workload API (SVIDs, task tokens) over vsock
+    └── Firecracker microVM (jailed, seccomp filter active)
+        └── /init (guest-init) → nucleus-tool-proxy
+                                 enforces the permission lattice
 ```
 
-## Quick Start
+Two isolation layers: macOS↔Lima (Apple vz) and Lima↔pod (KVM + jailer +
+seccomp + a default-deny network namespace).
 
-### 1. Install Dependencies
-
-```bash
-# Install Lima
-brew install lima
-
-# Install cross for cross-compilation
-cargo install cross
-```
-
-### 2. Setup Environment
-
-```bash
-# Run setup (creates Lima VM, secrets, config)
-nucleus setup
-```
-
-This will:
-- Detect your Mac's chip (Intel vs Apple Silicon)
-- Create a Lima VM with the appropriate architecture
-- Download Firecracker and kernel for that architecture
-- Generate secrets in macOS Keychain
-- Create configuration at `~/.config/nucleus/config.toml`
-
-### 3. Build Rootfs
-
-```bash
-# Cross-compile binaries for the rootfs
-./scripts/cross-build.sh
-
-# Build rootfs in Lima VM (Lima includes Docker - no Docker Desktop needed!)
-limactl shell nucleus -- make rootfs
-```
-
-The rootfs build happens inside the Lima VM which has Docker pre-installed. Secrets are injected at runtime via kernel command line - they're not baked into the rootfs image.
-
-### 4. Install nucleus-node
-
-```bash
-# Option A: Copy cross-compiled binary
-limactl cp target/aarch64-unknown-linux-musl/release/nucleus-node nucleus:/usr/local/bin/
-
-# Option B: Build inside VM (slower)
-limactl shell nucleus -- cargo build --release -p nucleus-node
-limactl shell nucleus -- sudo cp target/release/nucleus-node /usr/local/bin/
-```
-
-### 5. Start Nucleus
-
-```bash
-# Start nucleus-node service
-nucleus start
-
-# Output:
-# Nucleus is running!
-# HTTP API: http://127.0.0.1:8080
-# Metrics:  http://127.0.0.1:9080
-```
-
-### 6. Run Tasks
-
-```bash
-# Run a task with enforced permissions
-nucleus run "Review the code in src/main.rs"
-```
-
-### 7. Stop Nucleus
-
-```bash
-# Stop nucleus-node (keeps VM running)
-nucleus stop
-
-# Stop nucleus-node AND the VM (saves resources)
-nucleus stop --stop-vm
-```
-
-## Platform Support
-
-| Platform | VM Type | KVM | Performance |
-|----------|---------|-----|-------------|
-| M3/M4 + macOS 15+ | vz (native) | Nested | Fast |
-| M1/M2 + macOS 15+ | vz (native) | Emulated | Medium |
-| M1-M4 + macOS <15 | vz (native) | Emulated | Medium |
-| Intel Mac | QEMU (x86_64) | Emulated | Slow |
-
-## Security Model
-
-Nucleus provides **two layers of VM isolation**:
-
-### Layer 1: Lima VM
-- Apple Virtualization.framework (Apple Silicon) or QEMU (Intel)
-- Isolates the Firecracker orchestrator from macOS
-- Managed by Lima with port forwarding
-
-### Layer 2: Firecracker microVMs
-- Minimal device model (5 virtio devices)
-- Each task runs in its own microVM
-- Read-only rootfs with scratch volume
-
-### Network Security
-- Default-deny iptables policy
-- DNS allowlist for controlled outbound access
-- No direct internet access without explicit policy
-
-### Security Claims
-
-| Layer | Isolation | Escape Difficulty |
-|-------|-----------|-------------------|
-| macOS ↔ Lima | Apple vz / QEMU | VM escape (high) |
-| Lima ↔ Firecracker | KVM + jailer | VM escape (high) |
-| Firecracker ↔ Agent | Minimal virtio | Kernel exploit (high) |
-| Agent ↔ Network | iptables + allowlist | Policy bypass (medium) |
-
-## Troubleshooting
-
-### "KVM not available"
-
-This warning appears when nested virtualization isn't working. Causes:
-- **M1/M2 Macs**: Don't support nested virt (works via emulation, slower)
-- **macOS < 15**: Upgrade to macOS Sequoia for nested virt support
-- **Intel Macs**: Use QEMU emulation (slowest)
-
-### Intel Mac: "QEMU binary not found"
-
-Install QEMU:
-```bash
-brew install qemu
-```
-
-### Intel Mac: cross-rs "toolchain may not be able to run on this system"
-
-This error occurs when cross-compiling for Linux on Intel Mac:
-```
-error: toolchain 'stable-x86_64-unknown-linux-gnu' may not be able to run on this system
-```
-
-Fix by installing the toolchain with the `--force-non-host` flag:
-```bash
-rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
-```
-
-See: [cross-rs/cross#1687](https://github.com/cross-rs/cross/issues/1687)
-
-### "Lima VM failed to start"
-
-```bash
-# Check VM status
-limactl list
-
-# View VM logs
-limactl shell nucleus -- journalctl -xe
-
-# Delete and recreate
-nucleus setup --force
-```
-
-### "nucleus-node not found"
-
-You need to install the nucleus-node binary in the VM:
-
-```bash
-# Cross-compile for the correct architecture
-./scripts/cross-build.sh --arch aarch64  # or x86_64 for Intel
-
-# Copy to VM
-limactl cp target/aarch64-unknown-linux-musl/release/nucleus-node nucleus:/usr/local/bin/
-```
-
-### Port forwarding issues
-
-If `http://127.0.0.1:8080` doesn't respond:
-
-```bash
-# Verify port forwarding
-limactl list --format '{{.Name}} {{.Status}} {{.SSHLocalPort}}'
-
-# Check if nucleus-node is listening
-limactl shell nucleus -- ss -tlnp | grep 8080
-
-# View nucleus-node logs
-limactl shell nucleus -- journalctl -u nucleus-node -f
-```
-
-## Commands Reference
+## Commands
 
 | Command | Description |
-|---------|-------------|
-| `nucleus setup` | Initial setup (Lima VM, secrets, config) |
-| `nucleus setup --force` | Recreate VM and config |
-| `nucleus start` | Start nucleus-node service |
-| `nucleus start --no-wait` | Start without health check |
-| `nucleus stop` | Stop nucleus-node |
-| `nucleus stop --stop-vm` | Stop nucleus-node AND Lima VM |
-| `nucleus doctor` | Diagnose issues |
-| `nucleus run "task"` | Run a task |
-
-## Advanced Configuration
-
-### Custom VM Resources
-
-```bash
-nucleus setup --vm-cpus 8 --vm-memory-gib 16 --vm-disk-gib 100
-```
-
-### Rotate Secrets
-
-```bash
-nucleus setup --rotate-secrets
-```
-
-### Skip VM Setup (manual Lima management)
-
-```bash
-nucleus setup --skip-vm
-```
-
-### Configuration File
-
-Edit `~/.config/nucleus/config.toml`:
-
-```toml
-[vm]
-name = "nucleus"
-auto_start = true
-cpus = 4
-memory_gib = 8
-
-[node]
-url = "http://127.0.0.1:8080"
-
-[budget]
-max_cost_usd = 5.0
-max_input_tokens = 100000
-max_output_tokens = 10000
-```
+|---|---|
+| `nucleus setup` | Provision everything, then prove it works |
+| `nucleus setup --force` | Recreate the VM |
+| `nucleus setup --install-deps` | Also install Lima via Homebrew |
+| `nucleus setup --skip-verify` | Skip the boot proof (says Tier 2 is unverified) |
+| `nucleus verify --tier2` | Boot a real pod and assert what it did |
+| `nucleus verify --pins` | Print every pinned artifact URL and digest as JSON |
+| `nucleus doctor` | Are the components installed, in the VM |
+| `nucleus start` / `stop` | Run `nucleus-node` as a service |

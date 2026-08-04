@@ -197,6 +197,7 @@ impl IdentityManager {
     ///
     /// The computed attestation, or an error if hashing fails.
     #[allow(dead_code)]
+    #[tracing::instrument(skip_all, fields(boot.stage = "attestation.hash"))]
     pub async fn compute_attestation(
         &self,
         pod_id: &str,
@@ -249,6 +250,7 @@ impl IdentityManager {
     /// If attestation exists for the pod, it will be embedded in the certificate
     /// as an X.509 extension.
     #[allow(dead_code)]
+    #[tracing::instrument(skip_all, fields(boot.stage = "cert.issue"))]
     pub async fn fetch_attested_certificate(
         &self,
         identity: &Identity,

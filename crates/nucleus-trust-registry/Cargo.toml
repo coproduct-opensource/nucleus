@@ -30,7 +30,7 @@ serde_jcs = "0.2.0"
 toml = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 jsonwebtoken = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

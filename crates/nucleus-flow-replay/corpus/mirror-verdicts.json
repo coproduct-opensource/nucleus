@@ -1,0 +1,2930 @@
+{
+  "_provenance": "Verdicts produced by portcullis_defense.exposure, the pure-Python mirror of exposure_core::should_deny. That mirror was DELETED after this fixture was generated: it reimplemented a function with no live-path callers, and its policy did not match that function either. This file is the preserved record of what it decided, kept so the divergence against the real kernel stays checkable.",
+  "traces": [
+    {
+      "trace": 0,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 1,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 2,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 3,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 4,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 5,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 6,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 7,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 8,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 9,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 10,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 11,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 12,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 13,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 14,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 15,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 16,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 17,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 18,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 19,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 20,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 21,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 22,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 23,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 24,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 25,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 26,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 27,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 28,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 29,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 30,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 31,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 32,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 33,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 34,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 35,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 36,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 37,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 38,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 39,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 40,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 41,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 42,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 43,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 44,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "deny"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 45,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 46,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 47,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 48,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 49,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 50,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 51,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 52,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 53,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 54,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 55,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 56,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 57,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 58,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 59,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 60,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 61,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 62,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 63,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 64,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 65,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 66,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 67,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 68,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 69,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 70,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 71,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 72,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 73,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 74,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 75,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 76,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 77,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 78,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 79,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 80,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 81,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 82,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 83,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 84,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 85,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 86,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 87,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 88,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 89,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 90,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 91,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 92,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 93,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 94,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 95,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 96,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 97,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 98,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 99,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 100,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 101,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 102,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 103,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 104,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 105,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 106,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 107,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 108,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 109,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 110,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 111,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 112,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 113,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 114,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 115,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 116,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 117,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 118,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 119,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 120,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 121,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 122,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 123,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 124,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 125,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 126,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 127,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 128,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 129,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 130,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 131,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 132,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "deny"
+        }
+      ]
+    },
+    {
+      "trace": 133,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 134,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 135,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 136,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 137,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 138,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 139,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 140,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 141,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 142,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 143,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 144,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "send_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 145,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 146,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 147,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 148,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 149,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 150,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_webpage",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 151,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_received_emails",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 152,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "send_email",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 153,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "get_current_day",
+          "verdict": "allow"
+        }
+      ]
+    },
+    {
+      "trace": 154,
+      "verdicts": [
+        {
+          "step": 0,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 1,
+          "tool": "delete_email",
+          "verdict": "allow"
+        },
+        {
+          "step": 2,
+          "tool": "delete_email",
+          "verdict": "allow"
+        }
+      ]
+    }
+  ]
+}

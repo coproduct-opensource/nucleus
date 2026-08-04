@@ -37,7 +37,9 @@ pub struct ReplayArgs {
     #[arg(long)]
     pub exposure: bool,
 
-    /// Verify decision chain integrity (monotonic sequence numbers).
+    /// Verify decision chain integrity: monotonic sequence numbers AND the
+    /// permission-hash chain (surfaces deleted/tampered decisions a sequence-only
+    /// check would miss).
     #[arg(long)]
     pub verify: bool,
 }
@@ -146,26 +148,61 @@ pub fn execute(args: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
-fn verify_chain(decisions: &[Decision]) -> Result<()> {
-    let mut last_seq = None;
+/// Indices `i` where decision `i`'s `pre_permissions_hash` does not chain from
+/// decision `i-1`'s `post_permissions_hash`. Within a session the effective-
+/// permissions state carries across decisions, so a break means a DELETED or
+/// TAMPERED decision (or a session boundary — a trace may span sessions and
+/// `Decision` carries no session id). Pure + testable; the runtime complement to
+/// the append-only tamper-evidence proof (ReceiptChainProofs).
+fn permission_chain_breaks(decisions: &[Decision]) -> Vec<usize> {
+    (1..decisions.len())
+        .filter(|&i| decisions[i].pre_permissions_hash != decisions[i - 1].post_permissions_hash)
+        .collect()
+}
 
+fn verify_chain(decisions: &[Decision]) -> Result<()> {
+    // Sequence monotonicity (reorder/duplicate) — hard error, as before.
+    let mut prev: Option<&Decision> = None;
     for (i, d) in decisions.iter().enumerate() {
-        if let Some(prev) = last_seq {
-            if d.sequence <= prev {
+        if let Some(p) = prev {
+            if d.sequence <= p.sequence {
                 eprintln!(
                     "INTEGRITY ERROR: decision {} has sequence {} but previous was {} (non-monotonic)",
-                    i, d.sequence, prev
+                    i, d.sequence, p.sequence
                 );
                 anyhow::bail!("chain integrity violation at decision {i}");
             }
         }
-        last_seq = Some(d.sequence);
+        prev = Some(d);
     }
 
-    eprintln!(
-        "Chain integrity: OK ({} decisions, sequences monotonic)",
-        decisions.len()
-    );
+    // Permission-hash chain — the walk previously verified ONLY sequence order,
+    // so a deletion like [1,2,4] still reported "Chain integrity: OK". Surface
+    // breaks instead of hiding them (conservatively as a warning, not a hard
+    // fail, since a legitimate multi-session trace breaks at each boundary).
+    let breaks = permission_chain_breaks(decisions);
+    for &i in &breaks {
+        eprintln!(
+            "INTEGRITY WARNING: decision {i} pre-permissions hash does not chain from the previous \
+             post-permissions hash — possible deleted/tampered decision (or a session boundary). \
+             pre={}, expected={}",
+            decisions[i].pre_permissions_hash,
+            decisions[i - 1].post_permissions_hash
+        );
+    }
+    if breaks.is_empty() {
+        eprintln!(
+            "Chain integrity: OK ({} decisions; sequences monotonic AND permission-hash chain intact)",
+            decisions.len()
+        );
+    } else {
+        eprintln!(
+            "Chain integrity: {} permission-hash chain break(s) flagged across {} decisions — \
+             investigate for tampering/deletion (or session boundaries); sequences are monotonic",
+            breaks.len(),
+            decisions.len()
+        );
+    }
     Ok(())
 }
 
@@ -216,5 +253,65 @@ fn render_text(decisions: &[&Decision], show_exposure: bool) {
                 println!();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use portcullis::kernel::ExposureTransition;
+    use portcullis::Operation;
+    use uuid::Uuid;
+
+    fn dec(seq: u64, pre: &str, post: &str) -> Decision {
+        Decision {
+            id: Uuid::new_v4(),
+            sequence: seq,
+            operation: Operation::ReadFiles,
+            subject: "/x".to_string(),
+            verdict: Verdict::Allow,
+            timestamp: Utc::now(),
+            pre_permissions_hash: pre.to_string(),
+            post_permissions_hash: post.to_string(),
+            exposure_transition: ExposureTransition {
+                pre_count: 0,
+                post_count: 0,
+                contributed_label: None,
+                state_uninhabitable: false,
+                dynamic_gate_applied: false,
+            },
+            flow_node_id: None,
+            action_term: None,
+            preflight_result: None,
+        }
+    }
+
+    /// A DELETED decision leaves sequences monotonic (the old sequence-only
+    /// `verify_chain` reported "Chain integrity: OK") but breaks the permission-
+    /// hash chain — which this fix now detects.
+    #[test]
+    fn permission_chain_break_survives_monotonic_deletion() {
+        let intact = vec![
+            dec(1, "genesis", "h1"),
+            dec(2, "h1", "h2"),
+            dec(3, "h2", "h3"),
+        ];
+        assert!(
+            permission_chain_breaks(&intact).is_empty(),
+            "an intact chain has no permission-hash breaks"
+        );
+        // Delete the middle decision: sequences [1,3] are still monotonic.
+        let deleted = vec![dec(1, "genesis", "h1"), dec(3, "h2", "h3")];
+        assert!(
+            deleted.windows(2).all(|w| w[0].sequence < w[1].sequence),
+            "deleted trace is still sequence-monotonic (the old check passed it)"
+        );
+        // But the permission-hash chain is broken (pre 'h2' != prev post 'h1').
+        assert_eq!(
+            permission_chain_breaks(&deleted),
+            vec![1],
+            "deleting a decision must break the permission-hash chain (undetected before this fix)"
+        );
     }
 }

@@ -81,6 +81,8 @@ use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
 use crate::token::SessionProvenance;
 use crate::{ActionTerm, PreflightContext, PreflightResult, PreflightVerdict};
 
+#[cfg(feature = "dlc")]
+mod dlc;
 /// IFC flow gate (poison + tainted-outbound denial) — extends `impl Kernel`.
 mod ifc;
 
@@ -231,6 +233,13 @@ pub enum DenyReason {
         host: String,
         /// Human-readable reason from the egress policy.
         policy_reason: String,
+    },
+    /// Operation denied by DLC-D verified admission: no issuer-signed
+    /// credential verifies for exactly this operation's cap atom (fail-closed;
+    /// see the `says_admission` module for the trust boundary).
+    DlcAdmissionDenied {
+        /// Human-readable detail from the admission PEP.
+        detail: String,
     },
     /// Operation denied by an admissibility policy rule.
     ///
@@ -487,6 +496,9 @@ pub struct Kernel {
     /// default-on does not change behavior for sessions without a policy.
     #[cfg(feature = "cedar")]
     cedar_evaluator: Option<crate::cedar_bridge::CedarEvaluator>,
+    /// DLC-D verified admission (inert until [`Kernel::set_dlc_admission`]).
+    #[cfg(feature = "dlc")]
+    dlc_admission: Option<crate::says_admission::DlcAdmission>,
     /// Optional enterprise allowlist — when present, `decide()` checks the
     /// operation's sink class against the enterprise policy after admissibility
     /// policy checks and before path/command checks.
@@ -587,6 +599,8 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "cedar")]
             cedar_evaluator: None,
+            #[cfg(feature = "dlc")]
+            dlc_admission: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -638,6 +652,8 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "cedar")]
             cedar_evaluator: None,
+            #[cfg(feature = "dlc")]
+            dlc_admission: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -1027,6 +1043,8 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "cedar")]
             cedar_evaluator: None,
+            #[cfg(feature = "dlc")]
+            dlc_admission: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -1084,6 +1102,8 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "cedar")]
             cedar_evaluator: None,
+            #[cfg(feature = "dlc")]
+            dlc_admission: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -1675,6 +1695,13 @@ impl Kernel {
             return denied;
         }
 
+        // DLC-D verified admission (`kernel::dlc`): deny-narrowing, inert
+        // until `set_dlc_admission` provisions credentials.
+        #[cfg(feature = "dlc")]
+        if let Some(denied) = self.dlc_admission_gate(&term) {
+            return denied;
+        }
+
         // Only the Cedar consult below uses `operation`; bind it under the same
         // cfg so non-cedar feature combos don't trip `-D unused-variables`.
         #[cfg(feature = "cedar")]
@@ -1742,43 +1769,6 @@ impl Kernel {
     pub fn set_cedar_policy(&mut self, policy_src: &str) -> Result<(), String> {
         self.cedar_evaluator = Some(crate::cedar_bridge::CedarEvaluator::new(policy_src)?);
         Ok(())
-    }
-
-    /// Map an Operation to the most appropriate FlowNode kind.
-    fn node_kind_for(op: Operation) -> portcullis_core::flow::NodeKind {
-        use portcullis_core::flow::NodeKind;
-        match op {
-            Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
-                NodeKind::FileRead
-            }
-            Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
-            Operation::WriteFiles | Operation::EditFiles => NodeKind::OutboundAction,
-            Operation::RunBash
-            | Operation::GitCommit
-            | Operation::GitPush
-            | Operation::CreatePr
-            | Operation::ManagePods
-            | Operation::SpawnAgent => NodeKind::OutboundAction,
-        }
-    }
-
-    /// Extract source and artifact labels for policy rule evaluation.
-    ///
-    /// Reads the cached flow label (derived from graph state). When flow
-    /// control is enabled, uses the cache as both source and artifact label.
-    /// Otherwise returns empty sources and a bottom label (which causes
-    /// source predicates to be vacuously true and artifact predicates to
-    /// match permissively).
-    fn policy_flow_labels(&self) -> (Vec<portcullis_core::IFCLabel>, portcullis_core::IFCLabel) {
-        if let Some(ref label) = self.flow_label {
-            // Cached label (derived from graph): use as both source and artifact.
-            (vec![*label], *label)
-        } else {
-            // No flow control — use bottom label (most permissive).
-            let now = chrono::Utc::now().timestamp() as u64;
-            let bottom = portcullis_core::IFCLabel::user_prompt(now);
-            (vec![], bottom)
-        }
     }
 
     /// Incrementally update the cached flow label from a newly inserted

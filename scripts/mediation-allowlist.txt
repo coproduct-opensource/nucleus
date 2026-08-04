@@ -36,3 +36,15 @@
 # primitive has been relocated behind the discharge-gated sealed effect API
 # (`preflight_action` -> `DischargedBundle`, via portcullis-effects). A NEW raw
 # spawn on the agent path now fails the build with nothing to allowlist it.
+
+# The pod's own workload, started by the runtime after mediation is live.
+#
+# NOT an agent effect. The command comes from the operator's PodSpec, and
+# `strip_requested_workload` removes any workload an AGENT asked for when it
+# creates a sub-pod — otherwise `ManagePods` would silently become "run
+# arbitrary code in a fresh VM", bypassing the command lattice. That strip is
+# what makes this line safe; if it is ever removed, this entry must go too.
+#
+# Whole-file: the module exists for nothing else. A second `Command::new` here
+# means the file has grown a purpose it should not have.
+file:crates/nucleus-tool-proxy/src/workload.rs

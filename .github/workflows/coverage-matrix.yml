@@ -145,7 +145,30 @@ jobs:
             -- --all-features 2>&1 | tee /tmp/mutants.txt
       - name: Check for survived mutants
         if: always()
+        shell: bash
         run: |
+          # NON-VACUITY FIRST, and this step needed it more than most.
+          #
+          # The gate below is `grep -q SURVIVED || pass`. A cargo-mutants run that
+          # CRASHED, timed out, or failed to build writes no SURVIVED line — so
+          # the else branch fired and reported "All mutants caught by tests."
+          # Absence satisfied by silence: the strongest-sounding result in this
+          # job was the one a total failure also produced.
+          #
+          # The `| tee` on the run step compounded it: without pipefail that step
+          # reported TEE's exit status, so a crashed run did not fail there either.
+          if [ ! -s /tmp/mutants.txt ]; then
+            echo "::error::/tmp/mutants.txt is missing or empty — cargo-mutants did not"
+            echo "::error::produce a report, so 'no survived mutants' means nothing."
+            exit 1
+          fi
+          if ! grep -qE "MISSED|CAUGHT|SURVIVED|Found [0-9]+ mutants|mutants tested" /tmp/mutants.txt; then
+            echo "::error::/tmp/mutants.txt contains no cargo-mutants result markers — the"
+            echo "::error::run did not complete, so this check is asserting nothing."
+            sed -n '1,20p' /tmp/mutants.txt
+            exit 1
+          fi
+
           echo "## Mutation Testing Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Modules tested:** capability, guard, lattice, certificate, delegation, trust" >> "$GITHUB_STEP_SUMMARY"

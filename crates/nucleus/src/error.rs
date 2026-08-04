@@ -25,6 +25,13 @@ pub enum NucleusError {
         path: PathBuf,
     },
 
+    /// An authority earned for a different action was presented.
+    #[error("discharge scope mismatch: {reason}")]
+    ScopeMismatch {
+        /// Names both the authority held and the action attempted.
+        reason: String,
+    },
+
     /// Command execution denied by policy.
     #[error("command denied: '{command}' blocked by policy")]
     CommandDenied {

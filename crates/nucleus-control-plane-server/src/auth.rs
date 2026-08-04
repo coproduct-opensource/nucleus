@@ -311,6 +311,17 @@ pub enum SpiffeConfigError {
          trust_jwks/allowed_audience/allowed_subject_prefix, or NONE. Got {set_count}/3."
     )]
     Partial { set_count: usize },
+
+    /// Production build booted with SPIFFE auth UNCONFIGURED. The orchestration
+    /// API (submit/get/cancel/stream job) must not run open — fail-closed
+    /// (most-paranoid #6), mirroring the lineage-signer discipline in main.rs.
+    #[error(
+        "SPIFFE JWT-SVID auth is REQUIRED in production but is unconfigured — set \
+         --spiffe-trust-jwks-path / --spiffe-allowed-audience / --spiffe-allowed-subject-prefix \
+         (or build with `--features insecure-dev` to run WITHOUT auth, which is dangerous and \
+         must never be used in production)"
+    )]
+    AuthRequiredInProduction,
 }
 
 /// Resolve SPIFFE auth config from optional inputs. `None` from all
@@ -344,6 +355,31 @@ pub fn resolve_spiffe_auth(
             Ok(Some(SpiffeAuthConfig::new(jwks, aud, prefix)))
         }
         _ => Err(SpiffeConfigError::Partial { set_count }),
+    }
+}
+
+/// Fail-closed gate (most-paranoid #6): a PRODUCTION build REQUIRES SPIFFE
+/// JWT-SVID auth. Given the resolved config, returns it when present; when it is
+/// ABSENT (`None` — no SPIFFE flags set), a production build returns
+/// `Err(AuthRequiredInProduction)` so the server refuses to boot with the
+/// orchestration API open. Only a build with `--features insecure-dev` may boot
+/// without auth (`Ok(None)`). Mirrors the lineage-signer fail-closed discipline
+/// in `main.rs` (production `anyhow::bail!` when no signing key is configured).
+pub fn require_auth_or_insecure(
+    resolved: Option<SpiffeAuthConfig>,
+) -> Result<Option<SpiffeAuthConfig>, SpiffeConfigError> {
+    match resolved {
+        Some(c) => Ok(Some(c)),
+        None => {
+            #[cfg(not(feature = "insecure-dev"))]
+            {
+                Err(SpiffeConfigError::AuthRequiredInProduction)
+            }
+            #[cfg(feature = "insecure-dev")]
+            {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -391,6 +427,35 @@ mod tests {
     use ed25519_dalek::{Signer as _, SigningKey, SECRET_KEY_LENGTH};
     use nucleus_oidc_core::Jwk;
     use serde_json::json;
+
+    /// Fail-closed: a PRODUCTION build (no `insecure-dev`) must REFUSE to boot
+    /// when SPIFFE auth is unconfigured. On main the `None` branch only warned
+    /// and booted the orchestration API open — this is the RED→GREEN.
+    #[cfg(not(feature = "insecure-dev"))]
+    #[test]
+    fn production_fails_closed_without_spiffe_auth() {
+        assert!(
+            matches!(
+                require_auth_or_insecure(None),
+                Err(SpiffeConfigError::AuthRequiredInProduction)
+            ),
+            "production must fail closed when SPIFFE auth is unconfigured"
+        );
+    }
+
+    /// The escape hatch: an `insecure-dev` build may boot without auth.
+    #[cfg(feature = "insecure-dev")]
+    #[test]
+    fn insecure_dev_permits_no_auth() {
+        assert!(matches!(require_auth_or_insecure(None), Ok(None)));
+    }
+
+    /// No regression: a configured auth always passes through, in any build.
+    #[test]
+    fn configured_auth_always_passes() {
+        let f = Fixture::new();
+        assert!(require_auth_or_insecure(Some(config(f.jwks()))).is_ok());
+    }
 
     /// Helpers for building a signed JWT-SVID against a known signing key.
     struct Fixture {
