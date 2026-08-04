@@ -53,11 +53,11 @@ jobs:
 
           # Claude Code settings.json
           echo "::group::safe-restrictive.json (Claude settings)"
-          $SCANNER scan --claude-settings examples/claude-settings/safe-restrictive.json
+          $SCANNER scan --agent-settings examples/claude-settings/safe-restrictive.json
           echo "::endgroup::"
 
           echo "::group::permissive-danger.json (Claude settings, expected FAIL)"
-          if $SCANNER scan --claude-settings examples/claude-settings/permissive-danger.json; then
+          if $SCANNER scan --agent-settings examples/claude-settings/permissive-danger.json; then
             echo "::error::permissive-danger.json should fail the scan but passed"
             exit 1
           else
@@ -83,7 +83,7 @@ jobs:
           echo "::group::Combined scan (all three formats)"
           $SCANNER scan \
             --pod-spec examples/podspecs/safe-pr-fixer.yaml \
-            --claude-settings examples/claude-settings/safe-restrictive.json \
+            --agent-settings examples/claude-settings/safe-restrictive.json \
             --mcp-config examples/mcp-configs/safe-local.json
           echo "::endgroup::"
 
@@ -92,7 +92,7 @@ jobs:
         run: |
           target/release/nucleus-audit scan \
             --pod-spec examples/podspecs/safe-pr-fixer.yaml \
-            --claude-settings examples/claude-settings/safe-restrictive.json \
+            --agent-settings examples/claude-settings/safe-restrictive.json \
             --mcp-config examples/mcp-configs/safe-local.json \
             --format sarif > nucleus-scan.sarif || true
 
