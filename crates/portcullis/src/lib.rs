@@ -100,8 +100,22 @@ pub mod cedar_bridge;
 pub mod certificate;
 mod command;
 pub mod constraint;
+pub mod trace_monitor;
 pub mod uninhabitable_state;
 
+/// Attenuation tokens — compact delegation credentials for wire transport.
+///
+/// Requires the `serde` feature for serialization.
+/// The EU AI Act Article 12 decision-record type and its canonical preimage —
+/// shared by the tool-proxy that writes records and the audit tool that
+/// verifies them, so there is exactly one definition.
+///
+/// Gated on `serde`: a decision record exists to be serialized into a
+/// tamper-evident log and read back by a third-party verifier, so the type is
+/// meaningless without it. Both consumers (`nucleus-tool-proxy`,
+/// `nucleus-audit`) enable the feature.
+#[cfg(feature = "serde")]
+pub mod art12_record;
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
 pub mod dropout;
@@ -118,6 +132,9 @@ pub mod exposure_core;
 pub mod flow_graph;
 pub mod frame;
 pub mod galois;
+/// Gate classification — which KIND of control decided an operation
+/// (hard gate / soft gate / none), for EU AI Act Article 12 decision records.
+pub mod gate_class;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
@@ -146,13 +163,14 @@ pub mod observe;
 pub mod policy;
 #[cfg(feature = "spec")]
 pub mod profile;
-/// Attenuation tokens — compact delegation credentials for wire transport.
-///
-/// Requires the `serde` feature for serialization.
 /// Append-only receipt chain with hash-chain integrity enforcement.
 pub mod receipt_chain;
 #[cfg(feature = "crypto")]
 pub mod receipt_sign;
+/// DLC-D verified admission — cryptographic, proof-carrying admission conjunct
+/// (feature `dlc`); consulted by the kernel, composable as a `PolicyCheck`.
+#[cfg(feature = "dlc")]
+pub mod says_admission;
 #[cfg(feature = "crypto")]
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
 #[cfg(feature = "remote-audit")]
@@ -293,6 +311,11 @@ pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, 
 // Re-export the information-flow tracker so downstream runtimes (e.g. the MCP
 // server in nucleus-tool-proxy) can drive `Kernel::decide_term_with_flow`
 // without depending on portcullis-core directly (#1633).
+/// The kernel's flow module, re-exported so a downstream runtime can build a
+/// `ZkFlowInput` from a live `FlowTracker` without taking a direct
+/// portcullis-core dependency — the same reason `FlowTracker` is re-exported
+/// above.
+pub use portcullis_core::flow;
 pub use portcullis_core::flow::NodeKind;
 pub use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
 

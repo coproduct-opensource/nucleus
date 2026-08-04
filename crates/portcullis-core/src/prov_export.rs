@@ -7,8 +7,11 @@
 //! - `NodeKind` source observations → PROV `Entity`
 //! - `NodeKind` action/model nodes → PROV `Activity`
 //! - User/agent nodes → PROV `Agent`
-//! - Parent edges → `wasDerivedFrom` / `used` relations
 //! - IFC labels → PROV attributes (derivation, authority, integrity)
+//!
+//! **Relations (`wasDerivedFrom`, `used`) are NOT emitted.** They would assert
+//! that data actually flowed between two nodes, and nothing in the session
+//! state this function receives records that. See `export_prov_json`.
 
 use crate::flow::NodeKind;
 use crate::{AuthorityLevel, DerivationClass, IntegLevel};
@@ -223,12 +226,33 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
 /// Export flow observations as a W3C PROV-JSON document.
 ///
 /// Takes the raw flow observations `(node_kind_u8, label_str, subject)` from
-/// session state and produces a standards-compliant PROV-JSON document.
+/// session state and produces a standards-compliant PROV-JSON document of
+/// **nodes only** — `entity`, `activity`, `agent`, each a direct rendering of
+/// something actually observed, carrying its IFC label as attributes.
 ///
-/// Each observation becomes a PROV Entity, Activity, or Agent depending on
-/// its NodeKind. Parent relationships are inferred from sequential ordering
-/// (the full causal DAG requires the kernel's flow graph, which isn't
-/// available in session state — this produces a linear approximation).
+/// # No derivation relations are emitted, deliberately
+///
+/// This function used to emit `wasDerivedFrom` by linking each entity to the
+/// *previous* one, and `used` by pointing each activity at the *preceding*
+/// entity — both inferred from observation ORDER, commented as a "linear
+/// approximation". They are removed.
+///
+/// PROV's `wasDerivedFrom` and `used` are assertions that data actually flowed.
+/// Deriving them from sequence adjacency asserts flows that were never
+/// computed: two unrelated reads become a derivation chain purely because one
+/// happened after the other. In a document whose stated purpose is regulatory
+/// evidence, a fabricated relation is worse than a missing one — a missing
+/// relation is visibly absent, a fabricated one is indistinguishable from a
+/// real finding.
+///
+/// The relation types are retained because the schema is right; only the data
+/// is unavailable. Populating them needs genuine parent edges in the flow
+/// graph. Note this signature cannot carry them: `(u8, String, String)` has no
+/// field for a parent set, so restoring real relations is an input-type change
+/// here, not a change to the body.
+///
+/// Until then, a consumer sees the nodes and their labels, and sees plainly
+/// that no derivation was asserted.
 pub fn export_prov_json(observations: &[(u8, String, String)], session_id: &str) -> ProvDocument {
     let mut doc = ProvDocument {
         entity: BTreeMap::new(),
@@ -245,8 +269,6 @@ pub fn export_prov_json(observations: &[(u8, String, String)], session_id: &str)
         .insert("prov".into(), "http://www.w3.org/ns/prov#".into());
     doc.prefix
         .insert("nucleus".into(), "https://nucleus.dev/ns/prov#".into());
-
-    let mut prev_entity_id: Option<String> = None;
 
     for (i, (kind_u8, label, _subject)) in observations.iter().enumerate() {
         let kind = u8_to_node_kind(*kind_u8);
@@ -267,18 +289,6 @@ pub fn export_prov_json(observations: &[(u8, String, String)], session_id: &str)
                         node_kind: node_kind_str(kind).into(),
                     },
                 );
-
-                // wasDerivedFrom: link to previous entity (linear approx).
-                if let Some(ref prev) = prev_entity_id {
-                    doc.was_derived_from.insert(
-                        format!("nucleus:{session_id}/deriv/{i}"),
-                        ProvDerivation {
-                            generated_entity: node_id.clone(),
-                            used_entity: prev.clone(),
-                        },
-                    );
-                }
-                prev_entity_id = Some(node_id);
             }
             ProvCategory::Activity => {
                 doc.activity.insert(
@@ -288,17 +298,6 @@ pub fn export_prov_json(observations: &[(u8, String, String)], session_id: &str)
                         node_kind: node_kind_str(kind).into(),
                     },
                 );
-
-                // used: activity used the previous entity.
-                if let Some(ref prev) = prev_entity_id {
-                    doc.used.insert(
-                        format!("nucleus:{session_id}/used/{i}"),
-                        ProvUsage {
-                            activity: node_id,
-                            entity: prev.clone(),
-                        },
-                    );
-                }
             }
             ProvCategory::Agent => {
                 doc.agent.insert(
@@ -355,18 +354,28 @@ mod tests {
     }
 
     #[test]
-    fn sequential_entities_linked_by_derivation() {
+    fn adjacent_entities_are_not_asserted_to_derive_from_each_other() {
+        // A local file read followed by an unrelated web fetch. Nothing flowed
+        // between them; they are merely adjacent in time. The exporter used to
+        // emit a `wasDerivedFrom` here, which claims the web content was
+        // derived from the file.
         let obs = vec![
             (5u8, "Read".into(), "a.rs".into()),
             (2u8, "WebFetch".into(), "url".into()),
         ];
         let doc = export_prov_json(&obs, "s1");
-        assert_eq!(doc.entity.len(), 2);
-        assert_eq!(doc.was_derived_from.len(), 1);
+        assert_eq!(doc.entity.len(), 2, "both observations are still exported");
+        assert!(
+            doc.was_derived_from.is_empty(),
+            "sequence adjacency is not derivation: {:?}",
+            doc.was_derived_from
+        );
     }
 
     #[test]
-    fn activity_uses_preceding_entity() {
+    fn an_activity_is_not_asserted_to_have_used_the_preceding_entity() {
+        // Reading `a.rs` then writing `b.rs` does not mean the write consumed
+        // the read. PROV `used` is a claim about data flow, not about order.
         let obs = vec![
             (5u8, "Read".into(), "a.rs".into()),
             (9u8, "Write".into(), "b.rs".into()),
@@ -374,7 +383,24 @@ mod tests {
         let doc = export_prov_json(&obs, "s1");
         assert_eq!(doc.entity.len(), 1);
         assert_eq!(doc.activity.len(), 1);
-        assert_eq!(doc.used.len(), 1);
+        assert!(doc.used.is_empty(), "ordering is not usage: {:?}", doc.used);
+    }
+
+    /// The serialized document must not carry relation keys at all — a consumer
+    /// reading the JSON should see plainly that no derivation was asserted,
+    /// rather than an empty object that looks like a graph with no findings.
+    #[test]
+    fn serialized_document_omits_relation_keys_entirely() {
+        let obs = vec![
+            (5u8, "Read".into(), "a.rs".into()),
+            (2u8, "WebFetch".into(), "url".into()),
+            (9u8, "Write".into(), "b.rs".into()),
+        ];
+        let json = serde_json::to_string(&export_prov_json(&obs, "s1")).unwrap();
+        assert!(json.contains("entity"), "nodes are still exported: {json}");
+        for key in ["wasDerivedFrom", "used", "wasGeneratedBy"] {
+            assert!(!json.contains(key), "{key} must be absent, got: {json}");
+        }
     }
 
     #[test]

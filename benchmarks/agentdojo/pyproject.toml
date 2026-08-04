@@ -12,6 +12,15 @@ dependencies = [
     "agentdojo>=0.1.30",
 ]
 
+# The harness speaks the chat-completions wire protocol to whatever endpoint
+# LLM_API_BASE names — self-hosted or managed. The client below is used purely
+# as a protocol implementation; the harness never branches on a provider, and
+# no provider SDK is a hard dependency. `--dry-run` needs none of this.
+[project.optional-dependencies]
+llm = [
+    "openai>=1.0",
+]
+
 [project.scripts]
 portcullis-bench = "portcullis_defense.run_benchmark:main"
 

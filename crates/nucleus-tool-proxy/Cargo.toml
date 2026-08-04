@@ -60,7 +60,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
-portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
+portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto", "dlc"] }
 # The dependency-free IFC reference monitor. Used directly for the sealed
 # `DischargedBundle` preflight that gates the live RunBash path (#2038). Discharge
 # is already trusted (re-exported through `portcullis-core`); this is an additive
@@ -110,6 +110,10 @@ aws-config = { workspace = true, optional = true }
 tokio-vsock = "0.7"
 
 [dev-dependencies]
+# Credential minting for the DLC admission provisioning tests (same rev as
+# portcullis's dlc-d pin).
+dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
+dlc-d = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
 # In-process router driving for the H-3 panic-net regression test

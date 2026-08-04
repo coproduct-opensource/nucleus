@@ -137,6 +137,31 @@ const DENY_SET: &[&str] = &[
 /// The type whose by-value presence in a signature marks a mediation boundary.
 const AUTHORITY_PATH_SUFFIX: &str = "authority::Authority";
 
+/// Strip generic argument lists from a `def_path_str` rendering.
+///
+/// `def_path_str` renders generics — a call on a parameterised type comes back
+/// as `nucleus::Executor::<'a>::run_args` — so a deny-set prefix that does not
+/// anticipate the parameterisation silently never matches. A miss is
+/// indistinguishable from "no I/O here", which is the failure mode this pass
+/// exists to prevent, so the path is normalised once rather than every entry
+/// guessing.
+fn strip_generics(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for c in path.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    while out.contains("::::") {
+        out = out.replace("::::", "::");
+    }
+    out
+}
+
 /// What we learned about one function, before the call-graph closure runs.
 struct FnFacts {
     span: Span,
@@ -197,7 +222,7 @@ struct CallScan<'a, 'tcx> {
 
 impl<'a, 'tcx> CallScan<'a, 'tcx> {
     fn record(&mut self, did: DefId, span: Span) {
-        let path = self.cx.tcx.def_path_str(did);
+        let path = strip_generics(&self.cx.tcx.def_path_str(did));
         if self.direct_io.is_none()
             && let Some(hit) = DENY_SET.iter().find(|p| path.starts_with(**p))
         {
@@ -234,8 +259,14 @@ impl<'a, 'tcx> Visitor<'tcx> for CallScan<'a, 'tcx> {
         match ex.kind {
             ExprKind::Call(callee, _) => {
                 if let ExprKind::Path(ref qpath) = callee.kind {
+                    use rustc_hir::def::{DefKind, Res};
                     match self.cx.qpath_res(qpath, callee.hir_id) {
-                        rustc_hir::def::Res::Def(_, did) => self.record(did, ex.span),
+                        // A tuple-struct or enum-variant constructor is not a
+                        // call that can reach I/O. Reporting `Self(bytes)` as
+                        // "the call graph cannot see past this" is noise that
+                        // buries real findings.
+                        Res::Def(DefKind::Ctor(..), _) | Res::SelfCtor(_) => {}
+                        Res::Def(_, did) => self.record(did, ex.span),
                         _ => self
                             .unresolved
                             .push((ex.span, "call through an unresolved path".to_string())),
@@ -258,6 +289,22 @@ impl<'a, 'tcx> Visitor<'tcx> for CallScan<'a, 'tcx> {
             ExprKind::InlineAsm(_) => self
                 .unresolved
                 .push((ex.span, "inline `asm!` — opaque to the call graph".to_string())),
+            // Descend into closure bodies.
+            //
+            // An `async fn`'s body in HIR IS a closure, and `check_fn` returns
+            // early for `FnKind::Closure`, so without this every async function
+            // was recorded with ZERO callees and its body was never analysed.
+            // That is not a corner case here: 153 of ~571 functions in
+            // `nucleus-node` and 21 of ~376 in `portcullis-effects` are `async
+            // fn`, and this pass is a CI gate over both. Its green board did not
+            // cover them.
+            //
+            // `walk_expr` visits the closure EXPRESSION; the body is a separate
+            // `Body` reached through the HIR map.
+            ExprKind::Closure(closure) => {
+                let body = self.cx.tcx.hir_body(closure.body);
+                self.visit_body(body);
+            }
             _ => {}
         }
         walk_expr(self, ex);

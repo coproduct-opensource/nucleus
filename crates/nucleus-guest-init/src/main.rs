@@ -130,6 +130,32 @@ fn run() -> Result<(), String> {
     //
     // Synchronous, and before `exec_proxy`, so the values are in the environment
     // before anything reads them.
+    // The broker capability, fetched BEFORE `exec_proxy` and therefore before any
+    // workload exists. The host serves it once; arriving first is the entire
+    // property, since any guest process can open AF_VSOCK.
+    //
+    // Not fatal when absent: a pod may have no broker at all, and the tool-proxy
+    // fails closed on its own (an unsigned envelope is refused host-side). Making
+    // it fatal would break every pod that never had one.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_broker_secret(port) {
+            Ok(cap) => {
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET", &cap.secret);
+                // The port is NOT a secret — it is where to connect — so unlike
+                // the key it is safe to log, and worth logging: a proxy that
+                // cannot reach the broker looks identical to one that was never
+                // given a capability.
+                std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", cap.port.to_string());
+                // Presence only for the secret — never the value, never its length.
+                eprintln!(
+                    "fetched broker capability over vsock (broker port {})",
+                    cap.port
+                );
+            }
+            Err(err) => eprintln!("no broker capability over vsock: {err}"),
+        }
+    }
+
     let mut token_from_vsock = false;
     if let Some(port) = workload_api_port {
         match identity::fetch_task_token(port) {
@@ -172,6 +198,24 @@ fn run() -> Result<(), String> {
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
     // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
+    // DLC-D verified-admission provisioning → the in-VM tool-proxy, over the
+    // workload API like the task token (the cmdline lacks the capacity for a
+    // credential set, and per-pod material must not bake into snapshot bases).
+    // Unprovisioned is the ordinary case and stays quiet; the proxy is inert
+    // without these.
+    if let Some(port) = workload_api_port {
+        match identity::fetch_dlc_admission(port) {
+            Ok(Some(m)) => {
+                std::env::set_var("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
+                std::env::set_var("NUCLEUS_DLC_ISSUER", &m.issuer);
+                std::env::set_var("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
+                eprintln!("fetched DLC admission provisioning over the workload API");
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("failed to fetch DLC admission provisioning: {err}"),
+        }
+    }
+
     if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
         .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
     {

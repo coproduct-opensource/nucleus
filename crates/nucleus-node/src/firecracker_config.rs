@@ -288,6 +288,7 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
 /// The vsock socket is deliberately absent: Firecracker CREATES it at `uds_path`
 /// inside the jail, and the host reaches it through `layout.host_path(VSOCK)`.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "prepare_jail"))]
 pub(crate) fn prepare_jail(
     layout: &JailLayout,
     image: &nucleus_spec::ImageSpec,
@@ -987,6 +988,7 @@ pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
 /// deciding it is fine — see the rule in `check-failclosed-verifiers.sh`. A
 /// verifier may never SUCCEED when it cannot check; it may take a moment to look.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "seccomp.wait"))]
 pub(crate) async fn verify_seccomp_active_within(
     pid: u32,
     timeout: std::time::Duration,

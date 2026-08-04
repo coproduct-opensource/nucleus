@@ -20,6 +20,16 @@ description = "Wire types shared by the credential broker's host and guest halve
 [dependencies]
 serde = { workspace = true }
 
+# The frame codec lives here so the guest that SIGNS and the host that VERIFIES
+# run one implementation rather than two that agree today. These add no new
+# supply-chain surface: nucleus-tool-proxy already links all three at the same
+# workspace versions, so the guest's dependency graph is unchanged. That check
+# was made rather than assumed — adding a dependency to a credential path
+# casually is what the LiteLLM compromise punishes.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }
 

@@ -1,0 +1,30 @@
+# Version pins are a LOCKSTEP TRIPLE, identical to the sibling `nucleus-guarantee-lint`:
+#   - nightly-2026-04-16          (rust-toolchain.toml)
+#   - clippy_utils rev f6d3106…   (matched to that nightly)
+#   - dylint_linting / dylint_testing 6.0.1
+# Do NOT bump any single pin in isolation.
+[package]
+name = "nucleus_observed_lint"
+version = "0.1.0"
+authors = ["Nucleus Platform"]
+description = "observed: every path that ingests external bytes reaches FlowTracker::observe. The source-side dual of `mediated`."
+edition = "2024"
+publish = false
+
+[lib]
+# Dylint loads a dynamic library; a crate linking rustc_driver via
+# `#![feature(rustc_private)]` cannot also emit an rlib/bin.
+crate-type = ["cdylib"]
+
+[dependencies]
+clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", rev = "f6d310692116e9a527ce6d0b3526c965d9c5d7b9" }
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+# Self-contained workspace, explicitly NOT part of the parent.
+[workspace]
+
+[package.metadata.rust-analyzer]
+rustc_private = true

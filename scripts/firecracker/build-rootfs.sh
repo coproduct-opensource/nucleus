@@ -75,6 +75,13 @@ Options:
     --net-deny PATH         Network deny list file
     --audit-path PATH       Audit log path inside VM
     --size MB               Rootfs image size in MB (default: 256)
+
+Environment:
+  OVERLAY_DIR             Directory copied over the rootfs after the nucleus
+                          binaries, for a workload runtime or agent CLI. Opaque
+                          to nucleus. Paths that would shadow the mediating
+                          runtime (/init, nucleus-tool-proxy, nucleus-net-probe,
+                          guest-net.sh) are restored and the attempt reported.
     --verify                Verify required binaries exist without building
     -h, --help              Show this help message
 
@@ -354,6 +361,49 @@ fi
 
 # Copy network setup script
 cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
+
+# Overlay: an operator-supplied directory copied over the rootfs.
+#
+# This is how a workload gets into the image — a language runtime, an agent CLI,
+# whatever the pod is meant to run. Nucleus deliberately does not know what that
+# is: the overlay is opaque, and nothing vendor-specific belongs in this script
+# or anywhere else in the repo.
+#
+# Copied AFTER the nucleus binaries on purpose. An overlay that shadowed
+# `nucleus-tool-proxy` or `/init` would replace the mediating runtime with
+# whatever the operator shipped, so those paths are restored below and the
+# attempt is reported rather than silently honoured.
+if [ -n "${OVERLAY_DIR:-}" ]; then
+    if [ ! -d "$OVERLAY_DIR" ]; then
+        echo "ERROR: OVERLAY_DIR=$OVERLAY_DIR is not a directory" >&2
+        exit 1
+    fi
+    echo "Applying overlay from $OVERLAY_DIR"
+    cp -a "$OVERLAY_DIR/." "$ROOTFS_DIR/"
+
+    # Restore anything the overlay shadowed. Checked by re-copying rather than
+    # by scanning the overlay for names: a scan has to enumerate every path that
+    # matters and will miss the one added next year.
+    for guarded in \
+        "usr/local/bin/nucleus-tool-proxy" \
+        "usr/local/bin/nucleus-net-probe" \
+        "usr/local/bin/guest-net.sh"; do
+        if [ -e "$OVERLAY_DIR/$guarded" ]; then
+            echo "WARNING: overlay shadowed $guarded; restoring the nucleus binary" >&2
+        fi
+    done
+    cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
+    cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
+    cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
+    if [ -e "$OVERLAY_DIR/init" ]; then
+        echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
+    fi
+    if [ -f "$GUEST_INIT_BIN" ]; then
+        cp "$GUEST_INIT_BIN" "$ROOTFS_DIR/init"
+    else
+        cp "$INIT_SRC" "$ROOTFS_DIR/init"
+    fi
+fi
 
 # Set executable permissions
 chmod +x "$ROOTFS_DIR/init"

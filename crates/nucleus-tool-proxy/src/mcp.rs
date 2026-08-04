@@ -161,7 +161,15 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
-        let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(policy.clone())));
+        let kernel = Arc::new(tokio::sync::Mutex::new({
+            let mut k = Kernel::new(policy.clone());
+            // Same NUCLEUS_DLC_* provisioning as the HTTP path's kernel —
+            // verified admission gates both transports or neither.
+            if let Some(admission) = crate::dlc_admission::provision_from_env() {
+                k.set_dlc_admission(admission);
+            }
+            k
+        }));
 
         let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 
@@ -243,7 +251,27 @@ impl NucleusMcpServer {
         // are denied with `IfcUnsafe` before the normal decision path.
         let flow = self.flow_tracker.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
+        // Same second opinion the HTTP path takes (`mediation::cross_check_flow`),
+        // computed before the tracker lock is released. Both transports route
+        // through the same kernel, so both owe the same evidence.
+        let flow_check = crate::mediation::cross_check_flow(&flow, &decision, operation);
         drop(flow);
+        drop(kernel);
+
+        // ★ Record the kernel decision — allows AND refusals — BEFORE the match
+        // below returns. The HTTP path had the same hole: every refusal returned
+        // early, so the sink observed successes only and any evidence built on
+        // it would have shown an all-allow history.
+        crate::verdict_sink::record_kernel_decision(
+            self.sink.as_ref(),
+            &decision,
+            operation,
+            subject,
+            ActorIdentity::StdioGuest,
+            "mcp",
+            flow_check,
+        );
+
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
             Verdict::Deny(ref reason) => {
