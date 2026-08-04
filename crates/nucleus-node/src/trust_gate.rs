@@ -308,6 +308,7 @@ struct Brackets {
 ///
 /// If the trust API is unreachable or returns an error, falls back to
 /// the default bracket (never blocks execution due to trust API failure).
+#[tracing::instrument(skip_all, fields(boot.stage = "trust_gate.verify"))]
 pub async fn verify_agent_trust(
     config: &TrustGateConfig,
     spec: &PodSpec,

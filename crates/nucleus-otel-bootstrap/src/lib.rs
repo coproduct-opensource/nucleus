@@ -8,10 +8,13 @@
 //! # Activation
 //!
 //! Sets up OTLP export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
-//! (the canonical env per [OTel spec][envs]). Optional knobs:
+//! (the canonical env per [OTel spec][envs]). One optional knob:
 //! - `OTEL_SERVICE_NAME` — overrides the `service_name` argument
-//! - `OTEL_PROPAGATORS` — defaults to `tracecontext,baggage` (W3C)
-//! - `OTEL_EXPORTER_OTLP_PROTOCOL` — `grpc` (default) or `http/protobuf`
+//!
+//! The propagator is always W3C `tracecontext` and the exporter always
+//! speaks OTLP over gRPC; `OTEL_PROPAGATORS` and
+//! `OTEL_EXPORTER_OTLP_PROTOCOL` are **not** read. (This doc previously
+//! claimed they were honoured while nothing implemented either.)
 //!
 //! [envs]: https://opentelemetry.io/docs/languages/sdk-configuration/general/
 //!
@@ -95,15 +98,58 @@ pub fn init(service_name: &str) -> Result<OtelGuard> {
     }
     let endpoint = endpoint.unwrap();
 
-    // W3C Trace Context propagation (canonical default; injectable
-    // override via OTEL_PROPAGATORS — we trust the SDK default since
-    // tracecontext is the only universally-supported propagator).
+    let (layer, guard) = build_otel_layer(service_name, &endpoint)?;
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(layer)
+        .try_init()
+        .context("install tracing subscriber (with OTLP layer)")?;
+
+    tracing::info!(endpoint = %endpoint, "OTLP exporter enabled");
+
+    Ok(guard)
+}
+
+/// The OTLP layer alone, for binaries that compose their own subscriber
+/// (the node keeps its JSON fmt layer and adds boot-stage tracing; swapping
+/// its subscriber for [`init`]'s would silently turn its logs from JSON to
+/// text and break whatever parses them).
+///
+/// Returns `Ok(None)` when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset — no
+/// exporter is built and no outbound connection will ever be made. The
+/// caller must hold the [`OtelGuard`] for the process lifetime and add the
+/// layer to the subscriber it installs.
+pub fn otel_layer<S>(
+    service_name: &str,
+) -> Result<Option<(impl tracing_subscriber::Layer<S>, OtelGuard)>>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") else {
+        return Ok(None);
+    };
+    build_otel_layer(service_name, &endpoint).map(Some)
+}
+
+/// Shared exporter wiring: propagator, OTLP gRPC exporter, resource,
+/// provider. Sets the global propagator and tracer provider as side effects.
+fn build_otel_layer<S>(
+    service_name: &str,
+    endpoint: &str,
+) -> Result<(impl tracing_subscriber::Layer<S>, OtelGuard)>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    // W3C Trace Context propagation: the only universally-supported
+    // propagator, and the only one this crate implements.
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     // OTLP gRPC exporter.
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
-        .with_endpoint(&endpoint)
+        .with_endpoint(endpoint)
         .build()
         .context("build OTLP gRPC span exporter")?;
 
@@ -121,27 +167,17 @@ pub fn init(service_name: &str) -> Result<OtelGuard> {
         .with_batch_exporter(exporter)
         .build();
 
-    let tracer = provider.tracer(resolved_name.clone());
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let tracer = provider.tracer(resolved_name);
+    let layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     global::set_tracer_provider(provider.clone());
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(otel_layer)
-        .try_init()
-        .context("install tracing subscriber (with OTLP layer)")?;
-
-    tracing::info!(
-        service = %resolved_name,
-        endpoint = %endpoint,
-        "OTLP exporter enabled"
-    );
-
-    Ok(OtelGuard {
-        provider: Some(provider),
-    })
+    Ok((
+        layer,
+        OtelGuard {
+            provider: Some(provider),
+        },
+    ))
 }
 
 #[cfg(test)]

@@ -260,6 +260,7 @@ pub fn validate_policy(policy: &NetworkSpec) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.dns_proxy"))]
 pub async fn start_dns_proxy(
     plan: &mut NetPlan,
     policy: &NetworkSpec,
@@ -315,6 +316,7 @@ pub async fn start_dns_proxy(
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.create_netns"))]
 pub async fn create_netns(name: &str) -> Result<(), ApiError> {
     ensure_command("ip")?;
     let status = Command::new("ip")
@@ -340,6 +342,7 @@ pub async fn create_netns(_name: &str) -> Result<(), ApiError> {
 /// This must be called BEFORE spawning any process in the netns to prevent
 /// race conditions where a process could exfiltrate data before policy applies.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.default_deny"))]
 pub async fn apply_default_deny(netns: &str) -> Result<(), ApiError> {
     ensure_command("iptables")?;
 
@@ -436,6 +439,7 @@ pub async fn cleanup_netns(_name: &str) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "net.setup"))]
 pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     ensure_command("ip")?;
     ensure_command("iptables")?;

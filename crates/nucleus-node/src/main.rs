@@ -37,6 +37,7 @@ mod oidc;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
+mod boot_trace;
 mod broker;
 mod broker_launch;
 mod broker_perform;
@@ -536,10 +537,7 @@ async fn main() -> Result<(), ApiError> {
         .install_default()
         .map_err(|_| ApiError::Driver("failed to install rustls crypto provider".to_string()))?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .json()
-        .init();
+    let _tracing_guard = boot_trace::init_tracing().map_err(ApiError::Driver)?;
 
     let args = Args::parse();
     tokio::fs::create_dir_all(&args.state_dir).await?;
@@ -997,6 +995,7 @@ async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
+#[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty))]
 async fn create_pod_internal(
     state: &NodeState,
     mut spec: PodSpec,
@@ -1004,6 +1003,7 @@ async fn create_pod_internal(
     raw_yaml: Option<String>,
 ) -> Result<(Uuid, Option<String>), ApiError> {
     let id = Uuid::new_v4();
+    tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
 
     // ── Trust Gate: verify agent reputation, scope permissions ──────
@@ -1024,6 +1024,7 @@ async fn create_pod_internal(
             spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await?
         }
     };
+    boot_trace::log_guest_console_timeline(&log_path).await;
 
     // Write lifecycle audit event so even direct-task pods have an audit trail.
     write_lifecycle_audit(
@@ -1980,6 +1981,7 @@ async fn wait_for_container_announce(
 /// is never compiled or tested on a macOS dev host. `vmm_preflight_refuses_*`
 /// exercise it here.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[tracing::instrument(skip_all, fields(boot.stage = "vmm.preflight"))]
 async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
     use nucleus_spec::vmm_version::{judge, VmmVerdict};
 
@@ -2348,7 +2350,9 @@ async fn spawn_firecracker_pod(
             cmd
         };
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
-        let mut child = match command.stdout(log_stdout).stderr(log_stderr).spawn() {
+        let mut child = match boot_trace::time_sync("firecracker.spawn", || {
+            command.stdout(log_stdout).stderr(log_stderr).spawn()
+        }) {
             Ok(child) => child,
             Err(err) => {
                 cleanup_net_resources(
@@ -3061,6 +3065,7 @@ fn start_pod_reaper(state: NodeState) {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "vsock.wait"))]
 async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(3) {
@@ -3110,6 +3115,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
     wait_for_proxy_health_within(
         addr,
