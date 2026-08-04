@@ -46,11 +46,11 @@ mod shell;
 mod start;
 mod stop;
 mod token;
-// Completeness by 2-safety. Not yet called from a command: the comparison logic
-// lands first so it is reviewable on its own, exactly as the broker's decision
-// core did. The harness that boots twice needs /dev/kvm and lands next.
-#[allow(dead_code)]
+// Completeness by 2-safety: the observation function, the canonicaliser and the
+// comparison. Reached from `nucleus two-safety` via `twosafety_boot`, which is
+// the implementation of its `Boot` trait that boots real pods.
 mod twosafety;
+mod twosafety_boot;
 mod verify;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
@@ -93,6 +93,9 @@ enum Commands {
 
     /// Prove Tier 2 works by booting a real nucleus pod
     Verify(verify::VerifyArgs),
+
+    /// Boot a pod twice differing only in a secret, and compare (2-safety)
+    TwoSafety(twosafety_boot::TwoSafetyArgs),
 
     /// Start nucleus-node in the Lima VM
     Start(start::StartArgs),
@@ -181,6 +184,7 @@ async fn main() -> Result<()> {
         Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args).await,
         Commands::Verify(args) => verify::execute(args).await,
+        Commands::TwoSafety(args) => twosafety_boot::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
         Commands::Stop(args) => stop::execute(args).await,
         Commands::Lockdown(args) => lockdown::execute(args).await,
