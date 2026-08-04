@@ -205,6 +205,53 @@ jobs:
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreMediation.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-mediation/ canonicalized from the fresh extraction."
 
+      # generated-egress and generated-credential were NOT canonicalized here
+      # until now, and the omission was invisible: both appear in this workflow's
+      # `paths:` triggers, so editing them starts the run, and the build steps
+      # below compile EgressConfinementExtracted and
+      # CredentialNoninterferenceExtracted — against the COMMITTED copies. The
+      # theorems verified a model nothing re-derived from the Rust, so changing
+      # `egress::rule_admits` or `credential::cred_may_deliver` left them green
+      # while describing code that no longer existed. A `paths:` trigger reads as
+      # coverage and is not coverage.
+      #
+      # No new extraction is needed: EXTRACT_ROOTS already names every
+      # egress::* and credential::* root, so ci-generated-ifc/ — one Aeneas run
+      # over the whole scoped slice — contains these definitions too. Same single
+      # disclosed hand-edit as the two steps above: only the inter-module import
+      # is retargeted so the lib names do not collide.
+      - name: Canonicalize generated-egress from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-egress/PortcullisCoreEgress
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-egress $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreEgress.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-egress/ canonicalized from the fresh extraction; theorem builds against it."
+
+      - name: Canonicalize generated-credential from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-credential/PortcullisCoreCredential
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-credential $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreCredential.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-credential/ canonicalized from the fresh extraction; theorem builds against it."
+
       - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
           echo "CANONICAL-TYPES-START"
