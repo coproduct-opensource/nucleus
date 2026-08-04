@@ -43,6 +43,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Run no-vendor-strings.sh
         id: gate
+        # `shell: bash` is LOAD-BEARING. The default `run` shell is `bash -e {0}`
+        # — no pipefail — so `bash ci/<gate>.sh ... | tee gate-output.txt` reports
+        # TEE's status. The gate script's `exit 1` was DISCARDED, this step
+        # passed, and the `if: failure()` PR-comment step below therefore never
+        # fired: the failure was silent twice over. `continue-on-error: false`
+        # did not help, because the step SUCCEEDED.
+        shell: bash
         run: |
           bash ci/no-vendor-strings.sh \
             crates/nucleus-oidc-provider \
@@ -83,6 +90,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Run alg-pin-check.sh
         id: gate
+        # `shell: bash` is LOAD-BEARING. The default `run` shell is `bash -e {0}`
+        # — no pipefail — so `bash ci/<gate>.sh ... | tee gate-output.txt` reports
+        # TEE's status. The gate script's `exit 1` was DISCARDED, this step
+        # passed, and the `if: failure()` PR-comment step below therefore never
+        # fired: the failure was silent twice over. `continue-on-error: false`
+        # did not help, because the step SUCCEEDED.
+        shell: bash
         run: |
           bash ci/alg-pin-check.sh \
             crates/nucleus-oidc-provider \

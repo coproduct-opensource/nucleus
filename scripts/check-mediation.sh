@@ -35,6 +35,7 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 SPAWN_ALLOWLIST="scripts/mediation-allowlist.txt"
 NET_ALLOWLIST="scripts/mediation-net-allowlist.txt"
+VSOCK_ALLOWLIST="scripts/mediation-vsock-allowlist.txt"
 
 # In-scope = the agent effect path. Effects here MUST go through
 # `preflight_action` -> `DischargedBundle`, never a raw primitive.
@@ -157,13 +158,31 @@ run_pattern 'Command::new' 'spawn' "$SPAWN_ALLOWLIST"
 # not matched, so the net pattern isolates HTTP egress without false positives.
 run_pattern '.send()' 'net' "$NET_ALLOWLIST"
 
+# VSOCK — the third pattern, and the reason it exists.
+#
+# Credentialed egress no longer reaches the wire from inside the guest. It asks
+# the HOST to perform the call, over vsock. A `write_all` on a vsock stream is
+# invisible to the `.send()` pattern above, so that egress dropped out of this
+# gate's view entirely the moment it started working.
+#
+# The typestate does most of the work: `broker_client::perform_line` takes an
+# `Authority`, so a typed perform without a discharge does not compile. This
+# pattern is NOT redundant with it, and the distinction is the point — the
+# signature stops a typed call with no bundle; this stops a HAND-ROLLED frame
+# that never touches the typed API. Neither covers the other's hole, and each is
+# perturbed alone.
+#
+# Allowlist: the sanctioned client file only.
+run_pattern 'VsockStream::connect' 'vsock' "$VSOCK_ALLOWLIST"
+
 if [[ "$FAILED" -ne 0 ]]; then
     echo >&2
     echo "Fix: obtain the effect through portcullis_core::discharge (preflight_action -> DischargedBundle)" >&2
     echo "via portcullis-effects (spawn -> ShellEffect::run_argv[_async]; net -> NetEffect::fetch), not a" >&2
-    echo "raw Command::new / reqwest .send(. If this is legitimate un-migrated baseline debt (spawn) or an" >&2
+    echo "raw Command::new / reqwest .send( / VsockStream::connect. If this is legitimate un-migrated" >&2
+    echo "baseline debt (spawn) or an" >&2
     echo "infra sink (net), add it to the matching allowlist (spawn debt only shrinks; net infra is by-file/by-line)." >&2
     exit 1
 fi
 
-echo "mediation gate PASSED: no un-allowlisted raw effect primitive on the agent path (spawn + net)."
+echo "mediation gate PASSED: no un-allowlisted raw effect primitive on the agent path (spawn + net + vsock)."

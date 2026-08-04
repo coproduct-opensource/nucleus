@@ -114,6 +114,60 @@ jobs:
       - name: Forbid raw agent-path effect primitives outside the discharge-gated API
         run: scripts/check-mediation.sh
 
+  # `discharge::test_helpers::bundle_for` mints a DischargedBundle with no
+  # preflight. It is gated behind a `test-helpers` feature that only
+  # [dev-dependencies] enable — and Cargo unifies features per build, so one line
+  # moving to [dependencies] makes the proof mintable from production code with
+  # every test still green, because tests already have the feature on.
+  #
+  # This needs cargo (it reads the resolved no-dev feature graph rather than
+  # grepping manifests, which would miss transitive enabling), so it gets a
+  # toolchain rather than riding along with the grep-only gates above.
+  test-helpers-seal:
+    name: test-helpers is not reachable from a shipping build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: The discharge seal is not reachable from any shipping build
+        shell: bash
+        run: scripts/check-test-helpers-not-in-production.sh
+
+  # A `lean_lib` that no workflow builds is a theorem statement nothing
+  # elaborates — it can be false, ill-typed, or carry a `sorry`, and
+  # `#print axioms` cannot report it because the constant never comes into
+  # existence. #2162 fixed the two such libraries that had been noticed; this
+  # asks for the whole set instead of a list someone maintains by hand.
+  #
+  # Pure grep over lakefiles and workflows, so no toolchain and no Lean build.
+  lean-lib-coverage:
+    name: Every lean_lib is type-checked by something
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: No lean_lib is built by nothing
+        shell: bash
+        run: scripts/check-lean-libs-built.sh
+
+  # Every gate above is a claim that something is checked. This checks the claim.
+  #
+  # It needs full history and a clean tree because it PERTURBS real files and
+  # restores them, so it runs as its own job rather than sharing a checkout with
+  # a job that might have written into the tree.
+  gates-can-fail:
+    name: Gates must fail on their own subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Every gate REDs on a real violation and GREENs when restored
+        shell: bash
+        run: scripts/check-gates-can-fail.sh
+
   ingest-hash-gate:
     name: No-unwitnessed-ingest gate (InputsAuthorized)
     runs-on: ubuntu-latest
@@ -150,6 +204,46 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # Doctests, split out of `test` because they were 82% of its wall clock.
+  #
+  # WHY THIS JOB IS REQUIRED, NOT OPTIONAL
+  #
+  # Splitting a slow check into its own job is one edit away from dropping it:
+  # make it `continue-on-error`, or forget to add it to the required set, and the
+  # documented examples stop being verified while the board stays green. This
+  # repo has already produced that exact shape — two Lean proofs that appeared in
+  # a workflow's `paths:` triggers and were compiled by no job at all (#2162).
+  #
+  # Doctests are the ONLY thing checking that the examples in this codebase's
+  # documentation still compile, and the documentation is where most of its
+  # reasoning lives. They must fail the build.
+  doctests:
+    name: Doctests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changed-crates
+    if: ${{ needs.changed-crates.outputs.all == 'true' || needs.changed-crates.outputs.crates != '' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          targets: wasm32-unknown-unknown
+          cache: true
+      # PREREQUISITE, not boilerplate. `nucleus-verifier-service` vendors the
+      # wasm SDK with `include_str!`/`include_bytes!` on sdks/verifier-js/pkg/*,
+      # which only `wasm-pack build` produces. Without these two steps the whole
+      # workspace fails to compile and the doctest job REDs for a reason that has
+      # nothing to do with doctests.
+      #
+      # CI found this: splitting a job means carrying its PREREQUISITES, not just
+      # its command, and I moved the command alone.
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
+        run: wasm-pack build sdks/verifier-js --target web --release
+      - name: cargo test --doc
+        run: cargo test --all-features --doc
+
   test:
     name: Tests
     runs-on: ubuntu-latest
@@ -166,8 +260,21 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
         run: wasm-pack build sdks/verifier-js --target web --release
-      - name: cargo test
-        run: cargo test --all-features
+      # `--lib --bins --tests` EXCLUDES doctests, which run in the `doctests` job
+      # below. Measured on this workspace, warm cache:
+      #
+      #   --lib --bins --tests   152s
+      #   --doc                  702s   <- 82% of the time
+      #
+      # Every doctest is a separate rustc invocation linking the whole crate
+      # against 927 resolved packages, so ~113 doc code blocks cost ~8s each.
+      # That is not pathological, it is what doctests cost at this size — but it
+      # is not per-iteration work, and it was being paid on every run.
+      #
+      # SPLIT, NOT DROPPED. The doctests job below is required; see its comment
+      # for why that distinction is load-bearing.
+      - name: cargo test (lib, bins, tests — doctests run separately)
+        run: cargo test --all-features --lib --bins --tests
       # Node tests run the WASM bindings against the cross-language golden seal
       # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
       # just on publish, so a binding-layer drift from the proven kernels is caught

@@ -176,13 +176,36 @@ jobs:
 
       - name: lake build (extracted core + theorems)
         working-directory: crates/nucleus-github-oidc/lean
+        # `shell: bash` is LOAD-BEARING. GitHub's default `run` shell is
+        # `bash -e {0}` — `-e` WITHOUT pipefail — so `lake build X | tee log`
+        # reports TEE's status and a failed build PASSED this step. Naming the
+        # shell gets `bash --noprofile --norc -eo pipefail {0}`.
+        #
+        #   bash -e           -c 'false | tee /dev/null; echo $?'  -> 0
+        #   bash -eo pipefail -c 'false | tee /dev/null; echo $?'  -> 1
+        shell: bash
         run: |
           lake build NucleusGithubOidc
           lake build OidcSpiffeProofs 2>&1 | tee /tmp/lake-oidc.log
 
       - name: Assert clean axiom set (no sorryAx / opaque axioms)
         working-directory: crates/nucleus-github-oidc/lean
+        shell: bash
         run: |
+          # NON-VACUITY FIRST. Every check below is "the log does not contain a
+          # bad string", and an EMPTY log satisfies all of them — which is what a
+          # failed build produces. Require positive evidence that `#print axioms`
+          # actually ran before believing its silence.
+          if [ ! -s /tmp/lake-oidc.log ]; then
+            echo "ERROR: /tmp/lake-oidc.log is missing or empty — the build did not run,"
+            echo "so the assertions below would pass by saying nothing."
+            exit 1
+          fi
+          if ! grep -q "depends on axioms" /tmp/lake-oidc.log; then
+            echo "ERROR: no '#print axioms' output in the build log. The theorems were"
+            echo "not elaborated, so this step asserts nothing about them."
+            exit 1
+          fi
           echo "=== #print axioms output (from build log) ==="
           grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-oidc.log || true
           if grep -qE "sorryAx|External" /tmp/lake-oidc.log; then

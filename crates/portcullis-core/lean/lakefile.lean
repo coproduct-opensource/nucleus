@@ -27,6 +27,12 @@ lean_lib «PortcullisCore» where
   roots := #[`PortcullisCore.Types, `PortcullisCore.CoreFuns, `PortcullisCore.FunsExternal]
   srcDir := "generated"
 
+-- Assurance coverage: the gate suite as a covering family. Vocabulary ported
+-- from olog/claim-calculus (Lean 4.32 there, 4.30 here — see the file header for
+-- why it is copied rather than required). Mathlib-free and dependency-free.
+lean_lib «AssuranceCoverage» where
+  roots := #[`AssuranceCoverage]
+
 -- HeytingAlgebra bridge proof + function correspondence theorems
 lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]

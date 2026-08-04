@@ -38,6 +38,15 @@ remote-audit = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio", "serde"]
 # Cedar policy language integration (CNCF Sandbox project)
 cedar = ["dep:cedar-policy", "serde"]
 
+# DLC-D verified admission (#says-admission): a cryptographic, proof-carrying
+# admission conjunct — the kernel consults an issuer-signed says-credential per
+# operation, checked by a PEP whose positive verdict is backed by the
+# machine-checked `admit_joint` theorem (no false admits on the admission
+# fragment). Inert unless `Kernel::set_dlc_admission` provisions credentials,
+# mirroring the `cedar` pattern. Rev-pinned git dep, same pattern as
+# nucleus-policy-cert's `dlc` feature.
+dlc = ["dep:dlc-d", "dep:dlc-core", "crypto"]
+
 # SECURITY: Enable this feature ONLY for testing. It exposes methods that
 # bypass security constraints (e.g., disabling uninhabitable state enforcement).
 # DO NOT enable in production builds.
@@ -45,6 +54,10 @@ testing = []
 
 [dependencies]
 portcullis-core = { path = "../portcullis-core", features = ["serde", "envelope"] }
+# DLC-D admission (feature `dlc`) — rev-pinned to delegation_calc main. The pin
+# is the U3 state: gated mint + one-atom binding (see says_admission module docs).
+dlc-d = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a", optional = true }
+dlc-core = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a", optional = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
@@ -98,6 +111,8 @@ proptest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 kani = "0.0.1"
+# Credential minting for the `dlc` admission tests (signing side of dlc-d's PEP).
+dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 
 [[test]]
 name = "example_policies"
@@ -114,3 +129,7 @@ required-features = ["spec"]
 [[test]]
 name = "kernel_token"
 required-features = ["crypto"]
+
+[[test]]
+name = "kernel_dlc_admission"
+required-features = ["dlc"]

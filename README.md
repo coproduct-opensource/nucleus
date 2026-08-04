@@ -12,7 +12,9 @@
 
 > **Assume the agent is compromised. Constrain what it can do anyway. Prove the constraints hold.**
 
-At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session **through a mediated ingest channel**, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+
+The qualifier is load-bearing, so it is stated here rather than in a footnote: the guarantee covers content the runtime *observes*. Fetches through `web_fetch`/`web_search`, file reads, and memory recalls are observed. Bytes an agent obtains by running a command — `curl` inside `run` — are observed only when `NUCLEUS_PARANOID_TOOL_IO=1`, because the runtime cannot tell `curl` from `ls` in a command's output and tainting all of it makes a session "one privileged action then locked". That is an operator's policy call, and until it is made, command output is an unmediated ingest channel.
 
 This is the **[lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)** — private data + untrusted content + an exfiltration sink — made safe by **non-interference**: attacker-tainted data cannot reach a consequential action, so a compromised agent cannot be turned into a *confused deputy*. We don't *detect* the prompt injection; we make its consequence impossible — and prove it. (Detection-based guardrails are probabilistic; this is a structural guarantee.)
 
@@ -432,6 +434,8 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 **Protects against:** prompt-injection side effects, invisible Unicode injection, misconfigured permissions, network policy drift, budget exhaustion, privilege escalation via delegation, audit-log tampering, memory poisoning, substitution/truncation of provenance bundles, and silent policy widening (constitutional kernel).
 
 **Does not protect against:** compromised host/kernel, malicious human approvals, side-channel attacks, VM kernel escapes — nor does a green provenance verification imply the agent *behaved well* or that any computation was *correct*.
+
+**Unmediated by default:** bytes an agent obtains by running a command (`curl` inside `run`) are not observed as an ingest unless `NUCLEUS_PARANOID_TOOL_IO=1`, so they do not taint the session and the information-flow guarantee above does not cover them. Setting that variable closes the channel on both the HTTP and MCP transports at the cost of a session becoming "one privileged action then locked".
 
 > **Versioning:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 

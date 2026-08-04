@@ -326,6 +326,27 @@ impl PathLattice {
             // could exfiltrate the signing key, enabling receipt forgery.
             "**/.local/share/nucleus/**",
             "**/nucleus-hook/**",
+            // The runtime's assessment OF the agent, written into the agent's
+            // own workspace at shutdown (`write_exit_report`, read back by
+            // nucleus-node from the same shared path). It carries
+            // `observed_exposure_labels`, `observed_risk_tier`,
+            // `uninhabitable_reached`, `audit_tail_hash` and — since the trace
+            // monitor was wired — `monitor_violations`, i.e. exactly which
+            // mediation invariants the session tripped.
+            //
+            // Nothing about a session's own surveillance record belongs in that
+            // session's readable surface. Two ways it is reachable: the
+            // shutdown window, where an agent process outliving the proxy can
+            // read the file it just produced; and workspace reuse, where the
+            // next agent to run against a persisted checkout reads the previous
+            // session's assessment and learns which probes register.
+            //
+            // The `**/.nucleus/**` entries above do not cover this: that is a
+            // DIRECTORY, and this is a sibling file whose name merely starts
+            // the same way. Verified by probe before adding — the lattice
+            // returned `can_access(".nucleus-exit-report.json") == true`.
+            "**/.nucleus-exit-report.json",
+            ".nucleus-exit-report.json",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -554,6 +575,33 @@ mod tests {
         assert!(
             !lattice.can_access(Path::new(".nucleus/trust/author.pub")),
             ".nucleus/trust/ must be blocked"
+        );
+
+        // The runtime's assessment of the session, written into the session's
+        // own workspace. Probed BEFORE the fix and the lattice allowed it: an
+        // agent could read `observed_exposure_labels`, `observed_risk_tier`,
+        // `uninhabitable_reached` and `monitor_violations` — which mediation
+        // invariants it had tripped — either in the shutdown window or, on a
+        // reused workspace, as the previous session's assessment.
+        //
+        // Both spellings, because the file sits at the workspace root and the
+        // `**/` glob alone does not match a bare relative path.
+        assert!(
+            !lattice.can_access(Path::new(".nucleus-exit-report.json")),
+            "the exit report is the runtime's record ABOUT this session; it must not be in the \
+             session's own read surface"
+        );
+        assert!(
+            !lattice.can_access(Path::new("workspace/.nucleus-exit-report.json")),
+            "the exit report must be blocked at any depth, not only at the workspace root"
+        );
+        // The neighbouring directory rule does NOT cover the file — this is why
+        // the gap existed. If someone later replaces both entries with the
+        // directory glob, this control shows the two are different matches.
+        assert!(
+            lattice.can_access(Path::new("nucleus-exit-report.json")),
+            "the block must key on the dotfile the runtime actually writes, not on any file \
+             with a similar name -- otherwise it is over-broad and its meaning is unclear"
         );
 
         // Nucleus session state — signing key exfiltration (#487)
