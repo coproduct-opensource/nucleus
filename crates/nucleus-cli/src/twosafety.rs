@@ -329,6 +329,16 @@ fn strip_leading_timestamp(line: &str) -> &str {
 /// The literal that opens an audit record header.
 const AUDIT_OPEN: &str = "audit(";
 
+/// The literal a kernel audit record line begins with. The rule is anchored to
+/// it so a guest-authored line merely CONTAINING `audit(` is not eligible.
+const AUDIT_RECORD: &str = "audit: ";
+/// Widest plausible uptime in seconds (~317 years).
+const BOOT_CLOCK_SECS_MAX: usize = 10;
+/// `%03lu` — always three.
+const BOOT_CLOCK_FRAC_LEN: usize = 3;
+/// `%u` — a 32-bit serial is at most 10 digits.
+const AUDIT_SERIAL_MAX: usize = 10;
+
 /// Erase the boot-clock reading inside an `audit(SECS.MSECS:SERIAL)` header.
 ///
 /// Measured on two real boots five days apart, this is one of exactly three
@@ -369,33 +379,55 @@ const AUDIT_OPEN: &str = "audit(";
 /// A leak whose entire text is `digits.digits`, positioned immediately after a
 /// literal `audit(` and immediately before a `:`. Nothing else.
 fn strip_embedded_audit_clock(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(i) = rest.find(AUDIT_OPEN) {
-        let (head, tail) = rest.split_at(i + AUDIT_OPEN.len());
-        out.push_str(head);
-        // The reading is delimited by the `:` that separates it from the serial.
-        // Bounded to this line, and the span must be numeric or nothing happens.
-        match tail.split_once(':') {
-            Some((span, after)) if is_boot_clock_reading(span) => {
-                out.push_str("<BOOT-CLOCK>:");
-                rest = after;
-            }
-            _ => rest = tail,
-        }
+    // ANCHOR. The justification is about a kernel audit record header, so
+    // require the line to BE one. Without this the rule fired on any line
+    // containing the substring `audit(`, which a guest can print.
+    if !line.starts_with(AUDIT_RECORD) {
+        return line.to_string();
     }
-    out.push_str(rest);
-    out
+    // ONE occurrence, not every match on the line. `audit_log_start` emits
+    // exactly one header; looping invited a crafted line to present several
+    // erasable spans.
+    let Some(i) = line.find(AUDIT_OPEN) else {
+        return line.to_string();
+    };
+    let (head, tail) = line.split_at(i + AUDIT_OPEN.len());
+    // DELIMIT BY `)`, the close of the header, not by the first `:` anywhere on
+    // the line. The old span ran to a colon that might belong to the record
+    // body, so an arbitrarily long run could be swallowed — 93 digits in the
+    // audit's demonstration.
+    let Some(close) = tail.find(')') else {
+        return line.to_string();
+    };
+    let (inner, after) = tail.split_at(close);
+    let Some((clock, serial)) = inner.split_once(':') else {
+        return line.to_string();
+    };
+    // The serial is VALIDATED as a shape check that this really is a header,
+    // and then left COMPARED. Erasing it would have been a widening dressed as
+    // a narrowing: if the serial ever diverges we want that reported, not
+    // absorbed. The existing test caught this.
+    if is_boot_clock_reading(clock) && is_bounded_digits(serial, AUDIT_SERIAL_MAX) {
+        format!("{head}<BOOT-CLOCK>:{serial}{after}")
+    } else {
+        line.to_string()
+    }
+}
+
+/// Digits, at least one, at most `max` — the width bound that turns "looks
+/// numeric" into "is the field the kernel actually emits".
+fn is_bounded_digits(s: &str, max: usize) -> bool {
+    !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// `digits '.' digits` — exactly one dot, at least one digit either side.
 fn is_boot_clock_reading(s: &str) -> bool {
     match s.split_once('.') {
+        // WIDTH-BOUNDED. The kernel emits `audit(%llu.%03lu:%u)` — three
+        // fraction digits, always — so an unbounded run on either side was a
+        // channel of unbounded width wearing a numeric costume.
         Some((secs, frac)) => {
-            !secs.is_empty()
-                && !frac.is_empty()
-                && secs.bytes().all(|b| b.is_ascii_digit())
-                && frac.bytes().all(|b| b.is_ascii_digit())
+            is_bounded_digits(secs, BOOT_CLOCK_SECS_MAX) && frac.len() == BOOT_CLOCK_FRAC_LEN
         }
         None => false,
     }
@@ -407,6 +439,12 @@ fn is_boot_clock_reading(s: &str) -> bool {
 
 /// The driver-emitted literal that introduces the wall-clock reading.
 const RTC_PREFIX: &str = ": setting system clock to ";
+
+/// The RTC driver that emits the hand-off line. Anchoring to it is what stops
+/// `anything at all: setting system clock to ...` being eligible.
+const RTC_DRIVER: &str = "rtc-";
+/// A Unix second is 10 digits, and 11 from the year 33658.
+const RTC_EPOCH_MAX: usize = 11;
 
 /// Erase the wall-clock reading in the RTC hand-off line.
 ///
@@ -441,6 +479,12 @@ const RTC_PREFIX: &str = ": setting system clock to ";
 /// by ` UTC (digits)`, occupying the whole tail of a line that already contains
 /// the literal `: setting system clock to `. Nothing else.
 fn strip_rtc_wall_clock(line: &str) -> String {
+    // ANCHOR. `hctosys.c` emits this through the RTC driver, so require the
+    // driver name. Without it ANY line of the shape `<anything>: setting system
+    // clock to ...` was eligible, and the head is guest-writable text.
+    if !line.starts_with(RTC_DRIVER) {
+        return line.to_string();
+    }
     let Some(i) = line.find(RTC_PREFIX) else {
         return line.to_string();
     };
@@ -460,7 +504,9 @@ fn is_rtc_reading(s: &str) -> bool {
     let Some(digits) = epoch.strip_suffix(')') else {
         return false;
     };
-    is_iso8601_second(iso) && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    // WIDTH-BOUNDED epoch: a Unix second is 10 digits and will be 11 in the
+    // year 33658. Unbounded, it absorbed 93 digits in the audit's demonstration.
+    is_iso8601_second(iso) && is_bounded_digits(digits, RTC_EPOCH_MAX)
 }
 
 /// Exactly `YYYY-MM-DDTHH:MM:SS` — fixed width, fixed separators, digits
@@ -1683,6 +1729,76 @@ mod tests {
         assert!(
             !a.contains("<TRUNCATED-CMDLINE-TOKEN-ECHO>"),
             "the erasure must not fire on a value the host never wrote: {a}"
+        );
+    }
+
+    /// **The width and anchor attacks, as tests.**
+    ///
+    /// Both rules were gated on a SHAPE ("looks like a clock") while their
+    /// justification was about POSITION and PROVENANCE ("the kernel emits this
+    /// field, in this record, and nothing else can write there"). A shape gate
+    /// with no width bound is a channel of unbounded width wearing a numeric
+    /// costume; a shape gate with no anchor fires on any line a guest can print.
+    #[test]
+    fn the_clock_rules_are_anchored_and_width_bounded() {
+        // A REAL uuid shape. An earlier version of this test used pod_id "p",
+        // a single character that occurs in `type=2000`, so the pod-ID rule
+        // rewrote the line and the assertions failed for a reason that had
+        // nothing to do with the clocks. A fixture unlike the real input tests
+        // something unlike the real system.
+        let f = RunFacts {
+            pod_id: "aeb31452-ce64-468b-abf4-ea5f23378519".into(),
+            guest_cid: 3,
+        };
+        let long = "1".repeat(93);
+
+        // UNANCHORED: a guest-authored line merely CONTAINING `audit(`.
+        let forged = format!("fetched identity: audit({long}.123:1) x");
+        assert_eq!(
+            scrub(&forged, &f, None),
+            forged,
+            "the audit rule must require a real audit record, not a substring"
+        );
+
+        // WIDTH: even in a real record, an over-long run is not the field the
+        // kernel emits and must not be absorbed.
+        let wide = format!("audit: type=2000 audit({long}.123:1): x");
+        assert_eq!(
+            scrub(&wide, &f, None),
+            wide,
+            "an unbounded digit run is not a boot clock"
+        );
+        let frac = "audit: type=2000 audit(0.1234567:1): x";
+        assert_eq!(
+            scrub(frac, &f, None),
+            frac,
+            "the kernel emits exactly three fraction digits"
+        );
+
+        // The genuine article still normalises, or the assertions above pass
+        // for the boring reason that the rule never fires at all.
+        let real = "audit: type=2000 audit(0.310:1): state=initialized";
+        let out = scrub(real, &f, None);
+        assert!(out.contains("<BOOT-CLOCK>"), "the real header must normalise: {out}");
+        assert!(out.contains(":1)"), "the serial stays compared: {out}");
+
+        // RTC: unanchored head, and an unbounded epoch.
+        let rtc_forged = format!("fetched identity: setting system clock to 2026-08-04T10:45:20 UTC ({long})");
+        assert_eq!(
+            scrub(&rtc_forged, &f, None),
+            rtc_forged,
+            "the rtc rule must require the driver name"
+        );
+        let rtc_wide = format!("rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC ({long})");
+        assert_eq!(
+            scrub(&rtc_wide, &f, None),
+            rtc_wide,
+            "an unbounded epoch is not a Unix second"
+        );
+        let rtc_real = "rtc-pl031 40001000.rtc: setting system clock to 2026-08-04T10:45:20 UTC (1785840320)";
+        assert!(
+            scrub(rtc_real, &f, None).contains("<RTC-WALL-CLOCK>"),
+            "the real rtc line must normalise"
         );
     }
 
