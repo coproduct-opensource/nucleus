@@ -48,6 +48,7 @@ const NONCE_LEN: usize = 16;
 /// consumes. Field serialization matches
 /// `nucleus-tool-proxy::session_token` exactly: JSON token, lowercase-hex
 /// nonce, lowercase-hex issuer public key.
+#[derive(Clone)]
 pub(crate) struct MintedTaskToken {
     /// `serde_json` serialization of the [`SignedTaskRef`] → `NUCLEUS_TASK_TOKEN`.
     pub token_json: String,

@@ -12,30 +12,35 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::portcullis::action_term::ActionTerm;
-use nucleus::portcullis::escalation::{
-    EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
-};
-use nucleus::portcullis::kernel::{DecisionToken, DenyReason, Kernel, Verdict};
+use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
+use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+mod art12;
+mod art12_shipper;
+mod art12_sink;
 mod attestation;
 mod auth;
+mod broker_client;
 mod cert_bridge;
+mod dlc_admission;
+mod egress;
+mod escalate;
 mod exit_report;
 mod identity_fusion;
+mod ingest;
 mod lockdown_client;
 #[cfg(feature = "mcp")]
 mod mcp;
+mod mediation;
 mod memory;
 mod mtls;
 mod node_client;
@@ -50,6 +55,7 @@ mod unicode_audit;
 mod validation;
 mod verdict_sink;
 mod web_fetch_policy;
+mod workload;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
@@ -79,7 +85,12 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_PORT")]
     vsock_port: Option<u32>,
     /// Shared secret for HMAC request signing.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET")]
+    /// HMAC key for the shared-secret auth tier.
+    ///
+    /// Defaults to empty because a host-verified vsock listener does not use it
+    /// — see `enforce_hmac_key_quality`, which still refuses an empty key on
+    /// every transport that can actually select the HMAC tier.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET", default_value = "")]
     auth_secret: String,
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(
@@ -98,6 +109,22 @@ struct Args {
     /// Optional audit log signing secret (defaults to auth secret if omitted).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
+    /// Path for the EU AI Act Article 12 record-keeping log (JSONL, hash-chained).
+    ///
+    /// Absent means no Article 12 log is kept — the runtime does not pretend to
+    /// record-keeping it was not configured for. Present means EVERY kernel
+    /// decision is appended before the operation proceeds, and a write failure
+    /// latches the log degraded so the next operation is refused.
+    ///
+    /// MUST NOT be inside the agent's workspace: the log is the runtime's record
+    /// about the session, and #2145 is the same mistake made with the exit
+    /// report. Startup refuses rather than warns.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_LOG")]
+    art12_log: Option<PathBuf>,
+    /// Host URL to stream Article 12 records to as they are produced.
+    /// See `art12_shipper` for why this is fail-closed and why it matters.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_SHIP_URL")]
+    art12_ship_url: Option<String>,
     /// Approval authority secret (separate from tool auth).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
     approval_secret: String,
@@ -287,11 +314,36 @@ pub(crate) struct AppState {
     pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
+    /// Where a spent [`Authority`] records that it was exercised.
+    ///
+    /// Distinct from `audit` above: that is the pod's hash-chained audit surface,
+    /// this is the effect-discharge receipt log that
+    /// `portcullis_effects::authority::Authority::spend` writes to. `spend`
+    /// REFUSES an unwitnessed authority (`SpendError::Unwitnessed`), so without
+    /// this field the brokered-egress path would fail on every request — safe,
+    /// and inert, which is the failure shape this arc has already produced twice.
+    ///
+    /// **Limit, and it is the one already recorded for FM-3 rather than a new
+    /// one:** `ReceiptLog` is an in-memory `Vec`, so an append cannot fail and
+    /// "the effect is refused if the record cannot be written" is still not
+    /// expressible. It becomes real when the log gains durable backing. See
+    /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
+    receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
     auth: AuthConfig,
     approval_auth: AuthConfig,
+    /// True when this server was started on a vsock listener that accepts only
+    /// the host (`pod_mgmt::peer_is_host`).
+    ///
+    /// When set, a request's origin is established by the transport — the guest
+    /// kernel sets the peer CID and no guest process can forge it — so the HMAC
+    /// fallback is not consulted. It is a fact about how the server was bound,
+    /// never something a request can claim.
+    host_verified_transport: bool,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
+    /// Upstreams reachable with a credential the workload never holds.
+    pub(crate) credentialed_egress: Vec<nucleus_spec::CredentialedEgressSpec>,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
     /// URL pattern allowlist for web_fetch. If non-empty, URLs must match.
@@ -325,9 +377,25 @@ pub(crate) struct AppState {
     #[allow(dead_code)]
     session_id: String,
     /// Shared verdict sink for lockdown + telemetry convergence (HTTP + MCP).
+    ///
+    /// This IS the monitor below — `build_monitored_sink` returns one object
+    /// under two handles — so the field cannot hold an unmonitored sink.
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
+    /// The Article 12 record-keeping log, when configured. Held so the host can
+    /// see the chain head and whether recording is still happening — a log the
+    /// operator cannot observe is one that can stop without anyone noticing.
+    pub(crate) art12_log: Option<Arc<crate::art12::Art12Log>>,
+    /// Read handle on the runtime monitor wrapping `verdict_sink`, so the
+    /// process can report what the decision stream actually did — live at
+    /// `/v1/health`, and at shutdown in the exit report.
+    pub(crate) trace_monitor: Arc<portcullis::trace_monitor::TraceMonitor>,
     /// Kernel decision engine for complete mediation (HTTP path).
     pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
+    /// Whether DLC-D verified admission was provisioned on this pod's kernels
+    /// (NUCLEUS_DLC_* env, possibly via PodSpec labels). Exposed in /v1/health
+    /// so a host — or the Tier 2 harness — can distinguish "the gate refused"
+    /// from "the gate was never armed".
+    pub(crate) dlc_provisioned: bool,
     /// Session-scoped information-flow tracker for the lethal-trifecta guard on
     /// the HTTP path (#1633). Process-wide, mirroring the kernel above and the
     /// MCP server's per-session tracker: the tool-proxy is a per-pod sidecar
@@ -337,6 +405,20 @@ pub(crate) struct AppState {
     /// blocks outbound for all); true multi-tenancy would require keying the
     /// kernel AND tracker together — out of scope here.
     pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Path → the flow node recording the content last written there.
+    ///
+    /// This is #2135's laundered-path SET, generalised from a boolean into an
+    /// EDGE. That version answered "was this path written while tainted?"; this
+    /// one answers "which node produced the content at this path?", and the
+    /// taint answer falls out of it — a read whose parent is a tainted write
+    /// node inherits `Adversarial` through `propagate_label`, so the special
+    /// case #2135 hand-coded becomes a consequence of the graph.
+    ///
+    /// The proxy may only record edges it MEDIATED BOTH ENDS OF. It wrote these
+    /// bytes and it read them back, so this edge is established, not declared —
+    /// which matters because the agent is the compromised party under the threat
+    /// model and cannot be asked to report its own data flow.
+    pub(crate) path_provenance: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
     /// Provenance-verified, taint-labeled agent memory (next-bet #1). A write
     /// goes through `verified_admit`; a recall observes the record's own label
     /// into `flow_tracker` so the IFC gate governs whether it may inform an
@@ -402,7 +484,50 @@ pub(crate) fn core_capabilities(
 }
 
 /// Extract an ActorIdentity from the auth context for verdict recording.
-fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
+/// Refuse a world-known HMAC key — but only on transports that can select the
+/// HMAC tier.
+///
+/// An EMPTY `auth_secret` satisfies "present" while being a key anyone can
+/// compute: an attacker signs with `HMAC(∅, msg)` and every signed request and
+/// sandbox token becomes forgeable. That has always been fail-closed here.
+///
+/// What changed is that on a **host-verified vsock listener** the HMAC tier is
+/// unreachable — `auth::select_auth_tier` returns `HostVsock`, and the peer's
+/// identity comes from a CID the guest kernel sets and no guest process can
+/// forge. On that transport the key is not weak, it is *unused*, and demanding
+/// one would force a secret onto the kernel command line for nothing. That
+/// command line is world-readable inside the guest, which is the exposure this
+/// whole change exists to remove.
+///
+/// So: still fail closed wherever the key can be reached, and stay silent only
+/// where it provably cannot be.
+fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
+    if host_verified_transport {
+        if !auth_secret.trim().is_empty() {
+            warn!(
+                "an HMAC auth secret was supplied but this server is bound to a host-verified \
+                 vsock listener, where the HMAC tier is unreachable — the secret is unused"
+            );
+        }
+        return;
+    }
+    if auth_secret.trim().is_empty() {
+        error!(
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
+             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
+        );
+        std::process::exit(1);
+    }
+    if auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
+        warn!(
+            secret_len = auth_secret.len(),
+            min = nucleus_client::MIN_AUTH_SECRET_LEN,
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
+        );
+    }
+}
+
+pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
     if let Some(ctx) = auth {
         if let Some(ref spiffe_id) = ctx.spiffe_id {
             ActorIdentity::Authenticated {
@@ -898,7 +1023,7 @@ struct WebSearchResponse {
 
 /// Request to escalate permissions for an agent.
 #[derive(Debug, Deserialize)]
-struct EscalateRequest {
+pub(crate) struct EscalateRequest {
     /// The requesting agent's SPIFFE trace chain (serialized).
     requestor_chain: SerializedTraceChain,
     /// The approver's SPIFFE trace chain (serialized).
@@ -953,7 +1078,7 @@ struct SerializedTraceLink {
 
 /// Response from an escalation request.
 #[derive(Debug, Serialize)]
-struct EscalateResponse {
+pub(crate) struct EscalateResponse {
     /// Whether the escalation was granted.
     granted: bool,
     /// The grant ID (if granted).
@@ -1008,6 +1133,11 @@ enum ApiError {
     AttestationFailed(String),
     #[error("escalation error: {0}")]
     Escalation(String),
+    /// The permission kernel refused, for a reason that is not a capability
+    /// level. Carries the kernel's own reason rather than flattening every
+    /// refusal into "capability is Never".
+    #[error("kernel denied: {0}")]
+    KernelDenied(String),
     #[error("validation error: {0}")]
     Validation(#[from] validation::ValidationError),
     #[error("permission bid denied: insufficient value")]
@@ -1055,12 +1185,19 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::CommandDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "command_denied", None, None)
             }
+            // An authority earned for a different action was presented. FORBIDDEN
+            // rather than 400: the request was well-formed, the authority was not
+            // valid for it.
+            ApiError::Nucleus(NucleusError::ScopeMismatch { .. }) => {
+                (StatusCode::FORBIDDEN, "scope_mismatch", None, None)
+            }
             ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
                 (StatusCode::FORBIDDEN, "path_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
+            ApiError::KernelDenied(_) => (StatusCode::FORBIDDEN, "kernel_denied", None, None),
             ApiError::Nucleus(NucleusError::Io(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
             }
@@ -1158,20 +1295,11 @@ async fn main() -> Result<(), ApiError> {
     // always provide a real secret, so this never affects them.
     // `.trim().is_empty()` (matching nucleus-node) also rejects a whitespace-only
     // secret, which is effectively unset.
-    if args.auth_secret.trim().is_empty() {
-        error!(
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
-             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
-        );
-        std::process::exit(1);
-    }
-    if args.auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
-        warn!(
-            secret_len = args.auth_secret.len(),
-            min = nucleus_client::MIN_AUTH_SECRET_LEN,
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
-        );
-    }
+    // MOVED, not removed — see `enforce_hmac_key_quality` below. The check needs
+    // to know whether this server will be bound to a host-verified vsock
+    // listener, and that is only known once the spec is loaded. Refusing an
+    // empty key here would make the secretless vsock path impossible; refusing
+    // it nowhere would fail open on the transports that still need HMAC.
     // The node-auth secret defaults to `auth_secret` when unset, but an explicitly
     // provided EMPTY `--node-auth-secret` would be a world-known key for node
     // requests — refuse it too (fail-closed).
@@ -1404,19 +1532,85 @@ async fn main() -> Result<(), ApiError> {
     let exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>> =
         Arc::new(std::sync::RwLock::new(None));
 
-    let verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink> =
-        Arc::new(verdict_sink::ToolProxyVerdictSink::new(
-            file_lockdown.clone(),
-            stream_lockdown.clone(),
-            runtime.policy().capabilities.clone(),
-            exposure_guard.clone(),
-            policy_checksum.clone(),
-            session_id.clone(),
-        ));
+    // DLC-D verified admission: provisioned from NUCLEUS_DLC_* env (inert when
+    // unset). The SAME provisioning is applied to both transports' kernels, and
+    // the sink stamps every allowed verdict's span with the admission state.
+    // Article 12 record-keeping (opt-in). Opened BEFORE the sink chain, because
+    // the chain takes it by value and there must be no window in which decisions
+    // are made against a chain that is missing it.
+    let art12_log = match args.art12_log.as_ref() {
+        Some(path) => Some(
+            art12_sink::open_log(
+                path,
+                args.audit_secret.as_deref(),
+                &spec.spec.work_dir,
+                &session_id,
+            )
+            .map_err(ApiError::Spec)?,
+        ),
+        None => None,
+    };
+    if let Some(path) = args.art12_log.as_ref() {
+        info!(path = %path.display(), "Article 12 record-keeping log opened");
+    }
 
-    let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(
-        runtime.policy().clone(),
-    )));
+    // The Article 12 evidence channel. Absent means records live only in the
+    // pod, so the host can attest only a head the pod REPORTED.
+    let art12_shipper = art12_shipper::Art12Shipper::from_args(
+        args.art12_ship_url.as_ref(),
+        args.audit_secret.as_deref(),
+        &session_id,
+    );
+
+    // Both fail-closed: a credential the workload can read, or an upstream it can
+    // reach directly, each turn credentialed egress into a comment.
+    workload::reject_credential_readable_workload(
+        spec.spec.workload.as_ref(),
+        &spec.spec.credentialed_egress,
+    )
+    .map_err(ApiError::Spec)?;
+    // See `egress::reject_bypassable_upstreams` for why this is fail-closed.
+    egress::reject_bypassable_upstreams(&spec.spec.credentialed_egress, &dns_allow)
+        .map_err(ApiError::Spec)?;
+
+    // Credentialed egress goes through the host broker and nowhere else, so a
+    // pod configured for it without a capability can never succeed. Refuse here
+    // rather than at the first request, where it would look like a transient
+    // upstream error minutes into a run.
+    egress::reject_egress_without_a_broker(
+        &spec.spec.credentialed_egress,
+        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").is_ok_and(|v| !v.is_empty()),
+    )
+    .map_err(ApiError::Spec)?;
+
+    let dlc_admission = dlc_admission::provision_from_env();
+    let dlc_provisioned = dlc_admission.is_some();
+
+    // Runtime verification over the decision stream (#2141). The sink comes back
+    // already monitored — `build_monitored_sink` is the only constructor
+    // reachable from here — so there is no unmonitored chain to fall back to.
+    let (verdict_sink, trace_monitor) = verdict_sink::build_monitored_sink(
+        file_lockdown.clone(),
+        stream_lockdown.clone(),
+        runtime.policy().capabilities.clone(),
+        exposure_guard.clone(),
+        policy_checksum.clone(),
+        session_id.clone(),
+        dlc_provisioned,
+        art12_log.clone(),
+        art12_shipper.clone(),
+    );
+
+    if dlc_provisioned {
+        tracing::info!("DLC-D verified admission provisioned from NUCLEUS_DLC_* env");
+    }
+    let kernel = Arc::new(tokio::sync::Mutex::new({
+        let mut k = Kernel::new(runtime.policy().clone());
+        if let Some(admission) = dlc_admission {
+            k.set_dlc_admission(admission);
+        }
+        k
+    }));
 
     let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
 
@@ -1457,12 +1651,25 @@ async fn main() -> Result<(), ApiError> {
         session_task_token.state_label()
     );
 
+    // Resolved BEFORE the state is built: `host_verified_transport` must
+    // describe how this server will actually be bound, not be patched in later.
+    // A request can never influence it.
+    let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
+
+    // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
+    enforce_hmac_key_quality(&args.auth_secret, vsock_binding.is_some());
+
+    let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
+        receipts: Arc::clone(&receipts),
+        path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
         audit,
         auth,
         approval_auth,
+        host_verified_transport: vsock_binding.is_some(),
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
@@ -1486,7 +1693,10 @@ async fn main() -> Result<(), ApiError> {
         stream_lockdown,
         policy_checksum,
         session_id,
+        credentialed_egress: spec.spec.credentialed_egress.clone(),
         verdict_sink,
+        art12_log,
+        trace_monitor,
         kernel,
         flow_tracker,
         provenance_memory,
@@ -1580,6 +1790,10 @@ async fn main() -> Result<(), ApiError> {
     }
 
     let mut app = Router::new()
+        .route(
+            "/v1/egress/{name}/{*path}",
+            post(egress::credentialed_egress),
+        )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
         .route("/v1/write", post(write_file))
@@ -1591,7 +1805,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/memory/write", post(memory_write))
         .route("/v1/memory/recall", post(memory_recall))
         .route("/v1/approve", post(approve_operation))
-        .route("/v1/escalate", post(escalate_permissions));
+        .route("/v1/escalate", post(escalate::escalate_permissions));
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {
@@ -1607,6 +1821,8 @@ async fn main() -> Result<(), ApiError> {
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
+    let exit_monitor = state.trace_monitor.clone();
+    let exit_art12 = state.art12_log.clone();
 
     let app = app
         .with_state(state.clone())
@@ -1620,9 +1836,16 @@ async fn main() -> Result<(), ApiError> {
             fail_closed_panic_response,
         ));
 
-    if let Some(vsock) = pod_mgmt::resolve_vsock(&args, &spec)? {
+    if let Some(vsock) = vsock_binding {
         pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
-        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+        write_exit_report(
+            &exit_audit,
+            &exit_work_dir,
+            &exit_exposure,
+            &exit_monitor,
+            exit_art12.as_ref(),
+        )
+        .await;
         return Ok(());
     }
 
@@ -1632,6 +1855,9 @@ async fn main() -> Result<(), ApiError> {
     if let Some(path) = args.announce_path.as_ref() {
         tokio::fs::write(path, addr.to_string()).await?;
     }
+
+    // Started here and not earlier; `workload::start_if_configured` explains why.
+    let _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -1664,7 +1890,14 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
-    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+    write_exit_report(
+        &exit_audit,
+        &exit_work_dir,
+        &exit_exposure,
+        &exit_monitor,
+        exit_art12.as_ref(),
+    )
+    .await;
 
     Ok(())
 }
@@ -1701,6 +1934,8 @@ async fn write_exit_report(
     audit: &AuditLog,
     work_dir_path: &Path,
     exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+    monitor: &portcullis::trace_monitor::TraceMonitor,
+    art12_log: Option<&Arc<crate::art12::Art12Log>>,
 ) {
     let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
         Ok(h) => h,
@@ -1711,44 +1946,18 @@ async fn write_exit_report(
     };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
-    let mut report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
-
-    // Extract verified exposure from the session guard
-    if let Ok(guard_opt) = exposure_guard.read() {
-        if let Some(ref guard) = *guard_opt {
-            let exposure = guard.exposure();
-            if exposure.contains(portcullis::guard::ExposureLabel::PrivateData) {
-                report
-                    .observed_exposure_labels
-                    .push("PrivateData".to_string());
-            }
-            if exposure.contains(portcullis::guard::ExposureLabel::UntrustedContent) {
-                report
-                    .observed_exposure_labels
-                    .push("UntrustedContent".to_string());
-            }
-            if exposure.contains(portcullis::guard::ExposureLabel::ExfilVector) {
-                report
-                    .observed_exposure_labels
-                    .push("ExfilVector".to_string());
-            }
-            report.uninhabitable_reached = exposure.is_uninhabitable();
-            report.observed_risk_tier = match exposure.to_risk() {
-                portcullis::StateRisk::Safe => "safe",
-                portcullis::StateRisk::Low => "low",
-                portcullis::StateRisk::Medium => "medium",
-                portcullis::StateRisk::Uninhabitable => "critical",
-            }
-            .to_string();
-
-            info!(
-                exposure = ?report.observed_exposure_labels,
-                risk = %report.observed_risk_tier,
-                uninhabitable = report.uninhabitable_reached,
-                "exit report: verified exposure captured"
-            );
-        }
+    let mut report =
+        exit_report::build_exit_report(workspace_hash, tail_hash, count, None, monitor);
+    if !report.monitor_violations.is_empty() || report.monitor_violations_dropped > 0 {
+        warn!(
+            violations = ?report.monitor_violations,
+            dropped = report.monitor_violations_dropped,
+            "exit report: decision-stream properties were violated during this session"
+        );
     }
+
+    exit_report::apply_exposure(&mut report, exposure_guard);
+    exit_report::apply_art12(&mut report, art12_log);
 
     let report_path = work_dir_path.join(".nucleus-exit-report.json");
     match serde_json::to_string_pretty(&report) {
@@ -1925,6 +2134,27 @@ async fn auth_middleware(
 
     // Determine authentication context (unified flow — no early returns).
     // SPIFFE mTLS is most secure, then HMAC+drand for approvals, then HMAC.
+    // Precedence is decided by `auth::select_auth_tier`, which is unit-tested;
+    // this match only performs the chosen tier. Keeping the order in one
+    // testable place is deliberate — an invisible reordering here would make
+    // the transport tier dead and silently reinstate the readable-key HMAC.
+    debug_assert_eq!(
+        auth::select_auth_tier(
+            auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
+            parts.uri.path() == APPROVE_PATH,
+            state.host_verified_transport,
+        ),
+        if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
+            auth::AuthTier::SpiffeMtls
+        } else if parts.uri.path() == APPROVE_PATH {
+            auth::AuthTier::ApprovalHmacDrand
+        } else if state.host_verified_transport {
+            auth::AuthTier::HostVsock
+        } else {
+            auth::AuthTier::Hmac
+        },
+        "the inline chain has diverged from select_auth_tier"
+    );
     let mut context =
         if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
             tracing::info!(
@@ -1945,6 +2175,12 @@ async fn auth_middleware(
                 );
             }
             ctx
+        } else if state.host_verified_transport {
+            // The listener already dropped every non-host peer, so this request
+            // provably came from the host. No shared secret is involved, which
+            // is the point: the HMAC key it replaces was readable by the agent
+            // from /proc/cmdline.
+            auth::verify_host_vsock()
         } else {
             auth::verify_http(&parts.headers, &bytes, &state.auth)?
         };
@@ -2192,7 +2428,18 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "sandbox_proof": {
             "tier": state.sandbox_proof.tier(),
             "label": state.sandbox_proof.tier_label(),
-        }
+        },
+        "dlc_admission": if state.dlc_provisioned { "provisioned" } else { "unprovisioned" },
+        // Counts only, never labels or detail. Same reasoning as the DLC field
+        // above — a host needs to distinguish "the monitor saw nothing" from
+        // "the monitor was never armed" — but this endpoint is reachable from
+        // inside the sandbox, so it must not become a channel for reading back
+        // which invariant a probe just tripped.
+        "trace_monitor": {
+            "violations": state.trace_monitor.violations().len(),
+            "violations_dropped": state.trace_monitor.violations_dropped(),
+        },
+        "art12": art12_sink::health_json(state.art12_log.as_ref())
     }))
 }
 
@@ -2261,57 +2508,6 @@ fn check_identity_policy(
     !requires_approval
 }
 
-/// Pure reference monitor for the HTTP path: kernel decision + information-flow
-/// consult, mapped to the HTTP error surface. Split out from [`http_kernel_decide`]
-/// so it is unit-testable with a bare [`Kernel`] + [`FlowTracker`] (no `AppState`).
-///
-/// This is the single source of truth for HTTP mediation (#1194, #1633): it
-/// routes through [`Kernel::decide_term_with_flow`] — the same taint-aware path
-/// the MCP server uses — so once the session has ingested adversarial (web)
-/// content, outbound operations are denied with [`DenyReason::IfcUnsafe`] before
-/// any side effect. The deprecated capability-only `Kernel::decide()` is no
-/// longer reachable from the HTTP handlers.
-fn decide_with_flow_mapped(
-    kernel: &mut Kernel,
-    flow: &FlowTracker,
-    operation: Operation,
-    subject: &str,
-) -> Result<DecisionToken, ApiError> {
-    let term = ActionTerm::from_operation(operation, subject);
-    let (decision, token) = kernel.decide_term_with_flow(term, Some(flow));
-    match decision.verdict {
-        Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
-        Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
-            warn!(?operation, subject, %detail, "HTTP IFC denied outbound action (lethal trifecta)");
-            Err(ApiError::IfcDenied(detail))
-        }
-        Verdict::Deny(reason) => {
-            warn!(?operation, subject, ?reason, "HTTP kernel denied operation");
-            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                capability: format!("{operation:?}"),
-                actual: CapabilityLevel::Never,
-                required: CapabilityLevel::LowRisk,
-            }))
-        }
-        Verdict::RequiresApproval => {
-            info!(
-                ?operation,
-                subject,
-                exposure = decision.exposure_transition.post_count,
-                "HTTP kernel requires approval (no auto-approve channel)"
-            );
-            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                capability: format!("{operation:?}"),
-                actual: CapabilityLevel::Never,
-                required: CapabilityLevel::LowRisk,
-            }))
-        }
-    }
-}
-
-/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
-/// order as the MCP server) and runs the reference monitor. Both guards are
-/// dropped before the caller performs any sandbox/executor I/O.
 /// POST `/v1/memory/write` — provenance-verified memory admission (next-bet #1).
 /// A write maps to `WriteFiles` (so it is itself subject to the egress gate),
 /// then goes through `verified_admit`: a forged label is rejected; an honest
@@ -2358,6 +2554,14 @@ async fn memory_recall(
     Ok(Json(resp))
 }
 
+/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
+/// order as the MCP server) and runs the reference monitor. Both guards are
+/// dropped before the caller performs any sandbox/executor I/O.
+///
+/// The recording is not done here on purpose. `mediation::decide_and_record`
+/// owns both halves, so there is no way to obtain a decision on this path
+/// without it having been recorded — the hole this increment closes cannot be
+/// reopened by a future edit to this function.
 async fn http_kernel_decide(
     state: &AppState,
     operation: Operation,
@@ -2365,7 +2569,15 @@ async fn http_kernel_decide(
 ) -> Result<DecisionToken, ApiError> {
     let mut kernel = state.kernel.lock().await;
     let flow = state.flow_tracker.lock().await;
-    decide_with_flow_mapped(&mut kernel, &flow, operation, subject)
+    mediation::decide_and_record(
+        state.verdict_sink.as_ref(),
+        &mut kernel,
+        &flow,
+        operation,
+        subject,
+        ActorIdentity::Unknown,
+        "http",
+    )
 }
 
 /// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
@@ -2381,23 +2593,6 @@ pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHa
     hasher.update(bytes);
     let digest: [u8; 32] = hasher.finalize().into();
     nucleus_ifc_kernel::ContentHash::from_bytes(digest)
-}
-
-/// Observe a data-ingest node in the session flow tracker after a *successful*
-/// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial
-/// taint source; `FileRead` contributes to the confidentiality ceiling. Must be
-/// called only on success paths so a denied/failed op never leaks taint.
-///
-/// InputsAuthorized brick 3: the caller passes the *actual ingested bytes*, whose
-/// recomputed SHA-256 is recorded on the node via `observe_with_content_hash`.
-/// Label/taint behaviour is identical to the old bare `observe` — only the hash
-/// is added.
-async fn http_observe_flow(state: &AppState, kind: NodeKind, bytes: &[u8]) {
-    let hash = ingest_content_hash(bytes);
-    let mut flow = state.flow_tracker.lock().await;
-    if let Err(e) = flow.observe_with_content_hash(kind, hash) {
-        warn!(?kind, error = %e, "flow-tracker observe failed");
-    }
 }
 
 async fn read_file(
@@ -2432,33 +2627,82 @@ async fn read_file(
     let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
+    // Survives the sink record below, which consumes `path`.
+    let observed_path = path.clone();
 
-    let contents = match state
-        .runtime
-        .sandbox()
-        .read_to_string(&path, &decision_token)
-    {
-        Ok(contents) => contents,
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                || state.approvals.consume(&op)
-            {
-                let approval = state.runtime.sandbox().request_approval(op.clone())?;
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(operation, &format!("approved: read {}", path))
-                };
-                state
-                    .runtime
-                    .sandbox()
-                    .read_to_string_approved(&path, &approved_dt, &approval)?
-            } else {
+    // Discharge the eight obligations for this read. Reads were previously
+    // unmediated on this path: it went from `http_kernel_decide` straight to the
+    // sandbox, so a read never cleared the obligations that `FileEffect::read`
+    // enforces on the other filesystem path.
+    macro_rules! read_authority {
+        () => {{
+            use nucleus_ifc_kernel::discharge::PreflightResult;
+            let verified_scope = state.session_task_token.verified_scope();
+            let ceiling = state.runtime.policy().capabilities.read_files;
+            let flow = state.flow_tracker.lock().await;
+            let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
+            drop(flow);
+            match r {
+                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+                PreflightResult::Denied { reason, .. }
+                | PreflightResult::RequiresApproval { reason } => {
+                    return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+                }
+            }
+        }};
+    }
+    let first_authority = read_authority!();
+
+    let contents =
+        match state
+            .runtime
+            .sandbox()
+            .read_to_string(&path, &decision_token, first_authority)
+        {
+            Ok(contents) => contents,
+            Err(NucleusError::ApprovalRequired { operation: op }) => {
+                // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+                if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
+                    || state.approvals.consume(&op)
+                {
+                    let approval = state.runtime.sandbox().request_approval(op.clone())?;
+                    let approved_dt = {
+                        let mut kernel = state.kernel.lock().await;
+                        kernel.issue_approved_token(operation, &format!("approved: read {}", path))
+                    };
+                    // A fresh discharge for the approved retry: one discharge
+                    // authorizes one attempt.
+                    let retry_authority = read_authority!();
+                    state.runtime.sandbox().read_to_string_approved(
+                        &path,
+                        &approved_dt,
+                        &approval,
+                        retry_authority,
+                    )?
+                } else {
+                    if let Err(e) = sink.record(VerdictContext {
+                        operation,
+                        subject: path.clone(),
+                        outcome: VerdictOutcome::Deny {
+                            reason: "approval_required".to_string(),
+                        },
+                        actor,
+                        policy_rule: None,
+                        extensions: BTreeMap::new(),
+                    }) {
+                        warn!(error = %e, "verdict recording failed -- audit gap");
+                    }
+                    return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                        operation: op,
+                    }));
+                }
+            }
+            Err(err) => {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,
                     subject: path.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
+                    outcome: VerdictOutcome::Error {
+                        error: format!("{err:?}"),
                     },
                     actor,
                     policy_rule: None,
@@ -2466,27 +2710,9 @@ async fn read_file(
                 }) {
                     warn!(error = %e, "verdict recording failed -- audit gap");
                 }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
+                return Err(ApiError::Nucleus(err));
             }
-        }
-        Err(err) => {
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: path.clone(),
-                outcome: VerdictOutcome::Error {
-                    error: format!("{err:?}"),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-            return Err(ApiError::Nucleus(err));
-        }
-    };
+        };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -2500,7 +2726,26 @@ async fn read_file(
     }
     // IFC: a successful file read brings data into the session (#1633).
     // Brick 3: content-address the exact bytes read.
-    http_observe_flow(&state, NodeKind::FileRead, contents.as_bytes()).await;
+    // A path written during a tainted session re-enters as adversarial, not as a
+    // trusted file read — otherwise a round-trip through disk strips the taint.
+    // If the proxy wrote this path, the read DERIVES from that write — a real
+    // edge, because the proxy mediated both ends. `propagate_label` joins the
+    // parent's label in, so a read of a tainted write is adversarial without any
+    // special case: #2135 selected a different NodeKind by boolean; the graph now
+    // produces the same outcome as a consequence.
+    let parents: Vec<u64> = state
+        .path_provenance
+        .lock()
+        .await
+        .get(&observed_path)
+        .copied()
+        .into_iter()
+        .collect();
+    if !parents.is_empty() {
+        warn!(path = %observed_path, parent = parents[0],
+              "read derives from a prior write; attaching provenance edge");
+    }
+    ingest::http_observe_flow_from(&state, NodeKind::FileRead, contents.as_bytes(), &parents).await;
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2538,6 +2783,8 @@ async fn write_file(
     let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
+    // Survives the sink record below, which consumes `path`.
+    let written_path = path.clone();
     let contents = req.contents.clone();
 
     // ─── Sealed discharge gate (B6, parity with the RunBash executor-proof gate
@@ -2588,7 +2835,7 @@ async fn write_file(
         &path,
         contents.as_bytes(),
         &decision_token,
-        &discharge_bundle,
+        portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
@@ -2601,12 +2848,38 @@ async fn write_file(
                     let mut kernel = state.kernel.lock().await;
                     kernel.issue_approved_token(operation, &format!("approved: write {}", path))
                 };
+                // A fresh discharge for the approved retry: the first attempt
+                // spent the authority minted above. One discharge authorizes one
+                // attempt, and the approved write is a distinct action that must
+                // clear the obligations on its own.
+                let retry_bundle = {
+                    use nucleus_ifc_kernel::discharge::PreflightResult;
+                    let verified_scope = state.session_task_token.verified_scope();
+                    let fs_ceiling = state.runtime.policy().capabilities.write_files;
+                    let flow = state.flow_tracker.lock().await;
+                    let r = run_gate::preflight_fs(
+                        Operation::WriteFiles,
+                        verified_scope,
+                        fs_ceiling,
+                        &path,
+                        &flow,
+                    );
+                    drop(flow);
+                    match r {
+                        PreflightResult::Allowed(b) => b,
+                        _ => {
+                            return Err(ApiError::IfcDenied(
+                                "approved write failed re-discharge".to_string(),
+                            ))
+                        }
+                    }
+                };
                 state.runtime.sandbox().write_approved(
                     &path,
                     contents.as_bytes(),
                     &approved_dt,
                     &approval,
-                    &discharge_bundle,
+                    portcullis_effects::authority::Authority::new(retry_bundle),
                 )?;
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -2653,6 +2926,32 @@ async fn write_file(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // If this write succeeded while the session was tainted, the bytes on disk
+    // may carry that taint. Record the path so a later read of it is not treated
+    // as a trusted file read. Only reachable under grading — see the field docs.
+    // Record a node for the content now at this path, so a later read of it has
+    // something to derive FROM.
+    //
+    // Its parent is the latest adversarial node, when there is one. The proxy
+    // cannot know which prior nodes influenced what the agent chose to write —
+    // that happens inside the agent — so it attaches the conservative edge and
+    // over-approximates. Over-approximation is the safe direction: it can only
+    // add taint, never clear it.
+    // Record a node for the content now at this path, so a later read has
+    // something to derive FROM. The provenance parent is attached inside
+    // `http_observe_authored`, where it cannot be omitted.
+    {
+        if let Some(node) =
+            ingest::http_observe_authored(&state, NodeKind::FileRead, req.contents.as_bytes()).await
+        {
+            state
+                .path_provenance
+                .lock()
+                .await
+                .insert(written_path.clone(), node);
+        }
+    }
+
     Ok(Json(WriteResponse { ok: true }))
 }
 
@@ -2790,7 +3089,7 @@ async fn run_command(
         stdin,
         directory,
         &decision_token,
-        &discharge_bundle,
+        portcullis_effects::authority::Authority::new(discharge_bundle),
     ) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
@@ -2815,8 +3114,31 @@ async fn run_command(
                     directory,
                     &approved_dt,
                     &approval,
-                    // Same sealed bundle minted above authorizes the approved retry.
-                    &discharge_bundle,
+                    // A fresh discharge for the retry. The first attempt spent
+                    // the authority minted above — one discharge authorizes one
+                    // attempt, and the approved retry is a distinct action that
+                    // must clear the obligations on its own.
+                    portcullis_effects::authority::Authority::new({
+                        use nucleus_ifc_kernel::discharge::PreflightResult;
+                        let verified_scope = state.session_task_token.verified_scope();
+                        let ceiling = state.runtime.policy().capabilities.run_bash;
+                        let flow = state.flow_tracker.lock().await;
+                        let r = run_gate::preflight_runbash(
+                            verified_scope,
+                            ceiling,
+                            &display_command,
+                            &flow,
+                        );
+                        drop(flow);
+                        match r {
+                            PreflightResult::Allowed(b) => b,
+                            _ => {
+                                return Err(ApiError::Body(
+                                    "approved retry failed re-discharge".to_string(),
+                                ))
+                            }
+                        }
+                    }),
                 )?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
@@ -2866,6 +3188,8 @@ async fn run_command(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    ingest::http_observe_command_output(&state, &output.stdout, &output.stderr).await;
+
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
@@ -3032,7 +3356,7 @@ async fn web_fetch(
             &headers,
             body,
             None,
-            &discharge_bundle,
+            portcullis_effects::authority::Authority::new(discharge_bundle),
         )
         .await
         .map_err(|e| ApiError::WebFetch(format!("request failed: {e}")))?;
@@ -3099,7 +3423,7 @@ async fn web_fetch(
     // IFC: web content is an adversarial taint source — taint the session so
     // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
     // Brick 3: content-address the exact fetched body bytes.
-    http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::WebContent, &bytes).await;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -3256,7 +3580,7 @@ async fn glob_search(
     // IFC: a successful glob brings file data into the session (#1633).
     // Brick 3: content-address the exact match listing ingested.
     let listing = matches.join("\n");
-    http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
+    ingest::http_observe_flow(&state, NodeKind::FileRead, listing.as_bytes()).await;
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3470,7 +3794,7 @@ async fn grep_search(
     // Brick 3: content-address the exact match set ingested (deterministic
     // serialization of the real matched bytes).
     let match_bytes = serde_json::to_vec(&matches).unwrap_or_default();
-    http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::FileRead, &match_bytes).await;
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3627,7 +3951,7 @@ async fn web_search(
             &[],
             None,
             None,
-            &discharge_bundle,
+            portcullis_effects::authority::Authority::new(discharge_bundle),
         )
         .await
         .map_err(|e| ApiError::WebFetch(format!("search request failed: {e}")))?;
@@ -3679,7 +4003,7 @@ async fn web_search(
     }
     // IFC: web search results are an adversarial taint source (#1633).
     // Brick 3: content-address the exact search-backend response bytes.
-    http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
+    ingest::http_observe_flow(&state, NodeKind::WebContent, &search_bytes).await;
     Ok(Json(WebSearchResponse { results }))
 }
 
@@ -3721,262 +4045,6 @@ async fn approve_operation(
     Ok(Json(ApproveResponse { ok: true }))
 }
 
-/// Escalate permissions for an agent using SPIFFE trace chains.
-///
-/// This endpoint allows agents to request elevated permissions, bounded by:
-/// 1. The approver's ceiling (their trace chain's meet)
-/// 2. The escalation policy's max_grant
-/// 3. Time limits defined by the policy
-///
-/// The request must be made by an authenticated SPIFFE identity (via mTLS)
-/// that matches an approver pattern in the escalation policy.
-async fn escalate_permissions(
-    State(state): State<AppState>,
-    _headers: HeaderMap,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<EscalateRequest>,
-) -> Result<Json<EscalateResponse>, ApiError> {
-    let sink = &state.verdict_sink;
-    let operation = Operation::ManagePods; // meta-operation: escalation
-    let auth_ctx = auth.map(|e| e.0);
-    let actor = actor_from_auth(auth_ctx.as_ref());
-
-    // Rate limit escalation requests
-    if !state.approval_rate_limiter.try_acquire() {
-        return Err(ApiError::RateLimited);
-    }
-
-    // SECURITY: Validate nonce to prevent replay attacks
-    // This is critical - without nonce protection, an attacker can replay
-    // a captured escalation request within the drand tolerance window (~60s)
-    if req.nonce.is_empty() {
-        return Err(ApiError::Escalation(
-            "escalation nonce required".to_string(),
-        ));
-    }
-
-    let now = now_unix();
-    // Use a longer expiry for escalation nonces (5 minutes) since escalations
-    // are higher-value targets than regular approvals
-    let nonce_expiry = now + 300; // 5 minutes
-    if !state
-        .approval_nonces
-        .check_and_insert(&req.nonce, nonce_expiry, now)
-    {
-        tracing::warn!(
-            nonce = %req.nonce,
-            "REJECTING: escalation nonce already used (potential replay attack)"
-        );
-        return Err(ApiError::Escalation(
-            "escalation nonce already used (potential replay attack)".to_string(),
-        ));
-    }
-
-    // Check if escalation policies are configured
-    if !state.policy_engine.has_escalation_policies() {
-        return Err(ApiError::Escalation(
-            "no escalation policies configured".to_string(),
-        ));
-    }
-
-    // Extract approver's SPIFFE identity from mTLS
-    let approver_spiffe_id = auth_ctx
-        .as_ref()
-        .and_then(|a| a.spiffe_id.clone())
-        .ok_or_else(|| {
-            ApiError::Escalation("escalation requires SPIFFE mTLS authentication".to_string())
-        })?;
-
-    // Reconstruct the requestor's trace chain
-    let requestor_chain = deserialize_trace_chain(&req.requestor_chain)?;
-
-    // Reconstruct the approver's trace chain from the request
-    // SECURITY: The approver MUST submit their full chain - we don't construct it server-side
-    let approver_chain = deserialize_trace_chain(&req.approver_chain)?;
-
-    // SECURITY: Verify the submitted approver chain's leaf matches the mTLS identity
-    // This prevents an attacker from submitting someone else's chain
-    let approver_chain_leaf = approver_chain.current_spiffe_id().ok_or_else(|| {
-        ApiError::Escalation("approver chain must have at least one link".to_string())
-    })?;
-
-    if approver_chain_leaf != approver_spiffe_id {
-        tracing::warn!(
-            submitted_leaf = %approver_chain_leaf,
-            authenticated_id = %approver_spiffe_id,
-            "approver chain leaf does not match authenticated identity"
-        );
-        return Err(ApiError::Escalation(
-            "approver chain leaf must match authenticated SPIFFE identity".to_string(),
-        ));
-    }
-
-    // SECURITY: Verify the approver chain is valid (non-expired, monotonic)
-    if !approver_chain.verify() {
-        let result = approver_chain.verify_detailed();
-        let reason = match result {
-            portcullis::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,
-            _ => "unknown".to_string(),
-        };
-        tracing::warn!(
-            chain_id = %approver_chain.id,
-            reason = %reason,
-            "approver chain verification failed"
-        );
-        return Err(ApiError::Escalation(format!(
-            "approver chain is invalid: {}",
-            reason
-        )));
-    }
-
-    // Get the requested permissions
-    let requested = preset_to_permissions(&req.requested_preset);
-
-    // Fetch current drand round for cryptographic timestamping
-    let drand_round = if let Some(ref audit_log) = state.audit.drand_client {
-        match audit_log.current_round().await {
-            Ok(round) => round,
-            Err(e) => {
-                tracing::warn!("failed to fetch drand round for escalation: {e}");
-                return Err(ApiError::Escalation(
-                    "failed to fetch drand round for cryptographic timestamp".to_string(),
-                ));
-            }
-        }
-    } else {
-        return Err(ApiError::Escalation(
-            "drand anchoring required for escalation but not configured".to_string(),
-        ));
-    };
-
-    // Create the escalation request
-    let escalation_request = EscalationRequest::new(
-        requestor_chain.clone(),
-        requested,
-        &req.reason,
-        req.ttl_seconds,
-    );
-
-    // Validate against escalation policies
-    let policy_result = state
-        .policy_engine
-        .escalation_policies()
-        .validate_escalation(&escalation_request, &approver_chain);
-
-    let escalation_subject = format!(
-        "escalation:{} -> {} (ttl={}s)",
-        requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-        req.requested_preset,
-        req.ttl_seconds
-    );
-
-    match policy_result {
-        Ok(_policy) => {
-            // Create the grant
-            match EscalationGrant::new(&escalation_request, approver_chain, drand_round) {
-                Ok(grant) => {
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: escalation_subject,
-                        outcome: VerdictOutcome::Allow,
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-
-                    tracing::info!(
-                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                        approver = %approver_spiffe_id,
-                        preset = %req.requested_preset,
-                        ttl_seconds = %req.ttl_seconds,
-                        drand_round = %drand_round,
-                        grant_id = %grant.id,
-                        event = "escalation_granted",
-                        "escalation request approved"
-                    );
-
-                    Ok(Json(EscalateResponse {
-                        granted: true,
-                        grant_id: Some(grant.id.to_string()),
-                        granted_preset: Some(req.requested_preset.clone()),
-                        expires_at: Some(grant.expires_at.timestamp() as u64),
-                        drand_round: Some(drand_round),
-                        error: None,
-                    }))
-                }
-                Err(e) => {
-                    let error_msg = escalation_error_to_string(&e);
-
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: escalation_subject,
-                        outcome: VerdictOutcome::Deny {
-                            reason: error_msg.clone(),
-                        },
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-
-                    tracing::warn!(
-                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                        approver = %approver_spiffe_id,
-                        error = %error_msg,
-                        event = "escalation_denied",
-                        "escalation grant creation failed"
-                    );
-
-                    Ok(Json(EscalateResponse {
-                        granted: false,
-                        grant_id: None,
-                        granted_preset: None,
-                        expires_at: None,
-                        drand_round: None,
-                        error: Some(error_msg),
-                    }))
-                }
-            }
-        }
-        Err(e) => {
-            let error_msg = escalation_error_to_string(&e);
-
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: escalation_subject,
-                outcome: VerdictOutcome::Deny {
-                    reason: error_msg.clone(),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-
-            tracing::warn!(
-                requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                approver = %approver_spiffe_id,
-                error = %error_msg,
-                event = "escalation_denied",
-                "escalation request denied by policy"
-            );
-
-            Ok(Json(EscalateResponse {
-                granted: false,
-                grant_id: None,
-                granted_preset: None,
-                expires_at: None,
-                drand_round: None,
-                error: Some(error_msg),
-            }))
-        }
-    }
-}
-
 /// Deserialize a trace chain from the request format.
 ///
 /// SECURITY: UUIDs are ALWAYS generated server-side. Client-provided IDs are
@@ -3984,7 +4052,9 @@ async fn escalate_permissions(
 /// - Replay attacks using pre-computed IDs
 /// - Collision attacks on chain/link identifiers
 /// - ID prediction for future grants
-fn deserialize_trace_chain(chain: &SerializedTraceChain) -> Result<SpiffeTraceChain, ApiError> {
+pub(crate) fn deserialize_trace_chain(
+    chain: &SerializedTraceChain,
+) -> Result<SpiffeTraceChain, ApiError> {
     use chrono::{TimeZone, Utc};
 
     if chain.links.is_empty() {
@@ -4043,7 +4113,7 @@ fn deserialize_trace_chain(chain: &SerializedTraceChain) -> Result<SpiffeTraceCh
 }
 
 /// Convert an EscalationError to a user-friendly string.
-fn escalation_error_to_string(e: &EscalationError) -> String {
+pub(crate) fn escalation_error_to_string(e: &EscalationError) -> String {
     match e {
         EscalationError::RequestExpired => "escalation request has expired".to_string(),
         EscalationError::InvalidRequestorChain => "requestor's trace chain is invalid".to_string(),
@@ -4080,7 +4150,7 @@ fn escalation_error_to_string(e: &EscalationError) -> String {
 }
 
 /// Convert a preset name to a PermissionLattice (local helper, mirrors policy.rs).
-fn preset_to_permissions(preset: &str) -> PermissionLattice {
+pub(crate) fn preset_to_permissions(preset: &str) -> PermissionLattice {
     match preset.to_lowercase().as_str() {
         "codegen" => PermissionLattice::codegen(),
         "pr_review" | "pr-review" => PermissionLattice::pr_review(),
@@ -4176,7 +4246,24 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
             "drand anchoring enabled for audit logs (url={}, tolerance={})",
             args.drand_url, args.drand_tolerance
         );
-        Some(Arc::new(DrandClient::new(config)))
+        // Exit with the reason rather than panicking. In a microVM this process
+        // is PID 1: a panic here kills init and panics the kernel, so the
+        // operator sees a reqwest error inside a kernel backtrace instead of the
+        // one sentence that tells them what to do.
+        //
+        // Refusing to start (rather than degrading to `None`) is deliberate: the
+        // operator asked for drand anchoring, and a pod that ran without it
+        // while reporting success would be a claim outrunning its wiring. The
+        // escalation path already refuses when drand is absent; this makes the
+        // refusal legible at the moment it is decided.
+        match DrandClient::new(config) {
+            Ok(c) => Some(Arc::new(c)),
+            Err(why) => {
+                tracing::error!("{why}");
+                eprintln!("FATAL: {why}");
+                std::process::exit(1);
+            }
+        }
     } else {
         None
     };
@@ -4428,7 +4515,7 @@ impl AuditLog {
                 drand_part
             );
             let signature = auth::sign_message(&self.secret, message.as_bytes());
-            let hash = sha256_hex(&format!("{}|{}", message, signature));
+            let hash = art12::sha256_hex(&format!("{}|{}", message, signature));
             *last_hash = hash.clone();
             (prev_hash, hash, signature)
         };
@@ -4496,17 +4583,11 @@ impl AuditLog {
     }
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-fn sha256_hex(message: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(message.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 fn load_last_hash(path: &Path) -> Option<String> {

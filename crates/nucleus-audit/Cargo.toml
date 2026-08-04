@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 portcullis = { path = "../portcullis", features = ["serde"] }

@@ -1001,6 +1001,46 @@ pub mod test_helpers {
         }
     }
 
+    /// Like [`bundle_for`], but `None` instead of a panic when the pair is not
+    /// dischargeable.
+    ///
+    /// Not every `(Operation, SinkClass)` pair is structurally permitted —
+    /// `PathAllowed` rejects e.g. `ReadFiles`/`WorkspaceWrite`. A test that wants
+    /// to sweep the whole product needs to distinguish "this pair cannot be
+    /// earned" from "this pair was earned and then misused", which the panicking
+    /// form cannot express.
+    pub fn try_bundle_for(operation: Operation, sink_class: SinkClass) -> Option<DischargedBundle> {
+        let term = ActionTerm {
+            operation,
+            sink_class,
+            source_labels: vec![],
+            artifact_label: crate::IFCLabel {
+                confidentiality: ConfLevel::Internal,
+                integrity: IntegLevel::Trusted,
+                authority: AuthorityLevel::Directive,
+                provenance: ProvenanceSet::SYSTEM,
+                freshness: Freshness {
+                    observed_at: 1000,
+                    ttl_secs: 0,
+                },
+                derivation: DerivationClass::Deterministic,
+            },
+            subject: "test-helper".to_string(),
+            estimated_cost_micro_usd: 0,
+            capability_ceiling: Some(crate::CapabilityLevel::LowRisk),
+            requested_capability: Some(crate::CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![operation],
+                allowed_paths: vec![],
+            }),
+            content_addressed_inputs: Some(vec![]),
+        };
+        match preflight_action(&term) {
+            PreflightResult::Allowed(bundle) => Some(bundle),
+            _ => None,
+        }
+    }
+
     /// Produce a `DischargedBundle` by running preflight on a known-good term.
     pub fn allowed_bundle() -> DischargedBundle {
         let term = ActionTerm {

@@ -288,6 +288,7 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
 /// The vsock socket is deliberately absent: Firecracker CREATES it at `uds_path`
 /// inside the jail, and the host reaches it through `layout.host_path(VSOCK)`.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "prepare_jail"))]
 pub(crate) fn prepare_jail(
     layout: &JailLayout,
     image: &nucleus_spec::ImageSpec,
@@ -514,6 +515,39 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
 // FirecrackerConfig construction
 // ---------------------------------------------------------------------------
 
+/// Force `pci=off` onto a guest kernel command line.
+///
+/// # Why this is a floor rather than a default
+///
+/// `pci=off` used to live only in the `default_args` literal, which is
+/// **discarded wholesale** when a `PodSpec` supplies `image.boot_args`. So any
+/// spec with a custom command line silently lost it, while `ipv6.disable=1`
+/// three lines below was correctly enforced by appending. The right idiom was
+/// already in the file, applied to one hardening flag and not the other.
+///
+/// It matters because nucleus's PCI posture is the guest half of its defence
+/// against the virtio-PCI transport (CVE-2026-5747, escape-class). The host half
+/// is that nucleus never passes `--enable-pci`, which
+/// `jailer_argv_never_enables_the_pci_transport` pins. Neither half should be
+/// reachable from spec input.
+///
+/// A spec-supplied `pci=` is **stripped**, not honoured and not an error:
+/// `from_spec` returns `Self` with no error channel, and silently keeping a
+/// weaker value would be the worst of the three options. In nucleus's model no
+/// PodSpec has a legitimate reason to want guest PCI — the VMM is not started
+/// with the PCI transport at all.
+/// Ungated although its only caller is Linux-only, so the logic is compiled and
+/// unit-tested on a macOS dev host rather than only in CI.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn enforce_pci_off(args: &str) -> String {
+    let mut out: Vec<&str> = args
+        .split_whitespace()
+        .filter(|tok| !tok.starts_with("pci="))
+        .collect();
+    out.push("pci=off");
+    out.join(" ")
+}
+
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
     #[allow(clippy::too_many_arguments)]
@@ -570,15 +604,33 @@ impl FirecrackerConfig {
             None => Some("ipv6.disable=1".to_string()),
         };
 
-        // Inject secrets via kernel command line (read by nucleus-guest-init)
-        // This is more secure than baking secrets into the rootfs image
+        // Applied AFTER every branch that can build a command line, so no path
+        // — default, spec-supplied, or net-augmented — can reach the guest
+        // without it. See `enforce_pci_off`.
+        boot_args = boot_args.map(|args| enforce_pci_off(&args));
+
+        // `nucleus.auth_secret` is NO LONGER EMITTED.
+        //
+        // The kernel command line is world-readable inside the guest
+        // (`/proc/cmdline`), so every process there — including the agent the
+        // sandbox exists to contain — could read the HMAC key and sign requests
+        // as the host. That is a trust boundary drawn inside a single trust
+        // domain, and it cannot hold.
+        //
+        // It is not relocated, it is deleted: the tool-proxy is bound to a vsock
+        // listener that accepts only `VMADDR_CID_HOST`, and the guest kernel
+        // sets that CID. Origin is now established by something no guest process
+        // can forge. Firecracker pods always have vsock (`spawn_firecracker_pod`
+        // requires `spec.vsock`), so the HMAC tier is unreachable on this path.
+        //
+        // `nucleus.approval_secret` REMAINS for now: the approval endpoint is
+        // still drand-anchored HMAC, and dropping its key needs a drand-only
+        // tier first. Freshness is not origin, so the transport cannot replace
+        // it on its own.
+        let _ = auth_secret;
         boot_args = match boot_args.take() {
-            Some(args) => Some(format!(
-                "{args} nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
-            )),
-            None => Some(format!(
-                "nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
-            )),
+            Some(args) => Some(format!("{args} nucleus.approval_secret={approval_secret}")),
+            None => Some(format!("nucleus.approval_secret={approval_secret}")),
         };
 
         // Inject workload API port if identity management is enabled
@@ -625,9 +677,45 @@ impl FirecrackerConfig {
             }
         }
 
-        // Inject sandbox proof token so tool-proxy inside the VM can verify it's managed.
-        // This is a fallback — tier 1 (SVID with attestation) is preferred in Firecracker.
-        {
+        // Sandbox proof token — the tool-proxy refuses to start without SOME
+        // proof it is running inside a managed sandbox.
+        //
+        // # Emitted only when the pod will have no SVID
+        //
+        // This is Tier 3 of `sandbox_proof`: the fallback for a workload with no
+        // SPIFFE identity. A pod that gets an identity reaches Tier 1 or Tier 2
+        // from its SVID and never consults this token — so emitting it there put
+        // a per-pod secret on the world-readable kernel command line to be
+        // ignored.
+        //
+        // `workload_api_port` is exactly the right condition and not a proxy for
+        // it: `net::workload_api_port_for` and `net::identity_registration` are
+        // the same predicate — identity enabled AND the egress grant granted —
+        // stated on the advertising and serving sides. So `Some` here means the
+        // pod will be registered and will have an SVID to prove itself with.
+        //
+        // Deleting it unconditionally would be wrong, and that is why this is a
+        // condition rather than a removal: a node with identity management off,
+        // or a pod whose grant was denied, has Tier 3 as its ONLY proof, and the
+        // tool-proxy exits fatally when no tier succeeds.
+        //
+        // # This deadlocked every launch once, and what changed
+        //
+        // The condition shipped while `spawn_firecracker_pod` started the
+        // workload API bridge AFTER `wait_for_proxy_health`. An identity-bearing
+        // pod then had no proof at the only moment that mattered: the SVID
+        // source did not exist yet, Tier 3 was gone, the guest exited as PID 1,
+        // and every launch failed with "proxy health check timed out". Observed
+        // on real hardware and invisible to every unit test, because the
+        // omission is correct in isolation and wrong only in composition with
+        // that ordering.
+        //
+        // The bridge now starts BEFORE the health check, which is what makes
+        // this safe — not any improvement in the reasoning above.
+        // `the_workload_api_bridge_starts_before_the_health_check` pins that
+        // precondition, so if the bridge moves back this fails rather than
+        // deadlocking a fleet.
+        if workload_api_port.is_none() {
             use sha2::{Digest, Sha256};
             let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
             let spec_hash = hex::encode(Sha256::digest(spec_yaml.as_bytes()));
@@ -900,6 +988,7 @@ pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
 /// deciding it is fine — see the rule in `check-failclosed-verifiers.sh`. A
 /// verifier may never SUCCEED when it cannot check; it may take a moment to look.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "seccomp.wait"))]
 pub(crate) async fn verify_seccomp_active_within(
     pid: u32,
     timeout: std::time::Duration,
@@ -968,6 +1057,117 @@ mod tests {
             boot_args: None,
             read_only,
             scratch_path: scratch.then(|| PathBuf::from("/var/lib/nucleus/scratch.ext4")),
+        }
+    }
+
+    /// Build a cmdline for a pod that either will or will not receive an SVID.
+    ///
+    /// Linux-gated because `from_spec` is: the cmdline builder only compiles on
+    /// the platform that can run a microVM. These therefore run in CI and in
+    /// OrbStack, never on a macOS dev machine — the same trap that once hid the
+    /// vsock accept path behind a `cfg` nobody compiled.
+    #[cfg(target_os = "linux")]
+    fn boot_args_with_identity(will_have_identity: bool) -> String {
+        let config = FirecrackerConfig::from_spec(
+            &base_spec(),
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
+            &image(true, false),
+            None,
+            "auth-secret",
+            "approval-secret",
+            will_have_identity.then_some(15012),
+            None,
+            None,
+        );
+        config.boot_source.boot_args.unwrap_or_default()
+    }
+
+    /// **A pod that will hold an SVID gets no Tier 3 token.**
+    ///
+    /// `sandbox_token` is the fallback proof for a workload with no SPIFFE
+    /// identity. A pod that gets one proves itself from the SVID and never reads
+    /// the token — so emitting it there put a per-pod secret on the
+    /// world-readable kernel command line to be ignored.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_bearing_pod_carries_no_sandbox_token() {
+        let args = boot_args_with_identity(true);
+        assert!(
+            !args.contains("nucleus.sandbox_token"),
+            "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
+             not need the Tier 3 token: {args}"
+        );
+    }
+
+    /// **The precondition that makes the omission above safe**, pinned against
+    /// the source rather than trusted.
+    ///
+    /// The first attempt at that omission deadlocked every launch: the guest's
+    /// SVID source started after the health check that needed it, so an
+    /// identity-bearing pod had no proof at all. Nothing caught it, because each
+    /// half is correct alone.
+    ///
+    /// Not gated on Linux: the ordering is a property of the source text, and
+    /// gating it would mean the guard does not run on the machine where the
+    /// change is usually made.
+    #[test]
+    fn the_workload_api_bridge_starts_before_the_health_check() {
+        let src = include_str!("main.rs");
+        let bridge = src
+            .find("WorkloadApiVsockBridge::start")
+            .expect("the bridge start site");
+        let health = src
+            .find("wait_for_proxy_health(health_addr)")
+            .expect("the health check site");
+        assert!(
+            bridge < health,
+            "the workload API bridge must start BEFORE the proxy health check — the guest \
+             needs its SVID in order to become healthy, so producing it afterwards is the \
+             wrong order. An identity-bearing pod has no Tier 3 fallback, so this ordering \
+             is the only thing letting it prove itself at all."
+        );
+    }
+
+    /// **Non-vacuity, and the reason this is a condition rather than a removal.**
+    ///
+    /// A node with identity management off, or a pod whose egress grant was
+    /// denied, has Tier 3 as its ONLY proof — and `sandbox_proof` exits fatally
+    /// when no tier succeeds. Deleting the token outright would turn those pods
+    /// from working into dead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pod_without_an_identity_keeps_its_only_proof() {
+        let args = boot_args_with_identity(false);
+        assert!(
+            args.contains("nucleus.sandbox_token="),
+            "a pod with no SVID has Tier 3 as its only sandbox proof and must keep it: {args}"
+        );
+    }
+
+    /// The condition must track the identity predicate rather than merely
+    /// correlating with it: `workload_api_port_for` and `identity_registration`
+    /// are the same rule stated on the advertising and serving sides, so the
+    /// port being present is exactly "this pod will be registered".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_token_condition_matches_the_identity_predicate() {
+        for (enabled, granted) in [(true, true), (true, false), (false, true), (false, false)] {
+            let grant = if granted {
+                net::IdentityGrant::Granted
+            } else {
+                net::IdentityGrant::Denied {
+                    offending: "0.0.0.0/0".to_string(),
+                }
+            };
+            let port = net::workload_api_port_for(enabled, &grant, 15012);
+            let args = boot_args_with_identity(port.is_some());
+            assert_eq!(
+                args.contains("nucleus.sandbox_token="),
+                port.is_none(),
+                "identity_enabled={enabled} granted={granted}: the Tier 3 token must be \
+                 present exactly when the pod will have no SVID"
+            );
         }
     }
 
@@ -1780,6 +1980,88 @@ mod tests {
             got, want,
             "the guest-visible device surface changed — a device class was \
              added to or removed from what Firecracker is told to attach"
+        );
+    }
+
+    // ── PCI posture: both halves of the CVE-2026-5747 defence ─────────────
+
+    /// THE HOST HALF. Firecracker's virtio-PCI transport is opt-in via
+    /// `--enable-pci`; the default MMIO transport is unaffected by
+    /// CVE-2026-5747 (OOB write, CVSS v4 8.7, guest root -> potential host code
+    /// execution). Nucleus has never passed the flag, so the vulnerable code was
+    /// unreachable — but that was an unstated accident, and nothing would have
+    /// noticed it changing.
+    #[test]
+    fn jailer_argv_never_enables_the_pci_transport() {
+        let spec: nucleus_spec::CgroupSpec = serde_json::from_str(
+            r#"{"path":"/sys/fs/cgroup/nucleus","settings":[{"file":"cpu.weight","value":"42"}]}"#,
+        )
+        .expect("cgroup spec");
+        for cgroup in [None, Some(&spec)] {
+            for netns in [None, Some("/var/run/netns/pod-1")] {
+                let args = jailer_args(&JailerPlan {
+                    firecracker_path: "/usr/bin/firecracker",
+                    pod_id: "pod-1",
+                    chroot_base: "/srv/jailer",
+                    uid: 123,
+                    gid: 100,
+                    netns,
+                    cgroup,
+                    cgroup_version: 2,
+                    config_file_in_jail: in_jail::CONFIG,
+                });
+                assert!(
+                    !args.iter().any(|a| a.contains("enable-pci")),
+                    "jailer argv must never enable the virtio-PCI transport: {args:?}"
+                );
+            }
+        }
+    }
+
+    /// THE GUEST HALF, and the bug it fixes. `pci=off` used to live only in the
+    /// `default_args` literal, which is discarded whenever a PodSpec supplies
+    /// `image.boot_args` — so any spec with a custom command line silently lost
+    /// the hardening flag. Spec input must not be able to weaken it.
+    #[test]
+    fn a_spec_supplied_cmdline_cannot_drop_pci_off() {
+        // The pre-fix path: a custom cmdline with no mention of pci.
+        let hardened = enforce_pci_off("console=ttyS0 reboot=k panic=1 init=/init");
+        assert!(
+            hardened.split_whitespace().any(|t| t == "pci=off"),
+            "a spec-supplied cmdline must still get pci=off: {hardened}"
+        );
+    }
+
+    /// An explicit weakening is stripped rather than honoured — and the result
+    /// names `pci=off` exactly once, so the kernel is not handed two values.
+    #[test]
+    fn an_explicit_pci_on_is_overridden_not_honoured() {
+        let hardened = enforce_pci_off("console=ttyS0 pci=on init=/init");
+        assert!(
+            !hardened.split_whitespace().any(|t| t == "pci=on"),
+            "pci=on must not survive: {hardened}"
+        );
+        assert_eq!(
+            hardened
+                .split_whitespace()
+                .filter(|t| *t == "pci=off")
+                .count(),
+            1,
+            "exactly one pci= token: {hardened}"
+        );
+        // Everything else is preserved.
+        assert!(hardened.contains("console=ttyS0") && hardened.contains("init=/init"));
+    }
+
+    /// Idempotent: applying the floor to an already-hardened cmdline is a no-op,
+    /// so the default path does not end up with a duplicate.
+    #[test]
+    fn enforcing_pci_off_is_idempotent() {
+        let once = enforce_pci_off("console=ttyS0 pci=off init=/init");
+        assert_eq!(once, enforce_pci_off(&once));
+        assert_eq!(
+            once.split_whitespace().filter(|t| *t == "pci=off").count(),
+            1
         );
     }
 }

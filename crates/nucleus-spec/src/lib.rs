@@ -1,5 +1,8 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod tier2_artifacts;
+pub mod vmm_version;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -74,6 +77,15 @@ pub struct PodSpecInner {
     /// Optional VM image hints (Firecracker).
     #[serde(default)]
     pub image: Option<ImageSpec>,
+    /// Upstreams the pod may reach with a credential it never sees.
+    #[serde(default)]
+    pub credentialed_egress: Vec<CredentialedEgressSpec>,
+    /// Optional workload to run inside the pod under mediation.
+    ///
+    /// Absent means the pod serves its API and runs nothing of its own, which is
+    /// the historical behaviour.
+    #[serde(default)]
+    pub workload: Option<WorkloadSpec>,
     /// Optional vsock configuration for VM communication.
     #[serde(default)]
     pub vsock: Option<VsockSpec>,
@@ -642,6 +654,219 @@ pub struct ExitReport {
     /// Whether the uninhabitable state was reached during execution.
     #[serde(default)]
     pub uninhabitable_reached: bool,
+
+    // ── Runtime verification (written by the tool proxy's TraceMonitor) ──
+    /// Decision-stream properties observed to be violated during execution,
+    /// as class labels (`OutcomeWithoutDecision`, `PermissionDiscontinuity`,
+    /// `ExposureRegressed`).
+    ///
+    /// These are *observations of what ran*, complementing
+    /// `observed_exposure_labels`: exposure says which capability legs the
+    /// session exercised, this says whether the mediation invariants held while
+    /// it did. An empty list on a session with a non-zero
+    /// `audit_entry_count` is the expected, healthy case.
+    ///
+    /// Detail fields are deliberately not carried across this boundary — the
+    /// class is enough to say which property broke without exporting the
+    /// session state that broke it.
+    #[serde(default)]
+    pub monitor_violations: Vec<String>,
+
+    /// Violations observed but not retained, because the in-memory cap was
+    /// reached. Non-zero means `monitor_violations` is truncated and its length
+    /// must not be read as the total.
+    #[serde(default)]
+    pub monitor_violations_dropped: u64,
+
+    // ── Article 12 record-keeping (written by the tool proxy at shutdown) ──
+    /// The Article 12 log's chain head at shutdown, empty when no log was kept.
+    ///
+    /// This is the hash the host binds with its OWN key. Its purpose is to close
+    /// the limitation the verifier otherwise has to report: an HMAC'd chain shows
+    /// no party lacking the secret altered the file, but says nothing about a
+    /// holder of the secret rewriting history. A pod that rewrites its log
+    /// produces a different head, and cannot forge the executor's signature over
+    /// the new one.
+    ///
+    /// The binding is only as strong as the moment it happens: the host signs at
+    /// pod exit, which the pod does not control.
+    #[serde(default)]
+    pub art12_chain_head: String,
+
+    /// Records the Article 12 log wrote, and how many it could not.
+    ///
+    /// A non-zero `dropped` means the log went degraded — the runtime then
+    /// refuses further operations, so this bounds the gap rather than hiding it.
+    #[serde(default)]
+    pub art12_records: u64,
+    #[serde(default)]
+    pub art12_dropped: u64,
+}
+
+/// An upstream the workload may call without holding the credential.
+///
+/// # The problem this solves
+///
+/// A workload given an API token in its environment can exfiltrate it, and its
+/// calls to that API bypass every gate the runtime applies to tool calls — the
+/// data it has read leaves in a request body nothing inspected. Both follow from
+/// the same choice: putting the credential in the guest.
+///
+/// The runtime holds it instead and forwards on the workload's behalf. The
+/// workload is told a LOCAL address; the upstream and the header are fixed here,
+/// so it can neither redirect the request nor read what authenticates it.
+///
+/// # Per-pod, and it must stay that way
+///
+/// This concentrates a credential in the proxy, and credential-concentrating AI
+/// gateways are a demonstrated supply-chain target (the LiteLLM compromise of
+/// March 2026 shipped releases that harvested exactly the keys such services
+/// hold). The mitigation is structural: this proxy is per-pod and holds one
+/// pod's credentials, not a fleet's. Do not turn it into a shared gateway.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CredentialedEgressSpec {
+    /// Name the workload refers to this upstream by.
+    pub name: String,
+    /// Absolute upstream base URL. Fixed here; a request cannot change it.
+    pub upstream: String,
+    /// Environment variable **in the NODE's environment** holding the credential.
+    ///
+    /// # It is the node's, not the guest's, and not the pod spec's
+    ///
+    /// This said "the RUNTIME's environment" when the runtime that held the
+    /// credential was the in-guest proxy. The host holds it now, and the
+    /// distinction is load-bearing rather than a rename:
+    ///
+    /// * **Not the pod spec.** On Firecracker `build-rootfs.sh` copies the pod
+    ///   spec into the image at BUILD time, so a credential taken from
+    ///   `credentials.env` would be written into the guest rootfs — the exact
+    ///   opposite of what this type exists to arrange.
+    /// * **Not the guest.** That is the whole point: the guest receives the
+    ///   RESULT of a call made with this, never this.
+    ///
+    /// `nucleus_node::broker_launch::store_from_node_environment` cannot reach a
+    /// `PodSpec` at all, so the first of those is a property of a signature
+    /// rather than a rule someone has to remember.
+    ///
+    /// An unset or empty variable registers nothing and the broker refuses that
+    /// upstream by absence.
+    pub credential_env: String,
+    /// Header the credential is injected as (e.g. `authorization`).
+    pub header: String,
+    /// Optional prefix for the header value (e.g. `Bearer `).
+    #[serde(default)]
+    pub value_prefix: String,
+}
+
+impl CredentialedEgressSpec {
+    /// Resolve a caller-supplied path against this upstream's FIXED base.
+    ///
+    /// # This is the fixity property, and it lives here so there is one of it
+    ///
+    /// Two different components now send a credential on a workload's behalf:
+    /// the in-guest proxy forwards to the upstream itself, and the host performs
+    /// the call for a pod whose guest never receives the credential at all. Both
+    /// take a path chosen by the agent, and both must refuse to let that path
+    /// decide *where the credential is sent*.
+    ///
+    /// That is one property, so it is one function. Two copies would be two
+    /// chances to fix a traversal bug in one place and not the other, and a
+    /// green test suite on either side would say nothing about the other's
+    /// copy — the caller-pins-its-own-use tests in each crate call THIS, rather
+    /// than restating it.
+    ///
+    /// # Refused, not normalised
+    ///
+    /// An absolute URL or any `..` is rejected outright rather than cleaned up.
+    /// Normalising is how "the workload cannot choose the upstream" quietly
+    /// stops being true: every normaliser is a small parser, and the agent
+    /// supplying the input gets unlimited attempts at finding the case it gets
+    /// wrong.
+    ///
+    /// # What is deliberately NOT checked, and why
+    ///
+    /// Protocol-relative (`//host/x`) and backslash paths look like traversal
+    /// and are not, *here*: the join trims leading `/` from the path and
+    /// trailing `/` from the base, so `//host/x` becomes `<base>/host/x` — a
+    /// path under the upstream, not a redirect away from it. Checks for them
+    /// were written and then removed rather than kept "just in case", because a
+    /// control that does nothing still reads to the next person as evidence that
+    /// the case was handled.
+    ///
+    /// The join is therefore load-bearing, and
+    /// `a_protocol_relative_path_stays_under_the_base` pins it: if the
+    /// concatenation ever changes so that a leading `//` survives, that test
+    /// fails and this comment stops being true at the same moment.
+    #[must_use]
+    pub fn url_for(&self, path: &str) -> Option<String> {
+        if path.contains("..")
+            || path.starts_with("http://")
+            || path.starts_with("https://")
+            // Percent-encoded dots, which is traversal that `..` does not see.
+            // The path is handed to the upstream verbatim, and an upstream that
+            // percent-decodes before it normalises resolves `%2e%2e/` exactly
+            // as it resolves `../` — reaching a path ABOVE the base this spec
+            // fixes. Same host, so it is not a redirect; it is still the guest
+            // choosing a path the operator did not grant.
+            || path.to_ascii_lowercase().contains("%2e")
+        {
+            return None;
+        }
+        let base = self.upstream.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        Some(format!("{base}/{path}"))
+    }
+}
+
+/// A process the pod runs under its own mediation.
+///
+/// # Why the runtime starts it, rather than the image
+///
+/// The workload's whole value is that every effect it attempts goes through the
+/// kernel. If it were started by the boot process alongside the proxy, there
+/// would be a window — however short — in which it is running and mediation is
+/// not, and anything it did in that window would be unmediated AND unrecorded.
+/// So the proxy spawns it, after its sink chain and kernel are live. See
+/// `spawn_workload`.
+///
+/// # Vendor neutrality
+///
+/// `command`, `args` and `env` are opaque. Nucleus does not know or care what
+/// agent this is; a vendor-aware orchestrator supplies the binary, its
+/// credentials (via `credentials.env`) and any endpoint it needs on the network
+/// allowlist. Nothing vendor-specific belongs in this struct or in the runtime
+/// that reads it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkloadSpec {
+    /// Executable to run. Resolved inside the guest, not on the host.
+    pub command: String,
+    /// Arguments, passed through verbatim.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment for the workload.
+    ///
+    /// Merged UNDER the runtime's own injected variables, so a spec cannot
+    /// redirect the workload away from the mediating proxy by setting the same
+    /// key — see `workload_env`.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// UID to run the workload as.
+    ///
+    /// # Why this matters more than it looks
+    ///
+    /// The runtime and the workload share a guest. On Linux a process can read
+    /// `/proc/<pid>/environ` of any process with the SAME uid, so a workload
+    /// running as the runtime's user can simply read the runtime's environment —
+    /// including a credential that `credentialed_egress` exists to keep out of
+    /// its hands. "Not in the workload's environment" is not the same as "the
+    /// workload cannot get it", and only a uid boundary makes the second true.
+    ///
+    /// `None` means the workload runs as the runtime's user, which is fine when
+    /// no credential is being withheld from it. When `credentialed_egress` is
+    /// configured, a distinct uid is REQUIRED and the pod refuses to start
+    /// without one.
+    #[serde(default)]
+    pub uid: Option<u32>,
 }
 
 /// Errors resolving policies.
@@ -650,6 +875,106 @@ pub enum PolicyError {
     /// The named profile was not found.
     #[error("unknown policy profile: {0}")]
     UnknownProfile(String),
+}
+
+#[cfg(test)]
+mod credentialed_egress_fixity {
+    use super::*;
+
+    fn spec() -> CredentialedEgressSpec {
+        CredentialedEgressSpec {
+            name: "model-api".into(),
+            upstream: "https://upstream.invalid/v1".into(),
+            credential_env: "NUCLEUS_TEST_EGRESS_CRED".into(),
+            header: "authorization".into(),
+            value_prefix: "Bearer ".into(),
+        }
+    }
+
+    /// **The control, first.** Everything below asserts a refusal, and an
+    /// implementation that refused every path would satisfy all of them while
+    /// being completely broken. This says the ordinary case still works.
+    #[test]
+    fn an_ordinary_path_resolves_under_the_configured_base() {
+        assert_eq!(
+            spec().url_for("/messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+        assert_eq!(
+            spec().url_for("messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+    }
+
+    /// **A caller cannot redirect where the credential is sent.** This is the
+    /// property; the guest picks the path and must not thereby pick the host.
+    #[test]
+    fn a_path_cannot_redirect_the_upstream() {
+        for hostile in [
+            "https://attacker.invalid/steal",
+            "http://attacker.invalid/steal",
+            "../../../other",
+            "messages/../../escape",
+        ] {
+            assert!(
+                spec().url_for(hostile).is_none(),
+                "{hostile:?} must not resolve to an upstream URL"
+            );
+        }
+    }
+
+    /// Percent-encoded traversal, which a plain `..` scan does not see.
+    ///
+    /// The path reaches the upstream verbatim, so an upstream that decodes
+    /// before it normalises treats `%2e%2e/` exactly as `../`. Same host, so
+    /// this is not a redirect — it is reaching a path above the base the
+    /// operator fixed, which the base exists to prevent.
+    #[test]
+    fn percent_encoded_traversal_is_refused_in_any_case() {
+        for hostile in [
+            "%2e%2e/admin",
+            "%2E%2E/admin",
+            "messages/%2e%2e/%2e%2e/admin",
+            "%2e%2E/admin",
+        ] {
+            assert!(
+                spec().url_for(hostile).is_none(),
+                "{hostile:?} decodes to traversal at an upstream that decodes first"
+            );
+        }
+    }
+
+    /// **The join is what makes protocol-relative paths harmless**, and the
+    /// docs say so — so this pins it rather than leaving the claim unchecked.
+    ///
+    /// `url_for` deliberately does NOT test for a leading `//`, because
+    /// trimming leading `/` from the path already puts it under the base. If
+    /// the concatenation ever changes so a leading `//` survives, the doc
+    /// comment silently becomes false; this test fails at that moment instead.
+    #[test]
+    fn a_protocol_relative_path_stays_under_the_base() {
+        let url = spec()
+            .url_for("//attacker.invalid/steal")
+            .expect("not refused — it is neutralised by the join, not rejected");
+        assert_eq!(url, "https://upstream.invalid/v1/attacker.invalid/steal");
+        assert!(
+            url.starts_with("https://upstream.invalid/v1/"),
+            "a protocol-relative path escaped the base: {url}"
+        );
+    }
+
+    /// A base with a trailing slash must not produce a doubled separator, and
+    /// more importantly must not produce `https://host//x` — which some proxies
+    /// and origin servers do not treat as `https://host/x`.
+    #[test]
+    fn a_trailing_slash_on_the_base_does_not_double_the_separator() {
+        let mut s = spec();
+        s.upstream = "https://upstream.invalid/v1/".into();
+        assert_eq!(
+            s.url_for("messages").as_deref(),
+            Some("https://upstream.invalid/v1/messages")
+        );
+    }
 }
 
 #[cfg(test)]

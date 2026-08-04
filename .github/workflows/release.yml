@@ -207,7 +207,21 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           files: release/*
-      - name: Update floating v1 tag
+          # A tag containing `-` is a prerelease (`v2.1.0-rc.1`). Marking it
+          # matters beyond cosmetics: GitHub's `/releases/latest` EXCLUDES
+          # prereleases, and `scripts/install.sh` resolves the version from
+          # exactly that endpoint — so without this an RC becomes the default
+          # download for every one-line installer user.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+      # Move the floating major tag (`v2`) only for a real release.
+      #
+      # This repo's root `action.yml` is a composite Action, so anyone pinning
+      # `coproduct-opensource/nucleus@v2` follows this tag. Pointing it at a
+      # release CANDIDATE would ship unfinished code to those consumers under a
+      # reference they have every reason to treat as stable. (The step was also
+      # still named "v1" while computing `v2` from the tag.)
+      - name: Update floating major tag
+        if: ${{ !contains(github.ref_name, '-') }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -238,8 +252,13 @@ jobs:
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
         with:
           cache: false
+      # Never from a prerelease tag. A crates.io publish cannot be undone (only
+      # yanked), and `nucleus-node` has not had its first publish yet — so an RC
+      # tag would make a release candidate the permanent first version of the
+      # crate. The token gate alone is not enough: it protects against having no
+      # credentials, not against publishing the wrong thing.
       - name: Publish nucleus-node
-        if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
+        if: ${{ steps.publish_gate.outputs.enabled == 'true' && !contains(github.ref_name, '-') }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p nucleus-node --locked

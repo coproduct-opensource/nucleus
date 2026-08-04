@@ -441,6 +441,19 @@ pub enum RuntimeError {
     Io(String),
     /// The runtime was not configured correctly.
     Config(String),
+    /// The supplied [`DischargedBundle`] was earned for a different action.
+    ///
+    /// Obligations are discharged for one `(Operation, SinkClass)` pair. Passing
+    /// a bundle to a different effect would let an action whose own discharge
+    /// would fail proceed under one that succeeded for something cheaper — the
+    /// confused deputy. The bundle carries the pair it was earned for precisely
+    /// so this can be refused.
+    ScopeMismatch {
+        /// Which effect the caller attempted (e.g. "write file").
+        attempted: String,
+        /// The mismatch, naming both the authority held and the action tried.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -458,6 +471,15 @@ impl std::fmt::Display for RuntimeError {
             }
             Self::Io(msg) => write!(f, "I/O error: {msg}"),
             Self::Config(msg) => write!(f, "configuration error: {msg}"),
+            Self::ScopeMismatch { attempted, reason } => {
+                writeln!(f, "discharge scope mismatch")?;
+                writeln!(f, "  attempted: {attempted}")?;
+                writeln!(f, "  reason: {reason}")?;
+                write!(
+                    f,
+                    "  fix: discharge this action with its own preflight_* call"
+                )
+            }
         }
     }
 }
@@ -537,7 +559,20 @@ impl NucleusRuntime {
             task: String::new(),
             task_token: None,
             allowed_write_paths: Vec::new(),
+            git_dir: None,
         }
+    }
+
+    /// The receipt log for this runtime's effects.
+    ///
+    /// Delegates to the effect layer rather than holding its own. That is not an
+    /// implementation detail: `PolicyEnforced::gate` calls `witnessed`, which
+    /// REPLACES whatever log an authority already carried, so a second log
+    /// attached upstream would be silently discarded. Attempting exactly that
+    /// is how this accessor came to exist — the runtime-held log recorded
+    /// nothing, and the reason was the override downstream.
+    pub fn receipts(&self) -> &crate::receipt::ReceiptLog {
+        self.effects.receipts()
     }
 
     /// The active policy profile.
@@ -655,11 +690,20 @@ impl NucleusRuntime {
     pub fn unmediated_effects(
         &mut self,
         _token: &UnmediatedAccess,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<
         impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect,
         RuntimeError,
     > {
+        // `preflight_unmediated` discharges against the strictest egress sink,
+        // so the grant is only as cheap as the hardest thing it hands out.
+        // Substituting a laxer bundle would undo that.
+        Self::require_scope_for(
+            &proof,
+            Operation::WebFetch,
+            SinkClass::HTTPEgress,
+            "obtain unmediated effects",
+        )?;
         // FlowTracker update: record the unmediated grant in the causal DAG.
         // Without this observe(), node_count would not advance and the grant
         // would be invisible to audit — the hole this fix closes.
@@ -693,11 +737,21 @@ impl NucleusRuntime {
     pub fn read_file(
         &mut self,
         path: &Path,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<ReadOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::ReadFiles,
+            SinkClass::AuditLogAppend,
+            "read file",
+        )?;
+        // The runtime check above yields the precise `ScopeMismatch` error; the
+        // effect layer re-checks when it spends the authority. Both are cheap,
+        // and the effect-level one also covers callers that bypass the runtime.
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
         let data = fx
-            .read(path)
+            .read(path, authority)
             .map_err(|e| self.translate_error(e, "read file", path))?;
 
         let node_id = self
@@ -723,10 +777,21 @@ impl NucleusRuntime {
         &mut self,
         path: &Path,
         content: &[u8],
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<(), RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::WriteFiles,
+            SinkClass::WorkspaceWrite,
+            "write file",
+        )?;
+        // Re-checked here, not only in `preflight_write`. The allowlist is a
+        // property of THIS write, and a bundle minted by a different preflight
+        // would otherwise never encounter the check.
+        self.check_path_allowed(path)?;
+        let authority = crate::authority::Authority::new(proof);
         let fx = &self.effects;
-        fx.write(path, content)
+        fx.write(path, content, authority)
             .map_err(|e| self.translate_error(e, "write file", path))
     }
 
@@ -749,10 +814,17 @@ impl NucleusRuntime {
     pub fn fetch_url(
         &mut self,
         url: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<FetchOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::WebFetch,
+            SinkClass::HTTPEgress,
+            "fetch url",
+        )?;
         let fx = &self.effects;
-        let data = fx.fetch(url).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let data = fx.fetch(url, authority).map_err(RuntimeError::from)?;
 
         let node_id = self
             .flow_tracker
@@ -775,10 +847,17 @@ impl NucleusRuntime {
     pub fn run_shell(
         &mut self,
         cmd: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<ShellResult, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::RunBash,
+            SinkClass::BashExec,
+            "run shell command",
+        )?;
         let fx = &self.effects;
-        let output = fx.run(cmd).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let output = fx.run(cmd, authority).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
         })
@@ -794,10 +873,17 @@ impl NucleusRuntime {
     pub fn git_commit(
         &mut self,
         message: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<CommitOutput, RuntimeError> {
+        Self::require_scope_for(
+            &proof,
+            Operation::GitCommit,
+            SinkClass::GitCommit,
+            "git commit",
+        )?;
         let fx = &self.effects;
-        let hash = fx.commit(message).map_err(RuntimeError::from)?;
+        let authority = crate::authority::Authority::new(proof);
+        let hash = fx.commit(message, authority).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
         })
@@ -814,13 +900,36 @@ impl NucleusRuntime {
         &mut self,
         remote: &str,
         branch: &str,
-        _proof: DischargedBundle,
+        proof: DischargedBundle,
     ) -> Result<(), RuntimeError> {
+        Self::require_scope_for(&proof, Operation::GitPush, SinkClass::GitPush, "git push")?;
         let fx = &self.effects;
-        fx.push(remote, branch).map_err(RuntimeError::from)
+        let authority = crate::authority::Authority::new(proof);
+        fx.push(remote, branch, authority)
+            .map_err(RuntimeError::from)
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
+
+    /// Refuse a bundle that was earned for a different action.
+    ///
+    /// Every mediated method calls this with the same `(Operation, SinkClass)`
+    /// pair its matching `preflight_*` builds. Without it the bundle proves only
+    /// that *a* preflight ran, never that a preflight ran for **this** action —
+    /// the eight obligations are then defeated by substituting a bundle earned
+    /// for something cheaper. `DischargedBundle` carries the pair for exactly
+    /// this check; see `crate::require_scope`.
+    fn require_scope_for(
+        proof: &DischargedBundle,
+        op: Operation,
+        sink: SinkClass,
+        attempted: &str,
+    ) -> Result<(), RuntimeError> {
+        crate::require_scope(proof, op, sink).map_err(|reason| RuntimeError::ScopeMismatch {
+            attempted: attempted.to_string(),
+            reason,
+        })
+    }
 
     /// Build an `ActionTerm` with real IFC labels from the FlowTracker (#1346).
     ///
@@ -1325,9 +1434,22 @@ pub struct NucleusRuntimeBuilder {
     task: String,
     task_token: Option<VerifiedTaskRef>,
     allowed_write_paths: Vec<PathBuf>,
+    /// Working directory for git effects; `None` = the process CWD.
+    git_dir: Option<PathBuf>,
 }
 
 impl NucleusRuntimeBuilder {
+    /// Scope git effects to `dir` instead of the process working directory.
+    ///
+    /// `git commit` acts on whichever repository the process is standing in,
+    /// not on anything named in its arguments. A runtime that means to commit a
+    /// specific workspace must say so; leaving this unset keeps the historical
+    /// process-CWD behaviour.
+    pub fn git_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.git_dir = Some(dir.into());
+        self
+    }
+
     /// Set the policy profile.
     ///
     /// This is the recommended way to configure capabilities. If you also
@@ -1428,7 +1550,10 @@ impl NucleusRuntimeBuilder {
             .custom_policy
             .unwrap_or_else(|| self.profile.to_lattice());
 
-        let effects = crate::production_effects_concrete(policy.clone());
+        let effects = match self.git_dir {
+            Some(dir) => crate::production_effects_in(policy.clone(), dir),
+            None => crate::production_effects_concrete(policy.clone()),
+        };
         NucleusRuntime {
             profile: self.profile,
             policy,
@@ -1664,7 +1789,14 @@ mod tests {
         let fx = rt.unmediated_effects(&token, proof).unwrap();
 
         // Write should be policy-denied (capability levels still enforced)
-        let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
+        let result = fx.write(
+            std::path::Path::new("/tmp/test"),
+            b"data",
+            crate::authority::Authority::new(portcullis_core::discharge::test_helpers::bundle_for(
+                Operation::WriteFiles,
+                SinkClass::WorkspaceWrite,
+            )),
+        );
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
     }
 
@@ -1854,6 +1986,147 @@ mod tests {
         }
     }
 
+    // ── Discharge scope binding ──────────────────────────────────────────
+    //
+    // A `DischargedBundle` is earned for ONE (Operation, SinkClass) pair, and
+    // `DischargedBundle` carries both so the pair can be checked. These tests
+    // pin that the mediated methods actually check it.
+    //
+    // Without the check the eight obligations are defeated by substitution: an
+    // action whose OWN discharge would fail is performed under a discharge that
+    // succeeded for something cheaper. The coarse `PolicyEnforced` lattice gate
+    // still applies, so this is not a total bypass — what a substituted bundle
+    // buys is every obligation `preflight_action` is responsible for.
+
+    /// The confused deputy at the runtime layer: a read authority must not buy
+    /// a write. `preflight_read` discharges `ReadFiles`/`AuditLogAppend`;
+    /// `write_file` is `WriteFiles`/`WorkspaceWrite`.
+    #[test]
+    fn a_read_bundle_will_not_authorize_a_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("substituted.txt");
+
+        let mut rt = rt_tok(PolicyProfile::Permissive);
+        let read_bundle = rt.preflight_read().expect("read discharges");
+
+        let err = rt
+            .write_file(&target, b"written under a read authority", read_bundle)
+            .expect_err("a read bundle must not authorize a write");
+
+        assert!(
+            matches!(err, RuntimeError::ScopeMismatch { .. }),
+            "expected a scope mismatch, got: {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "the write must be refused BEFORE the effect runs, but the file was created"
+        );
+    }
+
+    /// A correctly-scoped write bundle must not be redirected to a different path.
+    ///
+    /// This is NOT caught by the scope check: `preflight_write` and `write_file`
+    /// agree on `WriteFiles`/`WorkspaceWrite` regardless of which path was
+    /// preflighted, so the bundle is in scope. The path is not part of the
+    /// scope, which is why `write_file` has to re-run `check_path_allowed`
+    /// rather than trusting that `preflight_write` already did.
+    #[test]
+    fn a_write_bundle_for_one_path_does_not_authorize_a_write_to_another() {
+        let allowed = tempfile::tempdir().expect("tempdir");
+        let permitted = allowed.path().join("permitted.txt");
+        let forbidden = tempfile::tempdir().expect("tempdir");
+        let outside = forbidden.path().join("outside-the-allowlist.txt");
+
+        // Both must exist before the check runs: `check_path_allowed`
+        // canonicalizes, and on macOS a non-existent path silently falls back to
+        // its uncanonicalized form (`/var/...`) while an existing allowlist entry
+        // resolves through the symlink (`/private/var/...`), so the prefix
+        // comparison would fail for the wrong reason.
+        std::fs::write(&permitted, b"").expect("seed permitted");
+        std::fs::write(&outside, b"").expect("seed outside");
+
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Permissive)
+            .allowed_write_paths([allowed.path()])
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+
+        // Earned honestly, for a path inside the allowlist.
+        let bundle = rt
+            .preflight_write(&permitted)
+            .expect("a permitted write discharges");
+
+        // Redirected to a path outside it. Same scope, different target.
+        let err = rt
+            .write_file(&outside, b"redirected", bundle)
+            .expect_err("a bundle earned for one path must not write to another");
+
+        // The file was seeded empty; the refusal has to happen before the effect,
+        // so it must still be empty rather than holding the redirected content.
+        assert!(
+            std::fs::read(&outside)
+                .expect("seeded file readable")
+                .is_empty(),
+            "the write must be refused before the effect runs, but content landed: {err:?}"
+        );
+    }
+
+    /// The in-scope path must keep working — a scope check that rejects
+    /// everything would pass the tests above and break the runtime.
+    #[test]
+    fn a_write_bundle_still_authorizes_its_own_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("in-scope.txt");
+
+        let mut rt = rt_tok(PolicyProfile::Permissive);
+        let write_bundle = rt.preflight_write(&target).expect("write discharges");
+
+        // The effect itself may still fail on I/O; what must NOT happen is a
+        // scope rejection of a correctly-scoped bundle.
+        if let Err(err) = rt.write_file(&target, b"in scope", write_bundle) {
+            assert!(
+                !matches!(err, RuntimeError::ScopeMismatch { .. }),
+                "a correctly-scoped bundle was rejected: {err:?}"
+            );
+        }
+    }
+
+    /// **The behavioural complement to the source scan.** The scan proves the
+    /// witness is WIRED at every site; it cannot prove the wiring works. A
+    /// `witnessed_by` that attached a log nobody appended to would satisfy the
+    /// scan and record nothing — which is materially the state this whole
+    /// change fixes, so it is the failure mode most worth a real test.
+    #[test]
+    fn a_real_effect_leaves_a_real_receipt() {
+        let mut rt = rt_tok(PolicyProfile::Codegen);
+        assert_eq!(
+            rt.receipts().len(),
+            0,
+            "a fresh runtime should have recorded nothing yet"
+        );
+
+        let result = {
+            let p = rt.preflight_read().unwrap();
+            rt.read_file(std::path::Path::new("Cargo.toml"), p)
+        };
+        assert!(result.is_ok(), "the read should succeed: {result:?}");
+
+        let entries = rt.receipts().entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "one authorised effect must leave exactly one receipt, got {entries:?}"
+        );
+        assert_eq!(entries[0].operation, Operation::ReadFiles);
+        assert_eq!(
+            entries[0].outcome,
+            crate::receipt::EffectOutcome::Allowed,
+            "an effect that succeeded must be recorded as allowed"
+        );
+    }
+
     #[test]
     fn read_file_updates_flow_tracker() {
         let mut rt = rt_tok(PolicyProfile::Codegen);
@@ -1903,6 +2176,10 @@ mod tests {
             Err(RuntimeError::Denied { reason, .. }) => {
                 // Should not be denied by policy — Research has WebFetch
                 panic!("unexpected denial: {reason}");
+            }
+            Err(RuntimeError::ScopeMismatch { reason, .. }) => {
+                // The bundle came from `preflight_fetch`, so it is in scope.
+                panic!("unexpected scope mismatch: {reason}");
             }
         }
     }
@@ -2061,10 +2338,46 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A scratch git repository with one staged change, so a commit here is a
+    /// real commit that touches nothing outside the temp dir.
+    fn scratch_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "test"]);
+        std::fs::write(dir.path().join("f.txt"), b"one").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        std::fs::write(dir.path().join("f.txt"), b"two").unwrap();
+        dir
+    }
+
     #[test]
     fn git_commit_allowed_by_codegen_profile() {
-        let mut rt = rt_tok(PolicyProfile::Codegen);
-        // git_commit may fail on I/O (no repo) but should NOT fail on policy
+        // This test drives the REAL git effect. Before the runtime could be
+        // scoped, it ran `git add -u && git commit` in the process CWD — which
+        // under `cargo test` is the repository root, so running the suite
+        // committed the developer's staged work to their branch. Observed
+        // twice on 2026-08-01. The comment it used to carry ("may fail on I/O
+        // (no repo)") assumed a condition that is false exactly where it
+        // matters.
+        let repo = scratch_repo();
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+
         let result = {
             let p = rt.preflight_commit().unwrap();
             rt.git_commit("test commit", p)
@@ -2072,6 +2385,50 @@ mod tests {
         if let Err(RuntimeError::Denied { .. }) = &result {
             panic!("git_commit should not be denied by Codegen profile");
         }
+        assert!(
+            result.is_ok(),
+            "the scratch commit should succeed: {result:?}"
+        );
+    }
+
+    /// **The property that makes the suite safe to run.** A runtime scoped to a
+    /// directory must commit THERE — otherwise the scoping is decorative and the
+    /// test above is back to mutating whatever repository it is run from.
+    ///
+    /// Perturbation: drop `current_dir` in `RealEffects::in_git_dir` and this
+    /// REDs on the scratch repo's commit count.
+    #[test]
+    fn a_scoped_runtime_commits_only_in_its_own_repo() {
+        let repo = scratch_repo();
+        let count = |dir: &std::path::Path| -> usize {
+            let out = std::process::Command::new("git")
+                .args(["rev-list", "--count", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+        };
+        assert_eq!(
+            count(repo.path()),
+            1,
+            "fixture should start with one commit"
+        );
+
+        let (token, root_vk, now, nonce) = full_scope_token();
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .git_dir(repo.path())
+            .task_token(token, root_vk, now, nonce)
+            .expect("full-scope test token verifies")
+            .build();
+        let p = rt.preflight_commit().unwrap();
+        rt.git_commit("scoped", p).expect("commit should succeed");
+
+        assert_eq!(
+            count(repo.path()),
+            2,
+            "the commit did not land in the scoped repository -- it went somewhere else"
+        );
     }
 
     #[test]

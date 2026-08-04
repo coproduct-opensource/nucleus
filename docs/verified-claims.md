@@ -139,14 +139,33 @@ constructor is private.
 that cannot be named outside its module. `Discharged<O>` tokens are zero-sized
 proof witnesses; `Discharged::mint()` is `fn` (not `pub fn`).
 
-**Proved in:** Compile-fail doc-test on `DischargedBundle` (portcullis-core/src/discharge.rs)
+**Scope binding (now machine-checked — see claim 8a):** the type system
+establishes that *a* preflight ran, not that a
+preflight ran for **this** action. The bundle carries the `(Operation, SinkClass)`
+pair it was earned for, and each mediated method checks it; without that check a
+bundle earned for a cheaper action would authorize any other — the confused
+deputy. The check itself is a runtime comparison, but it can no longer be
+*skipped*: effect methods take an owned `Authority`, so reaching the effect
+requires surrendering one.
+
+**Proved in:** Compile-fail doc-test on `DischargedBundle`
+(portcullis-core/src/discharge.rs); scope binding by
+`a_read_bundle_will_not_authorize_a_write` and siblings in
+`portcullis-effects/src/runtime.rs`.
 
 **What it does NOT prove:** That the obligation checks themselves are correct.
 Only that they cannot be skipped. The checks' correctness is tested by 33 unit
 tests and the Kani harnesses above.
 
-**CI gate:** `Tests` job runs the compile-fail doc-test. A PR that makes the
-`Seal` field public or adds a public constructor would fail the doc-test.
+Nor does it prove **complete mediation** on its own. For the effect traits that
+property now holds structurally: all 13 methods take an `Authority` **by value**,
+so the scope check cannot be skipped and replay is a compile error. See claim 8a
+for the machine-checked scope predicate, and
+[Production Delta](production-delta.md) for the surfaces still outside it.
+
+**CI gate:** `Tests` job runs the compile-fail doc-test and the scope-binding
+tests. A PR that makes the `Seal` field public, adds a public constructor, or
+drops a `require_scope` call would fail it.
 
 ---
 
@@ -196,6 +215,64 @@ system is an approximation — dynamic data flow through the `FlowTracker` remai
 necessary for paths where the type is erased.
 
 **CI gate:** `Tests` job.
+
+---
+
+### 8a. A discharge authorizes its own action, once, and nothing else
+
+**Plain English:** An authorization earned for one action cannot be spent on a
+different one. A bundle earned for reading a file does not authorize a write, a
+shell spawn, or a push — even when the coarse capability for that action is
+enabled. This is the confused deputy, and it is the first half of complete
+mediation.
+
+**Formal statement, two halves.** The *predicate*: `scope_admits(eo, es, ao, as) ↔
+(eo = ao ∧ es = as)` — reflexive, discriminating on each component, and functional
+(a bundle admits at most one pair). The *machine*: an effect succeeds only from a
+held authority whose scope admits it (`effect_requires_held`), a success
+**consumes** it (`effect_consumes_the_authority`), a refusal does **not**
+(`refusal_preserves_the_authority`), and therefore a second effect with no fresh
+discharge fails (`no_replay_without_a_fresh_discharge`).
+
+**Proved in:**
+- Lean 4: [`lean/MediationScopeExtracted.lean`](../crates/portcullis-core/lean/MediationScopeExtracted.lean)
+  — eight theorems: `scope_admits_{refl,iff_eq,unique,no_escalation}` over the
+  predicate, and `effect_requires_held`, `effect_consumes_the_authority`,
+  `refusal_preserves_the_authority`, `no_replay_without_a_fresh_discharge` over
+  the extracted state machine `med_step`
+- Proven **over the Aeneas-extracted definitions**, not a hand-written model:
+  `crates/nucleus-ifc-kernel/src/extracted/mediation.rs` → charon (scoped
+  `--start-from`) → aeneas → `generated-mediation/PortcullisCoreMediation/`.
+- Rust↔model parity: exhaustive sweep in `src/extracted/mediation.rs` over every
+  earnable pair (27 of 247 pass `PathAllowed`) against all 247 attempted pairs —
+  6,669 comparisons, the complete domain, so this is an equivalence proof rather
+  than a sample.
+
+**Axiom set:** `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, and no
+Aeneas `*External` opaque axiom. The Rust slice compares explicit `u8` ranks
+rather than deriving `PartialEq` precisely so no opaque comparison axiom lands on
+the critical path.
+
+**What it does NOT prove — and cannot:** that every effect path *calls* the
+predicate. That is a whole-program property over an open program, so Lean has
+nothing to quantify over, and the effect layer's real I/O is outside the
+extractable subset regardless. These theorems are the **conditional** half.
+
+The premise is discharged mechanically by the `mediated` Dylint pass
+(`tools/nucleus-mediation-lint`), closed under the call graph, over the set
+defined in [The Mediated Set](architecture/mediated-set.md). seL4 has the same
+shape: it assumes compiler/assembly/hardware correctness and imposes syntactic
+restrictions checked outside Isabelle so the proof has a static call graph.
+
+**Trusted, stated rather than hidden:** rustc's enforcement of affine moves, the
+lint's deny-set completeness, and Charon/Aeneas extraction fidelity.
+
+It also says nothing about the other seven obligations: it governs which action a
+bundle speaks for, not whether that action is safe.
+
+**CI gate:** `Scoped Aeneas (Rust → Lean 4) + parity tests` — re-extracts from
+Rust, rebuilds the theorem against the fresh extraction, and fails on a dirty
+axiom set or any `sorry`/`admit`/`native_decide`.
 
 ---
 

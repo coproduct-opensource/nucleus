@@ -1,4 +1,6 @@
 use super::*;
+use crate::mediation::kernel_denial_to_api_error;
+use nucleus::portcullis::kernel::DenyReason;
 
 #[test]
 fn test_rate_limiter_allows_burst() {
@@ -341,7 +343,7 @@ fn test_lockdown_blocks_unknown_paths() {
 // ═══════════════════════════════════════════════════════════════════════════
 // IFC enforcement on the HTTP path (#1194, #1633)
 //
-// These exercise the pure reference monitor `decide_with_flow_mapped` against a
+// These exercise the reference monitor `mediation::decide_and_record` against a
 // bare Kernel + FlowTracker (no AppState), proving the HTTP path now has the
 // same taint-aware lethal-trifecta guard the MCP server has: once the session
 // ingests web content, outbound actions are denied with `ApiError::IfcDenied`
@@ -350,8 +352,144 @@ fn test_lockdown_blocks_unknown_paths() {
 mod ifc_http_enforcement {
     use super::*;
 
-    fn permissive_kernel() -> Kernel {
+    pub(super) fn permissive_kernel() -> Kernel {
         Kernel::new(PermissionLattice::permissive())
+    }
+
+    /// A sink that keeps what it was handed, so a test can assert on the record
+    /// that the live HTTP chokepoint would produce — not on a reconstruction of
+    /// it. `decide_and_record` is the same function `http_kernel_decide` calls,
+    /// which is what makes these tests evidence about the live path rather than
+    /// about a parallel copy of its logic.
+    #[derive(Default)]
+    struct CapturingSink {
+        records: std::sync::Mutex<Vec<(String, String, BTreeMap<String, String>)>>,
+    }
+
+    impl portcullis::verdict_sink::VerdictSink for CapturingSink {
+        fn record(
+            &self,
+            ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            let outcome = match &ctx.outcome {
+                portcullis::verdict_sink::VerdictOutcome::Allow => "allow".to_string(),
+                portcullis::verdict_sink::VerdictOutcome::Deny { reason } => {
+                    format!("deny:{reason}")
+                }
+                portcullis::verdict_sink::VerdictOutcome::RequiresApproval { .. } => {
+                    "requires_approval".to_string()
+                }
+                other => format!("{other:?}"),
+            };
+            self.records.lock().unwrap().push((
+                format!("{:?}", ctx.operation),
+                outcome,
+                ctx.extensions.clone(),
+            ));
+            Ok(())
+        }
+
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    /// Drive the live entry point and hand back both the mapped result and what
+    /// the sink actually saw.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn decide_capturing(
+        kernel: &mut Kernel,
+        flow: &FlowTracker,
+        operation: Operation,
+        subject: &str,
+    ) -> (
+        Result<portcullis::kernel::DecisionToken, ApiError>,
+        Vec<(String, String, BTreeMap<String, String>)>,
+    ) {
+        let sink = CapturingSink::default();
+        let mapped = crate::mediation::decide_and_record(
+            &sink,
+            kernel,
+            flow,
+            operation,
+            subject,
+            portcullis::verdict_sink::ActorIdentity::Unknown,
+            "http",
+        );
+        let seen = sink.records.lock().unwrap().clone();
+        (mapped, seen)
+    }
+
+    // ── The kernel-decision recording chokepoint (EU AI Act Article 12) ─────────
+    //
+    // The property under test is the one that reframed this whole feature: a
+    // REFUSAL must produce evidence. Before `http_kernel_decide` recorded the
+    // decision, every deny returned through `?` before any sink call, so an
+    // evidence log built on the sink would have contained allows only.
+
+    /// ★ A DENIED operation must be recorded, with the kernel fields that make it
+    /// reconstructable. This is the anti-vacuity leg: an evidence log whose records
+    /// are all `allow` is worse than no log, because it looks like evidence.
+    ///
+    /// The assertion is on what the SINK RECEIVED. An earlier version of this test
+    /// asserted only that the `Decision` carried the right fields — which passed
+    /// even with the recording call deleted, because availability is not recording.
+    #[test]
+    fn denied_kernel_decision_is_recorded_with_its_reason() {
+        let mut kernel = permissive_kernel();
+        let mut flow = FlowTracker::new();
+        // Ingest web content so the next outbound action is IFC-denied.
+        flow.observe(NodeKind::WebContent).expect("observe");
+
+        let (mapped, seen) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(mapped.is_err(), "post-web write must be denied");
+
+        assert_eq!(seen.len(), 1, "a refusal must produce exactly one record");
+        let (op, outcome, ext) = &seen[0];
+        assert_eq!(op, "WriteFiles");
+        assert!(
+            outcome.starts_with("deny:"),
+            "the refusal must be recorded as a denial, got {outcome}"
+        );
+        assert_eq!(
+            ext.get("deny_code").map(String::as_str),
+            Some("ifc_unsafe"),
+            "the refusal must carry its machine-stable code, not a Debug string"
+        );
+        assert_eq!(
+            ext.get("gate_class").map(String::as_str),
+            Some("information_flow")
+        );
+        assert_eq!(ext.get("transport").map(String::as_str), Some("http"));
+        for field in [
+            "pre_permissions_hash",
+            "post_permissions_hash",
+            "decision_sequence",
+        ] {
+            assert!(
+                ext.get(field).is_some_and(|v| !v.is_empty()),
+                "{field} must be recoverable from the record"
+            );
+        }
+    }
+
+    /// An ALLOWED operation is recorded too — the pair is what makes the log a
+    /// history rather than a denial list.
+    #[test]
+    fn allowed_kernel_decision_carries_no_deny_code() {
+        let mut kernel = permissive_kernel();
+        let flow = FlowTracker::new();
+        let (mapped, seen) = decide_capturing(&mut kernel, &flow, Operation::ReadFiles, "in.txt");
+        assert!(mapped.is_ok(), "clean read should be allowed");
+
+        assert_eq!(seen.len(), 1, "an allow must produce a record too");
+        let (_, outcome, ext) = &seen[0];
+        assert_eq!(outcome, "allow");
+        assert_eq!(ext.get("deny_code"), None, "an allow has nothing to refuse");
+        assert_eq!(ext.get("gate_class").map(String::as_str), Some("none"));
     }
 
     fn tainted_tracker() -> FlowTracker {
@@ -365,7 +503,7 @@ mod ifc_http_enforcement {
     fn clean_session_allows_outbound_write() {
         let mut kernel = permissive_kernel();
         let flow = FlowTracker::new();
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        let r = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt").0;
         assert!(r.is_ok(), "clean session should allow write, got {r:?}");
     }
 
@@ -373,7 +511,8 @@ mod ifc_http_enforcement {
     fn tainted_session_denies_write() {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("tainted write must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -385,7 +524,8 @@ mod ifc_http_enforcement {
     fn tainted_session_denies_run() {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::RunBash, "echo hi")
+        let err = decide_capturing(&mut kernel, &flow, Operation::RunBash, "echo hi")
+            .0
             .expect_err("tainted run must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -398,7 +538,7 @@ mod ifc_http_enforcement {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
         // FileRead is not an OutboundAction, so taint does not block it.
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::ReadFiles, "in.txt");
+        let r = decide_capturing(&mut kernel, &flow, Operation::ReadFiles, "in.txt").0;
         assert!(r.is_ok(), "tainted read should still be allowed, got {r:?}");
     }
 
@@ -407,7 +547,7 @@ mod ifc_http_enforcement {
         let mut kernel = permissive_kernel();
         let flow = tainted_tracker();
         // WebFetch is a taint *source* (WebContent), not an OutboundAction.
-        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test");
+        let r = decide_capturing(&mut kernel, &flow, Operation::WebFetch, "https://x.test").0;
         assert!(r.is_ok(), "tainted web_fetch should be allowed, got {r:?}");
     }
 
@@ -417,14 +557,16 @@ mod ifc_http_enforcement {
         let mut flow = FlowTracker::new();
         // 1. Clean session: web fetch allowed.
         assert!(
-            decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test")
+            decide_capturing(&mut kernel, &flow, Operation::WebFetch, "https://x.test")
+                .0
                 .is_ok(),
             "clean web_fetch should be allowed"
         );
         // 2. Web content enters the session.
         flow.observe(NodeKind::WebContent).expect("observe");
         // 3. The exfiltration sink (write) is now denied — the lethal trifecta.
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("post-web write must be denied");
         assert!(
             matches!(err, ApiError::IfcDenied(_)),
@@ -433,20 +575,37 @@ mod ifc_http_enforcement {
     }
 
     #[test]
-    fn capability_deny_maps_to_insufficient_not_ifc() {
-        // read_only policy forbids writes; a clean session denial must surface as
-        // a capability error, NOT an IFC error (proves the two error classes are
-        // kept distinct).
+    fn capability_deny_is_distinct_from_ifc_and_names_the_ceiling() {
+        // read_only forbids writes; a clean-session denial must stay a CAPABILITY
+        // class error, distinct from an IFC one. That distinction is what this
+        // test has always protected and still does.
+        //
+        // What changed: the kernel reports this as
+        // `ActionTermRejected { detail: "WithinDelegationCeiling: requested
+        // WriteFiles@LowRisk exceeds available Never" }`, and the HTTP layer used
+        // to discard that detail and substitute a hand-written
+        // `InsufficientCapability { actual: Never }`. The substitution happened
+        // to be right HERE and was wrong for every other reason the kernel can
+        // give — a blocked path, an exhausted budget, an expired session, a
+        // request needing approval — all of which were reported as
+        // "capability is Never" about policies that said otherwise.
+        //
+        // So the assertion now checks the two things that are actually true and
+        // load-bearing: it is not an IFC denial, and the ceiling that caused it
+        // is named in the message rather than replaced by a constant.
         let mut kernel = Kernel::new(PermissionLattice::read_only());
         let flow = FlowTracker::new();
-        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+        let err = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .0
             .expect_err("read_only write must be denied");
         assert!(
-            matches!(
-                err,
-                ApiError::Nucleus(NucleusError::InsufficientCapability { .. })
-            ),
-            "expected InsufficientCapability, got {err:?}"
+            !matches!(err, ApiError::IfcDenied(_)),
+            "a capability denial must not be reported as an information-flow denial: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("WriteFiles") && msg.contains("Never"),
+            "the denial must name the operation and the ceiling it exceeded: {msg}"
         );
     }
 }
@@ -613,4 +772,429 @@ fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
         approvals.consume("run_bash"),
         "the trusted-signed operation must be registered"
     );
+}
+
+// ── Kernel denials must say what the kernel actually said ────────────────────
+//
+// Both arms of `decide_with_flow_mapped` used to return
+// `InsufficientCapability { actual: Never }` — a constant written at the call
+// site, not a reading of the policy. A pod whose profile sets
+// `read_files: Always` was told its capability was `Never` for a blocked path,
+// an exhausted budget, an expired session, or a request that only needed
+// approval. Found on a booted pod, where the guest's own resolved runtime
+// printed `read_files = Always` while the wire said `Never`.
+
+/// A path denial must report the PATH, not a capability level.
+#[test]
+fn a_blocked_path_is_not_reported_as_a_capability_of_never() {
+    let err = kernel_denial_to_api_error(
+        Operation::ReadFiles,
+        ".ssh/id_rsa",
+        DenyReason::PathBlocked {
+            path: ".ssh/id_rsa".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains(".ssh/id_rsa"),
+        "the denial must name the path it blocked: {msg}"
+    );
+    assert!(
+        !msg.contains("level is Never"),
+        "a path denial is not a claim about the capability lattice: {msg}"
+    );
+}
+
+/// A budget denial must not masquerade as a capability denial either — the two
+/// send an operator to entirely different places.
+#[test]
+fn a_budget_denial_keeps_its_own_reason() {
+    let err = kernel_denial_to_api_error(
+        Operation::RunBash,
+        "cargo test",
+        DenyReason::BudgetExhausted {
+            remaining_usd: "0.00".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("BudgetExhausted"),
+        "the budget reason must survive: {msg}"
+    );
+    assert!(
+        !msg.contains("level is Never"),
+        "not a capability claim: {msg}"
+    );
+}
+
+/// The ONE case where `InsufficientCapability` is the truth still reports it,
+/// so this fix did not simply delete the variant.
+#[test]
+fn a_real_capability_denial_is_still_reported_as_one() {
+    let err =
+        kernel_denial_to_api_error(Operation::RunBash, "sh", DenyReason::InsufficientCapability);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("insufficient capability"),
+        "a genuine capability denial must still say so: {msg}"
+    );
+}
+
+/// A command denial names the command.
+#[test]
+fn a_blocked_command_names_the_command() {
+    let err = kernel_denial_to_api_error(
+        Operation::RunBash,
+        "curl evil.example",
+        DenyReason::CommandBlocked {
+            command: "curl".to_string(),
+        },
+    );
+    assert!(err.to_string().contains("curl"));
+}
+
+/// An unfamiliar reason must surface accurately rather than being flattened
+/// into a capability claim — the failure mode this whole change removes.
+#[test]
+fn an_unmapped_reason_keeps_its_text_instead_of_becoming_a_capability_claim() {
+    let err = kernel_denial_to_api_error(
+        Operation::WebFetch,
+        "https://example.com",
+        DenyReason::IsolationGated {
+            dimension: "network".to_string(),
+        },
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("IsolationGated"), "reason must survive: {msg}");
+    assert!(msg.contains("network"), "detail must survive: {msg}");
+    assert!(
+        !msg.contains("level is Never"),
+        "not a capability claim: {msg}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Command output is a taint source (transport parity)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `/v1/run` returned arbitrary subprocess stdout to the agent and observed
+// nothing, while every other HTTP handler returning external bytes observes
+// them. `NUCLEUS_PARANOID_TOOL_IO=1` covered MCP and not HTTP, so enabling it
+// bought partial coverage with no signal that half the surface was uncovered.
+//
+// These tests are on the OBSERVATION SEMANTICS rather than on the handler,
+// which needs an AppState with a live sandbox. The handler wiring is one call
+// at the single return site of `run_command`.
+mod command_output_taint {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    /// **What the handler actually observes** — asserted against the constant the
+    /// call site uses, not against a kind named again in the test. Naming it
+    /// twice is how a test passes while the handler observes something weaker;
+    /// perturbation confirmed exactly that before this test existed.
+    #[test]
+    fn command_output_is_observed_as_an_adversarial_kind() {
+        let label =
+            nucleus_ifc_kernel::flow::intrinsic_label(crate::ingest::COMMAND_OUTPUT_NODE_KIND, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "command output is observed as {:?}, which cannot trip the egress gate",
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND
+        );
+    }
+
+    /// The two transports must agree: one flag, one policy.
+    #[test]
+    fn http_and_mcp_observe_tool_output_identically() {
+        assert_eq!(
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND,
+            NodeKind::McpToolResult,
+            "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
+        );
+    }
+
+    /// The point of observing at all: a session that has read command output
+    /// must be unable to take a privileged outbound action afterwards.
+    #[test]
+    fn observed_command_output_blocks_a_later_outbound_action() {
+        let mut kernel = permissive_kernel();
+        let mut flow = FlowTracker::new();
+
+        // Before: a clean session may act.
+        let (before, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(before.is_ok(), "clean session should allow the write");
+
+        // The command ran and its output entered the session.
+        flow.observe(NodeKind::McpToolResult)
+            .expect("observe command output");
+
+        // Asserts the action is NOT PERMITTED, not that it is specifically denied:
+        // the property under test is that command output taints, and that holds
+        // whether the graded policy refuses or defers. Pinning `IfcDenied` here
+        // would make this test a hostage of a policy it is not about.
+        let (after, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out2.txt");
+        assert!(
+            after.is_err(),
+            "post-command-output write must not be permitted; got {after:?}"
+        );
+    }
+
+    /// Without the observation the same sequence is permitted — which is what
+    /// the bug was, and what makes the test above load-bearing rather than a
+    /// restatement of the gate.
+    #[test]
+    fn unobserved_command_output_leaves_the_session_clean() {
+        let mut kernel = permissive_kernel();
+        let flow = FlowTracker::new();
+        // No observe call — the pre-fix behaviour of /v1/run.
+        let (after, _) = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(
+            after.is_ok(),
+            "with no observation the session stays clean — this is the hole"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Disk laundering: a round-trip through a file must not strip taint
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `NodeKind::FileRead` carries `IntegLevel::Trusted`, so reading a file yields a
+// trusted node no matter what is in it. An audit reported this as a mislabelled
+// constant; it is not. Changing the label is either a no-op (`Untrusted` — every
+// live consumer tests `== Adversarial` by EQUALITY, `ifc_api.rs:519,558,812`) or
+// unusable (`Adversarial` — the first file read taints every session forever).
+//
+// The real defect is a missing mechanism, and its REACHABILITY is the whole
+// story: by default, tainted bytes cannot reach disk at all, so the channel is
+// shut. It opens only when grading turns a write-denial into an approval.
+mod disk_laundering {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    fn tainted() -> FlowTracker {
+        let mut f = FlowTracker::new();
+        f.observe(NodeKind::WebContent)
+            .expect("observe web content");
+        f
+    }
+
+    /// **The precondition.** Ungraded, every route by which tainted bytes could
+    /// reach disk is denied — so the laundering channel is UNREACHABLE in the
+    /// default configuration. If this ever fails, the fix below stops being
+    /// defence-in-depth and becomes load-bearing.
+    #[test]
+    fn ungraded_tainted_bytes_cannot_reach_disk() {
+        let flow = tainted();
+        for op in [
+            Operation::WriteFiles,
+            Operation::EditFiles,
+            Operation::RunBash,
+        ] {
+            let mut kernel = permissive_kernel();
+            let r = decide_capturing(&mut kernel, &flow, op, "f.txt").0;
+            assert!(
+                matches!(r, Err(ApiError::IfcDenied(_))),
+                "{op:?} is no longer DENIED in a tainted session (got {r:?}).\n\
+                 This test is a TRIPWIRE, not a regression: it holds only in the \
+                 ungraded configuration. If it fires because NUCLEUS_GRADED_TAINT \
+                 is on, or because the default was flipped, then tainted bytes can \
+                 now reach disk via an approved write — the laundering channel is \
+                 REACHABLE and the tracked-path mechanism has become load-bearing \
+                 rather than defence-in-depth. Re-scope this test deliberately."
+            );
+        }
+    }
+
+    /// A shell stays denied even under grading, so there is no bash-written
+    /// blind spot — the tracked-path set does not need to see bash writes.
+    #[test]
+    fn bash_stays_denied_even_when_graded() {
+        assert_eq!(
+            portcullis::exposure_core::graded_taint_response(Operation::RunBash),
+            portcullis::exposure_core::TaintResponse::Deny,
+            "if bash ever becomes approvable, files it writes bypass the tracked set"
+        );
+    }
+
+    /// Retained from the boolean era: `COMMAND_OUTPUT_NODE_KIND` still governs
+    /// /v1/run output (#2134), which has no path to attach an edge to. The READ
+    /// path no longer uses it — see `mod provenance_edges` for the mechanism
+    /// that replaced it.
+    #[test]
+    fn command_output_is_still_observed_as_a_retainting_kind() {
+        let label =
+            nucleus_ifc_kernel::flow::intrinsic_label(crate::ingest::COMMAND_OUTPUT_NODE_KIND, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "a laundered read observed as {:?} would not restore the taint",
+            crate::ingest::COMMAND_OUTPUT_NODE_KIND
+        );
+    }
+
+    /// And the contrast that makes the above meaningful: an ORDINARY file read
+    /// stays trusted, so this does not blanket-taint every read.
+    #[test]
+    fn an_ordinary_file_read_is_still_trusted() {
+        let label = nucleus_ifc_kernel::flow::intrinsic_label(NodeKind::FileRead, 0);
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted,
+            "ordinary reads must stay trusted or every session locks on first read"
+        );
+    }
+
+    /// End to end on the flow tracker. NOTE this exercises the node-kind route
+    /// that /v1/run still uses; the FILE-read route now restores taint through a
+    /// provenance edge instead — `provenance_edges::a_read_inherits_the_taint_
+    /// of_the_write_it_derives_from` is the test for that.
+    #[test]
+    fn re_observing_a_laundered_read_restores_the_taint() {
+        // A plain file read leaves the session clean — the hole.
+        let mut clean = FlowTracker::new();
+        clean.observe(NodeKind::FileRead).expect("plain read");
+        assert!(
+            !clean.is_tainted(),
+            "a trusted read does not taint — the channel"
+        );
+
+        // The same read, recognised as laundered, does.
+        let mut fixed = FlowTracker::new();
+        fixed
+            .observe(crate::ingest::COMMAND_OUTPUT_NODE_KIND)
+            .expect("laundered read");
+        assert!(
+            fixed.is_tainted(),
+            "a laundered read must restore the taint"
+        );
+
+        // Not permitted — refused or deferred — for the same reason as above.
+        let mut kernel = permissive_kernel();
+        let r = decide_capturing(&mut kernel, &fixed, Operation::WriteFiles, "out.txt").0;
+        assert!(
+            r.is_err(),
+            "after a laundered read the session must not act outbound; got {r:?}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Provenance edges — lineage the proxy MEDIATED, not lineage it was told
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Production observed every flow node with no parents, so the causal DAG was
+// edgeless and every per-node check passed trivially. These are the first real
+// edges: the proxy wrote the bytes and read them back, so it established the
+// derivation itself. It never asks the agent, which is the compromised party
+// under this threat model and cannot be trusted to report its own data flow.
+mod provenance_edges {
+    use super::ifc_http_enforcement::{decide_capturing, permissive_kernel};
+    use super::*;
+
+    /// The parent's label joins into the child's, so a read of a tainted write
+    /// is adversarial WITHOUT a special case. #2135 achieved this by selecting a
+    /// different NodeKind from a boolean; it is now a consequence of the graph.
+    #[test]
+    fn a_read_inherits_the_taint_of_the_write_it_derives_from() {
+        let mut flow = FlowTracker::new();
+        let web = flow
+            .observe(NodeKind::WebContent)
+            .expect("taint the session");
+
+        // The write, parented on the adversarial node (what the live path does).
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[web])
+            .expect("write node");
+
+        // The read, parented on the write.
+        let read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .expect("read node");
+
+        let label = flow.label(read).expect("read has a label");
+        assert_eq!(
+            label.integrity,
+            nucleus_ifc_kernel::IntegLevel::Adversarial,
+            "taint must reach the read through the edge, not by special case"
+        );
+    }
+
+    /// The contrast that makes the above meaningful: with NO edge, the same read
+    /// is trusted. This is the edgeless production behaviour being fixed — and if
+    /// this test ever fails, `FileRead` has stopped being trusted and the one
+    /// above proves nothing.
+    #[test]
+    fn without_the_edge_the_same_read_is_trusted() {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent)
+            .expect("taint the session");
+        let orphan = flow
+            .observe_with_parents(NodeKind::FileRead, &[])
+            .expect("parentless read");
+        assert_eq!(
+            flow.label(orphan).expect("label").integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted,
+            "a parentless FileRead is trusted — this is what the edge fixes"
+        );
+    }
+
+    /// A clean session's write/read chain stays clean, so the edge is not just
+    /// tainting everything it touches.
+    #[test]
+    fn a_clean_chain_stays_clean() {
+        let mut flow = FlowTracker::new();
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[])
+            .expect("write");
+        let read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .expect("read");
+        assert!(!flow.is_tainted(), "no adversarial node was ever observed");
+        assert_eq!(
+            flow.label(read).expect("label").integrity,
+            nucleus_ifc_kernel::IntegLevel::Trusted
+        );
+    }
+
+    /// End to end: after reading a laundered path the session cannot act.
+    #[test]
+    fn a_laundered_read_still_blocks_the_next_outbound_action() {
+        let mut flow = FlowTracker::new();
+        let web = flow.observe(NodeKind::WebContent).unwrap();
+        let write = flow
+            .observe_with_parents(NodeKind::FileRead, &[web])
+            .unwrap();
+        let _read = flow
+            .observe_with_parents(NodeKind::FileRead, &[write])
+            .unwrap();
+
+        let mut kernel = permissive_kernel();
+        let r = decide_capturing(&mut kernel, &flow, Operation::WriteFiles, "out.txt").0;
+        assert!(
+            r.is_err(),
+            "must not act outbound after a laundered read; got {r:?}"
+        );
+    }
+
+    /// `latest_adversarial_node` must actually find one, and must return `None`
+    /// on a clean session — otherwise the write path would attach a bogus parent
+    /// or none at all, and both failures are silent.
+    #[test]
+    fn latest_adversarial_node_is_selective() {
+        let mut clean = FlowTracker::new();
+        clean.observe(NodeKind::UserPrompt).unwrap();
+        assert_eq!(
+            clean.latest_adversarial_node(),
+            None,
+            "clean session has none"
+        );
+
+        let mut dirty = FlowTracker::new();
+        dirty.observe(NodeKind::UserPrompt).unwrap();
+        let web = dirty.observe(NodeKind::WebContent).unwrap();
+        assert_eq!(dirty.latest_adversarial_node(), Some(web));
+    }
 }

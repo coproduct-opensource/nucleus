@@ -134,23 +134,42 @@ fn ensure_nucleus_node_available(vm_name: &str) -> Result<()> {
         .context("Failed to check for nucleus-node in VM")?;
 
     if !output.status.success() {
-        println!();
-        println!("WARNING: nucleus-node binary not found in Lima VM.");
-        println!();
-        println!("To install nucleus-node in the VM:");
-        println!("  1. Build: cargo build --release -p nucleus-node");
-        println!(
-            "  2. Copy to VM: limactl copy nucleus target/release/nucleus-node :/usr/local/bin/"
+        // This used to hand out a four-step cross-compile recipe, for a binary
+        // the project already publishes and `setup` now installs. Telling
+        // someone to build from source because a provisioning step was never
+        // written is not a workaround, it is the bug wearing instructions.
+        bail!(
+            "nucleus-node is not installed in Lima VM '{vm_name}'.\n\
+             Install it (and the kernel, rootfs and node secrets) with:\n\
+             \n    nucleus setup\n\n\
+             To use this working tree's own build instead of the pinned release:\n\
+             \n    nucleus setup --artifacts local\n"
         );
-        println!();
-        println!("Or use the cross-compiled binary:");
-        println!("  1. Build: scripts/cross-build.sh");
-        println!(
-            "  2. Copy: limactl copy {} target/aarch64-unknown-linux-musl/release/nucleus-node :/usr/local/bin/",
-            vm_name
+    }
+
+    // A node binary with no environment file cannot start: the node requires
+    // three secrets at startup and exits immediately without them. Checking here
+    // turns a systemd restart loop into one sentence.
+    let env_present = Command::new("limactl")
+        .args([
+            "shell",
+            vm_name,
+            "--",
+            "sudo",
+            "test",
+            "-s",
+            crate::provision::NODE_ENV_PATH,
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !env_present {
+        bail!(
+            "nucleus-node is installed in '{vm_name}' but {} is missing.\n\
+             The node requires three HMAC secrets at startup and will exit without them.\n\
+             Write it with: nucleus setup",
+            crate::provision::NODE_ENV_PATH
         );
-        println!();
-        bail!("nucleus-node not available in VM");
     }
 
     Ok(())

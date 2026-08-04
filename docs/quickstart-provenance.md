@@ -96,7 +96,9 @@ The `price` and `volume` values have a **cryptographic proof chain**:
 Source URL → SHA-256 content hash → WASM parser (content-addressed) → output hash
 ```
 
-The flow graph proves there is **no model node** in the causal ancestry of these values. The model orchestrated the fetch and parser, but never touched the data. An auditor can independently re-execute the parser on the raw content and verify the output hash matches.
+The model orchestrated the fetch and parser, but never touched the data — and the evidence for that is **re-execution, not graph traversal**. Every step is content-addressed: the fetched bytes, the parser module, and the output. An auditor re-runs the parser on the raw content and checks that the output hash matches. If a model had altered the value, the hash would not reproduce.
+
+> **What this does not claim.** Nucleus's flow graph does not currently carry derivation edges — nodes are recorded without parents — so nothing here is established by walking a causal ancestry. Phrasing it that way would be worse than useless: with no edges, "no model node in the ancestry" is trivially true of *every* value, including ones a model did produce. The guarantee above rests on content-addressed re-execution, which is independently checkable by someone who does not trust us.
 
 The `analysis` field is honestly labeled as `AIDerived` — the model generated it, and the provenance output says so. No false claims.
 
@@ -144,5 +146,14 @@ The `analysis` field is honestly labeled as `AIDerived` — the model generated 
 |----------|----------------------|
 | **EU AI Act Article 50** | `contains_ai_derived` flag, machine-readable provenance |
 | **FINRA/SEC** | Immutable receipt chain, Ed25519 signed |
-| **W3C PROV-DM** | PROV-JSON export from flow graph |
+| **W3C PROV-DM** | PROV-JSON export of flow *nodes* (entities/activities/agents + IFC labels). Derivation relations (`wasDerivedFrom`, `used`) are **not** emitted — see note below. CLI export not yet shipped. |
 | **NIST AI RMF** | Execution context telemetry in receipts |
+
+> **Note on derivation relations.** The PROV exporter previously emitted
+> `wasDerivedFrom` and `used` inferred from *observation order* — entity *i* was
+> declared derived from entity *i−1* — which asserts data flows that were never
+> computed. Those relations have been removed rather than left in place with a
+> caveat: in a document offered as regulatory evidence, a fabricated relation is
+> worse than a missing one, because a missing relation is visibly absent while a
+> fabricated one is indistinguishable from a real finding. Emitting real
+> relations requires derivation edges in the flow graph, which is open work.

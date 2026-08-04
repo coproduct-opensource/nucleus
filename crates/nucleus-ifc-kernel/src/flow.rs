@@ -1102,6 +1102,83 @@ pub struct ZkFlowInput {
     pub nodes: Vec<FlowNode>,
 }
 
+impl ZkFlowInput {
+    /// Build an input for the action a session is about to take, over the
+    /// session's causal DAG.
+    ///
+    /// # Why a constructor rather than a struct literal
+    ///
+    /// The struct is three public fields, and a caller can fill them with
+    /// anything. The combination that matters — a real DAG plus the action
+    /// actually being authorised — cannot be produced by
+    /// `FlowTracker::snapshot` alone (deliberately not an intra-doc link: this
+    /// file is kernel, and the boundary ratchet counts a link upward as a
+    /// dependency): every node a tracker holds is an observation, and
+    /// `check_flow` returns `Allow`
+    /// for any node with `operation: None`. A `ZkFlowInput` whose nodes all come
+    /// from a snapshot therefore verifies **nothing**; it confirms `Allow` for
+    /// every session including a maximally tainted one.
+    ///
+    /// This constructor appends the missing piece: an `OutboundAction` node
+    /// carrying the `operation` and `sink_class` the kernel decided on, whose
+    /// parents are the observations the action draws from. Its label is the
+    /// propagated join of those parents, so the verifier re-derives the same
+    /// label the kernel did rather than being handed one.
+    ///
+    /// `parents` beyond [`MAX_PARENTS`] are truncated — the same incompleteness
+    /// `latest_adversarial_node` documents. The resulting graph records real
+    /// edges, not necessarily every edge, and the session ceiling remains the
+    /// backstop.
+    ///
+    /// # Panics
+    ///
+    /// Never. An empty `snapshot` yields a single-node graph (the action with no
+    /// parents), which is a truthful description of a session that observed
+    /// nothing.
+    pub fn for_action(
+        snapshot: Vec<FlowNode>,
+        operation: Operation,
+        sink_class: Option<SinkClass>,
+        parents: &[NodeId],
+        expected_verdict: FlowVerdict,
+    ) -> Self {
+        let mut nodes = snapshot;
+        let action_node_id = (nodes.len() + 1) as NodeId;
+
+        let mut parent_ids = [0u64; MAX_PARENTS];
+        let n = parents.len().min(MAX_PARENTS);
+        parent_ids[..n].copy_from_slice(&parents[..n]);
+
+        // The action's label is the join of its parents with the intrinsic
+        // label of an outbound action — the same computation the kernel ran.
+        // Deriving it here rather than accepting one means a caller cannot
+        // hand the verifier a flattering label.
+        let parent_labels: Vec<IFCLabel> = parents
+            .iter()
+            .take(MAX_PARENTS)
+            .filter_map(|pid| nodes.iter().find(|n| n.id == *pid).map(|n| n.label))
+            .collect();
+        let label = propagate_label(&parent_labels, intrinsic_label(NodeKind::OutboundAction, 0));
+
+        nodes.push(FlowNode {
+            id: action_node_id,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: n as u8,
+            parents: parent_ids,
+            operation: Some(operation),
+            sink_class,
+            effect_kind: None,
+        });
+
+        Self {
+            action_node_id,
+            expected_verdict,
+            nodes,
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // zkVM guest verification (#1134) — check IFC noninterference on a flow snapshot
 // ═══════════════════════════════════════════════════════════════════════════

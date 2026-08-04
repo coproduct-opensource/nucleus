@@ -2962,7 +2962,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3186,7 +3186,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3226,7 +3226,38 @@ dependencies = [
 [[package]]
 name = "dlc-core"
 version = "1.5.0"
-source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=bc7bc35ff79226267c906a2e1f1317cae6e918bb#bc7bc35ff79226267c906a2e1f1317cae6e918bb"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+
+[[package]]
+name = "dlc-crypto"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "dlc-core",
+ "ed25519-dalek 2.2.0",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "dlc-d"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "dlc-core",
+ "dlc-crypto",
+ "dlc-d-macro",
+]
+
+[[package]]
+name = "dlc-d-macro"
+version = "1.5.0"
+source = "git+https://github.com/coproduct-opensource/delegation_calc.git?rev=34358234cb46279c4ce8a8729736a4135174f65a#34358234cb46279c4ce8a8729736a4135174f65a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "dlopen2"
@@ -3490,7 +3521,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6468,7 +6499,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6522,6 +6553,7 @@ dependencies = [
  "c2pa",
  "chrono",
  "clap",
+ "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "hmac 0.13.0",
  "nucleus-spec",
@@ -6662,6 +6694,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-cred-broker"
+version = "1.0.0"
+dependencies = [
+ "nucleus-cred-protocol",
+ "serde",
+ "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
+name = "nucleus-cred-protocol"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "hmac 0.13.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "nucleus-creditworthiness"
 version = "1.0.0"
 dependencies = [
@@ -6755,6 +6808,19 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "nucleus-flow-replay"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "portcullis",
+ "portcullis-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -6965,7 +7031,11 @@ dependencies = [
  "jsonwebtoken",
  "nucleus",
  "nucleus-client",
+ "nucleus-cred-broker",
+ "nucleus-cred-protocol",
  "nucleus-identity",
+ "nucleus-ifc-kernel",
+ "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-spec",
@@ -7267,12 +7337,15 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "dlc-crypto",
+ "dlc-d",
  "ed25519-dalek 3.0.0-pre.7",
  "glob",
  "hex",
  "hmac 0.13.0",
  "nucleus",
  "nucleus-client",
+ "nucleus-cred-protocol",
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-permission-market",
@@ -8264,6 +8337,9 @@ dependencies = [
  "cedar-policy",
  "cel-interpreter",
  "chrono",
+ "dlc-core",
+ "dlc-crypto",
+ "dlc-d",
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "hmac 0.13.0",
@@ -8308,12 +8384,14 @@ name = "portcullis-effects"
 version = "1.0.0"
 dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
+ "http 1.4.1",
  "nucleus-provenance-memory",
  "portcullis-core",
  "proptest",
  "regex",
  "reqwest 0.13.4",
  "rustls 0.23.42",
+ "sha2 0.11.0",
  "shell-words",
  "tempfile",
  "tokio",
@@ -9850,9 +9928,9 @@ dependencies = [
 
 [[package]]
 name = "ruint"
-version = "1.18.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0298da754d1395046b0afdc2f20ee76d29a8ae310cd30ffa84ed42acba9cb12a"
+checksum = "f5e99bff0393163bb25029a6af25d3d8d202ba5b5438a74d1bd8789f5c822970"
 dependencies = [
  "borsh",
  "proptest",
@@ -9967,7 +10045,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10048,7 +10126,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10291,7 +10369,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11349,7 +11427,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -11358,7 +11436,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13016,7 +13094,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

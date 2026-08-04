@@ -15,12 +15,15 @@ step = 1
 
 [[files]]
 path = "crates/nucleus-tool-proxy/src/main.rs"
-ceiling = 4118
+# Reset to the measured value 2026-07-31: the script only ever enforced the
+# first entry, so this had drifted to 4975 while declaring 4118.
+ceiling = 4975
 target = 2500
 step = 1
 
 [[files]]
 path = "crates/nucleus-node/src/main.rs"
-ceiling = 3252
+# Reset to the measured value 2026-07-31 (was a fictional 3252; see above).
+ceiling = 4042
 target = 2000
 step = 1
