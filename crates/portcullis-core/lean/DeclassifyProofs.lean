@@ -9,9 +9,10 @@ Proves that declassification rules cannot escalate privileges:
 - RaiseAuthority can only increase authority
 - No rule modifies dimensions it doesn't target
 - Applying a rule twice is idempotent
-- Robust declassification: the authenticated, artifact-scoped, sink-restricted
-  token path confines endorsement to the authorized target — an attacker cannot
-  influence what/where is endorsed (Askarov–Myers robustness)
+- Token guard scoping: the authenticated, artifact-scoped, sink-restricted token
+  path confines endorsement to the authorized target. This is NOT robust
+  declassification — see the note above `authorized_endorsement` for why the
+  citation was removed.
 
 Hand-written Lean models mirroring `portcullis-core/src/declassify.rs`.
 All proofs fully checked, no proof holes.
@@ -222,9 +223,20 @@ theorem non_expired_token_matches_rule (label from_ to_ : IntegLevel) (valid_unt
 -- under a security posture at both application (#2058) and registration (#2060).
 -- The signed path endorses ONLY a named target node, only with a verified
 -- signature, only before expiry, and only toward allowlisted sinks. These
--- theorems prove that path satisfies ROBUST DECLASSIFICATION: an attacker cannot
--- influence what/where is endorsed (Askarov–Myers robustness; Myers–Sabelfeld–
--- Zdancewic robust declassification).
+-- theorems prove the guard is ENFORCED. That is NOT robust declassification, and
+-- this comment used to claim it was.
+--
+-- Robust declassification (Myers–Sabelfeld–Zdancewic; Askarov–Myers) is a
+-- RELATIONAL property quantified over execution runs — canonically four, varying
+-- the secret within a pair and the attack across pairs — constraining the
+-- attacker's influence over both the CONTENT and the TIMING of a release. These
+-- theorems have no program, no step relation and no second run; timing is not
+-- modelled at all. They are guard-scoping lemmas.
+--
+-- Proving the real property needs a trace semantics for the reachable
+-- declassification path plus one-shot/timing constraints on the token. Until
+-- then the citation is removed rather than qualified: a reader who sees the name
+-- reasonably assumes the four-run obligation was discharged.
 
 /-- Endorsement via the authenticated, artifact-scoped token. `authorized` models
     successful Ed25519 signature verification against a trusted key (the runtime

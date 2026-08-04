@@ -93,7 +93,7 @@ fn federated_store(seq: u64) -> FederationStore {
 /// Mint an ES256 SVID with the given key, sub, aud, exp, and kid.
 fn mint_es256(priv_pkcs8: &str, sub: &str, aud: &str, exp: u64, kid: Option<&str>) -> String {
     let key = EncodingKey::from_ec_pem(priv_pkcs8.as_bytes()).expect("EC pem parses");
-    let mut header = Header::new(Algorithm::ES256);
+    let mut header = Header::new(Algorithm::ES256); // alg-pin-allow: signs a test JWT-SVID as a federated SPIFFE issuer would; EC is what SPIRE emits, and the point of these tests is that verification handles it correctly.
     header.kid = kid.map(|k| k.to_string());
     let claims = json!({ "sub": sub, "aud": aud, "exp": exp });
     encode(&header, &claims, &key).expect("ES256 sign")
@@ -190,7 +190,7 @@ fn negative_b_expired_svid_rejected() {
 fn negative_b_absent_exp_rejected() {
     let store = federated_store(1);
     let key = EncodingKey::from_ec_pem(SVID_PRIV_PKCS8.as_bytes()).unwrap();
-    let mut header = Header::new(Algorithm::ES256);
+    let mut header = Header::new(Algorithm::ES256); // alg-pin-allow: signs a test JWT-SVID as a federated SPIFFE issuer would; EC is what SPIRE emits, and the point of these tests is that verification handles it correctly.
     header.kid = Some(SVID_KID.to_string());
     // No `exp` claim at all.
     let claims = json!({ "sub": SUB, "aud": AUD });
@@ -208,7 +208,7 @@ fn negative_b_absent_aud_rejected() {
     // aud MUST be present and contain the expected audience.
     let store = federated_store(1);
     let key = EncodingKey::from_ec_pem(SVID_PRIV_PKCS8.as_bytes()).unwrap();
-    let mut header = Header::new(Algorithm::ES256);
+    let mut header = Header::new(Algorithm::ES256); // alg-pin-allow: signs a test JWT-SVID as a federated SPIFFE issuer would; EC is what SPIRE emits, and the point of these tests is that verification handles it correctly.
     header.kid = Some(SVID_KID.to_string());
     let claims = json!({ "sub": SUB, "exp": now() + 300 });
     let token = encode(&header, &claims, &key).unwrap();

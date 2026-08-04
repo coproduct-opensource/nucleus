@@ -46,7 +46,7 @@ postcard = { version = "1", default-features = false, features = ["use-std"], op
 
 [dev-dependencies]
 # Tests parse the witness's real cosignature line payload back out.
-base64 = "0.22"
+base64 = "0.23"
 # Async runtime for the #[tokio::test] live 2-node networking test (compiled
 # in CI under --features transport, but #[ignore]'d so the QUIC path is not run).
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

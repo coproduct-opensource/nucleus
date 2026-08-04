@@ -48,7 +48,7 @@ pub struct HostState {
     monitor: BoundaryMonitor,
     files: HashMap<i32, (Vec<u8>, IFCLabel)>,
     http: HashMap<i32, (Vec<u8>, IFCLabel)>,
-    exec: HashMap<i32, Vec<u8>>,
+    exec: HashMap<i32, (Vec<u8>, IFCLabel)>,
     /// Bytes the guest successfully sent out via `http_post` (the egress log).
     egress: Vec<(i32, Vec<u8>)>,
     /// The declassification rule a trusted summarizer is authorized to apply.
@@ -84,8 +84,14 @@ impl HostState {
     }
 
     /// Seed an exec output the guest can `exec_run` by `key`.
-    pub fn seed_exec(&mut self, key: i32, bytes: Vec<u8>) {
-        self.exec.insert(key, bytes);
+    /// Seed command output for `exec_run`, WITH its label.
+    ///
+    /// The label is not optional and never was safe to omit: `exec_run` is a
+    /// SOURCE, so its bytes must raise `pc` exactly as `seed_file`'s do.
+    /// Without it, command output entered the guest unlabelled and could be
+    /// posted to a public sink with the monitor never objecting.
+    pub fn seed_exec(&mut self, key: i32, bytes: Vec<u8>, label: IFCLabel) {
+        self.exec.insert(key, (bytes, label));
     }
 
     /// Read back a file's bytes (e.g. to assert what the guest wrote).
@@ -243,11 +249,15 @@ pub fn link_world(linker: &mut Linker<HostState>, world: &WasiWorld) -> Result<(
         linker.func_wrap(
             "host",
             "exec_run",
-            |caller: Caller<'_, HostState>, key: i32| -> i32 {
-                match caller.data().exec.get(&key).cloned() {
-                    Some(bytes) => deliver(caller, &bytes),
-                    None => NOT_FOUND,
-                }
+            // SOURCE: stamps the command output's label into pc, exactly as
+            // `fs_read` and `http_fetch` do. Command output is frequently the
+            // most sensitive thing a guest touches.
+            |mut caller: Caller<'_, HostState>, key: i32| -> i32 {
+                let Some((bytes, label)) = caller.data().exec.get(&key).cloned() else {
+                    return NOT_FOUND;
+                };
+                caller.data_mut().monitor.stamp(label);
+                deliver(caller, &bytes)
             },
         )?;
     }
@@ -285,6 +295,68 @@ mod tests {
     use crate::world_of;
     use portcullis_core::{CapabilityLattice, CapabilityLevel};
 
+    // ── THE HOST SURFACE PIN ────────────────────────────────────────────────
+    //
+    // The complete set of host functions a guest can import. This is the
+    // sandbox's attack surface: everything a guest can reach that is not pure
+    // computation. Nothing asserted it before, so a new `func_wrap` was
+    // invisible — the same shape as an undeclared build target, and the reason
+    // the 2026 escape literature can say "94.4% of agents are vulnerable"
+    // without anyone being able to enumerate what their sandbox trusts.
+    //
+    // Enumerated from the LINKER, not from the source text: a grep for
+    // `func_wrap` would be a second implementation that can disagree with the
+    // thing it describes, and could not see a function linked by any other
+    // route.
+    //
+    // If you are here because this test failed, you added or removed a host
+    // function. That is a change to the sandbox's attack surface. Update the
+    // list deliberately, and say why in the commit.
+    fn linked_surface(world: &WasiWorld) -> std::collections::BTreeSet<String> {
+        let engine = Engine::default();
+        let mut linker: Linker<HostState> = Linker::new(&engine);
+        link_world(&mut linker, world).expect("link_world");
+        let mut store = Store::new(&engine, HostState::new(*world));
+        linker
+            .iter(&mut store)
+            .map(|(module, name, _)| format!("{module}::{name}"))
+            .collect()
+    }
+
+    #[test]
+    fn host_surface_is_exactly_pinned() {
+        let got = linked_surface(&WasiWorld::top());
+        let want: std::collections::BTreeSet<String> = [
+            "host::declassify",
+            "host::exec_run",
+            "host::fs_read",
+            "host::fs_write",
+            "host::http_fetch",
+            "host::http_post",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(got, want, "the guest-reachable host surface changed");
+    }
+
+    #[test]
+    fn the_empty_world_still_exposes_declassify() {
+        // Five of the six host functions are gated on a `WasiGrant` being
+        // present. `declassify` is NOT: it is linked unconditionally, so a guest
+        // granted nothing at all can still call the IFC escape hatch.
+        //
+        // That is defensible — `declassify` only succeeds when a matching
+        // approved rule exists, so the gate is at the rule level rather than the
+        // link level — but it is an asymmetry, and an asymmetry nobody wrote
+        // down is one nobody is deciding to keep. Pinned here so that removing
+        // the gate from another function, or gating this one, is a visible diff.
+        let got = linked_surface(&WasiWorld::bottom());
+        let want: std::collections::BTreeSet<String> =
+            ["host::declassify"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, want, "the ungated host surface changed");
+    }
+
     // Filesystem-only guest (capability tests).
     const FS_GUEST: &str = r#"
         (module
@@ -304,6 +376,20 @@ mod tests {
           (memory (export "memory") 1)
           (func (export "do_exec") (param $key i32) (result i32)
             (call $exec (local.get $key))))
+    "#;
+
+    // Exec-source guest: read command output, then try to egress it. This is
+    // AgentLeak's C4 (tool outputs) — an INTERNAL channel that output-only
+    // auditing misses.
+    const EXEC_EGRESS_GUEST: &str = r#"
+        (module
+          (import "host" "exec_run"  (func $exec (param i32) (result i32)))
+          (import "host" "http_post" (func $post (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "run") (param $key i32) (result i32)
+            (call $exec (local.get $key)))
+          (func (export "post") (param $key i32) (param $len i32) (result i32)
+            (call $post (local.get $key) (local.get $len))))
     "#;
 
     // Full I/O guest (IFC tests): sources + sinks on both filesystem and http.
@@ -420,8 +506,12 @@ mod tests {
         };
         let world = world_of(&cap);
         assert!(world.exec.present());
-        let (mut store, inst) =
-            instantiate(world, |s| s.seed_exec(1, b"ok".to_vec()), EXEC_GUEST).unwrap();
+        let (mut store, inst) = instantiate(
+            world,
+            |s| s.seed_exec(1, b"ok".to_vec(), ifc::public_egress()),
+            EXEC_GUEST,
+        )
+        .unwrap();
         let do_exec = inst
             .get_typed_func::<i32, i32>(&mut store, "do_exec")
             .unwrap();
@@ -590,8 +680,70 @@ mod tests {
         assert!(log[0].applied);
     }
 
+    /// Command output is a LABELLED source, and the label is what decides.
+    ///
+    /// AgentLeak (arXiv 2602.11510) instruments seven channels and finds the
+    /// internal ones leak far more than the one everybody audits: inter-agent
+    /// messages leak at 68.8% against 27.2% for final outputs, so output-only
+    /// auditing misses 41.7% of violations. Tool OUTPUT is one of those channels.
+    ///
+    /// `fs_read` and `http_fetch` stamp the monitor; `exec_run` did neither, and
+    /// `seed_exec` took no label at all — command output entered the guest
+    /// unlabelled.
+    ///
+    /// WRITTEN AS A DISCRIMINATING PAIR, and it had to be. The first version of
+    /// this test seeded one secret and asserted the post was denied — which
+    /// passes with OR without the stamp, because an unstamped `pc` is `⊥`, and
+    /// `⊥` fails `flows_to` on integrity/authority anyway. It asserted a true
+    /// thing for the wrong reason and would have shipped a fix whose effect it
+    /// could not demonstrate. Two runs are needed: the permissive label must be
+    /// ALLOWED and the secret one DENIED, so only a monitor that actually reads
+    /// the label passes both.
+    #[test]
+    fn exec_output_label_decides_whether_it_can_egress() {
+        fn post_after_exec(label: IFCLabel) -> (i32, i32) {
+            let world = world_of(&CapabilityLattice {
+                run_bash: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                ..CapabilityLattice::bottom()
+            });
+            let (mut store, inst) = instantiate(
+                world,
+                |s| s.seed_exec(7, b"command output".to_vec(), label),
+                EXEC_EGRESS_GUEST,
+            )
+            .unwrap();
+            let run = inst.get_typed_func::<i32, i32>(&mut store, "run").unwrap();
+            let post = inst
+                .get_typed_func::<(i32, i32), i32>(&mut store, "post")
+                .unwrap();
+            let n = run.call(&mut store, 7).unwrap();
+            assert!(n > 0, "the guest must actually receive the command output");
+            (n, post.call(&mut store, (0, n)).unwrap())
+        }
+
+        // Permissive command output: egress ALLOWED. This is the half that fails
+        // if `exec_run` does not stamp, because an unstamped pc is ⊥ and ⊥ does
+        // not satisfy the sink's integrity/authority requirement.
+        let (_, allowed) = post_after_exec(ifc::public_egress());
+        assert_eq!(
+            allowed, 0,
+            "permissively-labelled command output must be allowed to egress — \
+             if this denies, exec_run is not stamping and pc is still ⊥"
+        );
+
+        // Secret command output: egress DENIED.
+        let (_, denied) = post_after_exec(ifc::secret());
+        assert_eq!(
+            denied, DENY_IFC,
+            "secret command output reached a public sink — exec is an \
+             unmonitored channel"
+        );
+    }
+
     /// Without authorization, the guest cannot declassify — the import denies,
     /// and the secret stays put.
+
     #[test]
     fn unauthorized_declassify_is_denied() {
         let (mut store, inst) = instantiate(

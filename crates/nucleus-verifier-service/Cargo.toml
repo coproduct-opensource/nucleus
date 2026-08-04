@@ -47,7 +47,7 @@ chrono = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros", "migrate"] }
 ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
 rand = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 tower_governor = "0.8"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

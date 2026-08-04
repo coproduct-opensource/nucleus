@@ -17,7 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 # Pinned to the single workspace-wide dalek line (see workspace Cargo.toml);
 # signing + verification only, no key generation, so no rand features.
 ed25519-dalek = "=3.0.0-pre.7"

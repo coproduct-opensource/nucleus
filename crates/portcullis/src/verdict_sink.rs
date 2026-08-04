@@ -22,10 +22,26 @@ use std::collections::BTreeMap;
 use crate::capability::Operation;
 
 /// Outcome of a single tool call (before audit recording).
+///
+/// `#[non_exhaustive]`: outcomes are an evidence vocabulary, so future kinds
+/// must be additive for downstream matches rather than a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum VerdictOutcome {
     /// The operation was permitted and completed successfully.
     Allow,
+    /// The operation was **deferred to a human** — it is neither permitted nor
+    /// refused until an approval is presented.
+    ///
+    /// Distinct from [`VerdictOutcome::Deny`] on purpose. Recording a deferral
+    /// as a refusal loses the EU AI Act Article 14 human-oversight evidence:
+    /// "the system refused" and "the system escalated to a person" are
+    /// different governance events, and an auditor must be able to tell them
+    /// apart without string-matching a human-facing message.
+    RequiresApproval {
+        /// Why an approval is required.
+        reason: String,
+    },
     /// The operation was denied by policy, lockdown, or capability guard.
     Deny {
         /// Human-readable reason for the denial.
