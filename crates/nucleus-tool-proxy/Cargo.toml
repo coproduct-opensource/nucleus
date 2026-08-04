@@ -82,7 +82,7 @@ tokio-util = "0.7"
 base64 = { workspace = true }
 ring = { workspace = true }
 rust_decimal = { workspace = true }
-pem = "3"
+pem = "4"
 
 # File search tools
 glob = "0.3"

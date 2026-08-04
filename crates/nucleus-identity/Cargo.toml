@@ -46,7 +46,7 @@ chrono = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
-pem = "3"
+pem = "4"
 time = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
