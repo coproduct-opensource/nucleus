@@ -82,9 +82,42 @@ impl Canonical {
 pub struct RunFacts {
     /// The pod's UUID. Minted before any secret is read, so it cannot encode one.
     pub pod_id: String,
-    /// The guest CID. Allocated from a counter, not derived from pod content.
+    /// The guest CID.
+    ///
+    /// The previous comment here said "allocated from a counter", which is not
+    /// true of any path: `firecracker_config.rs` takes it from the `--vsock-cid`
+    /// argument, and [`crate::twosafety_boot`] passes a compile-time constant.
+    /// A doc comment asserting a provenance nothing enforces is the weakest form
+    /// of the guarantee, so it now says what is actually the case.
     pub guest_cid: u32,
 }
+
+// ---------------------------------------------------------------------------
+// WHY `RunFacts` MAY BE ERASED AT ALL — the load-bearing assumption.
+//
+// The comparison is not `f s₁` against `f s₂`. It is `h_{r₁}(f s₁)` against
+// `h_{r₂}(f s₂)`: two observations put through two DIFFERENT erasure functions,
+// one per run. That is only sound if `r` — the run facts — is uncorrelated with
+// the secret. If a fact could be a function of the secret, the erasure keyed on
+// it could cancel exactly the difference the experiment exists to find, and the
+// harness would go quiet precisely when it mattered.
+//
+// Both fields are secret-independent BY CONSTRUCTION, which is a stronger answer
+// than a correlation test could give — a test can fail to detect a correlation,
+// never establish its absence:
+//
+// * `guest_cid` — `twosafety_boot::GUEST_CID`, a compile-time constant. The two
+//   runs pass literally the same value, so it cannot carry a per-run anything,
+//   let alone a per-secret one.
+// * `pod_id` — `Uuid::new_v4()`, minted node-side from the CSPRNG. Random bytes
+//   are not a function of the request that triggered them.
+//
+// If either ever becomes derived — a CID allocated from pod content, a v5 UUID
+// namespaced on the spec — this argument dies silently and the erasures keyed
+// on them become unsound. That is the thing to re-check before changing how
+// either is minted, and it is stated here rather than in a commit message
+// because the commit message is not where anyone will look.
+// ---------------------------------------------------------------------------
 
 /// Where two runs disagreed. Carries the component and a bounded excerpt of the
 /// FIRST differing line — never the whole content, and never a value the caller
