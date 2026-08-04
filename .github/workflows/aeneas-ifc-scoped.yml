@@ -38,6 +38,8 @@ on:
       - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/generated-egress/**"
       - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/generated-cap-quantale/**"
+      - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
       - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
@@ -52,6 +54,8 @@ on:
       - "crates/portcullis-core/lean/generated-mediation/**"
       - "crates/portcullis-core/lean/generated-egress/**"
       - "crates/portcullis-core/lean/generated-credential/**"
+      - "crates/portcullis-core/lean/generated-cap-quantale/**"
+      - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
       - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
@@ -70,7 +74,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits,nucleus_ifc_kernel::extracted::capability_quantale::caprank,nucleus_ifc_kernel::extracted::capability_quantale::capunit,nucleus_ifc_kernel::extracted::capability_quantale::capbot,nucleus_ifc_kernel::extracted::capability_quantale::capmeet,nucleus_ifc_kernel::extracted::capability_quantale::capjoin,nucleus_ifc_kernel::extracted::capability_quantale::capleq,nucleus_ifc_kernel::extracted::capability_quantale::capresidual"
 
 jobs:
   aeneas-ifc-scoped:
@@ -252,6 +256,35 @@ jobs:
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreCredential.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-credential/ canonicalized from the fresh extraction; theorem builds against it."
 
+      # generated-cap-quantale is the SIXTH extracted model and the last one that
+      # nothing re-derived. Unlike egress and credential, it needed new
+      # EXTRACT_ROOTS — `capability_quantale` was absent from the scoped
+      # extraction entirely, so the slice did not contain these definitions at
+      # all.
+      #
+      # It also could not be fixed by canonicalizing alone. CapabilityResiduatedQuantaleProofs
+      # is built by portcullis-core-proven-lean.yml, a DIFFERENT workflow with a
+      # different checkout and no charon/aeneas — so a fresh model produced here
+      # would never reach the job proving over it. Canonicalization is
+      # per-checkout; the proof has to be built where the fresh model exists.
+      # That is why the lake build step below gained two targets rather than this
+      # being a one-line addition.
+      - name: Canonicalize generated-cap-quantale from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-cap-quantale/PortcullisCoreCapQuantale
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-cap-quantale $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreCapQuantale.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-cap-quantale/ canonicalized from the fresh extraction; theorem builds against it."
+
       - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
           echo "CANONICAL-TYPES-START"
@@ -302,6 +335,14 @@ jobs:
           lake build EgressConfinementExtracted 2>&1 | tee /tmp/lake-egress.log
           lake build PortcullisCoreCredential
           lake build CredentialNoninterferenceExtracted 2>&1 | tee /tmp/lake-credential.log
+          # portcullis-core-proven-lean.yml also builds these two, but against the
+          # COMMITTED generated-cap-quantale — it runs no extraction, and
+          # canonicalization only affects the checkout that performs it. Building
+          # them here is what makes the residuation adjunction a claim about the
+          # CURRENT Rust rather than about a snapshot. Both jobs now build them;
+          # only this one proves over a freshly derived model.
+          lake build PortcullisCoreCapQuantale
+          lake build CapabilityResiduatedQuantaleProofs 2>&1 | tee /tmp/lake-capquantale.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
