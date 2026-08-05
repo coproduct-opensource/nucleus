@@ -428,11 +428,20 @@ mod harden {
         unsafe {
             // Close every fd from 3 up. std has already dup2'd this child's
             // stdio onto 0/1/2, so the only fds left above 2 are ones inherited
-            // from the parent — the leak this closes. `close_range` is a single
-            // syscall (async-signal-safe); ENOSYS on a pre-5.9 kernel is
-            // tolerated (the guest kernel is modern, and CLOEXEC is the fallback
+            // from the parent — the leak this closes. Invoked as the raw
+            // `close_range` syscall, not `libc::close_range`, because the latter
+            // is a glibc-only wrapper in the `libc` crate and the guest rootfs is
+            // musl (`libc::close_range` fails to resolve on the musl target). A
+            // single syscall is async-signal-safe; ENOSYS on a pre-5.9 kernel is
+            // tolerated (the guest kernel is modern, CLOEXEC is the fallback
             // there), any other error fails the spawn.
-            if libc::close_range(3, libc::c_uint::MAX, 0) != 0 {
+            if libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_long,
+                libc::c_uint::MAX as libc::c_long,
+                0 as libc::c_long,
+            ) != 0
+            {
                 let err = io::Error::last_os_error();
                 if err.raw_os_error() != Some(libc::ENOSYS) {
                     return Err(err);
