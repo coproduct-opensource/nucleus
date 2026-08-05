@@ -139,6 +139,12 @@ lean_lib «UnwindingNoninterference» where
 lean_lib «PodMachineSpike» where
   roots := #[`PodMachineSpike]
 
+-- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
+-- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
+-- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.
+lean_lib «IdentityOracleMirror» where
+  roots := #[`IdentityOracleMirror]
+
 -- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
 lean_lib «UnwindingIFC» where
   roots := #[`UnwindingIFC]

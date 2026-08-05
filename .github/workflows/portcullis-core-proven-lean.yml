@@ -105,7 +105,8 @@ jobs:
             ChannelAdmissionExtracted \
             AssuranceCoverage \
             UniversalDetection \
-            PodMachineSpike
+            PodMachineSpike \
+            IdentityOracleMirror
           # CapabilityResiduatedQuantaleProofs: the residuation adjunction
           # (a⊗b≤c ⟺ b≤a⊸c) for capability, proven over the Aeneas-extracted
           # capability_quantale slice — the enriching value V of the
