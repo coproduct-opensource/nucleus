@@ -491,3 +491,136 @@ fn the_approval_secret_is_still_emitted_and_that_is_tracked() {
         "if the approval secret has been removed, delete this test and the note beside it"
     );
 }
+
+// ── Proof-carrying admission: the posture gate on a real rootfs ───────────
+//
+// posture.rs unit-tests the pure parse/registry/verify logic. These exercise
+// `admit_posture` end to end: it must MEASURE a real on-disk rootfs and compare
+// the claim against that measurement, fail-closed, before any driver is spawned.
+
+/// Build a minimal PodSpec with an optional `dlc_posture` label and a rootfs
+/// path pointing at `rootfs`.
+fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpec {
+    use nucleus_spec::{ImageSpec, PodSpecInner, PolicySpec};
+    use std::path::PathBuf;
+    let mut spec = PodSpec::new(PodSpecInner {
+        work_dir: PathBuf::from("/work"),
+        timeout_seconds: 60,
+        policy: PolicySpec::Profile {
+            name: "demo".to_string(),
+        },
+        budget_model: None,
+        resources: None,
+        network: None,
+        credentialed_egress: Vec::new(),
+        workload: None,
+        image: rootfs.map(|p| ImageSpec {
+            kernel_path: PathBuf::from("/does/not/matter"),
+            rootfs_path: p.to_path_buf(),
+            boot_args: None,
+            read_only: true,
+            scratch_path: None,
+        }),
+        vsock: None,
+        seccomp: None,
+        cgroup: None,
+        audit_sink: None,
+        credentials: None,
+    });
+    if let Some(l) = label {
+        spec.metadata
+            .labels
+            .insert(posture::POSTURE_LABEL.to_string(), l.to_string());
+    }
+    spec
+}
+
+/// Write bytes to a temp file and return (dir keepalive, path, hex digest the
+/// node will measure over it).
+async fn rootfs_fixture(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rootfs.ext4");
+    tokio::fs::write(&path, bytes).await.unwrap();
+    let digest = hex::encode(
+        nucleus_identity::attestation::measure_artifact(&path)
+            .await
+            .unwrap(),
+    );
+    (dir, path, digest)
+}
+
+#[tokio::test]
+async fn admit_posture_inert_without_a_claim() {
+    let (_dir, path, _digest) = rootfs_fixture(b"an artifact").await;
+    let spec = posture_spec(None, Some(&path));
+    let reg = posture::PostureRegistry::default();
+    // No claim: inert, even with an empty registry and no image measured.
+    assert_eq!(admit_posture(&spec, Uuid::new_v4(), &reg).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn admit_posture_admits_a_matching_trusted_claim() {
+    let (_dir, path, digest) = rootfs_fixture(b"the proven artifact").await;
+    let label = format!("identity_nondelivery@{digest}");
+    let spec = posture_spec(Some(&label), Some(&path));
+    let reg = posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{digest}"));
+    assert_eq!(
+        admit_posture(&spec, Uuid::new_v4(), &reg).await.unwrap(),
+        Some("identity_nondelivery:verified".to_string())
+    );
+}
+
+#[tokio::test]
+async fn admit_posture_refuses_a_lying_digest() {
+    // The pod claims a digest that is NOT the rootfs the node measures.
+    let (_dir, path, real_digest) = rootfs_fixture(b"the real artifact").await;
+    let lie = "0".repeat(64);
+    assert_ne!(lie, real_digest);
+    let label = format!("identity_nondelivery@{lie}");
+    let spec = posture_spec(Some(&label), Some(&path));
+    // Even trusting the LIE, the measurement mismatch must refuse.
+    let reg = posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{lie}"));
+    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+}
+
+#[tokio::test]
+async fn admit_posture_refuses_an_untrusted_artifact() {
+    // Digest matches the measurement, but no trusted builder proved this posture
+    // for it (empty registry) — fail-closed.
+    let (_dir, path, digest) = rootfs_fixture(b"an unregistered artifact").await;
+    let label = format!("identity_nondelivery@{digest}");
+    let spec = posture_spec(Some(&label), Some(&path));
+    let reg = posture::PostureRegistry::default();
+    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+}
+
+#[tokio::test]
+async fn admit_posture_refuses_a_claim_with_no_image_to_measure() {
+    // A claim names a rootfs digest; without an image there is nothing to
+    // measure, so it cannot be verified and must be refused.
+    let label = format!("identity_nondelivery@{}", "a".repeat(64));
+    let spec = posture_spec(Some(&label), None);
+    let reg = posture::PostureRegistry::from_operator_str(&label);
+    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+}
+
+/// The perturbation the plan calls for: flipping one byte of the artifact
+/// changes the measured digest, so a claim minted for the original REDs. This is
+/// the property that makes the gate bind to the artifact, not to the pod's word.
+#[tokio::test]
+async fn admit_posture_one_byte_of_drift_reds_the_gate() {
+    let (_dir, path, digest) = rootfs_fixture(b"artifact v1").await;
+    let label = format!("identity_nondelivery@{digest}");
+    let reg = posture::PostureRegistry::from_operator_str(&label);
+    // As built, admitted.
+    let spec = posture_spec(Some(&label), Some(&path));
+    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_ok());
+    // Rewrite the rootfs with one byte changed: same claim, same registry, but
+    // the measurement no longer matches.
+    tokio::fs::write(&path, b"artifact v2").await.unwrap();
+    let spec2 = posture_spec(Some(&label), Some(&path));
+    assert!(
+        admit_posture(&spec2, Uuid::new_v4(), &reg).await.is_err(),
+        "a changed artifact must fail a claim minted for the original"
+    );
+}

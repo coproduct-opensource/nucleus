@@ -582,6 +582,17 @@ fn decode_generalized_time(data: &[u8], pos: &mut usize) -> Result<DateTime<Utc>
 // Utility Functions
 // ============================================================================
 
+/// Measures the SHA-256 digest of an on-disk artifact (e.g. a guest rootfs)
+/// using the SAME hashing the launch attestation uses. A posture claim verified
+/// against this value is therefore comparing against exactly the digest
+/// [`LaunchAttestation::rootfs_hash`] reports for the same file — the registry
+/// digest, the attestation digest, and the posture-admission digest are one
+/// function's output, so they cannot drift apart. Returns the raw 32-byte hash;
+/// callers hex-encode for comparison against operator-supplied digests.
+pub async fn measure_artifact(path: &Path) -> Result<Hash256> {
+    hash_file(path).await
+}
+
 /// Computes SHA-256 hash of a file.
 async fn hash_file(path: &Path) -> Result<Hash256> {
     let contents = tokio::fs::read(path).await.map_err(|e| {

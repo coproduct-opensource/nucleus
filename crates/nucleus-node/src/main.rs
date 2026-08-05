@@ -48,6 +48,7 @@ mod cred_split;
 mod envelope_frame;
 mod guest_socket;
 mod net;
+mod posture;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
@@ -196,6 +197,14 @@ struct Args {
     /// Default actor to use when signing proxy requests.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
     proxy_actor: String,
+    /// Trusted proof-carrying postures: `<posture>@<hexdigest>` entries a trusted
+    /// builder has proven, comma/space/newline separated. A pod carrying a
+    /// `dlc_posture` label is admitted only when its claimed artifact digest
+    /// matches the rootfs the node measures AND `(posture, digest)` appears here.
+    /// Empty (the default) trusts nothing, so every posture claim is refused
+    /// fail-closed; pods carrying no claim are unaffected. See `posture.rs`.
+    #[arg(long, env = "NUCLEUS_NODE_TRUSTED_POSTURES", default_value = "")]
+    trusted_postures: String,
     /// SPIFFE trust domain for workload identity.
     #[arg(
         long,
@@ -338,6 +347,9 @@ struct NodeState {
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
+    /// Operator-configured registry of proof-carrying postures a trusted builder
+    /// has proven. Consulted fail-closed at pod admission (`posture.rs`).
+    trusted_postures: posture::PostureRegistry,
     /// Drand configuration for anchoring approval signatures.
     drand_config: Option<DrandConfig>,
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
@@ -387,6 +399,11 @@ struct PodHandle {
     /// Parent pod ID for orchestrator-spawned sub-pods.
     /// When set, this pod is cancelled if the parent exits.
     parent_pod_id: Option<Uuid>,
+    /// The verified proof-carrying posture stamp (`<posture>:verified`), set when
+    /// the pod carried a `dlc_posture` claim that passed admission. `None` when
+    /// the pod carried no claim. Surfaced in `PodInfo` so an operator can see the
+    /// claim was checked, not merely present. See `posture.rs`.
+    posture_stamp: Option<String>,
 }
 
 #[derive(Debug)]
@@ -473,6 +490,13 @@ struct PodInfo {
     state: PodState,
     proxy_addr: Option<String>,
     labels: BTreeMap<String, String>,
+    /// The verified proof-carrying posture (`<posture>:verified`), present only
+    /// when the pod carried a `dlc_posture` claim that passed admission against
+    /// the host-measured rootfs and the trusted-posture registry. Absent means
+    /// the pod made no such claim — a pod whose claim FAILED never reaches this
+    /// list, because admission refused it. See `posture.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    posture: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -667,6 +691,7 @@ async fn main() -> Result<(), ApiError> {
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
+        trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
@@ -996,6 +1021,65 @@ async fn auth_middleware(
 }
 
 #[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty))]
+/// The proof-carrying-admission gate, factored out of `create_pod_internal` so
+/// the measure→verify→fail-closed path is testable end to end against a real
+/// on-disk rootfs (not just the pure parse/registry logic in `posture.rs`).
+///
+/// - `Ok(None)` — the pod carried no `dlc_posture` claim (inert; unchanged).
+/// - `Ok(Some(stamp))` — a claim was present, its digest matched the rootfs the
+///   node measured ITSELF, and a trusted builder has proven that posture for
+///   that artifact. `stamp` is `"<posture>:verified"`, to be recorded on the pod.
+/// - `Err(_)` — a claim was present and FAILED (malformed, no image to measure,
+///   digest mismatch, or untrusted). The caller must refuse the pod; this
+///   function is the refusal point, before any driver is spawned.
+async fn admit_posture(
+    spec: &PodSpec,
+    id: Uuid,
+    registry: &posture::PostureRegistry,
+) -> Result<Option<String>, ApiError> {
+    let claim = match posture::PostureClaim::parse(
+        spec.metadata
+            .labels
+            .get(posture::POSTURE_LABEL)
+            .map(String::as_str),
+    )
+    .map_err(ApiError::Driver)?
+    {
+        None => return Ok(None),
+        Some(claim) => claim,
+    };
+    // A claim names a rootfs digest, so it is only meaningful with an image to
+    // measure. Fail-closed if there is nothing to measure.
+    let rootfs = spec
+        .spec
+        .image
+        .as_ref()
+        .map(|i| i.rootfs_path.clone())
+        .ok_or_else(|| {
+            ApiError::Driver(
+                "pod carries a dlc_posture claim but has no spec.image to measure".to_string(),
+            )
+        })?;
+    let measured = hex::encode(
+        nucleus_identity::attestation::measure_artifact(&rootfs)
+            .await
+            .map_err(|e| {
+                ApiError::Driver(format!("cannot measure rootfs for posture verification: {e}"))
+            })?,
+    );
+    let stamp = claim
+        .verify_against(&measured, registry)
+        .map_err(ApiError::Driver)?;
+    info!(
+        target: "posture",
+        pod = %id,
+        measured = %measured,
+        stamp = %stamp,
+        "posture claim verified against host-measured rootfs",
+    );
+    Ok(Some(stamp))
+}
+
 async fn create_pod_internal(
     state: &NodeState,
     mut spec: PodSpec,
@@ -1015,6 +1099,15 @@ async fn create_pod_internal(
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;
+
+    // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
+    // If the pod carries a `dlc_posture` claim, admit it only when the claimed
+    // artifact digest matches the rootfs the node measures ITSELF and a trusted
+    // builder has proven that posture for that artifact. No claim is inert. The
+    // measured digest is unforgeable by the pod, so this is a reached obligation
+    // (AssuranceCoverage.lean's reached-vs-unreached distinction), not a carried
+    // assertion trusted on the pod's word. See posture.rs / `admit_posture`.
+    let posture_stamp: Option<String> = admit_posture(&spec, id, &state.trusted_postures).await?;
 
     let (driver_state, proxy_addr, log_path) = match state.driver {
         #[cfg(feature = "local-driver")]
@@ -1043,6 +1136,7 @@ async fn create_pod_internal(
         proxy_addr: Mutex::new(proxy_addr.clone()),
         driver_state,
         parent_pod_id,
+        posture_stamp,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1105,6 +1199,7 @@ impl PodHandle {
             state,
             proxy_addr,
             labels: self.spec.metadata.labels.clone(),
+            posture: self.posture_stamp.clone(),
         }
     }
 
