@@ -1858,19 +1858,42 @@ async fn main() -> Result<(), ApiError> {
 
     // Started here and not earlier; `workload::start_if_configured` explains why.
     // `spawn_admitted` pipes the child's stdout/stderr (declared, not inherited —
-    // the FM-5 inc3 change); drain stderr line-by-line into the console log so the
-    // workload's output is attributed and host-observable rather than dropped.
-    // This is what lets an in-guest probe report its verdict to `nucleus verify`.
+    // the FM-5 inc3 change); drain both into the console log so the workload's
+    // output is attributed and host-observable rather than dropped. This is what
+    // lets an in-guest probe report its verdict to `nucleus verify`.
+    //
+    // `eprintln!`, NOT `info!`: the console is this process's stderr (guest-init
+    // execs us as PID 1 with stderr on the serial console, and reports its own
+    // milestones with `eprintln!` for exactly this reason). The tool-proxy's
+    // tracing layer is filtered by `RUST_LOG`, which the guest never sets, so an
+    // `info!` here is silently dropped and never reaches `firecracker.log` — the
+    // bug that made the probe's PASS sentinel invisible. Draining BOTH streams
+    // also keeps a chatty workload from blocking on a full stdout pipe nobody reads.
     let mut _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
-    if let Some((child, _receipt)) = _workload.as_mut() {
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    info!(target: "workload", "{line}");
-                }
-            });
+    match _workload.as_mut() {
+        Some((child, _receipt)) => {
+            eprintln!("[workload] started (pid={:?})", child.id());
+            if let Some(out) = child.stdout.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(out).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        eprintln!("[workload] {line}");
+                    }
+                });
+            }
+            if let Some(err) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(err).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        eprintln!("[workload] {line}");
+                    }
+                });
+            }
         }
+        // Not an error: most pods run no workload. Logged so a boot that expected
+        // one (the probe pod) can tell "no workload configured" — a spec/POD_SPEC
+        // problem — apart from "workload ran but produced nothing".
+        None => eprintln!("[workload] no workload configured in pod spec"),
     }
 
     let shutdown = async {
