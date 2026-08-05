@@ -10,9 +10,11 @@ metadata:
 spec:
   work_dir: /work
   timeout_seconds: 2700
-  # A distinct unprivileged uid, so the launch builder's setgroups([])+setgid
-  # path runs and the probe's group-drop assertion is exercised on the real
-  # child (not just the env/fd/mount checks).
+  # A distinct unprivileged uid, so the launch's privilege-drop path runs —
+  # setgid + supplementary-group drop + setuid in std's still-privileged fork
+  # window (declared via `.uid()`/`.gid()` in spawn_admitted) — and the probe's
+  # group-drop assertion is exercised on the real child (not just the
+  # env/fd/mount checks).
   workload:
     command: /usr/local/bin/nucleus-workload-probe
     uid: 65534

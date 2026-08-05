@@ -360,18 +360,27 @@ pub(crate) fn spawn_admitted(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    // The async-signal-safe hardening hook, ALWAYS installed. It closes every
-    // inherited fd above 0/1/2 (`close_range`) so "only the child's own stdio
-    // crosses" is true BY CONSTRUCTION, not by trusting that every fd the parent
-    // holds happens to be CLOEXEC — the runc CVE-2024-21626 lesson. When a uid
-    // is set it additionally drops supplementary groups, sets gid, no_new_privs
-    // and rlimits (setting a uid without dropping groups would leave the
-    // workload in the runtime's groups). Runs AFTER std's stdio dup2, so closing
-    // the high fds cannot disturb 0/1/2.
+    // The privilege boundary is DECLARED on the Command, because std applies it
+    // in the right window: `do_exec` runs setgid, the supplementary-group drop
+    // (setgroups(0, NULL) — automatic when a uid is set, the parent is root,
+    // and no explicit groups were given), and setuid BEFORE the `pre_exec`
+    // closures (std/src/sys/process/unix/unix.rs). `gid` is set alongside `uid`
+    // so the child does not keep the runtime's primary gid (root's 0 in the
+    // guest) after its uid dropped. The run-5 boot proved the ordering the hard
+    // way: a hook that tried setgroups itself ran as the ALREADY-dropped uid
+    // and got EPERM.
     let hardened = plan.uid.is_some();
     if let Some(uid) = plan.uid {
         cmd.uid(uid);
+        cmd.gid(uid);
     }
+    // The async-signal-safe hardening hook, ALWAYS installed. It marks every
+    // inherited fd above 0/1/2 close-on-exec (`close_range(..CLOEXEC)`) so
+    // "only the child's own stdio crosses the exec" is true BY CONSTRUCTION,
+    // not by trusting that every fd the parent holds happens to be CLOEXEC —
+    // the runc CVE-2024-21626 lesson. When a uid is set it additionally applies
+    // no_new_privs and rlimits — the self-restrictions an unprivileged process
+    // may still make. Runs AFTER std's stdio dup2 and privilege drop.
     harden::apply(&mut cmd, plan.uid);
 
     tracing::info!(
@@ -386,10 +395,15 @@ pub(crate) fn spawn_admitted(
 
 /// The async-signal-safe child-side hardening hook. Local to the tool-proxy
 /// because `nucleus::HostSandbox` is `pub(crate)` to its own crate and does not
-/// drop groups or take a uid. Mirrors that module's audited-exception pattern:
-/// two `unsafe` blocks (the syscall sequence and the `pre_exec` install), every
-/// call is async-signal-safe, and any `Err` fails the spawn (fail-closed — the
-/// child never execs).
+/// bound descriptors or rlimits this way. Mirrors that module's
+/// audited-exception pattern: two `unsafe` blocks (the syscall sequence and the
+/// `pre_exec` install), every call is async-signal-safe, and any `Err` fails
+/// the spawn (fail-closed — the child never execs).
+///
+/// The privileged drops (setgid, setgroups, setuid) are NOT here: std's
+/// `do_exec` performs them from `.uid()`/`.gid()` BEFORE the `pre_exec`
+/// closures run, so this hook already executes as the dropped uid and may only
+/// do what an unprivileged process can do to itself.
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod harden {
@@ -412,51 +426,83 @@ mod harden {
         }
     }
 
+    /// `CLOSE_RANGE_CLOEXEC` from uapi `linux/close_range.h` (kernel ≥ 5.11):
+    /// mark the range close-on-exec instead of closing it now. Local constant
+    /// because the `libc` crate's binding availability varies by target.
+    const CLOSE_RANGE_CLOEXEC: libc::c_long = 1 << 2;
+
     /// Runs after fork, before exec. MUST be async-signal-safe: raw syscalls
     /// only, no allocation, no locks.
     ///
-    /// Always closes inherited fds above 2; drops privilege-related authority
-    /// only when a uid is requested. One `unsafe` block for the whole sequence,
-    /// deliberately: every call in it is a well-known async-signal-safe FFI
-    /// syscall, and consolidating them keeps the crate's unsafe surface minimal
-    /// (the exemplar `unsafe_blocks` ratchet).
+    /// Always condemns inherited fds above 2 (close-on-exec at the exec
+    /// boundary); applies the unprivileged self-restrictions (no_new_privs,
+    /// rlimits) when a uid is requested. One `unsafe` block for the whole
+    /// sequence, deliberately: every call in it is a well-known
+    /// async-signal-safe FFI syscall, and consolidating them keeps the crate's
+    /// unsafe surface minimal (the exemplar `unsafe_blocks` ratchet).
     fn harden_child(uid: Option<u32>) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars or a pointer to a fully-initialized local `rlimit`; none
         // allocates or takes a lock, satisfying the `pre_exec` contract. A
         // `!= 0` return is an error and fails the spawn (fail-closed).
         unsafe {
-            // Close every fd from 3 up. std has already dup2'd this child's
-            // stdio onto 0/1/2, so the only fds left above 2 are ones inherited
-            // from the parent — the leak this closes. Invoked as the raw
-            // `close_range` syscall, not `libc::close_range`, because the latter
-            // is a glibc-only wrapper in the `libc` crate and the guest rootfs is
-            // musl (`libc::close_range` fails to resolve on the musl target). A
-            // single syscall is async-signal-safe; ENOSYS on a pre-5.9 kernel is
-            // tolerated (the guest kernel is modern, CLOEXEC is the fallback
-            // there), any other error fails the spawn.
+            // Mark every fd from 3 up close-on-exec rather than closing it
+            // HERE. This hook runs between fork and exec, a window in which
+            // std still owns an internal CLOEXEC status pipe the child uses to
+            // report a failed later step (or a failed exec) back to the
+            // parent. Closing fds now severed that pipe, and when a later step
+            // failed the child could only abort — the run-5 boot's
+            // `fatal runtime error: assertion failed:
+            // output.write(&bytes).is_ok()` (std unix.rs, the CLOEXEC-pipe
+            // write) — an unreportable crash in place of a spawn error.
+            // CLOSE_RANGE_CLOEXEC yields the identical post-exec closure —
+            // nothing above 2 survives the exec — while leaving the pipe
+            // usable before it (it is already CLOEXEC; re-flagging is a
+            // no-op).
+            //
+            // Invoked as the raw `close_range` syscall, not
+            // `libc::close_range`, because the latter is a glibc-only wrapper
+            // in the `libc` crate and the guest rootfs is musl. ENOSYS
+            // (pre-5.9, no syscall) is tolerated — std marks everything it
+            // creates CLOEXEC, the fallback there. EINVAL (5.9–5.10: syscall
+            // exists, flag does not) falls back to closing outright, accepting
+            // the unreportable-failure trap on those kernels only; the pinned
+            // guest kernel is newer. Any other error fails the spawn.
             if libc::syscall(
                 libc::SYS_close_range,
                 3 as libc::c_long,
                 libc::c_uint::MAX as libc::c_long,
-                0 as libc::c_long,
+                CLOSE_RANGE_CLOEXEC,
             ) != 0
             {
                 let err = io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::ENOSYS) {
-                    return Err(err);
+                match err.raw_os_error() {
+                    Some(libc::ENOSYS) => {}
+                    Some(libc::EINVAL) => {
+                        if libc::syscall(
+                            libc::SYS_close_range,
+                            3 as libc::c_long,
+                            libc::c_uint::MAX as libc::c_long,
+                            0 as libc::c_long,
+                        ) != 0
+                        {
+                            let err = io::Error::last_os_error();
+                            if err.raw_os_error() != Some(libc::ENOSYS) {
+                                return Err(err);
+                            }
+                        }
+                    }
+                    _ => return Err(err),
                 }
             }
-            if let Some(uid) = uid {
-                // Drop supplementary groups before dropping privilege — a uid
-                // change that left the runtime's groups would keep ambient
-                // group authority. std applies `.uid()` AFTER this hook.
-                if libc::setgroups(0, std::ptr::null()) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::setgid(uid as libc::gid_t) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            if uid.is_some() {
+                // The child ALREADY runs as the dropped uid/gid here — std's
+                // `do_exec` applied setgid, the supplementary-group drop, and
+                // setuid before any `pre_exec` closure (see the declarations
+                // on the Command in `spawn_admitted`). Attempting
+                // setgroups/setgid at this point fails with EPERM, which is
+                // exactly how the run-5 boot failed. What remains is what an
+                // unprivileged process may do to itself:
                 // No new privileges: defeats setuid/file-capability escalation.
                 if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                     return Err(io::Error::last_os_error());
@@ -882,13 +928,14 @@ mod tests {
         assert_eq!(receipt.stdio, ["null", "piped", "piped"]);
 
         // **File-descriptor surface**, Linux only (procfs). `spawn_admitted`'s
-        // pre_exec `close_range(3, ..)` closes every inherited fd above the
-        // child's own stdio, so at exec only 0/1/2 exist; `ls /proc/self/fd`
-        // then opens the directory as one more fd, giving exactly four entries.
-        // Any fd beyond that is a leak the close_range was supposed to shut —
-        // the runc-CVE-2024-21626 shape. This runs in the noisy cargo-test
-        // harness (which itself holds high fds), so it also proves close_range
-        // actually fires rather than relying on the parent's fds being CLOEXEC.
+        // pre_exec `close_range(3, .., CLOEXEC)` condemns every inherited fd
+        // above the child's own stdio, so after exec only 0/1/2 exist;
+        // `ls /proc/self/fd` then opens the directory as one more fd, giving
+        // exactly four entries. Any fd beyond that is a leak the close_range
+        // was supposed to shut — the runc-CVE-2024-21626 shape. This runs in
+        // the noisy cargo-test harness (which itself holds high, non-CLOEXEC
+        // fds), so it also proves the close_range call actually fires rather
+        // than relying on the parent's fds happening to be CLOEXEC.
         #[cfg(target_os = "linux")]
         {
             let fds = std::fs::read_to_string(&f_fd).unwrap_or_default();
