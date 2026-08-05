@@ -300,7 +300,7 @@ jobs:
           sudo grep -rq "NUCLEUS_WORKLOAD_PROBE: PASS" "$state" || {
             echo "::error::in-guest workload probe did not report PASS (did it run?)"
             echo "--- workload markers across all pod logs (empty ⇒ the drain never ran) ---"
-            sudo grep -rhaE '\[workload\]|NUCLEUS_WORKLOAD_PROBE' "$state" | head -40 || true
+            sudo grep -rhaE '\[workload\]|NUCLEUS_WORKLOAD_PROBE|PROXY-CHAN-PROBE' "$state" | head -40 || true
             echo "--- last 60 lines of each guest log ---"
             sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -60 "$1"' _ {} \; || true
             exit 1

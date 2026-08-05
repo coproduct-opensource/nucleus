@@ -1262,26 +1262,49 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Write one line to the guest serial console (`/dev/console`), the sink that
-/// becomes `firecracker.log` on the host and that `nucleus verify` reads back.
-/// Used to surface workload output (e.g. an in-guest probe's verdict), which
-/// does not otherwise reach the log via this process's inherited stdio. Opened
-/// per call rather than held: workloads are few-line probes here, and a fresh
-/// open avoids sharing a handle across tokio tasks. Best-effort — a failed open
-/// falls back to stderr so nothing is lost when there is no console device
-/// (e.g. host-side unit tests).
+/// Write one line to the guest console log (`firecracker.log`), the sink
+/// `nucleus verify` reads back, so workload output (e.g. an in-guest probe's
+/// verdict) surfaces on the host. This process's inherited stdio does NOT reach
+/// that log post-`exec`, so try, in order of reliability: `/dev/kmsg` (injects
+/// into the kernel log ring, which the serial console always carries — the same
+/// path the `[    0.28] ...` kernel lines take), then `/dev/console`, then
+/// stderr as a last resort (host-side unit tests have no console device).
+/// Opened per call — workloads here are few-line probes, and a fresh open avoids
+/// sharing a handle across tokio tasks.
 fn console_line(msg: &str) {
     use std::io::Write;
-    match std::fs::OpenOptions::new().write(true).open("/dev/console") {
-        Ok(mut f) => {
-            let _ = writeln!(f, "{msg}");
+    for dev in ["/dev/kmsg", "/dev/console"] {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(dev) {
+            if writeln!(f, "{msg}").is_ok() {
+                return;
+            }
         }
-        Err(_) => eprintln!("{msg}"),
     }
+    eprintln!("{msg}");
+}
+
+/// One-shot startup diagnostic (temporary): write the SAME marker to every
+/// candidate console channel with a distinct tag, so a single boot reveals which
+/// of `/dev/kmsg`, `/dev/console`, or inherited stderr actually reaches
+/// `firecracker.log`. Removed once the reliable channel is confirmed.
+fn console_channel_probe() {
+    use std::io::Write;
+    for (tag, dev) in [("kmsg", "/dev/kmsg"), ("console", "/dev/console")] {
+        match std::fs::OpenOptions::new().write(true).open(dev) {
+            Ok(mut f) => {
+                let _ = writeln!(f, "PROXY-CHAN-PROBE via {tag} (open ok)");
+            }
+            Err(e) => eprintln!("PROXY-CHAN-PROBE {tag} open failed: {e}"),
+        }
+    }
+    eprintln!("PROXY-CHAN-PROBE via stderr");
 }
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // TEMPORARY diagnostic: which console channel reaches firecracker.log?
+    console_channel_probe();
+
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
