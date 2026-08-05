@@ -39,10 +39,12 @@ on:
       - "crates/portcullis-core/lean/generated-egress/**"
       - "crates/portcullis-core/lean/generated-credential/**"
       - "crates/portcullis-core/lean/generated-identity/**"
+      - "crates/portcullis-core/lean/generated-channel/**"
       - "crates/portcullis-core/lean/generated-cap-quantale/**"
       - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
       - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
@@ -57,10 +59,12 @@ on:
       - "crates/portcullis-core/lean/generated-egress/**"
       - "crates/portcullis-core/lean/generated-credential/**"
       - "crates/portcullis-core/lean/generated-identity/**"
+      - "crates/portcullis-core/lean/generated-channel/**"
       - "crates/portcullis-core/lean/generated-cap-quantale/**"
       - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
       - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"
@@ -78,7 +82,7 @@ env:
   # Charon needs a specific nightly for rustc-dev components.
   CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
-  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits,nucleus_ifc_kernel::extracted::capability_quantale::caprank,nucleus_ifc_kernel::extracted::capability_quantale::capunit,nucleus_ifc_kernel::extracted::capability_quantale::capbot,nucleus_ifc_kernel::extracted::capability_quantale::capmeet,nucleus_ifc_kernel::extracted::capability_quantale::capjoin,nucleus_ifc_kernel::extracted::capability_quantale::capleq,nucleus_ifc_kernel::extracted::capability_quantale::capresidual,nucleus_ifc_kernel::extracted::identity::matcode,nucleus_ifc_kernel::extracted::identity::prinrank,nucleus_ifc_kernel::extracted::identity::mat_label,nucleus_ifc_kernel::extracted::identity::principal_ceiling,nucleus_ifc_kernel::extracted::identity::ident_may_deliver,nucleus_ifc_kernel::extracted::identity::identity_reaches_workload"
+  EXTRACT_ROOTS: "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to,nucleus_ifc_kernel::extracted::ifc_integrity::imeet,nucleus_ifc_kernel::extracted::ifc_integrity::irun_step,nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to,nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin,nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step,nucleus_ifc_kernel::extracted::mediation::scope_admits,nucleus_ifc_kernel::extracted::mediation::opcode,nucleus_ifc_kernel::extracted::mediation::sinkcode,nucleus_ifc_kernel::extracted::mediation::med_step,nucleus_ifc_kernel::extracted::mediation::med_idle,nucleus_ifc_kernel::extracted::credential::sinkrank,nucleus_ifc_kernel::extracted::credential::sink_ceiling,nucleus_ifc_kernel::extracted::credential::cred_may_deliver,nucleus_ifc_kernel::extracted::credential::credential_may_reach,nucleus_ifc_kernel::extracted::egress::netmask,nucleus_ifc_kernel::extracted::egress::in_cidr,nucleus_ifc_kernel::extracted::egress::rule_matches,nucleus_ifc_kernel::extracted::egress::rule_admits,nucleus_ifc_kernel::extracted::capability_quantale::caprank,nucleus_ifc_kernel::extracted::capability_quantale::capunit,nucleus_ifc_kernel::extracted::capability_quantale::capbot,nucleus_ifc_kernel::extracted::capability_quantale::capmeet,nucleus_ifc_kernel::extracted::capability_quantale::capjoin,nucleus_ifc_kernel::extracted::capability_quantale::capleq,nucleus_ifc_kernel::extracted::capability_quantale::capresidual,nucleus_ifc_kernel::extracted::identity::matcode,nucleus_ifc_kernel::extracted::identity::prinrank,nucleus_ifc_kernel::extracted::identity::mat_label,nucleus_ifc_kernel::extracted::identity::principal_ceiling,nucleus_ifc_kernel::extracted::identity::ident_may_deliver,nucleus_ifc_kernel::extracted::identity::identity_reaches_workload,nucleus_ifc_kernel::extracted::channel::chanrank,nucleus_ifc_kernel::extracted::channel::is_public,nucleus_ifc_kernel::extracted::channel::channel_admits,nucleus_ifc_kernel::extracted::channel::channel_reaches_workload"
 
 jobs:
   aeneas-ifc-scoped:
@@ -309,6 +313,25 @@ jobs:
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreIdentity.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-identity/ canonicalized from the fresh extraction; theorem builds against it."
 
+      # generated-channel is the EIGHTH extracted model — FM-5 phase 2's channel
+      # taxonomy. Same single disclosed hand-edit as every step above: only the
+      # inter-module import is retargeted so the lib name does not collide.
+      - name: Canonicalize generated-channel from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-channel/PortcullisCoreChannel
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated-channel $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/NucleusIfcKernel\.Types/PortcullisCoreChannel.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-channel/ canonicalized from the fresh extraction; theorem builds against it."
+
       - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
           echo "CANONICAL-TYPES-START"
@@ -369,6 +392,8 @@ jobs:
           lake build CapabilityResiduatedQuantaleProofs 2>&1 | tee /tmp/lake-capquantale.log
           lake build PortcullisCoreIdentity
           lake build IdentityMaterialNoninterferenceExtracted 2>&1 | tee /tmp/lake-identity.log
+          lake build PortcullisCoreChannel
+          lake build ChannelAdmissionExtracted 2>&1 | tee /tmp/lake-channel.log
 
       # The #print axioms commands are in the .lean file; their output lands in
       # the build log above. Surface it explicitly and fail on a dirty axiom set.
@@ -376,7 +401,7 @@ jobs:
         working-directory: crates/portcullis-core/lean
         shell: bash
         run: |
-          LOGS="/tmp/lake-ifc.log /tmp/lake-mediation.log /tmp/lake-egress.log /tmp/lake-credential.log /tmp/lake-capquantale.log /tmp/lake-identity.log"
+          LOGS="/tmp/lake-ifc.log /tmp/lake-mediation.log /tmp/lake-egress.log /tmp/lake-credential.log /tmp/lake-capquantale.log /tmp/lake-identity.log /tmp/lake-channel.log"
 
           # NON-VACUITY FIRST. Every check below is "the log does not contain a
           # bad string", and an EMPTY log satisfies all of them — which is
@@ -518,11 +543,13 @@ jobs:
                EgressConfinementExtracted.lean \
                CredentialNoninterferenceExtracted.lean \
                IdentityMaterialNoninterferenceExtracted.lean \
+               ChannelAdmissionExtracted.lean \
                generated-ifc/PortcullisCoreIFC/ \
                generated-mediation/PortcullisCoreMediation/ \
                generated-egress/PortcullisCoreEgress/ \
                generated-credential/PortcullisCoreCredential/ \
-               generated-identity/PortcullisCoreIdentity/ --include='*.lean'; then
+               generated-identity/PortcullisCoreIdentity/ \
+               generated-channel/PortcullisCoreChannel/ --include='*.lean'; then
             echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1
           fi

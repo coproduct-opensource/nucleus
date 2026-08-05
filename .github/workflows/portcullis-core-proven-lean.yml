@@ -101,6 +101,8 @@ jobs:
             CapabilityResiduatedQuantaleProofs \
             PortcullisCoreIdentity \
             IdentityMaterialNoninterferenceExtracted \
+            PortcullisCoreChannel \
+            ChannelAdmissionExtracted \
             AssuranceCoverage \
             UniversalDetection
           # CapabilityResiduatedQuantaleProofs: the residuation adjunction

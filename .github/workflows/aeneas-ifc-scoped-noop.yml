@@ -20,6 +20,7 @@ on:
       - "crates/portcullis-core/lean/generated-egress/**"
       - "crates/portcullis-core/lean/generated-credential/**"
       - "crates/portcullis-core/lean/generated-identity/**"
+      - "crates/portcullis-core/lean/generated-channel/**"
       # These two were missing while the real workflow's `paths` had them, so a
       # cap-quantale-only PR fired BOTH twins under the same context name —
       # the exactly-one-twin invariant this file exists for.
@@ -27,6 +28,7 @@ on:
       - "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean"
       - "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean"
       - "crates/portcullis-core/lean/EgressConfinementExtracted.lean"
       - "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean"
       - "crates/portcullis-core/lean/lakefile.lean"

@@ -107,6 +107,15 @@ lean_lib «PortcullisCoreIdentity» where
 lean_lib «IdentityMaterialNoninterferenceExtracted» where
   roots := #[`IdentityMaterialNoninterferenceExtracted]
 
+lean_lib «PortcullisCoreChannel» where
+  roots := #[`PortcullisCoreChannel.Types, `PortcullisCoreChannel.Funs]
+  srcDir := "generated-channel"
+
+-- FM-5 phase 2: no channel (env/argv/cwd/stdio/fd/uid) delivers identity
+-- material to the workload — the channel enumeration proved total.
+lean_lib «ChannelAdmissionExtracted» where
+  roots := #[`ChannelAdmissionExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where
