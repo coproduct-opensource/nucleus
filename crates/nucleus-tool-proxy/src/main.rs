@@ -1262,6 +1262,24 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Write one line to the guest serial console (`/dev/console`), the sink that
+/// becomes `firecracker.log` on the host and that `nucleus verify` reads back.
+/// Used to surface workload output (e.g. an in-guest probe's verdict), which
+/// does not otherwise reach the log via this process's inherited stdio. Opened
+/// per call rather than held: workloads are few-line probes here, and a fresh
+/// open avoids sharing a handle across tokio tasks. Best-effort — a failed open
+/// falls back to stderr so nothing is lost when there is no console device
+/// (e.g. host-side unit tests).
+fn console_line(msg: &str) {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().write(true).open("/dev/console") {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{msg}");
+        }
+        Err(_) => eprintln!("{msg}"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
@@ -1858,26 +1876,28 @@ async fn main() -> Result<(), ApiError> {
 
     // Started here and not earlier; `workload::start_if_configured` explains why.
     // `spawn_admitted` pipes the child's stdout/stderr (declared, not inherited —
-    // the FM-5 inc3 change); drain both into the console log so the workload's
-    // output is attributed and host-observable rather than dropped. This is what
-    // lets an in-guest probe report its verdict to `nucleus verify`.
+    // the FM-5 inc3 change); drain both to the guest serial console so the
+    // workload's output is attributed and host-observable rather than dropped.
+    // This is what lets an in-guest probe report its verdict to `nucleus verify`.
     //
-    // `eprintln!`, NOT `info!`: the console is this process's stderr (guest-init
-    // execs us as PID 1 with stderr on the serial console, and reports its own
-    // milestones with `eprintln!` for exactly this reason). The tool-proxy's
-    // tracing layer is filtered by `RUST_LOG`, which the guest never sets, so an
-    // `info!` here is silently dropped and never reaches `firecracker.log` — the
-    // bug that made the probe's PASS sentinel invisible. Draining BOTH streams
-    // also keeps a chatty workload from blocking on a full stdout pipe nobody reads.
+    // Write to `/dev/console` DIRECTLY, not via this process's stdout/stderr.
+    // guest-init's own milestones reach `firecracker.log` because PID-1 stdio is
+    // the console, but empirically the tool-proxy's inherited stdio does NOT
+    // surface there (an `info!` is filtered by a `RUST_LOG` the guest never sets,
+    // and even a bare `eprintln!` did not appear). Opening the console device is
+    // the reliable channel: we run as root (guest-init exec'd us as PID 1) and
+    // `/dev` is a separate devtmpfs unaffected by the read-only root remount.
+    // Draining BOTH streams also keeps a chatty workload from blocking on a full
+    // stdout pipe nobody reads.
     let mut _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
     match _workload.as_mut() {
         Some((child, _receipt)) => {
-            eprintln!("[workload] started (pid={:?})", child.id());
+            console_line(&format!("[workload] started (pid={:?})", child.id()));
             if let Some(out) = child.stdout.take() {
                 tokio::spawn(async move {
                     let mut lines = BufReader::new(out).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
-                        eprintln!("[workload] {line}");
+                        console_line(&format!("[workload] {line}"));
                     }
                 });
             }
@@ -1885,7 +1905,7 @@ async fn main() -> Result<(), ApiError> {
                 tokio::spawn(async move {
                     let mut lines = BufReader::new(err).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
-                        eprintln!("[workload] {line}");
+                        console_line(&format!("[workload] {line}"));
                     }
                 });
             }
@@ -1893,7 +1913,7 @@ async fn main() -> Result<(), ApiError> {
         // Not an error: most pods run no workload. Logged so a boot that expected
         // one (the probe pod) can tell "no workload configured" — a spec/POD_SPEC
         // problem — apart from "workload ran but produced nothing".
-        None => eprintln!("[workload] no workload configured in pod spec"),
+        None => console_line("[workload] no workload configured in pod spec"),
     }
 
     let shutdown = async {

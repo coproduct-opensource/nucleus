@@ -290,17 +290,24 @@ jobs:
           # cannot fail vacuously — but a probe that failed to EXEC (missing from
           # the rootfs, wrong path, unable to run under its uid) emits no sentinel
           # at all, and the conditional needle would then say nothing. Assert the
-          # PASS sentinel is PRESENT in some pod's log, closing that gap: the
-          # probe ran as the real workload and reported the posture holds.
-          log=$(sudo find /var/lib/nucleus/state -name firecracker.log | head -1)
-          test -n "$log" || { echo "::error::no firecracker.log found"; exit 1; }
-          sudo grep -q "NUCLEUS_WORKLOAD_PROBE: PASS" "$log" || {
+          # PASS sentinel is PRESENT in SOME pod's log, closing that gap: the probe
+          # ran as the real workload and reported the posture holds. grep -r across
+          # every pod's log, not one arbitrary `head -1` — `nucleus verify` boots
+          # several pods and only the probe-workload pod carries the sentinel.
+          state=/var/lib/nucleus/state
+          sudo find "$state" -name firecracker.log | head -1 | grep -q . || {
+            echo "::error::no firecracker.log found"; exit 1; }
+          sudo grep -rq "NUCLEUS_WORKLOAD_PROBE: PASS" "$state" || {
             echo "::error::in-guest workload probe did not report PASS (did it run?)"
-            sudo tail -80 "$log" || true
+            echo "--- workload markers across all pod logs (empty ⇒ the drain never ran) ---"
+            sudo grep -rhaE '\[workload\]|NUCLEUS_WORKLOAD_PROBE' "$state" | head -40 || true
+            echo "--- last 60 lines of each guest log ---"
+            sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -60 "$1"' _ {} \; || true
             exit 1
           }
-          ! sudo grep -q "NUCLEUS_WORKLOAD_PROBE: FAIL" "$log" || {
+          ! sudo grep -rq "NUCLEUS_WORKLOAD_PROBE: FAIL" "$state" || {
             echo "::error::in-guest workload probe reported FAIL"
+            sudo grep -rhaE '\[workload\]|NUCLEUS_WORKLOAD_PROBE: FAIL' "$state" | head -40 || true
             exit 1
           }
           echo "in-guest workload probe: PASS present, FAIL absent"
