@@ -1021,65 +1021,6 @@ async fn auth_middleware(
 }
 
 #[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty))]
-/// The proof-carrying-admission gate, factored out of `create_pod_internal` so
-/// the measure→verify→fail-closed path is testable end to end against a real
-/// on-disk rootfs (not just the pure parse/registry logic in `posture.rs`).
-///
-/// - `Ok(None)` — the pod carried no `dlc_posture` claim (inert; unchanged).
-/// - `Ok(Some(stamp))` — a claim was present, its digest matched the rootfs the
-///   node measured ITSELF, and a trusted builder has proven that posture for
-///   that artifact. `stamp` is `"<posture>:verified"`, to be recorded on the pod.
-/// - `Err(_)` — a claim was present and FAILED (malformed, no image to measure,
-///   digest mismatch, or untrusted). The caller must refuse the pod; this
-///   function is the refusal point, before any driver is spawned.
-async fn admit_posture(
-    spec: &PodSpec,
-    id: Uuid,
-    registry: &posture::PostureRegistry,
-) -> Result<Option<String>, ApiError> {
-    let claim = match posture::PostureClaim::parse(
-        spec.metadata
-            .labels
-            .get(posture::POSTURE_LABEL)
-            .map(String::as_str),
-    )
-    .map_err(ApiError::Driver)?
-    {
-        None => return Ok(None),
-        Some(claim) => claim,
-    };
-    // A claim names a rootfs digest, so it is only meaningful with an image to
-    // measure. Fail-closed if there is nothing to measure.
-    let rootfs = spec
-        .spec
-        .image
-        .as_ref()
-        .map(|i| i.rootfs_path.clone())
-        .ok_or_else(|| {
-            ApiError::Driver(
-                "pod carries a dlc_posture claim but has no spec.image to measure".to_string(),
-            )
-        })?;
-    let measured = hex::encode(
-        nucleus_identity::attestation::measure_artifact(&rootfs)
-            .await
-            .map_err(|e| {
-                ApiError::Driver(format!("cannot measure rootfs for posture verification: {e}"))
-            })?,
-    );
-    let stamp = claim
-        .verify_against(&measured, registry)
-        .map_err(ApiError::Driver)?;
-    info!(
-        target: "posture",
-        pod = %id,
-        measured = %measured,
-        stamp = %stamp,
-        "posture claim verified against host-measured rootfs",
-    );
-    Ok(Some(stamp))
-}
-
 async fn create_pod_internal(
     state: &NodeState,
     mut spec: PodSpec,
@@ -1107,7 +1048,8 @@ async fn create_pod_internal(
     // measured digest is unforgeable by the pod, so this is a reached obligation
     // (AssuranceCoverage.lean's reached-vs-unreached distinction), not a carried
     // assertion trusted on the pod's word. See posture.rs / `admit_posture`.
-    let posture_stamp: Option<String> = admit_posture(&spec, id, &state.trusted_postures).await?;
+    let posture_stamp: Option<String> =
+        posture::admit_posture(&spec, id, &state.trusted_postures).await?;
 
     let (driver_state, proxy_addr, log_path) = match state.driver {
         #[cfg(feature = "local-driver")]

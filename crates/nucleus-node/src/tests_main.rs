@@ -555,7 +555,12 @@ async fn admit_posture_inert_without_a_claim() {
     let spec = posture_spec(None, Some(&path));
     let reg = posture::PostureRegistry::default();
     // No claim: inert, even with an empty registry and no image measured.
-    assert_eq!(admit_posture(&spec, Uuid::new_v4(), &reg).await.unwrap(), None);
+    assert_eq!(
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -563,9 +568,12 @@ async fn admit_posture_admits_a_matching_trusted_claim() {
     let (_dir, path, digest) = rootfs_fixture(b"the proven artifact").await;
     let label = format!("identity_nondelivery@{digest}");
     let spec = posture_spec(Some(&label), Some(&path));
-    let reg = posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{digest}"));
+    let reg =
+        posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{digest}"));
     assert_eq!(
-        admit_posture(&spec, Uuid::new_v4(), &reg).await.unwrap(),
+        posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+            .await
+            .unwrap(),
         Some("identity_nondelivery:verified".to_string())
     );
 }
@@ -580,7 +588,9 @@ async fn admit_posture_refuses_a_lying_digest() {
     let spec = posture_spec(Some(&label), Some(&path));
     // Even trusting the LIE, the measurement mismatch must refuse.
     let reg = posture::PostureRegistry::from_operator_str(&format!("identity_nondelivery@{lie}"));
-    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -591,7 +601,9 @@ async fn admit_posture_refuses_an_untrusted_artifact() {
     let label = format!("identity_nondelivery@{digest}");
     let spec = posture_spec(Some(&label), Some(&path));
     let reg = posture::PostureRegistry::default();
-    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -601,7 +613,9 @@ async fn admit_posture_refuses_a_claim_with_no_image_to_measure() {
     let label = format!("identity_nondelivery@{}", "a".repeat(64));
     let spec = posture_spec(Some(&label), None);
     let reg = posture::PostureRegistry::from_operator_str(&label);
-    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_err());
+    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+        .await
+        .is_err());
 }
 
 /// The perturbation the plan calls for: flipping one byte of the artifact
@@ -614,13 +628,17 @@ async fn admit_posture_one_byte_of_drift_reds_the_gate() {
     let reg = posture::PostureRegistry::from_operator_str(&label);
     // As built, admitted.
     let spec = posture_spec(Some(&label), Some(&path));
-    assert!(admit_posture(&spec, Uuid::new_v4(), &reg).await.is_ok());
+    assert!(posture::admit_posture(&spec, Uuid::new_v4(), &reg)
+        .await
+        .is_ok());
     // Rewrite the rootfs with one byte changed: same claim, same registry, but
     // the measurement no longer matches.
     tokio::fs::write(&path, b"artifact v2").await.unwrap();
     let spec2 = posture_spec(Some(&label), Some(&path));
     assert!(
-        admit_posture(&spec2, Uuid::new_v4(), &reg).await.is_err(),
+        posture::admit_posture(&spec2, Uuid::new_v4(), &reg)
+            .await
+            .is_err(),
         "a changed artifact must fail a claim minted for the original"
     );
 }
