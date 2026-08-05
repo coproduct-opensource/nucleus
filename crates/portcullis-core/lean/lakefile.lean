@@ -133,6 +133,12 @@ lean_lib «FlowProofs» where
 lean_lib «UnwindingNoninterference» where
   roots := #[`UnwindingNoninterference]
 
+-- Reference pod-execution semantics — Phase 0 falsification spike: a coarse-grained
+-- monitor LTS whose event trace makes two-run noninterference NON-vacuous, discharged
+-- by the extracted identity delivery theorem. Plan: graceful-puzzling-beaver.md.
+lean_lib «PodMachineSpike» where
+  roots := #[`PodMachineSpike]
+
 -- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
 lean_lib «UnwindingIFC» where
   roots := #[`UnwindingIFC]
