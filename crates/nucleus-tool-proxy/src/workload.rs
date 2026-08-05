@@ -442,4 +442,119 @@ mod tests {
     fn without_credentialed_egress_a_shared_uid_is_fine() {
         assert!(reject_credential_readable_workload(Some(&spec_with(&[])), &[]).is_ok());
     }
+
+    // ── FM-5 binding: the extracted delivery model agrees with workload_env ──
+    //
+    // The Lean theorems in `IdentityMaterialNoninterferenceExtracted.lean` are
+    // about `nucleus_ifc_kernel::extracted::identity`, not about this file.
+    // These tests are the leg that binds the two: every variable the overlay
+    // actually injects must be one the model calls deliverable to the
+    // workload, and every identity variable the runtime holds must be one the
+    // model refuses AND the overlay omits. Neither side proves the other; the
+    // pointwise agreement is the claim.
+
+    use nucleus_ifc_kernel::extracted::identity::{ident_may_deliver, MaterialKind, Principal};
+
+    /// Classify an environment key as the material kind the extracted model
+    /// speaks about. Test-local on purpose: the classifier is part of the
+    /// binding claim, and hiding it in production code would let the model and
+    /// the mapping drift together.
+    fn material_for_env_key(key: &str) -> MaterialKind {
+        match key {
+            "NUCLEUS_IDENTITY_CERT" => MaterialKind::SvidCert,
+            "NUCLEUS_TASK_TOKEN" | "NUCLEUS_TASK_TOKEN_NONCE" | "NUCLEUS_TASK_TOKEN_ISSUER" => {
+                MaterialKind::TaskToken
+            }
+            "NUCLEUS_TOOL_PROXY_BROKER_SECRET" | "NUCLEUS_TOOL_PROXY_BROKER_PORT" => {
+                MaterialKind::BrokerSecret
+            }
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" => MaterialKind::ApprovalSecret,
+            "NUCLEUS_SANDBOX_TOKEN" => MaterialKind::SandboxToken,
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET" => MaterialKind::ProxyAuthSecret,
+            k if k.starts_with("NUCLEUS_DLC_") => MaterialKind::DlcCredentials,
+            k if k.starts_with("NUCLEUS_EGRESS_") => MaterialKind::EgressEnv,
+            _ => MaterialKind::OrdinaryData,
+        }
+    }
+
+    /// Every variable the overlay injects is one the model says the workload
+    /// may receive. The non-vacuity control is the auth secret: the map must
+    /// contain at least one *Internal*-labelled key, because a Public-only
+    /// overlay would pass this test without exercising the ceiling at all.
+    #[test]
+    fn every_env_var_the_overlay_injects_is_model_deliverable_to_the_workload() {
+        let env = workload_env(
+            &spec_with(&[("ORDINARY", "1")]),
+            "http://127.0.0.1:8080",
+            "s3cret",
+            &[egress_spec()],
+        );
+        for key in env.keys() {
+            assert!(
+                ident_may_deliver(material_for_env_key(key), Principal::Workload),
+                "{key} is in the workload overlay but the FM-5 model refuses it — \
+                 either the overlay leaks or the model is stale"
+            );
+        }
+        assert!(
+            env.contains_key("NUCLEUS_TOOL_PROXY_AUTH_SECRET"),
+            "non-vacuity: the overlay must carry the one Internal-labelled key"
+        );
+        assert!(
+            env.keys().any(|k| k.starts_with("NUCLEUS_EGRESS_")),
+            "non-vacuity: the egress channel must be exercised"
+        );
+    }
+
+    /// Every identity variable the runtime holds is refused by the model AND
+    /// absent from the overlay. A spec that names one of these gets its own
+    /// value passed through — same stance as
+    /// `workload_env_does_not_source_the_capability_from_the_runtime`: the
+    /// property is that the RUNTIME's copy never crosses, not that the names
+    /// are unspeakable.
+    #[test]
+    fn every_identity_var_the_runtime_holds_is_refused_by_the_model_and_absent_from_the_overlay() {
+        const IDENTITY_VARS: [&str; 10] = [
+            "NUCLEUS_TOOL_PROXY_BROKER_SECRET",
+            "NUCLEUS_TASK_TOKEN",
+            "NUCLEUS_TASK_TOKEN_NONCE",
+            "NUCLEUS_TASK_TOKEN_ISSUER",
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+            "NUCLEUS_SANDBOX_TOKEN",
+            "NUCLEUS_IDENTITY_CERT",
+            "NUCLEUS_DLC_CREDENTIALS",
+            "NUCLEUS_DLC_TRUSTED_KEYS",
+            "NUCLEUS_DLC_ISSUER",
+        ];
+        let env = workload_env(
+            &spec_with(&[]),
+            "http://127.0.0.1:8080",
+            "s3cret",
+            &[egress_spec()],
+        );
+        for var in IDENTITY_VARS {
+            assert!(
+                !ident_may_deliver(material_for_env_key(var), Principal::Workload),
+                "{var} must classify as identity material the model refuses"
+            );
+            assert!(
+                !env.contains_key(var),
+                "{var} must not appear in the workload overlay"
+            );
+        }
+    }
+
+    /// The second injection channel — `spawn_workload`'s by-name inheritance
+    /// loop — is bound to the model too: everything on the allowlist must be
+    /// deliverable. A secret-carrying name added there would fail here before
+    /// it failed in a guest.
+    #[test]
+    fn the_inherited_by_name_allowlist_is_model_deliverable() {
+        for key in INHERITED_BY_NAME {
+            assert!(
+                ident_may_deliver(material_for_env_key(key), Principal::Workload),
+                "{key} is inherited by name but the FM-5 model refuses it"
+            );
+        }
+    }
 }

@@ -99,6 +99,8 @@ jobs:
             MatrixBridge \
             PortcullisCoreCapQuantale \
             CapabilityResiduatedQuantaleProofs \
+            PortcullisCoreIdentity \
+            IdentityMaterialNoninterferenceExtracted \
             AssuranceCoverage \
             UniversalDetection
           # CapabilityResiduatedQuantaleProofs: the residuation adjunction

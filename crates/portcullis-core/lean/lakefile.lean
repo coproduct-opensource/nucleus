@@ -98,6 +98,15 @@ lean_lib «PortcullisCoreCredential» where
 lean_lib «CredentialNoninterferenceExtracted» where
   roots := #[`CredentialNoninterferenceExtracted]
 
+lean_lib «PortcullisCoreIdentity» where
+  roots := #[`PortcullisCoreIdentity.Types, `PortcullisCoreIdentity.Funs]
+  srcDir := "generated-identity"
+
+-- FM-5: identity material never reaches the agent workload, proven over the
+-- extracted delivery relation at the intra-VM boundary (three principals).
+lean_lib «IdentityMaterialNoninterferenceExtracted» where
+  roots := #[`IdentityMaterialNoninterferenceExtracted]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where
