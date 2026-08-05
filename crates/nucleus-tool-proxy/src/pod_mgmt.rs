@@ -407,34 +407,87 @@ pub(crate) fn resolve_vsock(
     }
 }
 
+/// A vsock listener that is already bound (and announced). Split from
+/// [`serve_vsock`] so `main` can start the pod's workload BETWEEN bind and
+/// serve: the workload's `NUCLEUS_TOOL_PROXY_URL` is derived from this
+/// listener's local address, which keeps "the workload starts only once its
+/// proxy's socket exists" true on the vsock path the same way the TCP path's
+/// `local_addr()` does.
 #[cfg(target_os = "linux")]
-pub(crate) async fn serve_vsock(
-    app: Router,
+pub(crate) struct BoundVsock {
+    listener: tokio_vsock::VsockListener,
+    cid: u32,
+    port: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl BoundVsock {
+    pub(crate) fn cid(&self) -> u32 {
+        self.cid
+    }
+    pub(crate) fn port(&self) -> u32 {
+        self.port
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn bind_vsock(
     vsock: VsockConfig,
     announce_path: Option<PathBuf>,
-) -> Result<(), ApiError> {
+) -> Result<BoundVsock, ApiError> {
     let addr = tokio_vsock::VsockAddr::new(vsock.cid, vsock.port);
     let listener = tokio_vsock::VsockListener::bind(addr)?;
     let local = listener.local_addr()?;
     if let Some(path) = announce_path {
         tokio::fs::write(path, format!("vsock://{}:{}", local.cid(), local.port())).await?;
     }
+    Ok(BoundVsock {
+        listener,
+        cid: local.cid(),
+        port: local.port(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn serve_vsock(app: Router, bound: BoundVsock) -> Result<(), ApiError> {
     info!(
         "nucleus-tool-proxy listening on vsock {}:{}",
-        local.cid(),
-        local.port()
+        bound.cid, bound.port
     );
-    let listener = VsockAxumListener { inner: listener };
+    let listener = VsockAxumListener {
+        inner: bound.listener,
+    };
     axum::serve(listener, app).await?;
     Ok(())
 }
 
+/// Off Linux there is no vsock; the stub keeps `main`'s vsock branch compiling
+/// (it is unreachable there — `resolve_vsock` refuses vsock configs off Linux).
 #[cfg(not(target_os = "linux"))]
-pub(crate) async fn serve_vsock(
-    _app: Router,
+pub(crate) struct BoundVsock;
+
+#[cfg(not(target_os = "linux"))]
+impl BoundVsock {
+    pub(crate) fn cid(&self) -> u32 {
+        0
+    }
+    pub(crate) fn port(&self) -> u32 {
+        0
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn bind_vsock(
     _vsock: VsockConfig,
     _announce_path: Option<PathBuf>,
-) -> Result<(), ApiError> {
+) -> Result<BoundVsock, ApiError> {
+    Err(ApiError::Spec(
+        "vsock requires Linux (run inside the Firecracker VM)".to_string(),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn serve_vsock(_app: Router, _bound: BoundVsock) -> Result<(), ApiError> {
     Err(ApiError::Spec(
         "vsock requires Linux (run inside the Firecracker VM)".to_string(),
     ))

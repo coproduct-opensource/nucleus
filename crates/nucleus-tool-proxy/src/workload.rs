@@ -652,11 +652,39 @@ impl LaunchReceipt {
     }
 }
 
+/// Where the proxy's bound listener actually is — the value the workload's
+/// `NUCLEUS_TOOL_PROXY_URL` is derived from.
+///
+/// An enum over the two transports the proxy serves on, because the vsock path
+/// — the in-guest case, where the phase-2b boot gate runs — has no TCP
+/// `SocketAddr` to point at. Each variant is built from a listener's LOCAL
+/// address after bind, which preserves the ordering property the old
+/// `SocketAddr` parameter carried: the workload starts only once its proxy's
+/// socket exists.
+pub(crate) enum BoundProxy {
+    /// The host/TCP path: `TcpListener::local_addr()`.
+    Tcp(std::net::SocketAddr),
+    /// The in-guest path: the vsock listener's local `(cid, port)`. An in-guest
+    /// client speaks vsock, not TCP, so the URL is `vsock://cid:port` — the
+    /// same form the announce file uses.
+    Vsock { cid: u32, port: u32 },
+}
+
+impl BoundProxy {
+    fn url(&self) -> String {
+        match self {
+            Self::Tcp(addr) => format!("http://{addr}"),
+            Self::Vsock { cid, port } => format!("vsock://{cid}:{port}"),
+        }
+    }
+}
+
 /// Start the pod's workload if the spec asks for one.
 ///
-/// Called AFTER the listener is bound: it takes the bound address, which does
-/// not exist until the server is up, so the ordering is a property of the
-/// signature. The returned handle must be held for the process lifetime —
+/// Called AFTER the listener is bound: it takes a [`BoundProxy`], whose variants
+/// are built from a bound listener's local address — which does not exist until
+/// the server socket is up — so the ordering is a property of the signature.
+/// The returned handle must be held for the process lifetime —
 /// `kill_on_drop` means dropping it kills the workload, which is the correct
 /// coupling between a pod and the thing it exists to run.
 ///
@@ -673,13 +701,13 @@ impl LaunchReceipt {
 /// If a workload is configured and cannot be admitted or started.
 pub(crate) fn start_if_configured(
     spec: &nucleus_spec::PodSpec,
-    addr: std::net::SocketAddr,
+    bound: BoundProxy,
     auth_secret: &str,
 ) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
     };
-    let url = format!("http://{addr}");
+    let url = bound.url();
     let plan = WorkloadLaunch::build(
         w,
         &url,

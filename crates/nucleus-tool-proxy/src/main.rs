@@ -1271,40 +1271,74 @@ impl IntoResponse for ApiError {
 /// stderr as a last resort (host-side unit tests have no console device).
 /// Opened per call — workloads here are few-line probes, and a fresh open avoids
 /// sharing a handle across tokio tasks.
+///
+/// The whole line goes down in ONE `write(2)`: every write to `/dev/kmsg` is a
+/// separate log record, and the run-4 boot showed `writeln!`'s per-fragment
+/// writes splitting a single message across three records. A sentinel the host
+/// greps for must arrive as one record.
 fn console_line(msg: &str) {
     use std::io::Write;
+    let line = format!("{msg}\n");
     for dev in ["/dev/kmsg", "/dev/console"] {
         if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(dev) {
-            if writeln!(f, "{msg}").is_ok() {
+            if f.write_all(line.as_bytes()).is_ok() {
                 return;
             }
         }
     }
-    eprintln!("{msg}");
+    eprint!("{line}");
 }
 
-/// One-shot startup diagnostic (temporary): write the SAME marker to every
-/// candidate console channel with a distinct tag, so a single boot reveals which
-/// of `/dev/kmsg`, `/dev/console`, or inherited stderr actually reaches
-/// `firecracker.log`. Removed once the reliable channel is confirmed.
-fn console_channel_probe() {
-    use std::io::Write;
-    for (tag, dev) in [("kmsg", "/dev/kmsg"), ("console", "/dev/console")] {
-        match std::fs::OpenOptions::new().write(true).open(dev) {
-            Ok(mut f) => {
-                let _ = writeln!(f, "PROXY-CHAN-PROBE via {tag} (open ok)");
+/// Start the pod's workload (if configured) and drain its piped stdout/stderr
+/// to the guest console log, line-attributed as `[workload] ...`.
+///
+/// Called on BOTH serve paths — vsock and TCP — and it must stay that way. In a
+/// real guest the proxy serves over VSOCK and `main` RETURNS from that branch;
+/// run 4 of the phase-2b boot gate found the spawn sitting below that early
+/// return, on the TCP-only path, so the in-guest workload never started at all:
+/// the console channels were proven live at 0.9s by the startup diagnostics,
+/// verify's checks were served over vsock, and yet not even the `[workload]`
+/// start line appeared — the code was simply unreachable in the guest.
+///
+/// Draining BOTH streams also keeps a chatty workload from blocking on a full
+/// pipe nobody reads. The returned child must be held for the pod's lifetime
+/// (`kill_on_drop`).
+fn start_and_drain_workload(
+    spec: &nucleus_spec::PodSpec,
+    bound: workload::BoundProxy,
+    auth_secret: &str,
+) -> Result<Option<(tokio::process::Child, workload::LaunchReceipt)>, ApiError> {
+    let mut started = workload::start_if_configured(spec, bound, auth_secret)?;
+    match started.as_mut() {
+        Some((child, _receipt)) => {
+            console_line(&format!("[workload] started (pid={:?})", child.id()));
+            if let Some(out) = child.stdout.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(out).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        console_line(&format!("[workload] {line}"));
+                    }
+                });
             }
-            Err(e) => eprintln!("PROXY-CHAN-PROBE {tag} open failed: {e}"),
+            if let Some(err) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(err).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        console_line(&format!("[workload] {line}"));
+                    }
+                });
+            }
         }
+        // Not an error: most pods run no workload. Logged so a boot that expected
+        // one (the probe pod) can tell "no workload configured" — a spec/POD_SPEC
+        // problem — apart from "workload ran but produced nothing".
+        None => console_line("[workload] no workload configured in pod spec"),
     }
-    eprintln!("PROXY-CHAN-PROBE via stderr");
+    Ok(started)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
-    // TEMPORARY diagnostic: which console channel reaches firecracker.log?
-    console_channel_probe();
-
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -1878,7 +1912,22 @@ async fn main() -> Result<(), ApiError> {
         ));
 
     if let Some(vsock) = vsock_binding {
-        pod_mgmt::serve_vsock(app, vsock, args.announce_path).await?;
+        // THE GUEST PATH. In a booted microVM the proxy serves over vsock and
+        // `main` returns right here — everything below this block is host/TCP
+        // only. The workload therefore starts on this path (between bind and
+        // serve, so its proxy URL names a socket that exists); before run 4's
+        // diagnosis it started only below, and an in-guest pod's workload never
+        // ran at all.
+        let bound = pod_mgmt::bind_vsock(vsock, args.announce_path).await?;
+        let _workload = start_and_drain_workload(
+            &spec,
+            workload::BoundProxy::Vsock {
+                cid: bound.cid(),
+                port: bound.port(),
+            },
+            &args.auth_secret,
+        )?;
+        pod_mgmt::serve_vsock(app, bound).await?;
         write_exit_report(
             &exit_audit,
             &exit_work_dir,
@@ -1898,46 +1947,10 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Started here and not earlier; `workload::start_if_configured` explains why.
-    // `spawn_admitted` pipes the child's stdout/stderr (declared, not inherited —
-    // the FM-5 inc3 change); drain both to the guest serial console so the
-    // workload's output is attributed and host-observable rather than dropped.
-    // This is what lets an in-guest probe report its verdict to `nucleus verify`.
-    //
-    // Write to `/dev/console` DIRECTLY, not via this process's stdout/stderr.
-    // guest-init's own milestones reach `firecracker.log` because PID-1 stdio is
-    // the console, but empirically the tool-proxy's inherited stdio does NOT
-    // surface there (an `info!` is filtered by a `RUST_LOG` the guest never sets,
-    // and even a bare `eprintln!` did not appear). Opening the console device is
-    // the reliable channel: we run as root (guest-init exec'd us as PID 1) and
-    // `/dev` is a separate devtmpfs unaffected by the read-only root remount.
-    // Draining BOTH streams also keeps a chatty workload from blocking on a full
-    // stdout pipe nobody reads.
-    let mut _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
-    match _workload.as_mut() {
-        Some((child, _receipt)) => {
-            console_line(&format!("[workload] started (pid={:?})", child.id()));
-            if let Some(out) = child.stdout.take() {
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(out).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        console_line(&format!("[workload] {line}"));
-                    }
-                });
-            }
-            if let Some(err) = child.stderr.take() {
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(err).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        console_line(&format!("[workload] {line}"));
-                    }
-                });
-            }
-        }
-        // Not an error: most pods run no workload. Logged so a boot that expected
-        // one (the probe pod) can tell "no workload configured" — a spec/POD_SPEC
-        // problem — apart from "workload ran but produced nothing".
-        None => console_line("[workload] no workload configured in pod spec"),
-    }
+    // `start_and_drain_workload` explains why the same call also sits on the
+    // vsock branch above — this line alone is unreachable in a real guest.
+    let _workload =
+        start_and_drain_workload(&spec, workload::BoundProxy::Tcp(addr), &args.auth_secret)?;
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
