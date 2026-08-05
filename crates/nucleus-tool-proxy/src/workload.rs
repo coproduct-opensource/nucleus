@@ -23,7 +23,92 @@
 
 use std::collections::BTreeMap;
 
+use nucleus_ifc_kernel::extracted::identity::{
+    ident_may_deliver, mat_label, MaterialKind, Principal,
+};
+use nucleus_ifc_kernel::extracted::ifc_confidentiality::ConfLevel;
 use nucleus_spec::WorkloadSpec;
+
+/// Classify an environment-variable NAME as the identity-material kind the
+/// extracted FM-5 model reasons about.
+///
+/// **This is the trusted half of the boundary, and it is trusted for a reason
+/// Aeneas cannot change:** a `&str` is an opaque byte slice to Charon, so a
+/// name→kind function cannot be extracted or proved. The *decision* it feeds —
+/// `ident_may_deliver(kind, Workload)` — is extracted and carries ten theorems;
+/// this map is pinned instead by the dual-classifier corpus test, which asserts
+/// an independently-written oracle agrees with it over an enumerated key set.
+///
+/// The `_ => OrdinaryData` fallthrough is the one place a NEW secret hides: a
+/// `NUCLEUS_*` variable added to the overlay without a case here would be
+/// classified public and admitted. The corpus test exists to catch exactly
+/// that, which is why it enumerates the `NUCLEUS_*` namespace rather than a
+/// sample.
+pub(crate) fn env_key_material(key: &str) -> MaterialKind {
+    match key {
+        "NUCLEUS_IDENTITY_CERT" => MaterialKind::SvidCert,
+        "NUCLEUS_TASK_TOKEN" | "NUCLEUS_TASK_TOKEN_NONCE" | "NUCLEUS_TASK_TOKEN_ISSUER" => {
+            MaterialKind::TaskToken
+        }
+        "NUCLEUS_TOOL_PROXY_BROKER_SECRET" | "NUCLEUS_TOOL_PROXY_BROKER_PORT" => {
+            MaterialKind::BrokerSecret
+        }
+        "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" => MaterialKind::ApprovalSecret,
+        "NUCLEUS_SANDBOX_TOKEN" => MaterialKind::SandboxToken,
+        "NUCLEUS_TOOL_PROXY_AUTH_SECRET" => MaterialKind::ProxyAuthSecret,
+        k if k.starts_with("NUCLEUS_DLC_") => MaterialKind::DlcCredentials,
+        k if k.starts_with("NUCLEUS_EGRESS_") => MaterialKind::EgressEnv,
+        _ => MaterialKind::OrdinaryData,
+    }
+}
+
+/// Where an admitted env entry came from — kept in the launch receipt so an
+/// auditor can see not just what crossed but why it was allowed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EnvSource {
+    /// One of `INHERITED_BY_NAME`, taken from the runtime's own environment.
+    InheritedByName,
+    /// From the operator-written `spec.env`.
+    SpecEnv,
+    /// Injected by the runtime (the proxy URL and the workload's own HMAC).
+    RuntimeInjected,
+    /// An egress forwarder name/URL from `workload_egress_env`.
+    Egress,
+}
+
+/// One classified environment entry: the name, the material kind the classifier
+/// assigned, its confidentiality label, and its source. **Never the value.**
+#[derive(Debug, Clone)]
+pub(crate) struct ClassifiedEntry {
+    pub(crate) key: String,
+    pub(crate) material: MaterialKind,
+    pub(crate) label: ConfLevel,
+    pub(crate) source: EnvSource,
+}
+
+/// Attribute an env key to its source, given the spec that produced the overlay.
+///
+/// `workload_env` makes the runtime-injected pair win over `spec.env`, so a key
+/// that is one of that pair is `RuntimeInjected` regardless of whether the spec
+/// also named it — which is the correct attribution: the value that crossed is
+/// the runtime's.
+fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
+    if key == "NUCLEUS_TOOL_PROXY_URL" || key == "NUCLEUS_TOOL_PROXY_AUTH_SECRET" {
+        EnvSource::RuntimeInjected
+    } else if key.starts_with("NUCLEUS_EGRESS_") {
+        EnvSource::Egress
+    } else if INHERITED_BY_NAME.contains(&key) {
+        EnvSource::InheritedByName
+    } else if spec.env.contains_key(key) {
+        EnvSource::SpecEnv
+    } else {
+        // Not from any known channel — should be impossible, since `workload_env`
+        // produces only these. Recorded as `SpecEnv` conservatively; the
+        // admission check below runs on it regardless.
+        EnvSource::SpecEnv
+    }
+}
 
 /// The environment a workload is started with.
 ///
@@ -69,72 +154,334 @@ pub(crate) fn workload_env(
     env
 }
 
-/// Start the workload, after mediation is live.
+/// A workload launch whose every environment entry has been classified against
+/// the extracted FM-5 delivery relation and admitted. **The only value
+/// [`spawn_admitted`] will spawn**, and constructible only by
+/// [`WorkloadLaunch::admit`].
 ///
-/// Taking `proxy_url` is what enforces the ordering: the bound address does not
-/// exist until the server is listening.
-///
-/// # Errors
-/// If the process cannot be started. That is fatal to the pod by the caller's
-/// choice, not silently ignored — a pod that was asked to run a workload and did
-/// not is not a working pod, and reporting success would leave an operator
-/// waiting for output that will never come.
-pub(crate) fn spawn_workload(
-    spec: &WorkloadSpec,
-    proxy_url: &str,
-    auth_secret: &str,
-    work_dir: &std::path::Path,
-    egress: &[nucleus_spec::CredentialedEgressSpec],
-) -> std::io::Result<tokio::process::Child> {
-    let mut cmd = tokio::process::Command::new(&spec.command);
-    cmd.args(&spec.args)
-        .current_dir(work_dir)
-        .kill_on_drop(true);
+/// Affine, redacting, and scope-bound, following the `BrokerCapability` and
+/// `DischargedBundle` precedents:
+/// - `#[must_use]` — a plan admitted and never spawned is a workload that was
+///   cleared to run and then dropped, which an operator should never do silently.
+/// - not `Clone`/`Copy` — the classified inventory it carries is the exact data
+///   the receipt is built from; copying it would let one admission back two
+///   different launches.
+/// - private fields, no public constructor — the env map inside was admitted by
+///   `admit` and cannot be swapped for another after the check, which is the
+///   confused-deputy remedy `DischargedBundle` added its scope binding for.
+#[must_use = "an AdmittedWorkloadPlan that is never spawned is a workload that was admitted and not run"]
+pub(crate) struct AdmittedWorkloadPlan {
+    command: String,
+    args: Vec<String>,
+    work_dir: std::path::PathBuf,
+    uid: Option<u32>,
+    /// The exact env that will cross, already admitted. Paired with `classified`
+    /// so the receipt reports the same set the admission checked.
+    env: BTreeMap<String, String>,
+    classified: Vec<ClassifiedEntry>,
+}
 
-    // ── The workload's environment is DECLARED, never inherited ──────────────
-    //
-    // `Command` passes the parent's environment to the child unless told
-    // otherwise, and this did not tell it otherwise. The proxy's own environment
-    // carries `NUCLEUS_TOOL_PROXY_BROKER_SECRET` — `nucleus-guest-init` sets it
-    // before exec'ing the proxy — so **the workload inherited the broker
-    // capability**. The one thing steps 1 and 2 of this arc exist to prevent:
-    // the capability distinguishes the mediating proxy from every other process
-    // in the guest, and it was being handed to the workload for free.
-    //
-    // The uid boundary below does NOT close this, and the comment that used to
-    // sit there claimed it did. A uid stops the workload READING
-    // `/proc/<proxy_pid>/environ`; it does nothing about a value already in the
-    // workload's own environment. Inheritance arrives before any permission
-    // check applies.
-    //
-    // `env_clear` first, then an explicit allowlist. The fail-closed direction:
-    // a new variable now has to be added on purpose, rather than reaching the
-    // workload because it happened to be in the proxy's environment. Anything a
-    // workload genuinely needs belongs in `spec.env`, where an operator wrote it
-    // and a reader can see it.
-    cmd.env_clear();
-    for key in INHERITED_BY_NAME {
-        if let Ok(value) = std::env::var(key) {
-            cmd.env(key, value);
+// The plan carries secret VALUES in `env`; never let them reach a log via Debug.
+impl std::fmt::Debug for AdmittedWorkloadPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmittedWorkloadPlan")
+            .field("command", &self.command)
+            .field("env_entries", &self.classified.len())
+            .field("uid", &self.uid)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A workload the runtime declined to launch, with the reason.
+#[derive(Debug)]
+pub(crate) struct Refused(pub(crate) String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Build a launch from a spec and the runtime's mediation coordinates, then
+/// admit it. Splitting `build`/`admit` from `spawn_admitted` is what makes the
+/// admission a value: a plan cannot be spawned without having been admitted,
+/// because [`spawn_admitted`] takes an [`AdmittedWorkloadPlan`] and only
+/// [`WorkloadLaunch::admit`] produces one.
+pub(crate) struct WorkloadLaunch {
+    command: String,
+    args: Vec<String>,
+    work_dir: std::path::PathBuf,
+    uid: Option<u32>,
+    env: BTreeMap<String, String>,
+    classified: Vec<ClassifiedEntry>,
+    /// Whether credentialed egress is configured — folded in here so the uid
+    /// coupling that used to live 300 lines away is a field of the thing being
+    /// admitted, not an adjacent call a caller can forget.
+    has_credentialed_egress: bool,
+}
+
+impl WorkloadLaunch {
+    /// Assemble and classify. Takes the same inputs the old `spawn_workload`
+    /// did; the env is produced by the pinned [`workload_env`] so the binding
+    /// tests still describe the one env-assembly point.
+    pub(crate) fn build(
+        spec: &WorkloadSpec,
+        proxy_url: &str,
+        auth_secret: &str,
+        work_dir: &std::path::Path,
+        egress: &[nucleus_spec::CredentialedEgressSpec],
+    ) -> Self {
+        // Start from the by-name inheritance (resolved from the runtime's own
+        // environment), then let `workload_env` win over it — the same
+        // precedence the old `spawn_workload` applied by ordering its two loops.
+        // Folding them together here means every entry the child gets, including
+        // the inherited ones, is classified and admitted below.
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        for key in INHERITED_BY_NAME {
+            if let Ok(value) = std::env::var(key) {
+                env.insert(key.to_string(), value);
+            }
+        }
+        env.extend(workload_env(spec, proxy_url, auth_secret, egress));
+        let classified = env
+            .keys()
+            .map(|key| {
+                let material = env_key_material(key);
+                ClassifiedEntry {
+                    key: key.clone(),
+                    material,
+                    label: mat_label(material),
+                    source: env_source(key, spec),
+                }
+            })
+            .collect();
+        Self {
+            command: spec.command.clone(),
+            args: spec.args.clone(),
+            work_dir: work_dir.to_path_buf(),
+            uid: spec.uid,
+            env,
+            classified,
+            has_credentialed_egress: !egress.is_empty(),
         }
     }
 
-    // A uid boundary, for the DIFFERENT thing it actually buys: same-uid
-    // processes can read each other's `/proc/<pid>/environ`, so without this the
-    // workload could read the runtime's environment directly — which still holds
-    // the broker capability, whatever the workload's own environment says.
-    if let Some(uid) = spec.uid {
-        cmd.uid(uid);
+    /// Admit the launch: every classified entry must be deliverable to the
+    /// workload under the extracted relation, and the credentialed-egress uid
+    /// coupling must hold. Refusal is fatal to the pod by the caller's choice.
+    ///
+    /// The admission check IS `ident_may_deliver(kind, Workload)` — the same
+    /// function the FM-5 theorems are proven over. A `Secret`-labelled entry
+    /// reaching this point is refused here rather than trusted to have been kept
+    /// out upstream.
+    pub(crate) fn admit(self) -> Result<AdmittedWorkloadPlan, Refused> {
+        // The uid coupling, folded in from `reject_credential_readable_workload`.
+        if self.has_credentialed_egress {
+            match self.uid {
+                Some(uid) if uid != nix_getuid() => {}
+                Some(uid) => {
+                    return Err(Refused(format!(
+                        "the workload's uid ({uid}) is the runtime's own, so it can read the \
+                         runtime's environment via /proc and obtain the credentialed-egress \
+                         secret. Give the workload a distinct unprivileged uid."
+                    )));
+                }
+                None => {
+                    return Err(Refused(
+                        "credentialed egress is configured but the workload has no `uid`, so it \
+                         runs as the runtime's user and can read the credential from \
+                         /proc/<pid>/environ. Set `workload.uid` to a distinct unprivileged uid."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Every entry must be admissible to the workload under the proved
+        // relation. This is the structural form of FM-5: not "we kept identity
+        // material out", but "nothing that was not admitted can cross, because
+        // the only spawn consumes a plan and the plan is only built here".
+        for entry in &self.classified {
+            if !ident_may_deliver(entry.material, Principal::Workload) {
+                return Err(Refused(format!(
+                    "environment variable `{}` classifies as {:?} ({:?}), which the FM-5 \
+                     delivery relation refuses to the workload. It must not be placed on the \
+                     workload's environment.",
+                    entry.key, entry.material, entry.label
+                )));
+            }
+        }
+
+        Ok(AdmittedWorkloadPlan {
+            command: self.command,
+            args: self.args,
+            work_dir: self.work_dir,
+            uid: self.uid,
+            env: self.env,
+            classified: self.classified,
+        })
     }
-    for (k, v) in workload_env(spec, proxy_url, auth_secret, egress) {
+}
+
+/// Spawn an admitted plan. **The only `Command::new` in the crate** — the
+/// mediation gate's allowlist names this one line, so a second spawn anywhere in
+/// the tool-proxy fails the build.
+///
+/// Returns the child AND a [`LaunchReceipt`] so "spawned without a receipt" is
+/// unrepresentable, the way `start_if_configured` taking a `SocketAddr` makes
+/// "spawned before mediation" unrepresentable.
+///
+/// # Errors
+/// If the process cannot be started.
+pub(crate) fn spawn_admitted(
+    plan: AdmittedWorkloadPlan,
+) -> std::io::Result<(tokio::process::Child, LaunchReceipt)> {
+    let mut cmd = tokio::process::Command::new(&plan.command);
+    cmd.args(&plan.args)
+        .current_dir(&plan.work_dir)
+        .kill_on_drop(true);
+
+    // The environment is DECLARED, never inherited. `Command` passes the
+    // parent's environment to the child unless told otherwise; the proxy's
+    // environment holds the broker capability and every other identity value.
+    // `env_clear` first, then only the admitted map (which already includes the
+    // INHERITED_BY_NAME values, resolved in `WorkloadLaunch::build`).
+    cmd.env_clear();
+    for (k, v) in &plan.env {
         cmd.env(k, v);
     }
+
+    // Stdio is DECLARED too. Inherited stdio was the quiet twin of inherited
+    // env: stdin came from the node's controlling terminal, and stdout/stderr
+    // wrote raw into the operator-facing pod log, unattributed. `null` stdin
+    // (the workload has no console to read) and piped stdout/stderr (the proxy
+    // captures and attributes them) close both.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // The async-signal-safe hardening hook, ALWAYS installed. It closes every
+    // inherited fd above 0/1/2 (`close_range`) so "only the child's own stdio
+    // crosses" is true BY CONSTRUCTION, not by trusting that every fd the parent
+    // holds happens to be CLOEXEC — the runc CVE-2024-21626 lesson. When a uid
+    // is set it additionally drops supplementary groups, sets gid, no_new_privs
+    // and rlimits (setting a uid without dropping groups would leave the
+    // workload in the runtime's groups). Runs AFTER std's stdio dup2, so closing
+    // the high fds cannot disturb 0/1/2.
+    let hardened = plan.uid.is_some();
+    if let Some(uid) = plan.uid {
+        cmd.uid(uid);
+    }
+    harden::apply(&mut cmd, plan.uid);
+
     tracing::info!(
-        command = %spec.command,
-        args = ?spec.args,
-        "starting pod workload under mediation"
+        command = %plan.command,
+        env_entries = plan.classified.len(),
+        "starting pod workload under mediation (admitted)"
     );
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    let receipt = LaunchReceipt::from_admitted(&plan, hardened, child.id());
+    Ok((child, receipt))
+}
+
+/// The async-signal-safe child-side hardening hook. Local to the tool-proxy
+/// because `nucleus::HostSandbox` is `pub(crate)` to its own crate and does not
+/// drop groups or take a uid. Mirrors that module's audited-exception pattern:
+/// two `unsafe` blocks (the syscall sequence and the `pre_exec` install), every
+/// call is async-signal-safe, and any `Err` fails the spawn (fail-closed — the
+/// child never execs).
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod harden {
+    use std::io;
+
+    const RLIMIT_NPROC_MAX: libc::rlim_t = 512;
+    const RLIMIT_NOFILE_MAX: libc::rlim_t = 4096;
+    const RLIMIT_FSIZE_MAX: libc::rlim_t = 8 * 1024 * 1024 * 1024; // 8 GiB
+    const RLIMIT_CPU_SECS: libc::rlim_t = 3600;
+
+    #[cfg(target_env = "gnu")]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(not(target_env = "gnu"))]
+    type RlimitResource = libc::c_int;
+
+    fn rlimit(limit: libc::rlim_t) -> libc::rlimit {
+        libc::rlimit {
+            rlim_cur: limit,
+            rlim_max: limit,
+        }
+    }
+
+    /// Runs after fork, before exec. MUST be async-signal-safe: raw syscalls
+    /// only, no allocation, no locks.
+    ///
+    /// Always closes inherited fds above 2; drops privilege-related authority
+    /// only when a uid is requested. One `unsafe` block for the whole sequence,
+    /// deliberately: every call in it is a well-known async-signal-safe FFI
+    /// syscall, and consolidating them keeps the crate's unsafe surface minimal
+    /// (the exemplar `unsafe_blocks` ratchet).
+    fn harden_child(uid: Option<u32>) -> io::Result<()> {
+        // SAFETY: every call below is an async-signal-safe libc syscall taking
+        // scalars or a pointer to a fully-initialized local `rlimit`; none
+        // allocates or takes a lock, satisfying the `pre_exec` contract. A
+        // `!= 0` return is an error and fails the spawn (fail-closed).
+        unsafe {
+            // Close every fd from 3 up. std has already dup2'd this child's
+            // stdio onto 0/1/2, so the only fds left above 2 are ones inherited
+            // from the parent — the leak this closes. `close_range` is a single
+            // syscall (async-signal-safe); ENOSYS on a pre-5.9 kernel is
+            // tolerated (the guest kernel is modern, and CLOEXEC is the fallback
+            // there), any other error fails the spawn.
+            if libc::close_range(3, libc::c_uint::MAX, 0) != 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ENOSYS) {
+                    return Err(err);
+                }
+            }
+            if let Some(uid) = uid {
+                // Drop supplementary groups before dropping privilege — a uid
+                // change that left the runtime's groups would keep ambient
+                // group authority. std applies `.uid()` AFTER this hook.
+                if libc::setgroups(0, std::ptr::null()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::setgid(uid as libc::gid_t) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // No new privileges: defeats setuid/file-capability escalation.
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                for (resource, max) in [
+                    (libc::RLIMIT_NPROC, RLIMIT_NPROC_MAX),
+                    (libc::RLIMIT_NOFILE, RLIMIT_NOFILE_MAX),
+                    (libc::RLIMIT_FSIZE, RLIMIT_FSIZE_MAX),
+                    (libc::RLIMIT_CPU, RLIMIT_CPU_SECS),
+                ] {
+                    let rl = rlimit(max);
+                    if libc::setrlimit(resource as RlimitResource, &rl) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn apply(cmd: &mut tokio::process::Command, uid: Option<u32>) {
+        // SAFETY: `harden_child` only invokes async-signal-safe syscalls and
+        // does not allocate.
+        unsafe {
+            cmd.pre_exec(move || harden_child(uid));
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod harden {
+    pub(super) fn apply(_cmd: &mut tokio::process::Command, _uid: Option<u32>) {
+        // No procfs / no CommandExt uid semantics off Linux; the guest is Linux.
+    }
 }
 
 /// Refuse a pod that withholds a credential from a workload that could read it.
@@ -193,6 +540,109 @@ fn nix_getuid() -> u32 {
     }))
 }
 
+/// A tamper-evident record of exactly what authority a workload launch handed
+/// the child — the "resulting authority inventory". Modeled on
+/// `portcullis::art12_record::Art12Record`: a schema version, a canonical
+/// preimage joined with `|` (never `serde_json`, whose key order is unstable),
+/// and a self-hash. Emitted by [`spawn_admitted`] and returned rather than
+/// logged beside the spawn, so a launch without a receipt cannot happen.
+///
+/// It answers, without any other artifact: what environment crossed and why it
+/// was allowed to (kind, label, source — never the value), what stdio the child
+/// got, and what the uid boundary was.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct LaunchReceipt {
+    pub(crate) schema_version: u32,
+    /// The classified environment inventory. Never carries values.
+    pub(crate) env: Vec<ReceiptEnvEntry>,
+    /// stdin/stdout/stderr dispositions as set by `spawn_admitted`.
+    pub(crate) stdio: [&'static str; 3],
+    /// The uid boundary, three-valued so "no boundary" and "boundary not
+    /// required" stay distinct (the `nucleus.dlc_admission` unarmed-vs-refused
+    /// lesson): `distinct` (a uid different from the runtime's), `unset` (none).
+    pub(crate) uid_boundary: &'static str,
+    /// Whether the async-signal-safe hardening hook (groups dropped, gid set,
+    /// no_new_privs, rlimits) was applied.
+    pub(crate) hardened: bool,
+    pub(crate) argv_len: usize,
+    pub(crate) child_pid: Option<u32>,
+    /// SHA-256 of the canonical preimage below, hex. Anchors the record.
+    pub(crate) hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct ReceiptEnvEntry {
+    pub(crate) key: String,
+    pub(crate) material: String,
+    pub(crate) label: String,
+    pub(crate) source: EnvSource,
+}
+
+impl LaunchReceipt {
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn from_admitted(plan: &AdmittedWorkloadPlan, hardened: bool, child_pid: Option<u32>) -> Self {
+        let env: Vec<ReceiptEnvEntry> = plan
+            .classified
+            .iter()
+            .map(|c| ReceiptEnvEntry {
+                key: c.key.clone(),
+                material: format!("{:?}", c.material),
+                label: format!("{:?}", c.label),
+                source: c.source,
+            })
+            .collect();
+        let stdio = ["null", "piped", "piped"];
+        let uid_boundary = match plan.uid {
+            Some(_) => "distinct",
+            None => "unset",
+        };
+        let argv_len = plan.args.len();
+        // Canonical preimage: field-ordered, `|`-joined, values excluded.
+        // Reconstructed from the record's own fields, not serialized, so key
+        // order and escaping cannot drift the hash.
+        let mut preimage = format!(
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={uid_boundary}|hardened={hardened}",
+            Self::SCHEMA_VERSION,
+            plan.command,
+            stdio.join(","),
+        );
+        for e in &env {
+            preimage.push_str(&format!(
+                "|env={}:{}:{}:{:?}",
+                e.key, e.material, e.label, e.source
+            ));
+        }
+        let hash = {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(preimage.as_bytes());
+            hex::encode(digest)
+        };
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            env,
+            stdio,
+            uid_boundary,
+            hardened,
+            argv_len,
+            child_pid,
+            hash,
+        }
+    }
+
+    /// Whether the inventory carries at least one `Internal`-labelled entry.
+    ///
+    /// **Non-vacuity by construction.** A workload admitted with a wholly
+    /// `Public` environment is a broken pod, not a maximally secure one: it has
+    /// no proxy HMAC and cannot reach the one policed interface. A receipt that
+    /// cannot show its one legitimately-`Internal` entry is describing a launch
+    /// that will not work, and the caller treats an empty-of-Internal inventory
+    /// as a refusal rather than a success.
+    pub(crate) fn carries_internal_entry(&self) -> bool {
+        self.env.iter().any(|e| e.label == "Internal")
+    }
+}
+
 /// Start the pod's workload if the spec asks for one.
 ///
 /// Called AFTER the listener is bound: it takes the bound address, which does
@@ -206,26 +656,55 @@ fn nix_getuid() -> u32 {
 /// not a working pod, and returning success leaves an operator waiting for
 /// output that never comes.
 ///
+/// Returns the child AND its launch receipt. The whole path — build, admit,
+/// spawn — is the only way to a workload child, and each step is a value the
+/// next consumes, so none can be skipped.
+///
 /// # Errors
-/// If a workload is configured and cannot be started.
+/// If a workload is configured and cannot be admitted or started.
 pub(crate) fn start_if_configured(
     spec: &nucleus_spec::PodSpec,
     addr: std::net::SocketAddr,
     auth_secret: &str,
-) -> Result<Option<tokio::process::Child>, crate::ApiError> {
+) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
     };
     let url = format!("http://{addr}");
-    spawn_workload(
+    let plan = WorkloadLaunch::build(
         w,
         &url,
         auth_secret,
         &spec.spec.work_dir,
         &spec.spec.credentialed_egress,
     )
-    .map(Some)
-    .map_err(|e| crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command)))
+    .admit()
+    .map_err(|e| {
+        crate::ApiError::Spec(format!("refused to launch workload {:?}: {e}", w.command))
+    })?;
+
+    let (child, receipt) = spawn_admitted(plan).map_err(|e| {
+        crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
+    })?;
+
+    if !receipt.carries_internal_entry() {
+        // Non-vacuity: a workload with no Internal-labelled entry has no proxy
+        // HMAC and cannot reach the mediated interface. Refuse rather than run a
+        // pod that will fail opaquely later.
+        let _ = child; // dropped → kill_on_drop stops it
+        return Err(crate::ApiError::Spec(format!(
+            "workload {:?} was admitted with a wholly public environment — no proxy \
+             credential, so it cannot reach the mediated interface. This is a broken \
+             launch, not a secure one.",
+            w.command
+        )));
+    }
+
+    tracing::info!(
+        launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
+        "workload launch receipt"
+    );
+    Ok(Some((child, receipt)))
 }
 
 #[cfg(test)]
@@ -298,22 +777,34 @@ mod tests {
         std::env::set_var("NUCLEUS_TOOL_PROXY_BROKER_PORT", "1027");
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let dump = dir.path().join("child-env");
-        // Written to a FILE, not read from stdout: `spawn_workload` does not pipe
-        // stdout, so `wait_with_output` returns an empty buffer and every
-        // "does not contain the secret" assertion below would pass vacuously.
-        // The non-vacuity control at the end of this test is what caught that.
+        let f_env = dir.path().join("child.env");
+        let f_fd = dir.path().join("child.fd");
+        // The child dumps its inherited surface to FILES, not stdout: the point
+        // is what the child actually GOT, and reading it back from disk avoids
+        // any coupling to how the parent wired the pipes. The env dump caught the
+        // original vacuity bug; the fd dump pins the "only 0/1/2 cross"
+        // assumption that today rests entirely on std's implicit CLOEXEC and is
+        // asserted nowhere else.
+        let script = format!(
+            "env > {}; ls /proc/self/fd > {} 2>/dev/null || true",
+            f_env.display(),
+            f_fd.display(),
+        );
         let spec = WorkloadSpec {
             command: "/bin/sh".into(),
-            args: vec!["-c".into(), format!("env > {}", dump.display())],
+            args: vec!["-c".into(), script],
             uid: None,
             env: std::collections::BTreeMap::new(),
         };
-        let mut child = spawn_workload(&spec, "http://127.0.0.1:8080", "s3cret", dir.path(), &[])
-            .expect("sh must be spawnable");
+        // Through the real path: build → admit → spawn_admitted. A plan that did
+        // not classify-and-admit every entry could not be constructed.
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", "s3cret", dir.path(), &[])
+            .admit()
+            .expect("a clean spec must admit");
+        let (mut child, receipt) = spawn_admitted(plan).expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
         assert!(status.success(), "the child must actually run: {status:?}");
-        let observed = std::fs::read_to_string(&dump).expect("the child wrote its environment");
+        let observed = std::fs::read_to_string(&f_env).expect("the child wrote its environment");
 
         std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_SECRET");
         std::env::remove_var("NUCLEUS_TOOL_PROXY_BROKER_PORT");
@@ -342,6 +833,40 @@ mod tests {
             "PATH must survive the clear, or a workload cannot resolve its own \
              command:\n{observed}"
         );
+
+        // The receipt reports the same inventory the admission checked, and it
+        // carries the one legitimately-Internal entry (the proxy HMAC), so it is
+        // not the empty-environment vacuous case.
+        assert!(
+            receipt.carries_internal_entry(),
+            "the receipt must show the workload's own proxy credential, or the \
+             launch is the broken empty-env case: {receipt:?}"
+        );
+        assert_eq!(receipt.stdio, ["null", "piped", "piped"]);
+
+        // **File-descriptor surface**, Linux only (procfs). `spawn_admitted`'s
+        // pre_exec `close_range(3, ..)` closes every inherited fd above the
+        // child's own stdio, so at exec only 0/1/2 exist; `ls /proc/self/fd`
+        // then opens the directory as one more fd, giving exactly four entries.
+        // Any fd beyond that is a leak the close_range was supposed to shut —
+        // the runc-CVE-2024-21626 shape. This runs in the noisy cargo-test
+        // harness (which itself holds high fds), so it also proves close_range
+        // actually fires rather than relying on the parent's fds being CLOEXEC.
+        #[cfg(target_os = "linux")]
+        {
+            let fds = std::fs::read_to_string(&f_fd).unwrap_or_default();
+            let count = fds.split_whitespace().filter(|s| !s.is_empty()).count();
+            // Non-vacuity: stdio must be present, so the count is at least 3.
+            assert!(
+                count >= 3,
+                "the child must have its three standard fds; got:\n{fds}"
+            );
+            assert!(
+                count <= 4,
+                "the workload inherited a file descriptor beyond its own stdio — \
+                 close_range did not shut every parent fd. Open fds were:\n{fds}"
+            );
+        }
     }
 
     /// **`workload_env` does not SOURCE the capability from the runtime.**
@@ -455,25 +980,85 @@ mod tests {
 
     use nucleus_ifc_kernel::extracted::identity::{ident_may_deliver, MaterialKind, Principal};
 
-    /// Classify an environment key as the material kind the extracted model
-    /// speaks about. Test-local on purpose: the classifier is part of the
-    /// binding claim, and hiding it in production code would let the model and
-    /// the mapping drift together.
+    /// An INDEPENDENT oracle for the production `env_key_material` classifier —
+    /// deliberately a different structure (an exact-match lookup table plus two
+    /// prefix rules, not the production `match`) so that a careless joint edit
+    /// of production-and-oracle is unlikely to keep them agreeing.
+    ///
+    /// The production classifier had to move out of the tests (the builder
+    /// consults it on the live path), and the FM-5 docs warned that a classifier
+    /// in production "would let the model and the mapping drift together". This
+    /// oracle plus `the_production_classifier_agrees_with_the_independent_oracle`
+    /// is the answer: the two are written apart and pinned to agree over an
+    /// enumerated corpus, so drift in one reds the gate.
     fn material_for_env_key(key: &str) -> MaterialKind {
-        match key {
-            "NUCLEUS_IDENTITY_CERT" => MaterialKind::SvidCert,
-            "NUCLEUS_TASK_TOKEN" | "NUCLEUS_TASK_TOKEN_NONCE" | "NUCLEUS_TASK_TOKEN_ISSUER" => {
-                MaterialKind::TaskToken
-            }
-            "NUCLEUS_TOOL_PROXY_BROKER_SECRET" | "NUCLEUS_TOOL_PROXY_BROKER_PORT" => {
-                MaterialKind::BrokerSecret
-            }
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" => MaterialKind::ApprovalSecret,
-            "NUCLEUS_SANDBOX_TOKEN" => MaterialKind::SandboxToken,
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET" => MaterialKind::ProxyAuthSecret,
-            k if k.starts_with("NUCLEUS_DLC_") => MaterialKind::DlcCredentials,
-            k if k.starts_with("NUCLEUS_EGRESS_") => MaterialKind::EgressEnv,
-            _ => MaterialKind::OrdinaryData,
+        const EXACT: &[(&str, MaterialKind)] = &[
+            ("NUCLEUS_IDENTITY_CERT", MaterialKind::SvidCert),
+            ("NUCLEUS_TASK_TOKEN", MaterialKind::TaskToken),
+            ("NUCLEUS_TASK_TOKEN_NONCE", MaterialKind::TaskToken),
+            ("NUCLEUS_TASK_TOKEN_ISSUER", MaterialKind::TaskToken),
+            (
+                "NUCLEUS_TOOL_PROXY_BROKER_SECRET",
+                MaterialKind::BrokerSecret,
+            ),
+            ("NUCLEUS_TOOL_PROXY_BROKER_PORT", MaterialKind::BrokerSecret),
+            (
+                "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+                MaterialKind::ApprovalSecret,
+            ),
+            ("NUCLEUS_SANDBOX_TOKEN", MaterialKind::SandboxToken),
+            (
+                "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
+                MaterialKind::ProxyAuthSecret,
+            ),
+        ];
+        if let Some((_, kind)) = EXACT.iter().find(|(k, _)| *k == key) {
+            return *kind;
+        }
+        if key.starts_with("NUCLEUS_DLC_") {
+            return MaterialKind::DlcCredentials;
+        }
+        if key.starts_with("NUCLEUS_EGRESS_") {
+            return MaterialKind::EgressEnv;
+        }
+        MaterialKind::OrdinaryData
+    }
+
+    /// The production classifier and the independent oracle must agree over an
+    /// enumerated corpus that spans the whole `NUCLEUS_*` namespace the overlay
+    /// can produce — plus a NOVEL `NUCLEUS_*` name, the one case that matters:
+    /// a new variable the overlay could grow. Both must classify it the same.
+    /// This catches classifier drift — a KNOWN secret reclassified in one place
+    /// but not the other reds here.
+    #[test]
+    fn the_production_classifier_agrees_with_the_independent_oracle() {
+        let corpus = [
+            "NUCLEUS_IDENTITY_CERT",
+            "NUCLEUS_TASK_TOKEN",
+            "NUCLEUS_TASK_TOKEN_NONCE",
+            "NUCLEUS_TASK_TOKEN_ISSUER",
+            "NUCLEUS_TOOL_PROXY_BROKER_SECRET",
+            "NUCLEUS_TOOL_PROXY_BROKER_PORT",
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+            "NUCLEUS_SANDBOX_TOKEN",
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
+            "NUCLEUS_DLC_CREDENTIALS",
+            "NUCLEUS_DLC_TRUSTED_KEYS",
+            "NUCLEUS_DLC_ISSUER",
+            "NUCLEUS_EGRESS_MODEL_API_URL",
+            "NUCLEUS_TOOL_PROXY_URL",
+            "PATH",
+            "HOME",
+            "ORDINARY",
+            "NUCLEUS_SOME_FUTURE_NAME", // the novel-name case
+        ];
+        for key in corpus {
+            assert_eq!(
+                env_key_material(key),
+                material_for_env_key(key),
+                "production classifier and independent oracle disagree on `{key}` — \
+                 one drifted from the other"
+            );
         }
     }
 
@@ -544,7 +1129,7 @@ mod tests {
         }
     }
 
-    /// The second injection channel — `spawn_workload`'s by-name inheritance
+    /// The second injection channel — the builder's by-name inheritance
     /// loop — is bound to the model too: everything on the allowlist must be
     /// deliverable. A secret-carrying name added there would fail here before
     /// it failed in a guest.

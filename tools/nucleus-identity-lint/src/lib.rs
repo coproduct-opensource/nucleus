@@ -107,7 +107,12 @@ dylint_linting::impl_late_lint! {
 /// removes the check silently rather than failing loudly — the one way a root
 /// list can be worse than no root list.
 const WORKLOAD_ROOTS: &[&str] = &[
-    "::spawn_workload",
+    // The typed-launch path (FM-5 increment 3): build → admit → spawn. Type-
+    // qualified so a generic `build`/`admit` elsewhere in the crate is not
+    // pulled in as a root. `spawn_workload` was replaced by this trio.
+    "WorkloadLaunch::build",
+    "WorkloadLaunch::admit",
+    "::spawn_admitted",
     "::workload_env",
     "::start_if_configured",
     "::workload_egress_env",

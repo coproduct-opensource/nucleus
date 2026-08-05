@@ -45,6 +45,10 @@
 # arbitrary code in a fresh VM", bypassing the command lattice. That strip is
 # what makes this line safe; if it is ever removed, this entry must go too.
 #
-# Whole-file: the module exists for nothing else. A second `Command::new` here
-# means the file has grown a purpose it should not have.
-file:crates/nucleus-tool-proxy/src/workload.rs
+# LINE-LEVEL, not whole-file. This is the single `Command::new` inside
+# `spawn_admitted`, which only accepts an `AdmittedWorkloadPlan` — a value
+# `WorkloadLaunch::admit` produces after classifying every env entry against the
+# FM-5 delivery relation. A SECOND `Command::new` anywhere in `workload.rs` (or
+# the crate) now fails this gate, because the exemption names one exact line
+# rather than the whole file. If the line is reformatted, update this snippet.
+let mut cmd = tokio::process::Command::new(&plan.command);

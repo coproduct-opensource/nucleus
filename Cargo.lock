@@ -7365,6 +7365,7 @@ dependencies = [
  "glob",
  "hex",
  "hmac 0.13.0",
+ "libc",
  "nucleus",
  "nucleus-client",
  "nucleus-cred-protocol",

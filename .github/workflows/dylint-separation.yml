@@ -1,4 +1,4 @@
-name: Dylint (mediation + CB4A separation)
+name: Dylint (mediation + CB4A separation + identity isolation)
 
 # Runs the two custom rustc passes that discharge premises the Lean theorems
 # assume but cannot check:
@@ -43,12 +43,14 @@ on:
       - "crates/**"
       - "tools/nucleus-mediation-lint/**"
       - "tools/nucleus-cb4a-lint/**"
+      - "tools/nucleus-identity-lint/**"
       - ".github/workflows/dylint-separation.yml"
   pull_request:
     paths:
       - "crates/**"
       - "tools/nucleus-mediation-lint/**"
       - "tools/nucleus-cb4a-lint/**"
+      - "tools/nucleus-identity-lint/**"
       - ".github/workflows/dylint-separation.yml"
   workflow_dispatch:
 
@@ -116,6 +118,14 @@ jobs:
             out=$(cargo dylint --lib nucleus_cb4a_lint -- -p "$crate" 2>&1) || true
             echo "$out"
             echo "::endgroup::"
+            # A crate that fails to COMPILE under the lint reports zero findings,
+            # and the `|| true` above swallows the exit status — so a broken
+            # build would read as a clean separation. Zero is only meaningful
+            # when the check actually ran.
+            if printf '%s\n' "$out" | grep -qE 'could not compile|Compilation failed'; then
+              echo "::error::$crate failed to compile under the lint — zero findings would be a false green."
+              exit 1
+            fi
             n=$(printf '%s\n' "$out" | grep -c 'reachable from a \(PDP\|CDP\) entry point' || true)
             echo "$crate: $n finding(s)"
             total=$((total + n))
@@ -167,3 +177,60 @@ jobs:
             cargo dylint --lib nucleus_mediation_lint -- -p "$crate" 2>&1 || true
             echo "::endgroup::"
           done
+
+  identity-isolation:
+    name: workload_identity_isolation (enforced at zero)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Install the pinned nightly
+        run: |
+          rustup toolchain install nightly-2026-04-16 \
+            --component rustc-dev,llvm-tools-preview --profile minimal
+
+      # Version-pinned: the crates' manifests call the toolchain, clippy_utils rev
+      # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
+      # An unpinned `cargo install` would drift the third leg silently.
+      - name: Install cargo-dylint
+        run: cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+
+      # `cd` rather than `--manifest-path`: rustup selects a toolchain from the
+      # CURRENT DIRECTORY — see the cb4a job's comment.
+      - name: Build the pass
+        working-directory: tools/nucleus-identity-lint
+        run: cargo build
+
+      - name: Name the dylib the way dylint resolves it
+        run: |
+          cd tools/nucleus-identity-lint/target/debug
+          host=$(rustc -vV | sed -n 's/host: //p')
+          cp libnucleus_identity_lint.so \
+             "libnucleus_identity_lint@nightly-2026-04-16-${host}.so"
+
+      # ZERO findings, enforced. Same exit-status trap as the cb4a job: `cargo
+      # dylint` exits 0 on a `Warn` report, so count the reports instead. Both
+      # finding messages (a named hit AND an unresolvable call) contain the
+      # fragment grepped for, so an unsound hole in the closure also fails.
+      - name: Run workload_identity_isolation over the spawn-path crate
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-identity-lint/target/debug
+        run: |
+          set -o pipefail
+          out=$(cargo dylint --lib nucleus_identity_lint -- -p nucleus-tool-proxy 2>&1) || true
+          echo "$out"
+          # Same false-green guard as the cb4a job: a compile failure yields
+          # zero findings and `|| true` swallows the status.
+          if printf '%s\n' "$out" | grep -qE 'could not compile|Compilation failed'; then
+            echo "::error::nucleus-tool-proxy failed to compile under the lint — zero findings would be a false green."
+            exit 1
+          fi
+          n=$(printf '%s\n' "$out" | grep -c 'reachable from a workload-spawn root' || true)
+          echo "workload_identity_isolation: $n finding(s)"
+          if [ "$n" -ne 0 ]; then
+            echo "::error::workload_identity_isolation reported $n finding(s). FM-5 requires \
+          that identity material never enter the workload-spawn call graph. See \
+          tools/nucleus-identity-lint/README.md."
+            exit 1
+          fi
