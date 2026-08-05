@@ -1,0 +1,37 @@
+# Same as firecracker-pod.yaml, but with a `workload` that runs the in-guest
+# FM-5 posture probe. Baked into the rootfs for the CI boot gate: the probe
+# reads the REAL workload child's /proc/self/{environ,fd,status,mountinfo} and
+# reports PASS/FAIL, which `nucleus verify --tier2` asserts via the guest log.
+# The demo pod stays workload-free; this is the boot-gate variant.
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: openclaw-probe
+spec:
+  work_dir: /work
+  timeout_seconds: 2700
+  # A distinct unprivileged uid, so the launch builder's setgroups([])+setgid
+  # path runs and the probe's group-drop assertion is exercised on the real
+  # child (not just the env/fd/mount checks).
+  workload:
+    command: /usr/local/bin/nucleus-workload-probe
+    uid: 65534
+  policy:
+    type: profile
+    name: demo
+  network:
+    allow: []
+    deny: []
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  image:
+    kernel_path: ./build/firecracker/vmlinux
+    rootfs_path: ./build/firecracker/rootfs.ext4
+    read_only: true
+    scratch_path: ./build/firecracker/scratch.ext4
+  vsock:
+    guest_cid: 3
+    port: 5005
+  seccomp:
+    mode: default

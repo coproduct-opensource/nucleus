@@ -7556,6 +7556,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-workload-probe"
+version = "1.0.0"
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

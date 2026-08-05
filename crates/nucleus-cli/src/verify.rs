@@ -803,6 +803,30 @@ fn check_guest_facts(host: &Tier2Host, pod: &Pod) -> Result<()> {
         }
     }
 
+    // The in-guest workload probe (`nucleus-workload-probe`), when the pod runs
+    // it as its workload, asserts the FM-5 posture on the REAL child —
+    // no identity vars in its environment, no leaked fds, dropped groups, a
+    // read-only root — and prints a PASS/FAIL sentinel that the tool-proxy
+    // drains into this log. Conditional on the sentinel appearing: a pod with no
+    // probe workload (the demo pod) says nothing here, so this cannot fail
+    // vacuously. The boot job that bakes the probe as its workload separately
+    // asserts the sentinel is PRESENT, so a probe that failed to exec is caught
+    // too.
+    if contents.contains("NUCLEUS_WORKLOAD_PROBE") {
+        if contents.contains("NUCLEUS_WORKLOAD_PROBE: PASS")
+            && !contents.contains("NUCLEUS_WORKLOAD_PROBE: FAIL")
+        {
+            println!("  [OK] in-guest workload probe passed (FM-5 posture on the real child)");
+        } else {
+            println!(
+                "  [--] in-guest workload probe FAILED: the real workload child saw identity \
+                 material, a leaked file descriptor, retained supplementary groups, or a \
+                 writable root"
+            );
+            failures.push("workload probe");
+        }
+    }
+
     match host.sh("pgrep -x firecracker | head -1") {
         Ok(pid) if !pid.is_empty() => {
             let mode = host

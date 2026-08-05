@@ -50,6 +50,7 @@ GUEST_INIT_BIN="${GUEST_INIT_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-guest
 INIT_SRC="${INIT_SRC:-$SCRIPT_DIR/guest-init.sh}"
 PROXY_BIN="${PROXY_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-tool-proxy}"
 NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
+WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
 # NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
@@ -148,6 +149,7 @@ while [[ $# -gt 0 ]]; do
             GUEST_INIT_BIN="${GUEST_INIT_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-guest-init}"
             PROXY_BIN="${PROXY_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-tool-proxy}"
             NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
+WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
             shift 2
             ;;
         --output)
@@ -195,7 +197,7 @@ done
 if [ "$VERIFY_ONLY" = true ]; then
     echo "Verifying binaries for $ARCH ($TARGET)..."
     missing=0
-    for bin in "$PROXY_BIN" "$NET_PROBE_BIN"; do
+    for bin in "$PROXY_BIN" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN"; do
         if [ ! -f "$bin" ]; then
             echo "  MISSING: $bin"
             missing=1
@@ -225,6 +227,10 @@ fi
 
 if [ ! -f "$NET_PROBE_BIN" ]; then
     echo "Missing $NET_PROBE_BIN" >&2
+    exit 1
+fi
+if [ ! -f "$WORKLOAD_PROBE_BIN" ]; then
+    echo "Missing $WORKLOAD_PROBE_BIN" >&2
     echo "Build with: scripts/cross-build.sh --arch $ARCH" >&2
     exit 1
 fi
@@ -349,6 +355,7 @@ fi
 # Copy binaries
 cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
+cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -387,6 +394,7 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
     for guarded in \
         "usr/local/bin/nucleus-tool-proxy" \
         "usr/local/bin/nucleus-net-probe" \
+        "usr/local/bin/nucleus-workload-probe" \
         "usr/local/bin/guest-net.sh"; do
         if [ -e "$OVERLAY_DIR/$guarded" ]; then
             echo "WARNING: overlay shadowed $guarded; restoring the nucleus binary" >&2
@@ -394,6 +402,7 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
     done
     cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
     cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
+    cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
     cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
@@ -409,6 +418,7 @@ fi
 chmod +x "$ROOTFS_DIR/init"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
+chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Build ext4 image from directory
@@ -424,7 +434,7 @@ echo "Architecture: $ARCH"
 # Print binary info
 echo ""
 echo "Included binaries:"
-for bin in init usr/local/bin/nucleus-tool-proxy usr/local/bin/nucleus-net-probe; do
+for bin in init usr/local/bin/nucleus-tool-proxy usr/local/bin/nucleus-net-probe usr/local/bin/nucleus-workload-probe; do
     if [ -f "$ROOTFS_DIR/$bin" ]; then
         size=$(du -h "$ROOTFS_DIR/$bin" | cut -f1)
         echo "  /$bin ($size)"

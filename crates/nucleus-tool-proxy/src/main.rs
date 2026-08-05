@@ -20,7 +20,7 @@ use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket
 use nucleus_spec::PodSpec;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -1857,7 +1857,21 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Started here and not earlier; `workload::start_if_configured` explains why.
-    let _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
+    // `spawn_admitted` pipes the child's stdout/stderr (declared, not inherited —
+    // the FM-5 inc3 change); drain stderr line-by-line into the console log so the
+    // workload's output is attributed and host-observable rather than dropped.
+    // This is what lets an in-guest probe report its verdict to `nucleus verify`.
+    let mut _workload = workload::start_if_configured(&spec, addr, &args.auth_secret)?;
+    if let Some((child, _receipt)) = _workload.as_mut() {
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    info!(target: "workload", "{line}");
+                }
+            });
+        }
+    }
 
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;

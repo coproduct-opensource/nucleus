@@ -79,6 +79,7 @@ def main [
     let init_src = ($env.INIT_SRC? | default ($script_dir | path join "guest-init.sh"))
     let proxy_bin = ($env.PROXY_BIN? | default ($root_dir | path join $"target/($target)/release/nucleus-tool-proxy"))
     let net_probe_bin = ($env.NET_PROBE_BIN? | default ($root_dir | path join $"target/($target)/release/nucleus-net-probe"))
+    let workload_probe_bin = ($env.WORKLOAD_PROBE_BIN? | default ($root_dir | path join $"target/($target)/release/nucleus-workload-probe"))
     let audit_log_path = if ($audit_path | is-not-empty) { $audit_path } else { ($env.AUDIT_LOG_PATH? | default "") }
 
     # Verify mode
@@ -86,7 +87,7 @@ def main [
         print $"Verifying binaries for ($arch) \(($target)\)..."
         mut missing = 0
 
-        for bin in [$proxy_bin $net_probe_bin] {
+        for bin in [$proxy_bin $net_probe_bin $workload_probe_bin] {
             if ($bin | path exists) {
                 print $"  OK: ($bin)"
             } else {
@@ -116,6 +117,10 @@ def main [
     }
     if not ($net_probe_bin | path exists) {
         log-error $"Missing ($net_probe_bin)"
+        exit 1
+    }
+    if not ($workload_probe_bin | path exists) {
+        log-error $"Missing ($workload_probe_bin)"
         log-error $"Build with: scripts/cross-build.sh --arch ($arch)"
         exit 1
     }
@@ -219,6 +224,7 @@ def main [
     # Copy binaries
     cp $proxy_bin ($rootfs_dir | path join "usr/local/bin/nucleus-tool-proxy")
     cp $net_probe_bin ($rootfs_dir | path join "usr/local/bin/nucleus-net-probe")
+    cp $workload_probe_bin ($rootfs_dir | path join "usr/local/bin/nucleus-workload-probe")
 
     # Copy init binary (prefer Rust binary, fall back to shell script)
     if ($guest_init_bin | path exists) {
@@ -236,6 +242,7 @@ def main [
     ^chmod +x ($rootfs_dir | path join "init")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-tool-proxy")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-net-probe")
+    ^chmod +x ($rootfs_dir | path join "usr/local/bin/nucleus-workload-probe")
     ^chmod +x ($rootfs_dir | path join "usr/local/bin/guest-net.sh")
 
     # Build ext4 image from directory
@@ -250,7 +257,7 @@ def main [
     # Print binary info
     print ""
     log-info "Included binaries:"
-    for bin in ["init" "usr/local/bin/nucleus-tool-proxy" "usr/local/bin/nucleus-net-probe"] {
+    for bin in ["init" "usr/local/bin/nucleus-tool-proxy" "usr/local/bin/nucleus-net-probe" "usr/local/bin/nucleus-workload-probe"] {
         let bin_path = ($rootfs_dir | path join $bin)
         if ($bin_path | path exists) {
             let size_info = (ls $bin_path | get 0.size)

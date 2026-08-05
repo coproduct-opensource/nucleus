@@ -1,0 +1,15 @@
+[package]
+name = "nucleus-workload-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Minimal in-guest probe: asserts the FM-5 workload posture on the real child (empty of identity material, no leaked fds, dropped groups, read-only root)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-workload-probe"
+path = "src/main.rs"
+
+[dependencies]
