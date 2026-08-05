@@ -19,11 +19,28 @@
   The tool-proxy spawns the workload with `env_clear()` and an explicit overlay
   precisely so that identity material — the SVID and its key, the task token,
   the broker capability, the approval and sandbox secrets, the DLC credentials —
-  never reaches the process the sandbox exists to contain. This file states that
-  boundary as noninterference: what the workload observes must not depend on
-  which identity material exists. The binding tests in
+  never reaches the process the sandbox exists to contain. This file states
+  that boundary precisely: **direct identity-material non-delivery** — for
+  every material classified Secret, delivery to the workload is denied by the
+  confidentiality relation. What the workload observes THROUGH THIS RELATION
+  does not depend on which identity material exists; observational
+  noninterference of full executions (timing, sizes, errors, proxy responses)
+  is a strictly stronger claim this file does not make. The binding tests in
   `nucleus-tool-proxy/src/workload.rs` pin the model to `workload_env`
   pointwise; the theorems here are about the relation itself.
+
+  Three propositions, kept distinct on purpose:
+  1. PROVED: classified Secret material is refused by the extracted relation.
+  2. TESTED: today's spawn construction agrees with that relation pointwise.
+  3. NOT YET PROVED: that every real path by which identity information or
+     authority could reach the workload is covered by the relation. That
+     completeness property is the mediation-boundary work, not this file.
+
+  These proofs are finite case analysis over an 11×3 table — proof-carrying
+  CONFIGURATION, not deep semantics. The value is that the table is explicit,
+  extracted from the shipped Rust, classification-pinned, axiom-audited and
+  mutation-tested, so it cannot drift quietly. Read the rfl proofs in that
+  light.
 
   # The modelling decisions, stated so they can be disagreed with
 
@@ -34,6 +51,14 @@
   lattice's middle level means. With the auth secret at `Internal`, the
   delivery relation is EXACTLY `cflows_to` against the ceiling — no exception
   table — and the anti-drift theorem below holds by `rfl`.
+
+  Stated architecturally rather than lattice-internally: the workload is not
+  credential-FREE, it holds a deliberately ATTENUATED credential — no
+  credential capable of representing the pod directly to external relying
+  parties, only a local capability for requesting mediated actions. The
+  attenuation is only as good as the proxy's enforcement (request-level
+  authorization, session binding, scope, budgets), which is the kernel's
+  job and not this theorem's.
 
   Two different "guests": FM-1's `CredSink.Guest` (ceiling `Public`) is the VM
   as a host-side credential sink. FM-5's `GuestRuntime` (ceiling `Secret`) is
@@ -164,14 +189,18 @@ theorem the_workload_receives_at_most_internal :
         extracted.identity.Principal.Workload = ok false :=
   ⟨rfl, rfl, rfl, rfl⟩
 
-/-- **Noninterference, in the low-observer form.**
+/-- **Indistinguishability under the delivery relation** — deliberately NOT
+    named "noninterference": that word claims observational equivalence of
+    full executions, and this theorem claims less.
 
-    Any two Secret-labelled materials are indistinguishable to the workload:
-    its view of the delivery relation is constant across all of them. So the
-    workload cannot learn WHICH identity material exists — not the key from the
-    token, not the token from the broker capability — because the relation
-    projects them all to the same refusal. -/
-theorem the_workload_cannot_distinguish_which_secrets_exist
+    Any two Secret-labelled materials map to the same delivery result at the
+    workload, so nothing about WHICH identity material exists is observable
+    *through this relation* — the relation projects them all to the same
+    refusal. Channels outside the relation (timing, sizes, errors, proxy
+    responses, filesystem and process state) are fenced in the header; a
+    workload could in principle distinguish identities through those, and
+    this theorem says nothing about them. -/
+theorem secret_materials_are_indistinguishable_under_delivery
     (m₁ m₂ : Material)
     (h₁ : extracted.identity.mat_label m₁ = ok extracted.ifc_confidentiality.ConfLevel.Secret)
     (h₂ : extracted.identity.mat_label m₂ = ok extracted.ifc_confidentiality.ConfLevel.Secret) :
@@ -204,7 +233,7 @@ Everything here reduces by `rfl` or finite case split. -/
 #print axioms the_guest_runtime_still_gets_its_svid
 #print axioms the_trust_bundle_reaches_everyone
 #print axioms the_workload_receives_at_most_internal
-#print axioms the_workload_cannot_distinguish_which_secrets_exist
+#print axioms secret_materials_are_indistinguishable_under_delivery
 #print axioms delivery_is_flows_to_against_the_ceiling
 #print axioms ident_may_deliver_never_fails
 #print axioms mat_label_never_fails

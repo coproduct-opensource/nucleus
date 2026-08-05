@@ -7,10 +7,15 @@
 //! overlay so that identity material — the SVID and its private key, the task
 //! token, the broker capability, the approval and sandbox secrets, the DLC
 //! admission credentials — never reaches the one process the sandbox exists to
-//! contain. Stated as information flow, that is noninterference at the
-//! *intra-VM* boundary: *what the workload can observe must not depend on
-//! which identity material exists*. The workload is the low observer; identity
-//! material is the high value.
+//! contain. Stated precisely, the property is **direct identity-material
+//! non-delivery** at the *intra-VM* boundary: what the workload can observe
+//! *through this delivery relation* must not depend on which identity
+//! material exists. Full observational noninterference (timing, sizes,
+//! errors, proxy responses) is a strictly stronger claim, fenced below. The
+//! workload is the low observer; identity material is the high value — and
+//! the workload is not credential-free: it holds a deliberately ATTENUATED
+//! credential, a local capability for requesting mediated actions, never one
+//! that represents the pod to external relying parties.
 //!
 //! # Why this reuses the confidentiality axis rather than inventing one
 //!
