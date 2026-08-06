@@ -244,7 +244,13 @@ pub async fn accept(
     let Some(signature) = signature else {
         return (StatusCode::UNAUTHORIZED, "missing signature");
     };
-    if crate::auth::verify_signature_pub(secret, body.as_bytes(), signature).is_err() {
+    // Verify over the DESTINATION as well as the payload. Verifying the body
+    // alone authenticated "someone holding the receipt secret said this", never
+    // "…and meant it for THIS session" — so a validly-signed record could be
+    // replayed into any other session's chain by changing the URL path, and
+    // every pod configured with the node-wide receipt secret can sign.
+    let signed = nucleus_client::art12_signed_bytes(&session_id, body.as_bytes());
+    if crate::auth::verify_signature_pub(secret, &signed, signature).is_err() {
         tracing::warn!(%session_id, "rejected an unauthenticated Article 12 record");
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
@@ -261,6 +267,46 @@ pub async fn accept(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The cross-session replay, refused.** A record legitimately signed for
+    /// session A must not be accepted into session B's chain. Before the
+    /// signature covered the destination, this succeeded: the body verified, and
+    /// the session id came from a URL path that nothing authenticated.
+    ///
+    /// This is an integrity property of the EVIDENCE path (Article 12
+    /// record-keeping), and every pod configured with the node-wide receipt
+    /// secret can produce a valid signature — so "who can sign" is not a
+    /// meaningful restriction on "whose chain it lands in".
+    #[test]
+    fn a_record_signed_for_one_session_is_refused_by_another() {
+        let secret = b"node-wide-receipt-secret";
+        let body = r#"{"event":"decision"}"#;
+
+        let sig_for_a = {
+            use hmac::{digest::KeyInit, Hmac, Mac};
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).expect("key");
+            mac.update(&nucleus_client::art12_signed_bytes(
+                "session-a",
+                body.as_bytes(),
+            ));
+            hex::encode(mac.finalize().into_bytes())
+        };
+
+        // Its own session accepts it…
+        let signed_a = nucleus_client::art12_signed_bytes("session-a", body.as_bytes());
+        assert!(
+            crate::auth::verify_signature_pub(secret, &signed_a, &sig_for_a).is_ok(),
+            "a record must still verify for the session it was signed for"
+        );
+
+        // …and another session does not.
+        let signed_b = nucleus_client::art12_signed_bytes("session-b", body.as_bytes());
+        assert!(
+            crate::auth::verify_signature_pub(secret, &signed_b, &sig_for_a).is_err(),
+            "a record signed for session-a was accepted into session-b's chain -- \
+             the signature does not bind the destination"
+        );
+    }
 
     #[test]
     fn a_traversing_session_id_is_refused() {
@@ -314,8 +360,15 @@ mod tests {
 
     use axum::http::StatusCode;
 
-    fn sign(secret: &[u8], body: &str) -> String {
-        crate::auth::sign_message(secret, body.as_bytes())
+    /// Sign the way a real shipper does — over the DESTINATION and the payload.
+    /// Taking `session` is the point: a helper that signed the body alone would
+    /// let every test below pass while the destination went unauthenticated,
+    /// which is precisely the defect that shipped.
+    fn sign(secret: &[u8], session: &str, body: &str) -> String {
+        crate::auth::sign_message(
+            secret,
+            &nucleus_client::art12_signed_bytes(session, body.as_bytes()),
+        )
     }
 
     /// **Evidence anyone can append to is not evidence.** An unsigned record
@@ -341,7 +394,7 @@ mod tests {
             dir.path(),
             Some(b"k"),
             "s1",
-            Some(&sign(b"other", "{}")),
+            Some(&sign(b"other", "s1", "{}")),
             "{}",
         )
         .await;
@@ -355,7 +408,14 @@ mod tests {
     async fn a_correctly_signed_record_is_stored() {
         let dir = tempfile::tempdir().unwrap();
         let body = "{\"seq\":1}";
-        let (code, _) = accept(dir.path(), Some(b"k"), "s1", Some(&sign(b"k", body)), body).await;
+        let (code, _) = accept(
+            dir.path(),
+            Some(b"k"),
+            "s1",
+            Some(&sign(b"k", "s1", body)),
+            body,
+        )
+        .await;
         assert_eq!(code, StatusCode::NO_CONTENT);
         let stored = std::fs::read_to_string(session_log_path(dir.path(), "s1")).unwrap();
         assert!(stored.contains("\"seq\":1"));
@@ -369,7 +429,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let body = "{}";
         // Even a signature valid under the EMPTY key must not get in.
-        let (code, _) = accept(dir.path(), None, "s1", Some(&sign(b"", body)), body).await;
+        let (code, _) = accept(dir.path(), None, "s1", Some(&sign(b"", "s1", body)), body).await;
         assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!session_log_path(dir.path(), "s1").exists());
     }
@@ -383,7 +443,7 @@ mod tests {
             dir.path(),
             Some(b"k"),
             "../escaped",
-            Some(&sign(b"k", body)),
+            Some(&sign(b"k", "s1", body)),
             body,
         )
         .await;

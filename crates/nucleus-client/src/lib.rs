@@ -73,6 +73,38 @@ pub struct DrandSignedHeaders {
 /// Sign an HTTP request body.
 ///
 /// The server expects: `signature = HMAC_SHA256(secret, "{ts}.{actor}.{body}")`.
+/// The bytes an Article 12 record's signature must cover: the DESTINATION as
+/// well as the payload.
+///
+/// # The defect this closes
+///
+/// `art12_append` verified the signature over the request BODY alone, while the
+/// `session_id` that decides which chain the record lands in came from the URL
+/// path and was only sanitised against traversal. So a validly-signed record
+/// could be replayed into ANY session's chain by changing the path — and every
+/// pod configured with the node-wide receipt secret can sign. On the evidence
+/// path (EU AI Act Article 12 record-keeping), that is one tenant able to write
+/// into another tenant's audit chain.
+///
+/// A signature that authenticates a payload but not its destination is not
+/// authenticating the thing that matters.
+///
+/// # Framing
+///
+/// Length-prefixed, not concatenated. `session_id || body` is ambiguous: a
+/// session id ending in digits and a body starting with them can be re-split,
+/// so two different (session, body) pairs could share one signature. The
+/// domain tag makes these bytes unusable as any other signature in the system.
+#[must_use]
+pub fn art12_signed_bytes(session_id: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(session_id.len() + body.len() + 32);
+    out.extend_from_slice(b"nucleus-art12-v2\0");
+    out.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
+    out.extend_from_slice(session_id.as_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
 pub fn sign_http_headers(secret: &[u8], actor: Option<&str>, body: &[u8]) -> SignedHeaders {
     let timestamp = now_unix();
     let actor_value = actor.unwrap_or("");
@@ -650,5 +682,40 @@ mod tests {
         assert!(!constant_time_eq(b"hello", b"hell"));
         assert!(!constant_time_eq(b"", b"a"));
         assert!(constant_time_eq(b"", b""));
+    }
+}
+
+#[cfg(test)]
+mod art12_binding_tests {
+    use super::art12_signed_bytes;
+
+    /// The whole point: the same body aimed at a different session must produce
+    /// different signed bytes, or the signature does not bind the destination.
+    #[test]
+    fn the_destination_changes_the_signed_bytes() {
+        let body = br#"{"event":"x"}"#;
+        assert_ne!(
+            art12_signed_bytes("session-a", body),
+            art12_signed_bytes("session-b", body)
+        );
+    }
+
+    /// Length-prefixing, demonstrated rather than asserted in a comment: without
+    /// it, ("ab", "cd") and ("abc", "d") would frame identically.
+    #[test]
+    fn framing_is_unambiguous_across_the_boundary() {
+        assert_ne!(
+            art12_signed_bytes("ab", b"cd"),
+            art12_signed_bytes("abc", b"d")
+        );
+    }
+
+    /// Same inputs, same bytes — the signature has to be reproducible.
+    #[test]
+    fn framing_is_deterministic() {
+        assert_eq!(
+            art12_signed_bytes("s", b"body"),
+            art12_signed_bytes("s", b"body")
+        );
     }
 }

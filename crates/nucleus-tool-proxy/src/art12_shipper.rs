@@ -56,7 +56,12 @@ impl Art12Shipper {
     /// `url` is operator-configured and points at the host. It is not agent
     /// egress: nothing the agent does can influence it, and the mediation gate
     /// exempts this path for the same reason it exempts the audit webhook.
-    pub(crate) fn start(url: String, secret: Vec<u8>, client: reqwest::Client) -> Self {
+    pub(crate) fn start(
+        url: String,
+        secret: Vec<u8>,
+        session: String,
+        client: reqwest::Client,
+    ) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(QUEUE_DEPTH);
         let degraded = Arc::new(AtomicBool::new(false));
         let unshipped = Arc::new(AtomicU64::new(0));
@@ -68,7 +73,13 @@ impl Art12Shipper {
                 let sig = {
                     let mut mac =
                         Hmac::<Sha256>::new_from_slice(&secret).expect("hmac accepts any key");
-                    mac.update(line.as_bytes());
+                    // Sign the DESTINATION as well as the payload. Signing the body
+                    // alone let a validly-signed record be replayed into any other
+                    // session's chain by changing the URL path.
+                    mac.update(&nucleus_client::art12_signed_bytes(
+                        &session,
+                        line.as_bytes(),
+                    ));
                     hex::encode(mac.finalize().into_bytes())
                 };
                 let sent = client
@@ -140,6 +151,7 @@ impl Art12Shipper {
         Some(Arc::new(Self::start(
             url.clone(),
             secret,
+            session_id.to_string(),
             reqwest::Client::new(),
         )))
     }
