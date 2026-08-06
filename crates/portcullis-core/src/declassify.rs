@@ -126,9 +126,33 @@ impl DeclassificationRule {
 ///
 /// - **Artifact-scoped**: Only applies to `target_node_id`, not the whole session
 /// - **Time-bounded**: Expires at `valid_until` (unix timestamp)
-/// - **Sink-restricted**: Declassified data may only reach `allowed_sinks`
+/// - **Sink-restricted (DECLARED, NOT ENFORCED — see below)**: the token names
+///   the sinks the declassified data may reach in `allowed_sinks`
 /// - **Signed**: Ed25519 signature over the token's canonical bytes
 /// - **Auditable**: Justification string included for receipt chain
+///
+/// # The sink restriction is not enforced on the live path
+///
+/// `allowed_sinks` is signed (it is count-prefixed into [`Self::canonical_bytes`]
+/// under the `nucleus-declass-v2` domain tag), proven in Lean
+/// (`DeclassifyProofs.lean`, `sink_outside_allowlist_denied`), and queryable via
+/// [`Self::allows_sink`] — but **nothing consults it when a token is applied**.
+/// `FlowGraph::apply_token` raises the target node's label GLOBALLY via
+/// `modify_label`, so a token scoped `allowed_sinks = [WebSearch]` in fact clears
+/// its node for `GitPush` as well. `allows_sink` has no non-test callers.
+///
+/// This is currently unreachable rather than exploitable: the signed-token path
+/// is dormant — every `DeclassificationToken::new` and every `apply_token` call
+/// site in the tree is test code — and `scripts/check-declassify-token-dormant.sh`
+/// fails CI if that stops being true, because the deferral is only safe while it
+/// is. Enforcing the scope means making `gather_labels` operation-aware (a
+/// declassified parent contributes its raised label only for operations in the
+/// token's scope, else its pre-declassify label), which needs a per-node
+/// declassify-scope and original-label field.
+///
+/// The bullet above says DECLARED rather than restricted for that reason: this
+/// doc comment previously read "Declassified data may only reach `allowed_sinks`",
+/// which is a claim the code does not keep.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclassificationToken {
     /// The flow graph node this token applies to.

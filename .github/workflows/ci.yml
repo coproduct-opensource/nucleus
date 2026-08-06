@@ -153,6 +153,24 @@ jobs:
         shell: bash
         run: scripts/check-lean-libs-built.sh
 
+  # The sink-scope restriction on declassification tokens is signed, proven and
+  # documented — and NOT enforced (apply_token raises the node's label globally,
+  # so a token scoped to one sink clears its node for every sink). Hardening it
+  # is real surgery on the live IFC path, and it was deferred because the signed
+  # -token path is DORMANT: every caller is test code, so the over-grant is
+  # unreachable. This gate checks that premise, which is otherwise recorded only
+  # in prose — the day a production caller lands, the deferral stops being safe
+  # and CI must say so instead of the hole opening quietly.
+  declassify-token-dormant:
+    name: The unenforced declassify sink-scope stays unreachable
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: No production caller mints or applies a declassification token
+        shell: bash
+        run: scripts/check-declassify-token-dormant.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and

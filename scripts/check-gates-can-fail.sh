@@ -230,6 +230,31 @@ perturb_trusted_base() {
 echo "Probing whether each gate fails on its own subject..."
 echo
 
+# A PRODUCTION caller of the dormant declassification-token path — the exact
+# event the dormancy gate exists to catch. Deliberately a plain `pub fn` on the
+# kernel (no #[cfg(test)]), because a caller inside test code is FINE and must
+# not trip the gate; only a real one may.
+perturb_declassify_production_caller() {
+    local f="$1"
+    python3 - "$f" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+anchor = "    /// Set the Ed25519 signing key for receipt signing."
+probe = """    #[cfg(feature = "crypto")]
+    pub fn gate_probe_production_caller(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+    ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
+        self.apply_declassification_token(token)
+    }
+
+"""
+assert anchor in s, "anchor for the declassify production-caller probe moved"
+open(p, "w").write(s.replace(anchor, probe + anchor, 1))
+EOF
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -248,6 +273,9 @@ probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
+probe check-declassify-token-dormant.sh "" crates/portcullis/src/kernel.rs \
+      "a production caller of the dormant declassify-token path" \
+      perturb_declassify_production_caller
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
