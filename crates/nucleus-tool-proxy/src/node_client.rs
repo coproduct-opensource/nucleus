@@ -24,6 +24,11 @@ pub struct PodInfo {
     pub created_at_unix: u64,
     pub state: PodState,
     pub proxy_addr: Option<String>,
+    /// The pod that created this one, if any — what makes ownership checkable.
+    /// Absent on an older node that does not send it; `pod_mgmt` treats absent
+    /// as "not mine", which is the fail-closed direction.
+    #[serde(default)]
+    pub parent_pod_id: Option<Uuid>,
 }
 
 /// Pod state (mirrors nucleus-node PodState).

@@ -490,6 +490,16 @@ struct PodInfo {
     state: PodState,
     proxy_addr: Option<String>,
     labels: BTreeMap<String, String>,
+    /// The pod that created this one, if any.
+    ///
+    /// Exposed so a tool-proxy can tell WHICH pods are its own descendants.
+    /// Without it, `ManagePods` is a node-wide capability by accident: the proxy
+    /// has no way to distinguish the pods it spawned from every other tenant's,
+    /// so `list_sub_pods` returned all of them and `get_pod_logs` accepted any
+    /// UUID. The node has always tracked this (`PodHandle::parent_pod_id`) and
+    /// used it for cascade-cancel; it simply never told anyone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_pod_id: Option<Uuid>,
     /// The verified proof-carrying posture (`<posture>:verified`), present only
     /// when the pod carried a `dlc_posture` claim that passed admission against
     /// the host-measured rootfs and the trusted-posture registry. Absent means
@@ -1140,6 +1150,7 @@ impl PodHandle {
             created_at_unix: self.created_at,
             state,
             proxy_addr,
+            parent_pod_id: self.parent_pod_id,
             labels: self.spec.metadata.labels.clone(),
             posture: self.posture_stamp.clone(),
         }

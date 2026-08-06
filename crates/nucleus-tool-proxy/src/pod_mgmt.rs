@@ -210,6 +210,86 @@ pub(crate) async fn create_sub_pod(
     }))
 }
 
+/// Which pod THIS proxy serves, if it knows.
+///
+/// Set by guest-init from the SVID served over the per-pod vsock socket, so the
+/// value comes from the transport rather than from anything the guest could
+/// restate. `None` on deployments where identity was never fetched (local mode,
+/// or a boot where the fetch failed).
+fn self_pod_id() -> Option<String> {
+    std::env::var("NUCLEUS_POD_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Is `pod` a pod this proxy is entitled to manage?
+///
+/// # Why this exists
+///
+/// `check_manage_pods` asks whether the CALLER holds `ManagePods`. It does not
+/// ask WHICH pods that authorises, and nothing else did either — so a pod with
+/// the capability could list every pod on the node, read any pod's logs, and
+/// cancel any pod, including other tenants'. The node had tracked
+/// `parent_pod_id` all along and consulted it only for cascade-cancel.
+///
+/// The functions are named `list_sub_pods` / `cancel_sub_pod`; this makes the
+/// behaviour match the name.
+///
+/// **Where this is enforced, and the residual.** Proxy-side, which is where
+/// `check_manage_pods` already lives: the architecture treats the AGENT as
+/// untrusted and the tool-proxy as the guest's enforcement point. A *compromised
+/// proxy* could bypass it, because every proxy holds the node-wide auth secret —
+/// but that is a pre-existing property of the proxy↔node channel, not something
+/// this check weakens. Making the NODE enforce it needs per-caller identity at
+/// the node API, which does not exist today: every pod signs as the literal
+/// actor "tool-proxy" with the same shared secret.
+///
+/// **When identity is unknown** the check cannot be made, and this returns
+/// `true` — preserving today's behaviour rather than breaking pod management on
+/// deployments that never set `NUCLEUS_POD_ID`. That is a real, named gap, and
+/// it is logged so it is visible rather than silent.
+fn may_manage(pod: &node_client::PodInfo, me: Option<&str>) -> bool {
+    let Some(me) = me else {
+        tracing::warn!(
+            "this proxy does not know its own pod id (NUCLEUS_POD_ID unset), so \
+             sub-pod ownership cannot be enforced -- pod management is unrestricted \
+             on this deployment"
+        );
+        return true;
+    };
+    // A pod may manage its own descendants, and itself.
+    pod.parent_pod_id.map(|p| p.to_string()).as_deref() == Some(me) || pod.id.to_string() == me
+}
+
+/// Resolve `target` through the node and refuse unless this proxy may manage it.
+///
+/// Deliberately re-resolves rather than trusting anything in the request: the
+/// parentage that decides the answer must come from the node's registry, not
+/// from the caller.
+async fn ensure_may_manage(
+    node: &node_client::NodeClient,
+    target: uuid::Uuid,
+) -> Result<(), ApiError> {
+    let me = self_pod_id();
+    if me.is_none() {
+        // Unknown identity: the check cannot be made. `may_manage` logs the gap.
+        return Ok(());
+    }
+    let pods = node
+        .list_pods()
+        .await
+        .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
+    let found = pods.iter().find(|p| p.id == target);
+    match found {
+        Some(pod) if may_manage(pod, me.as_deref()) => Ok(()),
+        // Same refusal for "not yours" and "does not exist": distinguishing them
+        // would let a caller enumerate which UUIDs are live on the node.
+        _ => Err(ApiError::Spec(
+            "pod not found or not managed by this pod".to_string(),
+        )),
+    }
+}
+
 pub(crate) async fn list_sub_pods(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -226,7 +306,16 @@ pub(crate) async fn list_sub_pods(
         .await
         .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
 
-    Ok(Json(pods))
+    // Only this pod's own descendants. The node returns every pod it runs;
+    // returning that list wholesale is what made ManagePods node-wide, and it is
+    // also how a caller LEARNED the UUIDs it could then pass to get_pod_logs.
+    let me = self_pod_id();
+    let mine: Vec<_> = pods
+        .into_iter()
+        .filter(|p| may_manage(p, me.as_deref()))
+        .collect();
+
+    Ok(Json(mine))
 }
 
 pub(crate) async fn get_pod_status(
@@ -269,6 +358,11 @@ pub(crate) async fn get_pod_logs(
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
 
+    // Ownership: reading another tenant's pod log is a cross-pod disclosure, and
+    // nothing checked it. Resolve the target through the node's own list so the
+    // parentage comes from the node rather than from the request.
+    ensure_may_manage(node, pod_id).await?;
+
     let logs = node
         .pod_logs(pod_id)
         .await
@@ -300,6 +394,10 @@ pub(crate) async fn cancel_sub_pod(
         .pod_id
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
+
+    // Ownership: cancelling another tenant's pod is a cross-pod WRITE — a denial
+    // of service against a workload this caller has nothing to do with.
+    ensure_may_manage(node, pod_id).await?;
 
     node.cancel_pod(pod_id)
         .await
@@ -762,5 +860,91 @@ spec:
         strip_requested_workload(&mut spec);
         assert_eq!(spec.spec.work_dir, work_dir);
         assert_eq!(spec.metadata.name.as_deref(), Some("sub"));
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    //! `ManagePods` must mean "manage MY pods", not "manage every pod on the node".
+    //!
+    //! `check_manage_pods` asks whether the caller holds the capability; nothing
+    //! asked which pods it authorises. So a pod with it could list every tenant's
+    //! pods, read any pod's logs, and cancel any pod. The node tracked
+    //! `parent_pod_id` throughout and consulted it only for cascade-cancel.
+    use super::{may_manage, node_client};
+
+    fn pod(id: &str, parent: Option<&str>) -> node_client::PodInfo {
+        node_client::PodInfo {
+            id: id.parse().expect("uuid"),
+            name: None,
+            created_at_unix: 0,
+            state: node_client::PodState::Running,
+            proxy_addr: None,
+            parent_pod_id: parent.map(|p| p.parse().expect("uuid")),
+        }
+    }
+
+    const ME: &str = "11111111-1111-4111-8111-111111111111";
+    const OTHER: &str = "22222222-2222-4222-8222-222222222222";
+    const CHILD: &str = "33333333-3333-4333-8333-333333333333";
+
+    /// The defect, refused: another tenant's pod is not mine to manage.
+    #[test]
+    fn a_pod_i_did_not_create_is_not_mine() {
+        assert!(!may_manage(&pod(OTHER, None), Some(ME)));
+    }
+
+    /// …including one owned by a DIFFERENT parent, which is the multi-tenant case.
+    #[test]
+    fn another_pods_child_is_not_mine() {
+        assert!(!may_manage(&pod(CHILD, Some(OTHER)), Some(ME)));
+    }
+
+    /// Delegation still works: my own child is mine.
+    #[test]
+    fn my_own_child_is_mine() {
+        assert!(may_manage(&pod(CHILD, Some(ME)), Some(ME)));
+    }
+
+    /// A pod may address itself — cancelling yourself is legitimate.
+    #[test]
+    fn i_am_my_own() {
+        assert!(may_manage(&pod(ME, None), Some(ME)));
+    }
+
+    /// THE NAMED GAP, pinned so it stays a decision rather than an accident: with
+    /// no identity the check cannot be made and behaviour is unchanged. If this
+    /// ever becomes fail-closed, THIS is the test that should fail and be
+    /// deliberately updated.
+    #[test]
+    fn unknown_identity_is_unenforced_and_that_is_recorded() {
+        assert!(
+            may_manage(&pod(OTHER, Some(OTHER)), None),
+            "with no NUCLEUS_POD_ID the proxy cannot enforce ownership; this is the \
+             documented gap, not an oversight"
+        );
+    }
+
+    /// STRUCTURAL: the handlers must actually consult the check. The predicate
+    /// being right proves nothing if nobody calls it — the failure shape this
+    /// repo keeps finding.
+    #[test]
+    fn the_handlers_still_enforce_ownership() {
+        let src = include_str!("pod_mgmt.rs");
+        for (f, needle) in [
+            ("get_pod_logs", "ensure_may_manage"),
+            ("cancel_sub_pod", "ensure_may_manage"),
+            ("list_sub_pods", "may_manage"),
+        ] {
+            let body = src
+                .split(&format!("async fn {f}("))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{f} must exist"));
+            let body = &body[..body.find("\npub(crate) ").unwrap_or(body.len())];
+            assert!(
+                body.contains(needle),
+                "{f} no longer calls {needle} -- ManagePods is node-wide again"
+            );
+        }
     }
 }
