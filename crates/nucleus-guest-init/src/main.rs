@@ -111,6 +111,28 @@ fn run() -> Result<(), String> {
                 // always failed, so this gap was invisible: the pod died one
                 // step earlier for a different reason.
                 std::env::set_var("NUCLEUS_IDENTITY_CERT", identity::svid_cert_path());
+
+                // …and tell the proxy WHICH POD IT IS, from the same SVID.
+                //
+                // `lockdown_client::apply_scope` reads `NUCLEUS_POD_ID` to decide
+                // whether a `pod:<id>`-scoped lockdown is aimed at this pod.
+                // Nothing in the tree set it, so that branch was unreachable and
+                // apply_scope fell to `None => true`: a lockdown aimed at one pod
+                // locked down EVERY pod on the node. Fail-safe, and silently
+                // useless as targeting.
+                //
+                // Taken from the SVID rather than passed in as an env var by the
+                // host: the SVID arrives over the per-pod vsock socket the host
+                // creates per VM, so the identifier comes from the transport
+                // rather than from anything the guest could restate.
+                match identity::pod_id_from_spiffe(&spiffe_id) {
+                    Some(pod_id) => std::env::set_var("NUCLEUS_POD_ID", pod_id),
+                    None => eprintln!(
+                        "identity {spiffe_id} is not the workload-API pod form; \
+                         NUCLEUS_POD_ID unset, so pod-scoped lockdown will apply \
+                         conservatively to this pod"
+                    ),
+                }
             }
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");

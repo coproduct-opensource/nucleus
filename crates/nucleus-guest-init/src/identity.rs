@@ -209,6 +209,41 @@ pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
 /// and writes the certificate and key to the identity directory.
 ///
 /// Returns the SPIFFE ID on success.
+/// The pod's own UUID, read out of the SPIFFE ID the host just served it.
+///
+/// # Why this exists, and why it is not an environment variable from the host
+///
+/// The tool-proxy reads `NUCLEUS_POD_ID` to decide whether a pod-scoped lockdown
+/// command is aimed at it (`lockdown_client::apply_scope`). Nothing in the tree
+/// ever set that variable — so the `Some(my_id) => my_id == target_pod` branch was
+/// unreachable, and `apply_scope` fell to its `None => true` case: a lockdown
+/// aimed at ONE pod locked down EVERY pod on the node. Fail-safe, and silently
+/// non-functional as a targeting mechanism.
+///
+/// The identity is taken from the SVID rather than injected by the host as an
+/// env var because the SVID arrives over the per-pod vsock socket that the host
+/// creates per VM — the guest cannot forge which socket it is connected to,
+/// whereas any value merely placed in the environment is only as good as
+/// everything that can write to the environment. This is the same reasoning that
+/// makes the workload API's `pod_id` trustworthy host-side: the identifier comes
+/// from the transport, not from the payload.
+///
+/// Returns `None` rather than guessing when the ID is not the expected shape —
+/// a wrong pod id is worse than no pod id, because `apply_scope`'s `None` branch
+/// is the safe one.
+#[must_use]
+pub fn pod_id_from_spiffe(spiffe_id: &str) -> Option<String> {
+    // `spiffe://{trust_domain}/ns/pods/sa/{pod_id}` — see
+    // nucleus_node::workload_api_vsock, which mints exactly this form.
+    let rest = spiffe_id.strip_prefix("spiffe://")?;
+    let (_trust_domain, path) = rest.split_once('/')?;
+    let id = path.strip_prefix("ns/pods/sa/")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
 pub fn fetch_identity(port: u32) -> Result<String, String> {
     // Create identity directory
     fs::create_dir_all(IDENTITY_DIR)
@@ -335,4 +370,68 @@ pub fn parse_workload_api_port(cmdline: &str) -> Option<u32> {
 #[allow(dead_code)]
 pub fn should_fetch_identity(cmdline: &str) -> bool {
     parse_workload_api_port(cmdline).is_some()
+}
+
+#[cfg(test)]
+mod pod_id_tests {
+    use super::pod_id_from_spiffe;
+
+    /// The form `nucleus_node::workload_api_vsock` actually mints.
+    #[test]
+    fn the_pod_uuid_is_read_from_the_workload_api_form() {
+        assert_eq!(
+            pod_id_from_spiffe(
+                "spiffe://nucleus.local/ns/pods/sa/d6bf354e-6d41-42fe-8aa8-8c287a8db798"
+            )
+            .as_deref(),
+            Some("d6bf354e-6d41-42fe-8aa8-8c287a8db798")
+        );
+    }
+
+    /// The OTHER SPIFFE form a pod has — `ns/{namespace}/sa/{metadata.name}`,
+    /// which the node registers for the broker — is NOT a pod id and must not be
+    /// mistaken for one. Two pods can share a `metadata.name`; a pod UUID is
+    /// unique. Returning that string here would make lockdown scoping match the
+    /// wrong set of pods.
+    #[test]
+    fn the_namespace_form_is_not_mistaken_for_a_pod_id() {
+        assert_eq!(
+            pod_id_from_spiffe("spiffe://nucleus.local/ns/default/sa/my-agent"),
+            None
+        );
+    }
+
+    /// STRUCTURAL: the parser being correct proves nothing if nobody calls it.
+    /// The whole defect was a consumer (`apply_scope`) reading a variable no
+    /// producer ever set, and this test is what would have caught that. It reads
+    /// main.rs and fails if the identity branch stops setting NUCLEUS_POD_ID.
+    #[test]
+    fn guest_init_still_sets_the_pod_id_after_fetching_identity() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("pod_id_from_spiffe"),
+            "guest-init no longer derives the pod id from the SVID — pod-scoped \
+             lockdown silently reverts to locking every pod on the node"
+        );
+        assert!(
+            src.contains("NUCLEUS_POD_ID"),
+            "guest-init no longer sets NUCLEUS_POD_ID — the variable the \
+             tool-proxy reads would have no producer again"
+        );
+    }
+
+    /// Malformed input yields None rather than a guess: `apply_scope`'s None
+    /// branch is the conservative one, so refusing to parse fails safe.
+    #[test]
+    fn malformed_ids_yield_none_rather_than_a_guess() {
+        for bad in [
+            "",
+            "not-a-spiffe-id",
+            "spiffe://nucleus.local",
+            "spiffe://nucleus.local/ns/pods/sa/",
+            "spiffe://nucleus.local/ns/pods/sa/a/b",
+        ] {
+            assert_eq!(pod_id_from_spiffe(bad), None, "should not parse: {bad}");
+        }
+    }
 }
