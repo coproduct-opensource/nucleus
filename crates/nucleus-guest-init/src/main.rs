@@ -158,6 +158,24 @@ fn run() -> Result<(), String> {
 
     let mut token_from_vsock = false;
     if let Some(port) = workload_api_port {
+        // The caller-identity token for the node's management API, from the
+        // same per-pod socket. Fetched here rather than passed in the pod spec
+        // or the kernel cmdline for the reason the whole mechanism rests on:
+        // the socket says which pod this is, and nothing the guest can write
+        // does.
+        match identity::fetch_pod_caller_token(port) {
+            Ok(token) => {
+                eprintln!("fetched pod caller token over vsock");
+                std::env::set_var("NUCLEUS_POD_CALLER_TOKEN", token);
+            }
+            Err(err) => {
+                // Not fatal: the node still accepts unidentified callers today,
+                // and a pod that cannot identify itself simply gets the older,
+                // proxy-side-only enforcement.
+                eprintln!("failed to fetch pod caller token: {err}");
+            }
+        }
+
         match identity::fetch_task_token(port) {
             Ok(t) => {
                 std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);

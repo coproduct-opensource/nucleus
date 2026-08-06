@@ -49,12 +49,6 @@
 //! changes on purpose: this one cannot alter any existing verdict, so it can be
 //! reviewed for correctness rather than for blast radius.
 
-// `identify_caller` is not yet reached: the token is MINTED and SERVED, and the
-// node does not yet read it back off a management request. That last step is the
-// one that changes an authorization outcome, so it is deliberately separate.
-// REMOVE this allow in the change that reads the headers in the auth middleware.
-#![allow(dead_code)]
-
 use uuid::Uuid;
 
 /// Domain separation — these bytes must never be a valid signature anywhere else

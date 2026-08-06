@@ -5,6 +5,40 @@
 //! the nucleus-node REST API with HMAC request signing.
 
 use nucleus_client::sign_http_headers;
+
+/// The header names, imported rather than restated. Both sides reading one
+/// definition is what keeps a typo from silently degrading every caller to
+/// "unidentified" — the fail-open direction, and one that raises no error.
+pub(crate) use nucleus_client::{HEADER_POD_ID, HEADER_POD_TOKEN};
+
+/// Whether a (pod id, token) pair amounts to an identity — the decision itself,
+/// separated from where the values come from so it can be tested without
+/// mutating process-wide environment state.
+///
+/// An EMPTY value is treated as absent. It would otherwise be presented as a
+/// real claim: the node would see `x-nucleus-pod-id: ` on every request, fail to
+/// parse it, and log "claimed an identity it could not prove" for traffic that
+/// claimed nothing — turning a quiet default into a permanent false alarm, which
+/// is how a genuine one stops being noticed.
+fn caller_identity_from(id: Option<String>, token: Option<String>) -> Option<(String, String)> {
+    let id = id.filter(|v| !v.is_empty())?;
+    let token = token.filter(|v| !v.is_empty())?;
+    Some((id, token))
+}
+
+/// The (pod id, token) pair this proxy presents so the node can tell WHICH pod
+/// is calling.
+///
+/// Both come from guest-init, which fetched the token over this pod's own vsock
+/// socket — the host decided which pod that is. `None` on a deployment where
+/// identity was never fetched; the node still accepts unidentified callers, so
+/// omitting the headers degrades to the older behaviour rather than failing.
+pub(crate) fn caller_identity_headers() -> Option<(String, String)> {
+    caller_identity_from(
+        std::env::var("NUCLEUS_POD_ID").ok(),
+        std::env::var("NUCLEUS_POD_CALLER_TOKEN").ok(),
+    )
+}
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -92,6 +126,10 @@ impl NodeClient {
         for (key, value) in &signed.headers {
             request = request.header(key.as_str(), value.as_str());
         }
+        if let Some((pod_id, token)) = caller_identity_headers() {
+            request = request.header(HEADER_POD_ID, pod_id);
+            request = request.header(HEADER_POD_TOKEN, token);
+        }
 
         let response = request.send().await.map_err(|e| NodeClientError {
             message: e.to_string(),
@@ -121,6 +159,10 @@ impl NodeClient {
             .body(body_bytes.to_vec());
         for (key, value) in &signed.headers {
             request = request.header(key.as_str(), value.as_str());
+        }
+        if let Some((pod_id, token)) = caller_identity_headers() {
+            request = request.header(HEADER_POD_ID, pod_id);
+            request = request.header(HEADER_POD_TOKEN, token);
         }
 
         let response = request.send().await.map_err(|e| NodeClientError {
@@ -156,6 +198,10 @@ impl NodeClient {
         for (key, value) in &signed.headers {
             request = request.header(key.as_str(), value.as_str());
         }
+        if let Some((pod_id, token)) = caller_identity_headers() {
+            request = request.header(HEADER_POD_ID, pod_id);
+            request = request.header(HEADER_POD_TOKEN, token);
+        }
 
         let response = request.send().await.map_err(|e| NodeClientError {
             message: e.to_string(),
@@ -186,6 +232,10 @@ impl NodeClient {
         let mut request = self.http.get(&url);
         for (key, value) in &signed.headers {
             request = request.header(key.as_str(), value.as_str());
+        }
+        if let Some((pod_id, token)) = caller_identity_headers() {
+            request = request.header(HEADER_POD_ID, pod_id);
+            request = request.header(HEADER_POD_TOKEN, token);
         }
 
         let response = request.send().await.map_err(|e| NodeClientError {
@@ -248,5 +298,45 @@ mod tests {
         }"#;
         let info: PodInfo = serde_json::from_str(json).unwrap();
         assert!(matches!(info.state, PodState::Exited { code: Some(42) }));
+    }
+}
+
+#[cfg(test)]
+mod caller_identity_tests {
+    use super::caller_identity_from;
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn both_present_is_an_identity() {
+        assert_eq!(
+            caller_identity_from(s("pod-1"), s("tok")),
+            Some(("pod-1".to_string(), "tok".to_string()))
+        );
+    }
+
+    /// A pod id without its token is not an identity — the id alone is a claim
+    /// anyone could make, so presenting it would be worse than presenting
+    /// nothing.
+    #[test]
+    fn an_id_without_a_token_is_not_an_identity() {
+        assert_eq!(caller_identity_from(s("pod-1"), None), None);
+        assert_eq!(caller_identity_from(None, s("tok")), None);
+    }
+
+    /// Empty is absent, not present-and-blank. See `caller_identity_from`.
+    #[test]
+    fn empty_values_are_absent() {
+        assert_eq!(caller_identity_from(s(""), s("tok")), None);
+        assert_eq!(caller_identity_from(s("pod-1"), s("")), None);
+    }
+
+    /// The two header names must differ, or one would overwrite the other and
+    /// the token would travel under the id's name.
+    #[test]
+    fn the_two_headers_are_distinct() {
+        assert_ne!(super::HEADER_POD_ID, super::HEADER_POD_TOKEN);
     }
 }

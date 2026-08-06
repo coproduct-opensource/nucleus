@@ -176,6 +176,35 @@ pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     })
 }
 
+/// Fetch this pod's caller-identity token for the node's management API.
+///
+/// Over the per-pod workload-API socket, like every other per-pod artifact: the
+/// host serves the token belonging to whichever pod's socket this is, so the
+/// guest never states which pod it wants a token for.
+pub fn fetch_pod_caller_token(port: u32) -> Result<String, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_POD_CALLER_TOKEN\n")
+        .map_err(|e| format!("failed to send FETCH_POD_CALLER_TOKEN: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read caller token: {e}"))?;
+
+    let v: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|e| format!("caller token response is not JSON: {e}"))?;
+    v.get("caller_token")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "no caller_token in response".to_string())
+}
+
 pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;

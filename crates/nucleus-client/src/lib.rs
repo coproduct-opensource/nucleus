@@ -105,6 +105,20 @@ pub fn art12_signed_bytes(session_id: &str, body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The header a pod uses to state which pod it is.
+///
+/// Defined here, in the crate BOTH the node and the tool-proxy already depend on,
+/// rather than as a literal on each side. The failure this prevents is quiet: if
+/// the two spellings drifted, every caller would present nothing the node
+/// recognises and be treated as unidentified -- the fail-OPEN direction, with no
+/// error raised anywhere. One definition makes that drift a compile error instead
+/// of a behaviour change nobody would notice.
+pub const HEADER_POD_ID: &str = "x-nucleus-pod-id";
+
+/// The header carrying the token that PROVES the claim in [`HEADER_POD_ID`].
+/// The id alone is not a credential -- anyone can name a pod.
+pub const HEADER_POD_TOKEN: &str = "x-nucleus-pod-token";
+
 pub fn sign_http_headers(secret: &[u8], actor: Option<&str>, body: &[u8]) -> SignedHeaders {
     let timestamp = now_unix();
     let actor_value = actor.unwrap_or("");

@@ -22,6 +22,49 @@ Corollaries:
 
 This is the apodictic core — logically compelled, machine-checkable, marketable.
 
+### The Confidentiality Dual
+
+The claim above is about **authority**: what a workload may *do*. Its dual is
+about **confidentiality**: what a workload may *learn*. Both are needed, because
+a tenant's first question is not "can this agent act" but "can another tenant's
+agent read my secrets."
+
+**Whatever an agent workload does — including when an adversary controls the
+inputs feeding it — it can neither learn the secrets Nucleus holds on its behalf
+nor those of any other pod, nor influence which of them get released; the sole
+exception is a value a governor deliberately released with a single-use token,
+and even then the adversary cannot steer which value that is. This covers
+explicit flows through every mediated channel and excludes timing, cache, and
+other microarchitectural channels; it is a theorem about the code that ships,
+re-checked on every change, and a relying party can verify from the outside that
+the pod they are talking to is the artifact the theorem is about.**
+
+The microarchitectural exclusion is **inside the sentence, not a footnote**, so
+the claim cannot be quoted without its limit. Cross-pod confidentiality stated
+without it would read as "immune to co-tenancy attacks" — the worst overclaim
+available to this project, and one we have no basis for: Firecracker, the host
+kernel, and the hardware are all in the TCB and none of them is modelled.
+
+#### Status — what is proved, what is tested, what is not yet
+
+Keeping these apart is a house rule, because a north star written in the present
+tense is how a claim outruns its wiring.
+
+| Part of the claim | Status |
+| --- | --- |
+| Single-pod: workload cannot learn its own mediated secrets | **Proved** — the confidentiality/integrity/channel oracles and their faithfulness mirrors against the Rust extraction |
+| Adversary-controlled inputs do not change the released set | **Proved** — the two-run noninterference result over the reference pod machine |
+| Declassification is single-use and not adversary-steerable | **Proved** in the model; **tested** on the live path (spent-token set keyed on the Ed25519 signature) |
+| Remote verification that the pod is the modelled artifact | **Tested** — attestation and the delivery-conformance boot gate |
+| **Cross-pod**: one pod cannot learn another's secrets | **Not yet.** No artifact in the corpus mentions a second pod; the host is outside every model |
+
+The cross-pod leg is the open one, and it is deliberately sequenced audit-first:
+a lookup keyed on something a guest can forge is a far likelier defect than a
+flaw in the label lattice, and a real finding there is worth more than a theorem.
+Per-caller identity at the node API is the enabling step — until the node can
+tell *which* pod is calling, no cross-pod property is even statable, because the
+system cannot assign a secret to a pod any more than the model can.
+
 ### Theoretical Foundation
 
 This claim rests on the **capability safety theorem**: in an object-capability

@@ -35,6 +35,7 @@ mod grpc_tls;
 mod identity;
 mod oidc;
 mod pod_caller_identity;
+
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
@@ -1043,8 +1044,34 @@ async fn auth_middleware(
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
     let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
+
+    // WHICH POD is calling, when the caller can prove it.
+    //
+    // Additive, and deliberately not yet an authorization input: an unidentified
+    // caller is still accepted exactly as before (operators and older proxies
+    // present nothing), so this cannot change a verdict. What it DOES change is
+    // that a caller CLAIMING to be a pod and failing to prove it is now visible
+    // instead of indistinguishable from every other request.
+    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
+    let caller = pod_caller_identity::identify_caller(
+        state.caller_secret.as_ref(),
+        header(nucleus_client::HEADER_POD_ID),
+        header(nucleus_client::HEADER_POD_TOKEN),
+    );
+    match &caller {
+        Ok(pod_id) => tracing::debug!(%pod_id, "identified the calling pod"),
+        Err(pod_caller_identity::CallerError::Absent) => {}
+        Err(pod_caller_identity::CallerError::Invalid) => {
+            // Something claimed to be a pod and could not prove it. Not refused
+            // here — refusing would change behaviour for a caller that is
+            // currently accepted — but it is the one case worth seeing.
+            tracing::warn!("a request claimed a pod identity it could not prove");
+        }
+    }
+
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);
+    req.extensions_mut().insert(caller.ok());
     Ok(next.run(req).await)
 }
 
@@ -2745,7 +2772,10 @@ async fn spawn_firecracker_pod(
                     // every proxy already holds that one, so deriving from it
                     // would let any pod compute any other pod's token and the
                     // mechanism would prove nothing.
-                    caller_token: Some(pod_caller_identity::derive_token(&state.caller_secret, id)),
+                    caller_token: Some(pod_caller_identity::derive_token(
+                        state.caller_secret.as_ref(),
+                        id,
+                    )),
                     // Pod-scoped DLC-D admission provisioning (PodSpec labels).
                     // Partial labels still provision — the proxy's parser fails
                     // CLOSED, so misconfiguration narrows rather than widens.
