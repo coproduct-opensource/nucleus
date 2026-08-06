@@ -145,6 +145,25 @@ lean_lib «PodMachineSpike» where
 lean_lib «IdentityOracleMirror» where
   roots := #[`IdentityOracleMirror]
 
+-- The v2 half of the toolchain bridge: the confidentiality lattice, the material
+-- label table, and the principal ceiling, mirrored in plain Lean and PROVED equal
+-- to the shipped extraction. Machine v2's mirrors previously had no faithfulness
+-- theorem at all.
+lean_lib «ConfidentialityOracleMirror» where
+  roots := #[`ConfidentialityOracleMirror]
+
+-- The INTEGRITY axis — the second, orthogonal dimension of the reference machine
+-- (Machine v3 gate 1). Integrity MEETS where confidentiality JOINS, and its
+-- flows-to points the other way; those mirrors need their own anchor.
+lean_lib «IntegrityOracleMirror» where
+  roots := #[`IntegrityOracleMirror]
+
+-- The CHANNEL dimension (Machine v3 gate 2): delivery becomes a three-argument
+-- judgement over (channel, material, principal), and three of the six channels
+-- are material-closed by construction rather than by policy.
+lean_lib «ChannelOracleMirror» where
+  roots := #[`ChannelOracleMirror]
+
 -- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
 lean_lib «UnwindingIFC» where
   roots := #[`UnwindingIFC]
