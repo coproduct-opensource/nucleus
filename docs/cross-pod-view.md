@@ -32,6 +32,52 @@ cannot assign a material to a pod when the system cannot either.
 Per-caller identity at the node API (#2196) removes that. `HostState` can now
 carry a pod-indexed structure because the running system does.
 
+## Prior art, and the architecture it changed my mind about
+
+The first draft of this document hand-justified each field. The literature says
+that is the weaker of two available structures, and the stronger one is worth
+adopting before any Lean is written.
+
+**Nickel (OSDI 2018) makes the view relation *untrusted*.** Noninterference is
+defined over `output` alone; the observational equivalence `≈` and the state
+invariant `I` appear only in the unwinding theorem, and *any* instances
+satisfying the unwinding conditions establish the theorem. The trusted surface is
+the **policy** and `output` — not the relation. Their reported experience is
+exactly the worry this phase was created around: *"it was non-trivial to determine
+which part of the system state was observable by each domain."*
+
+That reframes the deliverable. A too-coarse relation stops being a soundness risk
+and becomes a **proof failure**, which is a far better place for a mistake to
+show up. Concretely, the two unwinding conditions squeeze each field from both
+sides:
+
+| Bound | Condition | Meaning for a field |
+| --- | --- | --- |
+| lower | **output consistency** | anything a pod can read back through the API must be *determined* by `podView`, or OC fails — the relation is too coarse |
+| upper | **local respect** | anything another pod's action writes must be *excluded* from `podView`, or LR fails — the relation is too fine |
+
+A field admissible in neither direction — read by nobody, written by others — is
+a design smell rather than a modelling choice. This is a decision procedure where
+this document previously had an argument, and X-2 should use it directly.
+
+**seL4 derives the partition instead of declaring it.** `subjectReads` is an
+inductive closure over the authority graph, grown under the confidentiality
+obligation until the proof closes — *the fixpoint is the answer, not the guess*.
+Same instinct as this project's `derive-the-domain-dont-declare-it` rule, and the
+right long-run replacement for the table below. seL4 also keeps a short explicit
+list of scalars every domain observes (`cur_thread`, `cur_domain`, …) — declared
+visible to all and therefore provably useless as a channel, which is the honest
+analogue of nucleus's structural 27.
+
+**van der Meyden (ESORICS 2007)** is the cautionary one: Haigh & Young's
+intransitive noninterference definition was accepted for roughly twenty years
+before being shown to admit flows it was meant to forbid. A definition being
+standard is not evidence it says what you want.
+
+**SeKVM** is the closest system — many VMs and untrusted host components on one
+machine — and earns the right to omit TLBs from the abstract machine rather than
+asserting it. Worth copying that standard.
+
 ## Method
 
 `HostState` is `NodeState`, whose 38 fields were **derived from the source**
@@ -87,7 +133,7 @@ state is inert, which is why a cross-pod theorem is tractable at all.
 | `lockdown_tx` | operator lockdown | **Yes — see below.** |
 | `firecracker_pool` | pod spawn / exit | **Yes — see below.** |
 | `container_pool` | pod spawn / exit | As `firecracker_pool`. |
-| `network_allocator` | pod spawn / exit | Sequential index allocation is a counting channel; a pod that observes its own index learns how many pods preceded it. Needs its own pass. |
+| `network_allocator` | pod spawn / exit | **Yes, confirmed.** `guest_ip = base + index * POD_STRIDE + 3`, so a pod's own IP *is* its allocation index, and allocation is a dense counter from zero. Reveals a count of prior pods, nothing about their contents. Excluded as co-tenancy cardinality. |
 | `docker` | shared client | Connection-pool contention; same shape as the semaphores. |
 | `http_client` | shared client | As above. |
 
@@ -185,6 +231,7 @@ Deliberately **excluded** from `Observation`, each with its reason:
 | --- | --- |
 | pool occupancy / permit availability | Finding 2. Excluded by the widened claim, not by pretending it is unobservable. |
 | wall-clock and completion latency | Pre-existing exclusion; unchanged. |
+| co-tenancy cardinality (own allocation index / IP) | The index is the pod's own IP and allocation is a dense counter, so it is plainly observable. It reveals a COUNT of prior pods and nothing about their contents. See the KILL assessment — this is the exclusion my own operational test misfired on. |
 | the identity registry | Currently defective (#2197, #2198). Modelling it as sound would prove a property the system does not have. It re-enters once retired or fixed. |
 | lockdown delivery | Finding 1. Re-enters as non-observable once filtering moves server-side; until then, including it would make the theorem false. |
 
@@ -203,12 +250,62 @@ exclusions has a stated reason rather than a shrug. Two required changing
 something outside the model — one claim correction and two filed defects — which
 is the phase working as intended rather than a detour around it.
 
-**What would have killed it:** had `network_allocator`'s index-assignment channel
-turned out to be both observable and unbounded in what it reveals, `podView`
-would have needed to model allocation order, and the relation would have stopped
-being auditable. It is listed above as needing its own pass; if that pass shows a
-pod can read its own index *and* indices are densely sequential, this phase
-reopens.
+**The `network_allocator` pass — and a test of mine that misfired.**
+
+The first draft of this section said: *if a pod can read its own index and
+indices are densely sequential, this phase reopens.* That pass has now been done,
+and **both conditions hold**:
+
+- Allocation is `self.next.fetch_add(1, SeqCst)` from zero, with released indices
+  recycled LIFO. Densely sequential.
+- `offset = index * POD_STRIDE; guest_ip = base + offset + 3`. The index **is**
+  the pod's own IP address. Every pod can read it with `ip addr`, divide by the
+  stride, and recover its allocation index exactly.
+
+So by the letter of the criterion I wrote, this phase reopens. It does not, and
+the reason is worth recording, because the failure was in the test rather than in
+the system.
+
+"Densely sequential" was a *proxy* for the real criterion in the sentence
+immediately before it — **"unbounded in what it reveals."** The proxy over-fires.
+Dense sequencing establishes that the index carries information about other
+pods; it says nothing about *how much*. On inspection the channel reveals a
+**count** and nothing else: how many pods were allocated before this one, modulo
+recycling. Not their identity, not their labels, not their contents, and nothing
+that varies with any secret nucleus holds. The flagship claim is about secrets
+and about which of them get released; a cardinality leak falsifies neither.
+
+That makes this a fourth exclusion — **co-tenancy cardinality** — rather than a
+collapse of the relation. Recorded here rather than folded silently into the
+claim, because a criterion that fires and is then argued past is exactly how a
+guarantee becomes weaker than it sounds. The correct lesson is that the
+operational test should have been written against what the channel *reveals*, not
+against the shape of the counter, and a future pass on `docker` / `http_client`
+connection reuse should use the revelation form directly.
+
+**But an exclusion is the second-best answer here, and the literature has the
+first.** CertiKOS hit this exact channel: `proc_create` allocated the lowest free
+process ID, so `y − x − 1` told Alice precisely how many children other
+principals had spawned while she was yielded. They did not exclude it — they
+**partitioned the identifier space by construction**, making the child of `i` be
+`i * m_c + c + 1` so different parents' child-ID sets are disjoint and an
+identifier reveals nothing about anyone else's allocations. Nickel independently
+names the same rule: *"partition names among domains."*
+
+nucleus's allocator is the dense-counter shape CertiKOS moved away from
+(`fetch_add` from zero, LIFO recycle). Allocating network indices from a
+per-lineage partition would make a pod's own IP reveal only its own subtree's
+allocation count — turning a permanent exclusion into a fixed defect, and
+shrinking rather than growing the list of things the claim has to disclaim.
+
+That is a **code change, not a modelling decision**, so it is filed rather than
+done here. It is the better answer, and this document should not be read as
+having settled for the exclusion when a structural fix is available and has
+precedent. Until it lands, the exclusion stands and is stated.
+
+**What would still kill this phase:** a shared-mutable field whose observable
+projection varies with another pod's *contents* rather than its existence or
+count. None of the eight does today.
 
 ## What X-2 inherits
 
@@ -218,3 +315,25 @@ reopens.
   trivial, since 27 of 38 fields are constants and 3 are unreachable secrets.
 - The one genuinely shared surface to introduce first is `pods`, because it is the
   only shared-mutable field that is *mediated by design* rather than by accident.
+
+## Sources
+
+- Nelson, Bornholt, Krishnamurthy, Torlak, Wang — *Noninterference specifications
+  for secure systems*, SIGOPS OSR 54(1), 2020.
+  https://jamesbornholt.com/papers/ni-osr20.pdf
+- Sigurbjarnarson et al. — *Nickel: A Framework for Design and Verification of
+  Information Flow Control Systems*, OSDI 2018.
+  https://jamesbornholt.com/papers/nickel-osdi18.pdf
+- Murray et al. — *seL4: from General Purpose to a Proof of Information Flow
+  Enforcement*, IEEE S&P 2013.
+  https://sel4.systems/Research/pdfs/sel4-from-general-purpose-to-proof-information-flow-enforcement.pdf
+- l4v, `proof/infoflow/InfoFlow.thy` — `reads_equiv` / `states_equiv_for` /
+  `subjectReads`. https://github.com/seL4/l4v/blob/master/proof/infoflow/InfoFlow.thy
+- Costanzo, Shao, Gu — *End-to-End Verification of Information-Flow Security for C
+  and Assembly Programs*, PLDI 2016. The observation-function formulation, and the
+  `proc_create` identifier channel with its partitioned-ID fix.
+  https://flint.cs.yale.edu/flint/publications/security.pdf
+- van der Meyden — *What, Indeed, Is Intransitive Noninterference?*, ESORICS 2007.
+  https://link.springer.com/chapter/10.1007/978-3-540-74835-9_16
+- Li et al. — *A Secure and Formally Verified Linux KVM Hypervisor*, IEEE S&P 2021.
+  https://www.cs.columbia.edu/~nieh/pubs/ieeesp2021_kvm.pdf
