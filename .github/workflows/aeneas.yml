@@ -138,13 +138,24 @@ jobs:
       #     partial translation, and under the old condition those two outcomes
       #     were indistinguishable.
       #
-      #   * emitted files that DIFFER from the committed copies -> WARN, not fail,
-      #     and the reason is specific rather than a shrug. The committed
-      #     `generated/` tree is a KNOWN-STALE legacy artifact: `Types.lean` is 42
-      #     lines against ~838 from a fresh extraction, because the IFC source moved
-      #     to `crates/nucleus-ifc-kernel` (MVK M3) and this whole-crate lib was
-      #     never refreshed. Failing on that drift would be red for a pre-existing
-      #     reason this step cannot fix, so it is surfaced loudly and tracked.
+      #   * emitted files that DIFFER from the committed copies -> WARN, not fail.
+      #     The reason is specific, and it is NOT "nobody refreshed it" — that was
+      #     the first diagnosis and it was WRONG in a way that invites damage. The
+      #     committed `generated/Types.lean` (42 lines) and a fresh extraction
+      #     (~838) are not comparable artifacts:
+      #       - the committed file declares `inductive CapabilityLevel`; a fresh
+      #         extraction declares `inductive capability_level.CapabilityLevel`.
+      #         Aeneas emits MODULE-QUALIFIED names now that the IFC source moved to
+      #         `crates/nucleus-ifc-kernel` and was split into modules.
+      #       - the committed file is a deliberate CURATED SUBSET (two types); a
+      #         fresh extraction covers the whole crate, `core::*` trait shims and all.
+      #     So "just regenerate it" would RENAME the types out from under
+      #     `PortcullisCoreBridge` and `CompartmentProofs` — both import the bare
+      #     names, and PortcullisCoreBridge is in the proven-tier build list in
+      #     `portcullis-core-proven-lean.yml`. Retiring the lib is equally
+      #     unavailable, for the same reason: those proofs depend on it.
+      #     Hardening this limb to FAIL therefore needs a MIGRATION (requalify the
+      #     dependents, then re-curate or adopt the full extraction) — not a refresh.
       #     THE LOAD-BEARING FRESHNESS CHECK IS ELSEWHERE and is not advisory:
       #     `aeneas-ifc-scoped.yml` (and siblings) re-extract the slices the
       #     flagship theorems are proven over, hard-fail if Aeneas emits nothing,
