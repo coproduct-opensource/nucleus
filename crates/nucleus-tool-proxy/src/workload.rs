@@ -44,23 +44,7 @@ use nucleus_spec::WorkloadSpec;
 /// classified public and admitted. The corpus test exists to catch exactly
 /// that, which is why it enumerates the `NUCLEUS_*` namespace rather than a
 /// sample.
-pub(crate) fn env_key_material(key: &str) -> MaterialKind {
-    match key {
-        "NUCLEUS_IDENTITY_CERT" => MaterialKind::SvidCert,
-        "NUCLEUS_TASK_TOKEN" | "NUCLEUS_TASK_TOKEN_NONCE" | "NUCLEUS_TASK_TOKEN_ISSUER" => {
-            MaterialKind::TaskToken
-        }
-        "NUCLEUS_TOOL_PROXY_BROKER_SECRET" | "NUCLEUS_TOOL_PROXY_BROKER_PORT" => {
-            MaterialKind::BrokerSecret
-        }
-        "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" => MaterialKind::ApprovalSecret,
-        "NUCLEUS_SANDBOX_TOKEN" => MaterialKind::SandboxToken,
-        "NUCLEUS_TOOL_PROXY_AUTH_SECRET" => MaterialKind::ProxyAuthSecret,
-        k if k.starts_with("NUCLEUS_DLC_") => MaterialKind::DlcCredentials,
-        k if k.starts_with("NUCLEUS_EGRESS_") => MaterialKind::EgressEnv,
-        _ => MaterialKind::OrdinaryData,
-    }
-}
+pub(crate) use nucleus_ifc_kernel::env_classifier::env_key_material;
 
 /// Where an admitted env entry came from — kept in the launch receipt so an
 /// auditor can see not just what crossed but why it was allowed to.

@@ -1,0 +1,13 @@
+[package]
+name = "nucleus-delivery-conformance"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Boot-trace conformance: replays a pod's observed delivery ledger through the extracted ident_may_deliver oracle, so every real boot is validated as a behaviour of the reference machine."
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+[dependencies]
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
+
+[lints]
+workspace = true

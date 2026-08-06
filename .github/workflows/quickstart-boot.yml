@@ -312,6 +312,30 @@ jobs:
           }
           echo "in-guest workload probe: PASS present, FAIL absent"
 
+      - name: Delivery conformance (observed inventory vs the extracted oracle)
+        run: |
+          # The probe emits its observed environment inventory
+          # (NUCLEUS_WORKLOAD_ENV: <name>, names only) into the guest log. This
+          # step replays every observed name through the production classifier
+          # (env_key_material) and the extracted oracle (ident_may_deliver) — a
+          # categorical check behind the probe's hand-enumerated variable list:
+          # a NOVEL secret-classified name flunks here even though no list
+          # remembers it. Fails closed on an empty inventory: the binary exits
+          # non-zero when the needle never appears, so "the probe's evidence
+          # never reached the log" cannot read as conformant.
+          cargo build --release -p nucleus-delivery-conformance
+          state=/var/lib/nucleus/state
+          logs=$(sudo find "$state" -name firecracker.log)
+          [ -n "$logs" ] || { echo "::error::no firecracker.log found"; exit 1; }
+          # Copy root-owned logs somewhere the unprivileged binary can read them,
+          # rather than running the checker under sudo.
+          tmp=$(mktemp -d)
+          i=0
+          for f in $logs; do
+            sudo cp "$f" "$tmp/log$i"; sudo chown "$(id -u)" "$tmp/log$i"; i=$((i+1))
+          done
+          ./target/release/nucleus-delivery-conformance "$tmp"/log*
+
       - name: Show the guest log on failure
         if: failure()
         run: |

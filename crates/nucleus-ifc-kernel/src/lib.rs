@@ -57,6 +57,7 @@ pub use hash_types::ContentHash;
 
 pub mod discharge;
 pub mod effect;
+pub mod env_classifier;
 pub mod extracted;
 pub mod flow;
 pub mod ifc_api;

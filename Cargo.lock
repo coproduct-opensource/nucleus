@@ -6754,6 +6754,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-delivery-conformance"
+version = "1.0.0"
+dependencies = [
+ "nucleus-ifc-kernel",
+]
+
+[[package]]
 name = "nucleus-econ-kernels"
 version = "1.0.0"
 dependencies = [

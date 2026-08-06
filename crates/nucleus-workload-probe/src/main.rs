@@ -86,6 +86,16 @@ fn check_environment(fails: &mut Vec<String>) {
         keys.insert(key);
     }
 
+    // Inventory for the boot gate's conformance step: every observed NAME (never
+    // a value) on stderr, which the proxy drains into the guest log where
+    // `nucleus-delivery-conformance` replays it through the production
+    // classifier and the extracted `ident_may_deliver` oracle — the categorical
+    // check behind the fixed list below. Emitted before the checks so even a
+    // FAIL run ships its evidence.
+    for key in &keys {
+        eprintln!("NUCLEUS_WORKLOAD_ENV: {key}");
+    }
+
     for var in IDENTITY_VARS {
         if keys.contains(*var) {
             fails.push(format!(
