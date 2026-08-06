@@ -152,6 +152,12 @@ lean_lib «IdentityOracleMirror» where
 lean_lib «ConfidentialityOracleMirror» where
   roots := #[`ConfidentialityOracleMirror]
 
+-- The INTEGRITY axis — the second, orthogonal dimension of the reference machine
+-- (Machine v3 gate 1). Integrity MEETS where confidentiality JOINS, and its
+-- flows-to points the other way; those mirrors need their own anchor.
+lean_lib «IntegrityOracleMirror» where
+  roots := #[`IntegrityOracleMirror]
+
 -- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
 lean_lib «UnwindingIFC» where
   roots := #[`UnwindingIFC]
