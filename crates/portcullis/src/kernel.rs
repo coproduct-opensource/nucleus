@@ -182,6 +182,11 @@ impl Verdict {
 
 /// The declassification authority surface — extracted from this file under the
 /// line ratchet; a CHILD module so it can reach the kernel's private fields.
+///
+/// Gated on `crypto` because everything in it is: without the feature the
+/// module's imports would be unused, which is an error under this crate's
+/// warning policy (caught by `cargo hack --each-feature`).
+#[cfg(feature = "crypto")]
 mod declassify_authority;
 /// Reason an operation was denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
