@@ -102,10 +102,21 @@ impl IdentityManager {
     }
 
     /// Unregisters a pod from the VM registry.
+    ///
+    /// Returns whether an entry was actually removed. `HashMap::remove` reports
+    /// this and the result used to be discarded, which is precisely how the
+    /// registry came to never drain: teardown removed by the pod's SPIFFE URI
+    /// while registration inserted under the pod's UUID, the two never matched,
+    /// and the no-op was invisible at every call site.
+    ///
+    /// `#[must_use]` so a caller cannot reintroduce that silence without saying
+    /// so in the code. A wrong key is a bug either way; the difference is whether
+    /// anyone finds out.
+    #[must_use = "a false return means NOTHING was removed -- usually a wrong key"]
     #[allow(dead_code)]
-    pub async fn unregister_pod(&self, connection_id: &str) {
+    pub async fn unregister_pod(&self, connection_id: &str) -> bool {
         let mut registry = self.vm_registry.write().await;
-        registry.remove(connection_id);
+        registry.remove(connection_id).is_some()
     }
 
     /// Starts the Workload API server on a Unix socket.
@@ -362,7 +373,10 @@ mod tests {
         drop(registry);
 
         // Unregister
-        manager.unregister_pod(&pod_id.to_string()).await;
+        assert!(
+            manager.unregister_pod(&pod_id.to_string()).await,
+            "the pod was registered under this key, so removal must report a hit"
+        );
         let registry = manager.vm_registry.read().await;
         assert!(!registry.contains_key(&pod_id.to_string()));
     }
@@ -482,5 +496,56 @@ mod tests {
             .unwrap();
 
         assert_eq!(cert.identity(), &identity);
+    }
+}
+
+#[cfg(test)]
+mod registry_key_tests {
+    use super::*;
+
+    fn manager() -> IdentityManager {
+        IdentityManager::new("example.org", std::time::Duration::from_secs(3600))
+            .expect("identity manager should construct")
+    }
+
+    /// The regression. A pod registered under its UUID is NOT removed by its
+    /// SPIFFE URI: the two key spaces are disjoint, so the mismatched teardown
+    /// silently removed nothing and the registry grew without bound.
+    ///
+    /// This matters beyond the leak. The Workload API's registry-lookup path
+    /// serves `registry.values().next()` -- an arbitrary entry -- and warns that
+    /// this is only safe while exactly one identity is registered. A registry
+    /// that never drains guarantees that precondition is false forever after the
+    /// second pod.
+    #[tokio::test]
+    async fn a_spiffe_uri_does_not_remove_a_uuid_keyed_entry() {
+        let m = manager();
+        let pod_id = uuid::Uuid::new_v4();
+        let identity = m.identity_for_pod(pod_id, "default", "agent");
+
+        m.register_pod(pod_id.to_string(), identity.clone()).await;
+
+        // The old teardown key.
+        assert!(
+            !m.unregister_pod(&identity.to_spiffe_uri()).await,
+            "a SPIFFE URI must not match a UUID-keyed entry -- if this ever \
+             passes, the two key spaces have merged and this test is no longer \
+             pinning anything"
+        );
+        assert_eq!(
+            m.vm_registry.read().await.len(),
+            1,
+            "the entry must still be there: that is the defect being pinned"
+        );
+
+        // The key registration actually used.
+        assert!(
+            m.unregister_pod(&pod_id.to_string()).await,
+            "removing by the registered key must actually remove"
+        );
+        assert!(
+            m.vm_registry.read().await.is_empty(),
+            "the registry must drain"
+        );
     }
 }

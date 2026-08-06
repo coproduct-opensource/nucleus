@@ -441,6 +441,14 @@ struct FirecrackerPod {
     identity: Option<nucleus_identity::Identity>,
     /// Reference to identity manager for cleanup
     identity_manager: Option<identity::IdentityManager>,
+    /// The key this pod was REGISTERED under, carried rather than re-derived.
+    ///
+    /// Teardown used to call `unregister_pod(&identity.to_spiffe_uri())` while
+    /// registration used `register_pod(id.to_string(), ..)`. Those are different
+    /// strings, so `HashMap::remove` never matched and no pod was EVER removed
+    /// from the identity registry. Two derivations of one key is the bug; there
+    /// is now one value, produced once and carried to the removal.
+    identity_registry_key: Option<String>,
     /// Workload API vsock bridge for this pod
     workload_api_bridge: Mutex<Option<workload_api_vsock::WorkloadApiVsockBridge>>,
     /// The credential broker listening for this pod, when the rollout serves one.
@@ -1296,7 +1304,20 @@ impl FirecrackerPod {
         }
 
         if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
-            manager.unregister_pod(&identity.to_spiffe_uri()).await;
+            // By the key registration used, not a second derivation of it.
+            if let Some(ref key) = self.identity_registry_key {
+                if !manager.unregister_pod(key).await {
+                    // Reachable only if the key drifted again. Worth a warning
+                    // rather than a silent no-op: a registry that does not drain
+                    // is what makes the Workload API's "exactly one identity is
+                    // registered" precondition permanently false.
+                    tracing::warn!(
+                        registry_key = %key,
+                        "pod teardown removed no identity registry entry -- the \
+                         registration and removal keys have drifted apart"
+                    );
+                }
+            }
             manager.forget_certificate(identity).await;
         }
     }
@@ -2630,6 +2651,9 @@ async fn spawn_firecracker_pod(
         // The refusal is at the source rather than the advertisement.
         let identity_source =
             net::identity_registration(state.identity_manager.as_ref(), &identity_grant);
+        // Set at registration, read at teardown. Declared out here so exactly one
+        // value spans both -- see `FirecrackerPod::identity_registry_key`.
+        let mut identity_registry_key: Option<String> = None;
         // ONE capability, TWO consumers: the workload API serves it to the guest
         // (once, before any workload exists) and the broker listener verifies
         // signatures against it. Minted here because those two are started in
@@ -2647,7 +2671,9 @@ async fn spawn_firecracker_pod(
             let identity = manager.identity_for_pod(id, namespace, service_account);
 
             // Register the pod identity
-            manager.register_pod(id.to_string(), identity.clone()).await;
+            let registry_key = id.to_string();
+            identity_registry_key = Some(registry_key.clone());
+            manager.register_pod(registry_key, identity.clone()).await;
 
             // Compute launch attestation for this pod
             // This captures integrity measurements of kernel, rootfs, and config
@@ -2865,6 +2891,7 @@ async fn spawn_firecracker_pod(
             drift_stop,
             network_allocator: state.network_allocator.clone(),
             identity: pod_identity,
+            identity_registry_key: identity_registry_key.clone(),
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
