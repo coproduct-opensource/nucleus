@@ -380,6 +380,7 @@ mod tests {
                 WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
                 WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
                 WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
+                WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
             }
         }
         for cmd in [
