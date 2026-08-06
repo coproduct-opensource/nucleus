@@ -79,6 +79,18 @@ pub enum WorkloadApiCommand {
     /// public keyset plus the pod's OWN capability grants; possession is
     /// exactly the authority intended.
     FetchDlcAdmission,
+    /// `FETCH_POD_CALLER_TOKEN` — request this pod's caller-identity token for
+    /// the node's management API.
+    ///
+    /// # Why this rides the workload API
+    ///
+    /// Same reasoning `FetchTaskToken` records: this channel already serves
+    /// per-pod artifacts over a per-pod socket the HOST creates per VM, so the
+    /// pod does not name itself — the socket does. That is exactly the property
+    /// a caller-identity token needs. Any other delivery (a spec field, a
+    /// kernel cmdline value, an environment variable set before the pod is
+    /// known) would be something the guest could restate.
+    FetchPodCallerToken,
     /// `FETCH_BROKER_SECRET` — request this pod's credential-broker capability.
     ///
     /// # Served exactly ONCE per pod, and that is the security property
@@ -130,6 +142,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchTaskToken => "FETCH_TASK_TOKEN",
             WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
             WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
+            WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
         }
     }
 }
@@ -195,6 +208,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_TASK_TOKEN" => Ok(WorkloadApiCommand::FetchTaskToken),
         "FETCH_DLC_ADMISSION" => Ok(WorkloadApiCommand::FetchDlcAdmission),
         "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
+        "FETCH_POD_CALLER_TOKEN" => Ok(WorkloadApiCommand::FetchPodCallerToken),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -208,6 +222,7 @@ mod tests {
     fn known_commands_round_trip() {
         for cmd in [
             WorkloadApiCommand::FetchTaskToken,
+            WorkloadApiCommand::FetchPodCallerToken,
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::Ping,

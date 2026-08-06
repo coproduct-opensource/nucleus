@@ -83,6 +83,12 @@ impl std::fmt::Debug for WorkloadApiVsockBridge {
 pub struct PodMaterial {
     /// The pod's live-path session capability token.
     pub task_token: Option<crate::session_mint::MintedTaskToken>,
+    /// This pod's caller-identity token for the node's management API.
+    ///
+    /// Derived host-side from a node-only secret and THIS pod's id, and served
+    /// only down this pod's own socket — so holding it proves which pod's
+    /// authority the caller is exercising. See `pod_caller_identity`.
+    pub caller_token: Option<String>,
     /// DLC-D verified-admission provisioning.
     pub dlc_admission: Option<DlcAdmissionMaterial>,
     /// The credential-broker capability, served exactly once.
@@ -131,6 +137,7 @@ impl WorkloadApiVsockBridge {
     ) -> std::io::Result<Self> {
         let PodMaterial {
             task_token,
+            caller_token,
             dlc_admission,
             broker_secret,
             broker_secret_served,
@@ -205,9 +212,11 @@ impl WorkloadApiVsockBridge {
                                 // flag would make "once" mean "once per connection",
                                 // which is not a restriction at all.
                                 let broker_secret_served = std::sync::Arc::clone(&broker_secret_served);
+                                let caller_token = caller_token.clone();
                                 tokio::spawn(async move {
                                     if let Err(err) = handle_connection(
-                                        stream, manager, pod_id, task_token, dlc_admission,
+                                        stream, manager, pod_id, task_token, caller_token,
+                                        dlc_admission,
                                         BrokerHandout {
                                             secret: broker_secret,
                                             port: broker_port,
@@ -350,6 +359,7 @@ async fn handle_connection(
     manager: IdentityManager,
     pod_id: uuid::Uuid,
     task_token: Option<crate::session_mint::MintedTaskToken>,
+    caller_token: Option<String>,
     dlc_admission: Option<DlcAdmissionMaterial>,
     broker: BrokerHandout,
 ) -> std::io::Result<()> {
@@ -376,6 +386,15 @@ async fn handle_connection(
                 handle_fetch_bundle(&manager)
             }
             Ok(WorkloadApiCommand::Ping) => r#"{"status":"ok"}"#.to_string(),
+            Ok(WorkloadApiCommand::FetchPodCallerToken) => {
+                debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
+                // Served for the pod bound to THIS socket. The request carries no
+                // pod id and could not be believed if it did.
+                match &caller_token {
+                    Some(t) => format!(r#"{{"caller_token":"{t}"}}"#),
+                    None => r#"{"error":"no caller token minted for this pod"}"#.to_string(),
+                }
+            }
             Ok(WorkloadApiCommand::FetchTaskToken) => {
                 debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
                 handle_fetch_task_token(task_token.as_ref())

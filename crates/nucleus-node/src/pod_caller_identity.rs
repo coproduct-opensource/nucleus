@@ -49,11 +49,10 @@
 //! changes on purpose: this one cannot alter any existing verdict, so it can be
 //! reviewed for correctness rather than for blast radius.
 
-// STAGED, and inert until the next change wires it. Dead code under this crate's
-// -D warnings is the wiring gate, so this allow is the explicit record that the
-// module is not yet reachable — REMOVE IT in the change that serves the token
-// over the workload API and reads it in the node's auth middleware. If that
-// change never lands, this allow is the thing a reviewer should object to.
+// `identify_caller` is not yet reached: the token is MINTED and SERVED, and the
+// node does not yet read it back off a management request. That last step is the
+// one that changes an authorization outcome, so it is deliberately separate.
+// REMOVE this allow in the change that reads the headers in the auth middleware.
 #![allow(dead_code)]
 
 use uuid::Uuid;

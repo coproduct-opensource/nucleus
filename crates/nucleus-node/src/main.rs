@@ -346,6 +346,12 @@ struct NodeState {
     #[cfg(feature = "local-driver")]
     listen_addr: String,
     proxy_auth_secret: String,
+    /// Node-only secret for deriving per-pod caller-identity tokens.
+    ///
+    /// Fresh per process, never persisted, never shared with a pod — which is
+    /// the whole point: a pod able to derive tokens could claim to be any other
+    /// pod. See `pod_caller_identity`.
+    caller_secret: std::sync::Arc<[u8; 32]>,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
     /// Operator-configured registry of proof-carrying postures a trusted builder
@@ -698,6 +704,19 @@ async fn main() -> Result<(), ApiError> {
         #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
+        // A NODE-ONLY secret, fresh per process and never persisted or shared.
+        //
+        // Not `auth_secret`: every proxy holds that one, so deriving caller
+        // tokens from it would let any pod compute any other pod's token — the
+        // mechanism would authenticate nothing. Not configured, either: there is
+        // no operator burden and nothing to leak at rest, and a node restart
+        // simply invalidates tokens for pods that cannot outlive the node.
+        caller_secret: {
+            use rand_core::RngCore;
+            let mut k = [0u8; 32];
+            rand_core::OsRng.fill_bytes(&mut k);
+            std::sync::Arc::new(k)
+        },
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
@@ -2721,6 +2740,12 @@ async fn spawn_firecracker_pod(
                     // Serving it here is what lets the cmdline copy go: a value
                     // fetched after boot is not baked into a snapshot base.
                     task_token: task_token.clone(),
+                    // This pod's caller identity for the management API, derived
+                    // from a NODE-ONLY secret. Deliberately not `auth_secret`:
+                    // every proxy already holds that one, so deriving from it
+                    // would let any pod compute any other pod's token and the
+                    // mechanism would prove nothing.
+                    caller_token: Some(pod_caller_identity::derive_token(&state.caller_secret, id)),
                     // Pod-scoped DLC-D admission provisioning (PodSpec labels).
                     // Partial labels still provision — the proxy's parser fails
                     // CLOSED, so misconfiguration narrows rather than widens.

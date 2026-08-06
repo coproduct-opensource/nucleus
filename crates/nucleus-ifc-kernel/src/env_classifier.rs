@@ -39,6 +39,12 @@ pub fn env_key_material(key: &str) -> MaterialKind {
         "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" => MaterialKind::ApprovalSecret,
         "NUCLEUS_SANDBOX_TOKEN" => MaterialKind::SandboxToken,
         "NUCLEUS_TOOL_PROXY_AUTH_SECRET" => MaterialKind::ProxyAuthSecret,
+        // The pod's caller-identity token for the node's management API. Secret,
+        // and classified as a TaskToken because that is what it is: a per-pod,
+        // host-minted capability the GUEST RUNTIME holds and the workload must
+        // never see. Unclassified it would fall through to OrdinaryData and be
+        // handed straight to the workload.
+        "NUCLEUS_POD_CALLER_TOKEN" => MaterialKind::TaskToken,
         k if k.starts_with("NUCLEUS_DLC_") => MaterialKind::DlcCredentials,
         k if k.starts_with("NUCLEUS_EGRESS_") => MaterialKind::EgressEnv,
         _ => MaterialKind::OrdinaryData,
