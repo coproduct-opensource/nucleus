@@ -158,6 +158,12 @@ lean_lib «ConfidentialityOracleMirror» where
 lean_lib «IntegrityOracleMirror» where
   roots := #[`IntegrityOracleMirror]
 
+-- The CHANNEL dimension (Machine v3 gate 2): delivery becomes a three-argument
+-- judgement over (channel, material, principal), and three of the six channels
+-- are material-closed by construction rather than by policy.
+lean_lib «ChannelOracleMirror» where
+  roots := #[`ChannelOracleMirror]
+
 -- Unwinding theorem instantiated over the real IFCLabel2 lattice (D1/M1b; Mathlib)
 lean_lib «UnwindingIFC» where
   roots := #[`UnwindingIFC]
