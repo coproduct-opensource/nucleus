@@ -167,6 +167,12 @@ pub(crate) async fn create_sub_pod(
     // deliberately, not inherited from a field being added.
     strip_requested_workload(&mut spec);
 
+    // 4c. CLAMP credentialed egress to the parent's own upstreams. Same reasoning
+    // as 4b: a spec field the delegation ceiling does not cover, which would
+    // otherwise turn ManagePods into "attach any node environment variable to a
+    // request aimed at a URL I choose". See clamp_credentialed_egress.
+    clamp_credentialed_egress(&mut spec, &state.credentialed_egress);
+
     // 5. Inject credentials from orchestrator's env (transparent to agent)
     let mut creds = spec.spec.credentials.take().unwrap_or_default();
     for (key, val) in &state.orchestrator_credentials {
@@ -587,6 +593,68 @@ impl axum::serve::Listener for VsockAxumListener {
 /// usable, and logged so the attempt is visible. Letting an agent choose a
 /// workload is a real capability decision; it must be made deliberately, not
 /// inherited from a field being added to a struct.
+/// Clamp a requested sub-pod's `credentialed_egress` to the upstreams the PARENT
+/// already holds.
+///
+/// # Why this exists, and why stripping the workload was not enough
+///
+/// `strip_requested_workload` above removes one spec field the delegation
+/// ceiling does not cover, on the grounds that `ManagePods` must not become
+/// "run arbitrary code in a fresh VM". `credentialed_egress` is the same shape
+/// and the same argument applies to it, but the reasoning was never extended.
+///
+/// A `CredentialedEgressSpec` carries BOTH halves of an exfiltration primitive:
+/// `upstream` (where the request goes) and `credential_env` (**which of the
+/// NODE's environment variables** is attached to it). Node-side,
+/// `store_from_node_environment` reads `std::env::var(&spec.credential_env)`
+/// with no check that this pod is entitled to that variable — the node's
+/// environment is one flat namespace shared by every pod — and the broker then
+/// sends the value as a header to `upstream`.
+///
+/// So an unclamped sub-pod spec turns `ManagePods` into "read any node
+/// environment variable and post it to a URL of my choosing". The delegation
+/// ceiling does not stop it, because `credentialed_egress` is not a policy
+/// field.
+///
+/// The clamp keeps delegation working — a child may still USE an upstream its
+/// parent has — while removing the ability to invent one. Matching is on the
+/// WHOLE entry, not on `name`: allowing a child to keep a parent's
+/// `credential_env` while changing `upstream` would re-target the parent's own
+/// credential at an attacker's server, which is the same defect wearing a
+/// different field.
+///
+/// Entries are dropped rather than rejected, matching `strip_requested_workload`
+/// so a spec that carries an extra upstream is still usable, and each drop is
+/// logged by NAME (never by `credential_env` value) so the attempt is visible.
+pub(crate) fn clamp_credentialed_egress(
+    spec: &mut PodSpec,
+    parent_upstreams: &[nucleus_spec::CredentialedEgressSpec],
+) {
+    if spec.spec.credentialed_egress.is_empty() {
+        return;
+    }
+    let requested = std::mem::take(&mut spec.spec.credentialed_egress);
+    let mut kept = Vec::with_capacity(requested.len());
+    for up in requested {
+        // WHOLE-STRUCT equality, not a hand-listed field set. `CredentialedEgressSpec`
+        // derives PartialEq, so a field added later (another header, a prefix, a
+        // timeout) is covered automatically. Enumerating fields here would mean a
+        // new one silently widens what a child may inherit — the failure this
+        // codebase has already had with hand-maintained lists standing in for a
+        // computable domain.
+        if parent_upstreams.iter().any(|p| p == &up) {
+            kept.push(up);
+        } else {
+            tracing::warn!(
+                upstream = %up.name,
+                "sub-pod request named a credentialed upstream the parent does not hold; \
+                 dropped -- ManagePods does not confer the node's credentials"
+            );
+        }
+    }
+    spec.spec.credentialed_egress = kept;
+}
+
 pub(crate) fn strip_requested_workload(spec: &mut PodSpec) {
     if spec.spec.workload.take().is_some() {
         tracing::warn!(
@@ -762,5 +830,179 @@ spec:
         strip_requested_workload(&mut spec);
         assert_eq!(spec.spec.work_dir, work_dir);
         assert_eq!(spec.metadata.name.as_deref(), Some("sub"));
+    }
+}
+
+#[cfg(test)]
+mod credentialed_egress_delegation_tests {
+    //! `ManagePods` must not confer the NODE's credentials.
+    //!
+    //! A `CredentialedEgressSpec` names both a destination (`upstream`) and
+    //! **which of the node's environment variables** to attach to it
+    //! (`credential_env`). Node-side, `store_from_node_environment` reads that
+    //! variable with no entitlement check — the node's environment is one flat
+    //! namespace shared by every pod — and the broker sends the value as a header
+    //! to `upstream`. Unclamped, an agent-authored sub-pod spec is therefore a
+    //! primitive for "post any node secret to a URL of my choosing".
+    //!
+    //! Same class as `workload_delegation_tests` above: a spec field the
+    //! delegation ceiling does not cover, because it is not a policy field.
+    use super::*;
+
+    fn upstream(name: &str, url: &str, env: &str) -> nucleus_spec::CredentialedEgressSpec {
+        serde_yaml::from_str(&format!(
+            "name: {name}\nupstream: {url}\ncredential_env: {env}\nheader: authorization\n"
+        ))
+        .expect("upstream spec parses")
+    }
+
+    fn parent_holds_one() -> Vec<nucleus_spec::CredentialedEgressSpec> {
+        vec![upstream("github", "https://api.github.com", "GITHUB_TOKEN")]
+    }
+
+    fn spec_requesting(ups: Vec<nucleus_spec::CredentialedEgressSpec>) -> PodSpec {
+        let mut spec: PodSpec = serde_yaml::from_str(
+            r#"
+apiVersion: nucleus.dev/v1
+kind: Pod
+metadata:
+  name: sub
+spec:
+  work_dir: /work
+  policy:
+    type: profile
+    name: default
+"#,
+        )
+        .expect("spec parses");
+        spec.spec.credentialed_egress = ups;
+        spec
+    }
+
+    /// **The exfiltration primitive, refused.** A sub-pod naming an upstream the
+    /// parent does not hold — here, the node's cloud key posted to an
+    /// attacker-controlled URL — must not survive into the forwarded spec.
+    #[test]
+    fn an_upstream_the_parent_does_not_hold_is_dropped() {
+        let mut spec = spec_requesting(vec![upstream(
+            "loot",
+            "https://attacker.invalid",
+            "AWS_SECRET_ACCESS_KEY",
+        )]);
+        assert!(
+            !spec.spec.credentialed_egress.is_empty(),
+            "the fixture must actually request an upstream, or the assertion below proves nothing"
+        );
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert!(
+            spec.spec.credentialed_egress.is_empty(),
+            "a sub-pod named an upstream its parent does not hold and it survived — \
+             ManagePods just became 'read any node environment variable'"
+        );
+    }
+
+    /// Delegation still works: a child may USE what its parent has.
+    #[test]
+    fn an_upstream_the_parent_holds_is_kept() {
+        let mut spec = spec_requesting(parent_holds_one());
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert_eq!(
+            spec.spec.credentialed_egress.len(),
+            1,
+            "clamping must not break legitimate delegation of an upstream the parent holds"
+        );
+    }
+
+    /// **The subtle one.** Matching on `name` alone would let a child keep the
+    /// parent's `credential_env` while changing `upstream` — re-targeting the
+    /// parent's own credential at an attacker's server. Same defect, different
+    /// field, so the match is on the whole entry.
+    #[test]
+    fn the_parents_credential_cannot_be_retargeted_to_another_url() {
+        let mut spec = spec_requesting(vec![upstream(
+            "github",
+            "https://attacker.invalid",
+            "GITHUB_TOKEN",
+        )]);
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert!(
+            spec.spec.credentialed_egress.is_empty(),
+            "a child kept the parent's credential_env but changed the destination — \
+             the parent's own token would be posted to the attacker's URL"
+        );
+    }
+
+    /// …and the mirror image: the same destination with a different secret.
+    #[test]
+    fn a_different_credential_to_a_known_url_is_dropped() {
+        let mut spec = spec_requesting(vec![upstream(
+            "github",
+            "https://api.github.com",
+            "AWS_SECRET_ACCESS_KEY",
+        )]);
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert!(
+            spec.spec.credentialed_egress.is_empty(),
+            "a child swapped which node secret is attached and it survived"
+        );
+    }
+
+    /// Mixed request: keep the legitimate entry, drop the invented one. Proves
+    /// the clamp filters rather than failing open or closed wholesale.
+    #[test]
+    fn a_mixed_request_keeps_only_what_the_parent_holds() {
+        let mut spec = spec_requesting(vec![
+            upstream("github", "https://api.github.com", "GITHUB_TOKEN"),
+            upstream("loot", "https://attacker.invalid", "AWS_SECRET_ACCESS_KEY"),
+        ]);
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert_eq!(spec.spec.credentialed_egress.len(), 1);
+        assert_eq!(spec.spec.credentialed_egress[0].name, "github");
+    }
+
+    /// A parent with NO upstreams can confer none — the fail-closed direction.
+    #[test]
+    fn a_parent_holding_nothing_confers_nothing() {
+        let mut spec = spec_requesting(vec![upstream(
+            "github",
+            "https://api.github.com",
+            "GITHUB_TOKEN",
+        )]);
+        clamp_credentialed_egress(&mut spec, &[]);
+        assert!(spec.spec.credentialed_egress.is_empty());
+    }
+
+    /// A field the clamp does not NAME must still be compared — the whole-struct
+    /// equality is what makes that true, and this pins it. Here only `header`
+    /// differs, which changes how the parent's credential is presented upstream.
+    #[test]
+    fn a_difference_in_an_unnamed_field_is_still_a_difference() {
+        let mut requested = parent_holds_one();
+        requested[0].header = "x-api-key".to_string();
+        let mut spec = spec_requesting(requested);
+        clamp_credentialed_egress(&mut spec, &parent_holds_one());
+        assert!(
+            spec.spec.credentialed_egress.is_empty(),
+            "a child altered a field the clamp does not enumerate and it survived — \
+             the match must be whole-struct so new fields cannot widen delegation"
+        );
+    }
+
+    /// STRUCTURAL: the handler must actually call the clamp. The unit tests
+    /// above prove the function is correct; nothing else proves it is wired, and
+    /// an unwired security check is the failure shape this repo keeps finding.
+    #[test]
+    fn create_sub_pod_still_clamps_credentialed_egress() {
+        let src = include_str!("pod_mgmt.rs");
+        let handler = src
+            .split("pub(crate) async fn create_sub_pod(")
+            .nth(1)
+            .expect("create_sub_pod must exist");
+        let body = &handler[..handler.find("\n pub(crate) ").unwrap_or(handler.len())];
+        assert!(
+            body.contains("clamp_credentialed_egress"),
+            "create_sub_pod no longer clamps credentialed_egress — an agent-authored \
+             sub-pod spec can name any node environment variable and any destination"
+        );
     }
 }
