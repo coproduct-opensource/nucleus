@@ -135,6 +135,7 @@ pub fn classify(verdict: &Verdict, exposure: &ExposureTransition) -> GateClass {
             DenyReason::EgressBlocked { .. }
             | DenyReason::FlowViolation { .. }
             | DenyReason::InvalidDeclassification { .. }
+            | DenyReason::DeclassificationReplayed { .. }
             | DenyReason::SinkScopeDenied { .. }
             | DenyReason::IfcUnsafe { .. } => GateClass::InformationFlow,
 
@@ -173,6 +174,7 @@ pub fn deny_code(reason: &DenyReason) -> &'static str {
         DenyReason::DelegationDenied { .. } => "delegation_denied",
         DenyReason::FlowViolation { .. } => "flow_violation",
         DenyReason::InvalidDeclassification { .. } => "invalid_declassification",
+        DenyReason::DeclassificationReplayed { .. } => "declassification_replayed",
         DenyReason::SinkScopeDenied { .. } => "sink_scope_denied",
         DenyReason::ActionTermRejected { .. } => "action_term_rejected",
         DenyReason::IfcUnsafe { .. } => "ifc_unsafe",

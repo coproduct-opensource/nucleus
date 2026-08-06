@@ -553,6 +553,11 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::InvalidDeclassification { detail } => {
             format!("declassification rejected: {detail}")
         }
+        DenyReason::DeclassificationReplayed { target_node } => {
+            format!(
+                "declassification token already used (one-shot) for node {target_node} — mint a                  new token to declassify again"
+            )
+        }
         DenyReason::ActionTermRejected { detail } => {
             format!("action term rejected: {detail}")
         }

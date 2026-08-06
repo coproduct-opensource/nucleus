@@ -205,3 +205,101 @@ fn apply_token_for_nonexistent_node_returns_not_found() {
         result
     );
 }
+
+// ── One-shot: exercising a token consumes it (HC-6 closure) ──────────────────
+//
+// The machine spec is capability-primitive's Spike/Declassify.lean: a release
+// SPENDS its token (`one_shot`), a refused release does not
+// (`no_release_after_spent` guards the ledger, not the refusals), and the
+// counter-model `runReplayable` — the ledger that never advances — is exactly
+// the shape these tests would catch if the kernel regressed to it.
+
+#[test]
+fn first_use_applies_then_identical_replay_is_denied() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut token = make_token(node_id);
+    token_sign::sign_token(&mut token, &key);
+
+    // First use: the authority is exercised.
+    match kernel.apply_declassification_token(&token) {
+        Ok(TokenApplyResult::Applied { .. }) => {}
+        other => panic!("first use must apply, got {other:?}"),
+    }
+
+    // Identical replay: refused with the dedicated verdict — BEFORE any graph
+    // work, and not as a stringly "invalid": the signature still verifies; the
+    // authority is simply spent.
+    match kernel.apply_declassification_token(&token) {
+        Err(DenyReason::DeclassificationReplayed { target_node }) => {
+            assert_eq!(target_node, node_id.to_string());
+        }
+        other => panic!("replay must be denied as DeclassificationReplayed, got {other:?}"),
+    }
+}
+
+#[test]
+fn two_distinct_tokens_both_apply() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    // Two nodes, two independently signed tokens: one-shot is per-authorization
+    // (per signature), not a global "declassified once already" latch.
+    let n1 = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let n2 = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut t1 = make_token(n1);
+    let mut t2 = make_token(n2);
+    token_sign::sign_token(&mut t1, &key);
+    token_sign::sign_token(&mut t2, &key);
+
+    assert!(matches!(
+        kernel.apply_declassification_token(&t1),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+    assert!(matches!(
+        kernel.apply_declassification_token(&t2),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+}
+
+#[test]
+fn a_failed_application_does_not_burn_the_token() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    // Mint for a node that does not exist YET (ids are sequential), so the
+    // first application fails without exercising any authority…
+    let existing = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let future = existing + 1;
+    let mut token = make_token(future);
+    token_sign::sign_token(&mut token, &key);
+
+    match kernel.apply_declassification_token(&token) {
+        Ok(TokenApplyResult::NodeNotFound) => {}
+        other => panic!("expected NodeNotFound for a not-yet-observed node, got {other:?}"),
+    }
+
+    // …then the obstacle clears, and the SAME token still works: a refusal is
+    // not a spend. (If the kernel burnt on refusal, this would now be
+    // DeclassificationReplayed — the over-eager-ledger defect.)
+    let created = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    assert_eq!(
+        created, future,
+        "observe() ids must be sequential for this test"
+    );
+    match kernel.apply_declassification_token(&token) {
+        Ok(TokenApplyResult::Applied { .. }) => {}
+        other => panic!("the un-exercised token must still apply, got {other:?}"),
+    }
+
+    // And now that it HAS been exercised, it is spent.
+    assert!(matches!(
+        kernel.apply_declassification_token(&token),
+        Err(DenyReason::DeclassificationReplayed { .. })
+    ));
+}

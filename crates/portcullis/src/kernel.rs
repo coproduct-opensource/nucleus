@@ -293,6 +293,17 @@ pub enum DenyReason {
         /// Human-readable detail about why the declassification was rejected.
         detail: String,
     },
+    /// A declassification token was REPLAYED.
+    ///
+    /// The token's Ed25519 signature was already applied once in this kernel
+    /// session. Tokens are one-shot: exercising the authority consumes it, and
+    /// a caller who legitimately needs to declassify twice mints a second
+    /// token. Replay is not "invalid" — the signature verifies — it is REUSE,
+    /// which deserves its own auditable verdict.
+    DeclassificationReplayed {
+        /// The node the replayed token targets.
+        target_node: String,
+    },
     /// Operation denied by certificate sink scope restrictions.
     ///
     /// The delegation certificate's `SinkScope` restricts which paths, hosts,
@@ -515,6 +526,16 @@ pub struct Kernel {
     /// trusted keys are configured.
     #[cfg(feature = "crypto")]
     trusted_public_keys: Vec<[u8; 32]>,
+    /// Signatures of declassification tokens already APPLIED in this session.
+    ///
+    /// Ed25519 is deterministic (RFC 8032), so a token's signature identifies
+    /// exactly one authorization — recording it makes tokens one-shot with
+    /// zero wire-format change. Only successful applications are recorded: a
+    /// token that failed (expired, precondition unmet, node not found) did not
+    /// exercise its authority and is not burnt. `BTreeSet`, not `HashSet`, for
+    /// the deterministic ordering the audit style of this crate relies on.
+    #[cfg(feature = "crypto")]
+    applied_declassifications: std::collections::BTreeSet<[u8; 64]>,
     /// Optional delegation constraints for this session.
     ///
     /// When present, `SpawnAgent` operations are checked against scope,
@@ -608,6 +629,8 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
+            applied_declassifications: std::collections::BTreeSet::new(),
+            #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
         }
@@ -660,6 +683,8 @@ impl Kernel {
             sink_scope: None,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
+            #[cfg(feature = "crypto")]
+            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -790,6 +815,15 @@ impl Kernel {
                     .to_string(),
             });
         }
+        // One-shot (HC-6): the deterministic Ed25519 signature identifies
+        // exactly one authorization. Already exercised ⇒ refuse with the
+        // dedicated replay verdict, BEFORE touching the flow graph — a replayed
+        // token must not re-run any part of the application.
+        if self.applied_declassifications.contains(&token.signature) {
+            return Err(DenyReason::DeclassificationReplayed {
+                target_node: token.target_node_id.to_string(),
+            });
+        }
         let key_refs: Vec<&[u8]> = self
             .trusted_public_keys
             .iter()
@@ -804,6 +838,17 @@ impl Kernel {
                 detail: "token signature verification failed — not signed by any trusted key"
                     .to_string(),
             });
+        }
+        // Burn only on success: an expired / precondition-unmet / node-not-found
+        // token did not exercise its authority and stays usable once the
+        // obstacle clears. This is the machine spec's `runD` semantics
+        // (capability-primitive Spike/Declassify.lean: spend on release, never
+        // on refusal), enforced live.
+        if matches!(
+            result,
+            portcullis_core::declassify::TokenApplyResult::Applied { .. }
+        ) {
+            self.applied_declassifications.insert(token.signature);
         }
         Ok(result)
     }
@@ -1052,6 +1097,8 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
+            applied_declassifications: std::collections::BTreeSet::new(),
+            #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
         }
@@ -1110,6 +1157,8 @@ impl Kernel {
             sink_scope,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
+            #[cfg(feature = "crypto")]
+            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,

@@ -76,6 +76,7 @@ pub(crate) fn kernel_denial_to_api_error(
         | DenyReason::EnterpriseBlocked { .. }
         | DenyReason::DelegationDenied { .. }
         | DenyReason::InvalidDeclassification { .. }
+        | DenyReason::DeclassificationReplayed { .. }
         | DenyReason::ActionTermRejected { .. }
         | DenyReason::SinkScopeDenied { .. }
         | DenyReason::IfcUnsafe { .. }
