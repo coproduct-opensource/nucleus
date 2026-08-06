@@ -35,15 +35,29 @@ nor those of any other pod, nor influence which of them get released; the sole
 exception is a value a governor deliberately released with a single-use token,
 and even then the adversary cannot steer which value that is. This covers
 explicit flows through every mediated channel and excludes timing, cache, and
-other microarchitectural channels; it is a theorem about the code that ships,
-re-checked on every change, and a relying party can verify from the outside that
-the pod they are talking to is the artifact the theorem is about.**
+other microarchitectural channels, and excludes availability and
+resource-contention channels such as a bounded pod pool; it is a theorem about
+the code that ships, re-checked on every change, and a relying party can verify
+from the outside that the pod they are talking to is the artifact the theorem is
+about.**
 
-The microarchitectural exclusion is **inside the sentence, not a footnote**, so
-the claim cannot be quoted without its limit. Cross-pod confidentiality stated
-without it would read as "immune to co-tenancy attacks" — the worst overclaim
-available to this project, and one we have no basis for: Firecracker, the host
-kernel, and the hardware are all in the TCB and none of them is modelled.
+The exclusions are **inside the sentence, not a footnote**, so the claim cannot
+be quoted without its limits. Cross-pod confidentiality stated without them would
+read as "immune to co-tenancy attacks" — the worst overclaim available to this
+project, and one we have no basis for: Firecracker, the host kernel, and the
+hardware are all in the TCB and none of them is modelled.
+
+The **resource-contention** exclusion was added after the fact, and it is worth
+saying why rather than letting it look like it was always there. The first
+version excluded only timing, cache, and microarchitectural channels. Working
+through the host state field by field (`cross-pod-view.md`) turned up
+`firecracker_pool`: a bounded semaphore that pod spawn acquires with
+`acquire_owned().await`. It **blocks**, so one tenant's pod delays another's, and
+that channel is macroscopic and reliable — not microarchitectural at all. Under
+the original wording a careful reader would have concluded the claim covered it,
+and that the claim was false. It was. Possibilistic noninterference over values
+conventionally says nothing about availability; the fix is to say so out loud,
+which is what this sentence now does.
 
 #### Status — what is proved, what is tested, what is not yet
 

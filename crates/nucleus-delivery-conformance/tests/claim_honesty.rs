@@ -25,10 +25,17 @@ use std::path::{Path, PathBuf};
 /// is being made, and generic enough to survive rewording around it.
 const CLAIM_MARKER: &str = "nor those of any other pod";
 
-/// The exclusion that must travel with it. Matched on the substantive words
+/// The exclusions that must travel with it. Matched on the substantive words
 /// rather than the full sentence so the claim can be reworded without this test
 /// becoming a spelling check.
-const LIMIT_MARKERS: [&str; 2] = ["timing", "microarchitectural"];
+///
+/// `resource-contention` was added after Phase X-1 found that a bounded pod pool
+/// blocks one tenant's spawn behind another's — a macroscopic, non-
+/// microarchitectural channel the original three markers did not cover, which
+/// made the claim false as written. It is listed here for the same reason as the
+/// others: an exclusion that is not enforced is an exclusion that gets dropped
+/// the first time someone wants a punchier sentence.
+const LIMIT_MARKERS: [&str; 3] = ["timing", "microarchitectural", "resource-contention"];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
