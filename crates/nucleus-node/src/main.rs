@@ -34,6 +34,7 @@ mod firecracker_config;
 mod grpc_tls;
 mod identity;
 mod oidc;
+mod pod_caller_identity;
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
