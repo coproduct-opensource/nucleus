@@ -402,9 +402,124 @@ fn apply_token_raises_integrity() {
         other => panic!("Expected Applied, got {other:?}"),
     }
 
-    // Verify the node's label was actually modified in the graph
+    // The STORED label is not modified — release is a per-operation view,
+    // never a label rewrite.
     assert_eq!(
         g.get(web).unwrap().label.integrity,
+        portcullis_core::IntegLevel::Adversarial
+    );
+
+    // Inside the token's sink mask the effective label is the released one…
+    assert_eq!(
+        g.effective_label(web, Operation::WriteFiles)
+            .unwrap()
+            .integrity,
+        portcullis_core::IntegLevel::Untrusted
+    );
+    assert_eq!(
+        g.effective_label(web, Operation::GitCommit)
+            .unwrap()
+            .integrity,
+        portcullis_core::IntegLevel::Untrusted
+    );
+
+    // …and outside it the strict label governs: a token scoped to
+    // {WriteFiles, GitCommit} clears its node for those and nothing else.
+    for op in [Operation::GitPush, Operation::WebFetch, Operation::RunBash] {
+        assert_eq!(
+            g.effective_label(web, op).unwrap().integrity,
+            portcullis_core::IntegLevel::Adversarial,
+            "release leaked to out-of-mask operation {op:?}"
+        );
+    }
+}
+
+#[test]
+fn apply_token_twice_is_refused() {
+    use portcullis_core::declassify::*;
+
+    let mut g = FlowGraph::new();
+    let now = 1000;
+    let web = g
+        .insert_observation(NodeKind::WebContent, &[], now)
+        .unwrap();
+
+    let token = |sinks: Vec<Operation>| {
+        DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            sinks,
+            now + 3600,
+            "double apply".to_string(),
+        )
+    };
+
+    assert!(matches!(
+        g.apply_token(&token(vec![Operation::WriteFiles]), now),
+        TokenApplyResult::Applied { .. }
+    ));
+    // A second token — even a differently scoped one — is refused: a node
+    // is declassified at most once.
+    assert!(matches!(
+        g.apply_token(&token(vec![Operation::GitPush]), now),
+        TokenApplyResult::AlreadyDeclassified
+    ));
+    // And the refusal did not widen the original scope.
+    assert_eq!(
+        g.effective_label(web, Operation::GitPush).unwrap().integrity,
+        portcullis_core::IntegLevel::Adversarial
+    );
+}
+
+#[test]
+fn apply_token_on_frozen_node_takes_effect() {
+    // The historical apply_token called modify_label and DISCARDED its
+    // Option, so a frozen target silently kept its label while `Applied`
+    // was returned — the caller was told a release happened that hadn't.
+    // Scopes never touch labels, so freezing no longer interferes with
+    // legitimate declassification (#947's stated intent).
+    use portcullis_core::declassify::*;
+
+    let mut g = FlowGraph::new();
+    let now = 1000;
+    let web = g
+        .insert_observation(NodeKind::WebContent, &[], now)
+        .unwrap();
+    g.freeze_all();
+
+    let token = DeclassificationToken::new(
+        web,
+        DeclassificationRule {
+            action: DeclassifyAction::RaiseIntegrity {
+                from: portcullis_core::IntegLevel::Adversarial,
+                to: portcullis_core::IntegLevel::Untrusted,
+            },
+            justification: "frozen target",
+        },
+        vec![Operation::WriteFiles],
+        now + 3600,
+        "frozen".to_string(),
+    );
+
+    assert!(matches!(
+        g.apply_token(&token, now),
+        TokenApplyResult::Applied { .. }
+    ));
+    // Frozen label untouched; released view live for the granted sink.
+    assert_eq!(
+        g.get(web).unwrap().label.integrity,
+        portcullis_core::IntegLevel::Adversarial
+    );
+    assert_eq!(
+        g.effective_label(web, Operation::WriteFiles)
+            .unwrap()
+            .integrity,
         portcullis_core::IntegLevel::Untrusted
     );
 }
@@ -990,22 +1105,23 @@ fn trusted_ancestry_web_ancestor_untrusted() {
 }
 
 #[test]
-fn trusted_ancestry_declassified_web_content_trusted() {
+fn trusted_ancestry_is_not_laundered_by_declassification() {
+    // Historical behavior: apply_token rewrote the stored label, so a
+    // declassified web node passed check_trusted_ancestry for EVERY
+    // subsequent operation — a token scoped to one sink laundered the
+    // node's whole ancestry. Scoped release keeps stored labels strict, so
+    // ancestry stays untrusted: strictly narrower, which is the safe
+    // direction. An operation-aware ancestry check that honors the scope
+    // for in-mask operations is deliberately NOT-YET.
     use portcullis_core::declassify::*;
 
     let mut g = FlowGraph::new();
     let now = 1000;
 
-    // Web content starts as Adversarial
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
-    assert_eq!(
-        g.get(web).unwrap().label.integrity,
-        portcullis_core::IntegLevel::Adversarial
-    );
 
-    // Declassify: raise integrity from Adversarial to Untrusted
     let token = DeclassificationToken::new(
         web,
         DeclassificationRule {
@@ -1019,20 +1135,31 @@ fn trusted_ancestry_declassified_web_content_trusted() {
         now + 3600,
         "Curated search output".to_string(),
     );
-    let result = g.apply_token(&token, now);
-    assert!(matches!(result, TokenApplyResult::Applied { .. }));
+    assert!(matches!(
+        g.apply_token(&token, now),
+        TokenApplyResult::Applied { .. }
+    ));
 
-    // Insert a plan node depending on the declassified web content
     let plan = g
         .insert_observation(NodeKind::ModelPlan, &[web], now)
         .unwrap();
 
-    // The plan inherits Untrusted (from declassified web) — which is
-    // >= Untrusted, so the ancestry check should pass.
+    // Stored-label ancestry is strict: the web node's label is still
+    // Adversarial, so the plan's ancestry stays untrusted…
+    match g.check_trusted_ancestry(plan) {
+        Some(TrustAncestryResult::Untrusted { tainted_ancestors }) => {
+            assert!(tainted_ancestors.contains(&web));
+        }
+        other => panic!("Expected Untrusted (no ancestry laundering), got {other:?}"),
+    }
+
+    // …while the released view still flows to the granted sink: the plan
+    // inherits the scope, and a WriteFiles consumer sees Untrusted.
     assert_eq!(
-        g.check_trusted_ancestry(plan),
-        Some(TrustAncestryResult::Trusted),
-        "declassified web content (Untrusted) should pass trusted ancestry check"
+        g.effective_label(plan, Operation::WriteFiles)
+            .unwrap()
+            .integrity,
+        portcullis_core::IntegLevel::Untrusted
     );
 }
 
@@ -1186,10 +1313,22 @@ mod apply_token_verified_tests {
             other => panic!("Expected Applied, got {other:?}"),
         }
 
-        // Verify the graph node was actually modified
+        // The stored label is NOT modified — release is a scoped view. The
+        // released level is visible exactly through the token's sinks.
         assert_eq!(
             g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+        assert_eq!(
+            g.effective_label(web, Operation::WriteFiles)
+                .unwrap()
+                .integrity,
             portcullis_core::IntegLevel::Untrusted
+        );
+        assert_eq!(
+            g.effective_label(web, Operation::GitPush).unwrap().integrity,
+            portcullis_core::IntegLevel::Adversarial,
+            "release leaked outside the signed sink mask"
         );
     }
 

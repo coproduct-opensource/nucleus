@@ -11,11 +11,17 @@ impl Kernel {
     /// Set trusted Ed25519 public keys for declassification token verification.
     ///
     /// When set, [`apply_declassification_token`](Self::apply_declassification_token)
-    /// verifies token signatures against these keys before applying label
-    /// changes. Supports key rotation by accepting multiple keys.
+    /// verifies token signatures against these keys before recording the
+    /// declass scope. Supports key rotation by accepting multiple keys.
     ///
-    /// When no trusted keys are set (the default), unsigned declassification
-    /// rules are applied without verification for backward compatibility.
+    /// When no trusted keys are set (the default), token application is
+    /// REFUSED outright — fail-closed; see the body of
+    /// `apply_declassification_token`. (This doc previously claimed a
+    /// permissive backward-compatibility default the code does not have.)
+    ///
+    /// This key set is what the North Star means by "a governor": a
+    /// principal holding a key configured here. It is configuration, not
+    /// something any agent-reachable path may write.
     #[cfg(feature = "crypto")]
     pub fn set_trusted_keys(&mut self, keys: Vec<[u8; 32]>) {
         self.trusted_public_keys = keys;
@@ -29,7 +35,7 @@ impl Kernel {
     ///
     /// If trusted keys are configured, the token's signature is verified
     /// before applying. If no trusted keys are configured, the token is
-    /// applied without verification (backward compatibility) with a warning.
+    /// REFUSED — fail-closed; there is no unsigned fallback.
     ///
     /// Returns `Err(DenyReason::InvalidDeclassification)` if trusted keys
     /// are set and signature verification fails.

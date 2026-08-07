@@ -303,3 +303,43 @@ fn a_failed_application_does_not_burn_the_token() {
         Err(DenyReason::DeclassificationReplayed { .. })
     ));
 }
+
+#[test]
+fn second_token_on_a_declassified_node_is_refused_and_not_burned() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut first = make_token(node);
+    token_sign::sign_token(&mut first, &key);
+    assert!(matches!(
+        kernel.apply_declassification_token(&first),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+
+    // A DISTINCT token for the same node (different justification ⇒
+    // different canonical bytes ⇒ different signature): refused, because a
+    // node is declassified at most once.
+    let mut second = make_token(node);
+    second.justification = "a second, distinct authorization".to_string();
+    token_sign::sign_token(&mut second, &key);
+    assert!(matches!(
+        kernel.apply_declassification_token(&second),
+        Ok(TokenApplyResult::AlreadyDeclassified)
+    ));
+
+    // The refusal did not burn the second token: retrying yields the same
+    // refusal, NOT DeclassificationReplayed. Only Applied spends.
+    assert!(matches!(
+        kernel.apply_declassification_token(&second),
+        Ok(TokenApplyResult::AlreadyDeclassified)
+    ));
+
+    // And the first token's ledger entry is intact: its replay is still the
+    // dedicated replay verdict.
+    assert!(matches!(
+        kernel.apply_declassification_token(&first),
+        Err(DenyReason::DeclassificationReplayed { .. })
+    ));
+}

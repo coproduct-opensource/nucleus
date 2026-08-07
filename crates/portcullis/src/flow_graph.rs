@@ -327,6 +327,34 @@ pub struct FlowGraph {
     /// is `modify_label_with_token()` which requires a signed
     /// `DeclassificationToken`.
     frozen: BTreeSet<NodeId>,
+    /// Declassification scopes, keyed by node ID.
+    ///
+    /// A scope records that a signed token released this node's data — but
+    /// only for the operations in the token's signed sink mask. The node's
+    /// stored label is NEVER mutated by declassification: every consumer of
+    /// `FlowNode::label` keeps seeing the strict label, and release exists
+    /// only as the per-operation VIEW computed by
+    /// [`effective_label`](Self::effective_label). That is what makes a
+    /// token scoped to one sink unable to clear its node for any other —
+    /// and it is why scopes compose with freezing (#947) instead of
+    /// fighting it: freezing pins labels, and scopes never touch labels.
+    ///
+    /// Stored separately from `FlowNode` for the same reason as
+    /// `field_lineage`: the node struct is `Copy` and most nodes have no
+    /// scope.
+    declass_scopes: HashMap<NodeId, DeclassScope>,
+}
+
+/// A node's declassification scope: the released view and the signed sink
+/// mask it applies to. See [`FlowGraph::effective_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclassScope {
+    /// The label the node contributes to operations inside the mask.
+    pub released_label: IFCLabel,
+    /// Bit mask over `Operation` discriminants (`1 << op as u8`), derived
+    /// from the token's signed `allowed_sinks` by
+    /// `DeclassificationToken::sink_mask()`. Mask 0 admits nothing.
+    pub sink_mask: u16,
 }
 
 impl FlowGraph {
@@ -341,6 +369,7 @@ impl FlowGraph {
             quarantine_releases: Vec::new(),
             field_lineage: HashMap::new(),
             frozen: BTreeSet::new(),
+            declass_scopes: HashMap::new(),
         }
     }
 
@@ -434,6 +463,51 @@ impl FlowGraph {
         ))
     }
 
+    /// Like [`causal_label`](Self::causal_label), but for a NAMED operation:
+    /// the effective label the action would be judged by, honoring any
+    /// declass scope the parents pass down. Where no scope admits the
+    /// operation, this equals `causal_label` exactly.
+    pub fn causal_label_for(
+        &self,
+        parents: &[NodeId],
+        operation: Operation,
+        now: u64,
+    ) -> Result<IFCLabel, FlowGraphError> {
+        use portcullis_core::extracted::declassify::mask_admits;
+        use portcullis_core::extracted::mediation::med_of;
+        self.validate_parents(parents)?;
+        let intrinsic = intrinsic_label(NodeKind::OutboundAction, now);
+        if let Some(scope) = self.inherited_scope(parents, intrinsic) {
+            if mask_admits(scope.sink_mask, med_of(operation)) {
+                return Ok(scope.released_label);
+            }
+        }
+        Ok(propagate_label(&self.gather_labels(parents), intrinsic))
+    }
+
+    /// [`check_flow`] over a node's EFFECTIVE label: where the node carries
+    /// a declass scope admitting its own operation, the released view
+    /// governs; everywhere else (no scope, out-of-mask operation, or a
+    /// non-action node) the strict stored label does. This is the single
+    /// verdict path — insert-time decisions and receipt-time
+    /// recomputations both come here, so they cannot disagree.
+    fn check_flow_effective(
+        &self,
+        node: &FlowNode,
+        now: u64,
+    ) -> portcullis_core::flow::FlowVerdict {
+        use portcullis_core::extracted::declassify::mask_admits;
+        use portcullis_core::extracted::mediation::med_of;
+        if let (Some(op), Some(scope)) = (node.operation, self.declass_scopes.get(&node.id)) {
+            if mask_admits(scope.sink_mask, med_of(op)) {
+                let mut shadow = *node;
+                shadow.label = scope.released_label;
+                return check_flow(&shadow, now);
+            }
+        }
+        check_flow(node, now)
+    }
+
     /// Insert a data-source observation. NOT flow-checked.
     ///
     /// If any parent is quarantined (directly or via ancestry), the new
@@ -464,8 +538,16 @@ impl FlowGraph {
         // Check if any parent is quarantined (directly or transitively)
         let any_parent_quarantined = parents.iter().any(|&pid| self.is_quarantined(pid));
 
-        let label = propagate_label(&self.gather_labels(parents), intrinsic_label(kind, now));
+        let intrinsic = intrinsic_label(kind, now);
+        let label = propagate_label(&self.gather_labels(parents), intrinsic);
+        // Declass scopes flow to descendants: the released view survives
+        // into the child for exactly the operations every scoped ancestor
+        // granted. The child's STORED label above is the strict join.
+        let scope = self.inherited_scope(parents, intrinsic);
         let id = self.alloc_node(kind, label, parents, None);
+        if let Some(s) = scope {
+            self.declass_scopes.insert(id, s);
+        }
 
         // Propagate quarantine to the new observation node
         if any_parent_quarantined {
@@ -501,10 +583,8 @@ impl FlowGraph {
         // Check if any parent is quarantined (directly or transitively)
         let any_parent_quarantined = parents.iter().any(|&pid| self.is_quarantined(pid));
 
-        let label = propagate_label(
-            &self.gather_labels(parents),
-            intrinsic_label(NodeKind::OutboundAction, now),
-        );
+        let intrinsic = intrinsic_label(NodeKind::OutboundAction, now);
+        let label = propagate_label(&self.gather_labels(parents), intrinsic);
         let sink_class = Some(default_sink_class(operation));
         let node = self.build_node_with_effect(
             NodeKind::OutboundAction,
@@ -514,11 +594,33 @@ impl FlowGraph {
             sink_class,
             effect_kind,
         );
-        let verdict = check_flow(&node, now);
+        // The verdict is computed over the EFFECTIVE label: where a declass
+        // scope inherited from the parents admits this operation, the
+        // released view governs; everywhere else the strict join above
+        // does. The stored node keeps the strict label either way, so
+        // session taint, lineage, and `FlowDecision::label` never launder.
+        // This is the same computation `check_flow_effective` performs from
+        // stored state (the scope recorded below), so a later receipt
+        // recomputation cannot disagree with the decision made here.
+        let scope = self.inherited_scope(parents, intrinsic);
+        let verdict = {
+            use portcullis_core::extracted::declassify::mask_admits;
+            use portcullis_core::extracted::mediation::med_of;
+            let mut verdict_node = node;
+            if let Some(s) = &scope {
+                if mask_admits(s.sink_mask, med_of(operation)) {
+                    verdict_node.label = s.released_label;
+                }
+            }
+            check_flow(&verdict_node, now)
+        };
         self.maybe_compact();
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
+        if let Some(s) = scope {
+            self.declass_scopes.insert(id, s);
+        }
 
         // Propagate quarantine to the new action node
         if any_parent_quarantined {
@@ -646,7 +748,7 @@ impl FlowGraph {
         let node = self.get(id)?;
         let ancestry = self.ancestors(id);
         let ancestor_refs: Vec<&FlowNode> = ancestry.ancestors.to_vec();
-        let verdict = check_flow(node, now);
+        let verdict = self.check_flow_effective(node, now);
         let mut receipt = build_receipt(node, &ancestor_refs, verdict, now);
 
         if !ancestry.tombstoned.is_empty() {
@@ -690,6 +792,80 @@ impl FlowGraph {
             .iter()
             .filter_map(|&pid| self.get(pid).map(|n| n.label))
             .collect()
+    }
+
+    // ── Declassification scopes (sink-scoped release views) ───────────
+
+    /// Full mask over the 13 `Operation` discriminants — the scope of a
+    /// parent that has no declass scope (its label applies to every
+    /// operation, so it constrains the child's mask not at all).
+    const FULL_SINK_MASK: u16 = (1 << 13) - 1;
+
+    /// A node's declassification scope, if a signed token released it.
+    pub fn declass_scope(&self, id: NodeId) -> Option<&DeclassScope> {
+        self.declass_scopes.get(&id)
+    }
+
+    /// The label node `id` contributes to operation `op` — the released
+    /// label inside the node's declass mask, the strict stored label
+    /// everywhere else. Routed through the extracted bit test
+    /// (`extracted::declassify::mask_admits`), the same function the Lean
+    /// sink-scope theorems are stated over.
+    pub fn effective_label(&self, id: NodeId, op: Operation) -> Option<IFCLabel> {
+        use portcullis_core::extracted::declassify::mask_admits;
+        use portcullis_core::extracted::mediation::med_of;
+        let node = self.get(id)?;
+        match self.declass_scopes.get(&id) {
+            Some(scope) if mask_admits(scope.sink_mask, med_of(op)) => Some(scope.released_label),
+            _ => Some(node.label),
+        }
+    }
+
+    /// The scope a new node inherits from its parents, if any ancestor was
+    /// declassified.
+    ///
+    /// * `released_label` — the propagated label where each SCOPED parent
+    ///   contributes its released label and every other parent its strict
+    ///   one, joined with the child's intrinsic.
+    /// * `sink_mask` — the AND of the parents' masks (full mask for
+    ///   unscoped parents): a release survives into the child only for
+    ///   operations EVERY scoped ancestor granted. Disjoint parent masks
+    ///   therefore intersect to 0 and the child stays strict — the
+    ///   deliberate sound over-approximation (per-parent precision at the
+    ///   verdict would be sharper; it is not taken, so that the verdict at
+    ///   insert time and any later receipt recomputation go through the one
+    ///   `effective_label` path and cannot disagree).
+    ///
+    /// Returns `None` when no parent is scoped or the intersection is
+    /// empty — an absent scope and a mask-0 scope mean the same thing, and
+    /// storing the former as the latter would make "how many nodes carry a
+    /// release" unanswerable.
+    fn inherited_scope(
+        &self,
+        parents: &[NodeId],
+        intrinsic: IFCLabel,
+    ) -> Option<DeclassScope> {
+        let mut any_scoped = false;
+        let mut mask = Self::FULL_SINK_MASK;
+        let mut contributions: Vec<IFCLabel> = Vec::with_capacity(parents.len());
+        for &pid in parents {
+            let Some(node) = self.get(pid) else { continue };
+            match self.declass_scopes.get(&pid) {
+                Some(scope) => {
+                    any_scoped = true;
+                    mask &= scope.sink_mask;
+                    contributions.push(scope.released_label);
+                }
+                None => contributions.push(node.label),
+            }
+        }
+        if !any_scoped || mask == 0 {
+            return None;
+        }
+        Some(DeclassScope {
+            released_label: propagate_label(&contributions, intrinsic),
+            sink_mask: mask,
+        })
     }
 
     fn build_node(
@@ -821,6 +997,14 @@ impl FlowGraph {
             let idx = *nid as usize;
             idx < self.nodes.len() && self.nodes[idx].is_some()
         });
+
+        // Remove declass scopes for tombstoned nodes: a scope is a VIEW of a
+        // node's label, and a compacted node's label survives only in the
+        // compaction log — strict, which is the conservative direction.
+        self.declass_scopes.retain(|nid, _| {
+            let idx = *nid as usize;
+            idx < self.nodes.len() && self.nodes[idx].is_some()
+        });
     }
 
     /// Read-only access to the compaction audit log.
@@ -848,10 +1032,22 @@ impl FlowGraph {
     /// Validates that:
     /// 1. The target node exists in the graph
     /// 2. The token has not expired
-    /// 3. The underlying rule's precondition matches the node's label
+    /// 3. The node does not already carry a declass scope
+    /// 4. The underlying rule's precondition matches the node's label
     ///
-    /// On success, modifies the node's label and returns the old/new labels.
-    /// The caller is responsible for recording this in the receipt chain.
+    /// On success, records a [`DeclassScope`] for the target node — the
+    /// node's stored label is NOT modified. `Applied::original_label` is the
+    /// strict label (which remains the stored one); `Applied::new_label` is
+    /// the released view that operations inside the token's signed sink mask
+    /// will see. The caller is responsible for recording this in the receipt
+    /// chain.
+    ///
+    /// Because no label is mutated, this path composes with freezing (#947)
+    /// instead of bypassing it — the historical variant of this method
+    /// called `modify_label` and DISCARDED its `Option`, so a frozen target
+    /// silently kept its label while `Applied` was returned. A scope on a
+    /// frozen node is the legitimate declassification #947 set out to
+    /// preserve.
     pub fn apply_token(
         &mut self,
         token: &portcullis_core::declassify::DeclassificationToken,
@@ -873,14 +1069,26 @@ impl FlowGraph {
             None => return TokenApplyResult::NodeNotFound,
         };
 
-        // Apply the underlying rule
+        // A node is declassified at most once. Refusing the second token
+        // (rather than joining or replacing scopes) keeps "which governor
+        // released this, for what" a single answerable fact per node.
+        if self.declass_scopes.contains_key(&token.target_node_id) {
+            return TokenApplyResult::AlreadyDeclassified;
+        }
+
+        // Apply the underlying rule to compute the released VIEW.
         let result = token.rule.apply(node.label);
         if !result.applied {
             return TokenApplyResult::PreconditionUnmet;
         }
 
-        // Modify the node's label
-        self.modify_label(token.target_node_id, result.label);
+        self.declass_scopes.insert(
+            token.target_node_id,
+            DeclassScope {
+                released_label: result.label,
+                sink_mask: token.sink_mask(),
+            },
+        );
         TokenApplyResult::Applied {
             original_label: result.original,
             new_label: result.label,
@@ -933,10 +1141,15 @@ impl FlowGraph {
     ///
     /// The check walks the full causal DAG (BFS), including the node
     /// itself, and collects any nodes with `Adversarial` integrity.
-    /// Denied nodes are skipped (they did not execute). Declassified
-    /// nodes that have been raised to `Untrusted` or above pass the
-    /// check — this is how web content can legitimately reach Execute
-    /// after explicit operator review.
+    /// Denied nodes are skipped (they did not execute).
+    ///
+    /// This walk reads STORED labels, which declassification no longer
+    /// mutates (release is the per-operation view in `declass_scopes`).
+    /// A declassified-but-Adversarial ancestor therefore still fails this
+    /// check — strictly narrower than the historical behavior, where one
+    /// token laundered the node's ancestry for every operation at once.
+    /// An operation-aware ancestry check that honors a scope for in-mask
+    /// operations is deliberately NOT-YET.
     ///
     /// Returns [`TrustAncestryResult::Trusted`] if the chain is clean,
     /// or [`TrustAncestryResult::Untrusted`] with the tainted node IDs.
@@ -1126,7 +1339,7 @@ impl FlowGraph {
         now: u64,
     ) -> Option<QuarantineVerdict> {
         let node = self.get(node_id)?;
-        let underlying = check_flow(node, now);
+        let underlying = self.check_flow_effective(node, now);
         let qa = self.quarantined_ancestors(node_id);
         if qa.is_empty() {
             Some(QuarantineVerdict::Clean(underlying))

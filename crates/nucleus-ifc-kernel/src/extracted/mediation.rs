@@ -195,6 +195,30 @@ pub struct StepResult {
     pub next: MedState,
 }
 
+/// Production `Operation` → mirror, total by exhaustive match.
+///
+/// This is the production-side bridge (NOT an extraction root): callers that
+/// route a live decision through an extracted function use this to name the
+/// operation in the mirror's vocabulary. Totality by `match` means a new
+/// `Operation` variant fails compilation here rather than mapping silently.
+pub fn med_of(op: crate::Operation) -> MedOperation {
+    match op {
+        crate::Operation::ReadFiles => MedOperation::ReadFiles,
+        crate::Operation::WriteFiles => MedOperation::WriteFiles,
+        crate::Operation::EditFiles => MedOperation::EditFiles,
+        crate::Operation::RunBash => MedOperation::RunBash,
+        crate::Operation::GlobSearch => MedOperation::GlobSearch,
+        crate::Operation::GrepSearch => MedOperation::GrepSearch,
+        crate::Operation::WebSearch => MedOperation::WebSearch,
+        crate::Operation::WebFetch => MedOperation::WebFetch,
+        crate::Operation::GitCommit => MedOperation::GitCommit,
+        crate::Operation::GitPush => MedOperation::GitPush,
+        crate::Operation::CreatePr => MedOperation::CreatePr,
+        crate::Operation::ManagePods => MedOperation::ManagePods,
+        crate::Operation::SpawnAgent => MedOperation::SpawnAgent,
+    }
+}
+
 /// The idle state: nothing held.
 pub fn med_idle() -> MedState {
     MedState {

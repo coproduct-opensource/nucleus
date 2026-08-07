@@ -126,33 +126,32 @@ impl DeclassificationRule {
 ///
 /// - **Artifact-scoped**: Only applies to `target_node_id`, not the whole session
 /// - **Time-bounded**: Expires at `valid_until` (unix timestamp)
-/// - **Sink-restricted (DECLARED, NOT ENFORCED — see below)**: the token names
-///   the sinks the declassified data may reach in `allowed_sinks`
+/// - **Sink-restricted**: the declassified node contributes its released label
+///   only to operations in `allowed_sinks`; every other operation keeps seeing
+///   the strict label (enforced in `FlowGraph` via a per-node declass scope —
+///   the node's stored label is never mutated)
 /// - **Signed**: Ed25519 signature over the token's canonical bytes
 /// - **Auditable**: Justification string included for receipt chain
 ///
-/// # The sink restriction is not enforced on the live path
+/// # How the sink restriction is enforced
 ///
-/// `allowed_sinks` is signed (it is count-prefixed into [`Self::canonical_bytes`]
-/// under the `nucleus-declass-v2` domain tag), proven in Lean
-/// (`DeclassifyProofs.lean`, `sink_outside_allowlist_denied`), and queryable via
-/// [`Self::allows_sink`] — but **nothing consults it when a token is applied**.
-/// `FlowGraph::apply_token` raises the target node's label GLOBALLY via
-/// `modify_label`, so a token scoped `allowed_sinks = [WebSearch]` in fact clears
-/// its node for `GitPush` as well. `allows_sink` has no non-test callers.
+/// `allowed_sinks` is signed (count-prefixed into [`Self::canonical_bytes`]
+/// under the `nucleus-declass-v2` domain tag) and compiled to a bit mask by
+/// [`Self::sink_mask`]. `FlowGraph::apply_token` records a
+/// `DeclassScope { released_label, sink_mask }` for the target node instead of
+/// modifying its label; flow verdicts are computed over the *effective* label —
+/// released inside the mask, strict outside — via the extracted decision
+/// functions in `nucleus-ifc-kernel::extracted::declassify`
+/// (`mask_admits` / `effective_conf` / `declass_release_ok`), whose parity with
+/// [`Self::allows_sink`] is checked exhaustively over the whole 2^13 × 13
+/// domain below. A token scoped `allowed_sinks = [WebSearch]` therefore clears
+/// its node for `WebSearch` and nothing else.
 ///
-/// This is currently unreachable rather than exploitable: the signed-token path
-/// is dormant — every `DeclassificationToken::new` and every `apply_token` call
-/// site in the tree is test code — and `scripts/check-declassify-token-dormant.sh`
-/// fails CI if that stops being true, because the deferral is only safe while it
-/// is. Enforcing the scope means making `gather_labels` operation-aware (a
-/// declassified parent contributes its raised label only for operations in the
-/// token's scope, else its pre-declassify label), which needs a per-node
-/// declassify-scope and original-label field.
-///
-/// The bullet above says DECLARED rather than restricted for that reason: this
-/// doc comment previously read "Declassified data may only reach `allowed_sinks`",
-/// which is a claim the code does not keep.
+/// The signed-token path is still dormant — every `DeclassificationToken::new`
+/// and every `apply_token` call site in the tree is test code, and
+/// `scripts/check-declassify-token-dormant.sh` fails CI if that stops being
+/// true. The gate remains until the production caller and its end-to-end tests
+/// land in the same change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclassificationToken {
     /// The flow graph node this token applies to.
@@ -181,6 +180,10 @@ pub enum TokenApplyResult {
     },
     /// Token's target node was not found in the graph.
     NodeNotFound,
+    /// The target node already carries a declassification scope. A node is
+    /// declassified at most once; a second token — including a differently
+    /// scoped one — is refused, and (like every refusal) does not burn.
+    AlreadyDeclassified,
     /// Token has expired (now > valid_until).
     Expired { valid_until: u64, now: u64 },
     /// The underlying rule's precondition didn't match the node's label.
@@ -226,6 +229,21 @@ impl DeclassificationToken {
     /// Check if a sink operation is allowed by this token.
     pub fn allows_sink(&self, op: Operation) -> bool {
         self.allowed_sinks.contains(&op)
+    }
+
+    /// The signed sink list compiled to a bit mask (`1 << discriminant` per
+    /// operation) — the form the `FlowGraph`'s declass-scope machinery and
+    /// the extracted decision functions
+    /// (`nucleus-ifc-kernel::extracted::declassify::mask_admits`) consume.
+    ///
+    /// Equivalence with [`Self::allows_sink`] is checked exhaustively over
+    /// the whole 2^13 × 13 domain in this file's tests.
+    pub fn sink_mask(&self) -> u16 {
+        let mut mask = 0u16;
+        for op in &self.allowed_sinks {
+            mask |= 1u16 << (*op as u8);
+        }
+        mask
     }
 
     /// The canonical bytes for signing.
@@ -938,5 +956,76 @@ mod tests {
         rl.check_and_record(110).ok();
         assert_eq!(rl.current_count(120), 2);
         assert_eq!(rl.current_count(200), 0); // both events expired
+    }
+
+    // ── sink_mask ↔ allows_sink ↔ extracted mask_admits parity ─────────
+    //
+    // The FlowGraph consults the extracted bit test over `sink_mask()`; the
+    // token's own API is `allows_sink()` over the signed list. These are two
+    // implementations of one relation, so the check is EXHAUSTIVE over the
+    // whole domain — all 2^13 sink sets × all 13 operations, 106 496 cases.
+    // For a finite domain an exhaustive check is a complete equivalence
+    // proof, not a sample.
+
+    /// Production `Operation` by discriminant — the same order as
+    /// `Operation::ALL`, pinned by ifc_ops.rs's compile-time asserts.
+    #[test]
+    fn sink_mask_and_extracted_mask_admits_match_allows_sink_exhaustively() {
+        use nucleus_ifc_kernel::extracted::declassify::mask_admits;
+        use nucleus_ifc_kernel::extracted::mediation::MedOperation;
+
+        const ALL_MED: [MedOperation; 13] = [
+            MedOperation::ReadFiles,
+            MedOperation::WriteFiles,
+            MedOperation::EditFiles,
+            MedOperation::RunBash,
+            MedOperation::GlobSearch,
+            MedOperation::GrepSearch,
+            MedOperation::WebSearch,
+            MedOperation::WebFetch,
+            MedOperation::GitCommit,
+            MedOperation::GitPush,
+            MedOperation::CreatePr,
+            MedOperation::ManagePods,
+            MedOperation::SpawnAgent,
+        ];
+
+        for mask in 0u16..(1 << 13) {
+            // The sink set this mask denotes.
+            let allowed: Vec<Operation> = Operation::ALL
+                .iter()
+                .copied()
+                .filter(|op| mask & (1u16 << (*op as u8)) != 0)
+                .collect();
+            let token = DeclassificationToken::new(
+                1,
+                DeclassificationRule {
+                    action: DeclassifyAction::LowerConfidentiality {
+                        from: ConfLevel::Secret,
+                        to: ConfLevel::Internal,
+                    },
+                    justification: "parity sweep",
+                },
+                allowed,
+                u64::MAX,
+                "parity sweep".to_string(),
+            );
+
+            // The derivation itself round-trips.
+            assert_eq!(
+                token.sink_mask(),
+                mask,
+                "sink_mask() did not round-trip mask {mask:#06x}"
+            );
+
+            for (i, op) in Operation::ALL.iter().enumerate() {
+                let via_list = token.allows_sink(*op);
+                let via_bits = mask_admits(token.sink_mask(), ALL_MED[i]);
+                assert_eq!(
+                    via_list, via_bits,
+                    "allows_sink and mask_admits diverged: mask={mask:#06x}, op={op:?}"
+                );
+            }
+        }
     }
 }
