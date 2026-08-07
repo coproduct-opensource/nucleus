@@ -33,6 +33,7 @@ mod auth;
 mod firecracker_config;
 mod grpc_tls;
 mod identity;
+mod lockdown;
 mod oidc;
 mod pod_api;
 mod pod_caller_identity;
@@ -3811,19 +3812,19 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
+        // WHICH pod is watching; an unidentified watcher is unchanged.
+        let watcher = pod_caller_identity::identify_from_metadata(
+            self.state.caller_secret.as_ref(),
+            request.metadata(),
+        )
+        .ok();
+
         let mut ack_stream = request.into_inner();
         let mut rx = self.state.lockdown_tx.subscribe();
 
         let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
 
-        // Forwarder: broadcast → gRPC response stream
-        tokio::spawn(async move {
-            while let Ok(cmd) = rx.recv().await {
-                if tx.send(Ok(cmd)).await.is_err() {
-                    break; // client disconnected
-                }
-            }
-        });
+        lockdown::spawn_filtered_forwarder(rx, tx, watcher);
 
         // ACK consumer: log acknowledgements from the tool-proxy
         tokio::spawn(async move {

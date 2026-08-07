@@ -122,6 +122,38 @@ pub(crate) fn identify_caller(
 /// nothing), so this cannot change a verdict. What it DOES change is that a
 /// caller CLAIMING to be a pod and failing to prove it becomes visible instead
 /// of indistinguishable from every other request.
+/// Identify the calling pod from gRPC request metadata.
+///
+/// The same two headers as the HTTP surface, read off `MetadataMap` instead of
+/// `HeaderMap`. Sharing `identify_caller` rather than re-deriving means the two
+/// transports cannot disagree about who a caller is.
+pub(crate) fn identify_from_metadata(
+    node_secret: &[u8],
+    md: &tonic::metadata::MetadataMap,
+) -> Result<Uuid, CallerError> {
+    let get = |name: &str| md.get(name).and_then(|v| v.to_str().ok());
+    let caller = identify_caller(
+        node_secret,
+        get(nucleus_client::HEADER_POD_ID),
+        get(nucleus_client::HEADER_POD_TOKEN),
+    );
+    report_identification(&caller);
+    caller
+}
+
+/// Log what the identification concluded. Shared so the two transports report
+/// the same way; an "unidentified over gRPC but identified over HTTP" split
+/// would be invisible if each logged its own way.
+fn report_identification(caller: &Result<Uuid, CallerError>) {
+    match caller {
+        Ok(pod_id) => tracing::debug!(%pod_id, "identified the calling pod"),
+        Err(CallerError::Absent) => {}
+        Err(CallerError::Invalid) => {
+            tracing::warn!("a request claimed a pod identity it could not prove");
+        }
+    }
+}
+
 pub(crate) fn identify_from_headers(
     node_secret: &[u8],
     headers: &axum::http::HeaderMap,
@@ -132,16 +164,9 @@ pub(crate) fn identify_from_headers(
         header(nucleus_client::HEADER_POD_ID),
         header(nucleus_client::HEADER_POD_TOKEN),
     );
-    match &caller {
-        Ok(pod_id) => tracing::debug!(%pod_id, "identified the calling pod"),
-        Err(CallerError::Absent) => {}
-        Err(CallerError::Invalid) => {
-            // Something claimed to be a pod and could not prove it. Not refused —
-            // refusing would change behaviour for a caller that is currently
-            // accepted — but it is the one case worth seeing.
-            tracing::warn!("a request claimed a pod identity it could not prove");
-        }
-    }
+    // Not refused — refusing would change behaviour for a caller that is
+    // currently accepted — but a failed claim is the one case worth seeing.
+    report_identification(&caller);
     caller
 }
 
