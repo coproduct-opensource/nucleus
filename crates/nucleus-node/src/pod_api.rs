@@ -10,22 +10,89 @@
 //! Nothing about the behaviour changes in this move.
 
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Extension, Path as AxumPath, State};
 use axum::Json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// May `caller` manage `pod`?
+///
+/// # Why this is node-side
+///
+/// The equivalent check used to live in the tool-proxy, which is where
+/// `check_manage_pods` already sat. That placement had a stated residual: every
+/// proxy holds the node-wide auth secret, so a compromised proxy could simply
+/// not perform the check. Enforcement here does not depend on the caller
+/// behaving, because the caller's identity is established by the node from a
+/// token it minted and the lineage is recorded by the node at creation.
+///
+/// # The unidentified case is deliberately permitted
+///
+/// `None` means no pod identity was proved -- an operator, or a client holding
+/// the node auth secret directly. That secret is *already* full node authority,
+/// so refusing here would break existing operators while granting no security:
+/// anyone who can reach this code path without a pod identity could equally
+/// create a pod and act through it. The check narrows authority for pods, which
+/// is where the excess authority actually was.
+///
+/// # Why `ManagePods` was not enough
+///
+/// `check_manage_pods` asks whether the caller holds the capability. It never
+/// asked WHICH pods that authorises, so any pod holding it could list, read the
+/// logs of, and cancel every pod on the node -- including other tenants'. The
+/// node had recorded lineage all along and consulted it only for cascade-cancel.
+fn caller_may_manage(caller: Option<Uuid>, pod_id: Uuid, parent_pod_id: Option<Uuid>) -> bool {
+    let Some(caller) = caller else {
+        return true;
+    };
+    // DIRECT children, and itself -- not the transitive descendant closure.
+    //
+    // A grandparent cannot manage a grandchild through this API. That is
+    // deliberate: the transitive version would have to walk the pod map per
+    // check, which is a cycle risk on a field that is only as acyclic as the
+    // code maintaining it, and it would widen authority on the strength of a
+    // graph traversal rather than a single recorded fact. Cascade-cancel already
+    // walks lineage recursively where recursion is actually wanted.
+    //
+    // If a grandparent needs reach, the honest way to get it is for the
+    // intermediate pod to expose it, not for this predicate to grow a search.
+    parent_pod_id == Some(caller) || pod_id == caller
+}
+
+/// The parent to record for a pod being created.
+///
+/// A proved caller identity wins outright; the header is only consulted when
+/// nothing was proved. See the call site for why the header alone is not
+/// trustworthy.
+pub(crate) fn resolve_parent_pod_id(caller: Option<Uuid>, header: Option<&str>) -> Option<Uuid> {
+    match caller {
+        Some(pod_id) => Some(pod_id),
+        None => header.and_then(|s| Uuid::parse_str(s).ok()),
+    }
+}
+
 pub(crate) async fn list_pods(
     State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
 ) -> Result<Json<Vec<PodInfo>>, ApiError> {
-    let infos = collect_pod_infos(&state).await;
+    let infos = collect_pod_infos(&state, caller).await;
     Ok(Json(infos))
 }
 
-pub(crate) async fn collect_pod_infos(state: &NodeState) -> Vec<PodInfo> {
+/// Pod summaries the caller is entitled to see.
+///
+/// Filtering here rather than at the handler is deliberate: the listing is how a
+/// caller LEARNS the pod UUIDs it would then pass to `pod_logs` or `cancel_pod`.
+/// Returning the full list and refusing individually would hand out the
+/// identifiers first and refuse afterwards.
+pub(crate) async fn collect_pod_infos(state: &NodeState, caller: Option<Uuid>) -> Vec<PodInfo> {
     let pods: Vec<Arc<PodHandle>> = {
         let guard = state.pods.lock().await;
-        guard.values().cloned().collect()
+        guard
+            .values()
+            .filter(|pod| caller_may_manage(caller, pod.id, pod.parent_pod_id))
+            .cloned()
+            .collect()
     };
 
     let mut infos = Vec::with_capacity(pods.len());
@@ -38,9 +105,10 @@ pub(crate) async fn collect_pod_infos(state: &NodeState) -> Vec<PodInfo> {
 
 pub(crate) async fn pod_logs(
     State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<String, ApiError> {
-    let pod = get_pod(&state, id).await?;
+    let pod = get_pod_for_caller(&state, id, caller).await?;
     let logs = tokio::fs::read_to_string(&pod.log_path)
         .await
         .unwrap_or_default();
@@ -49,9 +117,10 @@ pub(crate) async fn pod_logs(
 
 pub(crate) async fn cancel_pod(
     State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let pod = get_pod(&state, id).await?;
+    let pod = get_pod_for_caller(&state, id, caller).await?;
     pod.cancel().await?;
     Ok(Json(serde_json::json!({"status": "cancelled"})))
 }
@@ -59,4 +128,130 @@ pub(crate) async fn cancel_pod(
 pub(crate) async fn get_pod(state: &NodeState, id: Uuid) -> Result<Arc<PodHandle>, ApiError> {
     let guard = state.pods.lock().await;
     guard.get(&id).cloned().ok_or(ApiError::NotFound)
+}
+
+/// Resolve a pod, but only if this caller may manage it.
+///
+/// Returns `NotFound` -- not a distinct "forbidden" -- when the pod exists and
+/// the caller may not touch it. Distinguishing the two would answer "does pod
+/// <uuid> exist on this node?" for any caller willing to probe, which is exactly
+/// the fact that filtering the listing withholds. The refusal must not restore
+/// by oracle what the filter removed.
+async fn get_pod_for_caller(
+    state: &NodeState,
+    id: Uuid,
+    caller: Option<Uuid>,
+) -> Result<Arc<PodHandle>, ApiError> {
+    let pod = get_pod(state, id).await?;
+    if !caller_may_manage(caller, pod.id, pod.parent_pod_id) {
+        tracing::warn!(
+            %id,
+            caller = ?caller,
+            "a pod tried to manage a pod it does not own"
+        );
+        return Err(ApiError::NotFound);
+    }
+    Ok(pod)
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::{caller_may_manage, resolve_parent_pod_id};
+    use uuid::Uuid;
+
+    fn a() -> Uuid {
+        Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap()
+    }
+    fn b() -> Uuid {
+        Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap()
+    }
+    fn child_of_a() -> Uuid {
+        Uuid::parse_str("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap()
+    }
+
+    /// **The property this whole arc exists for.** Pod B cannot touch pod A's
+    /// child. Before this, any pod holding `ManagePods` could list, read the
+    /// logs of, and cancel every pod on the node -- including other tenants'.
+    #[test]
+    fn a_pod_cannot_manage_another_pods_child() {
+        assert!(!caller_may_manage(Some(b()), child_of_a(), Some(a())));
+    }
+
+    /// ...and the same for a pod with no recorded parent, which is the state
+    /// every pod created by an external orchestrator is in. "Unowned" must not
+    /// read as "owned by whoever asks".
+    #[test]
+    fn an_unparented_pod_is_not_managed_by_an_identified_pod() {
+        assert!(!caller_may_manage(Some(b()), child_of_a(), None));
+    }
+
+    /// The positive leg: a pod manages its own children.
+    #[test]
+    fn a_pod_manages_its_own_child() {
+        assert!(caller_may_manage(Some(a()), child_of_a(), Some(a())));
+    }
+
+    /// And itself, so a pod can read its own logs and cancel itself.
+    #[test]
+    fn a_pod_manages_itself() {
+        assert!(caller_may_manage(Some(a()), a(), None));
+    }
+
+    /// A grandchild is NOT reachable: the rule is direct children, not the
+    /// descendant closure. Pinned so the narrower scope is a decision on record
+    /// rather than something a later reader assumes is a bug.
+    #[test]
+    fn a_grandchild_is_not_directly_manageable() {
+        let grandchild = Uuid::parse_str("dddddddd-dddd-4ddd-8ddd-dddddddddddd").unwrap();
+        // grandchild's parent is child_of_a; a() is its grandparent.
+        assert!(!caller_may_manage(
+            Some(a()),
+            grandchild,
+            Some(child_of_a())
+        ));
+    }
+
+    /// An unidentified caller is unchanged. This is what keeps the change from
+    /// altering a verdict for operators, who hold the node auth secret and
+    /// already have full node authority.
+    #[test]
+    fn an_unidentified_caller_is_unrestricted() {
+        assert!(caller_may_manage(None, child_of_a(), Some(a())));
+        assert!(caller_may_manage(None, child_of_a(), None));
+    }
+
+    /// Lineage comes from the proof, not the claim. A pod that proves it is B
+    /// but names A as parent is recorded as B's child -- otherwise it could
+    /// plant a pod under a victim, or disown its own.
+    #[test]
+    fn a_proved_caller_overrides_the_claimed_parent() {
+        assert_eq!(
+            resolve_parent_pod_id(Some(b()), Some(&a().to_string())),
+            Some(b())
+        );
+    }
+
+    /// The header still applies when nothing was proved, so external
+    /// orchestrators keep working exactly as before.
+    #[test]
+    fn the_header_still_applies_to_unidentified_callers() {
+        assert_eq!(
+            resolve_parent_pod_id(None, Some(&a().to_string())),
+            Some(a())
+        );
+        assert_eq!(resolve_parent_pod_id(None, None), None);
+        assert_eq!(resolve_parent_pod_id(None, Some("not-a-uuid")), None);
+    }
+
+    /// The two legs together: what a forged header buys an identified caller is
+    /// nothing. Stated as its own test because this is the sentence the design
+    /// rests on, and it should fail by name if the precedence is ever flipped.
+    #[test]
+    fn forging_the_parent_header_gains_an_identified_pod_nothing() {
+        // B claims to be A's child, hoping to be handed A's children.
+        let recorded = resolve_parent_pod_id(Some(b()), Some(&a().to_string()));
+        assert_eq!(recorded, Some(b()), "the proof must win");
+        // And it still cannot reach A's child.
+        assert!(!caller_may_manage(Some(b()), child_of_a(), Some(a())));
+    }
 }

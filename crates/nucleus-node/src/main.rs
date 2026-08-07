@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{to_bytes, Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
@@ -1003,6 +1003,7 @@ impl IntoResponse for OidcApiError {
 
 async fn create_pod(
     State(state): State<NodeState>,
+    Extension(caller): Extension<Option<Uuid>>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
@@ -1021,11 +1022,15 @@ async fn create_pod(
         }
     };
 
-    // Extract parent pod ID from header (set by orchestrator tool-proxy)
-    let parent_pod_id = headers
-        .get("x-nucleus-parent-pod-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| Uuid::parse_str(s).ok());
+    // WHO the parent is, established by the node rather than declared by the
+    // caller. `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on
+    // it is forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
+    let parent_pod_id = pod_api::resolve_parent_pod_id(
+        caller,
+        headers
+            .get("x-nucleus-parent-pod-id")
+            .and_then(|v| v.to_str().ok()),
+    );
 
     let raw = String::from_utf8_lossy(&body).to_string();
     let (id, proxy_addr) = create_pod_internal(&state, spec, parent_pod_id, Some(raw)).await?;
@@ -3391,7 +3396,7 @@ impl NodeService for GrpcService {
             auth::Operation::ListPods,
         )?;
 
-        let infos = pod_api::collect_pod_infos(&self.state).await;
+        let infos = pod_api::collect_pod_infos(&self.state, None).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
