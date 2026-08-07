@@ -618,19 +618,21 @@ async fn main() -> Result<(), ApiError> {
         let manager = identity::IdentityManager::new(&args.identity_trust_domain, cert_ttl)
             .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?;
 
-        // Start the Workload API server
-        manager
-            .start_workload_api_server(socket_path)
-            .await
-            .map_err(|e| ApiError::Driver(format!("failed to start workload API: {e}")))?;
+        // Retired: it served an arbitrary pod's SVID to any local connector.
+        // Rationale and the gate live in `identity.rs::retired_surface_tests`.
+        tracing::warn!(
+            socket = %socket_path.display(),
+            "the node-wide Unix workload API socket is retired and was NOT opened \
+             (#2197); per-pod SVIDs are served over the per-pod vsock bridge. This \
+             flag is accepted for compatibility and has no other effect."
+        );
 
-        // Start certificate refresh loop
+        // Refresh still runs: it maintains the certs the vsock bridge serves.
         manager.start_refresh_loop();
 
         info!(
-            "identity manager initialized with trust domain '{}', workload API at {}",
-            args.identity_trust_domain,
-            socket_path.display()
+            "identity manager initialized with trust domain '{}'",
+            args.identity_trust_domain
         );
         Some(manager)
     } else {
