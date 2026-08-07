@@ -23,6 +23,31 @@ const POD_PREFIX: u8 = 30;
 const POD_STRIDE: u8 = 4;
 const DEFAULT_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
 
+/// The addresses a guest sees. **Identical in every pod, by design.**
+///
+/// # Why these are constants
+///
+/// The guest's address used to be derived from its allocation index
+/// (`NET_BASE + index * POD_STRIDE + 3`), and the index is a dense counter. So a
+/// pod could read its own IP, divide by the stride, and recover roughly how many
+/// pods had been concurrently live — a cross-tenant signal readable with `ip
+/// addr` and no special access (#2202).
+///
+/// Every pod already runs in its own network namespace, so nothing ever required
+/// these to differ: two pods can both be 192.168.241.2 without colliding. Only
+/// the veth link into the SHARED host namespace needs a unique address, and the
+/// guest never sees that side.
+///
+/// This is the pattern Firecracker documents for clones — the guest keeps one
+/// fixed configuration and the host distinguishes VMs by translating on its own
+/// side. It closes the channel by making the index **unobservable** rather than
+/// merely uninformative, which is a structural property the model can state
+/// rather than a probabilistic one it cannot.
+const GUEST_LINK_BASE: Ipv4Addr = Ipv4Addr::new(192, 168, 241, 0);
+const GUEST_GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 241, 1);
+const GUEST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 241, 2);
+const GUEST_PREFIX: u8 = 30;
+
 /// Network address pool with reclamation support.
 /// Allocates /30 subnets from the pool and returns them when pods terminate.
 #[derive(Debug)]
@@ -72,11 +97,13 @@ impl NetworkAllocator {
             }
         };
 
+        // The index-derived /30 now addresses ONLY the veth link between this
+        // pod's namespace and the host namespace. Both ends live outside the
+        // guest, so the index no longer reaches anything the guest can read.
         let offset = (index as u32) * u32::from(POD_STRIDE);
         let base = add_ipv4(NET_BASE, offset);
         let host_ip = add_ipv4(base, 1);
-        let gateway_ip = add_ipv4(base, 2);
-        let guest_ip = add_ipv4(base, 3);
+        let peer_ip = add_ipv4(base, 2);
         let subnet = IpNet::new(IpAddr::V4(base), POD_PREFIX)
             .map_err(|_| ApiError::Driver("invalid network pool".to_string()))?;
 
@@ -94,10 +121,11 @@ impl NetworkAllocator {
             tap_name,
             bridge,
             guest_mac: mac_from_id(pod_id),
-            guest_ip,
-            gateway_ip,
+            guest_ip: GUEST_ADDR,
+            gateway_ip: GUEST_GATEWAY,
+            peer_ip,
             host_ip,
-            cidr: POD_PREFIX,
+            cidr: GUEST_PREFIX,
             subnet,
             dns: DEFAULT_DNS,
         })
@@ -123,8 +151,14 @@ pub struct NetPlan {
     pub tap_name: String,
     pub bridge: String,
     pub guest_mac: String,
+    /// Constant across every pod — see `GUEST_ADDR`.
     pub guest_ip: Ipv4Addr,
+    /// Constant across every pod — the bridge inside this pod's namespace.
     pub gateway_ip: Ipv4Addr,
+    /// This pod's UNIQUE address on the veth link, inside its namespace. Host
+    /// side of the boundary: the guest never sees it.
+    pub peer_ip: Ipv4Addr,
+    /// This pod's UNIQUE address on the veth link, in the host namespace.
     pub host_ip: Ipv4Addr,
     pub cidr: u8,
     pub subnet: IpNet,
@@ -138,6 +172,11 @@ impl NetPlan {
             self.guest_ip, self.cidr, self.gateway_ip, self.dns
         )
     }
+}
+
+/// The constant guest-side subnet, as a CIDR string.
+fn guest_subnet_cidr() -> String {
+    format!("{}/{}", GUEST_LINK_BASE, GUEST_PREFIX)
 }
 
 pub fn netns_name(pod_id: Uuid) -> String {
@@ -445,8 +484,13 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     ensure_command("iptables")?;
     ensure_command("sysctl")?;
 
-    let host_cidr = format!("{}/{}", plan.host_ip, plan.cidr);
-    let gateway_cidr = format!("{}/{}", plan.gateway_ip, plan.cidr);
+    // Two subnets now, and the split is the whole point:
+    //   * the LINK subnet (index-derived) addresses the veth pair, both ends of
+    //     which are outside the guest;
+    //   * the GUEST subnet is constant in every pod's namespace.
+    let host_cidr = format!("{}/{}", plan.host_ip, POD_PREFIX);
+    let peer_cidr = format!("{}/{}", plan.peer_ip, POD_PREFIX);
+    let gateway_cidr = format!("{}/{}", plan.gateway_ip, GUEST_PREFIX);
 
     run_ip(&[
         "link",
@@ -471,7 +515,7 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     run_netns(&plan.netns, &["link", "set", &plan.bridge, "up"]).await?;
     run_netns(
         &plan.netns,
-        &["link", "set", &plan.peer_veth, "master", &plan.bridge],
+        &["addr", "add", &peer_cidr, "dev", &plan.peer_veth],
     )
     .await?;
     run_netns(&plan.netns, &["link", "set", &plan.peer_veth, "up"]).await?;
@@ -494,6 +538,27 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     run_netns(
         &plan.netns,
         &["route", "add", "default", "via", &plan.host_ip.to_string()],
+    )
+    .await?;
+    // Rewrite the CONSTANT guest address to this pod's unique link address on
+    // the way out of the namespace. Without this every pod's packets would leave
+    // claiming to be 192.168.241.2 and the host could not tell them apart.
+    // MASQUERADE picks the outgoing interface's address, which is exactly
+    // `peer_ip`, so the unique value is never written into the guest's view.
+    run_netns_iptables(
+        &plan.netns,
+        &[
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            &guest_subnet_cidr(),
+            "-o",
+            &plan.peer_veth,
+            "-j",
+            "MASQUERADE",
+        ],
     )
     .await?;
     run_netns(&plan.netns, &["sysctl", "-w", "net.ipv4.ip_forward=1"]).await?;
@@ -1065,6 +1130,29 @@ async fn run_ip(args: &[&str]) -> Result<(), ApiError> {
 /// one line that identified this bug got lost: the driver reported an exit
 /// status while `exec of "--" failed` went to the node's stdout stream,
 /// unattached to the error that mattered.
+/// Run `iptables` inside a pod's namespace.
+///
+/// Separate from `run_netns` only because the first argument is `iptables`
+/// rather than `ip`; the failure reporting is deliberately identical, since a
+/// silent NAT-rule failure would leave every pod's packets leaving under the
+/// same constant source address and the host unable to tell them apart.
+async fn run_netns_iptables(netns: &str, args: &[&str]) -> Result<(), ApiError> {
+    let output = tokio::process::Command::new("ip")
+        .args(["netns", "exec", netns, "iptables"])
+        .args(args)
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ApiError::Driver(format!(
+            "ip netns exec {netns:?} iptables {args:?} failed with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
 async fn run_netns(netns: &str, args: &[&str]) -> Result<(), ApiError> {
     let output = tokio::process::Command::new("ip")
         .args(["netns", "exec", netns])
@@ -1301,8 +1389,11 @@ mod tests {
         assert_eq!(plan3.index, 2);
 
         // IPs should be different
-        assert_ne!(plan1.guest_ip, plan2.guest_ip);
-        assert_ne!(plan2.guest_ip, plan3.guest_ip);
+        // Guest addresses are now CONSTANT by design (#2202): the index must not
+        // reach anything a guest can read. Distinctness moved to the link.
+        assert_ne!(plan1.host_ip, plan2.host_ip);
+        assert_ne!(plan2.host_ip, plan3.host_ip);
+        assert_ne!(plan1.peer_ip, plan2.peer_ip);
 
         // Release plan2
         allocator.release(plan2.index);
@@ -1311,7 +1402,7 @@ mod tests {
         let pod4 = Uuid::new_v4();
         let plan4 = allocator.allocate(pod4, "ns4".into()).unwrap();
         assert_eq!(plan4.index, 1); // Reused!
-        assert_eq!(plan4.guest_ip, plan2.guest_ip); // Same IP range
+        assert_eq!(plan4.host_ip, plan2.host_ip); // Same link range, recycled
 
         // Next new allocation should get index 3
         let pod5 = Uuid::new_v4();
@@ -1397,13 +1488,15 @@ COMMIT
         fn allocator_gives_distinct_resources_to_live_pods(n in 1usize..16) {
             let allocator = NetworkAllocator::new();
             let mut indices = std::collections::HashSet::new();
-            let mut guest_ips = std::collections::HashSet::new();
+            let mut link_ips = std::collections::HashSet::new();
             for _ in 0..n {
                 let plan = allocator
                     .allocate(Uuid::new_v4(), "nuc-test".to_string())
                     .expect("pool not exhausted for small n");
                 prop_assert!(indices.insert(plan.index), "duplicate pool index");
-                prop_assert!(guest_ips.insert(plan.guest_ip), "duplicate guest IP");
+                // The LINK address is what must be unique per live pod; the
+                // guest address is deliberately shared (#2202).
+                prop_assert!(link_ips.insert(plan.host_ip), "duplicate link IP");
             }
         }
     }
@@ -1609,4 +1702,65 @@ pub fn dnsmasq_config(gateway: Ipv4Addr, entries: &[ResolvedDnsEntry]) -> String
         }
     }
     config
+}
+
+#[cfg(test)]
+mod guest_address_is_constant_tests {
+    use super::*;
+
+    fn plan(alloc: &NetworkAllocator) -> NetPlan {
+        alloc
+            .allocate(Uuid::new_v4(), "nuc-test".to_string())
+            .expect("pool not exhausted")
+    }
+
+    /// **The property #2202 is about.** Two pods see the SAME network
+    /// configuration, so a guest reading `ip addr` learns nothing about how many
+    /// pods preceded it. The allocation index used to be recoverable by dividing
+    /// the guest's own address by the pod stride.
+    #[test]
+    fn two_pods_see_identical_guest_addresses() {
+        let alloc = NetworkAllocator::new();
+        let (a, b) = (plan(&alloc), plan(&alloc));
+        assert_eq!(a.guest_ip, b.guest_ip, "guest address must not vary");
+        assert_eq!(a.gateway_ip, b.gateway_ip, "gateway must not vary");
+        assert_eq!(a.cidr, b.cidr, "prefix must not vary");
+    }
+
+    /// The whole guest-visible boot argument must be identical — it is the
+    /// literal string handed to the guest kernel, so it is the thing that either
+    /// does or does not carry the index.
+    #[test]
+    fn the_guest_kernel_argument_does_not_vary() {
+        let alloc = NetworkAllocator::new();
+        let (a, b) = (plan(&alloc), plan(&alloc));
+        assert_eq!(a.kernel_arg(), b.kernel_arg());
+    }
+
+    /// And the host side still distinguishes them, or the pods could not be
+    /// routed apart. Without this the test above would be satisfiable by an
+    /// allocator that hands out one address to everyone.
+    #[test]
+    fn the_host_side_still_distinguishes_pods() {
+        let alloc = NetworkAllocator::new();
+        let (a, b) = (plan(&alloc), plan(&alloc));
+        assert_ne!(a.host_ip, b.host_ip);
+        assert_ne!(a.peer_ip, b.peer_ip);
+        assert_ne!(a.subnet, b.subnet);
+    }
+
+    /// The guest address must not fall inside the link pool, or the constant
+    /// would collide with some pod's link address and routing would break.
+    #[test]
+    fn the_guest_subnet_is_disjoint_from_the_link_pool() {
+        let pool = IpNet::new(IpAddr::V4(NET_BASE), NET_POOL_PREFIX).unwrap();
+        assert!(
+            !pool.contains(&IpAddr::V4(GUEST_ADDR)),
+            "the constant guest address is inside the link pool"
+        );
+        assert!(
+            !pool.contains(&IpAddr::V4(GUEST_GATEWAY)),
+            "the constant gateway is inside the link pool"
+        );
+    }
 }
