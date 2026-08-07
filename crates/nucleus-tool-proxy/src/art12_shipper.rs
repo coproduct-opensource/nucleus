@@ -186,6 +186,7 @@ mod tests {
         let s = Art12Shipper::start(
             "http://127.0.0.1:1/v1/art12".to_string(),
             b"k".to_vec(),
+            "test-session".to_string(),
             client(),
         );
         assert!(
@@ -215,6 +216,7 @@ mod tests {
         let s = Art12Shipper::start(
             "http://127.0.0.1:1/v1/art12".to_string(),
             b"k".to_vec(),
+            "test-session".to_string(),
             client(),
         );
         // Submit well past the queue depth without awaiting the drain.
