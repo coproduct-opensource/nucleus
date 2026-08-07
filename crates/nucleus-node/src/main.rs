@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{to_bytes, Body, Bytes};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
@@ -34,6 +34,7 @@ mod firecracker_config;
 mod grpc_tls;
 mod identity;
 mod oidc;
+mod pod_api;
 mod pod_caller_identity;
 
 mod workload_api_protocol;
@@ -743,9 +744,9 @@ async fn main() -> Result<(), ApiError> {
 
     // Routes that require HMAC auth
     let authenticated_routes = Router::new()
-        .route("/v1/pods", post(create_pod).get(list_pods))
-        .route("/v1/pods/{id}/logs", get(pod_logs))
-        .route("/v1/pods/{id}/cancel", post(cancel_pod))
+        .route("/v1/pods", post(create_pod).get(pod_api::list_pods))
+        .route("/v1/pods/{id}/logs", get(pod_api::pod_logs))
+        .route("/v1/pods/{id}/cancel", post(pod_api::cancel_pod))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1045,29 +1046,11 @@ async fn auth_middleware(
         .map_err(|e| ApiError::Body(e.to_string()))?;
     let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
 
-    // WHICH POD is calling, when the caller can prove it.
-    //
-    // Additive, and deliberately not yet an authorization input: an unidentified
-    // caller is still accepted exactly as before (operators and older proxies
-    // present nothing), so this cannot change a verdict. What it DOES change is
-    // that a caller CLAIMING to be a pod and failing to prove it is now visible
-    // instead of indistinguishable from every other request.
-    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
-    let caller = pod_caller_identity::identify_caller(
-        state.caller_secret.as_ref(),
-        header(nucleus_client::HEADER_POD_ID),
-        header(nucleus_client::HEADER_POD_TOKEN),
-    );
-    match &caller {
-        Ok(pod_id) => tracing::debug!(%pod_id, "identified the calling pod"),
-        Err(pod_caller_identity::CallerError::Absent) => {}
-        Err(pod_caller_identity::CallerError::Invalid) => {
-            // Something claimed to be a pod and could not prove it. Not refused
-            // here — refusing would change behaviour for a caller that is
-            // currently accepted — but it is the one case worth seeing.
-            tracing::warn!("a request claimed a pod identity it could not prove");
-        }
-    }
+    // WHICH POD is calling, when the caller can prove it. See
+    // `pod_caller_identity::identify_from_headers` for why this cannot change a
+    // verdict.
+    let caller =
+        pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), &parts.headers);
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);
@@ -1139,50 +1122,6 @@ async fn create_pod_internal(
     state.pods.lock().await.insert(id, handle);
 
     Ok((id, proxy_addr))
-}
-
-async fn list_pods(State(state): State<NodeState>) -> Result<Json<Vec<PodInfo>>, ApiError> {
-    let infos = collect_pod_infos(&state).await;
-    Ok(Json(infos))
-}
-
-async fn collect_pod_infos(state: &NodeState) -> Vec<PodInfo> {
-    let pods: Vec<Arc<PodHandle>> = {
-        let guard = state.pods.lock().await;
-        guard.values().cloned().collect()
-    };
-
-    let mut infos = Vec::with_capacity(pods.len());
-    for pod in pods {
-        infos.push(pod.info().await);
-    }
-
-    infos
-}
-
-async fn pod_logs(
-    State(state): State<NodeState>,
-    AxumPath(id): AxumPath<Uuid>,
-) -> Result<String, ApiError> {
-    let pod = get_pod(&state, id).await?;
-    let logs = tokio::fs::read_to_string(&pod.log_path)
-        .await
-        .unwrap_or_default();
-    Ok(logs)
-}
-
-async fn cancel_pod(
-    State(state): State<NodeState>,
-    AxumPath(id): AxumPath<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let pod = get_pod(&state, id).await?;
-    pod.cancel().await?;
-    Ok(Json(serde_json::json!({"status": "cancelled"})))
-}
-
-async fn get_pod(state: &NodeState, id: Uuid) -> Result<Arc<PodHandle>, ApiError> {
-    let guard = state.pods.lock().await;
-    guard.get(&id).cloned().ok_or(ApiError::NotFound)
 }
 
 impl PodHandle {
@@ -3452,7 +3391,7 @@ impl NodeService for GrpcService {
             auth::Operation::ListPods,
         )?;
 
-        let infos = collect_pod_infos(&self.state).await;
+        let infos = pod_api::collect_pod_infos(&self.state).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
@@ -3470,7 +3409,7 @@ impl NodeService for GrpcService {
 
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = get_pod(&self.state, id)
+        let pod = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
         let logs = tokio::fs::read_to_string(&pod.log_path)
@@ -3492,7 +3431,7 @@ impl NodeService for GrpcService {
 
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = get_pod(&self.state, id)
+        let pod = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
         pod.cancel()
@@ -3516,7 +3455,7 @@ impl NodeService for GrpcService {
 
         let id = Uuid::parse_str(&request.into_inner().pod_id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let handle = get_pod(&self.state, id)
+        let handle = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
         let info = handle.info().await;
@@ -3541,7 +3480,7 @@ impl NodeService for GrpcService {
         let req = request.into_inner();
         let id =
             Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = get_pod(&self.state, id)
+        let pod = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
 
@@ -3577,7 +3516,7 @@ impl NodeService for GrpcService {
         let req = request.into_inner();
         let id =
             Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let pod = get_pod(&self.state, id)
+        let pod = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
 
@@ -3609,7 +3548,7 @@ impl NodeService for GrpcService {
         let pod_id_str = request.into_inner().pod_id;
         let id =
             Uuid::parse_str(&pod_id_str).map_err(|_| Status::invalid_argument("invalid pod id"))?;
-        let handle = get_pod(&self.state, id)
+        let handle = pod_api::get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
 

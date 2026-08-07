@@ -111,6 +111,40 @@ pub(crate) fn identify_caller(
     }
 }
 
+/// Identify the calling pod from an HTTP request's headers.
+///
+/// Lives here rather than inline in the auth middleware so the whole mechanism —
+/// derivation, verification, and the header names it reads — is one module that
+/// can be read in a single sitting.
+///
+/// Additive, and deliberately not yet an authorization input: an unidentified
+/// caller is accepted exactly as before (operators and older proxies present
+/// nothing), so this cannot change a verdict. What it DOES change is that a
+/// caller CLAIMING to be a pod and failing to prove it becomes visible instead
+/// of indistinguishable from every other request.
+pub(crate) fn identify_from_headers(
+    node_secret: &[u8],
+    headers: &axum::http::HeaderMap,
+) -> Result<Uuid, CallerError> {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let caller = identify_caller(
+        node_secret,
+        header(nucleus_client::HEADER_POD_ID),
+        header(nucleus_client::HEADER_POD_TOKEN),
+    );
+    match &caller {
+        Ok(pod_id) => tracing::debug!(%pod_id, "identified the calling pod"),
+        Err(CallerError::Absent) => {}
+        Err(CallerError::Invalid) => {
+            // Something claimed to be a pod and could not prove it. Not refused —
+            // refusing would change behaviour for a caller that is currently
+            // accepted — but it is the one case worth seeing.
+            tracing::warn!("a request claimed a pod identity it could not prove");
+        }
+    }
+    caller
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
