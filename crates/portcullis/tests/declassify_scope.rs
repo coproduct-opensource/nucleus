@@ -87,18 +87,9 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
     let mut oracle_divergence_seen = false;
 
     for op in Operation::ALL {
-        let v_token = g_token
-            .insert_action(op, &[src_t], NOW)
-            .unwrap()
-            .verdict;
-        let v_strict = g_strict
-            .insert_action(op, &[src_s], NOW)
-            .unwrap()
-            .verdict;
-        let v_released = g_released
-            .insert_action(op, &[src_r], NOW)
-            .unwrap()
-            .verdict;
+        let v_token = g_token.insert_action(op, &[src_t], NOW).unwrap().verdict;
+        let v_strict = g_strict.insert_action(op, &[src_s], NOW).unwrap().verdict;
+        let v_released = g_released.insert_action(op, &[src_r], NOW).unwrap().verdict;
 
         if v_strict != v_released {
             oracle_divergence_seen = true;
@@ -129,8 +120,12 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
     let (mut g2_strict, s2) = graph_with_secret_source();
     let (mut g2_token, t2) = graph_with_secret_source();
     g2_token.apply_token(&lower_conf_token(t2, vec![Operation::WebFetch]), NOW);
-    let strict_fetch = g2_strict.insert_action(Operation::WebFetch, &[s2], NOW).unwrap();
-    let token_fetch = g2_token.insert_action(Operation::WebFetch, &[t2], NOW).unwrap();
+    let strict_fetch = g2_strict
+        .insert_action(Operation::WebFetch, &[s2], NOW)
+        .unwrap();
+    let token_fetch = g2_token
+        .insert_action(Operation::WebFetch, &[t2], NOW)
+        .unwrap();
     assert_ne!(
         strict_fetch.verdict, token_fetch.verdict,
         "non-vacuity: releasing Secret→Internal for WebFetch must change \
@@ -191,7 +186,9 @@ fn inherited_scope_intersects_toward_strict() {
         TokenApplyResult::Applied { .. }
     ));
 
-    let child = g.insert_observation(NodeKind::ModelPlan, &[a, b], NOW).unwrap();
+    let child = g
+        .insert_observation(NodeKind::ModelPlan, &[a, b], NOW)
+        .unwrap();
     for op in [Operation::WebFetch, Operation::WriteFiles] {
         assert_eq!(
             g.effective_label(child, op).unwrap().confidentiality,

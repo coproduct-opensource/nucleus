@@ -40,8 +40,8 @@
 //! pointwise binding test in `portcullis/tests/declassify_scope.rs`, the same
 //! layer FM-5 uses for its spawn binding.
 
-use super::ifc_confidentiality::{cflows_to, ConfLevel};
-use super::mediation::{opcode, MedOperation};
+use super::ifc_confidentiality::{ConfLevel, cflows_to};
+use super::mediation::{MedOperation, opcode};
 
 /// Bit test: does the signed sink mask admit operation `op`?
 ///
@@ -182,10 +182,7 @@ mod tests {
     fn empty_mask_is_inert_and_full_mask_is_total() {
         for op in ALL_OPS {
             assert!(!mask_admits(0, op), "empty mask admitted {op:?}");
-            assert!(
-                mask_admits((1 << 13) - 1, op),
-                "full mask refused {op:?}"
-            );
+            assert!(mask_admits((1 << 13) - 1, op), "full mask refused {op:?}");
         }
     }
 

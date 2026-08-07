@@ -840,11 +840,7 @@ impl FlowGraph {
     /// empty — an absent scope and a mask-0 scope mean the same thing, and
     /// storing the former as the latter would make "how many nodes carry a
     /// release" unanswerable.
-    fn inherited_scope(
-        &self,
-        parents: &[NodeId],
-        intrinsic: IFCLabel,
-    ) -> Option<DeclassScope> {
+    fn inherited_scope(&self, parents: &[NodeId], intrinsic: IFCLabel) -> Option<DeclassScope> {
         let mut any_scoped = false;
         let mut mask = Self::FULL_SINK_MASK;
         let mut contributions: Vec<IFCLabel> = Vec::with_capacity(parents.len());

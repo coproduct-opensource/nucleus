@@ -472,7 +472,9 @@ fn apply_token_twice_is_refused() {
     ));
     // And the refusal did not widen the original scope.
     assert_eq!(
-        g.effective_label(web, Operation::GitPush).unwrap().integrity,
+        g.effective_label(web, Operation::GitPush)
+            .unwrap()
+            .integrity,
         portcullis_core::IntegLevel::Adversarial
     );
 }
@@ -1326,7 +1328,9 @@ mod apply_token_verified_tests {
             portcullis_core::IntegLevel::Untrusted
         );
         assert_eq!(
-            g.effective_label(web, Operation::GitPush).unwrap().integrity,
+            g.effective_label(web, Operation::GitPush)
+                .unwrap()
+                .integrity,
             portcullis_core::IntegLevel::Adversarial,
             "release leaked outside the signed sink mask"
         );
