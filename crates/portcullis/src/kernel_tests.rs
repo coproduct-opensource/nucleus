@@ -1665,7 +1665,7 @@ fn dag_declassification_allows_validated_tool() {
             from: IntegLevel::Adversarial,
             to: IntegLevel::Untrusted,
         },
-        justification: "Search API returns curated content",
+        justification: "Search API returns curated content".to_string(),
     });
 
     // Observe web content — normally Adversarial/NoAuthority
@@ -1701,7 +1701,7 @@ fn dag_declassification_authority_upgrade() {
             from: AuthorityLevel::Informational,
             to: AuthorityLevel::Suggestive,
         },
-        justification: "Tool output from validated API",
+        justification: "Tool output from validated API".to_string(),
     });
 
     // Also raise integrity so both checks pass
@@ -1710,7 +1710,7 @@ fn dag_declassification_authority_upgrade() {
             from: portcullis_core::IntegLevel::Adversarial,
             to: portcullis_core::IntegLevel::Untrusted,
         },
-        justification: "Validated API output",
+        justification: "Validated API output".to_string(),
     });
 
     let tool = kernel
@@ -1749,7 +1749,7 @@ fn unsigned_declassify_refused_under_trusted_keys() {
             from: IntegLevel::Adversarial,
             to: IntegLevel::Trusted,
         },
-        justification: "adversarial endorsement — must be refused under trusted keys",
+        justification: "adversarial endorsement — must be refused under trusted keys".to_string(),
     });
 
     // Secure posture: operator opted into VERIFIED declassification.
@@ -1789,7 +1789,8 @@ fn unsigned_rule_refused_at_registration_under_trusted_keys() {
             from: IntegLevel::Adversarial,
             to: IntegLevel::Trusted,
         },
-        justification: "adversarial: must be refused at registration under trusted keys",
+        justification: "adversarial: must be refused at registration under trusted keys"
+            .to_string(),
     });
 
     // Relax the posture so observe() WILL apply any *registered* rule — this

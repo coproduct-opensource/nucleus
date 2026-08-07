@@ -153,23 +153,36 @@ jobs:
         shell: bash
         run: scripts/check-lean-libs-built.sh
 
-  # The sink-scope restriction on declassification tokens is signed, proven and
-  # documented — and NOT enforced (apply_token raises the node's label globally,
-  # so a token scoped to one sink clears its node for every sink). Hardening it
-  # is real surgery on the live IFC path, and it was deferred because the signed
-  # -token path is DORMANT: every caller is test code, so the over-grant is
-  # unreachable. This gate checks that premise, which is otherwise recorded only
-  # in prose — the day a production caller lands, the deferral stops being safe
-  # and CI must say so instead of the hole opening quietly.
-  declassify-token-dormant:
-    name: The unenforced declassify sink-scope stays unreachable
+  # The declassification token path is now LIVE (POST /v1/declassify). Two gates
+  # replace the former dormancy gate:
+  #
+  #  1. sink-scope ENFORCED — a token clears its node for the sinks it signed and
+  #     ONLY those, at most once (the property the dormancy gate deferred).
+  #  2. governor keys SEALED — set_trusted_keys is unreachable from any request
+  #     handler, so the workload cannot enroll its own key (robust declassification
+  #     at the *who* dimension).
+  declassify-sink-scope-enforced:
+    name: Declassify sink scope is enforced
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: A token clears its node for its signed sinks and only those
+        shell: bash
+        run: scripts/check-declassify-sink-scope-enforced.sh
+
+  declassify-governor-keys-sealed:
+    name: Governor trusted-key set is not workload-writable
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-      - name: No production caller mints or applies a declassification token
+      - name: set_trusted_keys has no caller outside kernel construction
         shell: bash
-        run: scripts/check-declassify-token-dormant.sh
+        run: scripts/check-declassify-governor-keys-sealed.sh
 
   # The North Star doc's status table is the project's public claim of what is
   # PROVED, TESTED, and NOT-YET. It drifted once: a row claimed "tested on the
@@ -197,9 +210,15 @@ jobs:
   gates-can-fail:
     name: Gates must fail on their own subject
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # 30 min (was 10): check-declassify-sink-scope-enforced.sh runs cargo tests,
+    # and the meta-gate runs each probed gate twice (perturbed + restored), so
+    # this job now compiles portcullis. The Rust cache below amortizes it.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
       - name: Every gate REDs on a real violation and GREENs when restored
         shell: bash
         run: scripts/check-gates-can-fail.sh

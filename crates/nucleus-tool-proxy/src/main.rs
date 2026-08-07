@@ -31,6 +31,7 @@ mod attestation;
 mod auth;
 mod broker_client;
 mod cert_bridge;
+mod declassify;
 mod dlc_admission;
 mod egress;
 mod escalate;
@@ -1148,6 +1149,16 @@ enum ApiError {
     /// #1633). Wired into the HTTP path so it has parity with the MCP server.
     #[error("ifc denied: {0}")]
     IfcDenied(String),
+    /// A governor declassification token was rejected (bad/absent signature,
+    /// no trusted keys, expired, precondition unmet, or node not found).
+    #[error("declassification denied: {0}")]
+    Declassification(String),
+    /// A governor declassification token was well-formed and signed but cannot
+    /// take effect because its one-shot authority is spent or the node is
+    /// already declassified. Distinct from a rejection so a governor can tell
+    /// "already done" from "refused".
+    #[error("declassification conflict: {0}")]
+    DeclassificationConflict(String),
 }
 
 impl IntoResponse for ApiError {
@@ -1247,6 +1258,15 @@ impl IntoResponse for ApiError {
                 Some(info.clone()),
             ),
             ApiError::IfcDenied(_) => (StatusCode::FORBIDDEN, "ifc_denied", None, None),
+            ApiError::Declassification(_) => {
+                (StatusCode::FORBIDDEN, "declassification_denied", None, None)
+            }
+            ApiError::DeclassificationConflict(_) => (
+                StatusCode::CONFLICT,
+                "declassification_conflict",
+                None,
+                None,
+            ),
         };
 
         // Sanitize error message to prevent information disclosure
@@ -1684,6 +1704,23 @@ async fn main() -> Result<(), ApiError> {
         if let Some(admission) = dlc_admission {
             k.set_dlc_admission(admission);
         }
+        // Provision the governor's declassification-token keys. This is the ONE
+        // place the trusted-key set is written, and it comes from the
+        // node-controlled env — never from a request handler — which is what
+        // keeps declassification robust (the workload cannot enroll its own
+        // key). Absent/empty ⇒ every token is refused fail-closed.
+        let governor_keys = declassify::governor_keys_from_env(
+            std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
+                .ok()
+                .as_deref(),
+        );
+        if !governor_keys.is_empty() {
+            tracing::info!(
+                count = governor_keys.len(),
+                "declassification governor keys provisioned from NUCLEUS_DECLASSIFY_TRUSTED_KEYS"
+            );
+            k.set_trusted_keys(governor_keys);
+        }
         k
     }));
 
@@ -1880,7 +1917,11 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/memory/write", post(memory_write))
         .route("/v1/memory/recall", post(memory_recall))
         .route("/v1/approve", post(approve_operation))
-        .route("/v1/escalate", post(escalate::escalate_permissions));
+        .route("/v1/escalate", post(escalate::escalate_permissions))
+        // Governor declassification: signature-gated, one-shot, sink-scoped.
+        // Safe on the workload-facing surface because the Ed25519 signature —
+        // not the transport — is the authority (see declassify.rs).
+        .route("/v1/declassify", post(declassify::apply_declassification));
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {

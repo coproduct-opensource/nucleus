@@ -8,4 +8,4 @@
 #     that earns the promotion, so every promotion is on the record with its
 #     evidence handle beside it.
 CLAUSES=9
-NOT_YET=5
+NOT_YET=3

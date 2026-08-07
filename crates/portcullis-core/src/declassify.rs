@@ -33,16 +33,20 @@ use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation};
 /// Rules are checked against the CURRENT label. If the precondition
 /// matches, the label is modified. If not, the rule has no effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeclassificationRule {
     /// What dimension and direction to modify.
     pub action: DeclassifyAction,
     /// Human-readable justification for this declassification.
-    /// Included in audit records.
-    pub justification: &'static str,
+    /// Included in audit records. `String` (not `&'static str`) because a
+    /// governor supplies it at runtime over the declassification wire and it
+    /// is part of the signed `canonical_bytes`.
+    pub justification: String,
 }
 
 /// The specific label modification a declassification performs.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DeclassifyAction {
     /// Lower confidentiality (e.g., Secret → Internal for sanitized output).
     /// Precondition: label.confidentiality >= from.
@@ -147,12 +151,14 @@ impl DeclassificationRule {
 /// domain below. A token scoped `allowed_sinks = [WebSearch]` therefore clears
 /// its node for `WebSearch` and nothing else.
 ///
-/// The signed-token path is still dormant — every `DeclassificationToken::new`
-/// and every `apply_token` call site in the tree is test code, and
-/// `scripts/check-declassify-token-dormant.sh` fails CI if that stops being
-/// true. The gate remains until the production caller and its end-to-end tests
-/// land in the same change.
+/// The signed-token path is LIVE: the governor endpoint
+/// `POST /v1/declassify` (nucleus-tool-proxy `declassify.rs`) applies tokens
+/// via `Kernel::apply_declassification_token`, which verifies the Ed25519
+/// signature against the trusted governor keys and is fail-closed with none
+/// configured. `scripts/check-declassify-sink-scope-enforced.sh` asserts the
+/// scope is enforced (replacing the former dormancy gate).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeclassificationToken {
     /// The flow graph node this token applies to.
     pub target_node_id: NodeId,
@@ -167,7 +173,42 @@ pub struct DeclassificationToken {
     pub justification: String,
     /// Ed25519 signature over the token's canonical form.
     /// Zero-filled if unsigned (for testing).
+    ///
+    /// Serialized as a 128-char lowercase hex string (serde does not derive
+    /// arrays larger than 32; a hex string is also a cleaner wire form than a
+    /// 64-element JSON array for the governor endpoint).
+    #[cfg_attr(feature = "serde", serde(with = "signature_hex"))]
     pub signature: [u8; 64],
+}
+
+/// serde adapter for the 64-byte Ed25519 signature ↔ lowercase hex string.
+/// Dependency-free; only compiled with the `serde` feature.
+#[cfg(feature = "serde")]
+mod signature_hex {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(sig: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
+        let mut hex = String::with_capacity(128);
+        for b in sig {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        s.serialize_str(&hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
+        let s = String::deserialize(d)?;
+        if s.len() != 128 {
+            return Err(serde::de::Error::custom(
+                "signature must be exactly 128 hex chars (64 bytes)",
+            ));
+        }
+        let mut out = [0u8; 64];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte =
+                u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(serde::de::Error::custom)?;
+        }
+        Ok(out)
+    }
 }
 
 /// Result of attempting to apply a declassification token.
@@ -420,21 +461,21 @@ mod kani_declassify_proofs {
                     from: from_conf,
                     to: to_conf,
                 },
-                justification: "kani",
+                justification: "kani".to_string(),
             },
             1 => DeclassificationRule {
                 action: DeclassifyAction::RaiseIntegrity {
                     from: from_integ,
                     to: to_integ,
                 },
-                justification: "kani",
+                justification: "kani".to_string(),
             },
             _ => DeclassificationRule {
                 action: DeclassifyAction::RaiseAuthority {
                     from: from_auth,
                     to: to_auth,
                 },
-                justification: "kani",
+                justification: "kani".to_string(),
             },
         };
 
@@ -576,7 +617,7 @@ mod tests {
                 from: IntegLevel::Adversarial,
                 to: IntegLevel::Untrusted,
             },
-            justification: "Search API returns curated content",
+            justification: "Search API returns curated content".to_string(),
         };
         let result = rule.apply(web_label());
         assert!(result.applied);
@@ -593,7 +634,7 @@ mod tests {
                 from: AuthorityLevel::NoAuthority,
                 to: AuthorityLevel::Informational,
             },
-            justification: "Tool output is informational only",
+            justification: "Tool output is informational only".to_string(),
         };
         let result = rule.apply(web_label());
         assert!(result.applied);
@@ -607,7 +648,7 @@ mod tests {
                 from: ConfLevel::Secret,
                 to: ConfLevel::Internal,
             },
-            justification: "Output sanitized by redaction filter",
+            justification: "Output sanitized by redaction filter".to_string(),
         };
         let result = rule.apply(secret_label());
         assert!(result.applied);
@@ -621,7 +662,7 @@ mod tests {
                 from: IntegLevel::Adversarial,
                 to: IntegLevel::Untrusted,
             },
-            justification: "N/A",
+            justification: "N/A".to_string(),
         };
         // Label already has Trusted integrity — precondition (<=Adversarial) doesn't match
         let result = rule.apply(secret_label());
@@ -637,7 +678,7 @@ mod tests {
                 from: IntegLevel::Adversarial,
                 to: IntegLevel::Untrusted,
             },
-            justification: "Partial trust",
+            justification: "Partial trust".to_string(),
         };
         let result = rule.apply(web_label());
         assert!(result.applied);
@@ -655,7 +696,7 @@ mod tests {
                 from: ConfLevel::Secret,
                 to: ConfLevel::Internal,
             },
-            justification: "Sanitized",
+            justification: "Sanitized".to_string(),
         };
         let result = rule.apply(secret_label());
         assert!(result.applied);
@@ -673,7 +714,7 @@ mod tests {
                 from: AuthorityLevel::NoAuthority,
                 to: AuthorityLevel::Informational,
             },
-            justification: "Curated search results",
+            justification: "Curated search results".to_string(),
         };
         let original = web_label();
         let result = rule.apply(original);
@@ -692,7 +733,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles],
             1000,
@@ -712,7 +753,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles, Operation::GitCommit],
             u64::MAX,
@@ -733,7 +774,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![],
             u64::MAX,
@@ -752,7 +793,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles],
             1000,
@@ -773,7 +814,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles],
             1000,
@@ -786,7 +827,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles],
             1000,
@@ -804,7 +845,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "test",
+                justification: "test".to_string(),
             },
             vec![Operation::WriteFiles],
             1000,
@@ -829,7 +870,7 @@ mod tests {
                 from: IntegLevel::Adversarial,
                 to: IntegLevel::Untrusted,
             },
-            justification: "same",
+            justification: "same".to_string(),
         };
 
         let token_a = DeclassificationToken::new(
@@ -874,7 +915,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "reason A",
+                justification: "reason A".to_string(),
             },
             vec![],
             1000,
@@ -887,7 +928,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "reason B",
+                justification: "reason B".to_string(),
             },
             vec![],
             1000,
@@ -908,7 +949,7 @@ mod tests {
                 from: ConfLevel::Internal,
                 to: ConfLevel::Secret, // to > from — wrong direction
             },
-            justification: "Invalid",
+            justification: "Invalid".to_string(),
         };
         let label = IFCLabel {
             confidentiality: ConfLevel::Internal,
@@ -1004,7 +1045,7 @@ mod tests {
                         from: ConfLevel::Secret,
                         to: ConfLevel::Internal,
                     },
-                    justification: "parity sweep",
+                    justification: "parity sweep".to_string(),
                 },
                 allowed,
                 u64::MAX,

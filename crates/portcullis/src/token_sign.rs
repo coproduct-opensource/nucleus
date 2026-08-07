@@ -107,7 +107,7 @@ mod tests {
                     from: IntegLevel::Adversarial,
                     to: IntegLevel::Untrusted,
                 },
-                justification: "Validated search results",
+                justification: "Validated search results".to_string(),
             },
             vec![Operation::WriteFiles, Operation::GitCommit],
             u64::MAX,

@@ -50,7 +50,7 @@ fn lower_conf_token(target: u64, sinks: Vec<Operation>) -> DeclassificationToken
                 from: ConfLevel::Secret,
                 to: ConfLevel::Internal,
             },
-            justification: "sink-scope binding test",
+            justification: "sink-scope binding test".to_string(),
         },
         sinks,
         NOW + 3600,

@@ -223,7 +223,7 @@ pub fn sanitize_to_public() -> DeclassificationRule {
             from: ConfLevel::Secret,
             to: ConfLevel::Public,
         },
-        justification: "verified summarizer produced a sanitized public summary",
+        justification: "verified summarizer produced a sanitized public summary".to_string(),
     }
 }
 

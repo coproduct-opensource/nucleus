@@ -252,29 +252,37 @@ perturb_ledger_restore_false_row() {
 echo "Probing whether each gate fails on its own subject..."
 echo
 
-# A PRODUCTION caller of the dormant declassification-token path — the exact
-# event the dormancy gate exists to catch. Deliberately a plain `pub fn` on the
-# kernel (no #[cfg(test)]), because a caller inside test code is FINE and must
-# not trip the gate; only a real one may.
-perturb_declassify_production_caller() {
+# Revert the sink-scope enforcement: widen the applied mask to admit EVERY sink,
+# so a token scoped to one sink clears its node for all of them again — the
+# exact over-grant the enforcement gate exists to catch. The two-oracle graph
+# binding then sees off-mask operations get the released view and reds.
+perturb_declassify_unscope() {
     local f="$1"
-    python3 - "$f" <<'EOF'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-anchor = "    /// Set the Ed25519 signing key for receipt signing."
-probe = """    #[cfg(feature = "crypto")]
-    pub fn gate_probe_production_caller(
-        &mut self,
-        token: &portcullis_core::declassify::DeclassificationToken,
-    ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
-        self.apply_declassification_token(token)
-    }
+    sed -i.gate-bak \
+        's/sink_mask: token.sink_mask(),/sink_mask: 0xFFFFu16,/' \
+        "$f"
+    rm -f "$f.gate-bak"
+    # If the field assignment is reworded, the sed silently no-ops and the probe
+    # reports the gate as broken when it is fine. Fail loudly instead.
+    if ! grep -q 'sink_mask: 0xFFFFu16,' "$f"; then
+        echo "  ERROR: apply_token's 'sink_mask: token.sink_mask()' line changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
 
-"""
-assert anchor in s, "anchor for the declassify production-caller probe moved"
-open(p, "w").write(s.replace(anchor, probe + anchor, 1))
-EOF
+# A caller of set_trusted_keys OUTSIDE kernel construction — the exact event the
+# seal gate exists to catch. Appended to a workload-reachable handler module so
+# it is unambiguously not a construction site.
+perturb_governor_keys_unsealed() {
+    local f="$1"
+    cat >> "$f" <<'RS'
+
+#[allow(dead_code)]
+fn _gate_of_gates_unseal(k: &mut nucleus::portcullis::kernel::Kernel) {
+    k.set_trusted_keys(vec![[0u8; 32]]);
+}
+RS
 }
 
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
@@ -295,9 +303,12 @@ probe check-test-helpers-not-in-production.sh "" crates/nucleus-tool-proxy/Cargo
       "test-helpers enabled on a non-dev edge"  perturb_test_helpers_in_prod
 probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
       "a lean_lib nothing builds"               perturb_lean_lib_unbuilt
-probe check-declassify-token-dormant.sh "" crates/portcullis/src/kernel.rs \
-      "a production caller of the dormant declassify-token path" \
-      perturb_declassify_production_caller
+probe check-declassify-sink-scope-enforced.sh "" crates/portcullis/src/flow_graph.rs \
+      "the applied sink mask widened to admit every sink" \
+      perturb_declassify_unscope
+probe check-declassify-governor-keys-sealed.sh "" crates/nucleus-tool-proxy/src/declassify.rs \
+      "a set_trusted_keys caller outside kernel construction" \
+      perturb_governor_keys_unsealed
 probe check-north-star-ledger.sh "" docs/north-star.md \
       "the original overclaiming declassification status row restored" \
       perturb_ledger_restore_false_row

@@ -315,6 +315,7 @@ pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, 
 /// `ZkFlowInput` from a live `FlowTracker` without taking a direct
 /// portcullis-core dependency — the same reason `FlowTracker` is re-exported
 /// above.
+pub use portcullis_core::declassify;
 pub use portcullis_core::flow;
 pub use portcullis_core::flow::NodeKind;
 pub use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};

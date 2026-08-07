@@ -75,8 +75,8 @@ status is a visible event, not an edit.
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
-| C4 | "a governor deliberately released with a single-use token" | NOT-YET | `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `scripts/check-declassify-token-dormant.sh` | — |
-| C5 | "cannot steer which value that is" | NOT-YET | `crates/portcullis-core/lean/DeclassifyProofs.lean#sink_outside_allowlist_denied`, `crates/portcullis-core/src/declassify.rs#allows_sink` | — |
+| C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/nucleus-tool-proxy/src/declassify.rs#apply_declassification` | `scripts/check-declassify-sink-scope-enforced.sh` |
+| C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#sink_outside_a_singleton_mask_denied`, `crates/portcullis/src/flow_graph.rs#effective_label` | `scripts/check-declassify-sink-scope-enforced.sh` |
 | C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
@@ -98,17 +98,22 @@ What each status means, and what it deliberately does not:
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
-- **C4 (NOT-YET)** — the one-shot ledger (spent-token set keyed on the Ed25519
-  signature, burn-on-success-only, fail-closed without trusted keys) is
-  implemented and unit-tested, but the whole token path is **dormant and
-  CI-gated to stay dormant** (`scripts/check-declassify-token-dormant.sh`),
-  because the sink-scope restriction is not enforced on the live path. No
-  production caller mints or applies a token; "governor" names the trusted-key
-  registry, not a modelled principal.
-- **C5 (NOT-YET)** — `sink_outside_allowlist_denied` is proved in a
-  hand-written model of a restriction the shipping code does not implement:
-  `allows_sink()` has no non-test callers, and `FlowGraph::apply_token` raises
-  the target node's label globally.
+- **C4 (PROVED)** — the one-shot property is the absorbing `declass_step`
+  machine (`no_second_apply`), proved over the Aeneas-extracted decision core;
+  the live path enforces it via the kernel's spent-signature ledger
+  (burn-on-success-only, fail-closed without trusted keys). The path is LIVE:
+  `POST /v1/declassify` applies governor-signed tokens. "Governor" means a
+  holder of a key configured in `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` — a
+  configured key signed the token, NOT that a human reviewed it. The key set is
+  not workload-writable (`check-declassify-governor-keys-sealed.sh`).
+- **C5 (PROVED)** — `sink_outside_a_singleton_mask_denied`, proved over the
+  extracted `declass_release_ok`: a token whose signed mask admits only one
+  sink does not release its data to any other. The shipping `FlowGraph` routes
+  verdicts through the same decision core as a per-operation released view
+  (`effective_label`); the released value and its mask are governor-signed, so
+  the workload cannot steer which value is released. The full four-run
+  robustness LTS over the pod machine remains a NOT-YET refinement (the
+  executable two-run form ships as `declassify_scope.rs`).
 - **C6 (NOT-YET)** — the six child-inheritance channels are proved total (the
   quantification is over the channel enum, so a new channel forces a match
   arm); the effect/API set is enumerated with named exclusions in

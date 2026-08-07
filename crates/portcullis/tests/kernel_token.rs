@@ -41,7 +41,7 @@ fn make_token(node_id: u64) -> DeclassificationToken {
                 from: IntegLevel::Adversarial,
                 to: IntegLevel::Untrusted,
             },
-            justification: "Validated search results",
+            justification: "Validated search results".to_string(),
         },
         vec![Operation::WriteFiles],
         u64::MAX,
@@ -342,4 +342,68 @@ fn second_token_on_a_declassified_node_is_refused_and_not_burned() {
         kernel.apply_declassification_token(&first),
         Err(DenyReason::DeclassificationReplayed { .. })
     ));
+}
+
+/// The governor wire contract: a signed token survives a JSON round-trip
+/// byte-for-byte, so the signature the governor computed over `canonical_bytes`
+/// still verifies after transport, and the token still applies live. This is
+/// the property the `POST /v1/declassify` endpoint depends on — if serde
+/// dropped or reordered a signed field, the endpoint would reject every real
+/// token. Gated on `serde`, which the tool-proxy always builds with.
+#[cfg(feature = "serde")]
+#[test]
+fn signed_token_survives_json_roundtrip_and_still_applies() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut token = make_token(node);
+    token_sign::sign_token(&mut token, &key);
+    assert!(token.is_signed());
+
+    // Round-trip through JSON (the endpoint's wire form).
+    let json = serde_json::to_string(&token).expect("token serializes");
+    let recovered: DeclassificationToken = serde_json::from_str(&json).expect("token deserializes");
+    assert_eq!(recovered, token, "JSON round-trip must be identity");
+    // The signature specifically survived (128-hex adapter).
+    assert_eq!(recovered.signature, token.signature);
+
+    // And the recovered token — the one a governor would POST — still applies:
+    // its signature verifies against the trusted key over the same bytes.
+    match kernel.apply_declassification_token(&recovered) {
+        Ok(TokenApplyResult::Applied { .. }) => {}
+        other => panic!("recovered token must apply, got {other:?}"),
+    }
+    // One-shot holds across the wire: the same recovered token is now spent.
+    assert!(matches!(
+        kernel.apply_declassification_token(&recovered),
+        Err(DenyReason::DeclassificationReplayed { .. })
+    ));
+}
+
+/// A token tampered with AFTER signing — the classic wire attack — is rejected:
+/// deserialization succeeds (it is well-formed JSON) but the signature no
+/// longer matches the mutated `allowed_sinks`, so the kernel refuses it. This
+/// is what stops a workload from widening a governor's grant in transit.
+#[cfg(feature = "serde")]
+#[test]
+fn tampering_with_a_signed_token_over_the_wire_is_rejected() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut token = make_token(node); // signed for [WriteFiles]
+    token_sign::sign_token(&mut token, &key);
+
+    let json = serde_json::to_string(&token).unwrap();
+    let mut tampered: DeclassificationToken = serde_json::from_str(&json).unwrap();
+    // The adversary widens the grant to a privileged sink after signing.
+    tampered.allowed_sinks.push(Operation::GitPush);
+
+    match kernel.apply_declassification_token(&tampered) {
+        Err(DenyReason::InvalidDeclassification { .. }) => {}
+        other => panic!("tampered token must be rejected, got {other:?}"),
+    }
 }
