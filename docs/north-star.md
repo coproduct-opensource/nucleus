@@ -81,6 +81,10 @@ status is a visible event, not an edit.
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
 | C9 | "verify from the outside" | TESTED | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | `.github/workflows/quickstart-boot.yml` |
+*The clause fragments quote the sentence above, whose exclusions travel with
+them: the claim covers explicit flows only, excluding timing, cache, and other
+microarchitectural channels, and excluding availability and resource-contention
+channels.*
 
 What each status means, and what it deliberately does not:
 
