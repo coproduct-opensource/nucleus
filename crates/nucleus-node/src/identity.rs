@@ -142,29 +142,13 @@ impl IdentityManager {
         self.forget_certificate(identity).await;
     }
 
-    /// Starts the Workload API server on a Unix socket.
-    ///
-    /// This should be called once at startup and the server runs in the background.
-    #[allow(dead_code)]
-    pub async fn start_workload_api_server(&self, socket_path: &Path) -> Result<(), String> {
-        let server = WorkloadApiServer::new(
-            self.secret_manager.clone(),
-            self.ca.clone(),
-            self.vm_registry.clone(),
-        );
-
-        let socket_path_for_spawn = socket_path.to_path_buf();
-        let socket_path_display = socket_path.display().to_string();
-        tokio::spawn(async move {
-            #[allow(deprecated)]
-            if let Err(e) = server.serve(&socket_path_for_spawn).await {
-                error!("workload API server error: {}", e);
-            }
-        });
-
-        info!("workload API server started on {}", socket_path_display);
-        Ok(())
-    }
+    // `start_workload_api_server` was removed here, not merely left uncalled.
+    //
+    // It was the only thing that invoked `WorkloadApiServer::serve`, the
+    // deprecated registry-lookup path that handed an arbitrary pod's SVID to any
+    // local connector (#2197). Deleting it means the node cannot open that socket
+    // by anyone re-adding a call site, which a commented-out invocation or an
+    // unused function would still allow.
 
     /// Starts the certificate refresh loop in the background.
     #[allow(dead_code)]
@@ -569,6 +553,45 @@ mod registry_key_tests {
         assert!(
             m.vm_registry.read().await.is_empty(),
             "the registry must drain"
+        );
+    }
+}
+
+#[cfg(test)]
+mod retired_surface_tests {
+    /// **The retirement is structural, and this keeps it that way.**
+    ///
+    /// `WorkloadApiServer::serve` returns an arbitrary registry entry — including
+    /// the private key — to any local connector (#2197). The node no longer calls
+    /// it, and this reads the source to make sure a future change does not
+    /// quietly restore the call. A comment saying "do not call this" is not a
+    /// gate; a test that fails when someone does is.
+    ///
+    /// Deliberately a source check rather than a behavioural one: the defect is
+    /// the *existence* of a call site, and there is no runtime observation that
+    /// distinguishes "never opened the socket" from "opened it and nobody
+    /// connected".
+    #[test]
+    fn the_node_does_not_start_the_unix_workload_api_server() {
+        // Match CODE forms -- a definition or a call -- not any mention. The
+        // first draft of this test matched the bare name and went red on the
+        // comment above explaining the removal, which is a gate failing for the
+        // wrong reason: prose about a retired function is exactly what should
+        // survive, and only a live call site is the defect.
+        let src = include_str!("identity.rs");
+        let body = src.split("mod retired_surface_tests").next().unwrap();
+        assert!(
+            !body.contains("fn start_workload_api_server")
+                && !body.contains(".start_workload_api_server("),
+            "identity.rs defines or calls start_workload_api_server again -- that \
+             function was the only route to WorkloadApiServer::serve, the \
+             deprecated registry-lookup path that hands an arbitrary pod's SVID \
+             to any local connector (#2197)"
+        );
+        let main_src = include_str!("main.rs");
+        assert!(
+            !main_src.contains(".start_workload_api_server("),
+            "main.rs calls start_workload_api_server again -- see #2197"
         );
     }
 }
