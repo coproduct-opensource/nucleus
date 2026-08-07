@@ -270,8 +270,13 @@ the system.
 immediately before it — **"unbounded in what it reveals."** The proxy over-fires.
 Dense sequencing establishes that the index carries information about other
 pods; it says nothing about *how much*. On inspection the channel reveals a
-**count** and nothing else: how many pods were allocated before this one, modulo
-recycling. Not their identity, not their labels, not their contents, and nothing
+**count**, and a smaller one than that phrasing suggests. Allocation pops a LIFO
+free list first and only increments the counter when that list is empty, so
+`next` climbs to the **high-water mark of concurrent pods** and then stops. With
+`NET_POOL_PREFIX = 24` and `POD_PREFIX = 30` the pool is **64 indices**, and
+`--firecracker-max-pods` defaults to **15**. So an index reveals "at some point
+at least this many pods were concurrently live", bounded by the concurrency
+limit — not a count of every tenant that has ever run here. Not their identity, not their labels, not their contents, and nothing
 that varies with any secret nucleus holds. The flagship claim is about secrets
 and about which of them get released; a cardinality leak falsifies neither.
 
@@ -293,15 +298,21 @@ identifier reveals nothing about anyone else's allocations. Nickel independently
 names the same rule: *"partition names among domains."*
 
 nucleus's allocator is the dense-counter shape CertiKOS moved away from
-(`fetch_add` from zero, LIFO recycle). Allocating network indices from a
-per-lineage partition would make a pod's own IP reveal only its own subtree's
-allocation count — turning a permanent exclusion into a fixed defect, and
-shrinking rather than growing the list of things the claim has to disclaim.
+(`fetch_add` from zero, LIFO recycle), so per-lineage partitioning would make a
+pod's own IP reveal only its own subtree.
 
-That is a **code change, not a modelling decision**, so it is filed rather than
-done here. It is the better answer, and this document should not be read as
-having settled for the exclusion when a structural fix is available and has
-precedent. Until it lands, the exclusion stands and is stated.
+**Measured, that fix does not fit.** Sixty-four indices cannot be meaningfully
+partitioned per parent: any block size worth having leaves room for a handful of
+parents, which trades node capacity for a metadata property. Recommending it
+before checking it against this constraint was backwards, and nucleus #2202
+carries the correction.
+
+What remains is a genuine three-way choice — widen the CIDR and then partition,
+randomise within the free set (cheap, but a probabilistic guarantee this
+possibilistic model cannot state), or keep the exclusion. **Kept as an
+exclusion**, because it is honest and cheap while both fixes cost either capacity
+or expressibility. This document should not be read as having settled for it
+without looking; it was measured, and the numbers are above.
 
 **What would still kill this phase:** a shared-mutable field whose observable
 projection varies with another pod's *contents* rather than its existence or
