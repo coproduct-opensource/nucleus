@@ -227,6 +227,28 @@ perturb_trusted_base() {
     append_line "$1" 'gate_of_gates_fake_component pinned_by:definitely_not_a_real_test_anywhere'
 }
 
+# The EXACT defect the North Star ledger gate was built for: the status row
+# that claimed "tested on the live path" for the declassification token while
+# the dormancy gate asserted that path has no production caller. Not a
+# synthetic perturbation — this row is quoted verbatim from the table as it
+# stood when the gate was written, so a gate that greens on it has stopped
+# detecting its own founding defect.
+perturb_ledger_restore_false_row() {
+    local f="$1"
+    local legacy='| Declassification is single-use and not adversary-steerable | **Proved** in the model; **tested** on the live path (spent-token set keyed on the Ed25519 signature) |'
+    if ! awk -v legacy="$legacy" '
+        $0 ~ /^\| C4 \|/ { print legacy; hit = 1; next }
+        { print }
+        END { exit hit ? 0 : 1 }
+    ' "$f" > "$f.gate-tmp"; then
+        rm -f "$f.gate-tmp"
+        echo "  ERROR: no '| C4 |' row found in $f;"
+        echo "         the ledger's C4 row moved and this perturbation must be updated."
+        return 1
+    fi
+    mv "$f.gate-tmp" "$f"
+}
+
 echo "Probing whether each gate fails on its own subject..."
 echo
 
@@ -276,6 +298,9 @@ probe check-lean-libs-built.sh "" crates/portcullis-core/lean/lakefile.lean \
 probe check-declassify-token-dormant.sh "" crates/portcullis/src/kernel.rs \
       "a production caller of the dormant declassify-token path" \
       perturb_declassify_production_caller
+probe check-north-star-ledger.sh "" docs/north-star.md \
+      "the original overclaiming declassification status row restored" \
+      perturb_ledger_restore_false_row
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #

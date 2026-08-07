@@ -1,0 +1,11 @@
+# North Star ledger population pin — read by scripts/check-north-star-ledger.sh.
+#
+# Both directions, deliberately (the cmdline five-keys ratchet pattern):
+#   CLAUSES may only GROW — a clause leaving the ledger means either the
+#     sentence was weakened (Brandon's call, made in the open) or a row was
+#     deleted to dodge a red, which is the exact move a shrinkable count pays.
+#   NOT_YET may only SHRINK — and the pin must be lowered in the same change
+#     that earns the promotion, so every promotion is on the record with its
+#     evidence handle beside it.
+CLAUSES=9
+NOT_YET=5

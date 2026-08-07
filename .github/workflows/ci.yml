@@ -171,6 +171,24 @@ jobs:
         shell: bash
         run: scripts/check-declassify-token-dormant.sh
 
+  # The North Star doc's status table is the project's public claim of what is
+  # PROVED, TESTED, and NOT-YET. It drifted once: a row claimed "tested on the
+  # live path" for the declassification token while the dormancy gate above —
+  # in this same file — asserted that path has no production caller. This gate
+  # makes the table a ledger: every row covers a verbatim clause of the
+  # sentence, resolves an evidence handle, names its falsifier, and may not
+  # contradict any in-tree dormancy declaration. Row and NOT-YET counts are
+  # pinned, so deletions and demotions are visible events.
+  north-star-ledger:
+    name: The North Star status table cannot outrun its wiring
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - name: Every status row is earned, evidenced, and uncontradicted
+        shell: bash
+        run: scripts/check-north-star-ledger.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and
