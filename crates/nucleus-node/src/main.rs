@@ -1304,21 +1304,9 @@ impl FirecrackerPod {
         }
 
         if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
-            // By the key registration used, not a second derivation of it.
-            if let Some(ref key) = self.identity_registry_key {
-                if !manager.unregister_pod(key).await {
-                    // Reachable only if the key drifted again. Worth a warning
-                    // rather than a silent no-op: a registry that does not drain
-                    // is what makes the Workload API's "exactly one identity is
-                    // registered" precondition permanently false.
-                    tracing::warn!(
-                        registry_key = %key,
-                        "pod teardown removed no identity registry entry -- the \
-                         registration and removal keys have drifted apart"
-                    );
-                }
-            }
-            manager.forget_certificate(identity).await;
+            manager
+                .release_pod(self.identity_registry_key.as_deref(), identity)
+                .await;
         }
     }
 }

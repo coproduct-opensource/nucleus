@@ -119,6 +119,29 @@ impl IdentityManager {
         registry.remove(connection_id).is_some()
     }
 
+    /// Release everything this pod held in the identity subsystem.
+    ///
+    /// Takes the key registration actually USED rather than re-deriving one, and
+    /// keeps the "did anything get removed?" check beside the registry it
+    /// concerns. Both call sites of that check now live in this module, so a
+    /// future key change has one place to be wrong instead of two.
+    pub async fn release_pod(&self, registry_key: Option<&str>, identity: &Identity) {
+        if let Some(key) = registry_key {
+            if !self.unregister_pod(key).await {
+                // Reachable only if the key drifted again. Worth a warning
+                // rather than a silent no-op: a registry that does not drain is
+                // what makes the Workload API's "exactly one identity is
+                // registered" precondition permanently false.
+                tracing::warn!(
+                    registry_key = %key,
+                    "pod teardown removed no identity registry entry -- the \
+                     registration and removal keys have drifted apart"
+                );
+            }
+        }
+        self.forget_certificate(identity).await;
+    }
+
     /// Starts the Workload API server on a Unix socket.
     ///
     /// This should be called once at startup and the server runs in the background.
