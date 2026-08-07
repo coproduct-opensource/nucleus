@@ -80,6 +80,22 @@ lean_lib «PortcullisCoreMediation» where
 lean_lib «MediationScopeExtracted» where
   roots := #[`MediationScopeExtracted]
 
+-- Aeneas-generated declassification decision core (from real Rust:
+-- crates/nucleus-ifc-kernel/src/extracted/declassify.rs). UNMODIFIED Aeneas
+-- output (only the inter-module import in Funs.lean was retargeted from
+-- NucleusIfcKernel.Types to PortcullisCoreDeclass.Types so this lib does not
+-- collide with the other generated libs, which re-export opcode/cflows_to).
+lean_lib «PortcullisCoreDeclass» where
+  roots := #[`PortcullisCoreDeclass.Types, `PortcullisCoreDeclass.Funs]
+  srcDir := "generated-declass"
+
+-- Sink-scoped, one-shot declassification proven OVER the Aeneas-generated core
+-- above: released data reaches a sink only through an operation the signed mask
+-- admits (O4/O5), and a token authorizes at most one application (O3). Replaces
+-- the hand model in DeclassifyProofs.lean.
+lean_lib «DeclassifySinkScopeExtracted» where
+  roots := #[`DeclassifySinkScopeExtracted]
+
 lean_lib «PortcullisCoreEgress» where
   roots := #[`PortcullisCoreEgress.Types, `PortcullisCoreEgress.Funs]
   srcDir := "generated-egress"

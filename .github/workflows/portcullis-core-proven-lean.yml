@@ -80,6 +80,7 @@ jobs:
             FlowGraphProofs \
             DecidePureProofs \
             DeclassifyProofs \
+            DeclassifySinkScopeExtracted \
             CompartmentProofs \
             DelegationProofs \
             DerivationProofs \

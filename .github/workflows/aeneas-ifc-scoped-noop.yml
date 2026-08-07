@@ -21,6 +21,8 @@ on:
       - "crates/portcullis-core/lean/generated-credential/**"
       - "crates/portcullis-core/lean/generated-identity/**"
       - "crates/portcullis-core/lean/generated-channel/**"
+      - "crates/portcullis-core/lean/generated-declass/**"
+      - "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean"
       # These two were missing while the real workflow's `paths` had them, so a
       # cap-quantale-only PR fired BOTH twins under the same context name —
       # the exactly-one-twin invariant this file exists for.

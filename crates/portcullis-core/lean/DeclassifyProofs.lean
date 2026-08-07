@@ -300,9 +300,19 @@ def scopedFlowAuthorized (target_node node_id : Nat) (authorized : Bool)
     (allowed_sinks : List Nat) (sink : Nat) (valid_until now : Nat) : Bool :=
   authorized && node_id == target_node && !isExpired valid_until now && allowed_sinks.contains sink
 
-/-- **Sink restriction ("where").** A sink NOT in the token's allowlist is denied
-    regardless of the endorsement — the release is bounded in destination, so
-    endorsed data cannot reach an arbitrary privileged sink. -/
+/-- **Sink restriction ("where") — over a HAND model of the token, SUPERSEDED.**
+
+    This proved that a sink outside the allowlist is denied, but over
+    `scopedFlowAuthorized` — a hand-written predicate, not the shipping code.
+    Until PR #2207 the shipping code did NOT enforce this: `allows_sink` had no
+    non-test callers and `FlowGraph::apply_token` raised labels globally, so
+    this theorem described a restriction that did not exist. It is kept only as
+    a statement of intent; the load-bearing version is
+    `DeclassifySinkScopeExtracted.sink_outside_a_singleton_mask_denied`, proven
+    over the Aeneas-EXTRACTED `declass_release_ok` that the shipping
+    `FlowGraph` released-view now routes through (bound by the exhaustive
+    `mask_admits ↔ allows_sink` parity sweep). Prefer that theorem when citing
+    the sink-scope property. -/
 theorem sink_outside_allowlist_denied
     (target_node node_id : Nat) (authorized : Bool)
     (allowed_sinks : List Nat) (sink : Nat) (valid_until now : Nat)
