@@ -76,15 +76,23 @@ jobs:
       - name: Sorry ratchet (must not exceed baseline)
         working-directory: crates/portcullis-core/lean
         run: |
-          # Proof-hole count: lines whose first non-space token is `sorry`/`admit`
-          # (comment lines start with `--`/`/-`, so they don't match).
-          count=$(grep -rhcE '^[[:space:]]*(sorry|admit)' --include='*.lean' \
+          # Proof-hole count: lines whose first non-space token is the WORD
+          # `sorry`/`admit`. The `\b` is load-bearing: without it the pattern
+          # matched any line starting with those letters — notably a `/- … -/`
+          # docstring BODY line beginning with the word "admits" (e.g. "admits
+          # ONLY WebFetch"), which is prose, not a proof hole. That false match
+          # reddened this gate on main once (DeclassifySinkScopeExtracted.lean
+          # counted 2 holes for two doc lines). Docstring bodies do NOT start
+          # with `--`, so the old "comment lines don't match" assumption was
+          # wrong for block comments.
+          PAT='^[[:space:]]*(sorry|admit)\b'
+          count=$(grep -rhcE "$PAT" --include='*.lean' \
                     --exclude-dir=.lake . 2>/dev/null | awk '{s+=$1} END{print s+0}')
           baseline=$(cat .research-sorry-baseline)
           echo "research-tier sorries: $count (baseline $baseline)"
           echo "per-file:"
-          grep -rlE '^[[:space:]]*(sorry|admit)' --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
-            | while read -r f; do echo "  $(basename "$f"): $(grep -cE '^[[:space:]]*(sorry|admit)' "$f")"; done
+          grep -rlE "$PAT" --include='*.lean' --exclude-dir=.lake . 2>/dev/null \
+            | while read -r f; do echo "  $(basename "$f"): $(grep -cE "$PAT" "$f")"; done
           if [ "$count" -gt "$baseline" ]; then
             echo "::error::research-tier sorry count increased ($count > baseline $baseline) — a new proof hole was introduced"
             exit 1

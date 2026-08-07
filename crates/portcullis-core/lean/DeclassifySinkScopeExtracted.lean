@@ -24,7 +24,7 @@
 
   * **Sink scope (O4/O5 — "cannot steer which value").** `declass_release_ok`
     lets released data reach a sink ONLY through an operation the signed mask
-    admits; outside the mask the strict pre-declassification level governs. The
+    permits; outside the mask the strict pre-declassification level governs. The
     released level and the mask are fields of the governor-signed token — never
     attacker input — so which value is released is fixed by the signature, not
     steerable by the workload. `sink_outside_a_singleton_mask_denied` is the
@@ -156,7 +156,7 @@ theorem empty_mask_denies_secret_at_public
   rfl
 
 /-- The concrete "scoped to one sink does not clear another": a token whose mask
-    admits ONLY `WebFetch` (bit 7) does not release Secret data — lowered to
+    permits ONLY `WebFetch` (bit 7) does not release Secret data — lowered to
     Public — to `GitPush` (bit 9), whose ceiling is Public. `128 &&& 512 = 0`. -/
 theorem sink_outside_a_singleton_mask_denied :
     declass_release_ok ConfLevel.Secret ConfLevel.Public
