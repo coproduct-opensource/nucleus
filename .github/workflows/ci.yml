@@ -184,6 +184,26 @@ jobs:
         shell: bash
         run: scripts/check-declassify-governor-keys-sealed.sh
 
+  # C1 ("cannot learn the secrets Nucleus holds on its behalf") is proven over
+  # the seven inbound channels in Lean, but the RUNTIME must withhold for that to
+  # hold on the live path. This gate runs the conformance the re-promotion rests
+  # on: the workload always runs as a distinct unprivileged uid (never the
+  # runtime's — /proc/<pid>/environ fence B), any unclassified NUCLEUS_* key is
+  # refused at admission (fail-closed classifier fence D), and no per-pod secret
+  # rides the guest cmdline. Reverting fence B or D reds this.
+  c1-inbound-fences-enforced:
+    name: C1 inbound fences are enforced
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: uid distinctness, reserved-namespace, and cmdline fences hold
+        shell: bash
+        run: scripts/check-c1-inbound-fences.sh
+
   # The North Star doc's status table is the project's public claim of what is
   # PROVED, TESTED, and NOT-YET. It drifted once: a row claimed "tested on the
   # live path" for the declassification token while the dormancy gate above —

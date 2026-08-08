@@ -31,5 +31,21 @@
 #     attestation. admit_posture is real but is self-characterization, not
 #     outside verification, and is inert without a dlc_posture label no pod emits.
 #   Both re-earning paths are recorded in the C5/C9 notes in docs/north-star.md.
+# 2026-08-08: lowered 6 -> 5. C1 ("cannot learn the secrets Nucleus holds on
+#   its behalf") re-promoted NOT-YET -> PROVED. The channel that demoted it
+#   (world-readable guest /proc/cmdline) is now a modelled ChannelKind::Cmdline
+#   in the closed inbound enum (Aeneas-extracted, sorry-free), and a red-team
+#   walk of the four residual inbound surfaces (bind-mounts, /proc/<pid>/environ,
+#   /etc/nucleus/*, the classifier fallthrough — see the C1 note in
+#   docs/north-star.md) resolved them: bind-mounts and /etc/nucleus/* are the
+#   existing VM/mount fence (block devices, no shared host FS; legacy secret
+#   files are never built; pod.yaml is cred-split), and the two real gaps were
+#   closed fail-closed — B: every workload now runs as a distinct unprivileged
+#   uid, never the runtime's (was wired only under credentialed egress), so it
+#   cannot read the runtime's secret-bearing environ via /proc; D: an
+#   unclassified NUCLEUS_* env key is refused at admission instead of falling
+#   through to OrdinaryData and being delivered. The relation leg is the Lean
+#   noninterference; the runtime conformance leg is TESTED and gated by
+#   scripts/check-c1-inbound-fences.sh (reverting fence B or D reds it).
 CLAUSES=9
-NOT_YET=6
+NOT_YET=5

@@ -79,7 +79,7 @@ status is a visible event, not an edit.
 
 | # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
 | --- | --- | --- | --- | --- |
-| C1 | "learn the secrets Nucleus holds on its behalf" | NOT-YET | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-node/src/firecracker_config.rs` | — |
+| C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/nucleus-tool-proxy/src/declassify.rs#apply_declassification` | `scripts/check-declassify-sink-scope-enforced.sh` |
@@ -95,7 +95,7 @@ channels.*
 
 What each status means, and what it deliberately does not:
 
-- **C1 (NOT-YET — demoted 2026-08-08, was PROVED).** FM-5 genuinely proves,
+- **C1 (PROVED — re-promoted 2026-08-08; had been demoted earlier the same day).** FM-5 genuinely proves,
   over the seven modelled child-inheritance channels (Env, Argv, Cwd, Stdio,
   ExtraFd, Uid, Cmdline), the 11-kind × 3-principal delivery table,
   Aeneas-extracted, `sorry`-free, axiom-audited — but the *clause* is broader
@@ -127,17 +127,36 @@ What each status means, and what it deliberately does not:
   `no_channel_delivers_secret_to_the_workload` covers it, and
   `the_cmdline_delivers_no_secret_to_the_workload` states it by name — a `Secret`
   re-appearing on the command line is now a RED theorem, not an unmodelled gap.
-  So the specific falsifier that demoted C1 is closed AND proved. **C1 stays
-  NOT-YET** for two reasons that are narrower than before: (1) the Lean proves
-  the delivery *relation*; that the node *obeys* it (writes no Secret on the
-  cmdline) is the Rust behavioural gate `no_pod_cmdline_carries_any_per_pod_secret`,
-  which is TESTED not proved — and C7 ("a theorem about the code that ships") is
-  itself only TESTED, so C1's conformance leg cannot exceed it; (2) mounts,
-  `/proc/<pid>/environ` and `/etc/nucleus/*` remain unmodelled surfaces, and the
-  `_ => OrdinaryData` classifier fallthrough is trusted. **Promoting C1** now
-  turns on a claim-status judgement — whether those residual surfaces are
-  in-scope exclusions (like FM-5's declared mounts fence) or genuine gaps — held
-  for Brandon rather than taken unilaterally on the flagship confidentiality row.
+  So the specific falsifier that demoted C1 is closed AND proved. **C1 is
+  re-promoted to PROVED** after a red-team walk of the four residual inbound
+  surfaces resolved each — two as declared exclusions, two closed fail-closed:
+  - **Bind-mounts (excluded).** Firecracker gives the guest virtio block
+    devices, not a shared host filesystem; the only bind-mounts are host-side
+    jailer-chroot plumbing the guest never sees as files. This is FM-5's existing
+    mount fence (`extracted/channel.rs`), not a new one.
+  - **`/etc/nucleus/*` (excluded).** The legacy secret files (`auth.secret`,
+    `approval.secret`) are written only under a `--legacy-secrets` build flag no
+    shipping path passes; `pod.yaml` is cred-split (no credential *values*); the
+    one runtime-written private key is mode-0600 and folds into the uid fence
+    below.
+  - **`/proc/<pid>/environ` (gap B — now closed).** The runtime holds every
+    per-pod secret in its own environment, and a same-uid workload reads it via
+    `/proc`. The uid fence was wired only under credentialed egress, so a
+    no-egress, no-uid pod ran the workload as the runtime's uid and was exposed.
+    Every workload now runs as a distinct unprivileged uid, never the runtime's
+    (`workload.rs`, `DEFAULT_WORKLOAD_UID`).
+  - **The `_ => OrdinaryData` classifier fallthrough (gap D — now closed).** An
+    unrecognised `NUCLEUS_*` name fell through to Public and was delivered, and
+    the dual-classifier corpus test could not catch it (both classifiers share
+    that default). Any unclassified reserved-namespace key is now refused at
+    admission (`workload.rs`, `PUBLIC_RESERVED`).
+
+  C1's **relation leg** is the Lean noninterference; its **conformance leg** —
+  that the shipping runtime actually withholds — is TESTED and gated by
+  `scripts/check-c1-inbound-fences.sh` (reverting fence B or D reds it). That
+  conformance leg is bounded by C7 ("a theorem about the code that ships"),
+  itself TESTED, so the row records the proven relation with the runtime
+  conformance gated beside it — the same shape as C4.
 - **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
   is outside every model. `docs/cross-pod-view.md` is the design.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
