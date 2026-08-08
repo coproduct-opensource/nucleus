@@ -39,6 +39,10 @@ on:
       - "crates/nucleus-spec/**"
       - "crates/nucleus-guest-init/**"
       - "crates/nucleus-tool-proxy/**"
+      # The empirical FM-5 checker whose PASS/FAIL sentinel this gate reads —
+      # a PR weakening only the probe or its spec must re-trigger the boot gate.
+      - "crates/nucleus-workload-probe/**"
+      - "examples/openclaw-demo/probe-pod.yaml"
       - "scripts/firecracker/**"
       - "scripts/lima/**"
       - ".github/workflows/quickstart-boot.yml"

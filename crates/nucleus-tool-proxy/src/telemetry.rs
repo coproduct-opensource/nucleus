@@ -110,9 +110,9 @@ pub fn init_otel_layer() -> Option<
 
 /// Shutdown OpenTelemetry (flush pending spans).
 /// Replaces the global provider with a noop, dropping the real one which
-/// triggers flush of all pending spans.
+/// triggers flush of all pending spans. Called on the tool-proxy's exit path
+/// after the server future completes.
 #[cfg(feature = "otel")]
-#[allow(dead_code)]
 pub fn shutdown_otel() {
     let noop = opentelemetry::trace::noop::NoopTracerProvider::new();
     opentelemetry::global::set_tracer_provider(noop);
