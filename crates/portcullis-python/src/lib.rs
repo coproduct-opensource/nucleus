@@ -694,7 +694,12 @@ impl Labeled {
         Ok(pyo3::types::PyBytes::new(py, &self.raw))
     }
 
-    /// Explicitly accept adversarial data. Reason is audit-logged.
+    /// Explicitly accept adversarial data.
+    ///
+    /// The `reason` is written to the host log (stderr), which the runtime
+    /// captures in the pod log — a record that a human accepted the risk. It is
+    /// a plain log line, not an entry in the tool-proxy's tamper-evident HMAC
+    /// chain, so treat it as a breadcrumb rather than a signed attestation.
     ///
     /// Returns the raw bytes without raising `UntrustedAccess`.
     fn acknowledge<'py>(
@@ -702,7 +707,11 @@ impl Labeled {
         py: Python<'py>,
         reason: &str,
     ) -> Bound<'py, pyo3::types::PyBytes> {
-        let _ = reason; // TODO: emit audit event
+        // Record the acknowledgement rather than silently dropping the reason.
+        eprintln!(
+            "portcullis: adversarial data acknowledged (len={}, reason={reason:?})",
+            self.raw.len()
+        );
         pyo3::types::PyBytes::new(py, &self.raw)
     }
 

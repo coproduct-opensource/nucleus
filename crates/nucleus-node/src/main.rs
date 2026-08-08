@@ -3723,9 +3723,10 @@ impl NodeService for GrpcService {
                     0u32
                 }
             }
-            Some(proto::lockdown_request::Scope::LabelSelector(_)) => {
-                // TODO: implement label matching on pods
-                pods.len() as u32
+            Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
+                pods.values()
+                    .filter(|p| matches_label_selector(&p.spec.metadata.labels, selector))
+                    .count() as u32
             }
             None => pods.len() as u32,
         };

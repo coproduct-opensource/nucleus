@@ -2081,6 +2081,11 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
+    // Flush batched OTLP spans before exit — the batch exporter would otherwise
+    // drop everything still pending at teardown. See `telemetry::shutdown_otel`.
+    #[cfg(feature = "otel")]
+    telemetry::shutdown_otel();
+
     write_exit_report(
         &exit_audit,
         &exit_work_dir,
