@@ -281,6 +281,36 @@ impl WorkloadLaunch {
             }
         }
 
+        // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
+        // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
+        // not recognise falls through to `OrdinaryData` (Public), which the
+        // relation below happily delivers. So a future secret added to the
+        // workload overlay WITHOUT a classifier arm would reach the workload
+        // silently — and the dual-classifier corpus test cannot catch it,
+        // because both classifiers share that same `OrdinaryData` default (a
+        // differential check is blind to a shortcut both sides take). Refuse any
+        // unrecognised reserved-namespace key here instead. The only public
+        // value the runtime injects under this prefix is allowlisted; every
+        // other `NUCLEUS_*` name must be classified deliberately (as a secret
+        // material kind if it carries identity, or added to this allowlist if it
+        // is genuinely public runtime config) before it may cross.
+        const PUBLIC_RESERVED: &[&str] = &["NUCLEUS_TOOL_PROXY_URL"];
+        for entry in &self.classified {
+            if entry.key.starts_with("NUCLEUS_")
+                && entry.material == MaterialKind::OrdinaryData
+                && !PUBLIC_RESERVED.contains(&entry.key.as_str())
+            {
+                return Err(Refused(format!(
+                    "environment variable `{}` is in the reserved `NUCLEUS_` namespace but the \
+                     classifier does not recognise it, so it falls through to OrdinaryData \
+                     (public) and would be delivered to the workload. Classify it in \
+                     `env_classifier.rs` (a secret material kind if it carries identity, or add \
+                     it to PUBLIC_RESERVED if it is genuinely public runtime config).",
+                    entry.key
+                )));
+            }
+        }
+
         // Every entry must be admissible to the workload under the proved
         // relation. This is the structural form of FM-5: not "we kept identity
         // material out", but "nothing that was not admitted can cross, because
@@ -825,6 +855,55 @@ mod tests {
             env.get("NUCLEUS_TOOL_PROXY_AUTH_SECRET")
                 .map(String::as_str),
             Some("s3cret")
+        );
+    }
+
+    /// **The reserved-namespace fail-safe.** An unrecognised `NUCLEUS_*`
+    /// variable falls through the classifier to `OrdinaryData` (public) and
+    /// would be delivered to the workload — the exact hole a future secret would
+    /// slip through, and one the dual-classifier corpus test cannot catch
+    /// because both classifiers share that `OrdinaryData` default. `admit` must
+    /// refuse it at the boundary, where the fence actually bites.
+    #[test]
+    fn an_unclassified_reserved_namespace_key_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let url = "http://127.0.0.1:8080";
+
+        // A novel NUCLEUS_* name the classifier does not recognise.
+        let refused = WorkloadLaunch::build(
+            &spec_with(&[("NUCLEUS_FUTURE_SECRET", "sensitive")]),
+            url,
+            "s3cret",
+            dir.path(),
+            &[],
+        )
+        .admit();
+        assert!(
+            refused.is_err(),
+            "an unclassified NUCLEUS_* key must be refused, not delivered as OrdinaryData"
+        );
+
+        // Control 1: the one public reserved name the runtime injects
+        // (NUCLEUS_TOOL_PROXY_URL) is allowlisted and must still admit.
+        assert!(
+            WorkloadLaunch::build(&spec_with(&[]), url, "s3cret", dir.path(), &[])
+                .admit()
+                .is_ok(),
+            "NUCLEUS_TOOL_PROXY_URL is public runtime config and must still admit"
+        );
+
+        // Control 2: an ordinary (non-reserved) operator var is unaffected.
+        assert!(
+            WorkloadLaunch::build(
+                &spec_with(&[("MY_APP_SETTING", "value")]),
+                url,
+                "s3cret",
+                dir.path(),
+                &[],
+            )
+            .admit()
+            .is_ok(),
+            "a non-NUCLEUS_ operator var must be unaffected by the reserved-namespace fence"
         );
     }
 
