@@ -273,7 +273,14 @@ pub fn fetch_pod_caller_token(port: u32) -> Result<String, String> {
         .ok_or_else(|| "no caller_token in response".to_string())
 }
 
-pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
+/// Fetch this pod's live-path session capability token.
+///
+/// `Ok(None)` when the host minted no token for this pod (a degraded but
+/// legitimate state — the tool-proxy then records the token as Missing and
+/// fails closed at verify). `Err` is reserved for a real transport or
+/// protocol failure, which the caller treats as fatal on the identity path
+/// where the kernel-cmdline fallback no longer exists.
+pub fn fetch_task_token(port: u32) -> Result<Option<TaskTokenResponse>, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -290,14 +297,25 @@ pub fn fetch_task_token(port: u32) -> Result<TaskTokenResponse, String> {
         .map_err(|e| format!("failed to read task token response: {e}"))?;
 
     // The host answers a pod with no minted token with `{"error": ...}` rather
-    // than an empty token, so a parse failure here is a real protocol problem
-    // and not the ordinary "this pod has none" case.
-    serde_json::from_str::<TaskTokenResponse>(&response).map_err(|e| {
+    // than an empty token — the ordinary degraded case, distinguished HERE from
+    // a real protocol problem so the caller can make only the latter fatal.
+    if let Ok(t) = serde_json::from_str::<TaskTokenResponse>(&response) {
+        return Ok(Some(t));
+    }
+    let v: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
         format!(
             "failed to parse task token response ({e}): {}",
             response.trim()
         )
-    })
+    })?;
+    if v.get("error").and_then(|e| e.as_str()).is_some() {
+        // Explicit "no token minted" — not a failure.
+        return Ok(None);
+    }
+    Err(format!(
+        "task token response had neither a token nor an error: {}",
+        response.trim()
+    ))
 }
 
 /// Fetches the workload certificate from the host via vsock.

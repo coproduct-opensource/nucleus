@@ -102,15 +102,27 @@ What each status means, and what it deliberately does not:
   exists), and approvals are Ed25519 signatures the guest verifies against
   the node's *public* key (`nucleus.approval_pubkeys`) — no shared secret
   exists in the guest, and the cmdline-secret ratchet in `snapshot.rs` pins
-  both removals. C1 stays NOT-YET because the removals are **tested, not
-  proved**: the cmdline is still not a modelled channel, `nucleus.sandbox_token`
-  (a per-pod bearer proof token) still rides it for identity-less pods, and
-  mounts, `/proc/<pid>/environ`, `/etc/nucleus/*` and the `_ => OrdinaryData`
-  classifier fallthrough remain trusted, not proved. **Re-earning C1**
-  requires adding the cmdline as a modelled channel to
-  `ChannelAdmissionExtracted` so any Secret-on-cmdline becomes a red theorem.
-  The task-token cmdline copies are not secrets (public issuer + host-pinned
-  nonce) and are not the blocker here.
+  both removals. The **task-token cmdline copy** (`nucleus.task_token_hex`
+  etc.) is also gone for identity-bearing pods (2026-08-08): the token is
+  fetched over the workload API (`FETCH_TASK_TOKEN`) instead. `MaterialKind::
+  TaskToken` is `Secret` in the FM-5 model, and rather than argue the cmdline
+  copy is harmless — an argument resting on `session_mint` keeping the nonce
+  host-pinned forever — the copy is deleted; deleting it retires the argument.
+  A categorical gate
+  (`an_identity_bearing_pod_cmdline_carries_no_per_pod_secret`) now proves an
+  identity-bearing pod's cmdline carries NO `PER_POD_SECRET_KEYS` member, and
+  is the Rust half of the future Lean theorem. **C1 stays NOT-YET** because the
+  removals are **tested, not proved**: the cmdline is still not a modelled
+  channel. The residual is the identity-LESS configuration only —
+  `nucleus.sandbox_token` and the task-token copy still ride its cmdline,
+  because it has no workload-API socket to fetch over — plus mounts,
+  `/proc/<pid>/environ`, `/etc/nucleus/*` and the `_ => OrdinaryData`
+  classifier fallthrough, which remain trusted rather than proved. **Re-earning
+  C1** requires adding the cmdline as a modelled channel to
+  `ChannelAdmissionExtracted`, parameterized by pod identity: green (proved) for
+  identity-bearing pods, with the identity-less residue stated as an explicit
+  gap theorem so it cannot go silently vacuous and flips green when Tier 3
+  leaves the cmdline too.
 - **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
   is outside every model. `docs/cross-pod-view.md` is the design.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod

@@ -745,32 +745,42 @@ impl FirecrackerConfig {
             };
         }
 
-        // Inject the live-path session capability token via the kernel cmdline,
-        // for nucleus-guest-init to forward to the in-VM tool-proxy as
-        // NUCLEUS_TASK_TOKEN{,_NONCE,_ISSUER}.
+        // Inject the live-path session capability token via the kernel cmdline
+        // — ONLY for a pod that will NOT have an identity, mirroring the
+        // `sandbox_token` conditional above and gated on the same predicate.
         //
-        // The token JSON is **hex-encoded** here (`nucleus.task_token_hex`)
-        // because the kernel cmdline is whitespace-delimited and quote-sensitive;
-        // raw JSON (braces/quotes) is unsafe to embed. guest-init hex-decodes it
-        // back to the exact JSON the tool-proxy verify half expects. Nonce and
-        // issuer are already hex. This is a scoped capability + PUBLIC issuer key
-        // — NOT a secret — so riding the world-readable cmdline (M-4 caveat,
-        // same channel as nucleus.auth_secret) is acceptable; the anti-replay /
-        // anti-truncation defense rests on the host-pinned nonce, not secrecy.
-        if let Some(tok) = task_token {
-            let token_hex = hex::encode(tok.token_json.as_bytes());
-            boot_args = match boot_args.take() {
-                Some(args) => Some(format!(
-                    "{args} nucleus.task_token_hex={token_hex} \
-                     nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
-                    tok.nonce_hex, tok.issuer_hex
-                )),
-                None => Some(format!(
-                    "nucleus.task_token_hex={token_hex} \
-                     nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
-                    tok.nonce_hex, tok.issuer_hex
-                )),
-            };
+        // An identity-bearing pod fetches this token over the workload API
+        // (`FETCH_TASK_TOKEN`, per-pod socket, after boot), and guest-init
+        // already prefers that source (`token_from_vsock`). So for the
+        // configuration nucleus actually ships, this copy was redundant — and
+        // it was the LAST per-pod material of any kind on an identity-bearing
+        // pod's `/proc/cmdline`. The task token is defended by a host-pinned
+        // nonce rather than by secrecy, but `MaterialKind::TaskToken` is
+        // `Secret` in the FM-5 model, and a Secret on the world-readable
+        // cmdline is exactly what blocks C1 — so the copy is DELETED here
+        // rather than argued harmless. That argument would have had to be
+        // re-made every time `session_mint` changed; deleting the copy retires
+        // it.
+        //
+        // The identity-LESS path keeps the cmdline copy: it has no workload
+        // API socket to fetch over, so this is its only source, exactly as
+        // `sandbox_token` is its only proof.
+        if workload_api_port.is_none() {
+            if let Some(tok) = task_token {
+                let token_hex = hex::encode(tok.token_json.as_bytes());
+                boot_args = match boot_args.take() {
+                    Some(args) => Some(format!(
+                        "{args} nucleus.task_token_hex={token_hex} \
+                         nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
+                        tok.nonce_hex, tok.issuer_hex
+                    )),
+                    None => Some(format!(
+                        "nucleus.task_token_hex={token_hex} \
+                         nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
+                        tok.nonce_hex, tok.issuer_hex
+                    )),
+                };
+            }
         }
 
         // Pure lowering seams (property-tested in `mod tests`): the money/boot
@@ -1083,6 +1093,17 @@ mod tests {
     /// vsock accept path behind a `cfg` nobody compiled.
     #[cfg(target_os = "linux")]
     fn boot_args_with_identity(will_have_identity: bool) -> String {
+        boot_args_with_identity_and_token(will_have_identity, None)
+    }
+
+    /// Like [`boot_args_with_identity`] but with a real minted task token, so a
+    /// test can prove the token is EXCLUDED from an identity-bearing pod's
+    /// cmdline rather than merely absent because none was passed.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn boot_args_with_identity_and_token(
+        will_have_identity: bool,
+        task_token: Option<&crate::session_mint::MintedTaskToken>,
+    ) -> String {
         let config = FirecrackerConfig::from_spec(
             &base_spec(),
             std::path::Path::new("/unused/firecracker.log"),
@@ -1092,10 +1113,19 @@ mod tests {
             "auth-secret",
             "aa00bb11-approval-pubkeys",
             will_have_identity.then_some(15012),
-            None,
+            task_token,
             None,
         );
         config.boot_source.boot_args.unwrap_or_default()
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn sample_task_token() -> crate::session_mint::MintedTaskToken {
+        crate::session_mint::MintedTaskToken {
+            token_json: r#"{"task":"demo"}"#.to_string(),
+            nonce_hex: "0011223344556677".to_string(),
+            issuer_hex: "aabbccdd".to_string(),
+        }
     }
 
     /// **A pod that will hold an SVID gets no Tier 3 token.**
@@ -1112,6 +1142,54 @@ mod tests {
             !args.contains("nucleus.sandbox_token"),
             "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
              not need the Tier 3 token: {args}"
+        );
+    }
+
+    /// **An identity-bearing pod carries NO task token on its cmdline either.**
+    /// It fetches the token over the workload API (`FETCH_TASK_TOKEN`), so the
+    /// cmdline copy — the last per-pod Secret-labelled material on an
+    /// identity-bearing pod's `/proc/cmdline` — is gone. Uses a real minted
+    /// token so this proves exclusion, not absence-of-input.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_bearing_pod_carries_no_task_token() {
+        let tok = sample_task_token();
+        let args = boot_args_with_identity_and_token(true, Some(&tok));
+        assert!(
+            !args.contains("nucleus.task_token_hex"),
+            "an identity-bearing pod fetches its task token over vsock; the cmdline \
+             copy must be gone: {args}"
+        );
+        assert!(!args.contains("nucleus.task_token_nonce"), "{args}");
+        assert!(!args.contains("nucleus.task_token_issuer"), "{args}");
+    }
+
+    /// **THE CATEGORICAL GATE, and the Rust half of the future Lean theorem.**
+    /// Over an identity-bearing pod's actual boot args, NO key classified
+    /// per-pod-secret may appear — not "no task token", not "no sandbox token",
+    /// but the whole [`snapshot::PER_POD_SECRET_KEYS`] set at once, so a per-pod
+    /// secret nobody has invented yet is caught the moment it is emitted here.
+    /// Reuses the snapshot key parser so the two cannot disagree on what a key
+    /// is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_bearing_pod_cmdline_carries_no_per_pod_secret() {
+        let tok = sample_task_token();
+        let args = boot_args_with_identity_and_token(true, Some(&tok));
+        let emitted: Vec<&str> = args
+            .split_whitespace()
+            .map(|t| t.split('=').next().unwrap_or(t))
+            .collect();
+        let leaked: Vec<&str> = crate::snapshot::PER_POD_SECRET_KEYS
+            .iter()
+            .copied()
+            .filter(|k| emitted.contains(k))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "an identity-bearing pod's /proc/cmdline carries per-pod secret material \
+             {leaked:?} — this is the C1 exposure. Deliver it over the workload API \
+             instead. Full args: {args}"
         );
     }
 
@@ -1160,6 +1238,21 @@ mod tests {
         );
     }
 
+    /// Non-vacuity for the task token: a pod with no identity has no workload
+    /// API socket to fetch over, so the cmdline copy is its ONLY source and
+    /// must remain. Deleting it outright would brick every identity-less pod.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pod_without_an_identity_keeps_its_cmdline_task_token() {
+        let tok = sample_task_token();
+        let args = boot_args_with_identity_and_token(false, Some(&tok));
+        assert!(
+            args.contains("nucleus.task_token_hex="),
+            "an identity-less pod cannot fetch over vsock, so the cmdline copy is its \
+             only task-token source and must remain: {args}"
+        );
+    }
+
     /// The condition must track the identity predicate rather than merely
     /// correlating with it: `workload_api_port_for` and `identity_registration`
     /// are the same rule stated on the advertising and serving sides, so the
@@ -1176,12 +1269,21 @@ mod tests {
                 }
             };
             let port = net::workload_api_port_for(enabled, &grant, 15012);
-            let args = boot_args_with_identity(port.is_some());
+            let tok = sample_task_token();
+            let args = boot_args_with_identity_and_token(port.is_some(), Some(&tok));
             assert_eq!(
                 args.contains("nucleus.sandbox_token="),
                 port.is_none(),
                 "identity_enabled={enabled} granted={granted}: the Tier 3 token must be \
                  present exactly when the pod will have no SVID"
+            );
+            // The task-token cmdline copy tracks the SAME predicate: present
+            // exactly when there is no vsock socket to fetch it over.
+            assert_eq!(
+                args.contains("nucleus.task_token_hex="),
+                port.is_none(),
+                "identity_enabled={enabled} granted={granted}: the task-token cmdline copy \
+                 must be present exactly when the pod will have no workload API socket"
             );
         }
     }

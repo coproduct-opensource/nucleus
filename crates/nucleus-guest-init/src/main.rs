@@ -200,21 +200,30 @@ fn run() -> Result<(), String> {
         }
 
         match identity::fetch_task_token(port) {
-            Ok(t) => {
+            Ok(Some(t)) => {
                 std::env::set_var("NUCLEUS_TASK_TOKEN", &t.token);
                 std::env::set_var("NUCLEUS_TASK_TOKEN_NONCE", &t.nonce);
                 std::env::set_var("NUCLEUS_TASK_TOKEN_ISSUER", &t.issuer);
                 token_from_vsock = true;
                 eprintln!("fetched session task token over vsock");
             }
+            // No token was minted for this pod: a degraded but legitimate
+            // state. The tool-proxy records the token as Missing and fails
+            // closed at verify, exactly as it did when the cmdline carried no
+            // token — so this is not fatal.
+            Ok(None) => {
+                eprintln!("no session task token was minted for this pod");
+            }
+            // A real transport/protocol failure, and now FATAL: the node no
+            // longer writes a cmdline copy for an identity-bearing pod (that
+            // was the last per-pod secret on `/proc/cmdline`), so vsock is the
+            // ONLY source. Failing here names the cause; letting it slide would
+            // surface as a fail-closed proxy four layers away, at first use.
             Err(err) => {
-                // Not fatal, and deliberately so: the command-line path below is
-                // still in place, so a node that has not been updated still
-                // works. When the cmdline copy is removed this must become the
-                // only source, and THEN a failure here should be fatal — the
-                // tool-proxy would otherwise start with no token and fail closed
-                // later, far from the cause.
-                eprintln!("failed to fetch session task token over vsock: {err}");
+                return Err(format!(
+                    "failed to fetch session task token over vsock, and there is no \
+                     kernel-cmdline fallback for an identity-bearing pod: {err}"
+                ));
             }
         }
     }
