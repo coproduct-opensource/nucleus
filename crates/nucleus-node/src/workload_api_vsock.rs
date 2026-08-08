@@ -65,6 +65,23 @@ pub struct DlcAdmissionMaterial {
     pub credentials: String,
 }
 
+impl DlcAdmissionMaterial {
+    /// Pod-scoped DLC-D admission provisioning from the PodSpec labels.
+    ///
+    /// Partial labels still provision — the proxy's parser fails CLOSED, so
+    /// misconfiguration narrows rather than widens.
+    // The only caller is inside spawn_firecracker_pod's target_os = "linux"
+    // block; on Linux the dead-code detector stays live for it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn from_labels(labels: &std::collections::BTreeMap<String, String>) -> Option<Self> {
+        labels.get("dlc_trusted_keys").map(|keys| Self {
+            trusted_keys: keys.clone(),
+            issuer: labels.get("dlc_issuer").cloned().unwrap_or_default(),
+            credentials: labels.get("dlc_credentials").cloned().unwrap_or_default(),
+        })
+    }
+}
+
 /// Cloud credentials for the pod's S3 audit sink, served over
 /// `FETCH_AUDIT_CREDENTIALS` exactly once per pod.
 ///
@@ -76,6 +93,31 @@ pub struct AuditCredentials {
     pub secret_access_key: String,
     /// Present only for temporary (STS) credentials.
     pub session_token: Option<String>,
+}
+
+impl AuditCredentials {
+    /// The credentials for a pod's audit sink, from the node's ambient AWS
+    /// environment — the same source the kernel-cmdline emission used to read.
+    ///
+    /// `None` unless the pod has an audit sink, and only ever a PAIR: an access
+    /// key id without its secret (or the reverse) is not a credential, so
+    /// `None` beats half of one. The session token alone is optional (absent
+    /// for long-lived keys).
+    // The only caller is inside spawn_firecracker_pod's target_os = "linux"
+    // block; on Linux the dead-code detector stays live for it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn from_node_env(pod_has_audit_sink: bool) -> Option<Self> {
+        if !pod_has_audit_sink {
+            return None;
+        }
+        let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
+        let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
+        Some(Self {
+            access_key_id,
+            secret_access_key,
+            session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
+        })
+    }
 }
 
 impl std::fmt::Debug for WorkloadApiVsockBridge {
