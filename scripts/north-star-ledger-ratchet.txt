@@ -6,6 +6,14 @@
 #     deleted to dodge a red, which is the exact move a shrinkable count pays.
 #   NOT_YET may only SHRINK — and the pin must be lowered in the same change
 #     that earns the promotion, so every promotion is on the record with its
-#     evidence handle beside it.
+#     evidence handle beside it. The one legitimate RAISE is a demotion: a row
+#     found to be overclaimed. That is a visible event, recorded here.
+#
+# 2026-08-08: raised 3 -> 4. C1 ("cannot learn the secrets Nucleus holds on
+#   its behalf") demoted PROVED -> NOT-YET. FM-5 proves it over the six
+#   child-inheritance channels, but the workload can read `nucleus.approval_secret`
+#   (always) and the AWS audit creds (with an audit sink) from the world-readable
+#   guest /proc/cmdline — a channel FM-5 does not model. The clause is falsified
+#   today; re-earning it is tracked in the C1 note in docs/north-star.md.
 CLAUSES=9
-NOT_YET=3
+NOT_YET=4
