@@ -382,28 +382,41 @@ mod tests {
     /// [`snapshot_safety`] becomes satisfiable by construction. **That was
     /// wrong**, and this test is what makes the error visible instead of
     /// discovering it when the warm pool is built. Phase 1 deleted exactly one
-    /// key — `nucleus.auth_secret` — and FIVE remain.
+    /// key — `nucleus.auth_secret` — and EIGHT remain.
     ///
-    /// Five, not four: the first version of this test asserted four, because the
-    /// shell pipeline I counted with deduplicated `nucleus.task_token_nonce`
-    /// away. The test caught the miscount, which is the argument for pinning the
-    /// set rather than the number.
+    /// Eight, not five: the earlier version of this test scanned only for
+    /// `nucleus.key=` and asserted five. It **silently missed the three AWS
+    /// audit credentials** (`nucleus.aws_access_key_id` /
+    /// `_secret_access_key` / `_session_token`), because they are emitted not as
+    /// a `format!("… nucleus.aws_…={val}")` literal but through a table LOOP
+    /// (`for (env_key, arg_key) in [("AWS_ACCESS_KEY_ID", "nucleus.aws_access_key_id"), …]`),
+    /// so the literal `nucleus.aws_access_key_id=` never appears in the source.
+    /// A real secret — long-lived cloud credentials — rode the world-readable
+    /// `/proc/cmdline` uncounted by the very gate meant to track it. (An earlier
+    /// miscount for a different reason — a shell pipeline deduplicating
+    /// `nucleus.task_token_nonce` — is why this pins the SET, not a number.)
     ///
-    /// A ratchet in both directions. Emitting a NEW per-pod key fails here; so
-    /// does removing one, which forces the list to be updated and the distance
-    /// re-stated rather than quietly drifting.
+    /// So this scan matches emission in EITHER form: a direct `{key}=` literal
+    /// (the `format!` sites) OR a quoted `"{key}"` table entry (the audit-cred
+    /// loop). Comments here use backticks, not double quotes, so the quoted-form
+    /// match does not re-introduce the false positive the `=`-only scan avoided
+    /// (`nucleus.auth_secret` appears only in prose and matches neither form,
+    /// which is correct — it is no longer emitted).
     ///
-    /// Scans for `nucleus.key=` — actual EMISSION. The sibling
-    /// `every_cmdline_key_is_classified` scans for bare mentions, which is right
-    /// for classification and wrong here: `nucleus.auth_secret` still appears in
-    /// a comment explaining what it used to do, and counting that would report a
-    /// key that is no longer emitted.
+    /// A ratchet in both directions, and it is also the only guard on the
+    /// **confidentiality** exposure the C1 ledger row was demoted for: every key
+    /// below is readable by the workload via `/proc/cmdline`. Emitting a NEW
+    /// per-pod secret fails here; removing one is progress and forces this list
+    /// to be re-stated rather than quietly drifting.
     #[test]
-    fn the_remaining_distance_to_a_snapshottable_base_is_five_keys() {
+    fn the_remaining_distance_to_a_snapshottable_base_is_eight_keys() {
         let src = include_str!("firecracker_config.rs");
         let mut emitted: Vec<&str> = Vec::new();
         for key in PER_POD_SECRET_KEYS {
-            if src.contains(&format!("{key}=")) {
+            // Direct `{key}=` (format! sites) OR quoted `"{key}"` (the audit-cred
+            // table loop). The second disjunct is the fix: without it the AWS
+            // credentials, emitted via the loop, were never counted.
+            if src.contains(&format!("{key}=")) || src.contains(&format!("\"{key}\"")) {
                 emitted.push(key);
             }
         }
@@ -411,6 +424,9 @@ mod tests {
 
         let expected = [
             "nucleus.approval_secret",
+            "nucleus.aws_access_key_id",
+            "nucleus.aws_secret_access_key",
+            "nucleus.aws_session_token",
             "nucleus.sandbox_token",
             "nucleus.task_token_hex",
             "nucleus.task_token_issuer",
@@ -418,10 +434,10 @@ mod tests {
         ];
         assert_eq!(
             emitted, expected,
-            "the set of per-pod secrets still riding the kernel command line has changed. \
-             Adding one blocks the snapshot base further; removing one is progress and this \
-             list should be updated to match. Either way the distance must be re-stated, not \
-             silently drifted."
+            "the set of per-pod secrets still riding the (world-readable) kernel command line \
+             has changed. Adding one blocks the snapshot base further AND widens the C1 \
+             confidentiality exposure; removing one is progress and this list should be updated \
+             to match. Either way the distance must be re-stated, not silently drifted."
         );
     }
 
