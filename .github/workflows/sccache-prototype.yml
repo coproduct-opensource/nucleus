@@ -1,0 +1,125 @@
+# sccache compiler-cache PROTOTYPE — an experiment, deliberately NOT required.
+#
+# WHAT THIS MEASURES
+#
+# Our required jobs already cache dependencies via Swatinem/rust-cache (through
+# `setup-rust-toolchain`'s `cache: true`). That caches the cargo registry/index
+# and the target dir keyed on Cargo.lock — so a run whose deps are unchanged
+# skips recompiling THEM, but still recompiles this workspace's OWN crates from
+# scratch. sccache is compiler-level: it content-addresses each rustc invocation
+# and reuses the object when the inputs match, so it can also skip recompiling
+# unchanged first-party crates across runs and across concurrent jobs.
+#
+# This job runs a representative heavy compile with sccache and prints
+# `sccache --show-stats`, so the hit rate and wall-clock can be compared against
+# the required `Clippy`/`Tests` jobs BEFORE deciding whether to fold sccache
+# into them. It is safe: separate workflow, never in the required set, cannot
+# block the merge queue.
+#
+# HOW TO READ THE RESULT
+#
+# The FIRST run is cold — it populates the sccache GHA cache, so expect ~0%
+# hits. Re-run it (push again, or `workflow_dispatch`) to see the WARM hit rate,
+# which is the number that matters. The step summary reports both compile
+# wall-clock and the sccache stats.
+#
+# THE COEXISTENCE CHOICE (the config we would actually adopt)
+#
+# rust-cache and sccache overlap on the target dir, and the repo cache is quota-
+# bounded, so caching the same objects twice wastes it. Here rust-cache keeps
+# ONLY the registry/git index (`cache-targets: false`) and sccache owns the
+# compilation-object cache. `CARGO_INCREMENTAL: 0` is mandatory — sccache does
+# not cache incrementally-compiled crates, so without it sccache is silently
+# bypassed for exactly the first-party crates this is meant to accelerate (and
+# incremental is pointless in ephemeral CI anyway).
+
+name: sccache prototype (experiment — not required)
+
+on:
+  # Deliberately NOT run on every code PR — this is an experiment, not a gate,
+  # and it would burn CI minutes on every change. It fires on its own file (so
+  # this PR gets a first, cold run), on merges to main (to seed the shared
+  # cache), and on manual dispatch (run it a second time to read the WARM hit
+  # rate, which is the number that decides whether to adopt sccache).
+  pull_request:
+    paths:
+      - ".github/workflows/sccache-prototype.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - ".github/workflows/sccache-prototype.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sccache-check:
+    name: sccache compiler-cache measurement
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # Mandatory with sccache — see the header comment. Without it the
+      # first-party crates compile incrementally and sccache never caches them.
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          # rust-cache is driven explicitly below so we can turn OFF target-dir
+          # caching and leave the object cache to sccache.
+          cache: false
+
+      - name: Cache the cargo registry/index only (sccache owns objects)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          cache-targets: "false"
+          # Distinct prefix so this experiment never shares or evicts the
+          # required jobs' caches.
+          prefix-key: sccache-proto
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Zero sccache stats before the build
+        run: sccache --zero-stats
+
+      # A representative heavy compile of the hottest first-party crates. These
+      # do NOT depend on the vendored wasm SDK (unlike the full workspace), so
+      # the job is self-contained. `cargo check` is a pure compile workload and
+      # will not fail on clippy lints, keeping the measurement about caching.
+      - name: Heavy compile under sccache (timed)
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo check \
+            -p portcullis \
+            -p nucleus-node \
+            -p nucleus-tool-proxy \
+            -p nucleus-ifc-kernel \
+            --all-features --tests
+          end=$(date +%s)
+          echo "COMPILE_SECS=$((end - start))" >> "$GITHUB_ENV"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### sccache prototype"
+            echo ""
+            echo "- Compile wall-clock: \`${COMPILE_SECS:-?}s\`"
+            echo "- This run's ref: \`${GITHUB_REF}\` (first run is cold — re-run for the warm hit rate)"
+            echo ""
+            echo '```'
+            sccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
