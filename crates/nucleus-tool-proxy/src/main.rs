@@ -361,7 +361,11 @@ pub(crate) struct AppState {
     pub(crate) web_client: reqwest::Client,
     /// Upstreams reachable with a credential the workload never holds.
     pub(crate) credentialed_egress: Vec<nucleus_spec::CredentialedEgressSpec>,
+    /// Effective web_fetch response cap: pod `network.max_response_bytes` else
+    /// `--web-fetch-max-bytes`. Resolved once so every read site agrees.
     web_fetch_max_bytes: usize,
+    /// Pod `network.mime_allow` override; `None` = built-in `ALLOWED_MIME_PREFIXES`.
+    web_fetch_mime_allow: Option<Vec<String>>,
     dns_allow: Vec<String>,
     /// URL pattern allowlist for web_fetch. If non-empty, URLs must match.
     url_allow: Vec<String>,
@@ -1548,25 +1552,20 @@ async fn main() -> Result<(), ApiError> {
 
     let audit = build_audit_log(&args, &auth).await?;
 
-    // Extract DNS and URL allow lists from spec (needed BEFORE the client is
-    // built, so the redirect policy can re-check every hop against them).
-    let dns_allow = spec
-        .spec
-        .network
-        .as_ref()
-        .map(|n| n.dns_allow.clone())
-        .unwrap_or_default();
-    let url_allow = spec
-        .spec
-        .network
-        .as_ref()
-        .map(|n| n.url_allow.clone())
-        .unwrap_or_default();
+    // Resolve all web_fetch enforcement inputs (DNS/URL allowlists + per-pod
+    // MIME and response-cap overrides) BEFORE building the client, so its
+    // redirect policy can re-check every hop against the allowlists.
+    let web_fetch_cfg = web_fetch_policy::resolve_web_fetch_config(
+        spec.spec.network.as_ref(),
+        args.web_fetch_max_bytes,
+    );
+    let dns_allow = web_fetch_cfg.dns_allow;
+    let url_allow = web_fetch_cfg.url_allow;
+    let web_fetch_mime_allow = web_fetch_cfg.mime_allow;
+    let web_fetch_max_bytes = web_fetch_cfg.max_bytes;
 
-    // Build the web_fetch HTTP client with the allowlist-enforcing redirect
-    // policy (see `web_fetch_policy::build_web_fetch_client` — every redirect
-    // hop is re-checked, closing the SSRF/exfil vector where an allowlisted
-    // host redirects the fetch to a host the policy never authorized).
+    // Client re-checks every redirect hop against the allowlists (see
+    // `web_fetch_policy::build_web_fetch_client`) — closes the SSRF/exfil hop.
     let web_client = web_fetch_policy::build_web_fetch_client(
         Duration::from_secs(args.web_fetch_timeout_secs),
         dns_allow.clone(),
@@ -1847,7 +1846,8 @@ async fn main() -> Result<(), ApiError> {
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
-        web_fetch_max_bytes: args.web_fetch_max_bytes,
+        web_fetch_max_bytes,
+        web_fetch_mime_allow,
         dns_allow,
         url_allow,
         attestation_verifier,
@@ -3587,7 +3587,8 @@ async fn web_fetch(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    web_fetch_policy::check_mime_type(content_type).map_err(ApiError::WebFetch)?;
+    web_fetch_policy::check_mime_type(content_type, state.web_fetch_mime_allow.as_deref())
+        .map_err(ApiError::WebFetch)?;
 
     // Collect response headers + add exposure metadata
     let mut response_headers: HashMap<String, String> = response
@@ -3616,9 +3617,10 @@ async fn web_fetch(
     // Read body with a HARD allocation cap: stream and stop at the limit so a
     // malicious upstream body cannot OOM-kill the enforcement process, which
     // would run the agent unmonitored (fail-open). Audit H-1.
-    let (bytes, was_truncated) = read_body_capped(response, state.web_fetch_max_bytes)
-        .await
-        .map_err(|e| ApiError::WebFetch(format!("failed to read response: {e}")))?;
+    let (bytes, was_truncated) =
+        web_fetch_policy::read_body_capped(response, state.web_fetch_max_bytes)
+            .await
+            .map_err(|e| ApiError::WebFetch(format!("failed to read response: {e}")))?;
     let body = String::from_utf8_lossy(&bytes).to_string();
     let truncated = if was_truncated { Some(true) } else { None };
 
@@ -4177,9 +4179,10 @@ async fn web_search(
 
     // Parse response - this is a generic JSON structure
     // Real implementations would adapt to specific search APIs
-    let (search_bytes, _truncated) = read_body_capped(response, state.web_fetch_max_bytes)
-        .await
-        .map_err(|e| ApiError::WebFetch(format!("failed to read search response: {e}")))?;
+    let (search_bytes, _truncated) =
+        web_fetch_policy::read_body_capped(response, state.web_fetch_max_bytes)
+            .await
+            .map_err(|e| ApiError::WebFetch(format!("failed to read search response: {e}")))?;
     let body: serde_json::Value = serde_json::from_slice(&search_bytes)
         .map_err(|e| ApiError::WebFetch(format!("failed to parse search response: {e}")))?;
 
@@ -4428,8 +4431,8 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
     let webhook = if let Some(url) = args.audit_webhook.as_ref() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            // Never chase a redirect when shipping audit records — a webhook
-            // that 3xx's to another host would leak the audit stream there.
+            // Never follow a redirect for audit records — a 3xx to another host
+            // would leak the audit stream there.
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ApiError::Spec(format!("failed to build webhook client: {e}")))?;
@@ -4830,44 +4833,12 @@ fn load_last_hash(path: &Path) -> Option<String> {
     Some(entry.hash)
 }
 
-/// Read an HTTP response body while STRICTLY bounding peak retained allocation to
-/// `max_bytes` (+ at most one upstream chunk), independent of the upstream's
-/// Content-Length or true size. Streams via `chunk()` and STOPS at the cap, so a
-/// malicious upstream cannot OOM-kill the tool-proxy (the enforcement point) —
-/// the untrusted-content fail-open of audit H-1. Returns `(body, truncated)`;
-/// `truncated` is true iff the upstream had more than `max_bytes` (the surplus is
-/// never accumulated).
-pub(crate) async fn read_body_capped(
-    mut resp: reqwest::Response,
-    max_bytes: usize,
-) -> Result<(Vec<u8>, bool), reqwest::Error> {
-    let mut buf: Vec<u8> = Vec::new();
-    while buf.len() < max_bytes {
-        match resp.chunk().await? {
-            Some(chunk) => {
-                let remaining = max_bytes - buf.len();
-                if chunk.len() > remaining {
-                    buf.extend_from_slice(&chunk[..remaining]);
-                    return Ok((buf, true)); // hit the cap mid-chunk; stop reading
-                }
-                buf.extend_from_slice(&chunk);
-            }
-            None => return Ok((buf, false)), // upstream ended within the cap
-        }
-    }
-    // Exactly at the cap: peek one more chunk to set the truncation flag. The
-    // surplus chunk is read into reqwest's buffer and immediately dropped — peak
-    // retained allocation stays at `max_bytes`.
-    let truncated = resp.chunk().await?.is_some();
-    Ok((buf, truncated))
-}
-
 #[cfg(test)]
 mod read_body_capped_tests {
     //! Regression guard for audit H-1: the tool-proxy must not buffer an entire
     //! attacker-controlled upstream body. `read_body_capped` must stop at the cap
     //! regardless of upstream size. Fails if reverted to whole-body buffering.
-    use super::read_body_capped;
+    use crate::web_fetch_policy::read_body_capped;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

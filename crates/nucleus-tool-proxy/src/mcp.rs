@@ -1273,11 +1273,14 @@ impl NucleusMcpServer {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            crate::web_fetch_policy::check_mime_type(content_type)?;
+            crate::web_fetch_policy::check_mime_type(
+                content_type,
+                self.state.web_fetch_mime_allow.as_deref(),
+            )?;
 
             // Bounded streaming read: never allocate the whole upstream body, so a
             // malicious page cannot OOM-kill the enforcement process (audit H-1).
-            let (bytes, truncated) = crate::read_body_capped(resp, max_bytes)
+            let (bytes, truncated) = crate::web_fetch_policy::read_body_capped(resp, max_bytes)
                 .await
                 .map_err(|e| format!("body read failed: {e}"))?;
             let body = String::from_utf8_lossy(&bytes);
