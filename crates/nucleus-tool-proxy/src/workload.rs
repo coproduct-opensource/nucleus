@@ -395,18 +395,22 @@ pub(crate) fn spawn_admitted(
     let drop_uid = if nix_getuid() == 0 { plan.uid } else { None };
     let hardened = drop_uid.is_some();
     if let Some(uid) = drop_uid {
-        // Hand the workload ownership of its own (root-created) work dir before
-        // dropping to it, or the unprivileged child could not write its scratch
-        // disk. The runtime is root here and does this once, before exec.
-        std::os::unix::fs::chown(&plan.work_dir, Some(uid), Some(uid)).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "cannot chown work dir {} to workload uid {uid}: {e}",
-                    plan.work_dir.display()
-                ),
-            )
-        })?;
+        // Best-effort: hand the workload ownership of its work dir so the
+        // unprivileged child can write its scratch. This is an ERGONOMIC aid,
+        // not the security control — the uid drop below is. It legitimately
+        // fails when the work dir is read-only (a pod with no writable scratch
+        // drive, where `/work` is on the read-only rootfs), and in that case the
+        // workload cannot write it regardless, so the failure is not fatal: log
+        // it and proceed. The privilege drop still happens unconditionally.
+        if let Err(e) = std::os::unix::fs::chown(&plan.work_dir, Some(uid), Some(uid)) {
+            tracing::warn!(
+                work_dir = %plan.work_dir.display(),
+                uid,
+                error = %e,
+                "could not chown the workload work dir to its uid; the workload will run \
+                 without ownership of it (expected when the scratch is read-only)"
+            );
+        }
         cmd.uid(uid);
         cmd.gid(uid);
     }
