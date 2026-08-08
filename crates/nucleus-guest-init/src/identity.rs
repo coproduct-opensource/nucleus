@@ -176,6 +176,74 @@ pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     })
 }
 
+/// The S3 audit-sink credentials, fetched over the workload API instead of
+/// read off the world-readable kernel command line.
+pub struct AuditCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    /// Present only for temporary (STS) credentials.
+    pub session_token: Option<String>,
+}
+
+/// Fetch the S3 audit-sink credentials, once.
+///
+/// Same discipline as [`fetch_broker_secret`], for the same reason: the host
+/// serves these EXACTLY ONCE, and fetching before `exec_proxy` — before any
+/// workload exists — is what makes "first" mean "the proxy". These credentials
+/// write the audit trail, so errors here name the failure and never echo the
+/// response body (which would put cloud credentials in the guest console log).
+///
+/// `Ok(None)` when the pod has no audit sink — the ordinary case, not a
+/// failure.
+pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_AUDIT_CREDENTIALS\n")
+        .map_err(|e| format!("failed to send FETCH_AUDIT_CREDENTIALS: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read audit-credentials response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        // Not `{e}` and not the body: a parse error that echoed the response
+        // would put the credentials in the guest console log.
+        .map_err(|_| "audit-credentials response was not valid JSON".to_string())?;
+    if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+        // "not provisioned" is the unremarkable no-audit-sink case; every other
+        // error (including "already served") is worth surfacing.
+        if err.contains("no audit credentials provisioned") {
+            return Ok(None);
+        }
+        return Err(err.to_string());
+    }
+    let access_key_id = parsed
+        .get("access_key_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "audit-credentials response had no `access_key_id`".to_string())?;
+    let secret_access_key = parsed
+        .get("secret_access_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "audit-credentials response had no `secret_access_key`".to_string())?;
+    let session_token = parsed
+        .get("session_token")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok(Some(AuditCredentials {
+        access_key_id,
+        secret_access_key,
+        session_token,
+    }))
+}
+
 /// Fetch this pod's caller-identity token for the node's management API.
 ///
 /// Over the per-pod workload-API socket, like every other per-pod artifact: the

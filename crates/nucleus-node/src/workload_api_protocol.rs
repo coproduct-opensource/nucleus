@@ -124,6 +124,22 @@ pub enum WorkloadApiCommand {
     /// `nucleus.auth_secret` and `nucleus.approval_secret` arrive today. Neither
     /// is a proxy-only capability for exactly that reason.
     FetchBrokerSecret,
+    /// `FETCH_AUDIT_CREDENTIALS` — request the cloud credentials for this pod's
+    /// S3 audit sink.
+    ///
+    /// # Served exactly ONCE per pod, like `FETCH_BROKER_SECRET`
+    ///
+    /// These are real, long-lived cloud credentials the host holds so the
+    /// in-guest tool-proxy can ship its audit log to S3. They used to ride the
+    /// kernel command line (`nucleus.aws_access_key_id` etc.), where
+    /// `/proc/cmdline` made them readable by the very workload the audit trail
+    /// is meant to witness — the C1 exposure. Moving them here restores the
+    /// intended split: `nucleus-guest-init` fetches before `exec_proxy`, so
+    /// before any workload exists, and the one-shot refuses whoever asks
+    /// second. A workload that steals the audit creds can erase its own trail,
+    /// so this gets the broker secret's delivery discipline, not the task
+    /// token's.
+    FetchAuditCredentials,
 }
 
 impl WorkloadApiCommand {
@@ -143,6 +159,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
             WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
             WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
+            WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
         }
     }
 }
@@ -209,6 +226,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_DLC_ADMISSION" => Ok(WorkloadApiCommand::FetchDlcAdmission),
         "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
         "FETCH_POD_CALLER_TOKEN" => Ok(WorkloadApiCommand::FetchPodCallerToken),
+        "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -226,6 +244,7 @@ mod tests {
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::Ping,
+            WorkloadApiCommand::FetchAuditCredentials,
         ] {
             assert_eq!(parse_command(cmd.as_wire().as_bytes()), Ok(cmd));
             // Trailing newline (the on-wire form) and surrounding whitespace
@@ -381,6 +400,7 @@ mod tests {
                 WorkloadApiCommand::FetchDlcAdmission => "FETCH_DLC_ADMISSION",
                 WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
                 WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
+                WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
             }
         }
         for cmd in [
@@ -388,6 +408,7 @@ mod tests {
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::FetchDlcAdmission,
             WorkloadApiCommand::FetchBrokerSecret,
+            WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::Ping,
         ] {
             assert_eq!(assert_known(cmd), cmd.as_wire());

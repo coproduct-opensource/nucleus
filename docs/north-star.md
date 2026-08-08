@@ -95,19 +95,21 @@ What each status means, and what it deliberately does not:
   and it is **falsified today by a channel FM-5 does not model**: the guest
   kernel command line (`/proc/cmdline`) is world-readable inside the VM, and
   `firecracker_config.rs` emits `nucleus.approval_secret` there on **every** pod
-  (~line 631; the code comment at ~615 states outright that the agent can read
-  it), plus the AWS credentials (`aws_access_key_id` / `_secret_access_key` /
-  `_session_token`) whenever an audit sink is configured. A workload that reads
-  `/proc/cmdline` learns a real secret Nucleus holds on its behalf, so "cannot
-  learn the secrets" is not established. Also unmodeled: mounts,
+  (the code comment at the emission site states outright that the agent can
+  read it). A workload that reads `/proc/cmdline` learns a real secret Nucleus
+  holds on its behalf, so "cannot learn the secrets" is not established. The
+  AWS audit-sink credentials used to ride the same channel; as of 2026-08-08
+  they are fetched over the workload API instead (`FETCH_AUDIT_CREDENTIALS`,
+  served once before any workload exists), and the cmdline-secret ratchet in
+  `snapshot.rs` pins them as no-longer-emitted. Also unmodeled: mounts,
   `/proc/<pid>/environ`, `/etc/nucleus/*`; and the `_ => OrdinaryData`
-  classifier fallthrough is trusted, not proved. **Re-earning C1** requires:
-  get `approval_secret` off the cmdline (needs a host-side or drand-only
-  approval tier — the HMAC key is used *in the guest* today), move the AWS
-  creds to a non-cmdline channel, and add the cmdline as a modelled channel to
-  `ChannelAdmissionExtracted` so any Secret-on-cmdline becomes a red theorem.
-  The task-token cmdline copies are not secrets (public issuer + host-pinned
-  nonce) and are not the blocker here.
+  classifier fallthrough is trusted, not proved. **Re-earning C1** still
+  requires: get `approval_secret` off the cmdline (signature-based approvals —
+  the guest verifying an approver's Ed25519 signature against a *public* key
+  removes the shared HMAC secret entirely), and add the cmdline as a modelled
+  channel to `ChannelAdmissionExtracted` so any Secret-on-cmdline becomes a red
+  theorem. The task-token cmdline copies are not secrets (public issuer +
+  host-pinned nonce) and are not the blocker here.
 - **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
   is outside every model. `docs/cross-pod-view.md` is the design.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod

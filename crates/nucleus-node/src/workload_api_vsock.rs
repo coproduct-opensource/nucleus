@@ -65,6 +65,19 @@ pub struct DlcAdmissionMaterial {
     pub credentials: String,
 }
 
+/// Cloud credentials for the pod's S3 audit sink, served over
+/// `FETCH_AUDIT_CREDENTIALS` exactly once per pod.
+///
+/// Deliberately NO `Debug` derive: these are long-lived cloud credentials, and
+/// a derived `Debug` would put them one `{material:?}` away from a log line.
+#[derive(Clone)]
+pub struct AuditCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    /// Present only for temporary (STS) credentials.
+    pub session_token: Option<String>,
+}
+
 impl std::fmt::Debug for WorkloadApiVsockBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkloadApiVsockBridge")
@@ -105,6 +118,12 @@ pub struct PodMaterial {
     /// this listener accepts — a per-connection flag would make "once" mean
     /// "once per connection", which is not a restriction.
     pub broker_secret_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The S3 audit-sink credentials, off the kernel command line at last.
+    /// `None` when the pod has no audit sink or the node holds no credentials.
+    pub audit_creds: Option<AuditCredentials>,
+    /// Whether the audit credentials have been served — one flag across every
+    /// connection, for the same reason as `broker_secret_served`.
+    pub audit_creds_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WorkloadApiVsockBridge {
@@ -135,14 +154,12 @@ impl WorkloadApiVsockBridge {
         material: PodMaterial,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<Self> {
-        let PodMaterial {
-            task_token,
-            caller_token,
-            dlc_admission,
-            broker_secret,
-            broker_secret_served,
-            broker_port,
-        } = material;
+        // One Arc over the whole bundle rather than a per-field clone into
+        // `handle_connection`: the parameter list crossed clippy's
+        // `too_many_arguments` line when the audit credentials arrived, and the
+        // fields are read-only anyway — the one-shot flags inside are already
+        // their own `Arc<AtomicBool>`s, so sharing the bundle shares them.
+        let material = std::sync::Arc::new(material);
         // Firecracker naming convention: {uds_path}_{port}
         let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
 
@@ -204,26 +221,15 @@ impl WorkloadApiVsockBridge {
                         match accept_result {
                             Ok((stream, _)) => {
                                 let manager = identity_manager.clone();
-                                let task_token = task_token.clone();
-                                let dlc_admission = dlc_admission.clone();
-                                let broker_secret = broker_secret.clone();
-                                // Arc, so the one-shot flag is SHARED across every
-                                // connection this listener accepts. A per-connection
-                                // flag would make "once" mean "once per connection",
-                                // which is not a restriction at all.
-                                let broker_secret_served = std::sync::Arc::clone(&broker_secret_served);
-                                let caller_token = caller_token.clone();
+                                // The SAME Arc for every connection, so the
+                                // one-shot flags inside stay one flag each. A
+                                // per-connection flag would make "once" mean
+                                // "once per connection", which is not a
+                                // restriction at all.
+                                let material = std::sync::Arc::clone(&material);
                                 tokio::spawn(async move {
-                                    if let Err(err) = handle_connection(
-                                        stream, manager, pod_id, task_token, caller_token,
-                                        dlc_admission,
-                                        BrokerHandout {
-                                            secret: broker_secret,
-                                            port: broker_port,
-                                            served: broker_secret_served,
-                                        },
-                                    )
-                                    .await
+                                    if let Err(err) =
+                                        handle_connection(stream, manager, pod_id, material).await
                                     {
                                         debug!("workload API connection closed: {err}");
                                     }
@@ -298,19 +304,6 @@ impl WorkloadApiVsockBridge {
 ///
 /// `Acquire`/`AcqRel` via `swap` rather than a load-then-store: two concurrent
 /// connections must not both observe "not yet served".
-/// The broker capability as one connection sees it.
-///
-/// Three fields that are one thing: the secret, where to use it, and whether it
-/// has already been handed out. Grouping them is not only clippy's argument
-/// count — it is that delivering any of them without the others produces a proxy
-/// that can sign but not connect, or connect but not sign, and the one-shot flag
-/// must be the SAME flag across every connection or "once" means "once each".
-struct BrokerHandout {
-    secret: Option<String>,
-    port: u32,
-    served: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
 fn handle_fetch_broker_secret(
     secret: Option<&str>,
     port: u32,
@@ -342,6 +335,39 @@ fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String
     }
 }
 
+/// Serve the S3 audit-sink credentials EXACTLY ONCE.
+///
+/// Same mechanism and same reasoning as [`handle_fetch_broker_secret`]: any
+/// guest process can open `AF_VSOCK`, so the only thing distinguishing the
+/// mediating tool-proxy from the workload it audits is that `nucleus-guest-init`
+/// asks FIRST, before `exec_proxy`. These credentials write the audit trail; a
+/// workload holding them could erase or forge its own record, which is exactly
+/// the C1 exposure that existed while they rode the world-readable kernel
+/// command line. A refusal for an absent credential set must not consume the
+/// one-shot (a pod with no audit sink asks and is told no, harmlessly).
+fn handle_fetch_audit_credentials(
+    creds: Option<&AuditCredentials>,
+    already_served: &std::sync::atomic::AtomicBool,
+) -> String {
+    use std::sync::atomic::Ordering;
+    let Some(creds) = creds else {
+        return r#"{"error":"no audit credentials provisioned for this pod"}"#.to_string();
+    };
+    if already_served.swap(true, Ordering::AcqRel) {
+        tracing::warn!(
+            "refused a repeat FETCH_AUDIT_CREDENTIALS — the credentials are served once, before \
+             the workload exists; a second request is a bug or an attempt to obtain them"
+        );
+        return r#"{"error":"audit credentials already served"}"#.to_string();
+    }
+    serde_json::json!({
+        "access_key_id": creds.access_key_id,
+        "secret_access_key": creds.secret_access_key,
+        "session_token": creds.session_token,
+    })
+    .to_string()
+}
+
 fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> String {
     match token {
         Some(t) => serde_json::json!({
@@ -358,10 +384,7 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     manager: IdentityManager,
     pod_id: uuid::Uuid,
-    task_token: Option<crate::session_mint::MintedTaskToken>,
-    caller_token: Option<String>,
-    dlc_admission: Option<DlcAdmissionMaterial>,
-    broker: BrokerHandout,
+    material: std::sync::Arc<PodMaterial>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -390,24 +413,36 @@ async fn handle_connection(
                 debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
                 // Served for the pod bound to THIS socket. The request carries no
                 // pod id and could not be believed if it did.
-                match &caller_token {
+                match &material.caller_token {
                     Some(t) => format!(r#"{{"caller_token":"{t}"}}"#),
                     None => r#"{"error":"no caller token minted for this pod"}"#.to_string(),
                 }
             }
             Ok(WorkloadApiCommand::FetchTaskToken) => {
                 debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
-                handle_fetch_task_token(task_token.as_ref())
+                handle_fetch_task_token(material.task_token.as_ref())
             }
             Ok(WorkloadApiCommand::FetchDlcAdmission) => {
                 debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
-                handle_fetch_dlc_admission(dlc_admission.as_ref())
+                handle_fetch_dlc_admission(material.dlc_admission.as_ref())
             }
             Ok(WorkloadApiCommand::FetchBrokerSecret) => {
                 // Value never logged, at any level: this is the one workload-API
                 // payload whose possession IS the capability.
                 debug!("workload API FETCH_BROKER_SECRET for pod {}", pod_id);
-                handle_fetch_broker_secret(broker.secret.as_deref(), broker.port, &broker.served)
+                handle_fetch_broker_secret(
+                    material.broker_secret.as_deref(),
+                    material.broker_port,
+                    &material.broker_secret_served,
+                )
+            }
+            Ok(WorkloadApiCommand::FetchAuditCredentials) => {
+                // Like the broker secret: never log the value, at any level.
+                debug!("workload API FETCH_AUDIT_CREDENTIALS for pod {}", pod_id);
+                handle_fetch_audit_credentials(
+                    material.audit_creds.as_ref(),
+                    &material.audit_creds_served,
+                )
             }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
@@ -920,6 +955,81 @@ mod tests {
         assert_eq!(
             parse_command(b"FETCH_BROKER_SECRET\n").unwrap(),
             WorkloadApiCommand::FetchBrokerSecret
+        );
+    }
+
+    fn audit_creds() -> AuditCredentials {
+        AuditCredentials {
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_access_key: "hunter2secret".to_string(),
+            session_token: Some("ststoken".to_string()),
+        }
+    }
+
+    /// **The audit credentials get the broker secret's discipline.** They write
+    /// the audit trail; a workload holding them can erase its own record. Only
+    /// "asked first" distinguishes the proxy from the workload, so serving
+    /// twice hands the trail's keys to whoever asks second.
+    #[test]
+    fn the_audit_credentials_are_served_exactly_once() {
+        let served = AtomicBool::new(false);
+        let first = handle_fetch_audit_credentials(Some(&audit_creds()), &served);
+        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["access_key_id"], "AKIAEXAMPLE");
+        assert_eq!(v["secret_access_key"], "hunter2secret");
+        assert_eq!(v["session_token"], "ststoken");
+
+        let second = handle_fetch_audit_credentials(Some(&audit_creds()), &served);
+        assert!(
+            second.contains("already served"),
+            "a second request must be refused: {second}"
+        );
+        assert!(
+            !second.contains("hunter2secret"),
+            "and must not leak the credentials in the refusal: {second}"
+        );
+    }
+
+    /// Long-lived keys without an STS session token are the common static-cred
+    /// case; the reply must carry an explicit null, not omit the field, so the
+    /// guest client can tell "no session token" from "truncated reply".
+    #[test]
+    fn static_credentials_serve_a_null_session_token() {
+        let served = AtomicBool::new(false);
+        let reply = handle_fetch_audit_credentials(
+            Some(&AuditCredentials {
+                session_token: None,
+                ..audit_creds()
+            }),
+            &served,
+        );
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert!(v["session_token"].is_null(), "got: {reply}");
+        assert_eq!(v["access_key_id"], "AKIAEXAMPLE");
+    }
+
+    /// A pod with no audit sink asks (guest-init always asks) and must be told
+    /// no WITHOUT burning the one-shot — otherwise a misprovisioned pod could
+    /// consume its own capability before the proxy exists to want it.
+    #[test]
+    fn an_absent_credential_set_does_not_consume_the_one_shot() {
+        let served = AtomicBool::new(false);
+        let r = handle_fetch_audit_credentials(None, &served);
+        assert!(r.contains("error"), "got: {r}");
+        assert!(
+            !served.load(std::sync::atomic::Ordering::Acquire),
+            "a refusal for an absent credential set must not mark it served"
+        );
+    }
+
+    /// `FETCH_AUDIT_CREDENTIALS` must be a command the parser knows, or the
+    /// guest client fails closed far from the cause.
+    #[test]
+    fn the_audit_credentials_command_round_trips_through_the_parser() {
+        use crate::workload_api_protocol::{parse_command, WorkloadApiCommand};
+        assert_eq!(
+            parse_command(b"FETCH_AUDIT_CREDENTIALS\n").unwrap(),
+            WorkloadApiCommand::FetchAuditCredentials
         );
     }
 }

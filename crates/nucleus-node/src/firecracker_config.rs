@@ -662,17 +662,21 @@ impl FirecrackerConfig {
                     args.push_str(&format!(" nucleus.audit_s3_endpoint={endpoint}"));
                 }
             }
-            // Forward ambient AWS credentials for S3 audit sink
-            for (env_key, arg_key) in [
-                ("AWS_ACCESS_KEY_ID", "nucleus.aws_access_key_id"),
-                ("AWS_SECRET_ACCESS_KEY", "nucleus.aws_secret_access_key"),
-                ("AWS_SESSION_TOKEN", "nucleus.aws_session_token"),
-                ("AWS_DEFAULT_REGION", "nucleus.aws_default_region"),
-            ] {
-                if let Ok(val) = std::env::var(env_key) {
-                    if let Some(ref mut args) = boot_args {
-                        args.push_str(&format!(" {arg_key}={val}"));
-                    }
+            // The AWS credentials are NO LONGER EMITTED here.
+            //
+            // They were forwarded as `nucleus.aws_access_key_id` /
+            // `_secret_access_key` / `_session_token`, which put long-lived
+            // cloud credentials on the world-readable `/proc/cmdline` — the C1
+            // exposure, and the sharpest instance of it: these keys write the
+            // audit trail, so the workload they were readable by could erase
+            // its own record. They now ride the workload API
+            // (`FETCH_AUDIT_CREDENTIALS`, served once, before any workload
+            // exists) — see `handle_fetch_audit_credentials`. Only the REGION
+            // stays: it is per-fleet configuration, not a secret, and the
+            // snapshot guard classifies it as shared.
+            if let Ok(region) = std::env::var("AWS_DEFAULT_REGION") {
+                if let Some(ref mut args) = boot_args {
+                    args.push_str(&format!(" nucleus.aws_default_region={region}"));
                 }
             }
         }

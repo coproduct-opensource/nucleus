@@ -169,6 +169,10 @@ pub const PER_POD_SECRET_KEYS: &[&str] = &[
     "nucleus.task_token_hex",
     "nucleus.task_token_issuer",
     "nucleus.task_token_nonce",
+    // The three audit-sink credentials are NO LONGER EMITTED (they ride
+    // `FETCH_AUDIT_CREDENTIALS` over the workload API now) but stay listed:
+    // the denylist is categorical, so a regression that puts them back on the
+    // command line is refused here rather than silently clonable.
     "nucleus.aws_access_key_id",
     "nucleus.aws_secret_access_key",
     "nucleus.aws_session_token",
@@ -382,26 +386,35 @@ mod tests {
     /// [`snapshot_safety`] becomes satisfiable by construction. **That was
     /// wrong**, and this test is what makes the error visible instead of
     /// discovering it when the warm pool is built. Phase 1 deleted exactly one
-    /// key — `nucleus.auth_secret` — and EIGHT remain.
+    /// key — `nucleus.auth_secret` — and FIVE remain.
     ///
-    /// Eight, not five: the earlier version of this test scanned only for
-    /// `nucleus.key=` and asserted five. It **silently missed the three AWS
+    /// The count has been wrong before, in the dangerous direction: an earlier
+    /// version of this test scanned only for `nucleus.key=` and asserted five
+    /// while EIGHT were emitted. It **silently missed the three AWS
     /// audit credentials** (`nucleus.aws_access_key_id` /
-    /// `_secret_access_key` / `_session_token`), because they are emitted not as
-    /// a `format!("… nucleus.aws_…={val}")` literal but through a table LOOP
-    /// (`for (env_key, arg_key) in [("AWS_ACCESS_KEY_ID", "nucleus.aws_access_key_id"), …]`),
-    /// so the literal `nucleus.aws_access_key_id=` never appears in the source.
+    /// `_secret_access_key` / `_session_token`), because they were emitted not
+    /// as a `format!("… nucleus.aws_…={val}")` literal but through a table LOOP
+    /// (`for (env_key, arg_key) in [("AWS_ACCESS_KEY_ID", …), …]`),
+    /// so the literal `nucleus.aws_access_key_id=` never appeared in the source.
     /// A real secret — long-lived cloud credentials — rode the world-readable
     /// `/proc/cmdline` uncounted by the very gate meant to track it. (An earlier
     /// miscount for a different reason — a shell pipeline deduplicating
     /// `nucleus.task_token_nonce` — is why this pins the SET, not a number.)
     ///
     /// So this scan matches emission in EITHER form: a direct `{key}=` literal
-    /// (the `format!` sites) OR a quoted `"{key}"` table entry (the audit-cred
-    /// loop). Comments here use backticks, not double quotes, so the quoted-form
-    /// match does not re-introduce the false positive the `=`-only scan avoided
-    /// (`nucleus.auth_secret` appears only in prose and matches neither form,
-    /// which is correct — it is no longer emitted).
+    /// (the `format!` sites) OR a quoted `"{key}"` table entry (the form the
+    /// audit-cred loop used while it existed). Comments here use backticks, not
+    /// double quotes, so the quoted-form match does not re-introduce the false
+    /// positive the `=`-only scan avoided (`nucleus.auth_secret` appears only
+    /// in prose and matches neither form, which is correct — it is no longer
+    /// emitted).
+    ///
+    /// **Back to five (2026-08-08):** the three AWS audit credentials now ride
+    /// the workload API (`FETCH_AUDIT_CREDENTIALS`, served once before any
+    /// workload exists) and are no longer emitted onto the command line. They
+    /// STAY in [`PER_POD_SECRET_KEYS`]: the denylist is categorical, so a
+    /// regression that re-emits them is refused by `snapshot_safety` at runtime
+    /// and re-counted here at test time.
     ///
     /// A ratchet in both directions, and it is also the only guard on the
     /// **confidentiality** exposure the C1 ledger row was demoted for: every key
@@ -409,13 +422,14 @@ mod tests {
     /// per-pod secret fails here; removing one is progress and forces this list
     /// to be re-stated rather than quietly drifting.
     #[test]
-    fn the_remaining_distance_to_a_snapshottable_base_is_eight_keys() {
+    fn the_remaining_distance_to_a_snapshottable_base_is_five_keys() {
         let src = include_str!("firecracker_config.rs");
         let mut emitted: Vec<&str> = Vec::new();
         for key in PER_POD_SECRET_KEYS {
-            // Direct `{key}=` (format! sites) OR quoted `"{key}"` (the audit-cred
-            // table loop). The second disjunct is the fix: without it the AWS
-            // credentials, emitted via the loop, were never counted.
+            // Direct `{key}=` (format! sites) OR quoted `"{key}"` (a table-loop
+            // entry). The second disjunct is the fix that first caught the AWS
+            // credentials: emitted via a loop, the `{key}=` literal never
+            // appeared in the source.
             if src.contains(&format!("{key}=")) || src.contains(&format!("\"{key}\"")) {
                 emitted.push(key);
             }
@@ -424,9 +438,6 @@ mod tests {
 
         let expected = [
             "nucleus.approval_secret",
-            "nucleus.aws_access_key_id",
-            "nucleus.aws_secret_access_key",
-            "nucleus.aws_session_token",
             "nucleus.sandbox_token",
             "nucleus.task_token_hex",
             "nucleus.task_token_issuer",

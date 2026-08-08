@@ -154,6 +154,29 @@ fn run() -> Result<(), String> {
             }
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
+
+        // The S3 audit-sink credentials, fetched with the same before-
+        // `exec_proxy` ordering as the broker capability (the host serves them
+        // once; arriving before any workload exists is the property). They
+        // used to arrive as `nucleus.aws_*` kernel args, world-readable by the
+        // workload whose audit trail they write.
+        //
+        // Not fatal when absent: most pods have no audit sink, and the
+        // tool-proxy's S3 sink init is non-fatal on missing credentials — the
+        // failure mode is audit degradation, which the proxy logs.
+        match identity::fetch_audit_credentials(port) {
+            Ok(Some(creds)) => {
+                std::env::set_var("AWS_ACCESS_KEY_ID", &creds.access_key_id);
+                std::env::set_var("AWS_SECRET_ACCESS_KEY", &creds.secret_access_key);
+                if let Some(token) = &creds.session_token {
+                    std::env::set_var("AWS_SESSION_TOKEN", token);
+                }
+                // Presence only — never the values, never their length.
+                eprintln!("fetched audit-sink credentials over vsock");
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("no audit-sink credentials over vsock: {err}"),
+        }
     }
 
     let mut token_from_vsock = false;
@@ -299,16 +322,11 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // AWS credentials for S3 audit sink (optional)
-    for (arg, env_var) in [
-        ("nucleus.aws_access_key_id", "AWS_ACCESS_KEY_ID"),
-        ("nucleus.aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
-        ("nucleus.aws_session_token", "AWS_SESSION_TOKEN"),
-        ("nucleus.aws_default_region", "AWS_DEFAULT_REGION"),
-    ] {
-        if let Some(val) = parse_cmdline_secret(&cmdline, arg) {
-            std::env::set_var(env_var, val);
-        }
+    // The AWS *credentials* no longer ride the kernel command line — they are
+    // fetched over the workload API above, before any workload exists. Only
+    // the region remains here: per-fleet configuration, not a secret.
+    if let Some(val) = parse_cmdline_secret(&cmdline, "nucleus.aws_default_region") {
+        std::env::set_var("AWS_DEFAULT_REGION", val);
     }
 
     let audit_path = resolve_audit_path();

@@ -2743,6 +2743,25 @@ async fn spawn_firecracker_pod(
                     broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                         false,
                     )),
+                    // The S3 audit-sink credentials, served once over this
+                    // socket instead of riding the world-readable kernel
+                    // command line (the C1 exposure). Same source the cmdline
+                    // emission read: the node's ambient AWS environment.
+                    // Provisioned only when the pod has an audit sink, and only
+                    // as a pair — an access key id without its secret (or the
+                    // reverse) is not a credential, so `None` beats half of one.
+                    audit_creds: spec.spec.audit_sink.as_ref().and_then(|_| {
+                        let id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
+                        let key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
+                        Some(workload_api_vsock::AuditCredentials {
+                            access_key_id: id,
+                            secret_access_key: key,
+                            session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
+                        })
+                    }),
+                    audit_creds_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    )),
                 },
                 // Only when jailed: unjailed Firecracker runs as this same user
                 // and can already connect. Passing an owner there would hand our
