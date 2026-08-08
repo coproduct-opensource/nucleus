@@ -117,6 +117,53 @@ pub fn check_mime_type(content_type: &str) -> Result<(), String> {
     }
 }
 
+/// Whether a redirect hop to `url` may be followed under the pod's egress
+/// policy — the SAME `dns_allow` + `url_allow` the initial request is checked
+/// against.
+///
+/// This is the fix for the SSRF/exfil vector: reqwest follows redirects by
+/// default, and checking only the initial and final URL lets an allowlisted
+/// host `302` the fetch through an INTERMEDIATE host the policy never
+/// authorized (attacker data in the redirect URL reaches it before any content
+/// check). Every hop is now gated by this, so a redirect that escapes the
+/// allowlist is refused before the request is sent. Empty allowlists mean
+/// "open", matching the initial-request semantics.
+pub fn redirect_hop_allowed(dns_allow: &[String], url_allow: &[String], url: &url::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    let port = url.port_or_known_default().unwrap_or(443);
+    check_dns_allowlist(dns_allow, host, port).is_ok()
+        && check_url_allowlist(url_allow, url.as_str()).is_ok()
+}
+
+/// Build the web_fetch HTTP client with a redirect policy that re-checks EVERY
+/// hop against the pod's `dns_allow`/`url_allow` (via [`redirect_hop_allowed`]).
+/// A redirect escaping the allowlist fails the request; the chain is bounded to
+/// 10 hops as defense in depth. This is the SSRF/exfil fix — without it reqwest
+/// follows redirects by default and only the first and last URL are validated.
+pub fn build_web_fetch_client(
+    timeout: std::time::Duration,
+    dns_allow: Vec<String>,
+    url_allow: Vec<String>,
+) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent("nucleus-tool-proxy/0.1")
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            let target = attempt.url().clone();
+            if redirect_hop_allowed(&dns_allow, &url_allow, &target) {
+                attempt.follow()
+            } else {
+                attempt.error(format!(
+                    "redirect to {target} is blocked by the pod's egress policy"
+                ))
+            }
+        }))
+        .build()
+}
+
 /// Validate the final URL after redirects against the DNS allowlist.
 /// This prevents open-redirect bypass attacks where an allowlisted domain
 /// redirects to a non-allowlisted domain.
@@ -198,5 +245,40 @@ mod tests {
         assert!(check_mime_type("application/octet-stream").is_err());
         assert!(check_mime_type("image/png").is_err());
         assert!(check_mime_type("application/zip").is_err());
+    }
+
+    /// **The redirect-hop gate refuses an escape from the allowlist.** An
+    /// allowlisted host that 302s to a non-allowlisted host must be blocked
+    /// before the intermediate request is sent — the SSRF/exfil vector.
+    #[test]
+    fn a_redirect_hop_outside_the_allowlist_is_refused() {
+        let url_allow = vec!["https://docs.rs/*".to_string()];
+        let dns_allow = vec!["docs.rs".to_string()];
+        let evil = url::Url::parse("https://evil.example/steal?data=secret").unwrap();
+        assert!(
+            !redirect_hop_allowed(&dns_allow, &url_allow, &evil),
+            "a redirect to a host outside the allowlist must not be followed"
+        );
+        let metadata = url::Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
+        assert!(!redirect_hop_allowed(&dns_allow, &url_allow, &metadata));
+    }
+
+    /// A redirect that STAYS inside the allowlist is still followed — the gate
+    /// tightens escapes, it does not break legitimate same-policy redirects.
+    #[test]
+    fn a_redirect_hop_inside_the_allowlist_is_followed() {
+        // `**` spans path separators; `*` does not (see url_glob_match).
+        let url_allow = vec!["https://docs.rs/**".to_string()];
+        let dns_allow = vec!["docs.rs".to_string()];
+        let ok = url::Url::parse("https://docs.rs/crate/serde/latest").unwrap();
+        assert!(redirect_hop_allowed(&dns_allow, &url_allow, &ok));
+    }
+
+    /// Empty allowlists mean "open" — a pod with no egress policy follows
+    /// redirects anywhere, matching how its initial request is unrestricted.
+    #[test]
+    fn empty_allowlists_permit_any_redirect_hop() {
+        let any = url::Url::parse("https://anywhere.example/x").unwrap();
+        assert!(redirect_hop_allowed(&[], &[], &any));
     }
 }

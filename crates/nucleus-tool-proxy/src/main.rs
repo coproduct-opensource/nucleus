@@ -1548,14 +1548,8 @@ async fn main() -> Result<(), ApiError> {
 
     let audit = build_audit_log(&args, &auth).await?;
 
-    // Build HTTP client for web fetch
-    let web_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(args.web_fetch_timeout_secs))
-        .user_agent("nucleus-tool-proxy/0.1")
-        .build()
-        .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
-
-    // Extract DNS and URL allow lists from spec
+    // Extract DNS and URL allow lists from spec (needed BEFORE the client is
+    // built, so the redirect policy can re-check every hop against them).
     let dns_allow = spec
         .spec
         .network
@@ -1568,6 +1562,17 @@ async fn main() -> Result<(), ApiError> {
         .as_ref()
         .map(|n| n.url_allow.clone())
         .unwrap_or_default();
+
+    // Build the web_fetch HTTP client with the allowlist-enforcing redirect
+    // policy (see `web_fetch_policy::build_web_fetch_client` — every redirect
+    // hop is re-checked, closing the SSRF/exfil vector where an allowlisted
+    // host redirects the fetch to a host the policy never authorized).
+    let web_client = web_fetch_policy::build_web_fetch_client(
+        Duration::from_secs(args.web_fetch_timeout_secs),
+        dns_allow.clone(),
+        url_allow.clone(),
+    )
+    .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
     // Build attestation verifier
     let attestation_config = {
@@ -4418,6 +4423,9 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
     let webhook = if let Some(url) = args.audit_webhook.as_ref() {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            // Never chase a redirect when shipping audit records — a webhook
+            // that 3xx's to another host would leak the audit stream there.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ApiError::Spec(format!("failed to build webhook client: {e}")))?;
         info!("audit webhook configured: {}", url);
