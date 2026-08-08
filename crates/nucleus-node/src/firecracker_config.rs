@@ -557,10 +557,8 @@ impl FirecrackerConfig {
         vsock_path: &Path,
         image: &nucleus_spec::ImageSpec,
         net_plan: Option<&net::NetPlan>,
-        auth_secret: &str,
         approval_pubkeys: &str,
         workload_api_port: Option<u32>,
-        task_token: Option<&crate::session_mint::MintedTaskToken>,
         // When jailed, every path emitted below is IN-JAIL, not host.
         jail: Option<&JailLayout>,
     ) -> Self {
@@ -636,7 +634,6 @@ impl FirecrackerConfig {
         // nothing else with the key — reading it grants no forging power, so
         // it is safe on a world-readable channel, and it is per-node config,
         // so it does not block a snapshot base (see `SHARED_CONFIG_KEYS`).
-        let _ = auth_secret;
         boot_args = match boot_args.take() {
             Some(args) => Some(format!(
                 "{args} nucleus.approval_pubkeys={approval_pubkeys}"
@@ -692,96 +689,39 @@ impl FirecrackerConfig {
             }
         }
 
-        // Sandbox proof token — the tool-proxy refuses to start without SOME
-        // proof it is running inside a managed sandbox.
+        // NO per-pod material is written to the kernel command line.
         //
-        // # Emitted only when the pod will have no SVID
+        // The Tier-3 `nucleus.sandbox_token` fallback and the identity-less
+        // task-token copy (`nucleus.task_token_hex` and siblings) have both been
+        // RETIRED (2026-08-08). This
+        // is the deletion that lets C1's `Cmdline` channel theorem be proved
+        // GREEN over EVERY pod rather than only identity-bearing ones, and it
+        // is a deletion rather than a relocation because the fallback was
+        // already dead on every rootfs nucleus ships:
         //
-        // This is Tier 3 of `sandbox_proof`: the fallback for a workload with no
-        // SPIFFE identity. A pod that gets an identity reaches Tier 1 or Tier 2
-        // from its SVID and never consults this token — so emitting it there put
-        // a per-pod secret on the world-readable kernel command line to be
-        // ignored.
+        //   * The Tier-3 token is verified with the tool-proxy's auth secret
+        //     (`try_orchestrator_token`). The guest gets that secret only from
+        //     `nucleus.auth_secret` (DELETED from the cmdline in Phase 1) or
+        //     `/etc/nucleus/auth.secret` (written ONLY under
+        //     `build-rootfs.sh --legacy-secrets`, which no build path — CI
+        //     boot, release, quickstart, Makefile — passes). So on a shipped
+        //     rootfs the guest's auth secret is empty, while the NODE signs the
+        //     token with its required-non-empty `proxy_auth_secret`. The HMAC
+        //     never matches: the token could not be verified, so it proved
+        //     nothing and only sat on the world-readable cmdline as a Secret.
         //
-        // `workload_api_port` is exactly the right condition and not a proxy for
-        // it: `net::workload_api_port_for` and `net::identity_registration` are
-        // the same predicate — identity enabled AND the egress grant granted —
-        // stated on the advertising and serving sides. So `Some` here means the
-        // pod will be registered and will have an SVID to prove itself with.
+        // An identity-BEARING pod reaches Tier 1/2 from its SVID and fetches
+        // its task token over the workload API (`FETCH_TASK_TOKEN`), so it is
+        // fully served without either cmdline value. An identity-LESS
+        // Firecracker pod has no Tier 1/2 SVID and, now, no Tier 3 either — it
+        // fails closed with `SandboxProofError::NakedProcess`, which on a
+        // shipped rootfs is the outcome it already had. Retiring the dead
+        // fallback makes that failure honest instead of routing it through an
+        // unverifiable secret on `/proc/cmdline`.
         //
-        // Deleting it unconditionally would be wrong, and that is why this is a
-        // condition rather than a removal: a node with identity management off,
-        // or a pod whose grant was denied, has Tier 3 as its ONLY proof, and the
-        // tool-proxy exits fatally when no tier succeeds.
-        //
-        // # This deadlocked every launch once, and what changed
-        //
-        // The condition shipped while `spawn_firecracker_pod` started the
-        // workload API bridge AFTER `wait_for_proxy_health`. An identity-bearing
-        // pod then had no proof at the only moment that mattered: the SVID
-        // source did not exist yet, Tier 3 was gone, the guest exited as PID 1,
-        // and every launch failed with "proxy health check timed out". Observed
-        // on real hardware and invisible to every unit test, because the
-        // omission is correct in isolation and wrong only in composition with
-        // that ordering.
-        //
-        // The bridge now starts BEFORE the health check, which is what makes
-        // this safe — not any improvement in the reasoning above.
-        // `the_workload_api_bridge_starts_before_the_health_check` pins that
-        // precondition, so if the bridge moves back this fails rather than
-        // deadlocking a fleet.
-        if workload_api_port.is_none() {
-            use sha2::{Digest, Sha256};
-            let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
-            let spec_hash = hex::encode(Sha256::digest(spec_yaml.as_bytes()));
-            let sandbox_token = nucleus_client::generate_sandbox_token(
-                auth_secret.as_bytes(),
-                "firecracker",
-                &spec_hash,
-            );
-            boot_args = match boot_args.take() {
-                Some(args) => Some(format!("{args} nucleus.sandbox_token={sandbox_token}")),
-                None => Some(format!("nucleus.sandbox_token={sandbox_token}")),
-            };
-        }
-
-        // Inject the live-path session capability token via the kernel cmdline
-        // — ONLY for a pod that will NOT have an identity, mirroring the
-        // `sandbox_token` conditional above and gated on the same predicate.
-        //
-        // An identity-bearing pod fetches this token over the workload API
-        // (`FETCH_TASK_TOKEN`, per-pod socket, after boot), and guest-init
-        // already prefers that source (`token_from_vsock`). So for the
-        // configuration nucleus actually ships, this copy was redundant — and
-        // it was the LAST per-pod material of any kind on an identity-bearing
-        // pod's `/proc/cmdline`. The task token is defended by a host-pinned
-        // nonce rather than by secrecy, but `MaterialKind::TaskToken` is
-        // `Secret` in the FM-5 model, and a Secret on the world-readable
-        // cmdline is exactly what blocks C1 — so the copy is DELETED here
-        // rather than argued harmless. That argument would have had to be
-        // re-made every time `session_mint` changed; deleting the copy retires
-        // it.
-        //
-        // The identity-LESS path keeps the cmdline copy: it has no workload
-        // API socket to fetch over, so this is its only source, exactly as
-        // `sandbox_token` is its only proof.
-        if workload_api_port.is_none() {
-            if let Some(tok) = task_token {
-                let token_hex = hex::encode(tok.token_json.as_bytes());
-                boot_args = match boot_args.take() {
-                    Some(args) => Some(format!(
-                        "{args} nucleus.task_token_hex={token_hex} \
-                         nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
-                        tok.nonce_hex, tok.issuer_hex
-                    )),
-                    None => Some(format!(
-                        "nucleus.task_token_hex={token_hex} \
-                         nucleus.task_token_nonce={} nucleus.task_token_issuer={}",
-                        tok.nonce_hex, tok.issuer_hex
-                    )),
-                };
-            }
-        }
+        // If a Tier-3 fallback is ever wanted again, its verification key must
+        // arrive over a channel that is not the cmdline (the workload API is
+        // the established shape) — not by re-baking a fleet-shared secret.
 
         // Pure lowering seams (property-tested in `mod tests`): the money/boot
         // path uses the exact same functions the invariant tests assert over.
@@ -1091,115 +1031,94 @@ mod tests {
     /// the platform that can run a microVM. These therefore run in CI and in
     /// OrbStack, never on a macOS dev machine — the same trap that once hid the
     /// vsock accept path behind a `cfg` nobody compiled.
-    #[cfg(target_os = "linux")]
-    fn boot_args_with_identity(will_have_identity: bool) -> String {
-        boot_args_with_identity_and_token(will_have_identity, None)
-    }
-
-    /// Like [`boot_args_with_identity`] but with a real minted task token, so a
-    /// test can prove the token is EXCLUDED from an identity-bearing pod's
-    /// cmdline rather than merely absent because none was passed.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn boot_args_with_identity_and_token(
-        will_have_identity: bool,
-        task_token: Option<&crate::session_mint::MintedTaskToken>,
-    ) -> String {
+    fn boot_args_with_identity(will_have_identity: bool) -> String {
         let config = FirecrackerConfig::from_spec(
             &base_spec(),
             std::path::Path::new("/unused/firecracker.log"),
             std::path::Path::new("/unused/vsock.sock"),
             &image(true, false),
             None,
-            "auth-secret",
             "aa00bb11-approval-pubkeys",
             will_have_identity.then_some(15012),
-            task_token,
             None,
         );
         config.boot_source.boot_args.unwrap_or_default()
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn sample_task_token() -> crate::session_mint::MintedTaskToken {
-        crate::session_mint::MintedTaskToken {
-            token_json: r#"{"task":"demo"}"#.to_string(),
-            nonce_hex: "0011223344556677".to_string(),
-            issuer_hex: "aabbccdd".to_string(),
+    /// **No pod carries a Tier-3 `sandbox_token` on its cmdline — RETIRED.**
+    /// The fallback was verified with an auth secret the guest no longer has on
+    /// any shipped rootfs (`/etc/nucleus/auth.secret` is written only under
+    /// `--legacy-secrets`, and `nucleus.auth_secret` left the cmdline in
+    /// Phase 1), so the token could never verify: it was a dead Secret on a
+    /// world-readable channel. Gone for BOTH identity states now.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_pod_carries_a_sandbox_token_on_the_cmdline() {
+        for identity in [true, false] {
+            let args = boot_args_with_identity(identity);
+            assert!(
+                !args.contains("nucleus.sandbox_token"),
+                "identity={identity}: the retired Tier-3 token must not be emitted: {args}"
+            );
         }
     }
 
-    /// **A pod that will hold an SVID gets no Tier 3 token.**
-    ///
-    /// `sandbox_token` is the fallback proof for a workload with no SPIFFE
-    /// identity. A pod that gets one proves itself from the SVID and never reads
-    /// the token — so emitting it there put a per-pod secret on the
-    /// world-readable kernel command line to be ignored.
+    /// **No pod carries a task token on its cmdline — RETIRED.** Identity-bearing
+    /// pods fetch it over the workload API (`FETCH_TASK_TOKEN`); identity-less
+    /// pods have no verifiable proof at all now and fail closed. Either way the
+    /// cmdline copy is gone.
     #[cfg(target_os = "linux")]
     #[test]
-    fn an_identity_bearing_pod_carries_no_sandbox_token() {
-        let args = boot_args_with_identity(true);
-        assert!(
-            !args.contains("nucleus.sandbox_token"),
-            "a pod with a workload identity reaches Tier 1/2 from its SVID and does \
-             not need the Tier 3 token: {args}"
-        );
+    fn no_pod_carries_a_task_token_on_the_cmdline() {
+        for identity in [true, false] {
+            let args = boot_args_with_identity(identity);
+            assert!(
+                !args.contains("nucleus.task_token_hex"),
+                "identity={identity}: the task-token cmdline copy must be gone: {args}"
+            );
+            assert!(!args.contains("nucleus.task_token_nonce"), "{args}");
+            assert!(!args.contains("nucleus.task_token_issuer"), "{args}");
+        }
     }
 
-    /// **An identity-bearing pod carries NO task token on its cmdline either.**
-    /// It fetches the token over the workload API (`FETCH_TASK_TOKEN`), so the
-    /// cmdline copy — the last per-pod Secret-labelled material on an
-    /// identity-bearing pod's `/proc/cmdline` — is gone. Uses a real minted
-    /// token so this proves exclusion, not absence-of-input.
+    /// **THE CATEGORICAL GATE, and the Rust half of the Lean `Cmdline` theorem.**
+    /// Over ANY pod's actual boot args — identity-bearing OR identity-less — NO
+    /// key classified per-pod-secret may appear. The whole
+    /// [`snapshot::PER_POD_SECRET_KEYS`] set at once, so a per-pod secret nobody
+    /// has invented yet is caught the moment it is emitted. Now UNCONDITIONAL
+    /// (was identity-bearing only) — the retirement is what makes the future
+    /// Lean channel theorem provable over every pod. Reuses the snapshot key
+    /// parser so the two cannot disagree on what a key is.
     #[cfg(target_os = "linux")]
     #[test]
-    fn an_identity_bearing_pod_carries_no_task_token() {
-        let tok = sample_task_token();
-        let args = boot_args_with_identity_and_token(true, Some(&tok));
-        assert!(
-            !args.contains("nucleus.task_token_hex"),
-            "an identity-bearing pod fetches its task token over vsock; the cmdline \
-             copy must be gone: {args}"
-        );
-        assert!(!args.contains("nucleus.task_token_nonce"), "{args}");
-        assert!(!args.contains("nucleus.task_token_issuer"), "{args}");
+    fn no_pod_cmdline_carries_any_per_pod_secret() {
+        for identity in [true, false] {
+            let args = boot_args_with_identity(identity);
+            let emitted: Vec<&str> = args
+                .split_whitespace()
+                .map(|t| t.split('=').next().unwrap_or(t))
+                .collect();
+            let leaked: Vec<&str> = crate::snapshot::PER_POD_SECRET_KEYS
+                .iter()
+                .copied()
+                .filter(|k| emitted.contains(k))
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "identity={identity}: /proc/cmdline carries per-pod secret material \
+                 {leaked:?} — the C1 exposure. Deliver it over the workload API instead. \
+                 Full args: {args}"
+            );
+        }
     }
 
-    /// **THE CATEGORICAL GATE, and the Rust half of the future Lean theorem.**
-    /// Over an identity-bearing pod's actual boot args, NO key classified
-    /// per-pod-secret may appear — not "no task token", not "no sandbox token",
-    /// but the whole [`snapshot::PER_POD_SECRET_KEYS`] set at once, so a per-pod
-    /// secret nobody has invented yet is caught the moment it is emitted here.
-    /// Reuses the snapshot key parser so the two cannot disagree on what a key
-    /// is.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_identity_bearing_pod_cmdline_carries_no_per_pod_secret() {
-        let tok = sample_task_token();
-        let args = boot_args_with_identity_and_token(true, Some(&tok));
-        let emitted: Vec<&str> = args
-            .split_whitespace()
-            .map(|t| t.split('=').next().unwrap_or(t))
-            .collect();
-        let leaked: Vec<&str> = crate::snapshot::PER_POD_SECRET_KEYS
-            .iter()
-            .copied()
-            .filter(|k| emitted.contains(k))
-            .collect();
-        assert!(
-            leaked.is_empty(),
-            "an identity-bearing pod's /proc/cmdline carries per-pod secret material \
-             {leaked:?} — this is the C1 exposure. Deliver it over the workload API \
-             instead. Full args: {args}"
-        );
-    }
-
-    /// **The precondition that makes the omission above safe**, pinned against
-    /// the source rather than trusted.
-    ///
-    /// The first attempt at that omission deadlocked every launch: the guest's
-    /// SVID source started after the health check that needed it, so an
-    /// identity-bearing pod had no proof at all. Nothing caught it, because each
-    /// half is correct alone.
+    /// **The precondition that makes the identity-bearing path work**, pinned
+    /// against the source rather than trusted, and now load-bearing: with the
+    /// Tier-3 fallback retired, an identity-bearing pod's SVID is its ONLY proof,
+    /// and it needs the SVID source running before the health check that depends
+    /// on it. The first attempt at deferring the token deadlocked every launch
+    /// because the bridge started after the health check.
     ///
     /// Not gated on Linux: the ordering is a property of the source text, and
     /// gating it would mean the guard does not run on the machine where the
@@ -1222,44 +1141,15 @@ mod tests {
         );
     }
 
-    /// **Non-vacuity, and the reason this is a condition rather than a removal.**
-    ///
-    /// A node with identity management off, or a pod whose egress grant was
-    /// denied, has Tier 3 as its ONLY proof — and `sandbox_proof` exits fatally
-    /// when no tier succeeds. Deleting the token outright would turn those pods
-    /// from working into dead.
+    /// **The retirement holds under every identity outcome.** Whatever the
+    /// `(identity_enabled, egress_granted)` combination resolves to — and hence
+    /// whether `workload_api_port` is `Some` — NEITHER the sandbox token nor the
+    /// task-token copy is ever written. There is no longer a condition to track,
+    /// which is the point: the previous version of this test pinned the copies
+    /// as present exactly when the port was absent; now they are absent always.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_pod_without_an_identity_keeps_its_only_proof() {
-        let args = boot_args_with_identity(false);
-        assert!(
-            args.contains("nucleus.sandbox_token="),
-            "a pod with no SVID has Tier 3 as its only sandbox proof and must keep it: {args}"
-        );
-    }
-
-    /// Non-vacuity for the task token: a pod with no identity has no workload
-    /// API socket to fetch over, so the cmdline copy is its ONLY source and
-    /// must remain. Deleting it outright would brick every identity-less pod.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_pod_without_an_identity_keeps_its_cmdline_task_token() {
-        let tok = sample_task_token();
-        let args = boot_args_with_identity_and_token(false, Some(&tok));
-        assert!(
-            args.contains("nucleus.task_token_hex="),
-            "an identity-less pod cannot fetch over vsock, so the cmdline copy is its \
-             only task-token source and must remain: {args}"
-        );
-    }
-
-    /// The condition must track the identity predicate rather than merely
-    /// correlating with it: `workload_api_port_for` and `identity_registration`
-    /// are the same rule stated on the advertising and serving sides, so the
-    /// port being present is exactly "this pod will be registered".
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_token_condition_matches_the_identity_predicate() {
+    fn no_identity_outcome_reintroduces_a_cmdline_token() {
         for (enabled, granted) in [(true, true), (true, false), (false, true), (false, false)] {
             let grant = if granted {
                 net::IdentityGrant::Granted
@@ -1269,21 +1159,16 @@ mod tests {
                 }
             };
             let port = net::workload_api_port_for(enabled, &grant, 15012);
-            let tok = sample_task_token();
-            let args = boot_args_with_identity_and_token(port.is_some(), Some(&tok));
-            assert_eq!(
-                args.contains("nucleus.sandbox_token="),
-                port.is_none(),
-                "identity_enabled={enabled} granted={granted}: the Tier 3 token must be \
-                 present exactly when the pod will have no SVID"
+            let args = boot_args_with_identity(port.is_some());
+            assert!(
+                !args.contains("nucleus.sandbox_token="),
+                "identity_enabled={enabled} granted={granted}: the retired Tier-3 token \
+                 must never reappear: {args}"
             );
-            // The task-token cmdline copy tracks the SAME predicate: present
-            // exactly when there is no vsock socket to fetch it over.
-            assert_eq!(
-                args.contains("nucleus.task_token_hex="),
-                port.is_none(),
-                "identity_enabled={enabled} granted={granted}: the task-token cmdline copy \
-                 must be present exactly when the pod will have no workload API socket"
+            assert!(
+                !args.contains("nucleus.task_token_hex="),
+                "identity_enabled={enabled} granted={granted}: the retired task-token copy \
+                 must never reappear: {args}"
             );
         }
     }
@@ -1621,9 +1506,7 @@ mod tests {
             Path::new("/unused/host/vsock.sock"),
             &img,
             None,
-            "auth",
             "aa00bb11-approval-pubkeys",
-            None,
             None,
             Some(&layout),
         );
@@ -1773,9 +1656,7 @@ mod tests {
             Path::new("/host/pod/vsock.sock"),
             &img,
             None,
-            "auth",
             "aa00bb11-approval-pubkeys",
-            None,
             None,
             Some(&JailLayout::new(
                 Path::new("/srv/jail"),

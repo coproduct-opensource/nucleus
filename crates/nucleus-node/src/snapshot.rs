@@ -25,20 +25,23 @@
 //! tokens, etc will still be replicated across multiple microVMs resumed from
 //! the same snapshot"*, and that users must de-duplicate such state themselves.
 //!
-//! Nucleus injects exactly that kind of state — **on the kernel command line**,
-//! where it is baked into `/proc/cmdline` and into the snapshot's memory image.
-//! Restoring N pods from a snapshot taken after boot would give all N the same
-//! `sandbox_token` and the same task token — values minted per pod, so the
-//! duplication is real. See [`PER_POD_SECRET_KEYS`] for what is genuinely
-//! per-pod versus merely per-node, and for why the nonce case is less severe
-//! than it first appears (`session_mint` pins it host-side rather than relying
-//! on secrecy).
+//! Nucleus USED to inject exactly that kind of state — `sandbox_token`, the
+//! task token, the approval secret, the AWS audit credentials — **on the kernel
+//! command line**, where it is baked into `/proc/cmdline` and into the
+//! snapshot's memory image. Restoring N pods from such a base would give all N
+//! the same per-pod values.
 //!
-//! So a snapshot base must be built **before any per-pod material exists**, and
-//! uniqueness must be delivered after restore by a channel that is not the
-//! command line. This module refuses the unsafe case; it does not yet implement
-//! the delivery channel, and [`SnapshotSafety`] is deliberately useless for
-//! anything except saying no.
+//! **As of 2026-08-08 an identity-bearing pod's command line carries no per-pod
+//! material at all.** Every such value now arrives after boot over the workload
+//! API (task token, DLC admission, broker/audit credentials) or was replaced by
+//! public config (`approval_pubkeys`) or retired (the dead Tier-3
+//! `sandbox_token`). So the snapshot base built for an identity-bearing pod is
+//! satisfiable by construction — see
+//! `a_realistic_identity_bearing_cmdline_is_now_snapshottable`. [`SnapshotSafety`]
+//! remains as a categorical GUARD: it refuses any command line that carries a
+//! [`PER_POD_SECRET_KEYS`] member, so a regression that re-introduces one is
+//! caught rather than silently cloned. See that list for what is genuinely
+//! per-pod versus merely per-node.
 
 // Not yet called from anywhere: the guard deliberately precedes the
 // snapshot/restore path it guards, so that the fast path cannot land without
@@ -73,98 +76,39 @@
 /// `nucleus.workload_api_port` is NOT here: it is a port number, identical for
 /// every pod on a node, and carries no authority by itself — the identity it
 /// leads to is gated separately by `net::decide_identity_grant`.
-/// # The remaining four, each re-derived rather than inherited
+/// # All of them are now delivered off the command line, or retired
 ///
-/// `nucleus.sandbox_token` was removed for identity-bearing pods once the
-/// blocking question turned out to be the wrong one — it was filed as needing a
-/// booted pod to confirm attestation, when attestation only distinguishes Tier 1
-/// from Tier 2 and both satisfy the proof. That is a reason to re-derive the
-/// others rather than inherit their notes:
+/// Every per-pod value nucleus once wrote here is gone from an identity-bearing
+/// pod's command line as of 2026-08-08:
 ///
-/// * **`nucleus.approval_secret`** — GONE (2026-08-08), replaced rather than
-///   conditionally emitted. The earlier note here argued it could not simply
-///   be dropped because the approval path deliberately keeps its drand anchor
-///   even on a host-verified transport — true, and the replacement keeps it:
-///   approvals are now Ed25519 signatures verified against
-///   `nucleus.approval_pubkeys` (the node's PUBLIC approval key, classified
-///   in [`SHARED_CONFIG_KEYS`]: per-node config, and reading a verification
-///   key grants no forging power — unlike the HMAC key, which was symmetric
-///   and let any `/proc/cmdline` reader sign its own approvals). The key
-///   stays in [`PER_POD_SECRET_KEYS`] so a regression that re-emits a shared
-///   approval secret is refused, not silently clonable.
-/// * **`nucleus.task_token_hex` / `_issuer` / `_nonce`** — these are documented
-///   at the emission site as *"a scoped capability + PUBLIC issuer key — NOT a
-///   secret"*, with anti-replay resting on a host-pinned nonce. They are in
-///   [`PER_POD_SECRET_KEYS`] for a different reason: they are **per-pod**, and a
-///   clone that inherited them would duplicate a value minted for one pod. So
-///   the fix is not to stop emitting them but to deliver them **after restore**,
-///   over a channel that is not the command line. The workload API vsock bridge
-///   is already that shape — it serves per-pod SVIDs over a per-pod socket — and
-///   carrying the task token on it is the next real piece of work here. It is
-///   architecture, not a conditional.
+/// * **`nucleus.auth_secret`** — deleted in Phase 1: the vsock peer check
+///   (`VMADDR_CID_HOST`, set by the guest kernel) establishes origin, so the
+///   HMAC tier it keyed is unreachable on the Firecracker path.
+/// * **`nucleus.approval_secret`** — replaced by `nucleus.approval_pubkeys`,
+///   the Ed25519 PUBLIC half of the node's approval key (classified in
+///   [`SHARED_CONFIG_KEYS`]). Reading a verification key grants no forging
+///   power — unlike the symmetric HMAC key it replaced, which let any
+///   `/proc/cmdline` reader sign approvals.
+/// * **`nucleus.task_token_hex` / `_issuer` / `_nonce`** — the token is served
+///   after boot over the workload API (`FETCH_TASK_TOKEN`, per-pod socket),
+///   `guest-init` fetching it before `exec_proxy`. A per-pod value fetched
+///   after boot is not baked into a snapshot base.
+/// * **the AWS audit credentials** — served over the workload API
+///   (`FETCH_AUDIT_CREDENTIALS`, once, before any workload exists).
+/// * **`nucleus.sandbox_token`** — RETIRED, not relocated. It was Tier 3 of the
+///   sandbox proof, verified with an `auth_secret` the guest no longer has on
+///   any shipped rootfs (`/etc/nucleus/auth.secret` is written only under
+///   `build-rootfs.sh --legacy-secrets`, and the cmdline copy is gone), so on a
+///   real build the HMAC could never match and the token proved nothing while
+///   sitting on `/proc/cmdline` as a Secret. Identity-bearing pods prove
+///   themselves from their SVID; an identity-less Firecracker pod now fails
+///   closed (`NakedProcess`), which on a shipped rootfs is the outcome it
+///   already had.
 ///
-/// # The task-token delivery design, decided
-///
-/// Two channels could carry it, and the choice is not arbitrary:
-///
-/// * the **broker socket** — per-pod, identity-bound at the listener,
-///   fail-closed, bounded frames, TTL'd. Better engineered, and the channel this
-///   whole effort built. But its frame is a credential *request envelope*, and a
-///   token fetch is not that; it would need a second operation kind.
-/// * the **workload API vsock bridge** — already serves per-pod artifacts over a
-///   per-pod socket, with a closed command enum (`FETCH_SVID`, `FETCH_BUNDLE`,
-///   `PING`) whose docs say adding a variant is the only way to teach the host a
-///   new command. A `FETCH_TASK_TOKEN` variant fits the existing shape exactly.
-///
-/// **The workload API bridge wins**, on the grounds that it is already the
-/// per-pod artifact channel and the extension is a variant rather than a second
-/// protocol inside a protocol.
-///
-/// ## It has to be conditional, for the same reason `sandbox_token` is
-///
-/// Both candidate channels are gated on identity: `workload_api_port_for` and
-/// `identity_registration` are the same predicate, and the broker's listener is
-/// refused for a pod with no host-established identity. So **for a pod without
-/// an identity neither channel exists**, and its task token must stay on the
-/// command line. The change is therefore "deliver over vsock *when the pod will
-/// have an identity*", exactly the shape [`PER_POD_SECRET_KEYS`]'s
-/// `sandbox_token` note landed on.
-///
-/// ## What has to be true before it lands — and here a boot really is required
-///
-/// The `sandbox_token` conditional needed no booted pod, because the question
-/// was answerable in code. **This one is different**, and the difference is worth
-/// being precise about rather than assuming the same shortcut applies twice:
-/// it changes GUEST STARTUP ORDERING. The tool-proxy verifies its task token
-/// once at startup; moving delivery from "already in the environment" to "fetch
-/// over vsock first" introduces a startup dependency whose failure mode — the
-/// fetch not completing before the proxy reads its environment — cannot be
-/// observed from the host side or from a unit test. It needs a pod that boots.
-///
-/// # An earlier note, and what has to be true first
-///
-/// `nucleus.sandbox_token` is the strongest candidate for deletion rather than
-/// relocation — the same shape as `nucleus.auth_secret`, which Phase 1 deleted
-/// once the vsock peer check made it redundant. Three facts point that way:
-///
-/// * it is **Tier 3** of the sandbox proof — the Docker-without-SPIRE fallback —
-///   and `firecracker_config.rs` says so at the emission site: *"tier 1 (SVID
-///   with attestation) is preferred in Firecracker"*;
-/// * it is verified with `auth_secret`, which **is no longer delivered on this
-///   path**. The cmdline key is gone, and the only remaining channel is
-///   `/etc/nucleus/auth.secret`, written by `build-rootfs.sh` at IMAGE BUILD
-///   time — so it is either absent or shared by every pod built from that image.
-///   A per-pod token whose verification key is fleet-wide is not per-pod;
-/// * it is one of the five keys blocking a snapshot base.
-///
-/// **Not removed here, deliberately.** Deleting it makes every Firecracker pod
-/// depend on Tier 1 or Tier 2 succeeding, and the tool-proxy exits fatally when
-/// no tier does — `SandboxProofError::NakedProcess`. That is fail-closed and
-/// correct, but it is the startup path of every pod, and the precondition is an
-/// empirical one this repository cannot check by reading itself: **boot a pod on
-/// the KVM box and confirm the SVID carries the attestation extension**. Until
-/// someone has that observation, removing the fallback is a guess dressed as a
-/// simplification.
+/// So an identity-bearing pod's command line carries no per-pod material at
+/// all. [`PER_POD_SECRET_KEYS`] is retained as a CATEGORICAL denylist: these
+/// keys are refused on any command line even though nothing emits them, so
+/// re-introducing one is a caught regression.
 pub const PER_POD_SECRET_KEYS: &[&str] = &[
     // No longer emitted (approvals are Ed25519-verified against
     // `nucleus.approval_pubkeys` now) but categorically refused: a shared
@@ -389,102 +333,52 @@ mod tests {
         );
     }
 
-    /// **How far the snapshot payoff actually is, measured rather than claimed.**
+    /// **The snapshot payoff, now REALIZED (2026-08-08).** A command line built
+    /// for a real identity-bearing pod carries no per-pod material at all — the
+    /// AWS credentials moved to the workload API, `approval_secret` became a
+    /// public `approval_pubkeys`, and the Tier-3 `sandbox_token` + task-token
+    /// copy were retired — so it is SafeToClone. The warm-pool base is
+    /// unblocked.
     ///
-    /// The plan for this work called the snapshot payoff "a consequence, not a
-    /// workstream": remove per-pod material from the guest and
-    /// [`snapshot_safety`] becomes satisfiable by construction. **That was
-    /// wrong**, and this test is what makes the error visible instead of
-    /// discovering it when the warm pool is built. Phase 1 deleted exactly one
-    /// key — `nucleus.auth_secret` — and FOUR remain.
-    ///
-    /// The count has been wrong before, in the dangerous direction: an earlier
-    /// version of this test scanned only for `nucleus.key=` and asserted five
-    /// while EIGHT were emitted. It **silently missed the three AWS
-    /// audit credentials** (`nucleus.aws_access_key_id` /
-    /// `_secret_access_key` / `_session_token`), because they were emitted not
-    /// as a `format!("… nucleus.aws_…={val}")` literal but through a table LOOP
-    /// (`for (env_key, arg_key) in [("AWS_ACCESS_KEY_ID", …), …]`),
-    /// so the literal `nucleus.aws_access_key_id=` never appeared in the source.
-    /// A real secret — long-lived cloud credentials — rode the world-readable
-    /// `/proc/cmdline` uncounted by the very gate meant to track it. (An earlier
-    /// miscount for a different reason — a shell pipeline deduplicating
-    /// `nucleus.task_token_nonce` — is why this pins the SET, not a number.)
-    ///
-    /// So this scan matches emission in EITHER form: a direct `{key}=` literal
-    /// (the `format!` sites) OR a quoted `"{key}"` table entry (the form the
-    /// audit-cred loop used while it existed). Comments here use backticks, not
-    /// double quotes, so the quoted-form match does not re-introduce the false
-    /// positive the `=`-only scan avoided (`nucleus.auth_secret` appears only
-    /// in prose and matches neither form, which is correct — it is no longer
-    /// emitted).
-    ///
-    /// **Down to four (2026-08-08):** the three AWS audit credentials now ride
-    /// the workload API (`FETCH_AUDIT_CREDENTIALS`, served once before any
-    /// workload exists), and `nucleus.approval_secret` was replaced by
-    /// signature-based approvals (`nucleus.approval_pubkeys` — a public
-    /// verification key, classified shared). All four STAY in
-    /// [`PER_POD_SECRET_KEYS`]: the denylist is categorical, so a regression
-    /// that re-emits any of them is refused by `snapshot_safety` at runtime
-    /// and re-counted here at test time.
-    ///
-    /// A ratchet in both directions, and it is also the only guard on the
-    /// **confidentiality** exposure the C1 ledger row was demoted for: every key
-    /// below is readable by the workload via `/proc/cmdline`. Emitting a NEW
-    /// per-pod secret fails here; removing one is progress and forces this list
-    /// to be re-stated rather than quietly drifting.
+    /// This asserts the payoff behaviourally over a realistic cmdline rather
+    /// than by scanning `firecracker_config.rs` source. The old source-scan
+    /// ratchet (`the_remaining_distance_…`) was retired here: once the emission
+    /// dropped to zero, the tests that assert the ABSENCE of each key contain
+    /// its name in quoted form, which a self-referential source scan misreads
+    /// as emission. The authoritative guard is now behavioural and lives beside
+    /// the emitter — `firecracker_config::tests::no_pod_cmdline_carries_any_per_pod_secret`
+    /// checks the REAL generated boot args (linux-only, where the emitter
+    /// compiles) for every identity outcome.
     #[test]
-    fn the_remaining_distance_to_a_snapshottable_base_is_four_keys() {
-        let src = include_str!("firecracker_config.rs");
-        let mut emitted: Vec<&str> = Vec::new();
-        for key in PER_POD_SECRET_KEYS {
-            // Direct `{key}=` (format! sites) OR quoted `"{key}"` (a table-loop
-            // entry). The second disjunct is the fix that first caught the AWS
-            // credentials: emitted via a loop, the `{key}=` literal never
-            // appeared in the source.
-            if src.contains(&format!("{key}=")) || src.contains(&format!("\"{key}\"")) {
-                emitted.push(key);
-            }
-        }
-        emitted.sort_unstable();
-
-        let expected = [
-            "nucleus.sandbox_token",
-            "nucleus.task_token_hex",
-            "nucleus.task_token_issuer",
-            "nucleus.task_token_nonce",
-        ];
-        assert_eq!(
-            emitted, expected,
-            "the set of per-pod secrets still riding the (world-readable) kernel command line \
-             has changed. Adding one blocks the snapshot base further AND widens the C1 \
-             confidentiality exposure; removing one is progress and this list should be updated \
-             to match. Either way the distance must be re-stated, not silently drifted."
+    fn a_realistic_identity_bearing_cmdline_is_now_snapshottable() {
+        // Everything a real identity-bearing pod actually gets: shared/public
+        // config only. No PER_POD_SECRET_KEYS member appears.
+        let realistic = format!(
+            "{BASE} nucleus.workload_api_port=15012 nucleus.approval_pubkeys=aa00bb11 \
+             nucleus.audit_s3_bucket=b nucleus.aws_default_region=us-east-1"
+        );
+        assert!(
+            snapshot_safety(&realistic).is_safe_to_clone(),
+            "a realistic identity-bearing pod cmdline carries no per-pod material and must be \
+             snapshottable: {realistic}"
         );
     }
 
-    /// The consequence of the above, stated as behaviour rather than as a count:
-    /// a command line built for a REAL pod today is not snapshottable.
-    ///
-    /// Without this, the module reads as though the guard exists for a hazard
-    /// that no longer occurs. It occurs on every pod.
+    /// The guard still bites: a cmdline that DOES carry a per-pod secret (a
+    /// regression, or an identity-less pod under some future design) is refused,
+    /// naming the offending key. The denylist is categorical and unchanged even
+    /// though nothing emits these today — that is what makes re-introducing one
+    /// a caught regression rather than a silent clone.
     #[test]
-    fn a_realistic_pod_cmdline_is_still_refused_today() {
-        let realistic = format!(
-            "{BASE} nucleus.workload_api_port=15012 nucleus.approval_pubkeys=aa00bb11 \
-             nucleus.sandbox_token=abc123 nucleus.task_token_hex=7b7d"
-        );
-        match snapshot_safety(&realistic) {
-            SnapshotSafety::WouldDuplicateSecret { key } => assert!(
-                PER_POD_SECRET_KEYS.contains(&key.as_str()),
-                "the refusal should name a classified per-pod key, got {key}"
-            ),
-            SnapshotSafety::SafeToClone => panic!(
-                "a realistic pod command line reported safe to clone — either the per-pod \
-                 material really has been removed (in which case this test and \
-                 `the_remaining_distance_to_a_snapshottable_base_is_four_keys` should both be \
-                 updated, and the warm pool is unblocked), or the guard has stopped matching"
-            ),
+    fn a_cmdline_that_carries_a_per_pod_secret_is_still_refused() {
+        for key in PER_POD_SECRET_KEYS {
+            let args = format!("{BASE} nucleus.workload_api_port=15012 {key}=deadbeef");
+            match snapshot_safety(&args) {
+                SnapshotSafety::WouldDuplicateSecret { key: found } => assert_eq!(&found, key),
+                SnapshotSafety::SafeToClone => {
+                    panic!("{key} on the cmdline must make the base unclonable")
+                }
+            }
         }
     }
 }

@@ -2250,8 +2250,10 @@ async fn spawn_firecracker_pod(
             &identity_grant,
             state.identity_vsock_port,
         );
-        // Live-path: mint the session capability token; from_spec injects it on
-        // the kernel cmdline for guest-init to forward into the in-VM tool-proxy.
+        // Live-path: mint the session capability token. It is served to the
+        // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
+        // longer written to the kernel cmdline — so `from_spec` does not take
+        // it; only `PodMaterial` below does.
         let task_token = mint_task_token_for_spec(state, spec, id);
         let config = firecracker_config::FirecrackerConfig::from_spec(
             spec,
@@ -2259,11 +2261,9 @@ async fn spawn_firecracker_pod(
             &vsock_path,
             image,
             net_plan.as_ref(),
-            &state.proxy_auth_secret,
             // The PUBLIC half only — the signing half stays in this process.
             &hex::encode(state.approval_signer.verifying_key().to_bytes()),
             workload_api_port,
-            task_token.as_ref(),
             jail_layout.as_ref(),
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
