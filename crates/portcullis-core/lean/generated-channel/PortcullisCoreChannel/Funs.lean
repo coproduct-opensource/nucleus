@@ -93,7 +93,7 @@ def extracted.capability_quantale.capresidual
   else ok c
 
 /-- [nucleus_ifc_kernel::extracted::channel::chanrank]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 82:0-91:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 95:0-104:1
     Visibility: public -/
 def extracted.channel.chanrank
   (c : extracted.channel.ChannelKind) : Result Std.U8 := do
@@ -104,6 +104,7 @@ def extracted.channel.chanrank
   | extracted.channel.ChannelKind.Stdio => ok 3#u8
   | extracted.channel.ChannelKind.ExtraFd => ok 4#u8
   | extracted.channel.ChannelKind.Uid => ok 5#u8
+  | extracted.channel.ChannelKind.Cmdline => ok 6#u8
 
 /-- [nucleus_ifc_kernel::extracted::identity::mat_label]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 155:0-169:1
@@ -196,7 +197,7 @@ def extracted.identity.ident_may_deliver
   extracted.ifc_confidentiality.cflows_to cl cl1
 
 /-- [nucleus_ifc_kernel::extracted::channel::channel_admits]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 104:0-110:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 121:0-130:1
     Visibility: public -/
 def extracted.channel.channel_admits
   (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind)
@@ -219,9 +220,14 @@ def extracted.channel.channel_admits
   | extracted.channel.ChannelKind.Stdio => ok false
   | extracted.channel.ChannelKind.ExtraFd => ok false
   | extracted.channel.ChannelKind.Uid => ok false
+  | extracted.channel.ChannelKind.Cmdline =>
+    let b ← extracted.channel.is_public m
+    if b
+    then extracted.identity.ident_may_deliver m p
+    else ok false
 
 /-- [nucleus_ifc_kernel::extracted::channel::channel_reaches_workload]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 116:0-118:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 143:0-145:1
     Visibility: public -/
 def extracted.channel.channel_reaches_workload
   (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind) :

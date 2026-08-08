@@ -28,11 +28,24 @@
   # The modelling decisions, stated so they can be disagreed with
 
   `Env` is the only material-carrying channel and its admission IS
-  `ident_may_deliver` (anti-drift theorem below). `Argv`/`Cwd` carry public
-  operator data only — a future secret-carrying argv would relabel here and turn
-  it red first. `Stdio`/`ExtraFd`/`Uid` are material-closed: `ExtraFd = false` is
-  the `close_range` structural closure the launch builder installs, stated as a
-  theorem.
+  `ident_may_deliver` (anti-drift theorem below). `Argv`/`Cwd`/`Cmdline` carry
+  public operator/node data only — a future secret-carrying argv or command line
+  would relabel here and turn it red first. `Stdio`/`ExtraFd`/`Uid` are
+  material-closed: `ExtraFd = false` is the `close_range` structural closure the
+  launch builder installs, stated as a theorem.
+
+  # The command line (`Cmdline`) is now a modelled channel — the C1 lift
+
+  `/proc/cmdline` is world-readable in the guest, so whatever the node writes
+  there reaches the workload. It USED to carry per-pod secrets (`auth_secret`,
+  `approval_secret`, the AWS audit credentials, the task token, the dead Tier-3
+  `sandbox_token`); every one was moved to the workload API or retired, so the
+  node now writes only per-node PUBLIC config. `Cmdline` is therefore modelled
+  exactly like `Argv` — admits a material iff it is `Public` — and the flagship
+  `no_channel_delivers_secret_to_the_workload` covers it by the same
+  quantification. This is the channel the C1 ledger row was demoted for; with it
+  modelled, a `Secret` re-appearing on the command line is a RED theorem, not an
+  unmodelled gap. See `the_cmdline_carries_no_secret_to_the_workload` below.
 
   # What is NOT claimed
 
@@ -114,6 +127,28 @@ theorem the_env_channel_refuses_every_secret :
     ∧ extracted.channel.channel_reaches_workload extracted.channel.ChannelKind.Env extracted.identity.MaterialKind.DlcCredentials = ok false :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
+/-- **The kernel command line delivers no `Secret` to the workload.** This is
+    the C1 lift: `/proc/cmdline` is world-readable in the guest, so the model
+    treats `Cmdline` as reaching the workload, and it admits a material iff that
+    material is `Public`. A `Secret` on the command line therefore fails this —
+    which is exactly the exposure the C1 ledger row was demoted for, now a red
+    theorem rather than an unmodelled channel. Stated over the two secrets that
+    used to ride the command line (the task token and the sandbox token), and
+    covered in full by `no_channel_delivers_secret_to_the_workload`. -/
+theorem the_cmdline_delivers_no_secret_to_the_workload :
+    extracted.channel.channel_reaches_workload extracted.channel.ChannelKind.Cmdline extracted.identity.MaterialKind.TaskToken = ok false
+    ∧ extracted.channel.channel_reaches_workload extracted.channel.ChannelKind.Cmdline extracted.identity.MaterialKind.SandboxToken = ok false
+    ∧ extracted.channel.channel_reaches_workload extracted.channel.ChannelKind.Cmdline extracted.identity.MaterialKind.ApprovalSecret = ok false :=
+  ⟨rfl, rfl, rfl⟩
+
+/-- Non-vacuity for the command line: it still carries PUBLIC config to the
+    workload (the trust bundle stands for a public cmdline value like a CA
+    path). Without this the theorem above is satisfied by a channel that admits
+    nothing. -/
+theorem the_cmdline_still_carries_public_config :
+    extracted.channel.channel_reaches_workload extracted.channel.ChannelKind.Cmdline extracted.identity.MaterialKind.TrustBundle = ok true := by
+  rfl
+
 /-- **The `close_range` structural closure, as a theorem.** No material crosses
     an inherited fd, to any principal — the launch builder shuts every fd above
     the child's own stdio before exec. -/
@@ -162,6 +197,8 @@ or finite case split. -/
 
 #print axioms no_channel_delivers_secret_to_the_workload
 #print axioms the_env_channel_refuses_every_secret
+#print axioms the_cmdline_delivers_no_secret_to_the_workload
+#print axioms the_cmdline_still_carries_public_config
 #print axioms no_fd_carries_anything
 #print axioms stdio_and_uid_carry_no_material
 #print axioms the_carrying_channels_still_carry

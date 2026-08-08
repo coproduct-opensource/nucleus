@@ -35,6 +35,19 @@
 //! to carry a secret token would have to relabel here — turning that change
 //! into a red theorem first, which is the point.
 //!
+//! **`Cmdline` (the guest kernel command line, `/proc/cmdline`) carries public
+//! per-node config only.** It is world-readable inside the guest, so whatever
+//! rides it structurally reaches the workload — there is no "deliver to the
+//! runtime but not the agent" on this channel. Modelled exactly like `Argv`:
+//! admits a material iff it is `Public`. That is faithful because the node now
+//! writes only per-node public configuration there (`approval_pubkeys`, the
+//! audit S3 bucket/region/endpoint, the workload-API port); every per-pod
+//! secret that used to ride it — `auth_secret`, `approval_secret`, the AWS
+//! audit credentials, the task token, the dead Tier-3 `sandbox_token` — was
+//! moved to the workload API or retired. A future change that put a `Secret`
+//! back on the command line would have to relabel it here to type-check the
+//! flagship, turning the regression into a red theorem, which is the point.
+//!
 //! **`Stdio`, `ExtraFd` and `Uid` are material-closed** — they carry no
 //! `MaterialKind` value at all. `Stdio` is `null`/pipe (a disposition, not a
 //! value); `ExtraFd = false` is the formal statement of the `close_range`
@@ -76,6 +89,10 @@ pub enum ChannelKind {
     ExtraFd = 4,
     /// The uid/gid boundary — a number, not material.
     Uid = 5,
+    /// The guest kernel command line (`/proc/cmdline`) — world-readable inside
+    /// the guest, carrying per-node public config only. Reaches the workload
+    /// structurally, so it admits a material iff that material is `Public`.
+    Cmdline = 6,
 }
 
 /// Numeric rank, so no derived comparison reaches the proof as an opaque axiom.
@@ -87,6 +104,7 @@ pub fn chanrank(c: ChannelKind) -> u8 {
         ChannelKind::Stdio => 3,
         ChannelKind::ExtraFd => 4,
         ChannelKind::Uid => 5,
+        ChannelKind::Cmdline => 6,
     }
 }
 
@@ -104,7 +122,9 @@ pub fn is_public(m: MaterialKind) -> bool {
 pub fn channel_admits(c: ChannelKind, m: MaterialKind, p: Principal) -> bool {
     match c {
         ChannelKind::Env => ident_may_deliver(m, p),
-        ChannelKind::Argv | ChannelKind::Cwd => is_public(m) && ident_may_deliver(m, p),
+        ChannelKind::Argv | ChannelKind::Cwd | ChannelKind::Cmdline => {
+            is_public(m) && ident_may_deliver(m, p)
+        }
         ChannelKind::Stdio | ChannelKind::ExtraFd | ChannelKind::Uid => false,
     }
 }
@@ -121,13 +141,14 @@ pub fn channel_reaches_workload(c: ChannelKind, m: MaterialKind) -> bool {
 mod tests {
     use super::*;
 
-    const CHANNELS: [ChannelKind; 6] = [
+    const CHANNELS: [ChannelKind; 7] = [
         ChannelKind::Env,
         ChannelKind::Argv,
         ChannelKind::Cwd,
         ChannelKind::Stdio,
         ChannelKind::ExtraFd,
         ChannelKind::Uid,
+        ChannelKind::Cmdline,
     ];
     const MATERIALS: [MaterialKind; 11] = [
         MaterialKind::SvidCert,
@@ -164,7 +185,7 @@ mod tests {
         }
     }
 
-    /// Exhaustive over the whole domain — 6 channels x 11 materials x 3
+    /// Exhaustive over the whole domain — 7 channels x 11 materials x 3
     /// principals. Small enough to enumerate, so there is no reason to sample.
     #[test]
     fn the_delivery_relation_is_pinned_over_its_entire_domain() {
@@ -173,7 +194,7 @@ mod tests {
                 for p in PRINCIPALS {
                     let expected = match c {
                         ChannelKind::Env => ident_may_deliver(m, p),
-                        ChannelKind::Argv | ChannelKind::Cwd => {
+                        ChannelKind::Argv | ChannelKind::Cwd | ChannelKind::Cmdline => {
                             is_public(m) && ident_may_deliver(m, p)
                         }
                         ChannelKind::Stdio | ChannelKind::ExtraFd | ChannelKind::Uid => false,
@@ -187,6 +208,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **The command line carries no Secret to the workload.** `/proc/cmdline`
+    /// is world-readable in the guest, so the model treats it as reaching the
+    /// workload and admitting a material iff it is `Public` — the same shape as
+    /// argv. This is the FM-5-phase-2 property specialised to the channel the
+    /// C1 ledger row was demoted for, and it is faithful because the node now
+    /// writes only per-node public config there.
+    #[test]
+    fn the_cmdline_carries_no_secret_to_the_workload() {
+        for m in MATERIALS {
+            if mat_label(m) == ConfLevel::Secret {
+                assert!(
+                    !channel_reaches_workload(ChannelKind::Cmdline, m),
+                    "the kernel command line must not deliver Secret material {m:?} to the workload"
+                );
+            }
+        }
+        // Non-vacuity: it still carries public config (the trust bundle is the
+        // Public material a real cmdline value like the CA path would be).
+        assert!(channel_reaches_workload(
+            ChannelKind::Cmdline,
+            MaterialKind::TrustBundle
+        ));
     }
 
     /// The env channel is EXACTLY the FM-5 relation — no fork. If it ever

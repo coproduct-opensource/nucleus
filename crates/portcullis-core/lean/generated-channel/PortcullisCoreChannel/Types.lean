@@ -24,7 +24,7 @@ inductive extracted.capability_quantale.CapLevel where
 | Always : extracted.capability_quantale.CapLevel
 
 /-- [nucleus_ifc_kernel::extracted::channel::ChannelKind]
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 65:0-79:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 78:0-96:1
     Visibility: public -/
 @[discriminant u8]
 inductive extracted.channel.ChannelKind where
@@ -34,6 +34,7 @@ inductive extracted.channel.ChannelKind where
 | Stdio : extracted.channel.ChannelKind
 | ExtraFd : extracted.channel.ChannelKind
 | Uid : extracted.channel.ChannelKind
+| Cmdline : extracted.channel.ChannelKind
 
 /-- [nucleus_ifc_kernel::extracted::ifc_confidentiality::ConfLevel]
     Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs', lines 21:0-28:1

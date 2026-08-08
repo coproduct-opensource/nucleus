@@ -89,9 +89,10 @@ channels.*
 What each status means, and what it deliberately does not:
 
 - **C1 (NOT-YET — demoted 2026-08-08, was PROVED).** FM-5 genuinely proves,
-  over the six modelled child-inheritance channels (Env, Argv, Cwd, Stdio,
-  ExtraFd, Uid), the 11-kind × 3-principal delivery table, Aeneas-extracted,
-  `sorry`-free, axiom-audited — but the *clause* is broader than that theorem,
+  over the seven modelled child-inheritance channels (Env, Argv, Cwd, Stdio,
+  ExtraFd, Uid, Cmdline), the 11-kind × 3-principal delivery table,
+  Aeneas-extracted, `sorry`-free, axiom-audited — but the *clause* is broader
+  than that theorem,
   and the *clause* was **falsified by a channel FM-5 does not model**: the
   guest kernel command line (`/proc/cmdline`) is world-readable inside the VM,
   and it carried real secrets — `nucleus.approval_secret` (the symmetric HMAC
@@ -114,14 +115,22 @@ What each status means, and what it deliberately does not:
   (`no_pod_cmdline_carries_any_per_pod_secret`) proves it over the real boot
   args for every identity outcome, and it is the Rust half of the Lean channel
   theorem. This also realized the FM-4 snapshot payoff: a realistic
-  identity-bearing pod cmdline is `SafeToClone`. **C1 stays NOT-YET** only
-  because the removals are **tested, not proved**: the cmdline is not yet a
-  modelled channel, and mounts, `/proc/<pid>/environ`, `/etc/nucleus/*` and the
-  `_ => OrdinaryData` classifier fallthrough remain trusted rather than proved.
-  **Re-earning C1** requires adding `Cmdline` to `ChannelAdmissionExtracted` as
-  a Public-only channel (it now carries only per-node config —
-  `approval_pubkeys`, audit S3 config, region, port), turning
-  `no_channel_delivers_secret_to_the_workload` green over it unconditionally.
+  identity-bearing pod cmdline is `SafeToClone`. **The cmdline is now a MODELLED
+  channel** (`ChannelKind::Cmdline`, Aeneas-extracted): the flagship
+  `no_channel_delivers_secret_to_the_workload` covers it, and
+  `the_cmdline_delivers_no_secret_to_the_workload` states it by name — a `Secret`
+  re-appearing on the command line is now a RED theorem, not an unmodelled gap.
+  So the specific falsifier that demoted C1 is closed AND proved. **C1 stays
+  NOT-YET** for two reasons that are narrower than before: (1) the Lean proves
+  the delivery *relation*; that the node *obeys* it (writes no Secret on the
+  cmdline) is the Rust behavioural gate `no_pod_cmdline_carries_any_per_pod_secret`,
+  which is TESTED not proved — and C7 ("a theorem about the code that ships") is
+  itself only TESTED, so C1's conformance leg cannot exceed it; (2) mounts,
+  `/proc/<pid>/environ` and `/etc/nucleus/*` remain unmodelled surfaces, and the
+  `_ => OrdinaryData` classifier fallthrough is trusted. **Promoting C1** now
+  turns on a claim-status judgement — whether those residual surfaces are
+  in-scope exclusions (like FM-5's declared mounts fence) or genuine gaps — held
+  for Brandon rather than taken unilaterally on the flagship confidentiality row.
 - **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
   is outside every model. `docs/cross-pod-view.md` is the design.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
@@ -143,9 +152,10 @@ What each status means, and what it deliberately does not:
   the workload cannot steer which value is released. The full four-run
   robustness LTS over the pod machine remains a NOT-YET refinement (the
   executable two-run form ships as `declassify_scope.rs`).
-- **C6 (NOT-YET)** — the six child-inheritance channels are proved total (the
-  quantification is over the channel enum, so a new channel forces a match
-  arm); the effect/API set is enumerated with named exclusions in
+- **C6 (NOT-YET)** — the seven child-inheritance channels (now including the
+  kernel command line) are proved total (the quantification is over the channel
+  enum, so a new channel forces a match arm); the effect/API set is enumerated
+  with named exclusions in
   `docs/architecture/mediated-set.md` with its lint reporting-only; the
   transport channels (vsock, pod-dir socket, in-guest HTTP, netns, DNS, node
   gRPC) have no unified inventory. "Every" is not yet earned.
