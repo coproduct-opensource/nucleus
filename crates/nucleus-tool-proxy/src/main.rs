@@ -361,7 +361,13 @@ pub(crate) struct AppState {
     pub(crate) web_client: reqwest::Client,
     /// Upstreams reachable with a credential the workload never holds.
     pub(crate) credentialed_egress: Vec<nucleus_spec::CredentialedEgressSpec>,
+    /// Effective web_fetch response cap: the pod's `network.max_response_bytes`
+    /// if set, else the proxy's `--web-fetch-max-bytes`. Resolved once at
+    /// startup so every read site enforces the same per-pod value.
     web_fetch_max_bytes: usize,
+    /// The pod's `network.mime_allow` override, if any. `None` means the
+    /// built-in `ALLOWED_MIME_PREFIXES` applies.
+    web_fetch_mime_allow: Option<Vec<String>>,
     dns_allow: Vec<String>,
     /// URL pattern allowlist for web_fetch. If non-empty, URLs must match.
     url_allow: Vec<String>,
@@ -1555,19 +1561,16 @@ async fn main() -> Result<(), ApiError> {
         .build()
         .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
-    // Extract DNS and URL allow lists from spec
-    let dns_allow = spec
-        .spec
-        .network
-        .as_ref()
-        .map(|n| n.dns_allow.clone())
-        .unwrap_or_default();
-    let url_allow = spec
-        .spec
-        .network
-        .as_ref()
-        .map(|n| n.url_allow.clone())
-        .unwrap_or_default();
+    // All web_fetch enforcement inputs (DNS/URL allowlists + the per-pod MIME
+    // and response-cap overrides) resolved from the spec in one place.
+    let web_fetch_cfg = web_fetch_policy::resolve_web_fetch_config(
+        spec.spec.network.as_ref(),
+        args.web_fetch_max_bytes,
+    );
+    let dns_allow = web_fetch_cfg.dns_allow;
+    let url_allow = web_fetch_cfg.url_allow;
+    let web_fetch_mime_allow = web_fetch_cfg.mime_allow;
+    let web_fetch_max_bytes = web_fetch_cfg.max_bytes;
 
     // Build attestation verifier
     let attestation_config = {
@@ -1842,7 +1845,8 @@ async fn main() -> Result<(), ApiError> {
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
-        web_fetch_max_bytes: args.web_fetch_max_bytes,
+        web_fetch_max_bytes,
+        web_fetch_mime_allow,
         dns_allow,
         url_allow,
         attestation_verifier,
@@ -3582,7 +3586,8 @@ async fn web_fetch(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    web_fetch_policy::check_mime_type(content_type).map_err(ApiError::WebFetch)?;
+    web_fetch_policy::check_mime_type(content_type, state.web_fetch_mime_allow.as_deref())
+        .map_err(ApiError::WebFetch)?;
 
     // Collect response headers + add exposure metadata
     let mut response_headers: HashMap<String, String> = response
