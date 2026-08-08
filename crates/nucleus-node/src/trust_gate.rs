@@ -1180,10 +1180,11 @@ fn hmac_sha256_hex(secret: &[u8], data: &[u8]) -> String {
 
 /// Register this executor's Ed25519 public key with the trust-service.
 ///
-/// Called once at startup so the trust-service can verify per-executor
-/// signatures on subsequent receipt POSTs. The registration request itself
+/// Called once at startup (from `main`, before serving) so the trust-service
+/// can verify per-executor signatures on subsequent receipt POSTs — those POSTs
+/// carry `X-Nucleus-Executor-Sig` but no inline pubkey, so without this
+/// enrollment the signatures are unverifiable. The registration request itself
 /// is HMAC-authenticated using `receipt_secret`.
-#[allow(dead_code)] // Called at startup when trust gate is enabled
 pub async fn register_executor_pubkey(config: &TrustGateConfig, http_client: &reqwest::Client) {
     if !config.is_enabled() {
         return;

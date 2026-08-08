@@ -751,6 +751,13 @@ async fn main() -> Result<(), ApiError> {
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
     };
 
+    // Enroll this executor's Ed25519 public key with the trust-service, once,
+    // before serving. Every receipt POST is signed with the matching private
+    // key (`X-Nucleus-Executor-Sig`) but ships no inline pubkey, so the
+    // trust-service can only verify those signatures if it learned the key from
+    // this enrollment first. A no-op when the trust gate is disabled.
+    trust_gate::register_executor_pubkey(&state.trust_gate, &state.http_client).await;
+
     // Routes that require HMAC auth
     let authenticated_routes = Router::new()
         .route("/v1/pods", post(create_pod).get(pod_api::list_pods))

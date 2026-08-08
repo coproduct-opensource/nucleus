@@ -273,12 +273,14 @@ pub struct NetworkSpec {
     /// If non-empty, only URLs matching at least one pattern are permitted.
     #[serde(default)]
     pub url_allow: Vec<String>,
-    /// Override the default MIME type allowlist for web_fetch responses.
-    /// If None, the built-in allowlist (text + structured data) is used.
+    /// Override the built-in MIME-type allowlist for web_fetch responses.
+    /// When `Some`, the listed prefixes REPLACE the built-in list; when `None`,
+    /// the built-in allowlist (text + structured data) is used.
     #[serde(default)]
     pub mime_allow: Option<Vec<String>>,
-    /// Maximum response body size in bytes for web_fetch.
-    /// Defaults to 10 MiB if not specified.
+    /// Per-pod maximum response body size in bytes for web_fetch.
+    /// When `None`, the proxy's configured cap applies
+    /// (`--web-fetch-max-bytes` / `NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES`).
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
 }
