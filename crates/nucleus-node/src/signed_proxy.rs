@@ -27,11 +27,28 @@ const HEADER_ACTOR: &str = "x-nucleus-actor";
 const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
 const MAX_PROXY_BODY_BYTES: usize = 10 * 1024 * 1024;
 
+/// How this proxy signs `/v1/approve` requests.
+///
+/// One enum rather than two `Option`s: a proxy holding both an approval
+/// secret and an approval key would have two ways to sign the same request,
+/// and which one the guest accepts is a property of how the POD was
+/// provisioned — the launch path that started this proxy knows, so it picks.
+#[derive(Clone)]
+pub enum ApprovalSigning {
+    /// Shared-secret HMAC — pods provisioned with `approval_secret` (the
+    /// env-delivered container paths).
+    Hmac(Arc<Vec<u8>>),
+    /// Ed25519 with the node's approval signing key — Firecracker pods, which
+    /// verify against the PUBLIC half (`nucleus.approval_pubkeys`) and hold
+    /// no approval secret at all.
+    Ed25519(Arc<ed25519_dalek::SigningKey>),
+}
+
 #[derive(Clone)]
 struct SignedProxyState {
     target: SocketAddr,
     secret: Arc<Vec<u8>>,
-    approval_secret: Option<Arc<Vec<u8>>>,
+    approval: Option<ApprovalSigning>,
     default_actor: Option<String>,
     /// Drand client for anchoring approval signatures.
     drand_client: Option<Arc<DrandClient>>,
@@ -60,10 +77,10 @@ impl SignedProxy {
     pub async fn start(
         target: SocketAddr,
         secret: Arc<Vec<u8>>,
-        approval_secret: Option<Arc<Vec<u8>>>,
+        approval: Option<ApprovalSigning>,
         default_actor: Option<String>,
     ) -> std::io::Result<Self> {
-        Self::start_with_drand(target, secret, approval_secret, default_actor, None).await
+        Self::start_with_drand(target, secret, approval, default_actor, None).await
     }
 
     /// Start the signed proxy with optional drand anchoring for approval requests.
@@ -83,7 +100,7 @@ impl SignedProxy {
     pub async fn start_with_drand(
         target: SocketAddr,
         secret: Arc<Vec<u8>>,
-        approval_secret: Option<Arc<Vec<u8>>>,
+        approval: Option<ApprovalSigning>,
         default_actor: Option<String>,
         drand_config: Option<DrandConfig>,
     ) -> std::io::Result<Self> {
@@ -109,7 +126,7 @@ impl SignedProxy {
         let state = SignedProxyState {
             target,
             secret,
-            approval_secret,
+            approval,
             default_actor,
             drand_client,
         };
@@ -158,28 +175,30 @@ async fn proxy_handler(
     let timestamp = now_unix();
     let path = parts.uri.path();
 
-    // Determine secret and whether to use drand anchoring
     let is_approval = path == "/v1/approve";
-    let secret = if is_approval {
-        state.approval_secret.as_ref().unwrap_or(&state.secret)
-    } else {
-        &state.secret
+
+    // Sign an approval with the approval AUTHORITY — Ed25519 when the pod
+    // verifies against public keys, HMAC when it was provisioned a secret,
+    // the plain auth secret when no approval authority was configured. The
+    // message bytes are identical across primitives (see `build_message`), so
+    // the guest-side verifier changed only its primitive, not its framing.
+    let sign_approval = |round: Option<u64>| -> String {
+        let message = build_message(round, timestamp, actor.as_deref(), &body_bytes);
+        match state.approval {
+            Some(ApprovalSigning::Ed25519(ref key)) => {
+                use ed25519_dalek::Signer as _;
+                hex::encode(key.sign(&message).to_bytes())
+            }
+            Some(ApprovalSigning::Hmac(ref secret)) => sign_message(secret, &message),
+            None => sign_message(&state.secret, &message),
+        }
     };
 
     // For approval requests, try to anchor with drand
     let (signature, drand_round) = if is_approval {
         if let Some(ref drand_client) = state.drand_client {
             match drand_client.current_round().await {
-                Ok(round) => {
-                    let sig = sign_request_with_drand(
-                        secret,
-                        round,
-                        timestamp,
-                        actor.as_deref(),
-                        &body_bytes,
-                    );
-                    (sig, Some(round))
-                }
+                Ok(round) => (sign_approval(Some(round)), Some(round)),
                 Err(e) => {
                     // Handle based on fail mode
                     // Note: The DrandClient handles Cached mode internally by using
@@ -197,25 +216,19 @@ async fn proxy_handler(
                             // its cache, so if we're here, the cache is too old.
                             // We fall back to non-drand signing as a last resort.
                             warn!("drand unavailable and cache expired, falling back to non-anchored signing: {e}");
-                            (
-                                sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
-                                None,
-                            )
+                            (sign_approval(None), None)
                         }
                     }
                 }
             }
         } else {
             // No drand client configured, use standard signing
-            (
-                sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
-                None,
-            )
+            (sign_approval(None), None)
         }
     } else {
-        // Non-approval requests use standard signing
+        // Non-approval requests use standard signing with the plain auth secret.
         (
-            sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
+            sign_request(&state.secret, timestamp, actor.as_deref(), &body_bytes),
             None,
         )
     };
@@ -319,44 +332,27 @@ fn build_target_uri(
     builder.build()
 }
 
-fn sign_request(secret: &[u8], timestamp: i64, actor: Option<&str>, body: &[u8]) -> String {
+/// The bytes both primitives sign: `"{round}.{timestamp}.{actor}.{body}"`
+/// when drand-anchored (the round cannot be predicted, which is what stops
+/// pre-computation), `"{timestamp}.{actor}.{body}"` otherwise.
+fn build_message(round: Option<u64>, timestamp: i64, actor: Option<&str>, body: &[u8]) -> Vec<u8> {
     let actor_value = actor.unwrap_or("");
     let ts = timestamp.to_string();
-    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 2 + body.len());
+    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 24 + body.len());
+    if let Some(round) = round {
+        message.extend_from_slice(round.to_string().as_bytes());
+        message.push(b'.');
+    }
     message.extend_from_slice(ts.as_bytes());
     message.push(b'.');
     message.extend_from_slice(actor_value.as_bytes());
     message.push(b'.');
     message.extend_from_slice(body);
-    sign_message(secret, &message)
+    message
 }
 
-/// Sign a request with drand anchoring.
-///
-/// Message format: `"{round}.{timestamp}.{actor}.{body}"`
-///
-/// This prevents pre-computation attacks because the drand round cannot be
-/// predicted in advance.
-fn sign_request_with_drand(
-    secret: &[u8],
-    drand_round: u64,
-    timestamp: i64,
-    actor: Option<&str>,
-    body: &[u8],
-) -> String {
-    let actor_value = actor.unwrap_or("");
-    let round_str = drand_round.to_string();
-    let ts = timestamp.to_string();
-    let mut message =
-        Vec::with_capacity(round_str.len() + ts.len() + actor_value.len() + 3 + body.len());
-    message.extend_from_slice(round_str.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(ts.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(actor_value.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(body);
-    sign_message(secret, &message)
+fn sign_request(secret: &[u8], timestamp: i64, actor: Option<&str>, body: &[u8]) -> String {
+    sign_message(secret, &build_message(None, timestamp, actor, body))
 }
 
 async fn forward_request(
@@ -390,4 +386,43 @@ fn now_unix() -> i64 {
 fn proxy_error(status: StatusCode, message: String) -> AxumResponse {
     info!("signed proxy error: {message}");
     (status, message).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The framing contract with the guest-side verifier, pinned as bytes.**
+    /// The tool-proxy's `auth` module reconstructs exactly
+    /// `"{round}.{timestamp}.{actor}.{body}"` (or without the round) from the
+    /// request headers and verifies the signature over it. The two live in
+    /// different crates, so nothing but this test notices if one side's
+    /// framing drifts — and a drift fails EVERY approval, far from the cause.
+    #[test]
+    fn the_signed_message_framing_matches_the_verifier() {
+        assert_eq!(
+            build_message(Some(42), 1000, Some("op"), b"BODY"),
+            b"42.1000.op.BODY".to_vec()
+        );
+        // No round, no actor: the separators stay (an empty actor is framed
+        // as an empty segment, not an absent one).
+        assert_eq!(build_message(None, 1000, None, b"B"), b"1000..B".to_vec());
+    }
+
+    /// An Ed25519 approval signature produced the way the handler produces it
+    /// verifies under `verify_strict` with the public half — the check the
+    /// guest performs against `nucleus.approval_pubkeys`.
+    #[test]
+    fn an_approval_signature_round_trips_to_the_public_key() {
+        use ed25519_dalek::Signer as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let message = build_message(Some(9), 1234, Some("approver"), b"{}");
+        let sig_hex = hex::encode(key.sign(&message).to_bytes());
+        let sig_bytes: [u8; 64] = hex::decode(&sig_hex).unwrap().try_into().unwrap();
+        let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        assert!(key
+            .verifying_key()
+            .verify_strict(&message, &signature)
+            .is_ok());
+    }
 }

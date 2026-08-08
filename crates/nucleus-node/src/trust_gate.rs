@@ -103,6 +103,14 @@ const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
 /// [`EXECUTOR_KEY_FILE`] so the two trust roles never share a key.
 const TASK_ISSUER_KEY_FILE: &str = "task_issuer_signing_key.der";
 
+/// Filename (under `state_dir`) holding the persisted **approval** signing
+/// key — the key whose signatures the guest tool-proxy accepts on
+/// `/v1/approve`, verified against the PUBLIC half delivered as
+/// `nucleus.approval_pubkeys`. DISTINCT from the other two role keys: the
+/// approval authority must not double as the executor's receipt identity or
+/// the task-token root.
+const APPROVAL_SIGNING_KEY_FILE: &str = "approval_signing_key.der";
+
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
 /// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds
@@ -147,6 +155,17 @@ pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
 /// is also the executor's receipt identity) never doubles as a token root.
 pub fn load_or_create_task_issuer_signing_key(state_dir: &Path) -> SigningKey {
     load_or_create_key_file(state_dir, TASK_ISSUER_KEY_FILE, "task issuer signing key")
+}
+
+/// Load the dedicated **approval** Ed25519 signing key from `state_dir`,
+/// creating and persisting a fresh one on first run.
+///
+/// Same persistence discipline as the other role keys, and persistence
+/// matters MORE here: a running pod verifies approvals against the public key
+/// it booted with, so a node that minted a fresh key on every restart could
+/// no longer approve anything for pods launched before the restart.
+pub fn load_or_create_approval_signing_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(state_dir, APPROVAL_SIGNING_KEY_FILE, "approval signing key")
 }
 
 /// Shared implementation for the persisted per-node Ed25519 keys. `filename` is

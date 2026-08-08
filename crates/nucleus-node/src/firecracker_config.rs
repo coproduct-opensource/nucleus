@@ -558,7 +558,7 @@ impl FirecrackerConfig {
         image: &nucleus_spec::ImageSpec,
         net_plan: Option<&net::NetPlan>,
         auth_secret: &str,
-        approval_secret: &str,
+        approval_pubkeys: &str,
         workload_api_port: Option<u32>,
         task_token: Option<&crate::session_mint::MintedTaskToken>,
         // When jailed, every path emitted below is IN-JAIL, not host.
@@ -623,14 +623,25 @@ impl FirecrackerConfig {
         // can forge. Firecracker pods always have vsock (`spawn_firecracker_pod`
         // requires `spec.vsock`), so the HMAC tier is unreachable on this path.
         //
-        // `nucleus.approval_secret` REMAINS for now: the approval endpoint is
-        // still drand-anchored HMAC, and dropping its key needs a drand-only
-        // tier first. Freshness is not origin, so the transport cannot replace
-        // it on its own.
+        // `nucleus.approval_secret` is NO LONGER EMITTED either.
+        //
+        // It was the last real secret on this command line: an HMAC key is
+        // symmetric, so the guest's VERIFICATION key was also a signing key,
+        // and any workload that read `/proc/cmdline` could forge approvals
+        // for its own operations — an authority bypass, not just a leak.
+        //
+        // What rides here instead is `nucleus.approval_pubkeys`: the Ed25519
+        // PUBLIC half of the node's approval signing key. The guest verifies
+        // an approver's signature (drand-anchored, `verify_strict`) and can do
+        // nothing else with the key — reading it grants no forging power, so
+        // it is safe on a world-readable channel, and it is per-node config,
+        // so it does not block a snapshot base (see `SHARED_CONFIG_KEYS`).
         let _ = auth_secret;
         boot_args = match boot_args.take() {
-            Some(args) => Some(format!("{args} nucleus.approval_secret={approval_secret}")),
-            None => Some(format!("nucleus.approval_secret={approval_secret}")),
+            Some(args) => Some(format!(
+                "{args} nucleus.approval_pubkeys={approval_pubkeys}"
+            )),
+            None => Some(format!("nucleus.approval_pubkeys={approval_pubkeys}")),
         };
 
         // Inject workload API port if identity management is enabled
@@ -1079,7 +1090,7 @@ mod tests {
             &image(true, false),
             None,
             "auth-secret",
-            "approval-secret",
+            "aa00bb11-approval-pubkeys",
             will_have_identity.then_some(15012),
             None,
             None,
@@ -1509,7 +1520,7 @@ mod tests {
             &img,
             None,
             "auth",
-            "approval",
+            "aa00bb11-approval-pubkeys",
             None,
             None,
             Some(&layout),
@@ -1661,7 +1672,7 @@ mod tests {
             &img,
             None,
             "auth",
-            "approval",
+            "aa00bb11-approval-pubkeys",
             None,
             None,
             Some(&JailLayout::new(

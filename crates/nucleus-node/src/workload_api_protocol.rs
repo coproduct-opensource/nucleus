@@ -121,8 +121,10 @@ pub enum WorkloadApiCommand {
     /// # Why not the kernel command line
     ///
     /// `/proc/cmdline` is world-readable in the guest, which is where
-    /// `nucleus.auth_secret` and `nucleus.approval_secret` arrive today. Neither
-    /// is a proxy-only capability for exactly that reason.
+    /// `nucleus.auth_secret` and `nucleus.approval_secret` once arrived —
+    /// neither was a proxy-only capability for exactly that reason, and both
+    /// are gone from the command line now (the transport peer check replaced
+    /// one, signature-based approvals the other).
     FetchBrokerSecret,
     /// `FETCH_AUDIT_CREDENTIALS` — request the cloud credentials for this pod's
     /// S3 audit sink.

@@ -228,14 +228,37 @@ fn run() -> Result<(), String> {
     let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
         .or_else(|| read_secret("/etc/nucleus/auth.secret"));
 
+    // Signature-based approvals: the node delivers the Ed25519 PUBLIC half of
+    // its approval signing key as `nucleus.approval_pubkeys`. A verification
+    // key is safe on the world-readable cmdline — reading it grants no
+    // forging power, which is exactly what the approval SECRET below lacked
+    // (HMAC is symmetric, so the workload could read `/proc/cmdline` and sign
+    // its own approvals). When keys are present the proxy accepts ONLY
+    // signatures; the secret is legacy for pods still provisioned with one.
+    let approval_pubkeys = parse_cmdline_secret(&cmdline, "nucleus.approval_pubkeys");
+    if let Some(ref keys) = approval_pubkeys {
+        std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys);
+    }
+
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
-        .or_else(|| read_secret("/etc/nucleus/approval.secret"))
-        .ok_or_else(|| "missing approval secret (set nucleus.approval_secret in boot args or /etc/nucleus/approval.secret)".to_string())?;
+        .or_else(|| read_secret("/etc/nucleus/approval.secret"));
+    if approval_pubkeys.is_none() && approval_secret.is_none() {
+        // Fail HERE, near the cause: the tool-proxy would refuse to start
+        // anyway (its approval endpoint would be unauthenticatable), but its
+        // exit is four layers from this missing boot arg.
+        return Err(
+            "missing approval authority (set nucleus.approval_pubkeys or \
+                    nucleus.approval_secret in boot args, or /etc/nucleus/approval.secret)"
+                .to_string(),
+        );
+    }
 
     if let Some(auth_secret) = auth_secret {
         std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
     }
-    std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
+    if let Some(approval_secret) = approval_secret {
+        std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
+    }
 
     // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
     // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.

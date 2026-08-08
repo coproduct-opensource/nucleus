@@ -479,17 +479,36 @@ fn the_auth_secret_never_reaches_the_guest_command_line() {
     assert!(!snapshot_safety("console=ttyS0 nucleus.auth_secret=abc").is_safe_to_clone());
 }
 
-/// The approval secret is DELIBERATELY still emitted. Phase 1 removes the key
-/// the transport can replace; the approval endpoint is drand-anchored and
-/// freshness is not origin, so its key needs a drand-only tier first. Asserting
-/// this keeps the remaining exposure visible instead of quietly forgotten.
+/// THE NEGATIVE TEST FOR SIGNED APPROVALS. The approval secret was the last
+/// real secret on the guest command line — and it was worse than a leak: HMAC
+/// is symmetric, so the guest's verification key was also a signing key, and
+/// any workload reading /proc/cmdline could FORGE approvals. What rides now is
+/// `nucleus.approval_pubkeys`, the Ed25519 PUBLIC half of the node's approval
+/// key: verification only, no forging power. (This test previously pinned the
+/// OPPOSITE — "still emitted and tracked" — and failed the moment the emission
+/// was removed, exactly as intended.)
 #[test]
-fn the_approval_secret_is_still_emitted_and_that_is_tracked() {
+fn the_approval_secret_never_reaches_the_guest_command_line() {
+    use crate::snapshot::snapshot_safety;
     let src = include_str!("firecracker_config.rs");
+    let emits_approval_secret = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .any(|l| l.contains("nucleus.approval_secret="));
     assert!(
-        src.contains("nucleus.approval_secret={approval_secret}"),
-        "if the approval secret has been removed, delete this test and the note beside it"
+        !emits_approval_secret,
+        "firecracker_config emits nucleus.approval_secret again — that key lets any \
+         /proc/cmdline reader forge approvals; approvals are Ed25519-verified against \
+         nucleus.approval_pubkeys now"
     );
+    // The pods must still be given the VERIFICATION key, or approvals brick.
+    assert!(
+        src.contains("nucleus.approval_pubkeys={approval_pubkeys}"),
+        "the approval public key is no longer delivered — pods cannot verify approvals"
+    );
+    // And a command line carrying the old secret is still refused as a
+    // snapshot base — the denylist is categorical, not tied to emission.
+    assert!(!snapshot_safety("console=ttyS0 nucleus.approval_secret=abc").is_safe_to_clone());
 }
 
 // ── Proof-carrying admission: the posture gate on a real rootfs ───────────

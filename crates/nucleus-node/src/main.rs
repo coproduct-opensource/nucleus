@@ -50,6 +50,7 @@ mod cgroup;
 mod cred_split;
 mod envelope_frame;
 mod guest_socket;
+mod lifecycle;
 mod net;
 mod posture;
 mod session_mint;
@@ -355,6 +356,11 @@ struct NodeState {
     /// pod. See `pod_caller_identity`.
     caller_secret: std::sync::Arc<[u8; 32]>,
     proxy_approval_secret: String,
+    /// Ed25519 key whose signatures Firecracker guests accept on
+    /// `/v1/approve`. The PRIVATE half never leaves the node; guests get the
+    /// public half as `nucleus.approval_pubkeys`. Persisted in `state_dir` so
+    /// pods launched before a node restart can still be approved.
+    approval_signer: std::sync::Arc<ed25519_dalek::SigningKey>,
     proxy_actor: Option<String>,
     /// Operator-configured registry of proof-carrying postures a trusted builder
     /// has proven. Consulted fail-closed at pod admission (`posture.rs`).
@@ -720,6 +726,9 @@ async fn main() -> Result<(), ApiError> {
             std::sync::Arc::new(k)
         },
         proxy_approval_secret: args.proxy_approval_secret.clone(),
+        approval_signer: std::sync::Arc::new(trust_gate::load_or_create_approval_signing_key(
+            &args.state_dir,
+        )),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
         drand_config,
@@ -1105,7 +1114,7 @@ async fn create_pod_internal(
     boot_trace::log_guest_console_timeline(&log_path).await;
 
     // Write lifecycle audit event so even direct-task pods have an audit trail.
-    write_lifecycle_audit(
+    lifecycle::write_lifecycle_audit(
         &pod_dir,
         "pod_started",
         &id.to_string(),
@@ -1600,7 +1609,10 @@ async fn spawn_local_pod(
         let proxy = signed_proxy::SignedProxy::start_with_drand(
             target_addr,
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-            Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
+            // Env-provisioned pod: it verifies approvals with the shared secret.
+            Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
+                state.proxy_approval_secret.as_bytes().to_vec(),
+            ))),
             state.proxy_actor.clone(),
             state.drand_config.clone(),
         )
@@ -1929,7 +1941,10 @@ async fn spawn_container_pod(
             let proxy = signed_proxy::SignedProxy::start_with_drand(
                 target_addr,
                 Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-                Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
+                // Env-provisioned container: shared-secret approvals.
+                Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
+                    state.proxy_approval_secret.as_bytes().to_vec(),
+                ))),
                 state.proxy_actor.clone(),
                 state.drand_config.clone(),
             )
@@ -2245,7 +2260,8 @@ async fn spawn_firecracker_pod(
             image,
             net_plan.as_ref(),
             &state.proxy_auth_secret,
-            &state.proxy_approval_secret,
+            // The PUBLIC half only — the signing half stays in this process.
+            &hex::encode(state.approval_signer.verifying_key().to_bytes()),
             workload_api_port,
             task_token.as_ref(),
             jail_layout.as_ref(),
@@ -2590,7 +2606,12 @@ async fn spawn_firecracker_pod(
         let proxy = signed_proxy::SignedProxy::start_with_drand(
             bridge.listen_addr(),
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-            Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
+            // Firecracker pod: it verifies approvals against the node's PUBLIC
+            // key (nucleus.approval_pubkeys), so approvals are Ed25519-signed
+            // and no approval secret exists in the guest.
+            Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
+                &state.approval_signer,
+            ))),
             state.proxy_actor.clone(),
             state.drand_config.clone(),
         )
@@ -2962,55 +2983,6 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
-///
-/// Ensures every pod — including direct-task pods that never run a tool-proxy —
-/// has at least start/stop entries.
-///
-/// **Deliberately NOT `audit.log`.** These entries are unsigned and unchained;
-/// `audit.log` is the tool-proxy's HMAC-chained log, and interleaving unsigned
-/// lines into it made every local- and container-driver log fail
-/// `nucleus-audit verify` (its `ToolProxyEntry` requires
-/// `prev_hash`/`hash`/`signature`). Keeping the two files separate preserves a
-/// verifiable chain; the lifecycle file is folded into an evidence bundle as
-/// explicitly-unsigned context. The filename lives here, in one place, so the
-/// two cannot drift back together.
-async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &str, detail: &str) {
-    let audit_path = pod_dir.join("lifecycle.log");
-    let audit_path = audit_path.as_path();
-    let entry = serde_json::json!({
-        "timestamp_unix": now_unix(),
-        "actor": "nucleus-node",
-        "event": event,
-        "subject": format!("pod:{}", pod_id),
-        "result": detail,
-    });
-    let line = match serde_json::to_string(&entry) {
-        Ok(l) => l,
-        Err(e) => {
-            error!("failed to serialize lifecycle audit entry: {e}");
-            return;
-        }
-    };
-    match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(audit_path)
-        .await
-    {
-        Ok(mut file) => {
-            let _ = file.write_all(line.as_bytes()).await;
-            let _ = file.write_all(b"\n").await;
-        }
-        Err(e) => {
-            error!(
-                "failed to write lifecycle audit to {}: {e}",
-                audit_path.display()
-            );
-        }
-    }
-}
-
 fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
     if !matches!(&args.driver, DriverKind::Firecracker) || args.firecracker_max_pods == 0 {
         return None;
@@ -3082,8 +3054,13 @@ fn start_pod_reaper(state: NodeState) {
                         _ => "unknown".to_string(),
                     };
                     let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
-                    write_lifecycle_audit(pod_dir, "pod_exited", &pod.id.to_string(), &detail)
-                        .await;
+                    lifecycle::write_lifecycle_audit(
+                        pod_dir,
+                        "pod_exited",
+                        &pod.id.to_string(),
+                        &detail,
+                    )
+                    .await;
 
                     exited_ids.push(pod.id);
                     pod.cleanup_after_exit().await;
@@ -3791,7 +3768,7 @@ impl NodeService for GrpcService {
                     "lockdown: pod affected"
                 );
                 let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
-                write_lifecycle_audit(
+                lifecycle::write_lifecycle_audit(
                     pod_dir,
                     action,
                     &pod.id.to_string(),

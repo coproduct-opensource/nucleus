@@ -81,14 +81,17 @@
 /// from Tier 2 and both satisfy the proof. That is a reason to re-derive the
 /// others rather than inherit their notes:
 ///
-/// * **`nucleus.approval_secret`** — NOT redundant. `select_auth_tier` puts the
-///   approval path on `ApprovalHmacDrand` *above* `HostVsock`, deliberately: a
-///   host-verified transport does not remove the drand anchor from an approval.
-///   A conditional emission would need "this pod can never require approval"
-///   derived from the resolved policy, and `requires_approval` lives on an
-///   autonomy ceiling rather than on `PermissionLattice`. Getting that wrong
-///   fails approvals at the moment a human is meant to be in the loop, which is
-///   a worse failure than the exposure it would close.
+/// * **`nucleus.approval_secret`** — GONE (2026-08-08), replaced rather than
+///   conditionally emitted. The earlier note here argued it could not simply
+///   be dropped because the approval path deliberately keeps its drand anchor
+///   even on a host-verified transport — true, and the replacement keeps it:
+///   approvals are now Ed25519 signatures verified against
+///   `nucleus.approval_pubkeys` (the node's PUBLIC approval key, classified
+///   in [`SHARED_CONFIG_KEYS`]: per-node config, and reading a verification
+///   key grants no forging power — unlike the HMAC key, which was symmetric
+///   and let any `/proc/cmdline` reader sign its own approvals). The key
+///   stays in [`PER_POD_SECRET_KEYS`] so a regression that re-emits a shared
+///   approval secret is refused, not silently clonable.
 /// * **`nucleus.task_token_hex` / `_issuer` / `_nonce`** — these are documented
 ///   at the emission site as *"a scoped capability + PUBLIC issuer key — NOT a
 ///   secret"*, with anti-replay resting on a host-pinned nonce. They are in
@@ -163,6 +166,9 @@
 /// someone has that observation, removing the fallback is a guess dressed as a
 /// simplification.
 pub const PER_POD_SECRET_KEYS: &[&str] = &[
+    // No longer emitted (approvals are Ed25519-verified against
+    // `nucleus.approval_pubkeys` now) but categorically refused: a shared
+    // symmetric approval key on a cloned base is the forgery-enabling case.
     "nucleus.approval_secret",
     "nucleus.auth_secret",
     "nucleus.sandbox_token",
@@ -185,6 +191,10 @@ pub const PER_POD_SECRET_KEYS: &[&str] = &[
 /// unclassified rather than silently assumed safe — see
 /// `every_cmdline_key_is_classified`.
 pub const SHARED_CONFIG_KEYS: &[&str] = &[
+    // The Ed25519 PUBLIC half of the node's approval signing key: identical
+    // for every pod on the node, and useless for forging — the guest verifies
+    // with it and can do nothing else.
+    "nucleus.approval_pubkeys",
     "nucleus.audit_s3_bucket",
     "nucleus.audit_s3_endpoint",
     "nucleus.audit_s3_prefix",
@@ -386,7 +396,7 @@ mod tests {
     /// [`snapshot_safety`] becomes satisfiable by construction. **That was
     /// wrong**, and this test is what makes the error visible instead of
     /// discovering it when the warm pool is built. Phase 1 deleted exactly one
-    /// key — `nucleus.auth_secret` — and FIVE remain.
+    /// key — `nucleus.auth_secret` — and FOUR remain.
     ///
     /// The count has been wrong before, in the dangerous direction: an earlier
     /// version of this test scanned only for `nucleus.key=` and asserted five
@@ -409,11 +419,13 @@ mod tests {
     /// in prose and matches neither form, which is correct — it is no longer
     /// emitted).
     ///
-    /// **Back to five (2026-08-08):** the three AWS audit credentials now ride
+    /// **Down to four (2026-08-08):** the three AWS audit credentials now ride
     /// the workload API (`FETCH_AUDIT_CREDENTIALS`, served once before any
-    /// workload exists) and are no longer emitted onto the command line. They
-    /// STAY in [`PER_POD_SECRET_KEYS`]: the denylist is categorical, so a
-    /// regression that re-emits them is refused by `snapshot_safety` at runtime
+    /// workload exists), and `nucleus.approval_secret` was replaced by
+    /// signature-based approvals (`nucleus.approval_pubkeys` — a public
+    /// verification key, classified shared). All four STAY in
+    /// [`PER_POD_SECRET_KEYS`]: the denylist is categorical, so a regression
+    /// that re-emits any of them is refused by `snapshot_safety` at runtime
     /// and re-counted here at test time.
     ///
     /// A ratchet in both directions, and it is also the only guard on the
@@ -422,7 +434,7 @@ mod tests {
     /// per-pod secret fails here; removing one is progress and forces this list
     /// to be re-stated rather than quietly drifting.
     #[test]
-    fn the_remaining_distance_to_a_snapshottable_base_is_five_keys() {
+    fn the_remaining_distance_to_a_snapshottable_base_is_four_keys() {
         let src = include_str!("firecracker_config.rs");
         let mut emitted: Vec<&str> = Vec::new();
         for key in PER_POD_SECRET_KEYS {
@@ -437,7 +449,6 @@ mod tests {
         emitted.sort_unstable();
 
         let expected = [
-            "nucleus.approval_secret",
             "nucleus.sandbox_token",
             "nucleus.task_token_hex",
             "nucleus.task_token_issuer",
@@ -460,7 +471,7 @@ mod tests {
     #[test]
     fn a_realistic_pod_cmdline_is_still_refused_today() {
         let realistic = format!(
-            "{BASE} nucleus.workload_api_port=15012 nucleus.approval_secret=deadbeef \
+            "{BASE} nucleus.workload_api_port=15012 nucleus.approval_pubkeys=aa00bb11 \
              nucleus.sandbox_token=abc123 nucleus.task_token_hex=7b7d"
         );
         match snapshot_safety(&realistic) {
@@ -471,7 +482,7 @@ mod tests {
             SnapshotSafety::SafeToClone => panic!(
                 "a realistic pod command line reported safe to clone — either the per-pod \
                  material really has been removed (in which case this test and \
-                 `the_remaining_distance_to_a_snapshottable_base_is_five_keys` should both be \
+                 `the_remaining_distance_to_a_snapshottable_base_is_four_keys` should both be \
                  updated, and the warm pool is unblocked), or the guard has stopped matching"
             ),
         }

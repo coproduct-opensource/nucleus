@@ -48,6 +48,10 @@ tracing-subscriber = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# Signature-based approvals: the guest verifies an approver's Ed25519
+# signature against configured PUBLIC keys (verify_strict only — see M-3).
+# Was dev-only; promoted when /v1/approve gained the signature tier.
+ed25519-dalek = { workspace = true }
 # The workload-spawn hardening hook (setgroups/setgid/prctl/setrlimit in a
 # pre_exec closure). Same version the `nucleus` crate uses for `hardening.rs`.
 libc = "0.2"
@@ -118,7 +122,6 @@ tokio-vsock = "0.7"
 dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 dlc-d = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
 tempfile = { workspace = true }
-ed25519-dalek = { workspace = true }
 # In-process router driving for the H-3 panic-net regression test
 # (ServiceExt::oneshot). Dev-only; production graph unchanged.
 tower = { version = "0.5", features = ["util"] }

@@ -126,9 +126,19 @@ struct Args {
     /// See `art12_shipper` for why this is fail-closed and why it matters.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_SHIP_URL")]
     art12_ship_url: Option<String>,
-    /// Approval authority secret (separate from tool auth).
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
+    /// Approval authority secret (separate from tool auth). Legacy: superseded
+    /// by `--approval-pubkeys` wherever that is set. Empty means "not
+    /// provisioned", which is fatal at startup unless pubkeys are.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", default_value = "")]
     approval_secret: String,
+    /// Comma-separated 64-char-hex Ed25519 approver PUBLIC keys. When set,
+    /// `/v1/approve` accepts ONLY an approver's signature (drand-anchored);
+    /// no approval secret exists in the guest to steal. This is how
+    /// Firecracker pods are provisioned (`nucleus.approval_pubkeys` — a
+    /// verification key is safe on the world-readable cmdline, and it is
+    /// per-node config, so it does not block a snapshot base).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS")]
+    approval_pubkeys: Option<String>,
     /// Optional webhook URL for remote audit log delivery.
     /// Entries are POSTed as JSON with HMAC signature in X-Nucleus-Signature header.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_WEBHOOK")]
@@ -332,6 +342,12 @@ pub(crate) struct AppState {
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
     auth: AuthConfig,
     approval_auth: AuthConfig,
+    /// Approver PUBLIC keys for signature-based approvals. `Some` makes the
+    /// Ed25519 tier the ONLY way into `/v1/approve` (the HMAC approval tier
+    /// becomes unreachable — see `auth::select_auth_tier`); `None` keeps the
+    /// legacy shared-secret tier for env-provisioned container pods. Holding
+    /// only verifying keys, the guest cannot forge what it checks.
+    approval_verifier: Option<auth::ApprovalVerifier>,
     /// True when this server was started on a vsock listener that accepts only
     /// the host (`pod_mgmt::peer_is_host`).
     ///
@@ -1483,10 +1499,50 @@ async fn main() -> Result<(), ApiError> {
             args.approval_secret.as_bytes(),
             Duration::from_secs(args.auth_max_skew_secs),
         );
-        if let Some(drand) = drand_config {
-            config.with_drand(drand)
+        if let Some(ref drand) = drand_config {
+            config.with_drand(drand.clone())
         } else {
             config
+        }
+    };
+
+    // Signature-based approvals: approver PUBLIC keys, drand-anchored. A
+    // malformed key list is fatal HERE, not skipped — silently verifying
+    // against fewer keys than configured surfaces as unexplained refusals far
+    // from the cause. And a pod with NEITHER pubkeys nor a secret has an
+    // approval endpoint nobody can authenticate to; that is a provisioning
+    // error, and startup is where it should stop.
+    let approval_verifier = match args.approval_pubkeys.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => {
+            match auth::ApprovalVerifier::from_hex_list(
+                raw,
+                Duration::from_secs(args.auth_max_skew_secs),
+                drand_config.clone(),
+            ) {
+                Ok(v) => {
+                    eprintln!(
+                        "approvals are signature-based: {} approver key(s), no shared secret \
+                         in this guest",
+                        v.key_count()
+                    );
+                    Some(v)
+                }
+                Err(e) => {
+                    eprintln!("FATAL: NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS: {e}");
+                    std::process::exit(78);
+                }
+            }
+        }
+        _ => {
+            if args.approval_secret.trim().is_empty() {
+                eprintln!(
+                    "FATAL: no approval authority is provisioned — set \
+                     NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS (signature-based) or \
+                     NUCLEUS_TOOL_PROXY_APPROVAL_SECRET (legacy shared secret)"
+                );
+                std::process::exit(78);
+            }
+            None
         }
     };
 
@@ -1781,6 +1837,7 @@ async fn main() -> Result<(), ApiError> {
         audit,
         auth,
         approval_auth,
+        approval_verifier,
         host_verified_transport: vsock_binding.is_some(),
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
@@ -2276,10 +2333,13 @@ async fn auth_middleware(
         auth::select_auth_tier(
             auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
             parts.uri.path() == APPROVE_PATH,
+            state.approval_verifier.is_some(),
             state.host_verified_transport,
         ),
         if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
             auth::AuthTier::SpiffeMtls
+        } else if parts.uri.path() == APPROVE_PATH && state.approval_verifier.is_some() {
+            auth::AuthTier::ApprovalEd25519Drand
         } else if parts.uri.path() == APPROVE_PATH {
             auth::AuthTier::ApprovalHmacDrand
         } else if state.host_verified_transport {
@@ -2300,7 +2360,15 @@ async fn auth_middleware(
             );
             auth::verify_spiffe_mtls(&spiffe_id)
         } else if parts.uri.path() == APPROVE_PATH {
-            let ctx = auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?;
+            // Signature tier FIRST, and exclusively: when approver public keys
+            // are configured, the shared-secret HMAC must not remain an
+            // alternative way in — any residual copy of the old secret would
+            // still forge approvals and the keys would have removed nothing.
+            let ctx = if let Some(ref verifier) = state.approval_verifier {
+                auth::verify_http_with_ed25519_drand(&parts.headers, &bytes, verifier)?
+            } else {
+                auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?
+            };
             if ctx.drand_round.is_some() {
                 tracing::info!(
                     drand_round = ctx.drand_round,

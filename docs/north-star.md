@@ -92,24 +92,25 @@ What each status means, and what it deliberately does not:
   over the six modelled child-inheritance channels (Env, Argv, Cwd, Stdio,
   ExtraFd, Uid), the 11-kind × 3-principal delivery table, Aeneas-extracted,
   `sorry`-free, axiom-audited — but the *clause* is broader than that theorem,
-  and it is **falsified today by a channel FM-5 does not model**: the guest
-  kernel command line (`/proc/cmdline`) is world-readable inside the VM, and
-  `firecracker_config.rs` emits `nucleus.approval_secret` there on **every** pod
-  (the code comment at the emission site states outright that the agent can
-  read it). A workload that reads `/proc/cmdline` learns a real secret Nucleus
-  holds on its behalf, so "cannot learn the secrets" is not established. The
-  AWS audit-sink credentials used to ride the same channel; as of 2026-08-08
-  they are fetched over the workload API instead (`FETCH_AUDIT_CREDENTIALS`,
-  served once before any workload exists), and the cmdline-secret ratchet in
-  `snapshot.rs` pins them as no-longer-emitted. Also unmodeled: mounts,
-  `/proc/<pid>/environ`, `/etc/nucleus/*`; and the `_ => OrdinaryData`
-  classifier fallthrough is trusted, not proved. **Re-earning C1** still
-  requires: get `approval_secret` off the cmdline (signature-based approvals —
-  the guest verifying an approver's Ed25519 signature against a *public* key
-  removes the shared HMAC secret entirely), and add the cmdline as a modelled
-  channel to `ChannelAdmissionExtracted` so any Secret-on-cmdline becomes a red
-  theorem. The task-token cmdline copies are not secrets (public issuer +
-  host-pinned nonce) and are not the blocker here.
+  and the *clause* was **falsified by a channel FM-5 does not model**: the
+  guest kernel command line (`/proc/cmdline`) is world-readable inside the VM,
+  and it carried real secrets — `nucleus.approval_secret` (the symmetric HMAC
+  key, so any workload could *forge approvals*, an authority bypass) on every
+  pod, plus the AWS audit-sink credentials whenever an audit sink was
+  configured. Both are closed as of 2026-08-08: the AWS credentials ride the
+  workload API (`FETCH_AUDIT_CREDENTIALS`, served once before any workload
+  exists), and approvals are Ed25519 signatures the guest verifies against
+  the node's *public* key (`nucleus.approval_pubkeys`) — no shared secret
+  exists in the guest, and the cmdline-secret ratchet in `snapshot.rs` pins
+  both removals. C1 stays NOT-YET because the removals are **tested, not
+  proved**: the cmdline is still not a modelled channel, `nucleus.sandbox_token`
+  (a per-pod bearer proof token) still rides it for identity-less pods, and
+  mounts, `/proc/<pid>/environ`, `/etc/nucleus/*` and the `_ => OrdinaryData`
+  classifier fallthrough remain trusted, not proved. **Re-earning C1**
+  requires adding the cmdline as a modelled channel to
+  `ChannelAdmissionExtracted` so any Secret-on-cmdline becomes a red theorem.
+  The task-token cmdline copies are not secrets (public issuer + host-pinned
+  nonce) and are not the blocker here.
 - **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
   is outside every model. `docs/cross-pod-view.md` is the design.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
