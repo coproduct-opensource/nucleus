@@ -175,7 +175,7 @@ lean_lib «IntegrityOracleMirror» where
   roots := #[`IntegrityOracleMirror]
 
 -- The CHANNEL dimension (Machine v3 gate 2): delivery becomes a three-argument
--- judgement over (channel, material, principal), and three of the six channels
+-- judgement over (channel, material, principal), and three of the seven channels
 -- are material-closed by construction rather than by policy.
 lean_lib «ChannelOracleMirror» where
   roots := #[`ChannelOracleMirror]

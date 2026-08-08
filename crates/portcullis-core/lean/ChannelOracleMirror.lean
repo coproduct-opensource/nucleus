@@ -8,14 +8,18 @@
   becomes a three-argument judgement over `(channel, material, principal)`. The
   shipped oracle:
 
-      Env              -> ident_may_deliver m p        (the one channel carrying values)
-      Argv, Cwd        -> is_public m ∧ ident_may_deliver m p   (strictly narrower)
-      Stdio, ExtraFd, Uid -> false                     (material-CLOSED, always)
+      Env                   -> ident_may_deliver m p        (the one channel carrying values)
+      Argv, Cwd, Cmdline    -> is_public m ∧ ident_may_deliver m p   (strictly narrower)
+      Stdio, ExtraFd, Uid   -> false                     (material-CLOSED, always)
 
-  Three of the six channels carry nothing at all, by construction rather than by
+  Three of the seven channels carry nothing at all, by construction rather than by
   policy — `ExtraFd` because `close_range` shuts every inherited descriptor before
   exec, `Uid` because a uid is not a value. That is a different shape from the
   tables mirrored so far: a whole dimension proved empty, not merely restricted.
+
+  `Cmdline` (the guest kernel command line, `/proc/cmdline`) is world-readable, so
+  whatever the node writes there reaches the workload; it is modelled like Argv —
+  Public-only — because the node now writes only per-node public config there.
 
   As with the confidentiality and integrity mirrors, these are plain Lean (no
   Aeneas monad, no Mathlib) so they port to the iris substrate, each carries a
@@ -62,11 +66,11 @@ def mirrorMayDeliver (m : Material) (p : Principal) : Bool :=
 def mirrorChannelAdmits (c : Chan) (m : Material) (p : Principal) : Bool :=
   match c with
   | .Env => mirrorMayDeliver m p
-  | .Argv | .Cwd => mirrorIsPublic m && mirrorMayDeliver m p
+  | .Argv | .Cwd | .Cmdline => mirrorIsPublic m && mirrorMayDeliver m p
   | .Stdio | .ExtraFd | .Uid => false
 
-/-- **Faithfulness of channel admission**, over the full 6 × 11 × 3 product —
-    198 cases, all checked by the kernel. -/
+/-- **Faithfulness of channel admission**, over the full 7 × 11 × 3 product —
+    231 cases, all checked by the kernel. -/
 theorem channel_admits_faithful (c : Chan) (m : Material) (p : Principal) :
     ok (mirrorChannelAdmits c m p) = extracted.channel.channel_admits c m p := by
   cases c <;> cases m <;> cases p <;> rfl
