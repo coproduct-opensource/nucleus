@@ -285,6 +285,24 @@ fn _gate_of_gates_unseal(k: &mut nucleus::portcullis::kernel::Kernel) {
 RS
 }
 
+# Neuter the reserved-namespace fail-safe (C1 fence D): make its OrdinaryData
+# guard always false, so an unclassified NUCLEUS_* key is no longer refused at
+# admission. The gate's `an_unclassified_reserved_namespace_key_is_refused` test
+# then reds. (Fence B, the uid distinctness, is the gate's other subject; one
+# perturbation is enough to prove the gate can fail.)
+perturb_c1_inbound_fence() {
+    local f="$1"
+    sed -i.gate-bak \
+        's/&& entry.material == MaterialKind::OrdinaryData/\&\& false/' \
+        "$f"
+    rm -f "$f.gate-bak"
+    if grep -q '&& entry.material == MaterialKind::OrdinaryData' "$f"; then
+        echo "  ERROR: admit()'s reserved-namespace guard changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -312,6 +330,9 @@ probe check-declassify-governor-keys-sealed.sh "" crates/nucleus-tool-proxy/src/
 probe check-north-star-ledger.sh "" docs/north-star.md \
       "the original overclaiming declassification status row restored" \
       perturb_ledger_restore_false_row
+probe check-c1-inbound-fences.sh "" crates/nucleus-tool-proxy/src/workload.rs \
+      "the reserved-namespace fence D neutered" \
+      perturb_c1_inbound_fence
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #

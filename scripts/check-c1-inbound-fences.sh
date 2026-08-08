@@ -56,11 +56,16 @@ cargo test -p nucleus-tool-proxy -- \
 #
 # The node-side construction tests exercise `FirecrackerConfig::from_spec`, which
 # is `#[cfg(target_os = "linux")]` (the Firecracker path compiles on Linux only),
-# so they run under CI's ubuntu runner, not on a macOS dev box. The extracted
-# channel-admission model below is cross-platform.
-cargo test -p nucleus-node -- \
-    no_pod_cmdline_carries_any_per_pod_secret \
-    a_cmdline_that_carries_a_per_pod_secret_is_still_refused
+# so they run under CI's ubuntu runner and are skipped on a macOS dev box (where
+# they would not compile). The extracted channel-admission model below is
+# cross-platform and always runs.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    cargo test -p nucleus-node -- \
+        no_pod_cmdline_carries_any_per_pod_secret \
+        a_cmdline_that_carries_a_per_pod_secret_is_still_refused
+else
+    echo "  (skipping the Linux-only cmdline construction tests on $(uname -s); they run in CI)"
+fi
 cargo test -p nucleus-ifc-kernel --lib -- extracted::channel
 
 echo "OK: the C1 inbound fences (uid distinctness, reserved-namespace, cmdline) are enforced."
