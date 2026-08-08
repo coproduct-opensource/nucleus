@@ -33,6 +33,7 @@
 # bypassed for exactly the first-party crates this is meant to accelerate (and
 # incremental is pointless in ephemeral CI anyway).
 
+# warm-run trigger: re-running with unchanged crate sources should hit cache.
 name: sccache prototype (experiment — not required)
 
 on:
