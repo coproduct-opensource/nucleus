@@ -22,6 +22,13 @@ Corollaries:
 
 This is the apodictic core — logically compelled, machine-checkable, marketable.
 
+"Can only stay the same or tighten" is stated from the **workload's** side, which
+is what the second corollary makes precise: the agent cannot widen its own
+authority mid-run. The single widening path, `POST /v1/escalate`, is not the
+agent's to take — it requires a separate approver's authority and the result is
+bounded by the delegation ceiling, so it never exceeds what was delegated (see
+Pillar A #4). An adversary controlling the workload sees a pure ratchet.
+
 ### The Confidentiality Dual
 
 The claim above is about **authority**: what a workload may *do*. Its dual is
@@ -76,11 +83,11 @@ status is a visible event, not an edit.
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/nucleus-tool-proxy/src/declassify.rs#apply_declassification` | `scripts/check-declassify-sink-scope-enforced.sh` |
-| C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#sink_outside_a_singleton_mask_denied`, `crates/portcullis/src/flow_graph.rs#effective_label` | `scripts/check-declassify-sink-scope-enforced.sh` |
+| C5 | "cannot steer which value that is" | NOT-YET | `crates/portcullis-core/src/declassify.rs#canonical_bytes`, `crates/portcullis/tests/declassify_scope.rs` | — |
 | C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
-| C9 | "verify from the outside" | TESTED | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | `.github/workflows/quickstart-boot.yml` |
+| C9 | "verify from the outside" | NOT-YET | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | — |
 *The clause fragments quote the sentence above, whose exclusions travel with
 them: the claim covers explicit flows only, excluding timing, cache, and other
 microarchitectural channels, and excluding availability and resource-contention
@@ -144,14 +151,26 @@ What each status means, and what it deliberately does not:
   holder of a key configured in `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` — a
   configured key signed the token, NOT that a human reviewed it. The key set is
   not workload-writable (`check-declassify-governor-keys-sealed.sh`).
-- **C5 (PROVED)** — `sink_outside_a_singleton_mask_denied`, proved over the
-  extracted `declass_release_ok`: a token whose signed mask admits only one
-  sink does not release its data to any other. The shipping `FlowGraph` routes
-  verdicts through the same decision core as a per-operation released view
-  (`effective_label`); the released value and its mask are governor-signed, so
-  the workload cannot steer which value is released. The full four-run
-  robustness LTS over the pod machine remains a NOT-YET refinement (the
-  executable two-run form ships as `declassify_scope.rs`).
+- **C5 (NOT-YET — demoted 2026-08-08, was PROVED).** The clause is about the
+  VALUE axis: an adversary controlling the inputs cannot steer *which* value a
+  governor release yields. The theorem previously cited,
+  `sink_outside_a_singleton_mask_denied`, proves the SINK axis — a token whose
+  signed mask admits only one sink releases to no other — which is a real,
+  proved property but a statement about *where* data goes, not *which value* is
+  released. It does not discharge this clause.
+  The demotion also corrects a false justification: the earlier note said "the
+  released value and its mask are governor-signed." The mask is signed, the
+  value is **not** — `canonical_bytes` signs `target_node_id`, `valid_until`,
+  the action's level transform, the justification, and `allowed_sinks`, and no
+  content byte. The released view is computed live from `node.label` at apply
+  time, and `target_node_id` is a workload-driven sequential index that a token
+  may be minted for *before the node exists* (`kernel_token.rs`), so a workload
+  that controls what lands at that id can influence which value is released —
+  exactly the steering this clause denies. Establishing it needs the four-run
+  robustness LTS (inputs vary on both sides ⇒ same released value); the
+  executable two-run form ships as `declassify_scope.rs`, which is why this is a
+  NOT-YET refinement rather than a bare gap. The sink-axis proof remains valid
+  and continues to back C4's single-use/scoped-release guarantees.
 - **C6 (NOT-YET)** — the seven child-inheritance channels (now including the
   kernel command line) are proved total (the quantification is over the channel
   enum, so a new channel forces a match arm); the effect/API set is enumerated
@@ -167,12 +186,28 @@ What each status means, and what it deliberately does not:
 - **C8 (NOT-YET)** — the proof workflow is path-filtered; a change to the
   trusted classifier or the spawn path does not re-run it, and nothing checks
   that the call sites of the extracted predicates still exist.
-- **C9 (TESTED)** — DICE-format measurements (kernel, rootfs, PodSpec+policy)
-  embedded in the pod's SVID; `admit_posture` verifies a claimed
-  `posture@digest` against a self-measured digest, fail-closed,
-  perturbation-tested. The registry binding a posture NAME to the FM-5 proof
-  is operator-asserted — no signed provenance binds artifact digest to
-  theorem set yet.
+- **C9 (NOT-YET — demoted 2026-08-08, was TESTED).** The external-verification
+  leg is not wired end to end, so a relying party CANNOT yet verify from the
+  outside. Concretely: `FETCH_SVID` serves a plain certificate
+  (`manager.fetch_certificate` → `sign_csr`) with **no** DICE attestation
+  extension; the only producer that would embed measurements,
+  `fetch_attested_certificate`, is `#[allow(dead_code)]` and, at its single call
+  site, its success value is **discarded** (only the error arm is handled), and
+  no CA implements `sign_attested_csr` — every backend falls through to plain
+  `sign_csr`. So no served cert carries a measurement. On the consumer side,
+  `AttestationRequirements::verify` / `LaunchAttestation::from_der` have no
+  production caller, so no shipped relying party extracts and checks a launch
+  attestation. What DOES exist and is real: `admit_posture` verifies a claimed
+  `posture@digest` against a self-measured rootfs digest, fail-closed and
+  perturbation-tested (`admit_posture_one_byte_of_drift_reds_the_gate`) — but it
+  is the pod's own self-characterization at admission, not outside verification,
+  and it is inert unless a pod carries a `dlc_posture` label (no shipped spec or
+  the CI probe emits one, so the boot gate never exercises it — which is also
+  why the former `quickstart-boot.yml` falsifier could not red on a regression).
+  Re-earning C9 needs: embed the measurement on the served SVID (implement
+  `sign_attested_csr`, stop discarding the attested cert), a shipped
+  relying-party verifier that checks it, and signed provenance binding the
+  artifact digest to the theorem set.
 
 The cross-pod leg is the open one, and it is deliberately sequenced audit-first:
 a lookup keyed on something a guest can forge is a far likelier defect than a
@@ -208,9 +243,17 @@ The math core is small and sharp:
 3. **Trace semantics** (time) — ordered record of actions, authority, and exposure
    at each step. Free monoid with homomorphic exposure accumulation.
 
-4. **Monotonicity** (ratchet) — authority can only stay the same or tighten.
-   Budget can only decrease. Exposure can only increase. The nucleus operator ν is
-   idempotent and deflationary.
+4. **Monotonicity** (ratchet) — authority can only stay the same or tighten
+   **under the workload's own action**. Budget can only decrease. Exposure can
+   only increase. The nucleus operator ν is idempotent and deflationary.
+   The one widening is `POST /v1/escalate`, and it is not the workload's to
+   take: it requires a separate approver's authority (mTLS identity + a valid
+   trace chain), and the granted authority is intersected with the delegation
+   ceiling (`cert_bridge.rs`, `effective.leq(verified.effective)`), so it can
+   never exceed what was delegated. So the flagship's "can only tighten" holds
+   for the agent (the corollary "no talking your way into more permissions
+   mid-run" is exact), and an approver-authorized widening stays bounded by the
+   ceiling — it is a move within the lattice, not above it.
 
 Key design choice: **prove properties about the enforcement boundary**, not
 about LLM behavior. The agent is a black box. The kernel is the TCB.

@@ -34,10 +34,18 @@ echo "Asserting the declassification sink scope is enforced (not just declared).
 # The graph-level binding: a token scoped to S clears its node for S and only S.
 cargo test -p portcullis --features crypto --test declassify_scope
 
+# The LIVE one-shot burn, over the shipping kernel: applying a token spends it,
+# and an identical replay is denied. This exercises apply_declassification_token
+# and the kernel's spent-signature ledger directly — so reverting the live burn
+# (declassify_authority.rs applied_declassifications / flow_graph.rs
+# declass_scopes) reds THIS gate. Without it, C4's declared falsifier tested
+# only the extracted one-shot MODEL, never the live path C4's Evidence cites.
+cargo test -p portcullis --features crypto --test kernel_token
+
 # The extracted decision core the graph routes through, and its exhaustive
 # parity with the token's own allowlist API + the one-shot machine.
 cargo test -p nucleus-ifc-kernel --lib extracted::declassify
 cargo test -p portcullis-core --lib declassify::
 
 echo "ok  declassification sink scope is enforced: a token clears its node for"
-echo "    its signed sinks and only those, at most once."
+echo "    its signed sinks and only those, at most once, on the LIVE path."

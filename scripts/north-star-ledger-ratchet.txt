@@ -15,5 +15,21 @@
 #   (always) and the AWS audit creds (with an audit sink) from the world-readable
 #   guest /proc/cmdline — a channel FM-5 does not model. The clause is falsified
 #   today; re-earning it is tracked in the C1 note in docs/north-star.md.
+# 2026-08-08: raised 4 -> 6. Two rows demoted after a North Star red-team audit
+#   found their statuses overstated relative to the wiring:
+#   * C5 ("cannot steer which value that is") PROVED -> NOT-YET. The cited
+#     theorem sink_outside_a_singleton_mask_denied proves the SINK axis (where
+#     data goes), not the VALUE axis (which value is released), and the old note
+#     "the released value ... is governor-signed" was false — canonical_bytes
+#     signs node id + level transform + sinks, no content byte, and target_node_id
+#     is a workload-driven index a token can be minted for before the node exists.
+#     Value-non-steerability needs the four-run robustness LTS (NOT-YET).
+#   * C9 ("verify from the outside") TESTED -> NOT-YET. The served SVID carries
+#     no DICE attestation (FETCH_SVID -> plain sign_csr; the attested-cert
+#     producer is dead-code with its result discarded; no CA implements
+#     sign_attested_csr), and no shipped relying party verifies a launch
+#     attestation. admit_posture is real but is self-characterization, not
+#     outside verification, and is inert without a dlc_posture label no pod emits.
+#   Both re-earning paths are recorded in the C5/C9 notes in docs/north-star.md.
 CLAUSES=9
-NOT_YET=4
+NOT_YET=6
