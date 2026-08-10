@@ -1362,7 +1362,41 @@ impl FlowGraph {
             return TokenApplyResult::InvalidSignature;
         }
 
-        // Delegate to the existing apply logic
+        // ── Value binding (Phase 3): a signed release names the SPECIFIC value ──
+        //
+        // The governor signs a `content_commitment` (SHA-256 of the exact bytes
+        // authorized) into the token's canonical-v3 bytes. Honor the release ONLY
+        // for a node whose monitor-recorded ingest `content_hash` EQUALS that
+        // commitment. An adversary who steers a DIFFERENT value into the target
+        // node therefore cannot ride the governor's signature to release it —
+        // the identity fixed by the signature no longer matches what was ingested.
+        //
+        // Fail-CLOSED and NON-BURNING: every refusal below returns before
+        // `apply_token`, so it neither records a `DeclassScope` nor spends the
+        // one-shot ledger (the token stays usable once a legitimate value is in
+        // place — `runD` semantics). This gate lives on the verified (production)
+        // path; the unsigned `apply_token` remains the primitive tests use to
+        // exercise sink-scope and one-shot in isolation. It mirrors the extracted
+        // decision core `extracted::declassify::value_authorized`.
+        //
+        // A non-existent node keeps returning `NodeNotFound` (checked first),
+        // which ALSO closes the mint-before-exist vector: no node ⇒ no recorded
+        // hash ⇒ no release.
+        if self.get(token.target_node_id).is_none() {
+            return TokenApplyResult::NodeNotFound;
+        }
+        if !token.is_value_bound() {
+            return TokenApplyResult::ContentMismatch;
+        }
+        match self.content_hash(token.target_node_id) {
+            None => return TokenApplyResult::ContentMismatch,
+            Some(recorded) if recorded.as_bytes() != &token.content_commitment => {
+                return TokenApplyResult::ContentMismatch;
+            }
+            Some(_) => {}
+        }
+
+        // Delegate to the existing sink-scope / one-shot apply logic.
         self.apply_token(token, now)
     }
 

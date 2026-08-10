@@ -851,6 +851,33 @@ impl Kernel {
         Ok(node_id)
     }
 
+    /// Observe a data-source node together with the SHA-256
+    /// [`ContentHash`](portcullis_core::ContentHash) of the bytes that entered —
+    /// the value-binding entry point.
+    ///
+    /// The hash is a monitor-recorded fact (recomputed at ingest, never an
+    /// agent-supplied field). A signed declassification token whose
+    /// `content_commitment` equals this hash may release THIS value and no other
+    /// (see [`apply_declassification_token`](Self::apply_declassification_token),
+    /// which refuses a token that does not match — fail-closed, Phase 3). Unlike
+    /// [`observe`](Self::observe) this does not apply unsigned declassification
+    /// rules: value-bound release is exclusively the signed-token path.
+    pub fn observe_with_content_hash(
+        &mut self,
+        kind: portcullis_core::flow::NodeKind,
+        parents: &[u64],
+        hash: portcullis_core::ContentHash,
+    ) -> Result<u64, crate::flow_graph::FlowGraphError> {
+        let now = chrono::Utc::now().timestamp() as u64;
+        let node_id = self
+            .flow_graph
+            .observe_with_content_hash(kind, parents, now, hash)?;
+        if let Some(node) = self.flow_graph.get(node_id) {
+            self.recompute_flow_label(node.label);
+        }
+        Ok(node_id)
+    }
+
     /// Decide an operation with explicit causal parents from the DAG.
     ///
     /// Like `decide()`, but instead of using the session-level cached label,

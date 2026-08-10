@@ -277,6 +277,16 @@ pub enum TokenApplyResult {
     PreconditionUnmet,
     /// Ed25519 signature is missing (all zeros) or failed verification.
     InvalidSignature,
+    /// **Value binding (Phase 3).** The release was refused because it does not
+    /// name the specific value the governor committed to: either the token is
+    /// UNBOUND (`content_commitment == [0u8; 32]`), the target node has NO
+    /// monitor-recorded content hash, or the recorded hash does not EQUAL the
+    /// token's `content_commitment`. Like every refusal this does NOT burn the
+    /// one-shot token — an adversary substituting a different value into the
+    /// node cannot ride the governor's signature, and a legitimate value put in
+    /// place later still applies. This is what denies steering WHICH value a
+    /// signed release clears (C5).
+    ContentMismatch,
 }
 
 impl DeclassificationToken {

@@ -1251,8 +1251,15 @@ fn trusted_ancestry_mixed_parents_one_tainted() {
 mod apply_token_verified_tests {
     use super::*;
     use portcullis_core::declassify::*;
+    use portcullis_core::ContentHash;
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    /// The recorded value identity every node in these tests carries, and that
+    /// every value-bound token commits to (Phase 3).
+    const VALUE_ID: [u8; 32] = [0x5Au8; 32];
+    /// A different value the governor did NOT authorize.
+    const OTHER_VALUE_ID: [u8; 32] = [0xA5u8; 32];
 
     fn test_key() -> Ed25519KeyPair {
         let rng = SystemRandom::new();
@@ -1264,7 +1271,12 @@ mod apply_token_verified_tests {
         let mut g = FlowGraph::new();
         let now = 1000;
         let web = g
-            .insert_observation(NodeKind::WebContent, &[], now)
+            .observe_with_content_hash(
+                NodeKind::WebContent,
+                &[],
+                now,
+                ContentHash::from_bytes(VALUE_ID),
+            )
             .unwrap();
         assert_eq!(
             g.get(web).unwrap().label.integrity,
@@ -1287,6 +1299,7 @@ mod apply_token_verified_tests {
             2000, // valid_until
             "Curated API output".to_string(),
         )
+        .with_content_commitment(VALUE_ID)
     }
 
     #[test]
@@ -1430,6 +1443,165 @@ mod apply_token_verified_tests {
         assert!(
             matches!(result, TokenApplyResult::Expired { .. }),
             "Expected Expired after valid signature, got {result:?}"
+        );
+    }
+
+    // ── Value binding (Phase 3) at the FlowGraph layer ──
+
+    /// A validly-signed token committing to VALUE_ID applied to a node holding a
+    /// DIFFERENT value is refused with `ContentMismatch`, records no scope, and
+    /// does not affect the effective label — the substitution attack, denied.
+    #[test]
+    fn apply_token_verified_substituted_value_rejected() {
+        let key = test_key();
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        // Node holds OTHER_VALUE_ID; token commits to VALUE_ID.
+        let web = g
+            .observe_with_content_hash(
+                NodeKind::WebContent,
+                &[],
+                now,
+                ContentHash::from_bytes(OTHER_VALUE_ID),
+            )
+            .unwrap();
+        let mut token = make_token_for(web);
+        crate::token_sign::sign_token(&mut token, &key);
+
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            g.apply_token_verified(&token, &[pk], now),
+            TokenApplyResult::ContentMismatch
+        );
+        // No scope recorded ⇒ the released view never appears at any sink.
+        assert_eq!(
+            g.effective_label(web, Operation::WriteFiles)
+                .unwrap()
+                .integrity,
+            portcullis_core::IntegLevel::Adversarial,
+            "a refused value-bound release must not lower any sink's view"
+        );
+    }
+
+    /// An UNBOUND token is refused even for a node with a recorded value.
+    #[test]
+    fn apply_token_verified_unbound_token_rejected() {
+        let key = test_key();
+        let (mut g, web) = make_graph_with_web_node();
+        let mut token = make_token_for(web).with_content_commitment([0u8; 32]);
+        assert!(!token.is_value_bound());
+        crate::token_sign::sign_token(&mut token, &key);
+
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            g.apply_token_verified(&token, &[pk], 1000),
+            TokenApplyResult::ContentMismatch
+        );
+    }
+
+    /// **Parity: the production gate's verdict equals the extracted decision.**
+    /// For each value-binding case the real `apply_token_verified` gate is run
+    /// (signed token, real `FlowGraph`) and its Applied/ContentMismatch verdict
+    /// is bound to `extracted::declassify::value_authorized` — the Aeneas-
+    /// extracted, Lean-proven decision core. The 32-byte identities are mapped
+    /// to the model's `u64` tags (equal bytes ⇒ equal tag over this corpus),
+    /// which is the runtime↔model binding the extraction's honest-scope note
+    /// promises for value binding.
+    #[test]
+    fn gate_verdict_matches_the_extracted_value_decision() {
+        use portcullis_core::extracted::declassify::value_authorized;
+
+        fn tag(h: [u8; 32]) -> u64 {
+            u64::from_le_bytes(h[..8].try_into().unwrap())
+        }
+
+        // (recorded_present, recorded_hash, bound, committed_hash)
+        let cases: &[(bool, [u8; 32], bool, [u8; 32])] = &[
+            (true, VALUE_ID, true, VALUE_ID),       // match      -> release
+            (true, OTHER_VALUE_ID, true, VALUE_ID), // substituted-> deny
+            (true, VALUE_ID, false, [0u8; 32]),     // unbound    -> deny
+            (false, VALUE_ID, true, VALUE_ID),      // missing    -> deny
+        ];
+
+        let key = test_key();
+        let pk = key.public_key().as_ref();
+        let now = 1000u64;
+        let mut saw_release = false;
+        let mut saw_deny = false;
+
+        for &(present, recorded, bound, committed) in cases {
+            let mut g = FlowGraph::new();
+            let web = if present {
+                g.observe_with_content_hash(
+                    NodeKind::WebContent,
+                    &[],
+                    now,
+                    ContentHash::from_bytes(recorded),
+                )
+                .unwrap()
+            } else {
+                g.insert_observation(NodeKind::WebContent, &[], now)
+                    .unwrap()
+            };
+            let mut token = DeclassificationToken::new(
+                web,
+                DeclassificationRule {
+                    action: DeclassifyAction::RaiseIntegrity {
+                        from: portcullis_core::IntegLevel::Adversarial,
+                        to: portcullis_core::IntegLevel::Untrusted,
+                    },
+                    justification: "value-binding parity".to_string(),
+                },
+                vec![Operation::WriteFiles],
+                2000,
+                "value-binding parity".to_string(),
+            );
+            if bound {
+                token = token.with_content_commitment(committed);
+            }
+            crate::token_sign::sign_token(&mut token, &key);
+
+            let runtime_release = matches!(
+                g.apply_token_verified(&token, &[pk], now),
+                TokenApplyResult::Applied { .. }
+            );
+            // The absent-node case has no recorded tag; present=false forces deny
+            // in the model exactly as a missing hash forces ContentMismatch live.
+            let recorded_tag = if present { tag(recorded) } else { 0 };
+            let extracted = value_authorized(bound, present, tag(committed), recorded_tag);
+
+            assert_eq!(
+                runtime_release, extracted,
+                "gate/extracted value-decision divergence (present={present}, bound={bound})"
+            );
+            saw_release |= runtime_release;
+            saw_deny |= !runtime_release;
+        }
+        // Non-vacuity: the corpus exercises BOTH a release and a denial, so the
+        // parity is not comparing two always-false verdicts.
+        assert!(
+            saw_release && saw_deny,
+            "parity corpus must cover release AND deny"
+        );
+    }
+
+    /// A node with NO recorded content hash cannot host a value-bound release.
+    #[test]
+    fn apply_token_verified_missing_hash_rejected() {
+        let key = test_key();
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        // insert_observation records NO content hash.
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let mut token = make_token_for(web); // committed to VALUE_ID
+        crate::token_sign::sign_token(&mut token, &key);
+
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            g.apply_token_verified(&token, &[pk], now),
+            TokenApplyResult::ContentMismatch
         );
     }
 }

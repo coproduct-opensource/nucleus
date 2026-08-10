@@ -243,6 +243,50 @@ theorem single_use :
       = ok { ok := false, next := { burned := true } }) :=
   ⟨apply_burns_the_token, no_second_apply true true⟩
 
+/-! ## Value binding (Phase 3, C5): a release names the specific committed value
+
+    `value_authorized` decides whether a declassification release is authorized
+    for the SPECIFIC value the governor committed to. It authorizes ONLY when the
+    token is bound to a value, the node has a recorded value, and the two
+    identities are EQUAL — a pure equality over the value identity. The 32-byte
+    SHA-256 identity is modeled as an opaque `u64` tag; the runtime binds its real
+    `ContentHash` comparison to this decision in the `apply_token_verified` parity
+    test (`portcullis/src/flow_graph_tests.rs`). This is what denies an adversary
+    steering WHICH value a signed release clears: the signature fixes the
+    identity, and a substituted value has a different identity and is refused. -/
+
+/-- Totality: the value decision never fails. -/
+theorem value_authorized_total (cb rp : Bool) (c r : Std.U64) :
+    ∃ b : Bool, value_authorized cb rp c r = ok b := by
+  unfold value_authorized
+  cases cb <;> cases rp <;> exact ⟨_, rfl⟩
+
+/-- Fail-closed: an UNBOUND token authorizes no release — for any recorded flag
+    and any identities. -/
+theorem unbound_token_never_authorizes (rp : Bool) (c r : Std.U64) :
+    value_authorized false rp c r = ok false := by
+  unfold value_authorized; rfl
+
+/-- Fail-closed: a node with NO recorded value identity authorizes no release —
+    for any token-bound flag and any identities. -/
+theorem missing_hash_never_authorizes (cb : Bool) (c r : Std.U64) :
+    value_authorized cb false c r = ok false := by
+  unfold value_authorized; cases cb <;> rfl
+
+/-- The C5 headline: a value-bound token committing to identity `7` does NOT
+    authorize releasing a DIFFERENT recorded identity `9`. A substituted value
+    has a different identity and is refused — an adversary cannot ride the
+    governor's signature to release a value it did not authorize. -/
+theorem substituted_value_refused :
+    value_authorized true true 7#u64 9#u64 = ok false := by
+  unfold value_authorized; rfl
+
+/-- Non-vacuity: the matching value IS released — the gate is not
+    deny-everything. Committing to identity `7` authorizes releasing `7`. -/
+theorem committed_value_authorized :
+    value_authorized true true 7#u64 7#u64 = ok true := by
+  unfold value_authorized; rfl
+
 end DeclassifySinkScopeExtracted
 
 -- The axiom audit in aeneas-ifc-scoped.yml reads these from the build log and
@@ -266,3 +310,13 @@ open DeclassifySinkScopeExtracted in
 #print axioms refusal_preserves_the_token
 open DeclassifySinkScopeExtracted in
 #print axioms single_use
+open DeclassifySinkScopeExtracted in
+#print axioms value_authorized_total
+open DeclassifySinkScopeExtracted in
+#print axioms unbound_token_never_authorizes
+open DeclassifySinkScopeExtracted in
+#print axioms missing_hash_never_authorizes
+open DeclassifySinkScopeExtracted in
+#print axioms substituted_value_refused
+open DeclassifySinkScopeExtracted in
+#print axioms committed_value_authorized

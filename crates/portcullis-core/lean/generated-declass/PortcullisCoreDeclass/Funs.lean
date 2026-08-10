@@ -119,4 +119,19 @@ def extracted.declassify.declass_step
       else ok { ok := false, next := { burned := false } }
     else ok { ok := false, next := { burned := false } }
 
+/-- [nucleus_ifc_kernel::extracted::declassify::value_authorized]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 175:0-182:1
+    Visibility: public -/
+def extracted.declassify.value_authorized
+  (committed_bound : Bool) (recorded_present : Bool) (committed : Std.U64)
+  (recorded : Std.U64) :
+  Result Bool
+  := do
+  if committed_bound
+  then
+    if recorded_present
+    then ok (committed == recorded)
+    else ok false
+  else ok false
+
 end nucleus_ifc_kernel

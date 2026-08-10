@@ -140,6 +140,44 @@ pub fn declass_step(state: DeclassState, sig_ok: bool, precond_ok: bool) -> Decl
     }
 }
 
+// ═══ Value binding — the slice the value-non-steering theorem is proven over ═══
+
+/// **Value binding (Phase 3): is a declassification release authorized for the
+/// *specific* value the governor committed to?**
+///
+/// A signed `DeclassificationToken` carries a `content_commitment` — the
+/// SHA-256 identity of the exact bytes the governor authorized releasing. The
+/// target node carries a `content_hash` the monitor recomputed at ingest (never
+/// an agent-supplied field). A release is authorized for the value ONLY when the
+/// token is BOUND to a value, the node HAS a recorded value, and the two
+/// identities are EQUAL — a pure equality over the value identity. This is what
+/// denies an adversary the ability to steer WHICH value a governor's release
+/// clears: the signature fixes the identity, and any substituted value has a
+/// different identity and is refused.
+///
+/// Fail-closed: an unbound token (`committed_bound == false`) or a node with no
+/// recorded identity (`recorded_present == false`) is NOT authorized.
+///
+/// # Representation of the value identity
+///
+/// The production identity is a 32-byte SHA-256 (`ContentHash([u8; 32])`).
+/// Modeled here as an opaque `u64` tag with decidable equality: the decision
+/// — bound ∧ present ∧ equal — is independent of the identity's *width*, and no
+/// other extracted decision function in this corpus uses a byte array, so a
+/// `u64` tag keeps the reachable subgraph inside the pipeline's proven-
+/// extractable subset (a full `[u8; 32]` array is unproven in this extractor).
+/// The runtime↔model parity test (`portcullis/tests/declassify_scope.rs`) binds
+/// the real 32-byte `ContentHash` comparison to this scalar decision: equal
+/// bytes map to an equal tag, unequal bytes to an unequal tag.
+pub fn value_authorized(
+    committed_bound: bool,
+    recorded_present: bool,
+    committed: u64,
+    recorded: u64,
+) -> bool {
+    committed_bound && recorded_present && committed == recorded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +301,28 @@ mod tests {
             let later = declass_step(refused.next, true, true);
             assert!(later.ok, "the token was not usable after a refusal");
         }
+    }
+
+    // ── Value binding ──
+
+    /// The matching value is released; a substituted value is refused.
+    #[test]
+    fn value_binding_gates_release_on_identity_equality() {
+        // Committed identity == recorded identity ⇒ authorized.
+        assert!(value_authorized(true, true, 0xABCD, 0xABCD));
+        // A DIFFERENT recorded identity (the substitution attack) ⇒ refused.
+        assert!(!value_authorized(true, true, 0xABCD, 0x1234));
+    }
+
+    /// Fail-closed: an unbound token and a node with no recorded identity are
+    /// both refused, whatever the tags.
+    #[test]
+    fn value_binding_fails_closed_on_unbound_or_missing() {
+        // Unbound token: even a matching tag is refused.
+        assert!(!value_authorized(false, true, 7, 7));
+        // Missing recorded hash: even a matching tag is refused.
+        assert!(!value_authorized(true, false, 7, 7));
+        // Both absent.
+        assert!(!value_authorized(false, false, 7, 7));
     }
 }

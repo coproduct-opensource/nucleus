@@ -11,9 +11,27 @@ use portcullis_core::declassify::{
     DeclassificationRule, DeclassificationToken, DeclassifyAction, TokenApplyResult,
 };
 use portcullis_core::flow::NodeKind;
+use portcullis_core::ContentHash;
 use portcullis_core::IntegLevel;
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
+
+/// A fixed, non-zero recorded value identity (SHA-256 stand-in) that every
+/// value-bound token in these tests commits to. Non-zero so a token bound to it
+/// is `is_value_bound()`.
+const VALUE_ID: [u8; 32] = [0x5Au8; 32];
+
+/// A DIFFERENT value identity — a substituted value the governor did NOT
+/// authorize. Used to prove a value-bound release is refused for it.
+const OTHER_VALUE_ID: [u8; 32] = [0xA5u8; 32];
+
+/// Observe a data-source node carrying [`VALUE_ID`] as its monitor-recorded
+/// content hash, so a token committing to `VALUE_ID` value-binds to it.
+fn observe_hashed(kernel: &mut Kernel, kind: NodeKind) -> u64 {
+    kernel
+        .observe_with_content_hash(kind, &[], ContentHash::from_bytes(VALUE_ID))
+        .unwrap()
+}
 
 fn test_key() -> Ed25519KeyPair {
     let rng = SystemRandom::new();
@@ -47,6 +65,10 @@ fn make_token(node_id: u64) -> DeclassificationToken {
         u64::MAX,
         "Curated API output".to_string(),
     )
+    // Value-bind every token to the recorded identity `observe_hashed` records,
+    // so the Phase-3 gate admits them; the substitution/unbound/missing cases
+    // are exercised explicitly below.
+    .with_content_commitment(VALUE_ID)
 }
 
 #[test]
@@ -56,7 +78,7 @@ fn verified_token_applied_with_trusted_keys() {
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
     // Observe web content to get a node
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
 
     // Sign a token targeting that node
     let mut token = make_token(node_id);
@@ -91,7 +113,7 @@ fn unsigned_token_rejected_when_keys_set() {
     let mut kernel = make_kernel_with_graph();
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
 
     // Create unsigned token (no signature)
     let token = make_token(node_id);
@@ -118,7 +140,7 @@ fn wrong_key_token_rejected() {
     // Set wrong key as trusted
     kernel.set_trusted_keys(vec![public_key_bytes(&wrong_key)]);
 
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
 
     // Sign with a different key
     let mut token = make_token(node_id);
@@ -144,7 +166,7 @@ fn no_keys_refuses_unsigned() {
     // backward-compat path was removed.)
     let mut kernel = make_kernel_with_graph();
 
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
 
     let token = make_token(node_id);
     assert!(!token.is_signed());
@@ -172,7 +194,7 @@ fn key_rotation_accepts_old_key() {
     // Both old and new keys are trusted
     kernel.set_trusted_keys(vec![public_key_bytes(&new_key), public_key_bytes(&old_key)]);
 
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
 
     // Sign with old key
     let mut token = make_token(node_id);
@@ -220,7 +242,7 @@ fn first_use_applies_then_identical_replay_is_denied() {
     let mut kernel = make_kernel_with_graph();
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
-    let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node_id = observe_hashed(&mut kernel, NodeKind::WebContent);
     let mut token = make_token(node_id);
     token_sign::sign_token(&mut token, &key);
 
@@ -249,8 +271,8 @@ fn two_distinct_tokens_both_apply() {
 
     // Two nodes, two independently signed tokens: one-shot is per-authorization
     // (per signature), not a global "declassified once already" latch.
-    let n1 = kernel.observe(NodeKind::WebContent, &[]).unwrap();
-    let n2 = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let n1 = observe_hashed(&mut kernel, NodeKind::WebContent);
+    let n2 = observe_hashed(&mut kernel, NodeKind::WebContent);
     let mut t1 = make_token(n1);
     let mut t2 = make_token(n2);
     token_sign::sign_token(&mut t1, &key);
@@ -274,7 +296,7 @@ fn a_failed_application_does_not_burn_the_token() {
 
     // Mint for a node that does not exist YET (ids are sequential), so the
     // first application fails without exercising any authority…
-    let existing = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let existing = observe_hashed(&mut kernel, NodeKind::WebContent);
     let future = existing + 1;
     let mut token = make_token(future);
     token_sign::sign_token(&mut token, &key);
@@ -287,7 +309,7 @@ fn a_failed_application_does_not_burn_the_token() {
     // …then the obstacle clears, and the SAME token still works: a refusal is
     // not a spend. (If the kernel burnt on refusal, this would now be
     // DeclassificationReplayed — the over-eager-ledger defect.)
-    let created = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let created = observe_hashed(&mut kernel, NodeKind::WebContent);
     assert_eq!(
         created, future,
         "observe() ids must be sequential for this test"
@@ -310,7 +332,7 @@ fn second_token_on_a_declassified_node_is_refused_and_not_burned() {
     let mut kernel = make_kernel_with_graph();
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
-    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node = observe_hashed(&mut kernel, NodeKind::WebContent);
     let mut first = make_token(node);
     token_sign::sign_token(&mut first, &key);
     assert!(matches!(
@@ -357,7 +379,7 @@ fn signed_token_survives_json_roundtrip_and_still_applies() {
     let mut kernel = make_kernel_with_graph();
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
-    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node = observe_hashed(&mut kernel, NodeKind::WebContent);
     let mut token = make_token(node);
     token_sign::sign_token(&mut token, &key);
     assert!(token.is_signed());
@@ -393,7 +415,7 @@ fn tampering_with_a_signed_token_over_the_wire_is_rejected() {
     let mut kernel = make_kernel_with_graph();
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
-    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let node = observe_hashed(&mut kernel, NodeKind::WebContent);
     let mut token = make_token(node); // signed for [WriteFiles]
     token_sign::sign_token(&mut token, &key);
 
@@ -406,4 +428,122 @@ fn tampering_with_a_signed_token_over_the_wire_is_rejected() {
         Err(DenyReason::InvalidDeclassification { .. }) => {}
         other => panic!("tampered token must be rejected, got {other:?}"),
     }
+}
+
+// ── Value binding (Phase 3, C5): a signed release is bound to the SPECIFIC ──
+// value the governor committed to. These are the C5-earning tests: a
+// substituted value cannot ride a governor's signature, and every refusal is
+// fail-closed and NON-BURNING.
+
+/// The headline: a token committing to value V, applied to a node holding a
+/// DIFFERENT value V', is DENIED with `ContentMismatch` — the substitution
+/// attack. And the refusal does NOT burn the token (a retry yields the same
+/// `ContentMismatch`, never `DeclassificationReplayed`).
+#[test]
+fn value_bound_token_denied_for_a_substituted_value() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    // The node holds OTHER_VALUE_ID; the token commits to VALUE_ID.
+    let node = kernel
+        .observe_with_content_hash(
+            NodeKind::WebContent,
+            &[],
+            ContentHash::from_bytes(OTHER_VALUE_ID),
+        )
+        .unwrap();
+    let mut token = make_token(node); // committed to VALUE_ID
+    token_sign::sign_token(&mut token, &key);
+
+    assert!(
+        matches!(
+            kernel.apply_declassification_token(&token),
+            Ok(TokenApplyResult::ContentMismatch)
+        ),
+        "a substituted value must be refused with ContentMismatch"
+    );
+    // Non-burning: the SAME refusal repeats — a mismatch did not spend the token.
+    assert!(
+        matches!(
+            kernel.apply_declassification_token(&token),
+            Ok(TokenApplyResult::ContentMismatch)
+        ),
+        "a ContentMismatch must not burn the token (would be DeclassificationReplayed)"
+    );
+}
+
+/// The matching value IS released: a token committing to V applied to a node
+/// holding V applies (the gate is not deny-everything). This is the flip side
+/// of the substitution denial and is what makes the denial non-vacuous.
+#[test]
+fn value_bound_token_applies_for_the_committed_value() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node = observe_hashed(&mut kernel, NodeKind::WebContent); // holds VALUE_ID
+    let mut token = make_token(node); // committed to VALUE_ID
+    token_sign::sign_token(&mut token, &key);
+
+    assert!(
+        matches!(
+            kernel.apply_declassification_token(&token),
+            Ok(TokenApplyResult::Applied { .. })
+        ),
+        "the committed value must be released"
+    );
+}
+
+/// Fail-closed: an UNBOUND token (`content_commitment == [0u8; 32]`) is refused
+/// even for a node that has a recorded value, and the refusal does not burn.
+#[test]
+fn unbound_token_is_denied() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    let node = observe_hashed(&mut kernel, NodeKind::WebContent);
+    // Strip the value binding make_token added, then sign the unbound token.
+    let mut token = make_token(node).with_content_commitment([0u8; 32]);
+    assert!(
+        !token.is_value_bound(),
+        "test premise: token must be unbound"
+    );
+    token_sign::sign_token(&mut token, &key);
+
+    assert!(
+        matches!(
+            kernel.apply_declassification_token(&token),
+            Ok(TokenApplyResult::ContentMismatch)
+        ),
+        "an unbound token must be refused (fail-closed)"
+    );
+    // Still usable-shaped: a retry is the same refusal, not a replay.
+    assert!(matches!(
+        kernel.apply_declassification_token(&token),
+        Ok(TokenApplyResult::ContentMismatch)
+    ));
+}
+
+/// Fail-closed: a node with NO monitor-recorded content hash cannot host a
+/// value-bound release — even a validly-signed, value-bound token is refused.
+#[test]
+fn missing_hash_node_is_denied() {
+    let key = test_key();
+    let mut kernel = make_kernel_with_graph();
+    kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+    // `observe` (not `observe_hashed`) records NO content hash.
+    let node = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+    let mut token = make_token(node); // committed to VALUE_ID
+    token_sign::sign_token(&mut token, &key);
+
+    assert!(
+        matches!(
+            kernel.apply_declassification_token(&token),
+            Ok(TokenApplyResult::ContentMismatch)
+        ),
+        "a node with no recorded value identity must refuse the release (fail-closed)"
+    );
 }

@@ -139,6 +139,16 @@ pub(crate) async fn apply_declassification(
         Ok(TokenApplyResult::InvalidSignature) => Err(ApiError::Declassification(
             "token signature is missing or not signed by a trusted governor key".to_string(),
         )),
+        // Value binding (Phase 3): the release does not name the specific value
+        // the governor committed to — the token is unbound, the node has no
+        // monitor-recorded content hash, or the recorded hash does not equal the
+        // token's content_commitment. Fail-closed 403; the one-shot token was NOT
+        // spent, so a governor who signs a token bound to the value actually in
+        // the node can still release it. This denies steering WHICH value a
+        // signed release clears (C5).
+        Ok(TokenApplyResult::ContentMismatch) => Err(ApiError::Declassification(format!(
+            "token content_commitment does not match the recorded value of node {target}              (unbound token, node without a recorded content hash, or a substituted value)              — release refused (fail-closed)"
+        ))),
         Err(DenyReason::DeclassificationReplayed { .. }) => {
             Err(ApiError::DeclassificationConflict(format!(
                 "token already spent for node {target} (one-shot)"
