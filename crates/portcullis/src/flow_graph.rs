@@ -14,10 +14,14 @@ use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
 };
+use portcullis_core::ifc_api::SafetyCheck;
 use portcullis_core::receipt::{
     build_receipt, FlowReceipt, TombstonedAncestor, MAX_RECEIPT_ANCESTORS,
 };
-use portcullis_core::{default_sink_class, IFCLabel, Operation, SinkClass};
+use portcullis_core::{
+    default_sink_class, ConfLevel, ContentHash, DerivationClass, IFCLabel, IntegLevel, Operation,
+    SinkClass,
+};
 
 /// Errors during graph operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +347,31 @@ pub struct FlowGraph {
     /// `field_lineage`: the node struct is `Copy` and most nodes have no
     /// scope.
     declass_scopes: HashMap<NodeId, DeclassScope>,
+    /// Per-node content hash of the bytes an observation carried
+    /// (InputsAuthorized brick 1), mirroring `FlowTracker`'s 4th node element.
+    /// Recorded only by [`observe_with_content_hash`](Self::observe_with_content_hash);
+    /// purely additive — no existing label, ceiling, or verdict reads it. Stored
+    /// in a side map (like `field_lineage`) so the `Copy` extracted `FlowNode`
+    /// is untouched.
+    content_hashes: HashMap<NodeId, ContentHash>,
+    /// Monotonic session taint ceiling — the join of every observed node's
+    /// `derivation`. A **ratchet field updated at observe time**, not a scan of
+    /// live nodes, so `maybe_compact()` tombstoning can never launder it. Mirrors
+    /// [`FlowTracker::session_taint_ceiling`](portcullis_core::ifc_api::FlowTracker::session_taint_ceiling).
+    session_taint_ceiling: DerivationClass,
+    /// Monotonic session confidentiality ceiling — `max(node.confidentiality)`
+    /// over every observation. Ratchet (anti-laundering). Mirrors
+    /// `FlowTracker::session_conf_ceiling`; backs [`session_exfiltration_check`](Self::session_exfiltration_check).
+    session_conf_ceiling: ConfLevel,
+    /// Monotonic "any observation carried `Adversarial` integrity" flag, backing
+    /// [`is_tainted`](Self::is_tainted). A ratchet rather than a live-node scan:
+    /// `FlowTracker` never compacts, so its scan means "ever adversarial"; this
+    /// flag preserves that meaning under `FlowGraph` compaction.
+    session_adversarial: bool,
+    /// Fail-closed poison flag, mirroring `FlowTracker::poisoned`: set when an
+    /// ingest observation is dropped, so taint state is unprovable and the
+    /// egress gate must deny until a human-authorized cleanse.
+    poisoned: bool,
 }
 
 /// A node's declassification scope: the released view and the signed sink
@@ -370,6 +399,12 @@ impl FlowGraph {
             field_lineage: HashMap::new(),
             frozen: BTreeSet::new(),
             declass_scopes: HashMap::new(),
+            content_hashes: HashMap::new(),
+            // Bottom of each lattice / clean session (mirrors FlowTracker::new).
+            session_taint_ceiling: DerivationClass::Deterministic,
+            session_conf_ceiling: ConfLevel::Public,
+            session_adversarial: false,
+            poisoned: false,
         }
     }
 
@@ -549,12 +584,89 @@ impl FlowGraph {
             self.declass_scopes.insert(id, s);
         }
 
+        // Raise the monotonic session aggregates (mirrors FlowTracker's
+        // observe path exactly). These are ratchet fields, updated here at the
+        // single ingest chokepoint, so `maybe_compact()` can never launder
+        // them. Purely additive: no existing FlowGraph verdict reads them.
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
+        if label.integrity == IntegLevel::Adversarial {
+            self.session_adversarial = true;
+        }
+
         // Propagate quarantine to the new observation node
         if any_parent_quarantined {
             self.quarantined.insert(id);
         }
 
         Ok(id)
+    }
+
+    /// Observe a data-source node and record the [`ContentHash`] of the bytes
+    /// it carried (InputsAuthorized brick 1) — the `FlowGraph` analogue of
+    /// [`FlowTracker::observe_with_content_hash`](portcullis_core::ifc_api::FlowTracker::observe_with_content_hash).
+    ///
+    /// Wraps [`insert_observation`](Self::insert_observation) (so the label,
+    /// declass-scope inheritance, quarantine propagation and session ratchets
+    /// are computed identically) and additionally stores the hash, retrievable
+    /// via [`content_hash`](Self::content_hash). Purely additive — existing
+    /// `insert_observation` behavior is unchanged.
+    pub fn observe_with_content_hash(
+        &mut self,
+        kind: NodeKind,
+        parents: &[NodeId],
+        now: u64,
+        hash: ContentHash,
+    ) -> Result<NodeId, FlowGraphError> {
+        let id = self.insert_observation(kind, parents, now)?;
+        self.content_hashes.insert(id, hash);
+        Ok(id)
+    }
+
+    /// The recorded content hash of an observation, or `None` if the node was
+    /// created without one. Mirrors `FlowTracker::content_hash`.
+    pub fn content_hash(&self, id: NodeId) -> Option<ContentHash> {
+        self.content_hashes.get(&id).copied()
+    }
+
+    /// The current monotonic session taint ceiling — the join of every observed
+    /// node's `derivation`. Mirrors `FlowTracker::session_taint_ceiling`.
+    pub fn session_taint_ceiling(&self) -> DerivationClass {
+        self.session_taint_ceiling
+    }
+
+    /// `true` if any observation in this session carried `Adversarial`
+    /// integrity. Mirrors `FlowTracker::is_tainted`; ratchet-backed so
+    /// compaction cannot launder a past adversarial ingest.
+    pub fn is_tainted(&self) -> bool {
+        self.session_adversarial
+    }
+
+    /// Session-level confidentiality downflow check for an outbound sink:
+    /// deny if the session ceiling exceeds what the sink may carry. Byte-for-byte
+    /// the same rule as `FlowTracker::session_exfiltration_check` — the clause
+    /// the live egress gate consults for outbound operations.
+    pub fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
+        if self.session_conf_ceiling > sink_max_conf {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: self.session_conf_ceiling,
+                sink_max_conf,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
+    /// Mark the session poisoned (fail-closed): an ingest observation was
+    /// dropped, so taint state is unprovable. Mirrors `FlowTracker::poison`.
+    pub fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Whether the session is poisoned. Mirrors `FlowTracker::is_poisoned`.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// Atomic check-and-insert for action nodes.
