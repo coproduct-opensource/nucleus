@@ -2770,10 +2770,9 @@ async fn memory_recall(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let set = state.provenance_memory.lock().await;
-    // Lock order matches the ingest chokepoint: FlowTracker (oracle) then
-    // FlowGraph (live). The recall projects the record's effective label onto
-    // BOTH so the egress verdict (which now reads FlowGraph) sees the recall's
-    // taint.
+    // Phase 2: project the recall's effective label onto BOTH the tracker oracle
+    // and the live FlowGraph the egress verdict now reads (lock order: tracker,
+    // then graph, as at the ingest chokepoint).
     let mut flow = state.flow_tracker.lock().await;
     let mut graph = state.flow_graph.lock().await;
     let resp = memory::memory_recall_core(
@@ -2802,10 +2801,8 @@ async fn http_kernel_decide(
     subject: &str,
 ) -> Result<DecisionToken, ApiError> {
     let mut kernel = state.kernel.lock().await;
-    // Lock order: kernel, then FlowTracker, then FlowGraph — the same order the
-    // ingest chokepoint (`ingest::http_observe_flow_from` → `shadow_observe`)
-    // takes, so the two never deadlock. The FlowGraph is the LIVE egress verdict
-    // source now (Phase 2); the FlowTracker is the retained divergence oracle.
+    // Phase 2: FlowGraph is the LIVE verdict source, FlowTracker the retained
+    // divergence oracle. Lock order (kernel, tracker, graph) matches ingest.
     let flow = state.flow_tracker.lock().await;
     let graph = state.flow_graph.lock().await;
     mediation::decide_and_record(
