@@ -402,7 +402,7 @@ fn test_decide_term_with_flow_none_matches_decide_term() {
     let mut a = Kernel::new(PermissionLattice::safe_pr_fixer());
     let mut b = Kernel::new(PermissionLattice::safe_pr_fixer());
     let (d_plain, _) = a.decide_term(term.clone());
-    let (d_flow, _) = b.decide_term_with_flow(term, None);
+    let (d_flow, _) = b.decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(term, None);
     assert_eq!(
         std::mem::discriminant(&d_plain.verdict),
         std::mem::discriminant(&d_flow.verdict),
@@ -458,7 +458,8 @@ fn test_cedar_denies_operation_not_permitted() {
     kernel
         .set_cedar_policy(r#"permit(principal, action == Action::"read_files", resource);"#)
         .expect("policy parses");
-    let (decision, token) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    let (decision, token) = kernel
+        .decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(cedar_edit_term(), None);
     assert!(
         matches!(
             decision.verdict,
@@ -477,7 +478,8 @@ fn test_cedar_permit_all_falls_through_to_normal_decision() {
     kernel
         .set_cedar_policy("permit(principal, action, resource);")
         .expect("policy parses");
-    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    let (decision, _) = kernel
+        .decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(cedar_edit_term(), None);
     assert!(
         decision.verdict.is_allowed(),
         "permit-all Cedar must fall through to the lattice (allowed), got {:?}",
@@ -490,7 +492,8 @@ fn test_cedar_permit_all_falls_through_to_normal_decision() {
 fn test_no_cedar_policy_is_inert() {
     // Default-on feature, but no policy loaded ⇒ Cedar does not gate anything.
     let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
-    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    let (decision, _) = kernel
+        .decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(cedar_edit_term(), None);
     assert!(
         !matches!(
             decision.verdict,

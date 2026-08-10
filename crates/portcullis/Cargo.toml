@@ -108,6 +108,11 @@ aws-config = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# SessionCleanseToken parity (Phase 2 precondition) needs a `DischargedBundle`,
+# mintable in tests only via portcullis-core's `test-helpers` feature. Dev/test
+# builds only — the normal lib build (line ~56) does NOT enable it, so no
+# test-only construction path leaks into shipped code.
+portcullis-core = { path = "../portcullis-core", features = ["serde", "envelope", "test-helpers"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 kani = "0.0.1"

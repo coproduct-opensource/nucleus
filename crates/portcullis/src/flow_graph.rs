@@ -14,10 +14,14 @@ use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
 };
+use portcullis_core::ifc_api::SafetyCheck;
 use portcullis_core::receipt::{
     build_receipt, FlowReceipt, TombstonedAncestor, MAX_RECEIPT_ANCESTORS,
 };
-use portcullis_core::{default_sink_class, IFCLabel, Operation, SinkClass};
+use portcullis_core::{
+    default_sink_class, ConfLevel, ContentHash, DerivationClass, IFCLabel, IntegLevel, Operation,
+    SinkClass,
+};
 
 /// Errors during graph operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +347,31 @@ pub struct FlowGraph {
     /// `field_lineage`: the node struct is `Copy` and most nodes have no
     /// scope.
     declass_scopes: HashMap<NodeId, DeclassScope>,
+    /// Per-node content hash of the bytes an observation carried
+    /// (InputsAuthorized brick 1), mirroring `FlowTracker`'s 4th node element.
+    /// Recorded only by [`observe_with_content_hash`](Self::observe_with_content_hash);
+    /// purely additive — no existing label, ceiling, or verdict reads it. Stored
+    /// in a side map (like `field_lineage`) so the `Copy` extracted `FlowNode`
+    /// is untouched.
+    content_hashes: HashMap<NodeId, ContentHash>,
+    /// Monotonic session taint ceiling — the join of every observed node's
+    /// `derivation`. A **ratchet field updated at observe time**, not a scan of
+    /// live nodes, so `maybe_compact()` tombstoning can never launder it. Mirrors
+    /// [`FlowTracker::session_taint_ceiling`](portcullis_core::ifc_api::FlowTracker::session_taint_ceiling).
+    session_taint_ceiling: DerivationClass,
+    /// Monotonic session confidentiality ceiling — `max(node.confidentiality)`
+    /// over every observation. Ratchet (anti-laundering). Mirrors
+    /// `FlowTracker::session_conf_ceiling`; backs [`session_exfiltration_check`](Self::session_exfiltration_check).
+    session_conf_ceiling: ConfLevel,
+    /// Monotonic "any observation carried `Adversarial` integrity" flag, backing
+    /// [`is_tainted`](Self::is_tainted). A ratchet rather than a live-node scan:
+    /// `FlowTracker` never compacts, so its scan means "ever adversarial"; this
+    /// flag preserves that meaning under `FlowGraph` compaction.
+    session_adversarial: bool,
+    /// Fail-closed poison flag, mirroring `FlowTracker::poisoned`: set when an
+    /// ingest observation is dropped, so taint state is unprovable and the
+    /// egress gate must deny until a human-authorized cleanse.
+    poisoned: bool,
 }
 
 /// A node's declassification scope: the released view and the signed sink
@@ -370,6 +399,12 @@ impl FlowGraph {
             field_lineage: HashMap::new(),
             frozen: BTreeSet::new(),
             declass_scopes: HashMap::new(),
+            content_hashes: HashMap::new(),
+            // Bottom of each lattice / clean session (mirrors FlowTracker::new).
+            session_taint_ceiling: DerivationClass::Deterministic,
+            session_conf_ceiling: ConfLevel::Public,
+            session_adversarial: false,
+            poisoned: false,
         }
     }
 
@@ -549,12 +584,218 @@ impl FlowGraph {
             self.declass_scopes.insert(id, s);
         }
 
+        // Raise the monotonic session aggregates (mirrors FlowTracker's
+        // observe path exactly). These are ratchet fields, updated here at the
+        // single ingest chokepoint, so `maybe_compact()` can never launder
+        // them. Purely additive: no existing FlowGraph verdict reads them.
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
+        if label.integrity == IntegLevel::Adversarial {
+            self.session_adversarial = true;
+        }
+
         // Propagate quarantine to the new observation node
         if any_parent_quarantined {
             self.quarantined.insert(id);
         }
 
         Ok(id)
+    }
+
+    /// Observe a data-source node and record the [`ContentHash`] of the bytes
+    /// it carried (InputsAuthorized brick 1) — the `FlowGraph` analogue of
+    /// [`FlowTracker::observe_with_content_hash`](portcullis_core::ifc_api::FlowTracker::observe_with_content_hash).
+    ///
+    /// Wraps [`insert_observation`](Self::insert_observation) (so the label,
+    /// declass-scope inheritance, quarantine propagation and session ratchets
+    /// are computed identically) and additionally stores the hash, retrievable
+    /// via [`content_hash`](Self::content_hash). Purely additive — existing
+    /// `insert_observation` behavior is unchanged.
+    pub fn observe_with_content_hash(
+        &mut self,
+        kind: NodeKind,
+        parents: &[NodeId],
+        now: u64,
+        hash: ContentHash,
+    ) -> Result<NodeId, FlowGraphError> {
+        let id = self.insert_observation(kind, parents, now)?;
+        self.content_hashes.insert(id, hash);
+        Ok(id)
+    }
+
+    /// Observe a **caller-labelled** node with its content hash â the `FlowGraph`
+    /// analogue of
+    /// [`FlowTracker::observe_with_label_and_content_hash`](portcullis_core::ifc_api::FlowTracker::observe_with_label_and_content_hash).
+    ///
+    /// Unlike [`observe_with_content_hash`](Self::observe_with_content_hash) â which
+    /// derives the label from `kind`'s intrinsic label â this preserves a
+    /// **caller-supplied** label. The recalled provenance-memory (k-of-n)
+    /// declassification path must keep the record's declassified/recomputed label
+    /// (never the fixed `intrinsic_label(MemoryRead)`, which would LAUNDER an
+    /// adversarial record). The stored label is `caller_label ⊔ ⨆ parents`
+    /// â byte-for-byte the fold `FlowTracker::observe_with_label_and_content_hash`
+    /// performs â and the SAME monotonic session ratchets
+    /// ([`session_taint_ceiling`](Self::session_taint_ceiling),
+    /// [`session_exfiltration_check`](Self::session_exfiltration_check),
+    /// [`is_tainted`](Self::is_tainted)) are raised, so those aggregates stay
+    /// byte-identical to `FlowTracker`'s after the same call.
+    ///
+    /// This is the `FlowGraph` half of the k-of-n memory declassification re-home
+    /// (Phase 2): once the egress verdict reads `FlowGraph`, the memory path MUST
+    /// project onto it, or the graph would under-count taint the tracker already
+    /// carries — a live fail-open. `now` is accepted for signature parity with
+    /// the hashing observe entries; the freshness clock does not affect any
+    /// aggregate.
+    pub fn observe_with_label_and_content_hash(
+        &mut self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[NodeId],
+        _now: u64,
+        hash: ContentHash,
+    ) -> Result<NodeId, FlowGraphError> {
+        self.validate_parents(parents)?;
+        // Start from the caller's label and join parents (mirrors
+        // `FlowTracker::observe_with_label_and_content_hash_inner`'s fold exactly).
+        let label = self
+            .gather_labels(parents)
+            .into_iter()
+            .fold(label, |acc, l| acc.join(l));
+        let id = self.alloc_node(kind, label, parents, None);
+        // Raise the monotonic session aggregates — identical block to
+        // `insert_observation`, so the caller-labelled path preserves every check
+        // `FlowTracker` performs and adds none. Ratchets, not live scans, so
+        // compaction cannot launder them.
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
+        if label.integrity == IntegLevel::Adversarial {
+            self.session_adversarial = true;
+        }
+        self.content_hashes.insert(id, hash);
+        Ok(id)
+    }
+
+    /// The recorded content hash of an observation, or `None` if the node was
+    /// created without one. Mirrors `FlowTracker::content_hash`.
+    pub fn content_hash(&self, id: NodeId) -> Option<ContentHash> {
+        self.content_hashes.get(&id).copied()
+    }
+
+    /// The current monotonic session taint ceiling — the join of every observed
+    /// node's `derivation`. Mirrors `FlowTracker::session_taint_ceiling`.
+    pub fn session_taint_ceiling(&self) -> DerivationClass {
+        self.session_taint_ceiling
+    }
+
+    /// `true` if any observation in this session carried `Adversarial`
+    /// integrity. Mirrors `FlowTracker::is_tainted`; ratchet-backed so
+    /// compaction cannot launder a past adversarial ingest.
+    pub fn is_tainted(&self) -> bool {
+        self.session_adversarial
+    }
+
+    /// The most recent **live** node carrying `Adversarial` integrity, for the
+    /// conservative provenance edge-attach the proxy performs when it records
+    /// agent-authored content (the `FlowGraph` analogue of
+    /// [`FlowTracker::latest_adversarial_node`](portcullis_core::ifc_api::FlowTracker::latest_adversarial_node)).
+    ///
+    /// # What "equivalent" means here — and what deliberately is NOT compared
+    ///
+    /// Phase 1 flagged that the raw *id value* legitimately differs between the
+    /// two trackers (`FlowTracker` ids are 1-based dense; `FlowGraph` ids are
+    /// sentinel-offset), so the id is **not** the behavior to hold at parity.
+    /// The behavior that matters for egress is twofold, and this method is
+    /// designed to preserve exactly it:
+    ///
+    /// 1. **Presence parity, pre-compaction:** while no node has been
+    ///    tombstoned, this returns `Some` iff `FlowTracker` would — i.e. iff the
+    ///    session has ever ingested adversarial content — so the proxy attaches
+    ///    a provenance edge in exactly the same cases.
+    /// 2. **The edge does its job:** the returned node id, used as a parent of a
+    ///    new observation, makes the child `Adversarial` (label join), exactly
+    ///    as `FlowTracker`'s does.
+    ///
+    /// **The one intended divergence is fail-CLOSED, not fail-open.** Unlike
+    /// `FlowTracker`, `FlowGraph` compacts (tombstones) past
+    /// `MAX_GRAPH_NODES`. Once the adversarial node is
+    /// tombstoned this returns `None` where `FlowTracker`'s scan would still
+    /// return `Some` — so the edge-attach becomes a no-op. That never opens
+    /// egress: [`is_tainted`](Self::is_tainted) is a monotonic ratchet that
+    /// survives compaction, so the egress gate still denies. The edge-attach is
+    /// only an OVER-approximation refinement on top of that ratchet backstop
+    /// (matching `FlowTracker`'s own doc: "the session ceiling remains the
+    /// backstop for everything the graph does not capture"). The differential
+    /// harness asserts precisely this: verdict parity holds even across the
+    /// compaction boundary because the ratchet, not the edge, is load-bearing.
+    pub fn latest_adversarial_node(&self) -> Option<NodeId> {
+        self.nodes.iter().enumerate().rev().find_map(|(i, slot)| {
+            slot.as_ref()
+                .filter(|n| n.label.integrity == IntegLevel::Adversarial)
+                .map(|_| i as NodeId)
+        })
+    }
+
+    /// Session-level confidentiality downflow check for an outbound sink:
+    /// deny if the session ceiling exceeds what the sink may carry. Byte-for-byte
+    /// the same rule as `FlowTracker::session_exfiltration_check` — the clause
+    /// the live egress gate consults for outbound operations.
+    pub fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
+        if self.session_conf_ceiling > sink_max_conf {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: self.session_conf_ceiling,
+                sink_max_conf,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
+    /// Mark the session poisoned (fail-closed): an ingest observation was
+    /// dropped, so taint state is unprovable. Mirrors `FlowTracker::poison`.
+    pub fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Whether the session is poisoned. Mirrors `FlowTracker::is_poisoned`.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Reset the session taint ceiling and clear the fail-closed poison flag —
+    /// the `FlowGraph` analogue of
+    /// [`FlowTracker::reset_session_ceiling`](portcullis_core::ifc_api::FlowTracker::reset_session_ceiling),
+    /// the single human-authorized cleanse escape hatch.
+    ///
+    /// Requires the SAME sealed
+    /// [`SessionCleanseToken`](portcullis_core::ifc_api::SessionCleanseToken)
+    /// (unforgeable outside `nucleus-ifc-kernel`, mintable only with a
+    /// `DischargedBundle`): the token-gating is provably identical because it is
+    /// the identical type, not a parallel one. Semantics mirror `FlowTracker`
+    /// **exactly** — and no more, so retiring `FlowTracker` preserves every
+    /// check it performed and adds none:
+    ///
+    /// * lowers the monotonic derivation ceiling to `new_ceiling`
+    ///   ([`session_taint_ceiling`](Self::session_taint_ceiling)), the only way
+    ///   to bypass the ratchet;
+    /// * clears the poison flag ([`is_poisoned`](Self::is_poisoned) → `false`);
+    /// * deliberately leaves `session_conf_ceiling`
+    ///   ([`session_exfiltration_check`](Self::session_exfiltration_check)) and
+    ///   the adversarial-integrity ratchet ([`is_tainted`](Self::is_tainted))
+    ///   UNTOUCHED — `FlowTracker::reset_session_ceiling` touches neither, so
+    ///   mirroring it must not either (widening the cleanse would be a silent
+    ///   behavior change, not parity).
+    pub fn reset_session_ceiling(
+        &mut self,
+        new_ceiling: DerivationClass,
+        _token: &portcullis_core::ifc_api::SessionCleanseToken,
+    ) {
+        self.session_taint_ceiling = new_ceiling;
+        // The human-authorized cleanse is also the only way to clear the
+        // fail-closed poison flag (most-paranoid #3) — same as FlowTracker.
+        self.poisoned = false;
     }
 
     /// Atomic check-and-insert for action nodes.

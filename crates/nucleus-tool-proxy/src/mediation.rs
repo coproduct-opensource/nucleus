@@ -10,10 +10,12 @@ use nucleus::portcullis::kernel::DenyReason;
 use nucleus::portcullis::{CapabilityLevel, Operation};
 
 use nucleus::portcullis::action_term::ActionTerm;
+use nucleus::portcullis::flow_graph::FlowGraph;
 use nucleus::portcullis::kernel::{Decision, DecisionToken, Kernel, Verdict};
 use nucleus::portcullis::verdict_sink::{ActorIdentity, VerdictSink};
 use nucleus::portcullis::FlowTracker;
 use nucleus::NucleusError;
+use nucleus_ifc_kernel::ConfLevel;
 use tracing::{info, warn};
 
 use crate::ApiError;
@@ -110,12 +112,16 @@ pub(crate) fn kernel_denial_to_api_error(
 /// propagating the error.
 fn decide_with_flow_mapped(
     kernel: &mut Kernel,
-    flow: &FlowTracker,
+    graph: &FlowGraph,
     operation: Operation,
     subject: &str,
 ) -> (Decision, Result<DecisionToken, ApiError>) {
     let term = ActionTerm::from_operation(operation, subject);
-    let (decision, token) = kernel.decide_term_with_flow(term, Some(flow));
+    // Phase 2: the LIVE egress verdict now reads the proven `FlowGraph` (its
+    // `is_poisoned` / `is_tainted` / `session_exfiltration_check` aggregates),
+    // NOT the `FlowTracker`. The tracker is retained, dual-written, as the oracle
+    // the divergence canary in `decide_and_record` compares against.
+    let (decision, token) = kernel.decide_term_with_flow(term, Some(graph));
     let mapped = match decision.verdict.clone() {
         Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
         Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
@@ -175,16 +181,27 @@ pub(crate) fn decide_and_record(
     sink: &dyn VerdictSink,
     kernel: &mut Kernel,
     flow: &FlowTracker,
+    graph: &FlowGraph,
     operation: Operation,
     subject: &str,
     actor: ActorIdentity,
     transport: &str,
 ) -> Result<DecisionToken, ApiError> {
-    let (decision, mapped) = decide_with_flow_mapped(kernel, flow, operation, subject);
+    // The live verdict is read from the `FlowGraph` (Phase 2 switch).
+    let (decision, mapped) = decide_with_flow_mapped(kernel, graph, operation, subject);
+
+    // Fail-closed divergence canary: the retained `FlowTracker` oracle and the
+    // now-live `FlowGraph` MUST give identical egress aggregates on the real
+    // session. If they differ the graph could UNDER-count taint the tracker
+    // carries — a live fail-open — so we deny (and log loudly) rather than serve
+    // the graph's verdict. Post-re-home they never diverge; the boot canary and
+    // the differential harness assert exactly this agreement.
+    let canary = egress_aggregates_agree(flow, graph);
 
     // Second opinion from the causal DAG. Inside this function, beside the
     // recording, for the same reason the recording is here: a step written at
-    // the call site is a step a refusal's `?` can skip.
+    // the call site is a step a refusal's `?` can skip. Uses the FlowTracker
+    // oracle (it holds the full DAG snapshot the graph aggregates do not expose).
     let flow_check = cross_check_flow(flow, &decision, operation);
     if let Some(result) = &flow_check {
         if *result
@@ -203,7 +220,58 @@ pub(crate) fn decide_and_record(
     crate::verdict_sink::record_kernel_decision(
         sink, &decision, operation, subject, actor, transport, flow_check,
     );
-    mapped
+
+    match canary {
+        Ok(()) => mapped,
+        Err(detail) => {
+            warn!(
+                ?operation,
+                subject,
+                %detail,
+                "FlowGraph/FlowTracker egress divergence; failing closed (the live \
+                 FlowGraph verdict may under-count taint the FlowTracker oracle carries)"
+            );
+            Err(ApiError::IfcDenied(format!(
+                "egress oracle divergence (fail-closed): {detail}"
+            )))
+        }
+    }
+}
+
+/// Fail-closed egress divergence canary (Phase 2): the retained `FlowTracker`
+/// oracle and the now-live `FlowGraph` MUST agree on every aggregate the egress
+/// gate consults. Compares the EXACT three reads `ifc_egress_verdict` /
+/// `ifc_flow_gate` make — poison, integrity taint, and the confidentiality
+/// downflow check at every `ConfLevel` — so agreement here is agreement on the
+/// verdict for every operation. `Err` names the first divergence; callers deny.
+///
+/// This is the in-process twin of the #2229/#2230 differential harness, run on
+/// the REAL session at every decision: if the two graphs ever disagree in
+/// production the caller fails closed and the divergence is surfaced, rather than
+/// the switch silently opening a hole.
+pub(crate) fn egress_aggregates_agree(flow: &FlowTracker, graph: &FlowGraph) -> Result<(), String> {
+    if flow.is_poisoned() != graph.is_poisoned() {
+        return Err(format!(
+            "poison: tracker={} graph={}",
+            flow.is_poisoned(),
+            graph.is_poisoned()
+        ));
+    }
+    if flow.is_tainted() != graph.is_tainted() {
+        return Err(format!(
+            "integrity-taint: tracker={} graph={}",
+            flow.is_tainted(),
+            graph.is_tainted()
+        ));
+    }
+    for conf in [ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret] {
+        let t = flow.session_exfiltration_check(conf).is_denied();
+        let g = graph.session_exfiltration_check(conf).is_denied();
+        if t != g {
+            return Err(format!("exfiltration@{conf:?}: tracker={t} graph={g}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

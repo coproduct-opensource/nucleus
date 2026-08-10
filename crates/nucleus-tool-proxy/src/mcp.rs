@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use portcullis::action_term::ActionTerm;
+use portcullis::flow_graph::FlowGraph;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{
@@ -144,6 +145,11 @@ pub struct NucleusMcpServer {
     /// session, outbound actions are denied with `IfcUnsafe` — the lethal
     /// trifecta, enforced in the live Rust runtime (parity with the Python SDK).
     flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Phase 2 SHADOW flow graph, dual-written with `flow_tracker` on every
+    /// `observe_flow` but not yet consulted by the kernel — verdict-neutral.
+    /// The MCP transport's own per-session graph, mirroring the HTTP path's
+    /// `AppState::flow_graph`. See `ingest::shadow_observe`.
+    flow_graph: Arc<tokio::sync::Mutex<FlowGraph>>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -196,6 +202,7 @@ impl NucleusMcpServer {
             sink,
             kernel,
             flow_tracker: Arc::new(tokio::sync::Mutex::new(FlowTracker::new())),
+            flow_graph: Arc::new(tokio::sync::Mutex::new(FlowGraph::new())),
         }
     }
 
@@ -214,10 +221,22 @@ impl NucleusMcpServer {
     /// is identical to the old bare `observe` — only the content hash is added.
     async fn observe_flow(&self, kind: NodeKind, bytes: &[u8]) {
         let hash = crate::ingest_content_hash(bytes);
-        let mut flow = self.flow_tracker.lock().await;
-        if let Err(e) = flow.observe_with_content_hash(kind, hash) {
-            flow.poison();
-            warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
+        // Authoritative tracker write (governs the live verdict). UNCHANGED.
+        let landed = {
+            let mut flow = self.flow_tracker.lock().await;
+            match flow.observe_with_content_hash(kind, hash) {
+                Ok(_) => true,
+                Err(e) => {
+                    flow.poison();
+                    warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
+                    false
+                }
+            }
+        };
+        // Phase 2 shadow dual-write (verdict-neutral; MCP ingests are always
+        // parent-less data sources). Mirrored only when the tracker write landed.
+        if landed {
+            crate::ingest::shadow_observe(&self.flow_graph, kind, false, hash).await;
         }
     }
 
@@ -257,16 +276,25 @@ impl NucleusMcpServer {
     ) -> Result<portcullis::kernel::DecisionToken, CallToolResult> {
         let term = build_action_term(operation, subject);
         let mut kernel = self.kernel.lock().await;
-        // Consult the session information-flow tracker (#1633): once the
-        // session has ingested adversarial (web) content, outbound operations
+        // Phase 2: the LIVE egress verdict reads the proven `FlowGraph` (its
+        // session aggregates), not the `FlowTracker`. Lock order matches the
+        // ingest chokepoint (tracker then graph) so the two never deadlock.
+        // Once adversarial (web) content is in the session, outbound operations
         // are denied with `IfcUnsafe` before the normal decision path.
         let flow = self.flow_tracker.lock().await;
-        let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
+        let graph = self.flow_graph.lock().await;
+        let (decision, token) = kernel.decide_term_with_flow(term, Some(&*graph));
         // Same second opinion the HTTP path takes (`mediation::cross_check_flow`),
-        // computed before the tracker lock is released. Both transports route
-        // through the same kernel, so both owe the same evidence.
+        // computed before the locks are released. Both transports route through
+        // the same kernel, so both owe the same evidence. Uses the FlowTracker
+        // oracle (it holds the DAG snapshot the graph aggregates do not expose).
         let flow_check = crate::mediation::cross_check_flow(&flow, &decision, operation);
+        // Fail-closed divergence canary: the retained FlowTracker oracle must
+        // agree with the FlowGraph the verdict was read from; a divergence means
+        // the graph could under-count taint (a live fail-open), so deny.
+        let divergence = crate::mediation::egress_aggregates_agree(&flow, &graph).err();
         drop(flow);
+        drop(graph);
         drop(kernel);
 
         // ★ Record the kernel decision — allows AND refusals — BEFORE the match
@@ -282,6 +310,18 @@ impl NucleusMcpServer {
             "mcp",
             flow_check,
         );
+
+        if let Some(detail) = divergence {
+            warn!(
+                ?operation,
+                subject,
+                %detail,
+                "FlowGraph/FlowTracker egress divergence; failing closed"
+            );
+            return Err(err_result(format!(
+                "egress oracle divergence (fail-closed): {detail}"
+            )));
+        }
 
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),

@@ -47,5 +47,18 @@
 #   through to OrdinaryData and being delivered. The relation leg is the Lean
 #   noninterference; the runtime conformance leg is TESTED and gated by
 #   scripts/check-c1-inbound-fences.sh (reverting fence B or D reds it).
+# 2026-08-10: raised 5 -> 6. C4 ("a governor deliberately released with a
+#   single-use token") demoted PROVED -> NOT-YET. The single-use theorem
+#   (no_second_apply) is real over the extracted core + the kernel
+#   spent-signature ledger, but it is INERT on every shipping deployment (the
+#   tool-proxy POST /v1/declassify wrapper resolves tokens against an empty
+#   kernel flow_graph -> NodeNotFound; nucleus-mcp populates a graph but never
+#   applies a token), and the release path that actually flips a shipping egress
+#   verdict is the DIFFERENT, unproven k-of-n witness-threshold memory path
+#   (nucleus-tool-proxy/src/memory.rs). A flagship PROVED for a mechanism that
+#   fires nowhere in production — while the live mechanism is unproven — is an
+#   overclaim, vacuously satisfied. Re-earning is the graph-unification arc
+#   (Phase 2/3/4) validated under boot-a-real-pod; see the C4 note in
+#   docs/north-star.md.
 CLAUSES=9
-NOT_YET=5
+NOT_YET=6

@@ -171,6 +171,21 @@ pub struct DeclassificationToken {
     pub valid_until: u64,
     /// Human-readable justification (included in receipts).
     pub justification: String,
+    /// SHA-256 commitment to the exact content the token authorizes releasing —
+    /// the bytes the governor reviewed. Bound into the signed
+    /// [`Self::canonical_bytes`] (v3) so a token is valid ONLY for the value it
+    /// was minted over: at apply time the target node's recorded ingest content
+    /// hash must equal this, or the release is refused. This closes the
+    /// value-steering vector — where an adversary arranges for the node to hold a
+    /// different value than the one the governor signed for — which the
+    /// sink-scope binding (the *where*) does not address (the *which value*).
+    ///
+    /// `[0u8; 32]` (the [`Self::new`] default) means "no value binding": a legacy
+    /// or unbound token, which the value-binding apply check refuses. A hex
+    /// string on the wire, like the signature — a 32-byte array is a cleaner
+    /// commitment than a 32-element JSON number list for the governor endpoint.
+    #[cfg_attr(feature = "serde", serde(default, with = "commitment_hex"))]
+    pub content_commitment: [u8; 32],
     /// Ed25519 signature over the token's canonical form.
     /// Zero-filled if unsigned (for testing).
     ///
@@ -203,6 +218,37 @@ mod signature_hex {
             ));
         }
         let mut out = [0u8; 64];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte =
+                u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(serde::de::Error::custom)?;
+        }
+        Ok(out)
+    }
+}
+
+/// serde adapter for the 32-byte content commitment ↔ lowercase hex string,
+/// mirroring [`signature_hex`]. A hex string is a cleaner wire form for the
+/// governor endpoint than a 32-element JSON number array.
+#[cfg(feature = "serde")]
+mod commitment_hex {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        let mut hex = String::with_capacity(64);
+        for b in bytes {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        s.serialize_str(&hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        let s = String::deserialize(d)?;
+        if s.len() != 64 {
+            return Err(serde::de::Error::custom(
+                "content_commitment must be exactly 64 hex chars (32 bytes)",
+            ));
+        }
+        let mut out = [0u8; 32];
         for (i, byte) in out.iter_mut().enumerate() {
             *byte =
                 u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(serde::de::Error::custom)?;
@@ -248,8 +294,31 @@ impl DeclassificationToken {
             allowed_sinks,
             valid_until,
             justification,
+            content_commitment: [0u8; 32],
             signature: [0u8; 64],
         }
+    }
+
+    /// Bind this token to a content commitment — the SHA-256 of the exact bytes
+    /// the governor authorizes releasing. Required for a value-bound release: the
+    /// apply-time check refuses a token whose commitment does not equal the
+    /// target node's recorded ingest content hash. Must be set BEFORE signing,
+    /// since the commitment is part of [`Self::canonical_bytes`].
+    #[must_use]
+    pub fn with_content_commitment(mut self, commitment: [u8; 32]) -> Self {
+        self.content_commitment = commitment;
+        self
+    }
+
+    /// The content commitment (SHA-256 of the authorized value), or all-zeros if
+    /// the token is unbound.
+    pub fn content_commitment(&self) -> [u8; 32] {
+        self.content_commitment
+    }
+
+    /// Whether the token carries a value binding (a non-zero content commitment).
+    pub fn is_value_bound(&self) -> bool {
+        self.content_commitment != [0u8; 32]
     }
 
     /// Check if the token has been signed (signature is not all zeros).
@@ -289,14 +358,15 @@ impl DeclassificationToken {
 
     /// The canonical bytes for signing.
     ///
-    /// **Encoding (v2)**: All variable-length fields are length-prefixed with
+    /// **Encoding (v3)**: All variable-length fields are length-prefixed with
     /// a 4-byte little-endian u32 count, eliminating the ambiguous
     /// concatenation from v1. The format is:
     ///
     /// ```text
-    /// b"nucleus-declass-v2\n"      // 19-byte version tag
+    /// b"nucleus-declass-v3\n"      // 19-byte version tag
     /// target_node_id: u64 LE       // 8 bytes
     /// valid_until: u64 LE          // 8 bytes
+    /// content_commitment: [u8; 32] // 32 bytes — SHA-256 of the authorized value
     /// action_discriminant: u8      // 1 byte (0=LowerConf, 1=RaiseInteg, 2=RaiseAuth)
     /// action_from: u8              // 1 byte
     /// action_to: u8                // 1 byte
@@ -308,18 +378,24 @@ impl DeclassificationToken {
     /// justification: [u8]
     /// ```
     ///
-    /// **Breaking change**: This replaces the v1 encoding which used a bare
-    /// 0xFF separator between sinks and justification. Existing signatures
-    /// produced under v1 will not verify against v2 canonical bytes.
+    /// **Breaking change**: v3 adds the `content_commitment` (fixed 32 bytes,
+    /// right after `valid_until`) so the value binding is signed. Signatures
+    /// produced under v2 (which lacked it) will not verify against v3 canonical
+    /// bytes — exactly as v2 broke v1's bare-`0xFF`-separator encoding.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
         // Version tag — domain separation for this encoding format
-        buf.extend_from_slice(b"nucleus-declass-v2\n");
+        buf.extend_from_slice(b"nucleus-declass-v3\n");
 
         // Fixed-size fields
         buf.extend_from_slice(&self.target_node_id.to_le_bytes());
         buf.extend_from_slice(&self.valid_until.to_le_bytes());
+
+        // The value binding — the SHA-256 the governor committed to. Signed as a
+        // fixed 32-byte field so a token authorizes exactly one value; the apply
+        // check compares it to the target node's recorded ingest content hash.
+        buf.extend_from_slice(&self.content_commitment);
 
         // Encode rule action discriminant + fields
         match &self.rule.action {
@@ -837,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn token_canonical_bytes_v2_has_version_tag() {
+    fn token_canonical_bytes_v3_has_version_tag() {
         let token = DeclassificationToken::new(
             1,
             DeclassificationRule {
@@ -853,9 +929,52 @@ mod tests {
         );
         let bytes = token.canonical_bytes();
         assert!(
-            bytes.starts_with(b"nucleus-declass-v2\n"),
-            "canonical bytes must start with v2 version tag"
+            bytes.starts_with(b"nucleus-declass-v3\n"),
+            "canonical bytes must start with v3 version tag"
         );
+    }
+
+    /// The content commitment is SIGNED: two tokens identical but for the value
+    /// they commit to must produce different canonical bytes, so a governor
+    /// signature over one does not authorize releasing the other. This is the
+    /// value-binding property at the signing layer (the apply-time enforcement
+    /// that the target node's content matches is a separate gate).
+    #[test]
+    fn token_canonical_bytes_bind_the_content_commitment() {
+        let mk = |commitment: [u8; 32]| {
+            DeclassificationToken::new(
+                7,
+                DeclassificationRule {
+                    action: DeclassifyAction::LowerConfidentiality {
+                        from: ConfLevel::Secret,
+                        to: ConfLevel::Public,
+                    },
+                    justification: "release the curated value".to_string(),
+                },
+                vec![Operation::WebSearch],
+                1000,
+                "j".to_string(),
+            )
+            .with_content_commitment(commitment)
+        };
+        let value_v = mk([0xAA; 32]);
+        let value_w = mk([0xBB; 32]);
+        assert_ne!(
+            value_v.canonical_bytes(),
+            value_w.canonical_bytes(),
+            "a token committing to a different value must sign different bytes"
+        );
+        // The commitment bytes actually appear in the signed form.
+        assert!(
+            value_v
+                .canonical_bytes()
+                .windows(32)
+                .any(|w| w == [0xAA; 32]),
+            "the content commitment must be part of the signed canonical bytes"
+        );
+        // A committed token is value-bound; the all-zeros default is not.
+        assert!(value_v.is_value_bound());
+        assert!(!mk([0u8; 32]).is_value_bound());
     }
 
     #[test]
