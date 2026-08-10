@@ -644,6 +644,47 @@ impl FlowGraph {
         self.session_adversarial
     }
 
+    /// The most recent **live** node carrying `Adversarial` integrity, for the
+    /// conservative provenance edge-attach the proxy performs when it records
+    /// agent-authored content (the `FlowGraph` analogue of
+    /// [`FlowTracker::latest_adversarial_node`](portcullis_core::ifc_api::FlowTracker::latest_adversarial_node)).
+    ///
+    /// # What "equivalent" means here — and what deliberately is NOT compared
+    ///
+    /// Phase 1 flagged that the raw *id value* legitimately differs between the
+    /// two trackers (`FlowTracker` ids are 1-based dense; `FlowGraph` ids are
+    /// sentinel-offset), so the id is **not** the behavior to hold at parity.
+    /// The behavior that matters for egress is twofold, and this method is
+    /// designed to preserve exactly it:
+    ///
+    /// 1. **Presence parity, pre-compaction:** while no node has been
+    ///    tombstoned, this returns `Some` iff `FlowTracker` would — i.e. iff the
+    ///    session has ever ingested adversarial content — so the proxy attaches
+    ///    a provenance edge in exactly the same cases.
+    /// 2. **The edge does its job:** the returned node id, used as a parent of a
+    ///    new observation, makes the child `Adversarial` (label join), exactly
+    ///    as `FlowTracker`'s does.
+    ///
+    /// **The one intended divergence is fail-CLOSED, not fail-open.** Unlike
+    /// `FlowTracker`, `FlowGraph` compacts (tombstones) past
+    /// `MAX_GRAPH_NODES`. Once the adversarial node is
+    /// tombstoned this returns `None` where `FlowTracker`'s scan would still
+    /// return `Some` — so the edge-attach becomes a no-op. That never opens
+    /// egress: [`is_tainted`](Self::is_tainted) is a monotonic ratchet that
+    /// survives compaction, so the egress gate still denies. The edge-attach is
+    /// only an OVER-approximation refinement on top of that ratchet backstop
+    /// (matching `FlowTracker`'s own doc: "the session ceiling remains the
+    /// backstop for everything the graph does not capture"). The differential
+    /// harness asserts precisely this: verdict parity holds even across the
+    /// compaction boundary because the ratchet, not the edge, is load-bearing.
+    pub fn latest_adversarial_node(&self) -> Option<NodeId> {
+        self.nodes.iter().enumerate().rev().find_map(|(i, slot)| {
+            slot.as_ref()
+                .filter(|n| n.label.integrity == IntegLevel::Adversarial)
+                .map(|_| i as NodeId)
+        })
+    }
+
     /// Session-level confidentiality downflow check for an outbound sink:
     /// deny if the session ceiling exceeds what the sink may carry. Byte-for-byte
     /// the same rule as `FlowTracker::session_exfiltration_check` — the clause
@@ -667,6 +708,40 @@ impl FlowGraph {
     /// Whether the session is poisoned. Mirrors `FlowTracker::is_poisoned`.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+
+    /// Reset the session taint ceiling and clear the fail-closed poison flag —
+    /// the `FlowGraph` analogue of
+    /// [`FlowTracker::reset_session_ceiling`](portcullis_core::ifc_api::FlowTracker::reset_session_ceiling),
+    /// the single human-authorized cleanse escape hatch.
+    ///
+    /// Requires the SAME sealed
+    /// [`SessionCleanseToken`](portcullis_core::ifc_api::SessionCleanseToken)
+    /// (unforgeable outside `nucleus-ifc-kernel`, mintable only with a
+    /// `DischargedBundle`): the token-gating is provably identical because it is
+    /// the identical type, not a parallel one. Semantics mirror `FlowTracker`
+    /// **exactly** — and no more, so retiring `FlowTracker` preserves every
+    /// check it performed and adds none:
+    ///
+    /// * lowers the monotonic derivation ceiling to `new_ceiling`
+    ///   ([`session_taint_ceiling`](Self::session_taint_ceiling)), the only way
+    ///   to bypass the ratchet;
+    /// * clears the poison flag ([`is_poisoned`](Self::is_poisoned) → `false`);
+    /// * deliberately leaves `session_conf_ceiling`
+    ///   ([`session_exfiltration_check`](Self::session_exfiltration_check)) and
+    ///   the adversarial-integrity ratchet ([`is_tainted`](Self::is_tainted))
+    ///   UNTOUCHED — `FlowTracker::reset_session_ceiling` touches neither, so
+    ///   mirroring it must not either (widening the cleanse would be a silent
+    ///   behavior change, not parity).
+    pub fn reset_session_ceiling(
+        &mut self,
+        new_ceiling: DerivationClass,
+        _token: &portcullis_core::ifc_api::SessionCleanseToken,
+    ) {
+        self.session_taint_ceiling = new_ceiling;
+        // The human-authorized cleanse is also the only way to clear the
+        // fail-closed poison flag (most-paranoid #3) — same as FlowTracker.
+        self.poisoned = false;
     }
 
     /// Atomic check-and-insert for action nodes.
