@@ -534,16 +534,10 @@ pub struct Kernel {
     /// trusted keys are configured.
     #[cfg(feature = "crypto")]
     trusted_public_keys: Vec<[u8; 32]>,
-    /// Signatures of declassification tokens already APPLIED in this session.
-    ///
-    /// Ed25519 is deterministic (RFC 8032), so a token's signature identifies
-    /// exactly one authorization — recording it makes tokens one-shot with
-    /// zero wire-format change. Only successful applications are recorded: a
-    /// token that failed (expired, precondition unmet, node not found) did not
-    /// exercise its authority and is not burnt. `BTreeSet`, not `HashSet`, for
-    /// the deterministic ordering the audit style of this crate relies on.
-    #[cfg(feature = "crypto")]
-    applied_declassifications: std::collections::BTreeSet<[u8; 64]>,
+    // Phase 4: the one-shot declassification-replay ledger moved ONTO the
+    // `flow_graph` (`FlowGraph::release_burn_ledger`) so BOTH mint policies — the
+    // Ed25519 token here and the keyless k-of-n memory path, which has no kernel —
+    // burn against the SAME shared ledger. See `kernel/declassify_authority.rs`.
     /// Optional delegation constraints for this session.
     ///
     /// When present, `SpawnAgent` operations are checked against scope,
@@ -637,7 +631,6 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
-            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -692,7 +685,6 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
-            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -1042,7 +1034,6 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
-            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -1103,7 +1094,6 @@ impl Kernel {
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
-            applied_declassifications: std::collections::BTreeSet::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,

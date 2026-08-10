@@ -21,7 +21,7 @@ use nucleus_provenance_memory::{
     TransformRegistry,
 };
 use portcullis::exposure_core::ifc_egress_denial;
-use portcullis::flow_graph::FlowGraph;
+use portcullis::flow_graph::{FlowGraph, ReleaseAuth};
 use portcullis::{FlowTracker, NodeKind, Operation};
 
 /// A fixed content hash for the recalled bytes on the FlowGraph side — the
@@ -192,5 +192,84 @@ fn declassify_is_fail_closed_under_quorum() {
     assert!(
         declassify(&rec, &signed, &[], 1).is_err(),
         "no trusted keys ⇒ fail closed"
+    );
+}
+
+/// **Phase 4 (C5 for the k-of-n mint policy): the threshold release now goes
+/// through the SAME governed-release enforcement as the Ed25519 token —
+/// `FlowGraph::authorize_release` (value-bound + sink-scoped + one-shot).** This
+/// drives the exact primitives `memory_recall_core` composes (the bin crate has
+/// no lib target, so the endpoint core is exercised in `src/memory.rs`; here we
+/// bind the shared enforcement to the live egress verdict).
+#[test]
+fn kofn_release_is_value_bound_and_one_shot_on_the_live_graph() {
+    let reg = TransformRegistry::new();
+    let mut set = ProvenanceMemorySet::new();
+    let rec = poisoned_web_record();
+    assert!(set.verified_admit(&rec, &reg).is_match());
+
+    let trusted = [
+        key(1).verifying_key().to_bytes(),
+        key(2).verifying_key().to_bytes(),
+    ];
+    let witness = DeclassifyWitness {
+        record_hash: rec.content_hash(),
+        recompute_verdict: RecomputeVerdict::Match,
+        to_authority: MemoryAuthority::MayInform,
+        to_derivation: DerivationClass::HumanPromoted,
+    };
+    let signed = SignedDeclassify::new(witness)
+        .cosign(&key(1))
+        .cosign(&key(2));
+    let promoted = declassify(&rec, &signed, &trusted, 2).expect("2-of-2 quorum declassifies");
+
+    // The shared enforcement inputs the k-of-n mint policy supplies:
+    let committed = *rec.content_hash().as_bytes(); // quorum-committed identity
+    let recorded = *rec.content_hash().as_bytes(); // monitor-recomputed identity
+    let released = memory_ifc_label(&promoted, 0);
+    let burn_id = [0x4du8; 32]; // stands in for SHA-256(SignedDeclassify)
+
+    // (1) VALUE-BINDING: a SUBSTITUTED value (a different recorded hash) is
+    //     refused with ValueMismatch — no scope, and NON-burning.
+    let mut graph = FlowGraph::new();
+    let substituted = *ContentHash::of_canonical_bytes(b"a substituted value").as_bytes();
+    assert_eq!(
+        graph.authorize_release(committed, substituted, released, u16::MAX, burn_id),
+        ReleaseAuth::ValueMismatch,
+        "a value substituted after the quorum signed must be refused (value-bound)"
+    );
+    assert!(
+        !graph.is_release_burned(&burn_id),
+        "a value-mismatch refusal must NOT burn the authorization"
+    );
+
+    // (2) The committed value IS authorized → observe the promoted label → the
+    //     live egress verdict flips to allow.
+    match graph.authorize_release(committed, recorded, released, u16::MAX, burn_id) {
+        ReleaseAuth::Authorized(scope) => {
+            let node = graph
+                .observe_with_label_and_content_hash(
+                    NodeKind::MemoryRead,
+                    released,
+                    &[],
+                    0,
+                    fixed_hash(),
+                )
+                .unwrap();
+            assert!(graph.record_release_scope(node, scope));
+        }
+        other => panic!("the committed value must be authorized, got {other:?}"),
+    }
+    assert!(!graph.is_tainted(), "the governed release does not taint");
+    assert!(
+        ifc_egress_denial(&graph, Operation::GitPush, NodeKind::OutboundAction).is_none(),
+        "the value-bound k-of-n release flips the live egress verdict to allow"
+    );
+
+    // (3) ONE-SHOT: the SAME authorization id is now burned → a replay is refused.
+    assert_eq!(
+        graph.authorize_release(committed, recorded, released, u16::MAX, burn_id),
+        ReleaseAuth::Replayed,
+        "a replayed quorum authorization must be refused (one-shot)"
     );
 }

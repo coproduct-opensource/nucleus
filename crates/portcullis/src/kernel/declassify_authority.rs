@@ -1,10 +1,23 @@
 //! The kernel's declassification authority surface: trusted-key configuration
 //! and one-shot token application. Extracted from `kernel.rs` (line ratchet);
 //! a CHILD module of `kernel`, so the impl reaches the kernel's private fields
-//! (`trusted_public_keys`, `applied_declassifications`, `flow_graph`) without
+//! (`trusted_public_keys`, `flow_graph` — incl. its shared release ledger) without
 //! widening their visibility.
 
 use super::{DenyReason, Kernel};
+
+/// The 32-byte one-shot authorization id for an Ed25519 declassification token:
+/// SHA-256 of its deterministic signature. Sharing a fixed-width id with the
+/// k-of-n path lets both mint policies burn against the one
+/// [`FlowGraph::release_burn_ledger`](crate::flow_graph::FlowGraph).
+#[cfg(feature = "crypto")]
+fn release_burn_id(signature: &[u8; 64]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"nucleus.declassify.token.v1");
+    h.update(signature);
+    h.finalize().into()
+}
 
 #[cfg(feature = "crypto")]
 impl Kernel {
@@ -47,8 +60,6 @@ impl Kernel {
         &mut self,
         token: &portcullis_core::declassify::DeclassificationToken,
     ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
-        let graph = &mut self.flow_graph;
-
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Fail-closed (most-paranoid #3): declassification weakens information-flow
@@ -66,11 +77,14 @@ impl Kernel {
                     .to_string(),
             });
         }
-        // One-shot (HC-6): the deterministic Ed25519 signature identifies
-        // exactly one authorization. Already exercised ⇒ refuse with the
-        // dedicated replay verdict, BEFORE touching the flow graph — a replayed
-        // token must not re-run any part of the application.
-        if self.applied_declassifications.contains(&token.signature) {
+        // One-shot (HC-6): the deterministic Ed25519 signature identifies exactly
+        // one authorization. Its burn id is a 32-byte SHA-256 over the signature —
+        // the width the SHARED `FlowGraph::release_burn_ledger` uses so the keyless
+        // k-of-n memory path burns against the same ledger (Phase 4). Already
+        // exercised ⇒ refuse with the dedicated replay verdict, BEFORE recording
+        // any scope — a replayed token must not re-run the application.
+        let burn_id = release_burn_id(&token.signature);
+        if self.flow_graph.is_release_burned(&burn_id) {
             return Err(DenyReason::DeclassificationReplayed {
                 target_node: token.target_node_id.to_string(),
             });
@@ -80,7 +94,7 @@ impl Kernel {
             .iter()
             .map(|k| k.as_slice())
             .collect();
-        let result = graph.apply_token_verified(token, &key_refs, now);
+        let result = self.flow_graph.apply_token_verified(token, &key_refs, now);
         if matches!(
             result,
             portcullis_core::declassify::TokenApplyResult::InvalidSignature
@@ -99,7 +113,7 @@ impl Kernel {
             result,
             portcullis_core::declassify::TokenApplyResult::Applied { .. }
         ) {
-            self.applied_declassifications.insert(token.signature);
+            self.flow_graph.burn_release(burn_id);
         }
         Ok(result)
     }

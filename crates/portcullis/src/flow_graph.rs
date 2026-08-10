@@ -372,6 +372,36 @@ pub struct FlowGraph {
     /// ingest observation is dropped, so taint state is unprovable and the
     /// egress gate must deny until a human-authorized cleanse.
     poisoned: bool,
+    /// **The shared one-shot ledger for governed declassification releases**
+    /// (Phase 4 — "one enforcement, two mint policies"). A governed release is
+    /// spent exactly once: an authorization id (a 32-byte SHA-256 over the
+    /// authorization artifact — the Ed25519 token signature, or the k-of-n
+    /// `SignedDeclassify` bytes) is inserted here on release and refused on
+    /// replay. It travels with the graph so BOTH mint policies (the kernel's
+    /// Ed25519 `apply_declassification_token` and the tool-proxy's k-of-n
+    /// `memory_recall_core`) burn against the SAME ledger — the graph is the one
+    /// place both reach. (Phase 3 kept this on the kernel keyed by the raw
+    /// signature; Phase 4 relocates it here, widthed to a 32-byte id, so the
+    /// keyless k-of-n path shares it.)
+    release_burn_ledger: BTreeSet<[u8; 32]>,
+}
+
+/// Outcome of the shared governed-release enforcement
+/// [`FlowGraph::authorize_release`] (Phase 4). Every non-`Authorized` variant is
+/// a fail-closed, NON-burning refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseAuth {
+    /// Value-bound, sink-scoped, and one-shot checks all passed; the
+    /// authorization has been BURNED. The caller must attach this scope to the
+    /// released node.
+    Authorized(DeclassScope),
+    /// Value-binding failed: the commitment is absent (zero) or does not equal
+    /// the monitor-recorded value identity — a substituted value.
+    ValueMismatch,
+    /// The sink mask is empty (mask 0 admits nothing) — refused.
+    EmptyMask,
+    /// One-shot: this authorization id was already spent in this session.
+    Replayed,
 }
 
 /// A node's declassification scope: the released view and the signed sink
@@ -405,6 +435,7 @@ impl FlowGraph {
             session_conf_ceiling: ConfLevel::Public,
             session_adversarial: false,
             poisoned: false,
+            release_burn_ledger: BTreeSet::new(),
         }
     }
 
@@ -1385,19 +1416,106 @@ impl FlowGraph {
         if self.get(token.target_node_id).is_none() {
             return TokenApplyResult::NodeNotFound;
         }
-        if !token.is_value_bound() {
+        // Value-binding via the SINGLE-SOURCED predicate both mint policies share
+        // (Phase 4): the commitment must be present and equal the monitor-recorded
+        // ingest hash of the target node. `recorded = None` (no recorded hash) or a
+        // zero/unequal commitment ⇒ `ContentMismatch`, fail-closed and NON-burning.
+        let recorded = self
+            .content_hash(token.target_node_id)
+            .map(|h| *h.as_bytes());
+        if !Self::value_binding_ok(token.content_commitment, recorded) {
             return TokenApplyResult::ContentMismatch;
-        }
-        match self.content_hash(token.target_node_id) {
-            None => return TokenApplyResult::ContentMismatch,
-            Some(recorded) if recorded.as_bytes() != &token.content_commitment => {
-                return TokenApplyResult::ContentMismatch;
-            }
-            Some(_) => {}
         }
 
         // Delegate to the existing sink-scope / one-shot apply logic.
         self.apply_token(token, now)
+    }
+
+    // ── Shared governed-release enforcement (Phase 4) ─────────────────────────
+    //
+    // "One enforcement, two mint policies." The Ed25519 token and the k-of-n
+    // witness threshold are two AUTHORITY-minting front-ends; the enforcement
+    // they feed — value-binding, sink-scope, one-shot burn — is single-sourced
+    // here so the runtime equals the proven algebra for BOTH.
+
+    /// **The single-sourced value-binding predicate** (mirrors the extracted
+    /// decision `extracted::declassify::value_authorized`: bound ∧ present ∧
+    /// equal). A release is value-bound iff the authority's `committed` value
+    /// identity is present (non-zero) AND equals the monitor-recorded value
+    /// identity `recorded`. `recorded` is a MONITOR-recomputed fact — never
+    /// agent-declared: the Ed25519 path reads it from the target node's ingest
+    /// hash; the k-of-n path recomputes it from the recalled record's bytes.
+    /// A missing recorded value (`None`) or a zero commitment fails closed.
+    pub fn value_binding_ok(committed: [u8; 32], recorded: Option<[u8; 32]>) -> bool {
+        committed != [0u8; 32] && recorded == Some(committed)
+    }
+
+    /// Whether a governed-release authorization id has already been spent in this
+    /// session (the shared one-shot ledger). See [`Self::release_burn_ledger`].
+    pub fn is_release_burned(&self, burn_id: &[u8; 32]) -> bool {
+        self.release_burn_ledger.contains(burn_id)
+    }
+
+    /// Spend a governed-release authorization id (insert into the shared one-shot
+    /// ledger). Called on release ONLY, never on refusal.
+    pub fn burn_release(&mut self, burn_id: [u8; 32]) {
+        self.release_burn_ledger.insert(burn_id);
+    }
+
+    /// **The bundled governed-release enforcement the k-of-n mint policy calls.**
+    ///
+    /// Given the authority's value commitment, the monitor-recomputed value
+    /// identity, the released label, the sink mask, and a one-shot authorization
+    /// id, enforce — ALL fail-closed and NON-burning on refusal:
+    ///   (a) **sink-scope**: an empty mask releases to nothing ⇒ `EmptyMask`;
+    ///   (b) **value-binding**: `committed == recorded` (via
+    ///       [`Self::value_binding_ok`]) ⇒ else `ValueMismatch`;
+    ///   (c) **one-shot**: `burn_id` unspent ⇒ else `Replayed`.
+    /// On success ONLY, the authorization is BURNED and the caller receives the
+    /// authorized [`DeclassScope`] to attach to the node it observes (via
+    /// [`Self::record_release_scope`]). The Ed25519 path composes the SAME three
+    /// primitives (`value_binding_ok` + the shared ledger + the `DeclassScope`
+    /// sink mask) with its own expiry/at-most-once-per-node checks and its
+    /// verified `apply_token`; both write this one ledger.
+    ///
+    /// Note this does NOT itself attach the scope: the k-of-n node does not exist
+    /// until the release is authorized (it must never OBSERVE a promoted label
+    /// for an un-authorized record — the adversarial ratchet cannot be un-set), so
+    /// the caller observes the node only after `Authorized` and then records the
+    /// scope on it.
+    pub fn authorize_release(
+        &mut self,
+        committed: [u8; 32],
+        recorded: [u8; 32],
+        released_label: IFCLabel,
+        sink_mask: u16,
+        burn_id: [u8; 32],
+    ) -> ReleaseAuth {
+        if sink_mask == 0 {
+            return ReleaseAuth::EmptyMask;
+        }
+        if !Self::value_binding_ok(committed, Some(recorded)) {
+            return ReleaseAuth::ValueMismatch;
+        }
+        if self.release_burn_ledger.contains(&burn_id) {
+            return ReleaseAuth::Replayed;
+        }
+        self.release_burn_ledger.insert(burn_id);
+        ReleaseAuth::Authorized(DeclassScope {
+            released_label,
+            sink_mask,
+        })
+    }
+
+    /// Attach an authorized [`DeclassScope`] (from [`Self::authorize_release`]) to
+    /// `node_id`. Fail-closed: returns `false` (records nothing) if the node does
+    /// not exist or already carries a scope — a node is declassified at most once.
+    pub fn record_release_scope(&mut self, node_id: NodeId, scope: DeclassScope) -> bool {
+        if self.get(node_id).is_none() || self.declass_scopes.contains_key(&node_id) {
+            return false;
+        }
+        self.declass_scopes.insert(node_id, scope);
+        true
     }
 
     // ── Trusted ancestry check (#515) ────────────────────────────────

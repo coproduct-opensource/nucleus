@@ -21,7 +21,7 @@
 //! lives in the two `*_core` functions so it is unit-testable without a full
 //! `AppState`.
 
-use nucleus::portcullis::flow_graph::FlowGraph;
+use nucleus::portcullis::flow_graph::{FlowGraph, ReleaseAuth};
 use nucleus::portcullis::NodeKind;
 use nucleus_provenance_memory::{
     declassify, memory_ifc_label, ContentHash, MemoryDerivation, MemoryLabel, MemoryRecord,
@@ -112,9 +112,56 @@ pub fn memory_write_core(
     }
 }
 
+/// The 32-byte one-shot authorization id for a k-of-n release: a SHA-256 over
+/// the `SignedDeclassify` artifact (the witness bytes plus the sorted
+/// cosignatures). Same fixed width as the Ed25519 token id (`release_burn_id` in
+/// `kernel/declassify_authority.rs`) so BOTH mint policies burn against the one
+/// shared `FlowGraph::release_burn_ledger` (Phase 4). A distinct quorum
+/// re-authorization (a different witness or signature set) yields a different id
+/// and may release again — exactly as a distinct Ed25519 token may.
+fn kofn_release_burn_id(signed: &SignedDeclassify) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut sigs: Vec<(&[u8; 32], &Vec<u8>)> = signed
+        .signatures
+        .iter()
+        .map(|(pk, sig)| (pk, sig))
+        .collect();
+    sigs.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.cmp(b.1)));
+    let mut h = Sha256::new();
+    h.update(b"nucleus.declassify.kofn.v1");
+    let wb = signed.witness.canonical_bytes();
+    h.update((wb.len() as u32).to_le_bytes());
+    h.update(&wb);
+    h.update((sigs.len() as u32).to_le_bytes());
+    for (pk, sig) in sigs {
+        h.update(pk);
+        h.update((sig.len() as u32).to_le_bytes());
+        h.update(sig);
+    }
+    h.finalize().into()
+}
+
 /// Core recall logic: resolve the record, apply any declassification, and
 /// observe the effective label into the authoritative `graph` so the live IFC
-/// gate governs the next action. Fail-closed: a declassify failure denies (and observes nothing).
+/// gate governs the next action. Fail-closed: a declassify failure denies (and
+/// observes nothing).
+///
+/// **Phase 4 — one enforcement, two mint policies.** A k-of-n witness is only the
+/// AUTHORITY half. Before a promoted (non-tainting) label may be observed, the
+/// release is put through the SAME governed-release enforcement the Ed25519 token
+/// path uses — `FlowGraph::authorize_release`. It is **value-bound** (the
+/// quorum-committed record identity `witness.record_hash` must equal the
+/// monitor-recomputed record hash of the exact bytes recalled, so a value
+/// substituted after the quorum signed cannot ride the witnesses), **sink-scoped**
+/// (recorded as a `DeclassScope`; the k-of-n mint policy grants all sinks —
+/// witness-level sink narrowing is a parked follow-up), and **one-shot** (burned
+/// against the shared `release_burn_ledger`, so a replay of the same quorum
+/// authorization in a session is refused).
+///
+/// Only on `Authorized` is the promoted label observed and the scope recorded;
+/// every refusal is fail-closed and NON-burning. (Ordering matters: the promoted,
+/// non-adversarial label must never be OBSERVED for an un-authorized record — the
+/// adversarial taint ratchet cannot be un-set — so authorization precedes observe.)
 #[allow(clippy::too_many_arguments)]
 pub fn memory_recall_core(
     set: &ProvenanceMemorySet,
@@ -131,31 +178,68 @@ pub fn memory_recall_core(
         .cloned()
         .ok_or_else(|| ApiError::Body("memory record not found".to_string()))?;
 
+    // Content-address the *actual recalled bytes* (`record.value`), recomputed
+    // here from the real record — NEVER the agent-supplied `req.content_hash`
+    // lookup key, which only locates the record and is not trusted as the
+    // ingested content's digest.
+    let content_hash = crate::ingest_content_hash(record.value.as_bytes());
+
     let (effective_label, declassified) = match &req.declassify {
         Some(signed) => {
-            // Fail-closed: an un-quorumed / invalid witness informs NOTHING.
+            // (1) AUTHORITY: an un-quorumed / invalid witness informs NOTHING.
             let promoted = declassify(&record, signed, trusted_keys, threshold)
                 .map_err(|e| ApiError::IfcDenied(format!("declassify refused: {e}")))?;
-            (promoted, true)
+
+            // (2) SHARED GOVERNED-RELEASE ENFORCEMENT (value-bind + sink-scope +
+            //     one-shot), identical to the Ed25519 token path. The committed
+            //     value is the quorum-signed record identity; the monitor-recorded
+            //     value is the record's recomputed content hash. All sinks for the
+            //     k-of-n mint policy (disclosed; witness-level narrowing parked).
+            let committed = *signed.witness.record_hash.as_bytes();
+            let recorded = *record.content_hash().as_bytes();
+            let burn_id = kofn_release_burn_id(signed);
+            let released = memory_ifc_label(&promoted, now);
+            match graph.authorize_release(committed, recorded, released, u16::MAX, burn_id) {
+                ReleaseAuth::Authorized(scope) => {
+                    // The promoted label is non-adversarial, so observing it does
+                    // not taint the session — this is what flips the live egress
+                    // verdict. Empty parents ⇒ this observe cannot fail.
+                    let node = graph
+                        .observe_with_label_and_content_hash(
+                            NodeKind::MemoryRead,
+                            released,
+                            &[],
+                            now,
+                            content_hash,
+                        )
+                        .map_err(|e| {
+                            ApiError::IfcDenied(format!("flow-graph observe failed: {e}"))
+                        })?;
+                    // Record the governed scope on the released node (the shared
+                    // enforcement already burned the one-shot authorization).
+                    graph.record_release_scope(node, scope);
+                    return Ok(MemoryRecallResp {
+                        value: record.value,
+                        label: promoted,
+                        declassified: true,
+                    });
+                }
+                // Fail-closed: a value-substituted, unscoped, or replayed release
+                // is denied. authorize_release did NOT burn on any of these.
+                refusal => {
+                    return Err(ApiError::IfcDenied(format!(
+                        "k-of-n governed release refused: {refusal:?}"
+                    )));
+                }
+            }
         }
         None => (record.label.clone(), false),
     };
 
-    // Observe with the record's OWN (possibly promoted) label — never the fixed
-    // intrinsic memory label, which would launder an adversarial record.
-    //
-    // Brick 3: content-address the *actual recalled bytes* (`record.value`),
-    // recomputed here from the real record — NEVER the agent-supplied
-    // `req.content_hash` lookup key, which is only used to locate the record and
-    // must not be trusted as the ingested content's digest.
+    // Un-declassified path: observe the record's OWN (adversarial) label — never
+    // the fixed intrinsic memory label, which would launder an adversarial
+    // record. This taints the session, so the next privileged action is denied.
     let ifc = memory_ifc_label(&effective_label, now);
-    let content_hash = crate::ingest_content_hash(record.value.as_bytes());
-    // Project the recall's (possibly promoted) label onto the SAME authoritative
-    // graph the egress verdict reads. An un-declassified adversarial recall taints
-    // the graph, so the next privileged action is denied; a k-of-n-promoted recall
-    // does not taint and may inform an action. Both mint policies act on the one
-    // graph. Fail-closed: a dropped graph write denies the recall (observes nothing
-    // usable).
     graph
         .observe_with_label_and_content_hash(NodeKind::MemoryRead, ifc, &[], now, content_hash)
         .map_err(|e| ApiError::IfcDenied(format!("flow-graph observe failed: {e}")))?;
@@ -379,6 +463,119 @@ mod tests {
         assert!(
             ifc_egress_denial(&graph2, Operation::GitPush, NodeKind::OutboundAction).is_none(),
             "the k-of-n release flips the FlowGraph-backed egress verdict to allow (was Deny in step 1)"
+        );
+    }
+
+    use ed25519_dalek::SigningKey;
+    use nucleus_provenance_memory::{
+        DeclassifyWitness, DerivationClass, MemoryAuthority, SignedDeclassify,
+    };
+
+    fn kofn_key(s: u8) -> SigningKey {
+        SigningKey::from_bytes(&[s; 32])
+    }
+
+    fn human_promotion_witness(rec: &MemoryRecord) -> DeclassifyWitness {
+        DeclassifyWitness {
+            record_hash: rec.content_hash(),
+            recompute_verdict: RecomputeVerdict::Match,
+            to_authority: MemoryAuthority::MayInform,
+            to_derivation: DerivationClass::HumanPromoted,
+        }
+    }
+
+    /// **Phase 4 value-binding (k-of-n).** A quorum that cosigned a witness for
+    /// record A cannot release a DIFFERENT record B: the committed record identity
+    /// no longer equals the monitor-recomputed hash of the recalled bytes, so the
+    /// governed release is REFUSED and nothing is observed. If value-binding were
+    /// dropped, the substituted record would be (wrongly) promoted.
+    #[test]
+    fn kofn_release_is_value_bound_substituted_value_refused() {
+        let mut set = ProvenanceMemorySet::new();
+        let rec_a = admit_record(&mut set, "the value the quorum actually signed");
+        let rec_b = admit_record(&mut set, "a DIFFERENT value substituted at recall");
+        let trusted = [
+            kofn_key(1).verifying_key().to_bytes(),
+            kofn_key(2).verifying_key().to_bytes(),
+        ];
+        // The quorum cosigns a witness bound to record A.
+        let signed = SignedDeclassify::new(human_promotion_witness(&rec_a))
+            .cosign(&kofn_key(1))
+            .cosign(&kofn_key(2));
+
+        // …but the agent presents it on a recall of record B → refused, fail-closed.
+        let mut graph = FlowGraph::new();
+        let err = memory_recall_core(
+            &set,
+            &mut graph,
+            &trusted,
+            2,
+            0,
+            MemoryRecallReq {
+                content_hash: rec_b.content_hash().to_hex(),
+                declassify: Some(signed),
+            },
+        )
+        .expect_err("a witness bound to record A must not release record B");
+        assert!(
+            matches!(err, ApiError::IfcDenied(_)),
+            "refusal is IFC-denied"
+        );
+        // Nothing was observed: no laundered promoted node on the graph.
+        assert_eq!(graph.len(), 0, "a refused release observes nothing");
+    }
+
+    /// **Phase 4 one-shot (k-of-n), reds-on-drop.** A quorum authorization is spent
+    /// exactly once against the shared burn ledger: the first declassified recall
+    /// is promoted (not tainting), a SECOND identical recall on the same session
+    /// graph is REFUSED (the authorization is burned) — mirroring the Ed25519
+    /// token's replay verdict. NOTE (semantic change disclosed in the PR): before
+    /// Phase 4 a re-recall re-promoted; it is now one-shot per quorum authorization.
+    #[test]
+    fn kofn_release_is_one_shot_replay_refused() {
+        let mut set = ProvenanceMemorySet::new();
+        let rec = admit_record(&mut set, "promote once, then never again this session");
+        let trusted = [
+            kofn_key(1).verifying_key().to_bytes(),
+            kofn_key(2).verifying_key().to_bytes(),
+        ];
+        let signed = SignedDeclassify::new(human_promotion_witness(&rec))
+            .cosign(&kofn_key(1))
+            .cosign(&kofn_key(2));
+
+        let mut graph = FlowGraph::new();
+        // First release: authorized, promoted, does not taint.
+        let first = memory_recall_core(
+            &set,
+            &mut graph,
+            &trusted,
+            2,
+            0,
+            MemoryRecallReq {
+                content_hash: rec.content_hash().to_hex(),
+                declassify: Some(signed.clone()),
+            },
+        )
+        .expect("first quorum release is authorized");
+        assert!(first.declassified, "first release promotes");
+        assert!(!graph.is_tainted(), "the release does not taint");
+
+        // Second identical release: the authorization is burned → refused.
+        let err = memory_recall_core(
+            &set,
+            &mut graph,
+            &trusted,
+            2,
+            0,
+            MemoryRecallReq {
+                content_hash: rec.content_hash().to_hex(),
+                declassify: Some(signed),
+            },
+        )
+        .expect_err("a replayed quorum authorization must be refused (one-shot)");
+        assert!(
+            matches!(err, ApiError::IfcDenied(ref m) if m.contains("Replayed")),
+            "the second release is refused as a one-shot replay, got {err:?}"
         );
     }
 }

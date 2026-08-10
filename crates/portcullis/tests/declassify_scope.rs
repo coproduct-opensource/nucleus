@@ -254,3 +254,60 @@ fn causal_label_for_honors_the_scope() {
         ConfLevel::Secret
     );
 }
+
+/// **Phase 4 parity: the shared governed-release value-binding equals the
+/// extracted decision `value_authorized`.** Both mint policies (Ed25519 token,
+/// k-of-n threshold) route their value-binding through
+/// `FlowGraph::authorize_release`; this binds its runtime decision to the proven
+/// scalar core `bound ∧ present ∧ equal`, so the runtime equals the algebra for
+/// the unified path — and exercises the one-shot burn (a replay is refused).
+#[test]
+fn authorize_release_value_binding_matches_the_extracted_decision() {
+    use portcullis::flow_graph::ReleaseAuth;
+    use portcullis_core::extracted::declassify::value_authorized;
+    use portcullis_core::IFCLabel;
+
+    // The released label is irrelevant to the value-binding / one-shot decision.
+    let released = IFCLabel::bottom();
+    // Opaque 32-byte value identities; the scalar model tags them by first byte.
+    let v = |b: u8| {
+        let mut a = [0u8; 32];
+        a[0] = b;
+        a
+    };
+    let tag = |a: &[u8; 32]| a[0] as u64;
+
+    // committed == recorded (both non-zero) ⇒ Authorized AND value_authorized true.
+    for (committed, recorded) in [(v(7), v(7)), (v(7), v(9)), (v(9), v(7))] {
+        let mut g = FlowGraph::new();
+        let out = g.authorize_release(committed, recorded, released, u16::MAX, [1u8; 32]);
+        let model = value_authorized(
+            committed != [0u8; 32],
+            true,
+            tag(&committed),
+            tag(&recorded),
+        );
+        assert_eq!(
+            matches!(out, ReleaseAuth::Authorized(_)),
+            model,
+            "authorize_release value-binding must equal the extracted decision"
+        );
+    }
+
+    // One-shot: the burned id is refused as Replayed on the second call.
+    let mut g = FlowGraph::new();
+    assert!(matches!(
+        g.authorize_release(v(7), v(7), released, u16::MAX, [2u8; 32]),
+        ReleaseAuth::Authorized(_)
+    ));
+    assert_eq!(
+        g.authorize_release(v(7), v(7), released, u16::MAX, [2u8; 32]),
+        ReleaseAuth::Replayed,
+        "a replayed authorization id is refused (one-shot burn)"
+    );
+    // An empty sink mask releases to nothing.
+    assert_eq!(
+        FlowGraph::new().authorize_release(v(7), v(7), released, 0, [3u8; 32]),
+        ReleaseAuth::EmptyMask,
+    );
+}
