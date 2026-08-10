@@ -177,19 +177,64 @@ What each status means, and what it deliberately does not:
   signed mask admits only one sink releases to no other — which is a real,
   proved property but a statement about *where* data goes, not *which value* is
   released. It does not discharge this clause.
-  The demotion also corrects a false justification: the earlier note said "the
-  released value and its mask are governor-signed." The mask is signed, the
-  value is **not** — `canonical_bytes` signs `target_node_id`, `valid_until`,
-  the action's level transform, the justification, and `allowed_sinks`, and no
-  content byte. The released view is computed live from `node.label` at apply
-  time, and `target_node_id` is a workload-driven sequential index that a token
-  may be minted for *before the node exists* (`kernel_token.rs`), so a workload
-  that controls what lands at that id can influence which value is released —
-  exactly the steering this clause denies. Establishing it needs the four-run
-  robustness LTS (inputs vary on both sides ⇒ same released value); the
-  executable two-run form ships as `declassify_scope.rs`, which is why this is a
-  NOT-YET refinement rather than a bare gap. The sink-axis proof remains valid
-  and continues to back C4's single-use/scoped-release guarantees.
+
+  **Increment 1 (landed 2026-08-10, `declassify.rs`).** The value is now signed.
+  `DeclassificationToken` carries a `content_commitment: [u8; 32]` (SHA-256 of
+  the exact bytes the governor authorizes) bound into `canonical_bytes` (bumped
+  v2→v3, so v2 signatures no longer verify). A governor signature therefore
+  authorizes exactly ONE value: a token committing to V and one committing to W
+  sign different bytes (`token_canonical_bytes_bind_the_content_commitment`).
+  This closes the *signing-layer* half of the earlier false justification — the
+  old note said "the released value … is governor-signed" when it was not; now
+  it is. The all-zeros default is "unbound" (`is_value_bound()` is false).
+
+  **Blocked: apply-time enforcement + the four-run theorem — an architectural
+  disconnect, not just a missing theorem.** For the signed commitment to *bind*,
+  the apply path must refuse a token whose committed value does not equal the
+  target node's recorded ingest content hash (and refuse an unbound token, and a
+  node that does not exist). Wiring that check is blocked by a two-graph split
+  discovered while designing it:
+  * `Kernel::apply_declassification_token` — the ONLY non-test caller is the
+    tool-proxy governor endpoint (`nucleus-tool-proxy/src/declassify.rs`) — and
+    it operates on the kernel's own `flow_graph` (`portcullis::flow_graph`),
+    which is label-only and carries **no per-node content hash**.
+  * Every production ingest node, its content hash, the session taint, and the
+    live exfiltration decision live on a **separate** graph — the
+    `portcullis_core::ifc_api::FlowTracker` held as `state.flow_tracker`. The
+    live egress gate (`Kernel::ifc_flow_gate` → `exposure_core::ifc_egress_verdict`)
+    reads `flow_tracker` and never consults `flow_graph`'s declass scopes.
+  * On the production tool-proxy path `kernel.flow_graph` is **never populated**
+    — there is no `kernel.observe(...)` on any request path (verified by grep);
+    all `observe*` calls target `flow_tracker`. So a governor `target_node_id`
+    resolves against an empty graph and `apply_declassification_token` returns
+    `NodeNotFound` for any real node: declassification is **non-functional
+    end-to-end on the live path today**, value-bound or not. (This also narrows
+    C4's "live path" evidence to the *kernel API* unit tests it runs, not the
+    tool-proxy egress decision.)
+
+  So the content hash the C5 check needs exists only on `flow_tracker`; the token
+  machinery and its proofs (`declassify_scope.rs`, `DeclassifySinkScopeExtracted.lean`)
+  live only on `flow_graph`; and the two are disjoint. Threading a hash onto
+  `flow_graph` and checking it there would gate an artifact the live decisions
+  never consult (and which has no production nodes) — a false green — so it was
+  deliberately NOT done.
+
+  **Re-earn path (a decided fork, raised for owner review — it changes live
+  egress semantics).** Unify declassification onto `flow_tracker`: give it the
+  per-node released-view + one-shot-burn machinery that today lives on
+  `flow_graph` (or bridge the two so the release actually reaches the live egress
+  gate), have the apply path read `flow_tracker.content_hash(target)` and refuse
+  on unbound / missing / mismatched (require-node-exists closes mint-before-exist
+  for free — a not-yet-observed node has no hash), then upgrade the two-run
+  `graph_verdicts_match_the_extracted_decision_pointwise` in `declassify_scope.rs`
+  to the four-run robustness statement (attacker inputs vary on both runs ⇒
+  identical released value, or deny) over the extracted core with the commitment
+  in the decision. That arc — not this note's increment 1 — is what promotes C5.
+  This matches the literature's *delimited release* / *robust declassification*
+  target (Sabelfeld–Sands; Zdancewic–Myers; Cecchetti et al., non-malleable IFC):
+  the attacker may influence neither the decision to declassify nor *which value*
+  is released. The sink-axis proof remains valid and continues to back C4's
+  single-use/scoped-release guarantees.
 - **C6 (NOT-YET)** — the seven child-inheritance channels (now including the
   kernel command line) are proved total (the quantification is over the channel
   enum, so a new channel forces a match arm); the effect/API set is enumerated
