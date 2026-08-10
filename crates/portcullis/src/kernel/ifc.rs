@@ -11,10 +11,9 @@
 //!   session, OR the session's confidentiality ceiling exceeds what a sink may
 //!   emit, outbound actions are denied to prevent exfiltration.
 
-use portcullis_core::ifc_api::FlowTracker;
-
 use super::{Decision, DecisionToken, DenyReason, Kernel, Verdict};
 use crate::exposure_core;
+use crate::exposure_core::EgressAggregates;
 use crate::ActionTerm;
 use crate::Operation;
 
@@ -63,10 +62,10 @@ impl Kernel {
     /// Consult the session flow tracker. Returns `Some(deny_decision)` if the
     /// IFC gate denies the action, or `None` to fall through to the normal
     /// decision path. `flow == None` ⇒ always `None` (backward compatible).
-    pub(super) fn ifc_flow_gate(
+    pub(super) fn ifc_flow_gate<F: EgressAggregates + ?Sized>(
         &mut self,
         term: &ActionTerm,
-        flow: Option<&FlowTracker>,
+        flow: Option<&F>,
     ) -> Option<(Decision, Option<DecisionToken>)> {
         let flow = flow?;
         let operation = term.operation();

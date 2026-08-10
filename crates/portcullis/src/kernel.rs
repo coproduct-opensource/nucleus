@@ -1651,10 +1651,10 @@ impl Kernel {
     ///
     /// `flow == None` ⇒ behaves exactly like [`decide_term`] (callers without a
     /// tracker are unaffected — backward compatible).
-    pub fn decide_term_with_flow(
+    pub fn decide_term_with_flow<F: crate::exposure_core::EgressAggregates + ?Sized>(
         &mut self,
         term: ActionTerm,
-        flow: Option<&portcullis_core::ifc_api::FlowTracker>,
+        flow: Option<&F>,
     ) -> (Decision, Option<DecisionToken>) {
         // IFC flow gate (poison + tainted-outbound + confidentiality egress),
         // extracted to `kernel::ifc` (most-paranoid #1/#3/#4).

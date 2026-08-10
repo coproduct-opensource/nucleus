@@ -397,6 +397,45 @@ mod ifc_http_enforcement {
         }
     }
 
+    /// Build a `FlowGraph` whose egress aggregates (integrity taint,
+    /// confidentiality ceiling, poison) match `flow`'s — the mediation chokepoint
+    /// now reads the graph for the live verdict and cross-checks it against the
+    /// FlowTracker oracle (`egress_aggregates_agree`), so these bare-kernel tests
+    /// supply an aligned graph exactly as the live dual-write keeps them aligned.
+    /// Reproduces the three reads the gate consults; nothing else is observable.
+    pub(super) fn mirror_graph(flow: &FlowTracker) -> portcullis::flow_graph::FlowGraph {
+        use nucleus_ifc_kernel::ConfLevel;
+        let mut g = portcullis::flow_graph::FlowGraph::new();
+        if flow.is_tainted() {
+            g.insert_observation(NodeKind::WebContent, &[], 0)
+                .expect("observe adversarial");
+        }
+        // Reproduce the confidentiality ceiling by probing the tracker: the check
+        // denies iff ceiling > sink_max_conf. Secret first, then Internal.
+        if flow
+            .session_exfiltration_check(ConfLevel::Internal)
+            .is_denied()
+        {
+            g.insert_observation(NodeKind::Secret, &[], 0)
+                .expect("observe secret");
+        } else if flow
+            .session_exfiltration_check(ConfLevel::Public)
+            .is_denied()
+        {
+            g.insert_observation(NodeKind::FileRead, &[], 0)
+                .expect("observe internal");
+        }
+        if flow.is_poisoned() {
+            g.poison();
+        }
+        debug_assert_eq!(
+            crate::mediation::egress_aggregates_agree(flow, &g),
+            Ok(()),
+            "mirror_graph must reproduce the tracker's egress aggregates"
+        );
+        g
+    }
+
     /// Drive the live entry point and hand back both the mapped result and what
     /// the sink actually saw.
     #[allow(clippy::type_complexity)]
@@ -410,10 +449,12 @@ mod ifc_http_enforcement {
         Vec<(String, String, BTreeMap<String, String>)>,
     ) {
         let sink = CapturingSink::default();
+        let graph = mirror_graph(flow);
         let mapped = crate::mediation::decide_and_record(
             &sink,
             kernel,
             flow,
+            &graph,
             operation,
             subject,
             portcullis::verdict_sink::ActorIdentity::Unknown,
@@ -1196,5 +1237,159 @@ mod provenance_edges {
         dirty.observe(NodeKind::UserPrompt).unwrap();
         let web = dirty.observe(NodeKind::WebContent).unwrap();
         assert_eq!(dirty.latest_adversarial_node(), Some(web));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 2: the live egress verdict now reads the proven FlowGraph.
+//
+// These prove (a) the switch is REAL — the kernel egress gate decides on the
+// FlowGraph, not the FlowTracker; (b) poison on the graph fails CLOSED; and (c)
+// the fail-closed divergence canary denies when the graph would under-count the
+// taint the retained FlowTracker oracle carries (the fail-open shape the switch
+// could otherwise introduce). Each is a regression guard: dropping the migrated
+// check flips the asserted Deny to Pass.
+// ═══════════════════════════════════════════════════════════════════════════
+mod phase2_flowgraph_switch {
+    use super::ifc_http_enforcement::permissive_kernel;
+    use super::*;
+    use portcullis::action_term::ActionTerm;
+    use portcullis::flow_graph::FlowGraph;
+    use portcullis::kernel::{DenyReason, Verdict};
+
+    struct NoopSink;
+    impl portcullis::verdict_sink::VerdictSink for NoopSink {
+        fn record(
+            &self,
+            _ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    fn tainted_graph() -> FlowGraph {
+        let mut g = FlowGraph::new();
+        g.insert_observation(NodeKind::WebContent, &[], 0)
+            .expect("observe adversarial");
+        g
+    }
+
+    /// The switch is REAL: the kernel egress gate decides on the FlowGraph. A
+    /// tainted graph denies an outbound action; a clean graph allows the SAME
+    /// action. If the gate still read the (here-absent) FlowTracker this would
+    /// allow both — so this reds the instant the switch is reverted.
+    #[test]
+    fn the_kernel_egress_gate_reads_the_flowgraph() {
+        let mut kernel = permissive_kernel();
+        let term = ActionTerm::from_operation(Operation::WriteFiles, "out.txt");
+        let (denied, _) = kernel.decide_term_with_flow(term.clone(), Some(&tainted_graph()));
+        assert!(
+            matches!(denied.verdict, Verdict::Deny(DenyReason::IfcUnsafe { .. })),
+            "a tainted FlowGraph must deny an outbound action; got {:?}",
+            denied.verdict
+        );
+
+        let mut kernel2 = permissive_kernel();
+        let (allowed, _) = kernel2.decide_term_with_flow(term, Some(&FlowGraph::new()));
+        assert!(
+            matches!(allowed.verdict, Verdict::Allow),
+            "a clean FlowGraph must allow the same action; got {:?}",
+            allowed.verdict
+        );
+    }
+
+    /// A poisoned FlowGraph fails CLOSED on the live path: every operation is
+    /// denied (the #3 poison gate now reads the graph).
+    #[test]
+    fn a_poisoned_flowgraph_denies_every_operation() {
+        let mut g = FlowGraph::new();
+        g.poison();
+        for op in [
+            Operation::ReadFiles,
+            Operation::WriteFiles,
+            Operation::WebFetch,
+        ] {
+            let mut kernel = permissive_kernel();
+            let term = ActionTerm::from_operation(op, "x");
+            let (d, _) = kernel.decide_term_with_flow(term, Some(&g));
+            assert!(
+                matches!(d.verdict, Verdict::Deny(DenyReason::IfcUnsafe { .. })),
+                "a poisoned FlowGraph must deny {op:?}; got {:?}",
+                d.verdict
+            );
+        }
+    }
+
+    /// The fail-closed divergence canary: if the retained oracle out-taints the
+    /// live graph (the UNDER-count / fail-open shape), `decide_and_record`
+    /// DENIES. This is the guard that an under-counting graph reds instead of
+    /// silently permitting.
+    #[test]
+    fn a_graph_that_undercounts_tracker_taint_fails_closed() {
+        let mut tainted_tracker = FlowTracker::new();
+        tainted_tracker
+            .observe(NodeKind::WebContent)
+            .expect("observe");
+        let clean_graph = FlowGraph::new(); // under-counts vs the tainted oracle
+
+        // Exactly the divergence the canary exists to catch.
+        assert!(
+            crate::mediation::egress_aggregates_agree(&tainted_tracker, &clean_graph).is_err(),
+            "an under-counting graph must be a detected divergence"
+        );
+
+        let mut kernel = permissive_kernel();
+        let r = crate::mediation::decide_and_record(
+            &NoopSink,
+            &mut kernel,
+            &tainted_tracker,
+            &clean_graph,
+            Operation::WriteFiles,
+            "out.txt",
+            portcullis::verdict_sink::ActorIdentity::Unknown,
+            "http",
+        );
+        assert!(
+            matches!(r, Err(ApiError::IfcDenied(_))),
+            "an under-counting graph must fail closed; got {r:?}"
+        );
+    }
+
+    /// The complement: when the two agree (the post-re-home invariant), the
+    /// canary is silent and the verdict is served normally. Without this the
+    /// test above could pass by denying everything.
+    #[test]
+    fn agreeing_graphs_do_not_trip_the_canary() {
+        // A pristine tracker and a pristine graph agree on every aggregate
+        // (UserPrompt would raise the conf ceiling above Public, so we keep both
+        // empty to exercise the agreement path itself).
+        let clean_tracker = FlowTracker::new();
+        let clean_graph = FlowGraph::new();
+        assert_eq!(
+            crate::mediation::egress_aggregates_agree(&clean_tracker, &clean_graph),
+            Ok(())
+        );
+
+        let mut kernel = permissive_kernel();
+        let r = crate::mediation::decide_and_record(
+            &NoopSink,
+            &mut kernel,
+            &clean_tracker,
+            &clean_graph,
+            Operation::ReadFiles,
+            "in.txt",
+            portcullis::verdict_sink::ActorIdentity::Unknown,
+            "http",
+        );
+        assert!(
+            r.is_ok(),
+            "agreeing clean graphs must serve the verdict; got {r:?}"
+        );
     }
 }

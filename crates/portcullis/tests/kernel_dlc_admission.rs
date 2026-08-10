@@ -48,7 +48,7 @@ fn read_term() -> ActionTerm {
 }
 
 fn deny_reason(kernel: &mut Kernel, term: ActionTerm) -> Option<DenyReason> {
-    let (decision, _token) = kernel.decide_term_with_flow(term, None);
+    let (decision, _token) = kernel.decide_term_with_flow::<portcullis::FlowTracker>(term, None);
     match decision.verdict {
         Verdict::Deny(reason) => Some(reason),
         _ => None,
@@ -59,7 +59,7 @@ fn deny_reason(kernel: &mut Kernel, term: ActionTerm) -> Option<DenyReason> {
 fn unprovisioned_kernel_is_unchanged() {
     // Inert-by-default: no set_dlc_admission ⇒ the gate never fires.
     let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
-    let (decision, _) = kernel.decide_term_with_flow(read_term(), None);
+    let (decision, _) = kernel.decide_term_with_flow::<portcullis::FlowTracker>(read_term(), None);
     assert!(
         decision.verdict.is_allowed(),
         "baseline lattice must allow the read, got {:?}",
@@ -74,7 +74,7 @@ fn valid_credential_admits() {
     kernel.set_dlc_admission(
         DlcAdmission::new(keyring, issuer).with_credential("read_files", credential("read_files")),
     );
-    let (decision, _) = kernel.decide_term_with_flow(read_term(), None);
+    let (decision, _) = kernel.decide_term_with_flow::<portcullis::FlowTracker>(read_term(), None);
     assert!(
         decision.verdict.is_allowed(),
         "a genuine issuer-signed credential for read_files must admit, got {:?}",
@@ -137,7 +137,7 @@ fn deny_narrowing_only() {
             .with_credential("manage_pods", credential("manage_pods")),
     );
     let term = ActionTerm::from_operation(Operation::ManagePods, "pod-1");
-    let (decision, _) = kernel.decide_term_with_flow(term, None);
+    let (decision, _) = kernel.decide_term_with_flow::<portcullis::FlowTracker>(term, None);
     assert!(
         !decision.verdict.is_allowed(),
         "a valid credential must not widen what the lattice denies, got {:?}",

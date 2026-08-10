@@ -625,6 +625,60 @@ impl FlowGraph {
         Ok(id)
     }
 
+    /// Observe a **caller-labelled** node with its content hash â the `FlowGraph`
+    /// analogue of
+    /// [`FlowTracker::observe_with_label_and_content_hash`](portcullis_core::ifc_api::FlowTracker::observe_with_label_and_content_hash).
+    ///
+    /// Unlike [`observe_with_content_hash`](Self::observe_with_content_hash) â which
+    /// derives the label from `kind`'s intrinsic label â this preserves a
+    /// **caller-supplied** label. The recalled provenance-memory (k-of-n)
+    /// declassification path must keep the record's declassified/recomputed label
+    /// (never the fixed `intrinsic_label(MemoryRead)`, which would LAUNDER an
+    /// adversarial record). The stored label is `caller_label ⊔ ⨆ parents`
+    /// â byte-for-byte the fold `FlowTracker::observe_with_label_and_content_hash`
+    /// performs â and the SAME monotonic session ratchets
+    /// ([`session_taint_ceiling`](Self::session_taint_ceiling),
+    /// [`session_exfiltration_check`](Self::session_exfiltration_check),
+    /// [`is_tainted`](Self::is_tainted)) are raised, so those aggregates stay
+    /// byte-identical to `FlowTracker`'s after the same call.
+    ///
+    /// This is the `FlowGraph` half of the k-of-n memory declassification re-home
+    /// (Phase 2): once the egress verdict reads `FlowGraph`, the memory path MUST
+    /// project onto it, or the graph would under-count taint the tracker already
+    /// carries — a live fail-open. `now` is accepted for signature parity with
+    /// the hashing observe entries; the freshness clock does not affect any
+    /// aggregate.
+    pub fn observe_with_label_and_content_hash(
+        &mut self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[NodeId],
+        _now: u64,
+        hash: ContentHash,
+    ) -> Result<NodeId, FlowGraphError> {
+        self.validate_parents(parents)?;
+        // Start from the caller's label and join parents (mirrors
+        // `FlowTracker::observe_with_label_and_content_hash_inner`'s fold exactly).
+        let label = self
+            .gather_labels(parents)
+            .into_iter()
+            .fold(label, |acc, l| acc.join(l));
+        let id = self.alloc_node(kind, label, parents, None);
+        // Raise the monotonic session aggregates — identical block to
+        // `insert_observation`, so the caller-labelled path preserves every check
+        // `FlowTracker` performs and adds none. Ratchets, not live scans, so
+        // compaction cannot launder them.
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
+        if label.integrity == IntegLevel::Adversarial {
+            self.session_adversarial = true;
+        }
+        self.content_hashes.insert(id, hash);
+        Ok(id)
+    }
+
     /// The recorded content hash of an observation, or `None` if the node was
     /// created without one. Mirrors `FlowTracker::content_hash`.
     pub fn content_hash(&self, id: NodeId) -> Option<ContentHash> {

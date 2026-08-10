@@ -22,8 +22,60 @@
 use crate::capability::Operation;
 use crate::guard::{ExposureLabel, ExposureSet};
 use portcullis_core::flow::NodeKind;
-use portcullis_core::ifc_api::FlowTracker;
+use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
 use portcullis_core::ConfLevel;
+
+/// The three session aggregates the live egress gate consults.
+///
+/// Implemented by BOTH the legacy [`FlowTracker`] and the proven
+/// [`FlowGraph`](crate::flow_graph::FlowGraph) so [`ifc_egress_verdict`] is ONE
+/// gate reading whichever graph the caller supplies — never a second copy of the
+/// rule that could drift (the exact failure mode the "two aligned graphs"
+/// approach carries, and the reason this migration collapses onto one graph).
+///
+/// Fail-closed by construction: every method returns a conservative,
+/// deny-biasing answer, and the gate treats poison and taint as denials. The
+/// tool-proxy reads the [`FlowGraph`](crate::flow_graph::FlowGraph) through this
+/// trait for its live verdict (Phase 2) while retaining the [`FlowTracker`] as a
+/// dual-written oracle for the divergence canary.
+pub trait EgressAggregates {
+    /// A dropped observation ⇒ taint state unprovable ⇒ deny everything (#3).
+    fn is_poisoned(&self) -> bool;
+    /// `true` if any observation in this session carried adversarial integrity.
+    fn is_tainted(&self) -> bool;
+    /// Session confidentiality-ceiling downflow check for an outbound sink (#4).
+    fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck;
+}
+
+impl EgressAggregates for FlowTracker {
+    #[inline]
+    fn is_poisoned(&self) -> bool {
+        FlowTracker::is_poisoned(self)
+    }
+    #[inline]
+    fn is_tainted(&self) -> bool {
+        FlowTracker::is_tainted(self)
+    }
+    #[inline]
+    fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
+        FlowTracker::session_exfiltration_check(self, sink_max_conf)
+    }
+}
+
+impl EgressAggregates for crate::flow_graph::FlowGraph {
+    #[inline]
+    fn is_poisoned(&self) -> bool {
+        crate::flow_graph::FlowGraph::is_poisoned(self)
+    }
+    #[inline]
+    fn is_tainted(&self) -> bool {
+        crate::flow_graph::FlowGraph::is_tainted(self)
+    }
+    #[inline]
+    fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
+        crate::flow_graph::FlowGraph::session_exfiltration_check(self, sink_max_conf)
+    }
+}
 
 /// Classify an operation into its exposure label.
 ///
@@ -126,8 +178,8 @@ pub enum EgressVerdict {
 /// The confidentiality check is NOT graded. A session holding secrets must not
 /// emit them regardless of how cheap the sink looks, and unlike integrity there
 /// is no "the session already lost this" argument to make.
-pub fn ifc_egress_verdict(
-    flow: &FlowTracker,
+pub fn ifc_egress_verdict<F: EgressAggregates + ?Sized>(
+    flow: &F,
     op: Operation,
     kind: NodeKind,
     graded: bool,
@@ -179,7 +231,11 @@ pub fn ifc_egress_verdict(
 /// either the session is integrity-tainted (adversarial content observed) or its
 /// confidentiality ceiling exceeds what the sink may emit (secret exfiltration).
 /// `None` ⇒ the gate falls through to the normal decision path.
-pub fn ifc_egress_denial(flow: &FlowTracker, op: Operation, kind: NodeKind) -> Option<String> {
+pub fn ifc_egress_denial<F: EgressAggregates + ?Sized>(
+    flow: &F,
+    op: Operation,
+    kind: NodeKind,
+) -> Option<String> {
     // Delegates rather than duplicating: two copies of an enforcement rule are
     // two things that can drift, and this one has already drifted once (the
     // web-egress bypass). `graded = false` is the historical behaviour.

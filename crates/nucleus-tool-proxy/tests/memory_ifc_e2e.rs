@@ -3,9 +3,15 @@
 //! action until it is declassified by a k-of-n signed witness.
 //!
 //! This drives the REAL primitives — `ProvenanceMemorySet`, `declassify`,
-//! `FlowTracker::observe_with_label`, and the live `ifc_egress_denial` egress
-//! gate — exactly as the tool-proxy memory endpoints do, without constructing a
-//! full `AppState` (which needs a sandbox/runtime).
+//! `FlowTracker`/`FlowGraph` `observe_with_label*`, and the live
+//! `ifc_egress_denial` egress gate — exactly as the tool-proxy memory endpoints
+//! do, without constructing a full `AppState` (which needs a sandbox/runtime).
+//!
+//! Phase 2: the shipping egress verdict now reads the proven `FlowGraph`, so the
+//! release-flips-the-verdict assertions below are made on a `FlowGraph`
+//! (`ifc_egress_denial` is generic over the session aggregates), with the
+//! `FlowTracker` retained as the dual-written oracle. This is the C4-earning
+//! evidence that a k-of-n release ACTUALLY changes the graph-backed verdict.
 
 use ed25519_dalek::SigningKey;
 use nucleus_provenance_memory::{
@@ -15,7 +21,14 @@ use nucleus_provenance_memory::{
     TransformRegistry,
 };
 use portcullis::exposure_core::ifc_egress_denial;
+use portcullis::flow_graph::FlowGraph;
 use portcullis::{FlowTracker, NodeKind, Operation};
+
+/// A fixed content hash for the recalled bytes on the FlowGraph side — the
+/// egress aggregates are label-driven, so the exact digest is immaterial here.
+fn fixed_hash() -> nucleus_ifc_kernel::ContentHash {
+    nucleus_ifc_kernel::ContentHash::from_bytes([7u8; 32])
+}
 
 // Decode-only test keys (no CSPRNG; production keys come from SPIRE).
 fn key(seed: u8) -> SigningKey {
@@ -77,6 +90,27 @@ fn poisoned_recall_blocks_privileged_action_until_declassified() {
         ifc_egress_denial(&flow_a, Operation::GitPush, NodeKind::OutboundAction).is_some(),
         "a poisoned recall must block the next privileged (outbound) action"
     );
+    // ── The LIVE path (Phase 2): the same recall projected onto the FlowGraph
+    //    the egress verdict now reads must ALSO deny. This is the graph-backed
+    //    verdict, not the oracle's.
+    let mut graph_a = FlowGraph::new();
+    graph_a
+        .observe_with_label_and_content_hash(
+            NodeKind::MemoryRead,
+            memory_ifc_label(&rec.label, 0),
+            &[],
+            0,
+            fixed_hash(),
+        )
+        .unwrap();
+    assert!(
+        graph_a.is_tainted(),
+        "adversarial recall taints the FlowGraph too"
+    );
+    assert!(
+        ifc_egress_denial(&graph_a, Operation::GitPush, NodeKind::OutboundAction).is_some(),
+        "the FlowGraph-backed egress verdict must block the poisoned recall"
+    );
 
     // 4) DECLASSIFY with a 2-of-2 quorum of trusted witnesses.
     let trusted = [
@@ -111,6 +145,27 @@ fn poisoned_recall_blocks_privileged_action_until_declassified() {
     assert!(
         ifc_egress_denial(&flow_b, Operation::GitPush, NodeKind::OutboundAction).is_none(),
         "a declassified recall may inform a privileged action"
+    );
+    // ── The LIVE path: the k-of-n release FLIPS the FlowGraph-backed verdict
+    //    from Deny (step 3) to Pass. This is the thing that was inert before the
+    //    switch — the C4-earning evidence that a release changes a live verdict.
+    let mut graph_b = FlowGraph::new();
+    graph_b
+        .observe_with_label_and_content_hash(
+            NodeKind::MemoryRead,
+            memory_ifc_label(&promoted, 0),
+            &[],
+            0,
+            fixed_hash(),
+        )
+        .unwrap();
+    assert!(
+        !graph_b.is_tainted(),
+        "declassified recall does not taint the FlowGraph"
+    );
+    assert!(
+        ifc_egress_denial(&graph_b, Operation::GitPush, NodeKind::OutboundAction).is_none(),
+        "the k-of-n release flips the FlowGraph-backed egress verdict to allow"
     );
 }
 
