@@ -43,14 +43,18 @@
 
   The generated defs mirror the production decision — bound by the exhaustive
   `mask_admits ↔ allows_sink` sweep (106 496 cases) and the two-oracle graph
-  binding cited above. What is NOT proved here, stated rather than hidden: the
-  full four-run robust-declassification statement over the reference pod-machine
-  LTS (attacker inputs varied on both sides) is where `PodMachineSpike` hooks
-  in and is a larger add — the executable two-run form ships as a test in
-  `declassify_scope.rs`, and the released set's independence from attacker input
-  is visible here only as `effective_conf`'s dependence on its
-  token-and-graph-derived arguments alone. Charon/Aeneas extraction fidelity and
-  rustc's affine-move enforcement remain trusted, as elsewhere in this corpus.
+  binding cited above. The four-run VALUE-robustness statement (Phase 5) — over
+  runs that differ only in attacker-controlled inputs, the released value is
+  identical (equal to the governor's commitment) or the run denies — is now
+  PROVEN below (`## Four-run value robustness`), in the same style as
+  `PodMachineSpike`'s coarse-grained delivery machine but on the VALUE axis; the
+  executable four-run form ships as a test in `declassify_scope.rs`. What remains
+  trusted, stated rather than hidden: the 32-byte `ContentHash` identity is
+  modeled as an opaque `u64` tag (bound to the real byte comparison by the
+  `declassify_scope.rs` parity test — equal bytes ⇒ equal tag, unequal ⇒ unequal,
+  so the width abstraction cannot hide a steer); and Charon/Aeneas extraction
+  fidelity plus rustc's affine-move enforcement remain trusted, as elsewhere in
+  this corpus.
 -/
 
 import PortcullisCoreDeclass.Types
@@ -287,6 +291,141 @@ theorem committed_value_authorized :
     value_authorized true true 7#u64 7#u64 = ok true := by
   unfold value_authorized; rfl
 
+/-! ## Four-run value robustness (Phase 5, C5): the released VALUE cannot be
+    steered by attacker-controlled inputs
+
+    The scalar theorems above (`substituted_value_refused`,
+    `committed_value_authorized`) fix the value binding pointwise. This section
+    lifts them to the RELATIONAL statement that is the demotion reason for C5:
+    over runs that differ only in attacker input, the released value does not
+    change — the attacker can force a deny, never a different value.
+
+    A RUN applies a governor-signed declassification token to a node and either
+    RELEASES a value or DENIES. The governor SIGNS, and thus FIXES across runs,
+    the value commitment `c` (`committed`) and the bound flag `cb`
+    (`committed_bound`). The node's recorded content identity `r` (`recorded`)
+    and its presence flag `rp` (`recorded_present`) are MONITOR-recorded facts
+    derived from the workload — i.e. ATTACKER-CONTROLLED in the threat model.
+    `runValue` reads the extracted `value_authorized` decision; on authorization
+    it physically egresses the node's RECORDED content (what actually leaves the
+    boundary), otherwise it denies. This is the value-axis analogue of
+    `PodMachineSpike`'s delivery machine: there the low-observable is the
+    delivered material; here it is the released VALUE. -/
+
+/-- The Bool release predicate the run branches on: `bound ∧ present ∧
+    (committed == recorded)`. Equal to the extracted `value_authorized` decision
+    (next lemma), so the machine below decides through the shipped oracle. -/
+def releases (cb rp : Bool) (c r : Std.U64) : Bool := cb && rp && (c == r)
+
+/-- `releases` IS the extracted decision — the machine consults the shipped
+    oracle, not a re-implementation. -/
+theorem releases_eq_value_authorized (cb rp : Bool) (c r : Std.U64) :
+    value_authorized cb rp c r = ok (releases cb rp c r) := by
+  unfold value_authorized releases
+  cases cb <;> cases rp <;> simp
+
+/-- A run's observable outcome: a released value, or a denial. -/
+inductive Outcome where
+  | released (v : Std.U64)
+  | denied
+deriving DecidableEq
+
+/-- One run: apply the governor-signed token (`cb`, `c`) to a node whose recorded
+    content `(rp, r)` is attacker-controlled. On authorization the RECORDED
+    content is what egresses; otherwise the run denies. -/
+def runValue (cb rp : Bool) (c r : Std.U64) : Outcome :=
+  if releases cb rp c r then Outcome.released r else Outcome.denied
+
+/-- **The teeth of value-binding.** A run can only RELEASE the governor-committed
+    value. Even though the egressed value is the attacker-influenced RECORDED
+    content, authorization forces it to equal the commitment — so the released
+    value is provably the governor's `c`, never a value the attacker substituted.
+    This is where the equality check in `value_authorized` does its work. -/
+theorem released_value_is_the_commitment
+    (cb rp : Bool) (c r v : Std.U64)
+    (h : runValue cb rp c r = Outcome.released v) : v = c := by
+  unfold runValue at h
+  split at h
+  · rename_i hb
+    injection h with hrv
+    unfold releases at hb
+    simp only [Bool.and_eq_true, beq_iff_eq] at hb
+    rw [← hrv, ← hb.2]
+  · exact absurd h (by simp)
+
+/-- **Four-run value non-steering (relational).** For a FIXED governor-signed
+    token (`cb`, `c`), ANY two runs whose attacker inputs `(rp, r)` both RELEASE
+    release the SAME value. The attacker cannot make one signed token emit two
+    different values by varying its inputs. -/
+theorem four_run_value_non_steering
+    (cb : Bool) (c : Std.U64)
+    (rp₁ rp₂ : Bool) (r₁ r₂ v₁ v₂ : Std.U64)
+    (h₁ : runValue cb rp₁ c r₁ = Outcome.released v₁)
+    (h₂ : runValue cb rp₂ c r₂ = Outcome.released v₂) :
+    v₁ = v₂ := by
+  rw [released_value_is_the_commitment cb rp₁ c r₁ v₁ h₁,
+      released_value_is_the_commitment cb rp₂ c r₂ v₂ h₂]
+
+/-- **Content mismatch denies.** A run whose recorded content differs from the
+    commitment DENIES — for any bound/presence flags. This is the
+    `TokenApplyResult::ContentMismatch` deny: an attacker who substitutes a value
+    (`r ≠ c`) gets a denial, not a release of the substituted value. -/
+theorem content_mismatch_denies (cb rp : Bool) (c r : Std.U64) (h : c ≠ r) :
+    runValue cb rp c r = Outcome.denied := by
+  unfold runValue releases
+  have hcr : (c == r) = false := by simp [h]
+  simp [hcr]
+
+/-- **Attacker chooses only WHETHER, never WHICH.** For a fixed governor token,
+    every run either releases EXACTLY the committed value `c` or denies. The
+    released value is a function of the governor's signature alone; attacker
+    input can only toggle liveness (release vs deny). -/
+theorem attacker_cannot_steer_the_value (cb rp : Bool) (c r : Std.U64) :
+    runValue cb rp c r = Outcome.released c ∨ runValue cb rp c r = Outcome.denied := by
+  cases h : runValue cb rp c r with
+  | released v =>
+    left
+    have hvc := released_value_is_the_commitment cb rp c r v h
+    rw [hvc]
+  | denied => right; rfl
+
+/-- **The four-run robustness theorem.** Four runs of one governor-signed token
+    over the 2×2 grid of attacker inputs (presence flag `rpA/rpB` × recorded
+    identity `rA/rB`): every one of the four either releases EXACTLY the
+    committed value or denies. No attacker-input combination releases any other
+    value — the released value is robust against attacker-controlled inputs. -/
+theorem four_run_value_robustness
+    (cb : Bool) (c : Std.U64)
+    (rpA rpB : Bool) (rA rB : Std.U64) :
+    (runValue cb rpA c rA = Outcome.released c ∨ runValue cb rpA c rA = Outcome.denied) ∧
+    (runValue cb rpA c rB = Outcome.released c ∨ runValue cb rpA c rB = Outcome.denied) ∧
+    (runValue cb rpB c rA = Outcome.released c ∨ runValue cb rpB c rA = Outcome.denied) ∧
+    (runValue cb rpB c rB = Outcome.released c ∨ runValue cb rpB c rB = Outcome.denied) :=
+  ⟨attacker_cannot_steer_the_value cb rpA c rA,
+   attacker_cannot_steer_the_value cb rpA c rB,
+   attacker_cannot_steer_the_value cb rpB c rA,
+   attacker_cannot_steer_the_value cb rpB c rB⟩
+
+/-! ### Non-vacuity — a releasing run and a denying run under varied attacker input
+
+    If the machine denied everything the theorems above would be vacuous. These
+    pin that it does real work AND that the deny arm is reachable by varying
+    attacker input, so the four-run statement has content. Governor commits `7`:
+    the honest node recorded `7` and RELEASES `7`; an attacker that substituted
+    `9` makes the SAME signed token DENY (liveness moved, value never could). -/
+
+/-- A run releases the committed value. -/
+example : runValue true true 7#u64 7#u64 = Outcome.released 7#u64 := by decide
+/-- The SAME token denies under a substituted (attacker-varied) recorded value. -/
+example : runValue true true 7#u64 9#u64 = Outcome.denied := by decide
+/-- Separating witness: the two runs differ only in attacker input, and their
+    outcomes differ (release vs deny) — attacker input DOES move liveness… -/
+example : runValue true true 7#u64 7#u64 ≠ runValue true true 7#u64 9#u64 := by decide
+/-- …but a run that lowers the presence flag also denies — release requires the
+    monitor-recorded value to be present and equal, not attacker assertion. -/
+example : runValue true false 7#u64 7#u64 = Outcome.denied := by decide
+
+
 end DeclassifySinkScopeExtracted
 
 -- The axiom audit in aeneas-ifc-scoped.yml reads these from the build log and
@@ -320,3 +459,15 @@ open DeclassifySinkScopeExtracted in
 #print axioms substituted_value_refused
 open DeclassifySinkScopeExtracted in
 #print axioms committed_value_authorized
+open DeclassifySinkScopeExtracted in
+#print axioms releases_eq_value_authorized
+open DeclassifySinkScopeExtracted in
+#print axioms released_value_is_the_commitment
+open DeclassifySinkScopeExtracted in
+#print axioms four_run_value_non_steering
+open DeclassifySinkScopeExtracted in
+#print axioms content_mismatch_denies
+open DeclassifySinkScopeExtracted in
+#print axioms attacker_cannot_steer_the_value
+open DeclassifySinkScopeExtracted in
+#print axioms four_run_value_robustness

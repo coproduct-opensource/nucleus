@@ -311,3 +311,109 @@ fn authorize_release_value_binding_matches_the_extracted_decision() {
         ReleaseAuth::EmptyMask,
     );
 }
+
+/// **Phase 5 — four-run VALUE robustness: the released value is not
+/// attacker-steerable.** The executable image of
+/// `DeclassifySinkScopeExtracted::four_run_value_robustness`. A governor signs ONE
+/// value commitment (attacker-independent); the node's recorded content identity
+/// is a MONITOR-recorded fact derived from the (attacker-influenced) workload.
+/// Over four runs that vary ONLY that attacker-controlled recorded content, each
+/// run either RELEASES exactly the committed value or DENIES (`ValueMismatch`) —
+/// no attacker input releases a different value. Bound to the extracted
+/// `value_authorized` decision, and non-vacuous: one arm releases, one denies, and
+/// every released value provably equals the governor commitment.
+#[test]
+fn four_run_released_value_is_not_attacker_steerable() {
+    use portcullis::flow_graph::ReleaseAuth;
+    use portcullis_core::extracted::declassify::value_authorized;
+    use portcullis_core::IFCLabel;
+
+    let released_label = IFCLabel::bottom();
+    let v = |b: u8| {
+        let mut a = [0u8; 32];
+        a[0] = b;
+        a
+    };
+    let tag = |a: &[u8; 32]| a[0] as u64;
+
+    // Governor-signed commitment — fixed across all runs (attacker-independent).
+    let committed = v(7);
+
+    // What a run egresses: on Authorized, the node's recorded content (the value
+    // that physically leaves the boundary); None on any deny. Mirrors Lean
+    // `runValue`, which releases the RECORDED content — the value-binding check is
+    // what forces it to equal the commitment.
+    let run = |recorded: [u8; 32], burn: [u8; 32]| -> Option<[u8; 32]> {
+        let mut g = FlowGraph::new();
+        match g.authorize_release(committed, recorded, released_label, u16::MAX, burn) {
+            ReleaseAuth::Authorized(_) => Some(recorded),
+            _ => None,
+        }
+    };
+
+    // Two attacker-controlled recorded identities: one matches the commitment, one
+    // substitutes a different value. Four runs = 2 identities × 2 independent
+    // attacker attempts (distinct burn ids, fresh graph each, so the one-shot
+    // ledger never confounds the value axis).
+    let attacker_recorded = [v(7), v(9)];
+    let mut released_values: Vec<[u8; 32]> = Vec::new();
+    let mut any_release = false;
+    let mut any_deny = false;
+
+    for (i, rec) in attacker_recorded.iter().enumerate() {
+        for attempt in 0u8..2 {
+            let mut burn = [0u8; 32];
+            burn[0] = 10 + attempt;
+            burn[1] = i as u8;
+            let out = run(*rec, burn);
+
+            // Parity: the runtime authorize decision equals the extracted model.
+            let model = value_authorized(committed != [0u8; 32], true, tag(&committed), tag(rec));
+            assert_eq!(
+                out.is_some(),
+                model,
+                "runtime authorize_release disagreed with the extracted value_authorized \
+                 (recorded {rec:?})"
+            );
+
+            match out {
+                Some(value) => {
+                    any_release = true;
+                    // Teeth: a release egresses exactly the governor commitment,
+                    // never the attacker's substituted value.
+                    assert_eq!(
+                        value, committed,
+                        "a release egressed a value the governor did not commit — value steered"
+                    );
+                    released_values.push(value);
+                }
+                None => any_deny = true,
+            }
+        }
+    }
+
+    // Four-run non-steering: every released value is identical (all == commitment).
+    for w in released_values.windows(2) {
+        assert_eq!(
+            w[0], w[1],
+            "two runs with different attacker input released different values"
+        );
+    }
+
+    // Non-vacuity: the attacker inputs genuinely differ AND both arms are
+    // reachable — one run RELEASED (recorded matched the commitment) and one
+    // DENIED (recorded was substituted). Without both, the assertions above would
+    // be vacuous.
+    assert_ne!(
+        attacker_recorded[0], attacker_recorded[1],
+        "test premise: attacker inputs must actually differ"
+    );
+    assert!(
+        any_release,
+        "non-vacuity: no run ever released — the gate denies everything"
+    );
+    assert!(
+        any_deny,
+        "non-vacuity: no run ever denied — value-binding is not enforced"
+    );
+}
