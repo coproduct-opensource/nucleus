@@ -384,6 +384,17 @@ pub struct FlowGraph {
     /// signature; Phase 4 relocates it here, widthed to a 32-byte id, so the
     /// keyless k-of-n path shares it.)
     release_burn_ledger: BTreeSet<[u8; 32]>,
+    /// Set once [`maybe_compact`](Self::maybe_compact) has actually tombstoned
+    /// nodes (never merely on reaching the warn threshold). Once true, a live-node
+    /// scan can no longer see every observation, so the scope-aware effective
+    /// aggregates ([`effective_exfiltration_check`](Self::effective_exfiltration_check),
+    /// [`effective_is_tainted`](Self::effective_is_tainted)) STOP refining and
+    /// defer to the monotonic session ratchet — fail-closed: a declass scope on a
+    /// tombstoned node cannot be used to argue egress is safe. Deliberately NOT
+    /// cleared by [`reset_session_ceiling`](Self::reset_session_ceiling): a cleanse
+    /// lowers the taint ceiling but cannot resurrect tombstoned nodes, so the
+    /// scan is still blind and must stay conservative.
+    ever_compacted: bool,
 }
 
 /// Outcome of the shared governed-release enforcement
@@ -436,6 +447,7 @@ impl FlowGraph {
             session_adversarial: false,
             poisoned: false,
             release_burn_ledger: BTreeSet::new(),
+            ever_compacted: false,
         }
     }
 
@@ -782,6 +794,110 @@ impl FlowGraph {
             };
         }
         SafetyCheck::Safe
+    }
+
+    // ── Scope-aware effective aggregates (Phase 4.5) ──────────────────────────
+    //
+    // The plain `session_*` aggregates above are monotonic ratchets: they never
+    // honor a per-node `DeclassScope`, so a signed release that clears a node for
+    // one sink cannot lower the session ceiling the egress gate reads. These
+    // effective variants refine the ratchet DOWNWARD — and only downward — under
+    // full node visibility, routing each live observation node through
+    // `effective_label(id, op)` so a scope admitting `op` contributes its released
+    // view. Every path is fail-closed: the ratchet is the floor, and once
+    // `ever_compacted` a live-node scan is incomplete so the strict ratchet
+    // governs.
+
+    /// The session confidentiality ceiling recomputed over the EFFECTIVE
+    /// (scope-aware) labels of LIVE OBSERVATION nodes for operation `op`: the max
+    /// over each live observation node's `effective_label(id, op).confidentiality`.
+    /// A node carrying a declass scope that admits `op` contributes its RELEASED
+    /// confidentiality; every other node its strict stored confidentiality. Only
+    /// sound when no compaction has tombstoned a node — callers gate on
+    /// `ever_compacted` first.
+    fn effective_conf_ceiling(&self, op: Operation) -> ConfLevel {
+        let mut ceiling = ConfLevel::Public;
+        for (i, slot) in self.nodes.iter().enumerate() {
+            let Some(node) = slot.as_ref() else { continue };
+            // Observation nodes only (`operation.is_none()`); the session
+            // ceiling is the join over INGESTS, and an action node's label is a
+            // derived join, not an independent source.
+            if node.operation.is_some() {
+                continue;
+            }
+            if let Some(label) = self.effective_label(i as NodeId, op) {
+                if label.confidentiality > ceiling {
+                    ceiling = label.confidentiality;
+                }
+            }
+        }
+        ceiling
+    }
+
+    /// Scope-aware confidentiality downflow check for an outbound sink emitting
+    /// operation `op`. Fail-closed and never weaker than
+    /// [`session_exfiltration_check`](Self::session_exfiltration_check):
+    ///
+    /// * `session_conf_ceiling <= sink_max_conf` ⇒ `Safe` (the ratchet already
+    ///   fits; no per-node refinement could raise it).
+    /// * else if `ever_compacted` ⇒ deny (`ConfidentialityViolation`): the
+    ///   live-node scan is blind, so the strict ratchet governs.
+    /// * else recompute the effective ceiling over live observation nodes and deny
+    ///   iff it STILL exceeds the sink — a declass scope admitting `op` can lower
+    ///   the ceiling and clear the release; nothing else can.
+    pub fn effective_exfiltration_check(
+        &self,
+        op: Operation,
+        sink_max_conf: ConfLevel,
+    ) -> SafetyCheck {
+        if self.session_conf_ceiling <= sink_max_conf {
+            return SafetyCheck::Safe;
+        }
+        if self.ever_compacted {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: self.session_conf_ceiling,
+                sink_max_conf,
+            };
+        }
+        let eff = self.effective_conf_ceiling(op);
+        if eff > sink_max_conf {
+            SafetyCheck::ConfidentialityViolation {
+                data_conf: eff,
+                sink_max_conf,
+            }
+        } else {
+            SafetyCheck::Safe
+        }
+    }
+
+    /// Scope-aware integrity-taint check for operation `op`. Fail-closed and never
+    /// weaker than [`is_tainted`](Self::is_tainted):
+    ///
+    /// * `!session_adversarial` ⇒ `false` (no adversarial ingest ever occurred).
+    /// * else if `ever_compacted` ⇒ `true`: the live-node scan is blind, so the
+    ///   ratchet governs.
+    /// * else `true` iff some live observation node's `effective_label(id, op)`
+    ///   still carries `Adversarial` integrity — a scope admitting `op` can lower
+    ///   a node's contributed integrity, and nothing else clears the taint.
+    pub fn effective_is_tainted(&self, op: Operation) -> bool {
+        if !self.session_adversarial {
+            return false;
+        }
+        if self.ever_compacted {
+            return true;
+        }
+        for (i, slot) in self.nodes.iter().enumerate() {
+            let Some(node) = slot.as_ref() else { continue };
+            if node.operation.is_some() {
+                continue;
+            }
+            if let Some(label) = self.effective_label(i as NodeId, op) {
+                if label.integrity == IntegLevel::Adversarial {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Mark the session poisoned (fail-closed): an ingest observation was
@@ -1216,6 +1332,11 @@ impl FlowGraph {
         if count < MAX_GRAPH_NODES {
             return;
         }
+
+        // Past this point compaction actually tombstones nodes: a live-node scan
+        // is no longer complete, so the scope-aware effective aggregates must stop
+        // refining and defer to the monotonic ratchet (fail-closed).
+        self.ever_compacted = true;
 
         warn!(
             nodes = count,

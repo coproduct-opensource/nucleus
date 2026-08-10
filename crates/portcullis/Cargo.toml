@@ -136,5 +136,9 @@ name = "kernel_token"
 required-features = ["crypto"]
 
 [[test]]
+name = "declassify_rehome_egress"
+required-features = ["crypto"]
+
+[[test]]
 name = "kernel_dlc_admission"
 required-features = ["dlc"]

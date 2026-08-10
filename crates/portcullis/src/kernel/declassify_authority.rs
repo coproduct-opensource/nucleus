@@ -60,13 +60,57 @@ impl Kernel {
         &mut self,
         token: &portcullis_core::declassify::DeclassificationToken,
     ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
+        // Disjoint-field borrow: the trusted-key set and the kernel's own
+        // `flow_graph` are separate fields, so the core can hold a shared borrow
+        // of one and an exclusive borrow of the other simultaneously.
+        Self::apply_declassification_token_core(
+            &self.trusted_public_keys,
+            &mut self.flow_graph,
+            token,
+        )
+    }
+
+    /// Apply a signed declassification token to an EXTERNALLY-SUPPLIED flow graph
+    /// (Phase 4.5 re-home). Same authority and one-shot semantics as
+    /// [`apply_declassification_token`](Self::apply_declassification_token), but
+    /// the scope is recorded on — and the one-shot burn is spent against — the
+    /// `graph` the caller passes, not the kernel's own `flow_graph`.
+    ///
+    /// This is the live path: the tool-proxy's `/v1/declassify` endpoint holds the
+    /// session's authoritative `state.flow_graph` (the graph egress reads), so the
+    /// token must land there. Writing to the kernel's separate, never-populated
+    /// `flow_graph` would record the scope on a graph no verdict ever consults
+    /// (→ `NodeNotFound` on the live graph). Takes `&self` because it only reads
+    /// the trusted-key configuration; all mutation is on the passed graph.
+    #[cfg(feature = "crypto")]
+    pub fn apply_declassification_token_on(
+        &self,
+        graph: &mut crate::flow_graph::FlowGraph,
+        token: &portcullis_core::declassify::DeclassificationToken,
+    ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
+        Self::apply_declassification_token_core(&self.trusted_public_keys, graph, token)
+    }
+
+    /// The single-sourced body of the Ed25519 declassification apply, reading and
+    /// mutating the release ledger on the PASSED graph. Both
+    /// [`apply_declassification_token`](Self::apply_declassification_token) (kernel's
+    /// own graph) and [`apply_declassification_token_on`](Self::apply_declassification_token_on)
+    /// (a caller-supplied graph) delegate here, so the authority, value-binding,
+    /// sink-scope, and one-shot semantics are identical on whichever graph the
+    /// scope is recorded.
+    #[cfg(feature = "crypto")]
+    fn apply_declassification_token_core(
+        trusted_public_keys: &[[u8; 32]],
+        graph: &mut crate::flow_graph::FlowGraph,
+        token: &portcullis_core::declassify::DeclassificationToken,
+    ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Fail-closed (most-paranoid #3): declassification weakens information-flow
         // labels, so it MUST be cryptographically authorized. With no trusted keys
         // configured there is no authority to verify against, so refuse outright
         // rather than applying the token unsigned.
-        if self.trusted_public_keys.is_empty() {
+        if trusted_public_keys.is_empty() {
             tracing::warn!(
                 target_node = token.target_node_id,
                 "declassification refused: no trusted public keys configured (fail-closed)"
@@ -84,17 +128,13 @@ impl Kernel {
         // exercised ⇒ refuse with the dedicated replay verdict, BEFORE recording
         // any scope — a replayed token must not re-run the application.
         let burn_id = release_burn_id(&token.signature);
-        if self.flow_graph.is_release_burned(&burn_id) {
+        if graph.is_release_burned(&burn_id) {
             return Err(DenyReason::DeclassificationReplayed {
                 target_node: token.target_node_id.to_string(),
             });
         }
-        let key_refs: Vec<&[u8]> = self
-            .trusted_public_keys
-            .iter()
-            .map(|k| k.as_slice())
-            .collect();
-        let result = self.flow_graph.apply_token_verified(token, &key_refs, now);
+        let key_refs: Vec<&[u8]> = trusted_public_keys.iter().map(|k| k.as_slice()).collect();
+        let result = graph.apply_token_verified(token, &key_refs, now);
         if matches!(
             result,
             portcullis_core::declassify::TokenApplyResult::InvalidSignature
@@ -113,7 +153,7 @@ impl Kernel {
             result,
             portcullis_core::declassify::TokenApplyResult::Applied { .. }
         ) {
-            self.flow_graph.burn_release(burn_id);
+            graph.burn_release(burn_id);
         }
         Ok(result)
     }

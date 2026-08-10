@@ -114,8 +114,14 @@ pub(crate) async fn apply_declassification(
         .collect();
     let target = token.target_node_id;
 
-    let mut kernel = state.kernel.lock().await;
-    match kernel.apply_declassification_token(&token) {
+    // Re-home (Phase 4.5): the scope must land on the session's authoritative
+    // `state.flow_graph` — the graph the live egress verdict reads — not the
+    // kernel's separate, never-populated `flow_graph`. Lock order MUST be
+    // (kernel, then flow_graph) to match `http_kernel_decide` and the ingest
+    // path, or the two lock sites could deadlock.
+    let kernel = state.kernel.lock().await;
+    let mut graph = state.flow_graph.lock().await;
+    match kernel.apply_declassification_token_on(&mut graph, &token) {
         Ok(TokenApplyResult::Applied { .. }) => Ok(Json(DeclassifyResponse {
             applied: true,
             target_node_id: target,

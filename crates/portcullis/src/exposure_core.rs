@@ -45,6 +45,24 @@ pub trait EgressAggregates {
     fn is_tainted(&self) -> bool;
     /// Session confidentiality-ceiling downflow check for an outbound sink (#4).
     fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck;
+
+    /// Scope-aware integrity taint for a specific operation (Phase 4.5). Defaults
+    /// to the operation-agnostic [`is_tainted`](Self::is_tainted), so an
+    /// implementor with no per-node scopes (e.g. `FlowTracker`) is byte-identical
+    /// to the historical gate. `FlowGraph` overrides it to honor per-node declass
+    /// scopes, refining the answer DOWNWARD only under full node visibility.
+    fn effective_is_tainted(&self, _op: Operation) -> bool {
+        self.is_tainted()
+    }
+
+    /// Scope-aware confidentiality downflow check for a specific operation
+    /// (Phase 4.5). Defaults to the operation-agnostic
+    /// [`session_exfiltration_check`](Self::session_exfiltration_check), so an
+    /// implementor with no per-node scopes is byte-identical to the historical
+    /// gate. `FlowGraph` overrides it to honor per-node declass scopes.
+    fn effective_exfiltration_check(&self, _op: Operation, cap: ConfLevel) -> SafetyCheck {
+        self.session_exfiltration_check(cap)
+    }
 }
 
 impl EgressAggregates for FlowTracker {
@@ -74,6 +92,14 @@ impl EgressAggregates for crate::flow_graph::FlowGraph {
     #[inline]
     fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
         crate::flow_graph::FlowGraph::session_exfiltration_check(self, sink_max_conf)
+    }
+    #[inline]
+    fn effective_is_tainted(&self, op: Operation) -> bool {
+        crate::flow_graph::FlowGraph::effective_is_tainted(self, op)
+    }
+    #[inline]
+    fn effective_exfiltration_check(&self, op: Operation, cap: ConfLevel) -> SafetyCheck {
+        crate::flow_graph::FlowGraph::effective_exfiltration_check(self, op, cap)
     }
 }
 
@@ -191,7 +217,7 @@ pub fn ifc_egress_verdict<F: EgressAggregates + ?Sized>(
         return EgressVerdict::Pass;
     }
 
-    if is_outbound_action && flow.is_tainted() {
+    if is_outbound_action && flow.effective_is_tainted(op) {
         let detail = format!(
             "session carries adversarial integrity (untrusted/web content was \
              observed); outbound operation {op:?} blocked to prevent exfiltration \
@@ -215,7 +241,7 @@ pub fn ifc_egress_verdict<F: EgressAggregates + ?Sized>(
     }
 
     if flow
-        .session_exfiltration_check(sink_max_conf_for(op))
+        .effective_exfiltration_check(op, sink_max_conf_for(op))
         .is_denied()
     {
         return EgressVerdict::Deny(format!(
