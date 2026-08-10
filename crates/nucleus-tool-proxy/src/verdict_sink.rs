@@ -320,13 +320,6 @@ impl VerdictSink for ToolProxyVerdictSink {
 /// invite a retry that doubles it. The gap is surfaced as a warning and, once
 /// the durable log is wired, counted so it is explicit rather than silent.
 ///
-/// `flow_check` is the causal DAG's independent opinion of the same decision
-/// (`mediation::cross_check_flow`), `None` when the session is untainted and the
-/// answer is fixed. It is a REQUIRED parameter rather than something a caller
-/// may attach: the check exists to be visible in evidence, and a check whose
-/// result only reaches a log line is one a later edit can delete with every test
-/// still green. Passing it here means the call cannot be removed without the
-/// build failing.
 pub(crate) fn record_kernel_decision(
     sink: &dyn VerdictSink,
     decision: &portcullis::kernel::Decision,
@@ -334,7 +327,6 @@ pub(crate) fn record_kernel_decision(
     subject: &str,
     actor: ActorIdentity,
     transport: &str,
-    flow_check: Option<crate::mediation::FlowCrossCheck>,
 ) {
     use portcullis::gate_class;
     use portcullis::kernel::Verdict;
@@ -360,32 +352,6 @@ pub(crate) fn record_kernel_decision(
         "post_permissions_hash".to_string(),
         decision.post_permissions_hash.clone(),
     );
-    // The DAG's second opinion. `confirmed` / `unconfirmed:<kind>` rather than
-    // the full result: which node broke the flow is session state, and this
-    // record crosses a process boundary.
-    if let Some(check) = &flow_check {
-        extensions.insert(
-            "flow_cross_check".to_string(),
-            match check {
-                crate::mediation::FlowCrossCheck::SkippedGraphTooLarge => {
-                    // Neither a confirmation nor a finding: the check did not run.
-                    "skipped:graph_too_large".to_string()
-                }
-                crate::mediation::FlowCrossCheck::Checked(v) => match v {
-                    portcullis::flow::VerificationResult::Confirmed => "confirmed".to_string(),
-                    portcullis::flow::VerificationResult::Mismatch { .. } => {
-                        "unconfirmed:mismatch".to_string()
-                    }
-                    portcullis::flow::VerificationResult::ActionNodeNotFound => {
-                        "unconfirmed:action_node_not_found".to_string()
-                    }
-                    portcullis::flow::VerificationResult::BrokenParentRef { .. } => {
-                        "unconfirmed:broken_parent_ref".to_string()
-                    }
-                },
-            },
-        );
-    }
     extensions.insert(
         "dynamic_gate_applied".to_string(),
         decision
@@ -550,12 +516,12 @@ mod tests {
         }
     }
 
-    /// **The cross-check must reach evidence, not just a log line.** This is why
-    /// `flow_check` is a parameter: a check whose only output is `tracing::warn`
-    /// can be deleted with every test still green, which is the defect the whole
-    /// exercise is about.
+    /// The kernel decision is recorded as durable evidence — the discipline that
+    /// reframed this chokepoint: a verdict (allow or refusal) must reach the sink,
+    /// never just a log line. `record_kernel_decision` is the same call the live
+    /// HTTP and MCP paths make.
     #[test]
-    fn the_flow_cross_check_reaches_the_record() {
+    fn the_kernel_decision_reaches_the_record() {
         let sink = CapturingSink::default();
         record_kernel_decision(
             &sink,
@@ -564,72 +530,19 @@ mod tests {
             "s",
             ActorIdentity::Unknown,
             "http",
-            Some(crate::mediation::FlowCrossCheck::Checked(
-                portcullis::flow::VerificationResult::Mismatch {
-                    computed: portcullis::flow::FlowVerdict::Deny(
-                        portcullis::flow::FlowDenyReason::IntegrityViolation,
-                    ),
-                    expected: portcullis::flow::FlowVerdict::Allow,
-                },
-            )),
         );
         let recorded = sink.0.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
         assert_eq!(
-            recorded[0]
-                .extensions
-                .get("flow_cross_check")
-                .map(String::as_str),
-            Some("unconfirmed:mismatch"),
-            "the DAG's disagreement with the kernel must be in the record"
+            recorded.len(),
+            1,
+            "the decision must be recorded exactly once"
         );
-    }
-
-    /// An untainted session is not checked, and the record says nothing rather
-    /// than claiming confirmation it never obtained.
-    #[test]
-    fn an_unchecked_decision_claims_nothing() {
-        let sink = CapturingSink::default();
-        record_kernel_decision(
-            &sink,
-            &sample_decision(),
-            Operation::WebFetch,
-            "s",
-            ActorIdentity::Unknown,
-            "http",
-            None,
-        );
-        let recorded = sink.0.lock().unwrap();
+        let ext = &recorded[0].extensions;
+        assert_eq!(ext.get("transport").map(String::as_str), Some("http"));
+        assert_eq!(ext.get("decision_sequence").map(String::as_str), Some("7"));
         assert!(
-            !recorded[0].extensions.contains_key("flow_cross_check"),
-            "absent must read as 'not checked', never as 'confirmed'"
-        );
-    }
-
-    /// The record carries the verification CLASS, not which node broke the flow.
-    /// Everything in `extensions` crosses a process boundary.
-    #[test]
-    fn the_record_does_not_export_which_node_broke_the_flow() {
-        let sink = CapturingSink::default();
-        record_kernel_decision(
-            &sink,
-            &sample_decision(),
-            Operation::WebFetch,
-            "s",
-            ActorIdentity::Unknown,
-            "http",
-            Some(crate::mediation::FlowCrossCheck::Checked(
-                portcullis::flow::VerificationResult::BrokenParentRef {
-                    node_id: 41,
-                    parent_id: 42,
-                },
-            )),
-        );
-        let recorded = sink.0.lock().unwrap();
-        let v = recorded[0].extensions.get("flow_cross_check").unwrap();
-        assert!(
-            !v.contains("41") && !v.contains("42"),
-            "node ids leaked: {v}"
+            ext.contains_key("gate_class"),
+            "the verdict's gate class must be in the evidence"
         );
     }
 

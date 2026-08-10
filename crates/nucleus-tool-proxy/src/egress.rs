@@ -287,7 +287,7 @@ pub(crate) async fn credentialed_egress(
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
         let level = state.runtime.policy().capabilities.web_fetch;
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         let result =
             crate::run_gate::preflight_web(Operation::WebFetch, verified_scope, level, &url, &flow);
         drop(flow);
@@ -302,7 +302,7 @@ pub(crate) async fn credentialed_egress(
 
     // The discharge is minted HERE and spent by `perform_line`. That is the
     // whole reason the guest half exists: the host applies a coarse capability
-    // check and structurally cannot see `FlowTracker`, the session taint ceiling
+    // check and structurally cannot see the `FlowGraph`, the session taint ceiling
     // or the lethal-trifecta guard. Those live in this process, and a
     // `PerformRequest` that was not composed past them would be egress the
     // kernel never saw.

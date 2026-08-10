@@ -1,6 +1,10 @@
 use super::*;
+// FlowTracker is retained repo-wide (nucleus-node, portcullis-effects, ...); these
+// unit tests use it as a concise fixture vehicle. The tool-proxy no longer wires
+// it into AppState (Phase 2 retirement), so import it directly here.
 use crate::mediation::kernel_denial_to_api_error;
 use nucleus::portcullis::kernel::DenyReason;
+use nucleus::portcullis::FlowTracker;
 
 #[test]
 fn test_rate_limiter_allows_burst() {
@@ -344,7 +348,7 @@ fn test_lockdown_blocks_unknown_paths() {
 // IFC enforcement on the HTTP path (#1194, #1633)
 //
 // These exercise the reference monitor `mediation::decide_and_record` against a
-// bare Kernel + FlowTracker (no AppState), proving the HTTP path now has the
+// bare Kernel + FlowGraph (no AppState), proving the HTTP path now has the
 // same taint-aware lethal-trifecta guard the MCP server has: once the session
 // ingests web content, outbound actions are denied with `ApiError::IfcDenied`
 // — before any side effect.
@@ -397,12 +401,11 @@ mod ifc_http_enforcement {
         }
     }
 
-    /// Build a `FlowGraph` whose egress aggregates (integrity taint,
-    /// confidentiality ceiling, poison) match `flow`'s — the mediation chokepoint
-    /// now reads the graph for the live verdict and cross-checks it against the
-    /// FlowTracker oracle (`egress_aggregates_agree`), so these bare-kernel tests
-    /// supply an aligned graph exactly as the live dual-write keeps them aligned.
-    /// Reproduces the three reads the gate consults; nothing else is observable.
+    /// Build the `FlowGraph` the reference monitor reads, reproducing a
+    /// `FlowTracker` fixture's egress aggregates (integrity taint,
+    /// confidentiality ceiling, poison) — the three reads the gate consults.
+    /// Lets a bare-kernel test drive the single authoritative graph from a
+    /// concise tracker fixture.
     pub(super) fn mirror_graph(flow: &FlowTracker) -> portcullis::flow_graph::FlowGraph {
         use nucleus_ifc_kernel::ConfLevel;
         let mut g = portcullis::flow_graph::FlowGraph::new();
@@ -428,11 +431,6 @@ mod ifc_http_enforcement {
         if flow.is_poisoned() {
             g.poison();
         }
-        debug_assert_eq!(
-            crate::mediation::egress_aggregates_agree(flow, &g),
-            Ok(()),
-            "mirror_graph must reproduce the tracker's egress aggregates"
-        );
         g
     }
 
@@ -453,7 +451,6 @@ mod ifc_http_enforcement {
         let mapped = crate::mediation::decide_and_record(
             &sink,
             kernel,
-            flow,
             &graph,
             operation,
             subject,
@@ -1326,30 +1323,31 @@ mod phase2_flowgraph_switch {
         }
     }
 
-    /// The fail-closed divergence canary: if the retained oracle out-taints the
-    /// live graph (the UNDER-count / fail-open shape), `decide_and_record`
-    /// DENIES. This is the guard that an under-counting graph reds instead of
-    /// silently permitting.
+    /// Fail-closed on taint: a tainted graph DENIES the outbound action through
+    /// the live reference monitor. With the `FlowTracker` oracle retired there is
+    /// one graph and no under-count is possible; this is the invariant the old
+    /// divergence canary approximated, asserted directly on the one graph.
     #[test]
-    fn a_graph_that_undercounts_tracker_taint_fails_closed() {
-        let mut tainted_tracker = FlowTracker::new();
-        tainted_tracker
-            .observe(NodeKind::WebContent)
-            .expect("observe");
-        let clean_graph = FlowGraph::new(); // under-counts vs the tainted oracle
-
-        // Exactly the divergence the canary exists to catch.
+    fn a_tainted_graph_fails_closed_through_the_monitor() {
+        let mut tainted = FlowGraph::new();
+        tainted
+            .observe_with_content_hash(
+                NodeKind::WebContent,
+                &[],
+                0,
+                crate::ingest_content_hash(b"web"),
+            )
+            .expect("observe adversarial");
         assert!(
-            crate::mediation::egress_aggregates_agree(&tainted_tracker, &clean_graph).is_err(),
-            "an under-counting graph must be a detected divergence"
+            tainted.is_tainted(),
+            "precondition: the graph carries taint"
         );
 
         let mut kernel = permissive_kernel();
         let r = crate::mediation::decide_and_record(
             &NoopSink,
             &mut kernel,
-            &tainted_tracker,
-            &clean_graph,
+            &tainted,
             Operation::WriteFiles,
             "out.txt",
             portcullis::verdict_sink::ActorIdentity::Unknown,
@@ -1357,39 +1355,25 @@ mod phase2_flowgraph_switch {
         );
         assert!(
             matches!(r, Err(ApiError::IfcDenied(_))),
-            "an under-counting graph must fail closed; got {r:?}"
+            "a tainted graph must fail closed through decide_and_record; got {r:?}"
         );
     }
 
-    /// The complement: when the two agree (the post-re-home invariant), the
-    /// canary is silent and the verdict is served normally. Without this the
-    /// test above could pass by denying everything.
+    /// The complement: a clean graph serves the verdict normally, so the test
+    /// above cannot pass by denying everything.
     #[test]
-    fn agreeing_graphs_do_not_trip_the_canary() {
-        // A pristine tracker and a pristine graph agree on every aggregate
-        // (UserPrompt would raise the conf ceiling above Public, so we keep both
-        // empty to exercise the agreement path itself).
-        let clean_tracker = FlowTracker::new();
-        let clean_graph = FlowGraph::new();
-        assert_eq!(
-            crate::mediation::egress_aggregates_agree(&clean_tracker, &clean_graph),
-            Ok(())
-        );
-
+    fn a_clean_graph_serves_the_verdict() {
+        let clean = FlowGraph::new();
         let mut kernel = permissive_kernel();
         let r = crate::mediation::decide_and_record(
             &NoopSink,
             &mut kernel,
-            &clean_tracker,
-            &clean_graph,
+            &clean,
             Operation::ReadFiles,
             "in.txt",
             portcullis::verdict_sink::ActorIdentity::Unknown,
             "http",
         );
-        assert!(
-            r.is_ok(),
-            "agreeing clean graphs must serve the verdict; got {r:?}"
-        );
+        assert!(r.is_ok(), "a clean graph must serve the verdict; got {r:?}");
     }
 }

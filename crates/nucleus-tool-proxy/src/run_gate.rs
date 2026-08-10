@@ -8,7 +8,8 @@
 //! the shared preflight lives here, in an always-compiled module, so neither
 //! caller depends on the other's feature.
 
-use portcullis::{CapabilityLevel, FlowTracker, Operation};
+use portcullis::flow_graph::FlowGraph;
+use portcullis::{CapabilityLevel, Operation};
 
 use nucleus_ifc_kernel::discharge::{
     self, preflight_action, DischargedBundle, PreflightResult, VerifiedScope,
@@ -39,27 +40,27 @@ use nucleus_provenance_memory::TokenScope;
 /// - PathAllowed: the fixed `RunBash`/`BashExec` pair is always structurally OK;
 /// - DerivationClear: `BashExec` is not a verified-lane sink, so it is skipped;
 /// - NoAdversarialAncestry: passes whenever the session carries no
-///   adversarial-integrity source label (with an empty [`FlowTracker`], vacuous);
+///   adversarial-integrity source label (with an empty [`FlowGraph`], vacuous);
 /// - BudgetNotExceeded: cost is 0 (no cost estimator wired, #1362);
 /// - WithinDelegationCeiling: `requested == ceiling == level_for(RunBash)`, the
 ///   runtime's honest no-escalation claim, so `requested ≤ ceiling` holds by
 ///   construction (sound-but-dormant, mirrors `build_term_scoped`).
 /// - InputsAuthorized: the content-addressed inputs channel is plumbed from the
-///   session [`FlowTracker`] (`Some(..)`, never a `None` default), so the
+///   session [`FlowGraph`] (`Some(..)`, never a `None` default), so the
 ///   obligation is minted — vacuously on a clean session with no
 ///   content-addressed inputs (empty vec), and for real once bricks 1+3 record
 ///   digests on the session's source nodes.
 ///
 /// So the real added enforcement of this brick is **`InScopeWithTask`** (gated by
 /// the verified session task token) plus the fail-closed ceiling. The IFC labels
-/// ARE fed honestly from the session's real [`FlowTracker`] (not `default()`), so
+/// ARE fed honestly from the session's real [`FlowGraph`] (not `default()`), so
 /// `NoAdversarialAncestry`/`IntegrityGate` bite for real once web/adversarial
 /// content is in the session — they are simply vacuous on a clean session.
 pub(crate) fn preflight_runbash(
     verified_scope: Option<&TokenScope>,
     run_bash_ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     preflight_scoped(
         Operation::RunBash,
@@ -91,7 +92,7 @@ pub(crate) fn preflight_runbash(
 /// STRONGER than the RunBash gate on the integrity axis: `HTTPEgress` has a
 /// `sink_min_integrity` of `Untrusted` (vs `BashExec`'s `Adversarial` floor), so
 /// once web/adversarial content taints the session the honest `artifact_label`
-/// (joined from the real [`FlowTracker`] source labels) drops to `Adversarial`
+/// (joined from the real [`FlowGraph`] source labels) drops to `Adversarial`
 /// and both `IntegrityGate` and `NoAdversarialAncestry` DENY the egress — the
 /// lethal-trifecta guard biting for real. On a clean session the default label
 /// is `Untrusted`, which meets the floor, so a valid in-scope token ALLOWS.
@@ -100,7 +101,7 @@ pub(crate) fn preflight_web(
     verified_scope: Option<&TokenScope>,
     web_ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     debug_assert!(
         matches!(operation, Operation::WebFetch | Operation::WebSearch),
@@ -146,7 +147,7 @@ pub(crate) fn preflight_fs(
     verified_scope: Option<&TokenScope>,
     fs_ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     debug_assert!(
         matches!(operation, Operation::WriteFiles | Operation::EditFiles),
@@ -176,7 +177,7 @@ pub(crate) fn preflight_read_fs(
     verified_scope: Option<&TokenScope>,
     fs_ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     preflight_scoped(
         Operation::ReadFiles,
@@ -204,7 +205,7 @@ pub(crate) fn preflight_grep_fs(
     verified_scope: Option<&TokenScope>,
     fs_ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     preflight_scoped(
         Operation::GrepSearch,
@@ -230,7 +231,7 @@ fn preflight_scoped(
     verified_scope: Option<&TokenScope>,
     ceiling: CapabilityLevel,
     subject: &str,
-    flow: &FlowTracker,
+    flow: &FlowGraph,
 ) -> PreflightResult {
     // Real source labels from the session flow tracker (#1633 taint state) —
     // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
@@ -241,13 +242,23 @@ fn preflight_scoped(
     // authorized. `None` (fail-closed deny) is reserved for un-plumbed callers.
     let mut source_labels = Vec::new();
     let mut content_addressed_inputs = Vec::new();
-    for node_id in 1..=flow.node_count() as u64 {
-        if let Some(label) = flow.label(node_id) {
-            source_labels.push(*label);
+    // FlowGraph node ids are sparse under compaction, so walk the id space and
+    // skip tombstoned (None) slots. `node_count()` is the backing-Vec length
+    // (id 0 is the sentinel), so the real ids are `1..node_count()`.
+    for node_id in 1..flow.node_count() as u64 {
+        if let Some(node) = flow.get(node_id) {
+            source_labels.push(node.label);
         }
         if let Some(hash) = flow.content_hash(node_id) {
             content_addressed_inputs.push(hash);
         }
+    }
+    // Fold in compaction-preserved labels so tombstoning cannot launder the
+    // adversarial ancestry a compacted node carried (fail-closed: taint is only
+    // ever ADDED to the artifact join). FlowTracker never compacted, so this is a
+    // strict superset of its per-node scan.
+    for rec in flow.compaction_log() {
+        source_labels.push(rec.preserved_label);
     }
     // Artifact label: join of all source labels (most restrictive composite); an
     // empty (clean) session yields the default label.
@@ -308,7 +319,7 @@ mod tests {
     // web_search request and the sealed `NetEffect::fetch`: the handler only
     // reaches the send past its `Allowed` arm. Anything else means the handler
     // returns its error early and NEVER fetches. A clean session
-    // (`FlowTracker::new()`) is used so the integrity/ancestry obligations are
+    // (`FlowGraph::new()`) is used so the integrity/ancestry obligations are
     // met (default label = Untrusted, meeting the HTTPEgress floor) and
     // `InScopeWithTask` is the discriminating gate. Exact ceiling is immaterial
     // (`requested == ceiling`).
@@ -319,7 +330,7 @@ mod tests {
     #[test]
     fn web_denies_when_session_token_missing_or_invalid() {
         for op in [Operation::WebFetch, Operation::WebSearch] {
-            let flow = FlowTracker::new();
+            let flow = FlowGraph::new();
             let result = preflight_web(op, None, WEB_CEILING, "https://evil.example", &flow);
             assert!(
                 result.is_denied(),
@@ -338,7 +349,7 @@ mod tests {
     #[test]
     fn web_denies_when_out_of_token_scope() {
         for op in [Operation::WebFetch, Operation::WebSearch] {
-            let flow = FlowTracker::new();
+            let flow = FlowGraph::new();
             // Verified, but the net op ∉ allowed_operations.
             let scope = TokenScope::new(
                 vec![Operation::ReadFiles, Operation::RunBash],
@@ -362,7 +373,7 @@ mod tests {
     #[test]
     fn web_succeeds_with_valid_in_scope_token() {
         for op in [Operation::WebFetch, Operation::WebSearch] {
-            let flow = FlowTracker::new();
+            let flow = FlowGraph::new();
             let scope = TokenScope::new(
                 vec![Operation::WebFetch, Operation::WebSearch],
                 vec!["/workspace/**".to_string()],
@@ -387,7 +398,7 @@ mod tests {
     // `preflight_fs` is the sole precondition standing between a write_file
     // request and the `_proof`-gated `Sandbox::write`: the handler only reaches
     // the write past its `Allowed` arm. Anything else means the handler returns
-    // its error early and NEVER writes. A clean session (`FlowTracker::new()`) is
+    // its error early and NEVER writes. A clean session (`FlowGraph::new()`) is
     // used so `WorkspaceWrite`'s Adversarial-floor integrity is met and
     // `InScopeWithTask` is the discriminating gate. Exact ceiling is immaterial
     // (`requested == ceiling`).
@@ -397,7 +408,7 @@ mod tests {
     //     fail-closed (no-vacuous-witness) ⇒ no write.
     #[test]
     fn fs_denies_when_session_token_missing_or_invalid() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         let result = preflight_fs(
             Operation::WriteFiles,
             None,
@@ -420,7 +431,7 @@ mod tests {
     //     InScopeWithTask DENIES ⇒ no write.
     #[test]
     fn fs_denies_when_out_of_token_scope() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         // Verified, but WriteFiles ∉ allowed_operations.
         let scope = TokenScope::new(
             vec![Operation::ReadFiles, Operation::RunBash],
@@ -448,7 +459,7 @@ mod tests {
     //     sealed `DischargedBundle` ⇒ the handler proceeds to the sealed write.
     #[test]
     fn fs_succeeds_with_valid_in_scope_token() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         let scope = TokenScope::new(
             vec![Operation::WriteFiles],
             vec!["/workspace/**".to_string()],

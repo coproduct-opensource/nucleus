@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use tracing::warn;
 
-use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation};
+use nucleus::portcullis::flow_graph::FlowGraph;
+use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation};
 use nucleus::{BudgetModel, NucleusError};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
@@ -70,7 +71,7 @@ fn check_manage_pods(state: &AppState) -> Result<(), ApiError> {
 /// Information-flow egress gate for sub-pod spawning (audit C-1 / #1207).
 ///
 /// `create_sub_pod` spawns a child compartment and injects orchestrator
-/// credentials into it. A fresh child `FlowTracker` starts clean, so if the
+/// credentials into it. A fresh child `FlowGraph` starts clean, so if the
 /// parent session has ingested adversarial/web content (integrity-tainted), is
 /// poisoned (an observation was dropped), or carries confidentiality above what
 /// the spawn may emit, then allowing the spawn would *launder* the parent's
@@ -84,7 +85,7 @@ fn check_manage_pods(state: &AppState) -> Result<(), ApiError> {
 /// Kept as a small private helper so its logic is unit-tested directly and so the
 /// call from `create_sub_pod` cannot be silently dropped (an unused private fn
 /// fails the warnings-denied build).
-fn sub_pod_ifc_gate(flow: &FlowTracker) -> Result<(), ApiError> {
+fn sub_pod_ifc_gate(flow: &FlowGraph) -> Result<(), ApiError> {
     if flow.is_poisoned() {
         return Err(ApiError::IfcDenied(
             "session poisoned: an information-flow observation was dropped; \
@@ -123,10 +124,10 @@ pub(crate) async fn create_sub_pod(
     //     adversarial/web content — or is poisoned, or over its confidentiality
     //     ceiling — may NOT spawn a credential-injected sub-pod. Fail closed HERE,
     //     before credential injection (step 5) and any node call (step 6): a fresh
-    //     child FlowTracker starts clean and would otherwise launder the parent's
+    //     child FlowGraph starts clean and would otherwise launder the parent's
     //     accumulated taint across the sub-pod boundary (confused-deputy spawn).
     {
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         sub_pod_ifc_gate(&flow)?;
     }
 
@@ -672,14 +673,15 @@ mod ifc_gate_tests {
     //! by `sub_pod_ifc_gate` being a private fn called only from `create_sub_pod`
     //! (dropping the call makes it dead code → warnings-denied build fails).
     use super::sub_pod_ifc_gate;
-    use crate::ApiError;
-    use nucleus::portcullis::{FlowTracker, NodeKind};
+    use crate::{ingest_content_hash, ApiError};
+    use nucleus::portcullis::flow_graph::FlowGraph;
+    use nucleus::portcullis::NodeKind;
 
     #[test]
     fn tainted_parent_is_denied_sub_pod() {
-        let mut tainted = FlowTracker::new();
+        let mut tainted = FlowGraph::new();
         tainted
-            .observe(NodeKind::WebContent)
+            .observe_with_content_hash(NodeKind::WebContent, &[], 0, ingest_content_hash(b"web"))
             .expect("observe web content");
         assert!(tainted.is_tainted());
         assert!(
@@ -690,7 +692,7 @@ mod ifc_gate_tests {
 
     #[test]
     fn poisoned_parent_is_denied_sub_pod() {
-        let mut poisoned = FlowTracker::new();
+        let mut poisoned = FlowGraph::new();
         poisoned.poison();
         assert!(poisoned.is_poisoned());
         assert!(
@@ -701,7 +703,7 @@ mod ifc_gate_tests {
 
     #[test]
     fn clean_parent_passes_the_gate() {
-        let clean = FlowTracker::new();
+        let clean = FlowGraph::new();
         assert!(
             sub_pod_ifc_gate(&clean).is_ok(),
             "a clean parent must pass the IFC gate (no over-denial)"

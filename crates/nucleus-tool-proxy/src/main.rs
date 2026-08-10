@@ -14,7 +14,7 @@ use axum::{middleware, Json, Router};
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
-use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, PermissionLattice};
+use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
@@ -418,25 +418,16 @@ pub(crate) struct AppState {
     /// so a host — or the Tier 2 harness — can distinguish "the gate refused"
     /// from "the gate was never armed".
     pub(crate) dlc_provisioned: bool,
-    /// Session-scoped information-flow tracker for the lethal-trifecta guard on
-    /// the HTTP path (#1633). Process-wide, mirroring the kernel above and the
-    /// MCP server's per-session tracker: the tool-proxy is a per-pod sidecar
-    /// (one pod = one session = one process), so a single shared tracker has the
-    /// same semantics as the single shared kernel. Under any hypothetical
-    /// multi-session-per-process hosting it fails *closed* (taint from any actor
-    /// blocks outbound for all); true multi-tenancy would require keying the
-    /// kernel AND tracker together — out of scope here.
-    pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
-    /// Phase 2 SHADOW information-flow graph: the kernel's proven `FlowGraph`,
-    /// dual-written on every ingest alongside `flow_tracker` above. NOT yet
-    /// consulted by the egress verdict (`kernel/ifc.rs` still reads
-    /// `flow_tracker`), so populating it is verdict-neutral. It exists so the
-    /// later, separately boot-gated egress switch onto the one proven graph can
-    /// be proven safe: the differential canary asserts the two agree on the real
-    /// ingest sequence, and the graph is actually non-empty in production (the
-    /// bug this closes is that `FlowGraph` was empty on the tool-proxy). Populated
-    /// only through the server-computed `ingest::shadow_observe` chokepoint—
-    /// never from client-declared lineage.
+    /// Session-scoped information-flow graph for the lethal-trifecta guard — the
+    /// kernel's proven `FlowGraph`, and the SINGLE authoritative graph the egress
+    /// verdict reads (Phase 2 retirement: the former `FlowTracker` oracle and its
+    /// divergence canary are gone — there is one graph now). Process-wide,
+    /// mirroring the shared kernel: the tool-proxy is a per-pod sidecar (one pod =
+    /// one session = one process), so a single shared graph has the same semantics
+    /// as the single shared kernel. Under any hypothetical multi-session-per-process
+    /// hosting it fails *closed* (taint from any actor blocks outbound for all).
+    /// Populated only through the server-computed `ingest` chokepoint — never from
+    /// client-declared lineage.
     pub(crate) flow_graph: Arc<tokio::sync::Mutex<FlowGraph>>,
     /// Path → the flow node recording the content last written there.
     ///
@@ -454,8 +445,9 @@ pub(crate) struct AppState {
     pub(crate) path_provenance: Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
     /// Provenance-verified, taint-labeled agent memory (next-bet #1). A write
     /// goes through `verified_admit`; a recall observes the record's own label
-    /// into `flow_tracker` so the IFC gate governs whether it may inform an
-    /// action. Process-wide, same per-pod-session rationale as `flow_tracker`.
+    /// into the single authoritative `flow_graph` so the IFC gate governs whether it
+    /// may inform an action. Process-wide, same per-pod-session rationale as the
+    /// shared kernel.
     pub(crate) provenance_memory:
         Arc<tokio::sync::Mutex<nucleus_provenance_memory::ProvenanceMemorySet>>,
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
@@ -1796,9 +1788,7 @@ async fn main() -> Result<(), ApiError> {
         k
     }));
 
-    let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
-    // Phase 2 shadow graph, dual-written with `flow_tracker` but not yet read by
-    // egress (verdict-neutral). Same per-pod-session lifetime as the tracker.
+    // The single authoritative information-flow graph the egress verdict reads.
     let flow_graph = Arc::new(tokio::sync::Mutex::new(FlowGraph::new()));
 
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
@@ -1887,7 +1877,6 @@ async fn main() -> Result<(), ApiError> {
         art12_log,
         trace_monitor,
         kernel,
-        flow_tracker,
         flow_graph,
         provenance_memory,
         memory_transforms,
@@ -2770,14 +2759,11 @@ async fn memory_recall(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let set = state.provenance_memory.lock().await;
-    // Phase 2: project the recall's effective label onto BOTH the tracker oracle
-    // and the live FlowGraph the egress verdict now reads (lock order: tracker,
-    // then graph, as at the ingest chokepoint).
-    let mut flow = state.flow_tracker.lock().await;
+    // Project the recall's effective label onto the single authoritative graph
+    // the egress verdict reads.
     let mut graph = state.flow_graph.lock().await;
     let resp = memory::memory_recall_core(
         &set,
-        &mut flow,
         &mut graph,
         state.declassify_trusted_keys.as_ref(),
         state.declassify_threshold,
@@ -2787,7 +2773,7 @@ async fn memory_recall(
     Ok(Json(resp))
 }
 
-/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
+/// HTTP enforcement chokepoint: locks the kernel THEN the flow graph (same
 /// order as the MCP server) and runs the reference monitor. Both guards are
 /// dropped before the caller performs any sandbox/executor I/O.
 ///
@@ -2801,14 +2787,13 @@ async fn http_kernel_decide(
     subject: &str,
 ) -> Result<DecisionToken, ApiError> {
     let mut kernel = state.kernel.lock().await;
-    // Phase 2: FlowGraph is the LIVE verdict source, FlowTracker the retained
-    // divergence oracle. Lock order (kernel, tracker, graph) matches ingest.
-    let flow = state.flow_tracker.lock().await;
+    // The single authoritative FlowGraph is the live verdict source (Phase 2
+    // retirement: the FlowTracker oracle is gone). Lock order (kernel, graph)
+    // matches ingest.
     let graph = state.flow_graph.lock().await;
     mediation::decide_and_record(
         state.verdict_sink.as_ref(),
         &mut kernel,
-        &flow,
         &graph,
         operation,
         subject,
@@ -2819,7 +2804,7 @@ async fn http_kernel_decide(
 
 /// Content-address the *actual ingested bytes* of an agent input (InputsAuthorized
 /// brick 3). Recomputes the SHA-256 of the real bytes in hand at the ingest site
-/// and wraps the digest in the kernel [`ContentHash`] the FlowTracker node API
+/// and wraps the digest in the kernel [`ContentHash`] the FlowGraph node API
 /// expects. The hash is NEVER read from an agent-supplied field — it is always
 /// recomputed here from the bytes we actually observed.
 ///
@@ -2876,7 +2861,7 @@ async fn read_file(
             use nucleus_ifc_kernel::discharge::PreflightResult;
             let verified_scope = state.session_task_token.verified_scope();
             let ceiling = state.runtime.policy().capabilities.read_files;
-            let flow = state.flow_tracker.lock().await;
+            let flow = state.flow_graph.lock().await;
             let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
             drop(flow);
             match r {
@@ -3037,7 +3022,7 @@ async fn write_file(
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
         let fs_ceiling = state.runtime.policy().capabilities.write_files;
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_fs(
             Operation::WriteFiles,
             verified_scope,
@@ -3093,7 +3078,7 @@ async fn write_file(
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
                     let fs_ceiling = state.runtime.policy().capabilities.write_files;
-                    let flow = state.flow_tracker.lock().await;
+                    let flow = state.flow_graph.lock().await;
                     let r = run_gate::preflight_fs(
                         Operation::WriteFiles,
                         verified_scope,
@@ -3277,7 +3262,7 @@ async fn run_command(
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
         let run_bash_ceiling = state.runtime.policy().capabilities.run_bash;
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         let result =
             run_gate::preflight_runbash(verified_scope, run_bash_ceiling, &display_command, &flow);
         drop(flow);
@@ -3359,7 +3344,7 @@ async fn run_command(
                         use nucleus_ifc_kernel::discharge::PreflightResult;
                         let verified_scope = state.session_task_token.verified_scope();
                         let ceiling = state.runtime.policy().capabilities.run_bash;
-                        let flow = state.flow_tracker.lock().await;
+                        let flow = state.flow_graph.lock().await;
                         let r = run_gate::preflight_runbash(
                             verified_scope,
                             ceiling,
@@ -3553,7 +3538,7 @@ async fn web_fetch(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_web(operation, verified_scope, level, &url_str, &flow);
         drop(flow);
         match result {
@@ -4153,7 +4138,7 @@ async fn web_search(
     let discharge_bundle = {
         use nucleus_ifc_kernel::discharge::PreflightResult;
         let verified_scope = state.session_task_token.verified_scope();
-        let flow = state.flow_tracker.lock().await;
+        let flow = state.flow_graph.lock().await;
         let result = run_gate::preflight_web(operation, verified_scope, level, &req.query, &flow);
         drop(flow);
         match result {

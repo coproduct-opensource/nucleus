@@ -16,9 +16,7 @@ use portcullis::action_term::ActionTerm;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
-use portcullis::{
-    CapabilityLevel, FlowTracker, GradedExposureGuard, NodeKind, Operation, ToolCallGuard,
-};
+use portcullis::{CapabilityLevel, GradedExposureGuard, NodeKind, Operation, ToolCallGuard};
 // Sealed discharge preflight (#2038): the live RunBash path must mint a
 // `DischargedBundle` before it may spawn. The bundle-minting itself
 // (`preflight_runbash`) now lives in `crate::run_gate` (shared with the HTTP
@@ -138,17 +136,14 @@ pub struct NucleusMcpServer {
     sink: Arc<dyn VerdictSink>,
     /// Kernel decision engine for complete mediation.
     kernel: Arc<tokio::sync::Mutex<Kernel>>,
-    /// Session-scoped information-flow tracker (#1633). Tool entry points
+    /// Session-scoped information-flow graph (#1633) — the single authoritative
+    /// graph the kernel consults via `decide_term_with_flow`. Tool entry points
     /// `observe` the data they bring in (`web_fetch` ⇒ `WebContent`,
-    /// `read`/`glob`/`grep` ⇒ `FileRead`); the kernel consults it via
-    /// `decide_term_with_flow` so that once adversarial (web) content is in the
-    /// session, outbound actions are denied with `IfcUnsafe` — the lethal
-    /// trifecta, enforced in the live Rust runtime (parity with the Python SDK).
-    flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
-    /// Phase 2 SHADOW flow graph, dual-written with `flow_tracker` on every
-    /// `observe_flow` but not yet consulted by the kernel — verdict-neutral.
-    /// The MCP transport's own per-session graph, mirroring the HTTP path's
-    /// `AppState::flow_graph`. See `ingest::shadow_observe`.
+    /// `read`/`glob`/`grep` ⇒ `FileRead`); once adversarial (web) content is in
+    /// the session, outbound actions are denied with `IfcUnsafe` — the lethal
+    /// trifecta, enforced in the live Rust runtime. The MCP transport's own
+    /// per-session graph, mirroring the HTTP path's `AppState::flow_graph` (Phase 2
+    /// retirement: the former `FlowTracker` oracle is gone).
     flow_graph: Arc<tokio::sync::Mutex<FlowGraph>>,
 }
 
@@ -201,12 +196,11 @@ impl NucleusMcpServer {
             guard,
             sink,
             kernel,
-            flow_tracker: Arc::new(tokio::sync::Mutex::new(FlowTracker::new())),
             flow_graph: Arc::new(tokio::sync::Mutex::new(FlowGraph::new())),
         }
     }
 
-    /// Observe a data-ingest node in the session flow tracker (#1633).
+    /// Observe a data-ingest node in the session flow graph (#1633).
     ///
     /// Called by input tool entry points after a successful fetch/read so the
     /// kernel's `decide_term_with_flow` consult sees the taint on subsequent
@@ -221,23 +215,11 @@ impl NucleusMcpServer {
     /// is identical to the old bare `observe` — only the content hash is added.
     async fn observe_flow(&self, kind: NodeKind, bytes: &[u8]) {
         let hash = crate::ingest_content_hash(bytes);
-        // Authoritative tracker write (governs the live verdict). UNCHANGED.
-        let landed = {
-            let mut flow = self.flow_tracker.lock().await;
-            match flow.observe_with_content_hash(kind, hash) {
-                Ok(_) => true,
-                Err(e) => {
-                    flow.poison();
-                    warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
-                    false
-                }
-            }
-        };
-        // Phase 2 shadow dual-write (verdict-neutral; MCP ingests are always
-        // parent-less data sources). Mirrored only when the tracker write landed.
-        if landed {
-            crate::ingest::shadow_observe(&self.flow_graph, kind, false, hash).await;
-        }
+        // Single authoritative write onto the graph the egress verdict reads. MCP
+        // ingests are always parent-less data sources. Fail-closed: a dropped
+        // observe poisons the session so every subsequent decision denies (see
+        // `ingest::observe_into_graph`).
+        crate::ingest::observe_into_graph(&self.flow_graph, kind, false, hash).await;
     }
 
     /// Taint a tool RESULT as adversarial (most-paranoid next-bet #2): an
@@ -276,24 +258,12 @@ impl NucleusMcpServer {
     ) -> Result<portcullis::kernel::DecisionToken, CallToolResult> {
         let term = build_action_term(operation, subject);
         let mut kernel = self.kernel.lock().await;
-        // Phase 2: the LIVE egress verdict reads the proven `FlowGraph` (its
-        // session aggregates), not the `FlowTracker`. Lock order matches the
-        // ingest chokepoint (tracker then graph) so the two never deadlock.
-        // Once adversarial (web) content is in the session, outbound operations
-        // are denied with `IfcUnsafe` before the normal decision path.
-        let flow = self.flow_tracker.lock().await;
+        // The live egress verdict reads the single authoritative `FlowGraph` (its
+        // session aggregates). Once adversarial (web) content is in the session,
+        // outbound operations are denied with `IfcUnsafe` before the normal
+        // decision path.
         let graph = self.flow_graph.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&*graph));
-        // Same second opinion the HTTP path takes (`mediation::cross_check_flow`),
-        // computed before the locks are released. Both transports route through
-        // the same kernel, so both owe the same evidence. Uses the FlowTracker
-        // oracle (it holds the DAG snapshot the graph aggregates do not expose).
-        let flow_check = crate::mediation::cross_check_flow(&flow, &decision, operation);
-        // Fail-closed divergence canary: the retained FlowTracker oracle must
-        // agree with the FlowGraph the verdict was read from; a divergence means
-        // the graph could under-count taint (a live fail-open), so deny.
-        let divergence = crate::mediation::egress_aggregates_agree(&flow, &graph).err();
-        drop(flow);
         drop(graph);
         drop(kernel);
 
@@ -308,20 +278,7 @@ impl NucleusMcpServer {
             subject,
             ActorIdentity::StdioGuest,
             "mcp",
-            flow_check,
         );
-
-        if let Some(detail) = divergence {
-            warn!(
-                ?operation,
-                subject,
-                %detail,
-                "FlowGraph/FlowTracker egress divergence; failing closed"
-            );
-            return Err(err_result(format!(
-                "egress oracle divergence (fail-closed): {detail}"
-            )));
-        }
 
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
@@ -427,7 +384,7 @@ impl NucleusMcpServer {
         let read_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
             let fs_ceiling = self.state.runtime.policy().capabilities.read_files;
-            let flow = self.flow_tracker.lock().await;
+            let flow = self.flow_graph.lock().await;
             let result =
                 crate::run_gate::preflight_read_fs(verified_scope, fs_ceiling, &params.path, &flow);
             drop(flow);
@@ -532,7 +489,7 @@ impl NucleusMcpServer {
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
             let fs_ceiling = self.state.runtime.policy().capabilities.write_files;
-            let flow = self.flow_tracker.lock().await;
+            let flow = self.flow_graph.lock().await;
             let result = preflight_fs(
                 Operation::WriteFiles,
                 verified_scope,
@@ -651,7 +608,7 @@ impl NucleusMcpServer {
         let (discharge_note, discharge_bundle) = {
             let verified_scope = self.state.session_task_token.verified_scope();
             let run_bash_ceiling = self.state.runtime.policy().capabilities.run_bash;
-            let flow = self.flow_tracker.lock().await;
+            let flow = self.flow_graph.lock().await;
             let result = preflight_runbash(verified_scope, run_bash_ceiling, &subject, &flow);
             drop(flow);
             match result {
@@ -1005,7 +962,7 @@ impl NucleusMcpServer {
                         // `blocking_lock` rather than `.await`: this loop runs
                         // inside `block_in_place`, which exists precisely to allow
                         // blocking calls off the async executor.
-                        let flow = state.flow_tracker.blocking_lock();
+                        let flow = state.flow_graph.blocking_lock();
                         let r = crate::run_gate::preflight_grep_fs(
                             verified_scope,
                             ceiling,
@@ -1245,7 +1202,7 @@ impl NucleusMcpServer {
         let discharge_bundle = {
             let verified_scope = self.state.session_task_token.verified_scope();
             let web_ceiling = self.state.runtime.policy().capabilities.web_fetch;
-            let flow = self.flow_tracker.lock().await;
+            let flow = self.flow_graph.lock().await;
             let result = preflight_web(
                 Operation::WebFetch,
                 verified_scope,
@@ -1543,7 +1500,7 @@ mod tests {
     // `Allowed` arm. Anything other than `Allowed` means the handler returns
     // early and NEVER calls `run_args` (no process is spawned). These tests
     // exercise that decision directly at all three cases. A clean session
-    // (`FlowTracker::new()`) is used so the five original obligations are
+    // (`FlowGraph::new()`) is used so the five original obligations are
     // vacuously satisfied and `InScopeWithTask` is the discriminating gate.
 
     /// The RunBash policy ceiling supplied by the handler; its exact value is
@@ -1555,7 +1512,7 @@ mod tests {
     //     DENIES fail-closed (no-vacuous-witness) ⇒ run_args is never reached.
     #[test]
     fn runbash_denies_when_session_token_missing_or_invalid() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         // `SessionTaskToken::Missing` and `::Invalid` both return `None` from
         // `verified_scope()` (see session_token.rs) — modeled here as `None`.
         let result = preflight_runbash(None, RUN_BASH_CEILING, "rm -rf /", &flow);
@@ -1574,7 +1531,7 @@ mod tests {
     //     DENIES ⇒ run_args is never reached.
     #[test]
     fn runbash_denies_when_out_of_token_scope() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         // Verified, but RunBash ∉ allowed_operations.
         let scope = TokenScope::new(
             vec![Operation::ReadFiles, Operation::GlobSearch],
@@ -1596,7 +1553,7 @@ mod tests {
     //     `DischargedBundle` ⇒ the handler proceeds to run_args.
     #[test]
     fn runbash_succeeds_with_valid_in_scope_token() {
-        let flow = FlowTracker::new();
+        let flow = FlowGraph::new();
         let scope = TokenScope::new(
             vec![Operation::RunBash, Operation::ReadFiles],
             vec!["/workspace/**".to_string()],
