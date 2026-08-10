@@ -82,7 +82,7 @@ status is a visible event, not an edit.
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
-| C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-sink-scope-enforced.sh` |
+| C4 | "a governor deliberately released with a single-use token" | NOT-YET | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/portcullis/tests/kernel_token.rs` | — |
 | C5 | "cannot steer which value that is" | NOT-YET | `crates/portcullis-core/src/declassify.rs#canonical_bytes`, `crates/portcullis/tests/declassify_scope.rs` | — |
 | C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
@@ -162,33 +162,41 @@ What each status means, and what it deliberately does not:
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
-- **C4 (PROVED)** — the one-shot property is the absorbing `declass_step`
-  machine (`no_second_apply`), proved over the Aeneas-extracted decision core;
-  the kernel API enforces it via the spent-signature ledger
-  (burn-on-success-only, fail-closed without trusted keys), exercised
-  end-to-end at that API by `crates/portcullis/tests/kernel_token.rs`
-  (mint → apply → second-apply refused). "Governor" means a holder of a key
-  configured in `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` — a configured key signed the
-  token, NOT that a human reviewed it. The key set is not workload-writable
-  (`check-declassify-governor-keys-sealed.sh`).
+- **C4 (NOT-YET — demoted 2026-08-10, was PROVED).** The clause names a specific
+  live mechanism: a governor release via *a single-use token*. The single-use
+  property of that token IS genuinely proved — the absorbing `declass_step`
+  machine (`no_second_apply`) over the Aeneas-extracted decision core, enforced
+  by the kernel's spent-signature ledger and exercised at the kernel API by
+  `crates/portcullis/tests/kernel_token.rs` (mint → apply → second-apply
+  refused). What is NOT earned is the flagship row's implicit claim that this is
+  the mechanism governing releases on the shipping system:
+  * **The proven token path fires nowhere in production.** Its sole production
+    wrapper is the tool-proxy governor endpoint (`POST /v1/declassify`,
+    `nucleus-tool-proxy/src/declassify.rs`), and there it is **inert**: ingest
+    populates a *separate* `FlowTracker` (`state.flow_tracker`), not the kernel
+    `flow_graph` the token resolves against, so a governor `target_node_id` hits
+    an empty graph and apply returns `NodeNotFound`. `nucleus-mcp` populates a
+    graph but never applies a token. So no shipping deployment ever performs a
+    single-use-token release — a safety property vacuously satisfied by a dead
+    mechanism does not earn a flagship row. (An earlier note claimed "the path
+    is LIVE: `POST /v1/declassify` applies governor-signed tokens" — retracted.)
+  * **The actually-live release path is a different, unproven mechanism.** On
+    the shipping tool-proxy, releases that flip an egress verdict come from the
+    **k-of-n witness-threshold** memory path (`nucleus-tool-proxy/src/memory.rs`
+    → `nucleus_provenance_memory::declassify`), which promotes a record's label
+    into the live `FlowTracker` (`crates/nucleus-tool-proxy/tests/memory_ifc_e2e.rs`
+    asserts the egress flip under a 2-of-2 quorum). That path is NOT a single-use
+    token and carries none of C4's single-use / sink-scope proofs. So the
+    shipping product's real declassification is the unproven one while the proven
+    one is dormant — the exact inversion a flagship PROVED here would hide.
 
-  **Scope — what "live path" does and does NOT mean here (corrected 2026-08-10).**
-  The single-use guarantee is a proved property of the token mechanism and is
-  enforced wherever `Kernel::apply_declassification_token` runs against a
-  *populated* `flow_graph`. Its sole production wrapper is the tool-proxy
-  governor endpoint (`POST /v1/declassify`,
-  `nucleus-tool-proxy/src/declassify.rs`) — but on the shipping tool-proxy that
-  endpoint is currently **inert**: request ingest populates a *separate*
-  `FlowTracker` (`state.flow_tracker`), not the kernel `flow_graph` the token
-  resolves against, so a governor `target_node_id` hits an empty graph and apply
-  returns `NodeNotFound` — **no egress verdict changes today**. So C4's evidence
-  is the extracted single-use theorem plus the kernel-API enforcement it drives
-  (`kernel_token.rs`), NOT a live tool-proxy egress effect. An earlier version of
-  this note claimed "the path is LIVE: `POST /v1/declassify` applies
-  governor-signed tokens"; that overstated the wiring and is **retracted**.
-  Making a governed release actually flip a tool-proxy egress verdict is the same
-  graph-unification arc that re-earns C5 (see the C5 note); the single-use
-  theorem itself is unaffected by that wiring gap.
+  **Re-earn.** The graph-unification arc: switch the tool-proxy egress onto the
+  proven `flow_graph` so the token path fires live (Phase 2), value-bind at apply
+  (Phase 3), and unify the k-of-n mint onto the same one-shot, sink-scoped
+  `DeclassScope` (Phase 4) — validated by a boot-a-real-pod e2e in which a
+  single-use token applied via `POST /v1/declassify` actually flips a tool-proxy
+  egress verdict for the committed value. The single-use theorem and the
+  sink-axis proof remain valid and are exactly what that arc makes live.
 - **C5 (NOT-YET — demoted 2026-08-08, was PROVED).** The clause is about the
   VALUE axis: an adversary controlling the inputs cannot steer *which* value a
   governor release yields. The theorem previously cited,
