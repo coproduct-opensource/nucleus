@@ -184,10 +184,7 @@ pub struct DeclassificationToken {
     /// or unbound token, which the value-binding apply check refuses. A hex
     /// string on the wire, like the signature — a 32-byte array is a cleaner
     /// commitment than a 32-element JSON number list for the governor endpoint.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, with = "commitment_hex")
-    )]
+    #[cfg_attr(feature = "serde", serde(default, with = "commitment_hex"))]
     pub content_commitment: [u8; 32],
     /// Ed25519 signature over the token's canonical form.
     /// Zero-filled if unsigned (for testing).
