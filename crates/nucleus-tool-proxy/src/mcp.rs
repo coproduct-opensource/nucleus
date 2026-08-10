@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use portcullis::action_term::ActionTerm;
+use portcullis::flow_graph::FlowGraph;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{
@@ -144,6 +145,11 @@ pub struct NucleusMcpServer {
     /// session, outbound actions are denied with `IfcUnsafe` — the lethal
     /// trifecta, enforced in the live Rust runtime (parity with the Python SDK).
     flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Phase 2 SHADOW flow graph, dual-written with `flow_tracker` on every
+    /// `observe_flow` but not yet consulted by the kernel — verdict-neutral.
+    /// The MCP transport's own per-session graph, mirroring the HTTP path's
+    /// `AppState::flow_graph`. See `ingest::shadow_observe`.
+    flow_graph: Arc<tokio::sync::Mutex<FlowGraph>>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -196,6 +202,7 @@ impl NucleusMcpServer {
             sink,
             kernel,
             flow_tracker: Arc::new(tokio::sync::Mutex::new(FlowTracker::new())),
+            flow_graph: Arc::new(tokio::sync::Mutex::new(FlowGraph::new())),
         }
     }
 
@@ -214,10 +221,22 @@ impl NucleusMcpServer {
     /// is identical to the old bare `observe` — only the content hash is added.
     async fn observe_flow(&self, kind: NodeKind, bytes: &[u8]) {
         let hash = crate::ingest_content_hash(bytes);
-        let mut flow = self.flow_tracker.lock().await;
-        if let Err(e) = flow.observe_with_content_hash(kind, hash) {
-            flow.poison();
-            warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
+        // Authoritative tracker write (governs the live verdict). UNCHANGED.
+        let landed = {
+            let mut flow = self.flow_tracker.lock().await;
+            match flow.observe_with_content_hash(kind, hash) {
+                Ok(_) => true,
+                Err(e) => {
+                    flow.poison();
+                    warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
+                    false
+                }
+            }
+        };
+        // Phase 2 shadow dual-write (verdict-neutral; MCP ingests are always
+        // parent-less data sources). Mirrored only when the tracker write landed.
+        if landed {
+            crate::ingest::shadow_observe(&self.flow_graph, kind, false, hash).await;
         }
     }
 

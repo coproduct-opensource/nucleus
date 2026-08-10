@@ -18,6 +18,7 @@ use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, Per
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
+use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -426,6 +427,17 @@ pub(crate) struct AppState {
     /// blocks outbound for all); true multi-tenancy would require keying the
     /// kernel AND tracker together — out of scope here.
     pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Phase 2 SHADOW information-flow graph: the kernel's proven `FlowGraph`,
+    /// dual-written on every ingest alongside `flow_tracker` above. NOT yet
+    /// consulted by the egress verdict (`kernel/ifc.rs` still reads
+    /// `flow_tracker`), so populating it is verdict-neutral. It exists so the
+    /// later, separately boot-gated egress switch onto the one proven graph can
+    /// be proven safe: the differential canary asserts the two agree on the real
+    /// ingest sequence, and the graph is actually non-empty in production (the
+    /// bug this closes is that `FlowGraph` was empty on the tool-proxy). Populated
+    /// only through the server-computed `ingest::shadow_observe` chokepoint—
+    /// never from client-declared lineage.
+    pub(crate) flow_graph: Arc<tokio::sync::Mutex<FlowGraph>>,
     /// Path → the flow node recording the content last written there.
     ///
     /// This is #2135's laundered-path SET, generalised from a boolean into an
@@ -1785,6 +1797,9 @@ async fn main() -> Result<(), ApiError> {
     }));
 
     let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
+    // Phase 2 shadow graph, dual-written with `flow_tracker` but not yet read by
+    // egress (verdict-neutral). Same per-pod-session lifetime as the tracker.
+    let flow_graph = Arc::new(tokio::sync::Mutex::new(FlowGraph::new()));
 
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
@@ -1873,6 +1888,7 @@ async fn main() -> Result<(), ApiError> {
         trace_monitor,
         kernel,
         flow_tracker,
+        flow_graph,
         provenance_memory,
         memory_transforms,
         declassify_trusted_keys,
