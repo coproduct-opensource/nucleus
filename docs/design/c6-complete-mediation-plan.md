@@ -6,13 +6,18 @@ the confidentiality ledger (`docs/north-star.md`), written the way the
 declassification arc (#2227–#2238) was scoped, so a direction can be approved
 before any multi-PR execution.
 
-> **Execution status (2026-08-11):** Phase 0 (inventory) landed — the closed
-> `EgressChannel` table lives in `docs/architecture/mediated-set.md` with the
-> `documented_inventory_equals_the_enum` parity test. Phase 1a (Tier-A theorem
-> `no_sink_reachable_without_discharge`, #2241) and Phase 1b (the `mediated`
-> lint enforced-at-zero over `portcullis-effects`, #2244) landed. C6 remains
-> **NOT-YET**; Phase 2 (network backstop proven fail-closed on boot) and Phase 3
-> (`effects()` hatch + bash-curl gap) are the remaining Tier-B work.
+> **Execution status (2026-08-11):** Phases 0–3 landed. Phase 0 (inventory —
+> closed `EgressChannel` table + `documented_inventory_equals_the_enum`). Phase
+> 1a (Tier-A theorem `no_sink_reachable_without_discharge`, #2241) + 1b (`mediated`
+> lint enforced-at-zero over `portcullis-effects`, #2244). Phase 2 (netns
+> default-deny backstop **proven applied on boot** by the in-guest egress probe
+> `scripts/check-egress-probe.sh`, x86_64 boot gate, #2246). Phase 3 (the
+> `effects()` hatch is closed — `unmediated_effects`, #1248 — and channel 12 is
+> re-statused `type-enforced`; `no_channel_is_an_open_hole` asserts the inventory
+> holds no open hole; the bash-curl gap is stated as backstopped by the proven
+> netns fence). **All Tier-B engineering is complete.** C6 remains **NOT-YET**
+> only pending the Phase-4 ledger-promotion decision (the outward-wording call
+> below, FORK 3 — Brandon's), which lowers `NOT_YET` 4→3.
 
 ## 0. The clause, and why it is genuinely the hard one
 

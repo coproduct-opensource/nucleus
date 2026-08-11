@@ -48,8 +48,9 @@ pub enum MediationStatus {
     /// Some frames on this transport are mediated, others rest on a structural
     /// property (peer-CID pin, identity refusal) rather than a token.
     Partial = 2,
-    /// A known unmediated path with no fence beyond "tracked open" — the honest
-    /// hole C6 is NOT-YET for.
+    /// A known unmediated path with no fence beyond "tracked open". No channel
+    /// currently carries this status; `no_channel_is_an_open_hole` asserts the
+    /// set stays empty — the machine meaning of C6's "every mediated channel".
     OpenHole = 3,
     /// Out of the mediated set by construction: operator/host authority, never
     /// agent-controlled (see `mediated-set.md` exclusions).
@@ -121,9 +122,13 @@ pub enum EgressChannel {
     /// Audit / Article-12 egress (S3, webhook) — the runtime's record OF the
     /// agent, an operator sink.
     AuditEgress = 10,
-    /// The `NucleusRuntime::effects()` escape hatch — returns a raw
-    /// `PolicyEnforced` bundle with no discharge/FlowTracker update. Tracked
-    /// open.
+    /// The unmediated-effects escape hatch (#1248). The old raw
+    /// `NucleusRuntime::effects()` accessor is gone; the only path to a raw
+    /// bundle, `NucleusRuntime::unmediated_effects`, now requires a builder
+    /// opt-in `UnmediatedAccess` token, a `DischargedBundle` discharged against
+    /// the STRICTEST sink (`HTTPEgress`/`Untrusted` — fails on a tainted
+    /// session), and a `FlowTracker` observation. Its effect methods take an
+    /// owned `Authority` by value, so an un-preflighted call is a compile error.
     EffectsEscapeHatch = 11,
 }
 
@@ -212,7 +217,10 @@ impl EgressChannel {
             }
             EgressChannel::VsockTransport | EgressChannel::PodDirSocket => MediationStatus::Partial,
             EgressChannel::NodeGrpc | EgressChannel::AuditEgress => MediationStatus::InfraOutOfSet,
-            EgressChannel::EffectsEscapeHatch => MediationStatus::OpenHole,
+            // #1248 closed: unmediated_effects requires opt-in token + strictest-
+            // sink discharge + FlowTracker observe, and the effect methods take
+            // Authority by value (compile-error on an un-preflighted call).
+            EgressChannel::EffectsEscapeHatch => MediationStatus::TypeEnforced,
         }
     }
 }
@@ -239,6 +247,27 @@ mod tests {
         for (i, c) in EgressChannel::ALL.iter().enumerate() {
             assert_eq!(c.rank() as usize, i, "ALL[{i}] = {c:?} out of order");
         }
+    }
+
+    /// **THE MACHINE MEANING OF "EVERY".** C6 is "*every mediated channel*". A
+    /// channel tagged `open-hole` is, by that status's own definition, a path
+    /// with no fence — so "every" cannot hold while any channel carries it. This
+    /// asserts the closed inventory contains ZERO open holes; it reds if any
+    /// channel regresses to `OpenHole` (e.g. the #1248 unmediated-effects guard
+    /// being reverted and the status honestly following). It is the regression
+    /// guard behind moving C6 off NOT-YET.
+    #[test]
+    fn no_channel_is_an_open_hole() {
+        let holes: Vec<&str> = EgressChannel::ALL
+            .iter()
+            .filter(|c| c.status() == MediationStatus::OpenHole)
+            .map(|c| c.doc_key())
+            .collect();
+        assert!(
+            holes.is_empty(),
+            "these egress channels are open holes, so C6's \"every mediated channel\" \
+             does not hold: {holes:?}"
+        );
     }
 
     /// Keys are unique — the parity contract depends on the key being an

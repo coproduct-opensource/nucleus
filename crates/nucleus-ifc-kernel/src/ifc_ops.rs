@@ -480,3 +480,33 @@ pub fn is_exfil_operation(op: Operation) -> bool {
             | Operation::ManagePods
     )
 }
+
+#[cfg(test)]
+mod bash_exec_boundary {
+    use super::{IntegLevel, SinkClass};
+
+    /// C6 phase 3 — the `BashExec` label is NOT load-bearing for in-shell egress.
+    ///
+    /// `BashExec`'s integrity floor gates whether bash *runs* on the session's
+    /// integrity (a floor of `Untrusted` refuses an adversarial-tainted session
+    /// from spawning a shell at all). It says nothing about **where** an
+    /// already-running shell reaches — `bash -c curl`, `/dev/tcp`, `nc` — because
+    /// a sink label cannot follow a process once it has execed. That surface
+    /// (mediated-set.md channels 5 and 10) is confined by the netns default-deny
+    /// backstop, proven applied on boot by `scripts/check-egress-probe.sh`.
+    ///
+    /// This pins the floor so the doc claim has a checked anchor: lowering it to
+    /// `Adversarial` (no requirement) would let a tainted session spawn a shell
+    /// and must red here; the boundary between "gates the spawn" and "confines
+    /// the reach" stays explicit.
+    #[test]
+    fn bash_exec_floor_gates_the_spawn_not_the_reach() {
+        assert_eq!(
+            SinkClass::BashExec.required_integrity(),
+            IntegLevel::Untrusted,
+            "BashExec must refuse an adversarial-tainted session from spawning a shell; \
+             where a running shell REACHES is confined by the netns backstop \
+             (check-egress-probe.sh), not this label"
+        );
+    }
+}

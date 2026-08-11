@@ -358,12 +358,20 @@ checking via `Kernel::decide_term()` (which runs obligation discharge), but does
 NOT get the `PolicyEnforced` effect wrapper. A bug in the call site code could
 perform I/O without any policy gate.
 
-### NucleusRuntime escape hatch ([#1248](https://github.com/coproduct-opensource/nucleus/issues/1248))
+### NucleusRuntime escape hatch ([#1248](https://github.com/coproduct-opensource/nucleus/issues/1248)) — CLOSED
 
-`NucleusRuntime::effects()` returns a raw `PolicyEnforced` bundle that checks
-capabilities but does NOT run obligation discharge or update the FlowTracker.
-The mediated methods (`read_file`, `write_file`, etc.) compose all three layers.
-A developer who discovers `.effects()` first uses the weaker path.
+The raw `NucleusRuntime::effects()` accessor is **gone**. The only path to a raw
+bundle, `unmediated_effects(&token, proof)`, requires (1) an opt-in
+`UnmediatedAccess` token, (2) a `DischargedBundle` discharged against the
+**strictest** sink (`HTTPEgress`/`Untrusted`, so discharge fails on a tainted
+session), and (3) a `FlowTracker` observe recording an `OutboundAction` node; the
+returned effect methods take `Authority` by value, so an un-preflighted call is a
+compile error. Guarded by `unmediated_preflight_denies_adversarial_session` (a
+tainted session is denied) and an all-profile isolation invariant
+(`prop_unmediated_effects_always_discharges_and_flow_tracks`). In the C6 egress
+inventory this is channel 12, `type-enforced`, and `no_channel_is_an_open_hole`
+asserts no channel remains an open hole. Residual honesty: the audit-DAG
+granularity is coarse (one `OutboundAction` node per grant, not per effect).
 
 ### Type-level IFC not composed into runtime ([#1249](https://github.com/coproduct-opensource/nucleus/issues/1249))
 

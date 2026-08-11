@@ -253,11 +253,21 @@ What each status means, and what it deliberately does not:
   `docs/architecture/mediated-set.md` enumerates every outbound channel against
   the closed `EgressChannel` enum, and `documented_inventory_equals_the_enum`
   reds if the table and enum disagree on the key set or a channel's status
-  (Phase 0). What keeps C6 **NOT-YET** is the Tier-B open surface the inventory
-  now names as such: in-shell / raw-socket egress (channels 5, 10) fenced only
-  by a *documented* netns default-deny, not yet proven-applied-on-boot (Phase 2);
-  the `partial` transport channels (7, 8); and the `effects()` escape hatch (12,
-  #1248). "Every" is not yet earned.
+  (Phase 0). The three Tier-B surfaces that kept this NOT-YET are now closed:
+  (d) *Phase 2* — the netns default-deny backstop for in-shell / raw-socket egress
+  (channels 5, 10) is **proven applied on boot** by the in-guest egress probe
+  (`scripts/check-egress-probe.sh`, x86_64 boot gate: an off-allowlist connect
+  from inside the live guest returns `ENETUNREACH`; #2246); (e) *Phase 3* — the
+  `effects()` escape hatch (channel 12, #1248) is closed (`unmediated_effects`
+  requires an opt-in token + strictest-sink discharge + `FlowTracker` observe,
+  fail-closed tested), and the `partial` transport channels (7, 8) rest on tested
+  structural refusals (host-CID pin, broker refusal by absence). The inventory now
+  carries **no open hole** — `no_channel_is_an_open_hole` asserts it. C6 is held
+  at **NOT-YET** here only pending the ledger-promotion decision itself: moving it
+  to TESTED and lowering the `NOT_YET` pin touches the outward north-star wording
+  (plan Phase 4, an explicit human call), so the status does not self-promote on
+  the engineering being done. The earn is complete; the promotion is a separate,
+  deliberate edit.
 - **C7 (TESTED — unchanged 2026-08-10; the declassify gap narrowed but C7 is
   broader).** The theorems are about a scalar-only extracted restatement of the
   enforcement predicates, re-extracted from the current Rust on every proof-workflow

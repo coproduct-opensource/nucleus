@@ -40,8 +40,10 @@ Status vocabulary (the `Status` column, machine-stable):
   (`scripts/check-mediation.sh`) catches raw primitives.
 - **`backstopped-only`** — no sink-lattice mediation; the only fence is the
   netns/iptables default-deny egress policy
-  (`crates/nucleus-node/src/net.rs:385` `apply_default_deny`), which is today
-  *documented*, not proven-applied-on-boot (C6 phase 2).
+  (`crates/nucleus-node/src/net.rs:385` `apply_default_deny`), which is now
+  **proven applied on boot** by the in-guest egress probe
+  (`scripts/check-egress-probe.sh`, the x86_64 boot gate: an off-allowlist
+  connect from inside the live guest returns `ENETUNREACH`; C6 phase 2).
 - **`partial`** — some frames on the transport are mediated, the rest rest on a
   structural property (peer-CID pin, identity refusal) rather than a token.
 - **`open-hole`** — a known unmediated path with no fence beyond "tracked open".
@@ -54,10 +56,12 @@ row, keyed by the `Key` column, and the
 `documented_inventory_equals_the_enum` parity test asserts the two agree on both
 the key set and the `Status` of each row. **Adding an egress or transport
 channel therefore requires editing both this table and the enum**, and changing
-a channel's status requires editing both too — that is the categorical gate. The
-enum is not yet consumed by any runtime path; C6 phase 1 proves the Tier-A
-total-mediation theorem over `SinkClass`/`Operation`, phase 2 promotes the
-network backstop to proven-on-boot.
+a channel's status requires editing both too — that is the categorical gate. C6
+phase 1 proved the Tier-A total-mediation theorem over `SinkClass`/`Operation`
+(`no_sink_reachable_without_discharge`); phase 2 promoted the network backstop to
+proven-on-boot (`check-egress-probe.sh`); phase 3 closed the last `open-hole`
+(channel 12, below). `no_channel_is_an_open_hole` now asserts the inventory holds
+no open hole at all — the machine meaning of "every".
 
 <!-- C6-INVENTORY-START -->
 
@@ -67,24 +71,28 @@ network backstop to proven-on-boot.
 | 2 | Agent HTTP egress (`web_fetch`/`web_search`) | `agent_http_egress` | `crates/nucleus-tool-proxy/src/run_gate.rs:99` `preflight_web` → `crates/portcullis-effects/src/async_traits.rs:140` `NetEffect::fetch` | `type-enforced` | `HTTPEgress` sink floor is `Untrusted`, trifecta guard bites on a tainted session; `DischargedBundle` + `.send()` grep-gate |
 | 3 | Agent filesystem write | `agent_fs_write` | `crates/nucleus-tool-proxy/src/run_gate.rs` `preflight_write` → `Sandbox::write(_proof)` | `type-enforced` | Every `Sandbox` method takes an owned `Authority`; `DischargedBundle` + `cap-std` |
 | 4 | Credentialed egress via broker (host performs call) | `broker_credentialed_egress` | `crates/nucleus-tool-proxy/src/egress.rs:309`, `broker_client.rs:173` `perform_line` | `type-enforced` | `perform_line` takes an `Authority`; the vsock frame is covered by the `VsockStream::connect` grep-gate |
-| 5 | In-shell egress (`bash -c curl`, `/dev/tcp`, `python`, `nc`) | `in_shell_egress` | inside the child spawned at #1 | `backstopped-only` | Sink label `BashExec` (`crates/nucleus-ifc-kernel/src/ifc_ops.rs:226`) is a heuristic, not a physical fact; only `apply_default_deny` (`crates/nucleus-node/src/net.rs:385`) confines it — documented, not proven-applied |
+| 5 | In-shell egress (`bash -c curl`, `/dev/tcp`, `python`, `nc`) | `in_shell_egress` | inside the child spawned at #1 | `backstopped-only` | Sink label `BashExec` (`crates/nucleus-ifc-kernel/src/ifc_ops.rs:226`) gates whether bash *runs* (integrity floor `Untrusted`), NOT where an already-running shell reaches; that is confined by `apply_default_deny` (`crates/nucleus-node/src/net.rs:385`), **proven applied on boot** by `scripts/check-egress-probe.sh` |
 | 6 | DNS (tunnel/exfil) | `dns` | dnsmasq guest config | `backstopped-only` | `no-resolv`, no upstream → an unlisted name fails locally (`the_dns_proxy_has_no_upstream_and_cannot_forward`) |
 | 7 | vsock (broker/task-token/SVID transport) | `vsock_transport` | `crates/nucleus-tool-proxy/src/broker_client.rs:223`, `crates/nucleus-node/src/workload_api_vsock.rs` | `partial` | Broker perform is mediated (#4); other frames are host-issued, peer-CID pinned to `VMADDR_CID_HOST` — no agent authority to discharge |
 | 8 | pod-dir Unix socket (container broker) | `pod_dir_socket` | `crates/nucleus-node/src/broker_transport.rs` `BrokerTransport::PodDirSocket` | `partial` | The container path registers no identity, so the broker refuses — a structural refusal, not a token |
 | 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (whole-file infra grep-gate) | `infra-out-of-set` | Operator-provisioned endpoint, never agent-controlled |
-| 10 | netns raw socket (`std::net`, any linked lib) | `netns_raw_socket` | anywhere in the guest | `backstopped-only` | Same open class as #5 — `apply_default_deny` netns egress policy only |
+| 10 | netns raw socket (`std::net`, any linked lib) | `netns_raw_socket` | anywhere in the guest | `backstopped-only` | Same open class as #5 — `apply_default_deny` netns egress policy, **proven applied on boot** by `scripts/check-egress-probe.sh` |
 | 11 | Audit / Article-12 egress (S3, webhook) | `audit_egress` | `crates/nucleus-tool-proxy/src/main.rs`, `art12_shipper.rs` (net allowlist) | `infra-out-of-set` | The runtime's record OF the agent, an operator sink |
-| 12 | Effect escape hatch `NucleusRuntime::effects()` | `effects_escape_hatch` | `production-delta.md:48` (#1248) | `open-hole` | Returns a raw `PolicyEnforced` bundle with no discharge/FlowTracker update — tracked open |
+| 12 | Effect escape hatch `NucleusRuntime::unmediated_effects` | `effects_escape_hatch` | `crates/portcullis-effects/src/runtime.rs:690` (#1248) | `type-enforced` | The raw `effects()` accessor is gone; `unmediated_effects` requires an `UnmediatedAccess` opt-in token + a `DischargedBundle` discharged against the strictest sink (`HTTPEgress`, fails on a tainted session) + a `FlowTracker` observe, and the returned effect methods take `Authority` by value. Fail-closed tested (`unmediated_preflight_denies_adversarial_session`) + all-profile isolation invariant. Audit-DAG granularity is coarse (one `OutboundAction` node per grant) |
 
 <!-- C6-INVENTORY-END -->
 
 **Read of the table:** the *typed* effect API (1–4) is at the North Star floor —
-type-enforced, grep-backstopped. What keeps C6 honestly NOT-YET is (a) the open
-in-shell/raw-socket surface (5, 10) whose only fence is a *documented* netns
-policy, (b) the transport channels (7, 8) with no unified proof, and (c) the
-`effects()` escape hatch (12). This inventory is C6 phase 0's deliverable: it
-makes the taxonomy a closed, gated set. It does not change any egress verdict,
-ledger row, or ratchet.
+type-enforced, grep-backstopped. The three surfaces that once kept C6 honestly
+NOT-YET are now closed: (a) the in-shell/raw-socket surface (5, 10) is confined by
+the netns default-deny, **proven applied on boot** (`check-egress-probe.sh`); (b)
+the partial transport channels (7, 8) rest on tested structural refusals (host-CID
+pin `only_the_host_cid_is_accepted`; broker refusal by absence); and (c) the
+`effects()` escape hatch (12) is closed (`unmediated_effects`, #1248). The
+inventory now carries **no open hole** — `no_channel_is_an_open_hole` asserts it.
+The remaining step to move C6 off NOT-YET is the ledger-promotion decision itself
+(an outward-wording call recorded in `docs/north-star.md`); this page changes no
+egress verdict, ledger row, or ratchet.
 
 ## What "agent-attributed" means
 
