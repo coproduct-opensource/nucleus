@@ -84,7 +84,7 @@ status is a visible event, not an edit.
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
-| C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-ifc-kernel/src/egress_channel.rs#documented_inventory_equals_the_enum`, `docs/architecture/mediated-set.md` | `scripts/check-mediation-dylint.sh` |
+| C6 | "every mediated channel" | TESTED | `crates/nucleus-ifc-kernel/src/egress_channel.rs#no_channel_is_an_open_hole`, `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/nucleus-ifc-kernel/src/egress_channel.rs#documented_inventory_equals_the_enum`, `scripts/check-egress-probe.sh`, `docs/architecture/mediated-set.md` | `scripts/check-egress-probe.sh` |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
 | C9 | "verify from the outside" | NOT-YET | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | — |
@@ -239,7 +239,7 @@ What each status means, and what it deliberately does not:
   gated: the falsifier `scripts/check-declassify-value-bound.sh` runs both the
   four-run test and the parity test, and reds if value-binding stops refusing a
   substituted value.
-- **C6 (NOT-YET — Phase 1 earned 2026-08-11, still short of "every").** Three
+- **C6 (TESTED — promoted from NOT-YET 2026-08-11; complete-mediation Phases 1–3).** Five
   legs now hold. (a) *Tier-A total mediation is a theorem:* over the closed
   `SinkClass`/`Operation` enum, `no_sink_reachable_without_discharge`
   (`MediationScopeExtracted.lean`, Aeneas-extracted, `sorry`-free, axioms ⊆
@@ -261,13 +261,20 @@ What each status means, and what it deliberately does not:
   `effects()` escape hatch (channel 12, #1248) is closed (`unmediated_effects`
   requires an opt-in token + strictest-sink discharge + `FlowTracker` observe,
   fail-closed tested), and the `partial` transport channels (7, 8) rest on tested
-  structural refusals (host-CID pin, broker refusal by absence). The inventory now
-  carries **no open hole** — `no_channel_is_an_open_hole` asserts it. C6 is held
-  at **NOT-YET** here only pending the ledger-promotion decision itself: moving it
-  to TESTED and lowering the `NOT_YET` pin touches the outward north-star wording
-  (plan Phase 4, an explicit human call), so the status does not self-promote on
-  the engineering being done. The earn is complete; the promotion is a separate,
-  deliberate edit.
+  structural refusals (host-CID pin `only_the_host_cid_is_accepted`, broker refusal
+  by absence). The inventory now carries **no open hole** —
+  `no_channel_is_an_open_hole` asserts it, the machine meaning of "every".
+  **TESTED, not PROVED:** "every" here is a *union* of tested properties plus one
+  theorem, not a single proof. The Tier-A theorem covers only the effect-API
+  surface (channels 1–4); the in-shell/raw-socket backstop (5, 10) rests on
+  "iptables applies the rules", which is TESTED-on-boot with the kernel in the TCB,
+  not proven; the partial transport channels (7, 8) rest on tested structural
+  refusals; and channel 12's audit-DAG granularity is coarse (one node per grant).
+  The falsifier is `scripts/check-egress-probe.sh` — it reds if the live-path
+  backstop stops confining egress; `no_channel_is_an_open_hole` reds if any channel
+  regresses to an open hole. Re-earning toward PROVED would need the network
+  backstop proven (not tested) applied and the theorem extended past the API
+  surface.
 - **C7 (TESTED — unchanged 2026-08-10; the declassify gap narrowed but C7 is
   broader).** The theorems are about a scalar-only extracted restatement of the
   enforcement predicates, re-extracted from the current Rust on every proof-workflow
