@@ -107,6 +107,7 @@ jobs:
             AssuranceCoverage \
             UniversalDetection \
             PodMachineSpike \
+            PodCrossView \
             IdentityOracleMirror \
             ConfidentialityOracleMirror \
             IntegrityOracleMirror \

@@ -80,7 +80,7 @@ status is a visible event, not an edit.
 | # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
 | --- | --- | --- | --- | --- |
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
-| C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
+| C2 | "nor those of any other pod" | NOT-YET | `crates/portcullis-core/lean/PodCrossView.lean#cross_pod_noninterference`, `docs/cross-pod-view.md` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
@@ -157,8 +157,27 @@ What each status means, and what it deliberately does not:
   conformance leg is bounded by C7 ("a theorem about the code that ships"),
   itself TESTED, so the row records the proven relation with the runtime
   conformance gated beside it — the same shape as C4.
-- **C2 (NOT-YET)** — no artifact in the corpus mentions a second pod; the host
-  is outside every model. `docs/cross-pod-view.md` is the design.
+- **C2 (NOT-YET — first mechanization landed 2026-08-11).** The design
+  (`docs/cross-pod-view.md`, after Nickel/OSDI-2018: the view relation is
+  *untrusted*, so a too-coarse relation fails the proof) is now a kernel-checked
+  two-run theorem for the first shared surface. `PodCrossView.lean` defines
+  `podView : PodId → HostState → Observation` verbatim from the design and proves
+  both unwinding conditions over `pods` — the only shared-mutable field mediated
+  by design (server-side lineage filter, #2199): *output-consistency*
+  (`output_consistency`, a pod's view is determined by its own lineage slice) and
+  *local-respect* (`local_respect`, another pod's write is excluded from the
+  view), with `cross_pod_noninterference` as the two-run payoff. It is non-vacuous
+  by four `decide`-checked witnesses — including the **coarse-relation-fails**
+  guardrail (dropping the lineage filter makes `local_respect` false, so a weaker
+  relation breaks the proof rather than silently passing). Clean axiom profile
+  (⊆ `[propext, Classical.choice, Quot.sound]`), gated by the proven-lean
+  workflow. **What keeps C2 NOT-YET:** (a) only `pods` of the 8 shared-mutable
+  fields is mechanized — the rest are not yet in-Lean; (b) two fields are excluded
+  *because their code is currently defective* (`lockdown_tx` broadcast, #2203; the
+  identity registry, #2197/#2198/#2204) and re-enter the model only when fixed;
+  (c) the model↔runtime parity (abstract `podView` ↔ the shipped `NodeState`
+  serving path) is not yet tied; (d) no two-pod boot e2e. "Any other pod" is not
+  yet earned end to end — this is the substrate + first surface, honestly scoped.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
