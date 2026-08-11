@@ -368,10 +368,30 @@ UNCOVERED=(
 # at. The remaining two need a Cargo.lock change, which this script will not make.
 UNCOVERED_CEILING=2
 
+# ── Self-falsified elsewhere, not here ────────────────────────────────────
+#
+# These gates PROVE they can fail — but on a toolchain this job does not have, so
+# their reds-on-revert runs in their OWN workflow job rather than through probe()
+# above. They are NOT "uncovered": each has a live falsifier that fails CI if the
+# gate stops detecting its subject. They are listed here so the accounting stays
+# honest (a gate that is neither probed, nor uncovered, nor here would still be
+# flagged UNACCOUNTED) and so the location of each falsifier is on the record.
+#
+#   check-mediation-dylint.sh — needs the pinned dylint nightly + cargo-dylint
+#     (this job runs only stable Rust). Its `--self-test` appends an unmediated
+#     raw-I/O sink to the sealed effect home and asserts the finding count goes
+#     non-zero; it runs in the `mediated` job of dylint-separation.yml, BEFORE the
+#     enforcing run, every CI invocation.
+SELF_FALSIFIED=(
+    "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
+)
+
 echo
 echo "Covered: $covered gate(s) probed."
 echo "Uncovered: ${#UNCOVERED[@]} (ceiling $UNCOVERED_CEILING) — these have no perturbation yet:"
 for u in "${UNCOVERED[@]}"; do echo "    $u"; done
+echo "Self-falsified in-workflow: ${#SELF_FALSIFIED[@]} — reds-on-revert runs on a toolchain this job lacks:"
+for s in "${SELF_FALSIFIED[@]}"; do echo "    $s"; done
 
 if [[ "${#UNCOVERED[@]}" -gt "$UNCOVERED_CEILING" ]]; then
     echo
@@ -409,6 +429,7 @@ for path in scripts/check-*.sh; do
 
     grep -qE "^probe[[:space:]]+$gate([[:space:]]|$)" "$0" && continue
     printf '%s\n' "${UNCOVERED[@]}" | grep -q "^$gate[[:space:]]" && continue
+    printf '%s\n' "${SELF_FALSIFIED[@]}" | grep -q "^$gate[[:space:]]" && continue
     UNACCOUNTED+=("$gate")
 done
 

@@ -24,17 +24,27 @@ name: Dylint (mediation + CB4A separation + identity isolation)
 # `DYLD_*` from child processes. Both passes' READMEs record this; it is why
 # neither has a committed UI baseline. On Linux there is no such problem.
 #
-# WHY NON-BLOCKING TODAY (`continue-on-error`)
+# WHY `mediated` IS NOW ENFORCING (C6 phase 1b)
 #
-# `mediated` has 15 known open findings on `portcullis-effects`, recorded in its
-# README and not yet acted on. Making this job required would either block every
-# unrelated pull request or force those findings to be suppressed to get green —
-# and a suppressed lint is worse than an unrun one, because it looks clean.
+# The pass is scoped to the MEDIATED SET — the sealed agent-effect boundary
+# `portcullis_effects` (`MEDIATED_CRATES` in the lint). Over that set it reports
+# ZERO unmediated-I/O findings today: every raw sink in the effect home is
+# reached only after an `Authority` is demanded by value and spent. So the job
+# gates on that count staying zero, exactly like `cb4a_separation` and
+# `identity-isolation`.
 #
-# So the job reports, and the ratchet below is what makes it mean something: the
-# CB4A pass must stay at ZERO, which it is today. That half IS enforced. When the
-# mediation findings are closed, drop the `continue-on-error` and delete this
-# comment.
+# The earlier "15 open findings" were the host runtime's own infrastructure I/O
+# in transitive workspace deps (config loaders, audit/lineage persistence,
+# keyless-identity fetch, attestation clients, sandbox setup) — NOT
+# agent-attributed effect, and out of scope by the same reasoning that puts
+# jailer spawn and HTTP serving out of scope. Scoping the finding to the effect
+# home makes the enforced claim precise instead of suppressing anything: the
+# closure/unresolved-call reports remain emitted for every crate as an ADVISORY
+# signal, and the gate deliberately does not count them (a higher-order call is a
+# call-graph observation, not an unmediated sink).
+#
+# The gate lives in scripts/check-mediation-dylint.sh (one source of truth), and
+# its `--self-test` proves reds-on-revert on the pinned toolchain every run.
 
 on:
   push:
@@ -139,10 +149,9 @@ jobs:
           fi
 
   mediated:
-    name: mediated (reporting only — see workflow comment)
+    name: mediated (enforced at zero over the sealed effect boundary)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -168,15 +177,25 @@ jobs:
           cp libnucleus_mediation_lint.so \
              "libnucleus_mediation_lint@nightly-2026-04-16-${host}.so"
 
-      - name: Run mediated over the mediated crate set
+      # REDS-ON-REVERT FIRST. The gate proves it can fail on its own subject
+      # before it is trusted to pass: an unmediated raw-I/O sink appended to the
+      # effect home must push the count non-zero. A gate that cannot fail is not
+      # a gate. This runs on the pinned toolchain (the scripts/check-gates-can-fail.sh
+      # job has only stable Rust and cannot exercise a dylint gate).
+      - name: Prove the gate reds on a reverted discharge
         env:
           DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-mediation-lint/target/debug
-        run: |
-          for crate in portcullis-effects nucleus-node; do
-            echo "::group::$crate"
-            cargo dylint --lib nucleus_mediation_lint -- -p "$crate" 2>&1 || true
-            echo "::endgroup::"
-          done
+        run: scripts/check-mediation-dylint.sh --self-test
+
+      # ZERO unmediated-I/O findings over the mediated set, ENFORCED. `cargo
+      # dylint` exits 0 even when the `Warn` pass reports, so the script counts
+      # the findings rather than trusting exit status, and guards the
+      # compile-failure false-green. Closure/unresolved-call reports are printed
+      # but NOT counted (advisory).
+      - name: Enforce zero unmediated I/O in the sealed effect boundary
+        env:
+          DYLINT_LIBRARY_PATH: ${{ github.workspace }}/tools/nucleus-mediation-lint/target/debug
+        run: scripts/check-mediation-dylint.sh
 
   identity-isolation:
     name: workload_identity_isolation (enforced at zero)

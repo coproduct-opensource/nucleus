@@ -60,7 +60,7 @@ extern crate rustc_span;
 
 use clippy_utils::diagnostics::span_lint_and_help;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId};
 use rustc_hir::intravisit::{FnKind, Visitor, walk_expr};
 use rustc_hir::{Expr, ExprKind, FnDecl};
 use rustc_lint::{LateContext, LateLintPass};
@@ -136,6 +136,39 @@ const DENY_SET: &[&str] = &[
 
 /// The type whose by-value presence in a signature marks a mediation boundary.
 const AUTHORITY_PATH_SUFFIX: &str = "authority::Authority";
+
+/// The **mediated set** — the crates whose unmediated-I/O findings are ENFORCED.
+///
+/// This codifies the "defined set" the module docs and README already declare:
+/// *"'Mediated crates' is a defined set, listed in the CI invocation, not
+/// 'everything'."* Because `cargo dylint -- -p <crate>` compiles and lints every
+/// workspace member in the dependency closure, the pass would otherwise report
+/// the host runtime's own infrastructure I/O — config loaders (`load_from_dir`),
+/// audit/lineage persistence (`JsonlSink`, `MerkleSink`), keyless-identity fetch
+/// (`workload_api`), attestation/randomness clients, and sandbox setup — none of
+/// which is *agent-attributed* effect. That surface is out of scope by the same
+/// reasoning that puts jailer spawn and HTTP serving out of scope.
+///
+/// So the **"reaches raw I/O, demands no `Authority`" finding is emitted only for
+/// a crate in this set** (see [`check_crate_post`]). This is a **crate scope, not
+/// a call-site allowlist**: the pass still reports *every* such site within a
+/// mediated crate — there is no per-call exemption, and the "no call-site
+/// allowlist by design" posture is preserved. Widening the guarantee is done by
+/// adding a crate here, in the open, not by suppressing a call site.
+///
+/// The closure-soundness reports (unresolved `dyn`/fn-pointer/closure calls) are
+/// **not** scoped by this set: they remain emitted for every crate as an
+/// advisory signal, and the enforcing CI job deliberately does not gate on them
+/// (a higher-order call is a call-graph observation, not an unmediated sink).
+///
+/// Crate names are the **lib crate** spelling (hyphens become underscores):
+/// package `portcullis-effects` is crate `portcullis_effects`.
+const MEDIATED_CRATES: &[&str] = &[
+    // The sealed agent-effect boundary: every raw sink here is reached only after
+    // an `Authority` is demanded by value and spent. This is the crate the Lean
+    // Tier-A mediation theorem is stated over.
+    "portcullis_effects",
+];
 
 /// Strip generic argument lists from a `def_path_str` rendering.
 ///
@@ -221,7 +254,7 @@ struct CallScan<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> CallScan<'a, 'tcx> {
-    fn record(&mut self, did: DefId, span: Span) {
+    fn record(&mut self, did: DefId, _span: Span) {
         let path = strip_generics(&self.cx.tcx.def_path_str(did));
         if self.direct_io.is_none()
             && let Some(hit) = DENY_SET.iter().find(|p| path.starts_with(**p))
@@ -274,8 +307,10 @@ impl<'a, 'tcx> Visitor<'tcx> for CallScan<'a, 'tcx> {
                 } else {
                     // Calling a value: a function pointer or closure variable. seL4
                     // forbids exactly this so its call graph stays static.
-                    self.unresolved
-                        .push((ex.span, "call through a function pointer or value".to_string()));
+                    self.unresolved.push((
+                        ex.span,
+                        "call through a function pointer or value".to_string(),
+                    ));
                 }
             }
             ExprKind::MethodCall(..) => {
@@ -286,9 +321,10 @@ impl<'a, 'tcx> Visitor<'tcx> for CallScan<'a, 'tcx> {
                         .push((ex.span, "unresolved method call".to_string())),
                 }
             }
-            ExprKind::InlineAsm(_) => self
-                .unresolved
-                .push((ex.span, "inline `asm!` — opaque to the call graph".to_string())),
+            ExprKind::InlineAsm(_) => self.unresolved.push((
+                ex.span,
+                "inline `asm!` — opaque to the call graph".to_string(),
+            )),
             // Descend into closure bodies.
             //
             // An `async fn`'s body in HIR IS a closure, and `check_fn` returns
@@ -335,10 +371,7 @@ impl<'tcx> LateLintPass<'tcx> for Mediated {
         };
         scan.visit_body(body);
 
-        let is_public = cx
-            .tcx
-            .effective_visibilities(())
-            .is_exported(def_id);
+        let is_public = cx.tcx.effective_visibilities(()).is_exported(def_id);
 
         self.facts.borrow_mut().insert(
             def_id,
@@ -361,6 +394,17 @@ impl<'tcx> LateLintPass<'tcx> for Mediated {
     /// has been seen. This is the whole reason the pass accumulates.
     fn check_crate_post(&mut self, cx: &LateContext<'tcx>) {
         let facts = self.facts.borrow();
+
+        // Is the crate currently under compilation in the mediated set? The pass
+        // is invoked once per workspace member in the dependency closure, so this
+        // is the gate that keeps the ENFORCED "unmediated I/O" finding scoped to
+        // the agent-effect boundary rather than the host runtime's own infra I/O.
+        // See [`MEDIATED_CRATES`]. Unresolved-call reports below are NOT scoped by
+        // this — they stay advisory for every crate.
+        let crate_is_mediated = {
+            let name = cx.tcx.crate_name(LOCAL_CRATE);
+            MEDIATED_CRATES.contains(&name.as_str())
+        };
 
         // Least fixpoint of "reaches raw I/O without crossing a boundary".
         //
@@ -394,7 +438,11 @@ impl<'tcx> LateLintPass<'tcx> for Mediated {
             // Report at the crate boundary. An internal helper reaching I/O is
             // fine so long as every public path to it crosses a boundary; the
             // public function is where that stops being true.
-            if f.is_public && unmediated.contains(did) {
+            //
+            // Scoped to the mediated set: outside it, raw I/O is the host
+            // runtime's own infrastructure (config load, audit persistence,
+            // identity/attestation, sandbox setup), not agent-attributed effect.
+            if crate_is_mediated && f.is_public && unmediated.contains(did) {
                 let detail = match &f.direct_io {
                     Some(hit) => format!("reaches raw I/O: {hit}"),
                     None => "reaches raw I/O transitively through its callees".to_string(),
