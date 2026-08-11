@@ -82,8 +82,8 @@ status is a visible event, not an edit.
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
-| C4 | "a governor deliberately released with a single-use token" | NOT-YET | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token`, `crates/portcullis/tests/kernel_token.rs` | — |
-| C5 | "cannot steer which value that is" | NOT-YET | `crates/portcullis-core/src/declassify.rs#canonical_bytes`, `crates/portcullis/tests/declassify_scope.rs` | — |
+| C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
+| C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
 | C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
@@ -162,106 +162,76 @@ What each status means, and what it deliberately does not:
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
-- **C4 (NOT-YET — demoted 2026-08-10, was PROVED).** The clause names a specific
-  live mechanism: a governor release via *a single-use token*. The single-use
-  property of that token IS genuinely proved — the absorbing `declass_step`
-  machine (`no_second_apply`) over the Aeneas-extracted decision core, enforced
-  by the kernel's spent-signature ledger and exercised at the kernel API by
-  `crates/portcullis/tests/kernel_token.rs` (mint → apply → second-apply
-  refused). What is NOT earned is the flagship row's implicit claim that this is
-  the mechanism governing releases on the shipping system:
-  * **The proven token path fires nowhere in production.** Its sole production
-    wrapper is the tool-proxy governor endpoint (`POST /v1/declassify`,
-    `nucleus-tool-proxy/src/declassify.rs`), and there it is **inert**: ingest
-    populates a *separate* `FlowTracker` (`state.flow_tracker`), not the kernel
-    `flow_graph` the token resolves against, so a governor `target_node_id` hits
-    an empty graph and apply returns `NodeNotFound`. `nucleus-mcp` populates a
-    graph but never applies a token. So no shipping deployment ever performs a
-    single-use-token release — a safety property vacuously satisfied by a dead
-    mechanism does not earn a flagship row. (An earlier note claimed "the path
-    is LIVE: `POST /v1/declassify` applies governor-signed tokens" — retracted.)
-  * **The actually-live release path is a different, unproven mechanism.** On
-    the shipping tool-proxy, releases that flip an egress verdict come from the
-    **k-of-n witness-threshold** memory path (`nucleus-tool-proxy/src/memory.rs`
-    → `nucleus_provenance_memory::declassify`), which promotes a record's label
-    into the live `FlowTracker` (`crates/nucleus-tool-proxy/tests/memory_ifc_e2e.rs`
-    asserts the egress flip under a 2-of-2 quorum). That path is NOT a single-use
-    token and carries none of C4's single-use / sink-scope proofs. So the
-    shipping product's real declassification is the unproven one while the proven
-    one is dormant — the exact inversion a flagship PROVED here would hide.
+- **C4 (PROVED — re-promoted 2026-08-10; had been demoted earlier the same day).**
+  The clause names a specific live mechanism: a governor release via *a single-use
+  token*. Both legs now hold on the graph the shipping egress verdict reads.
+  * **Single-use, PROVED.** The absorbing `declass_step` machine (`no_second_apply`,
+    `single_use`) over the Aeneas-extracted decision core, enforced by the shared
+    one-shot burn ledger (`FlowGraph::release_burn_ledger`) and exercised at the
+    kernel API by `crates/portcullis/tests/kernel_token.rs` (mint → apply →
+    second-apply refused; a refusal never burns).
+  * **Live on the graph egress reads, PROVED-mechanism / TESTED-conformance.** The
+    demotion reason was that the proven token fired nowhere: `apply_declassification_token`
+    recorded its scope on the kernel's own `flow_graph`, which no request path
+    populated, so `POST /v1/declassify` returned `NodeNotFound` and the *actually*
+    live release was the unproven k-of-n memory path. That inversion is closed. The
+    apply is re-homed (`apply_declassification_token_on(&mut graph, token)`, #2235):
+    the endpoint (`nucleus-tool-proxy/src/declassify.rs`) locks `state.flow_graph`
+    — the graph egress reads — and lands the scope there, and egress honors per-node
+    scopes fail-closed. So a single-use token now **flips the egress verdict
+    Deny→Pass for exactly the committed value at exactly its signed sinks**, proven
+    on one graph by `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`,
+    with a boundary matrix that denies a substituted value (`ContentMismatch`), an
+    unsigned sink, a replay, a second secret node, and poison. The k-of-n mint now
+    feeds the *same* value-bound, sink-scoped, one-shot `DeclassScope` on that graph
+    (#2234), so there is one enforcement and two mint policies, not a proven-but-dead
+    path beside an unproven-but-live one.
 
-  **Re-earn.** The graph-unification arc: switch the tool-proxy egress onto the
-  proven `flow_graph` so the token path fires live (Phase 2), value-bind at apply
-  (Phase 3), and unify the k-of-n mint onto the same one-shot, sink-scoped
-  `DeclassScope` (Phase 4) — validated by a boot-a-real-pod e2e in which a
-  single-use token applied via `POST /v1/declassify` actually flips a tool-proxy
-  egress verdict for the committed value. The single-use theorem and the
-  sink-axis proof remain valid and are exactly what that arc makes live.
-- **C5 (NOT-YET — demoted 2026-08-08, was PROVED).** The clause is about the
-  VALUE axis: an adversary controlling the inputs cannot steer *which* value a
-  governor release yields. The theorem previously cited,
-  `sink_outside_a_singleton_mask_denied`, proves the SINK axis — a token whose
-  signed mask admits only one sink releases to no other — which is a real,
-  proved property but a statement about *where* data goes, not *which value* is
-  released. It does not discharge this clause.
+  **Honest caveat — which leg is TESTED.** The proven single-use/sink-scope theorems
+  and the value-bound apply→egress flip are exercised at the **unit level over the
+  real `FlowGraph` type** (the same type and API the endpoint uses), and the endpoint
+  wiring (`apply_declassification_token_on` on `state.flow_graph`) is asserted by
+  inspection in `scripts/check-declassify-value-bound.sh`. The full
+  **HTTP-`POST /v1/declassify`-against-a-running-pod e2e** — a real governor request
+  flipping a real tool-proxy egress verdict — is **boot-gated** (`boot-a-real-pod`,
+  requires `/dev/kvm`) and is the conformance leg, the same shape as C1's runtime
+  conformance. The falsifier `scripts/check-declassify-value-bound.sh` reds if the
+  value-binding is neutered OR the endpoint is re-pointed at the orphan kernel graph
+  (the exact #2235 regression), so the dead-mechanism inversion cannot return silently.
+- **C5 (PROVED — re-promoted 2026-08-10; had been demoted 2026-08-08).** The clause
+  is about the VALUE axis: an adversary controlling the inputs cannot steer *which*
+  value a governor release yields. This is now both **enforced** and **proven
+  relationally**, closing the sink-axis-only overclaim that demoted it (the old
+  citation `sink_outside_a_singleton_mask_denied` proves *where* data goes, not
+  *which value* is released).
+  * **Enforced (value-binding at apply).** The token carries a signed
+    `content_commitment: [u8; 32]` (SHA-256 of the exact authorized bytes, bound
+    into `canonical_bytes` at `canonical-v3`). Apply releases **only** for a node
+    whose monitor-recomputed ingest `content_hash` **equals** that commitment
+    (`FlowGraph::value_binding_ok`); a substituted value, an unbound (`[0u8;32]`)
+    commitment, or a node with no recorded hash is refused `ContentMismatch` —
+    fail-closed and **non-burning** (the token stays usable). The content hash is
+    a monitor-recorded fact (`observe_with_content_hash`, SHA-256 recomputed at
+    ingest, never an agent field), so the adversary cannot forge the equality.
+  * **Proven relationally (four-run robustness).** `four_run_value_robustness`
+    (`DeclassifySinkScopeExtracted.lean`) states that over the 2×2 grid of
+    attacker-controlled recorded content against one governor commitment, every run
+    releases **exactly the committed value or denies** — no attacker input releases
+    any other value. Sorry-free; `#print axioms = {propext}`. This is the value axis
+    of robust / non-malleable declassification (Sabelfeld–Sands; Cecchetti et al.,
+    CCS'17), which nucleus can reach because the proxy mediates every egress.
 
-  **Increment 1 (landed 2026-08-10, `declassify.rs`).** The value is now signed.
-  `DeclassificationToken` carries a `content_commitment: [u8; 32]` (SHA-256 of
-  the exact bytes the governor authorizes) bound into `canonical_bytes` (bumped
-  v2→v3, so v2 signatures no longer verify). A governor signature therefore
-  authorizes exactly ONE value: a token committing to V and one committing to W
-  sign different bytes (`token_canonical_bytes_bind_the_content_commitment`).
-  This closes the *signing-layer* half of the earlier false justification — the
-  old note said "the released value … is governor-signed" when it was not; now
-  it is. The all-zeros default is "unbound" (`is_value_bound()` is false).
-
-  **Blocked: apply-time enforcement + the four-run theorem — an architectural
-  disconnect, not just a missing theorem.** For the signed commitment to *bind*,
-  the apply path must refuse a token whose committed value does not equal the
-  target node's recorded ingest content hash (and refuse an unbound token, and a
-  node that does not exist). Wiring that check is blocked by a two-graph split
-  discovered while designing it:
-  * `Kernel::apply_declassification_token` — the ONLY non-test caller is the
-    tool-proxy governor endpoint (`nucleus-tool-proxy/src/declassify.rs`) — and
-    it operates on the kernel's own `flow_graph` (`portcullis::flow_graph`),
-    which is label-only and carries **no per-node content hash**.
-  * Every production ingest node, its content hash, the session taint, and the
-    live exfiltration decision live on a **separate** graph — the
-    `portcullis_core::ifc_api::FlowTracker` held as `state.flow_tracker`. The
-    live egress gate (`Kernel::ifc_flow_gate` → `exposure_core::ifc_egress_verdict`)
-    reads `flow_tracker` and never consults `flow_graph`'s declass scopes.
-  * On the production tool-proxy path `kernel.flow_graph` is **never populated**
-    — there is no `kernel.observe(...)` on any request path (verified by grep);
-    all `observe*` calls target `flow_tracker`. So a governor `target_node_id`
-    resolves against an empty graph and `apply_declassification_token` returns
-    `NodeNotFound` for any real node: declassification is **non-functional
-    end-to-end on the live path today**, value-bound or not. (This also narrows
-    C4's "live path" evidence to the *kernel API* unit tests it runs, not the
-    tool-proxy egress decision.)
-
-  So the content hash the C5 check needs exists only on `flow_tracker`; the token
-  machinery and its proofs (`declassify_scope.rs`, `DeclassifySinkScopeExtracted.lean`)
-  live only on `flow_graph`; and the two are disjoint. Threading a hash onto
-  `flow_graph` and checking it there would gate an artifact the live decisions
-  never consult (and which has no production nodes) — a false green — so it was
-  deliberately NOT done.
-
-  **Re-earn path (a decided fork, raised for owner review — it changes live
-  egress semantics).** Unify declassification onto `flow_tracker`: give it the
-  per-node released-view + one-shot-burn machinery that today lives on
-  `flow_graph` (or bridge the two so the release actually reaches the live egress
-  gate), have the apply path read `flow_tracker.content_hash(target)` and refuse
-  on unbound / missing / mismatched (require-node-exists closes mint-before-exist
-  for free — a not-yet-observed node has no hash), then upgrade the two-run
-  `graph_verdicts_match_the_extracted_decision_pointwise` in `declassify_scope.rs`
-  to the four-run robustness statement (attacker inputs vary on both runs ⇒
-  identical released value, or deny) over the extracted core with the commitment
-  in the decision. That arc — not this note's increment 1 — is what promotes C5.
-  This matches the literature's *delimited release* / *robust declassification*
-  target (Sabelfeld–Sands; Zdancewic–Myers; Cecchetti et al., non-malleable IFC):
-  the attacker may influence neither the decision to declassify nor *which value*
-  is released. The sink-axis proof remains valid and continues to back C4's
-  single-use/scoped-release guarantees.
+  **Honest abstraction — the u64-tag / 32-byte nuance.** The extracted decision core
+  the theorem is stated over (`value_authorized`, in `EXTRACT_ROOTS`) models value
+  identity as a **u64 tag** and decides on **tag equality**. The runtime compares the
+  full **32-byte `ContentHash`**. The two are bound by the parity test
+  `crates/portcullis/tests/declassify_scope.rs#authorize_release_value_binding_matches_the_extracted_decision`
+  (equal bytes ⇔ equal tag; unequal ⇔ deny), so the relational theorem transfers to
+  the byte-level runtime decision **by tested parity**, not by a proof over 32-byte
+  arrays. That is the one gap between the proof and the shipped comparison, and it is
+  gated: the falsifier `scripts/check-declassify-value-bound.sh` runs both the
+  four-run test and the parity test, and reds if value-binding stops refusing a
+  substituted value.
 - **C6 (NOT-YET)** — the seven child-inheritance channels (now including the
   kernel command line) are proved total (the quantification is over the channel
   enum, so a new channel forces a match arm); the effect/API set is enumerated
@@ -269,11 +239,18 @@ What each status means, and what it deliberately does not:
   `docs/architecture/mediated-set.md` with its lint reporting-only; the
   transport channels (vsock, pod-dir socket, in-guest HTTP, netns, DNS, node
   gRPC) have no unified inventory. "Every" is not yet earned.
-- **C7 (TESTED)** — the theorems are about a scalar-only extracted restatement
-  of the enforcement predicates, re-extracted from the current Rust on every
-  proof-workflow run and bound to production by exhaustive parity tests and
-  the boot-gate conformance replay. The surrounding kernel, classifier, and
-  spawn path are covered by tests and lints, not by the theorem.
+- **C7 (TESTED — unchanged 2026-08-10; the declassify gap narrowed but C7 is
+  broader).** The theorems are about a scalar-only extracted restatement of the
+  enforcement predicates, re-extracted from the current Rust on every proof-workflow
+  run and bound to production by exhaustive parity tests and the boot-gate
+  conformance replay. The declassification arc (#2227–#2236) *narrowed* this gap for
+  its own slice — the declassify decision core (`value_authorized`) is now in
+  `EXTRACT_ROOTS`, so the proofs describe the graph the live egress actually reads,
+  and the u64-tag↔32-byte binding is parity-tested — but that does not promote C7,
+  which is the broader whole-slice↔shipped-code correspondence. The surrounding
+  kernel, classifier, and spawn path are still covered by tests and lints, not by
+  the theorem; and even the declassify slice's byte-level runtime comparison
+  transfers to the proof by *tested* parity, not by proof. C7 stays TESTED.
 - **C8 (NOT-YET)** — the proof workflow is path-filtered; a change to the
   trusted classifier or the spawn path does not re-run it, and nothing checks
   that the call sites of the extracted predicates still exist.

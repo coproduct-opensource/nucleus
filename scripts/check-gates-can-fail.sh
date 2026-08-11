@@ -303,6 +303,25 @@ perturb_c1_inbound_fence() {
     fi
 }
 
+# Neuter VALUE-BINDING: make FlowGraph::value_binding_ok always true, so a
+# substituted value is no longer refused ContentMismatch — the exact over-release
+# the value-bound gate exists to catch. The gate's kernel_token /
+# declassify_rehome_egress / four-run substitution tests then red.
+perturb_declassify_value_unbind() {
+    local f="$1"
+    sed -i.gate-bak \
+        's|committed != \[0u8; 32\] && recorded == Some(committed)|{ let _ = (committed, recorded); true }|' \
+        "$f"
+    rm -f "$f.gate-bak"
+    # If value_binding_ok's body is reworded, the sed silently no-ops and the probe
+    # reports the gate as broken when it is fine. Fail loudly instead.
+    if ! grep -q 'let _ = (committed, recorded); true' "$f"; then
+        echo "  ERROR: FlowGraph::value_binding_ok's body changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -333,6 +352,9 @@ probe check-north-star-ledger.sh "" docs/north-star.md \
 probe check-c1-inbound-fences.sh "" crates/nucleus-tool-proxy/src/workload.rs \
       "the reserved-namespace fence D neutered" \
       perturb_c1_inbound_fence
+probe check-declassify-value-bound.sh "" crates/portcullis/src/flow_graph.rs \
+      "value_binding_ok neutered to accept a substituted value" \
+      perturb_declassify_value_unbind
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #

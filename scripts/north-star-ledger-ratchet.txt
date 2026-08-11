@@ -60,5 +60,36 @@
 #   overclaim, vacuously satisfied. Re-earning is the graph-unification arc
 #   (Phase 2/3/4) validated under boot-a-real-pod; see the C4 note in
 #   docs/north-star.md.
+# 2026-08-10: lowered 6 -> 4. Two promotions, both earned by the
+#   declassification graph-unification arc (#2227-#2236), each with a falsifier
+#   that reds on regression:
+#   * C4 ("a governor deliberately released with a single-use token") NOT-YET ->
+#     PROVED. The dead-mechanism inversion that demoted it is closed: the Ed25519
+#     apply is re-homed onto state.flow_graph — the graph the live egress verdict
+#     reads (#2235) — so a single-use token now FLIPS the egress verdict Deny->Pass
+#     for the committed value (declassify_rehome_egress.rs#c4_flip_back_on_one_graph)
+#     and denies substituted/unsigned-sink/replay/poison. The single-use theorem
+#     (no_second_apply / single_use over the extracted core + the shared burn
+#     ledger) is unchanged and now fires live. Evidence handle: the new falsifier
+#     scripts/check-declassify-value-bound.sh, which also reds if the endpoint is
+#     re-pointed at the orphan kernel graph. Honest caveat (in the C4 note): the
+#     proven mechanism + apply-on-live-graph flip is TESTED at the unit level over
+#     the real FlowGraph type and verified-by-inspection at the endpoint; the full
+#     HTTP-POST-vs-running-pod e2e is boot-gated (the conformance leg, same shape
+#     as C1).
+#   * C5 ("cannot steer which value that is") NOT-YET -> PROVED. Value
+#     non-steering is now ENFORCED (a substituted value is refused ContentMismatch,
+#     fail-closed and non-burning, via FlowGraph::value_binding_ok) AND proven
+#     relationally (four_run_value_robustness: over four attacker-varied runs a
+#     release yields exactly the committed value or denies; sorry-free, axioms =
+#     {propext}). Honest abstraction (in the C5 note): the theorem is over the
+#     u64-tag identity-equality decision in the extracted core; the runtime 32-byte
+#     ContentHash comparison is bound to it by the parity test
+#     authorize_release_value_binding_matches_the_extracted_decision (equal bytes
+#     <=> equal tag). Evidence handle: scripts/check-declassify-value-bound.sh.
+#   C7 stays TESTED: the declassify model<->code gap narrowed (the proofs now bind
+#   to the graph egress actually reads via value_authorized in EXTRACT_ROOTS + the
+#   parity sweep), but C7 is the broader whole-slice<->shipped-code correspondence,
+#   still parity-tested + boot-gate conformance, not proven.
 CLAUSES=9
-NOT_YET=6
+NOT_YET=4
