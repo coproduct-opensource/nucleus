@@ -3820,7 +3820,9 @@ impl NodeService for GrpcService {
         .ok();
 
         let mut ack_stream = request.into_inner();
-        let mut rx = self.state.lockdown_tx.subscribe();
+        // `rx` is moved into the forwarder (which owns the `recv` loop and takes
+        // `mut` internally), so it needs no `mut` here.
+        let rx = self.state.lockdown_tx.subscribe();
 
         let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
 
