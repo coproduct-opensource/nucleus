@@ -34,22 +34,29 @@
 //!     TCP endpoint by design, so a loopback or on-net positive control cannot
 //!     exist here. The socketpair needs neither an interface nor a route.)
 //!   - NEGATIVE posture: a raw TCP connect to each of ≥1 non-allowlisted hosts
-//!     MUST fail, and a DNS resolve of an off-allowlist name MUST NOT resolve.
-//!     Refusing to pass when *zero* targets were probed closes the other vacuous
-//!     door (an empty target list).
+//!     MUST fail. Refusing to pass when *zero* targets were probed closes the
+//!     other vacuous door (an empty target list).
 //!
 //! PASS requires the socketpair witness AND at least one probed deny target AND
-//! every negative failing.
+//! every connect failing.
 //!
-//! # Bounded, non-hanging
+//! # Why TCP egress only — and why it must be fast
 //!
-//! In a fully-fenced pod there is no resolver, so `getaddrinfo` on an off-list
-//! name blocks until its own multi-second timeout — long enough that the pod is
-//! torn down before the verdict is emitted. The DNS check therefore runs on a
-//! worker thread with a short join bound; not resolving within the bound is the
-//! expected fenced outcome, not a hang. Connects use a short timeout too. The
-//! sentinel is emitted promptly so it reaches the guest log within the workload's
-//! lifetime.
+//! The probe is deliberately narrow: it observes **TCP egress confinement** on
+//! the live guest (C6 channels 5 and 10 — in-shell / raw-socket egress). DNS
+//! fail-closed (channel 6) is a *separate* property, already gated by
+//! `the_dns_proxy_has_no_upstream_and_cannot_forward` and the pure
+//! `net::dnsmasq_config`; a fully default-deny pod has no resolver at all, so a
+//! DNS resolve there only *hangs* (`getaddrinfo` blocks on its own multi-second
+//! timeout) and observes nothing new.
+//!
+//! That hang matters because the workload's window is tiny: the tool-proxy comes
+//! up late (measured `proxy.health_wait` ≈ 5.7 s of a ~6 s boot), the workload is
+//! spawned only after it is healthy, and the guest is torn down shortly after. A
+//! probe that blocks even a few hundred ms may be killed before its sentinel
+//! drains to the console. So every check here is non-blocking: the socketpair is
+//! instant, and a denied connect returns `ENETUNREACH` immediately (the fenced
+//! guest has no route out). The verdict is emitted within a few ms of start.
 //!
 //! # Configuration (for the host-side falsifier)
 //!
@@ -59,19 +66,15 @@
 //! inside a netns.
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 const PASS_SENTINEL: &str = "NUCLEUS_EGRESS_PROBE: PASS";
 const FAIL_SENTINEL: &str = "NUCLEUS_EGRESS_PROBE: FAIL";
 
 const DEFAULT_DENY_TARGETS: &str = "1.1.1.1:443,8.8.8.8:53";
-const DEFAULT_DENY_NAME: &str = "example.com";
-const DEFAULT_TIMEOUT_MS: u64 = 700;
-const DNS_BOUND_MS: u64 = 700;
+const DEFAULT_TIMEOUT_MS: u64 = 500;
 
 fn main() {
     let mut fails: Vec<String> = Vec::new();
@@ -85,7 +88,6 @@ fn main() {
 
     check_positive_control(&mut fails);
     check_denied_connects(&mut fails, timeout);
-    check_denied_dns(&mut fails);
 
     if fails.is_empty() {
         // Both streams: the proxy drains stderr into the guest log, but a direct
@@ -176,39 +178,5 @@ fn check_denied_connects(fails: &mut Vec<String>, timeout: Duration) {
              posture check would pass vacuously"
                 .to_string(),
         );
-    }
-}
-
-/// NEGATIVE posture — resolving an off-allowlist name MUST NOT succeed. A guest
-/// with a resolver (dnsmasq via `net::dnsmasq_config`) fails closed on an
-/// unlisted name (`no-resolv`, no upstream); a fully default-deny pod has no
-/// resolver reachable at all. Either way the resolve must not return an address.
-///
-/// Bounded: `getaddrinfo` blocks on its own multi-second timeout when no resolver
-/// answers, which would outlive the pod. Run it on a worker thread and treat "no
-/// answer within the bound" as the expected fenced outcome — the sentinel must
-/// not wait on a resolver that is designed not to exist.
-fn check_denied_dns(fails: &mut Vec<String>) {
-    let name = std::env::var("NUCLEUS_EGRESS_PROBE_DENY_NAME")
-        .unwrap_or_else(|_| DEFAULT_DENY_NAME.to_string());
-    let (tx, rx) = mpsc::channel();
-    let probe_name = name.clone();
-    thread::spawn(move || {
-        // Port is irrelevant to resolution; :80 just makes it a valid host:port.
-        let resolved = (probe_name.as_str(), 80u16)
-            .to_socket_addrs()
-            .ok()
-            .and_then(|mut addrs| addrs.next());
-        let _ = tx.send(resolved);
-    });
-    match rx.recv_timeout(Duration::from_millis(DNS_BOUND_MS)) {
-        Ok(Some(addr)) => fails.push(format!(
-            "DNS resolved {name:?} to {addr} — the guest resolver is forwarding to an upstream \
-             instead of failing closed on an unlisted name"
-        )),
-        Ok(None) => eprintln!("NUCLEUS_EGRESS_CHECK: denied-dns {name:?} UNRESOLVED (ok)"),
-        Err(_) => {
-            eprintln!("NUCLEUS_EGRESS_CHECK: denied-dns {name:?} no answer within bound (ok)")
-        }
     }
 }

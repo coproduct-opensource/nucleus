@@ -349,10 +349,12 @@ jobs:
         run: |
           # The egress probe runs as the same booted workload (network.allow: []),
           # so the pod is under net::apply_default_deny. It asserts, from inside
-          # the live guest, that a non-allowlisted connect and an off-allowlist
-          # DNS name FAIL while loopback (the positive control) succeeds — i.e.
-          # the netns default-deny is applied on boot, converting C6 channels
-          # 5/10 from *documented* to *runtime-observed*. Same fail-closed shape
+          # the live guest, that a non-allowlisted TCP connect FAILS
+          # (ENETUNREACH) while a socketpair round-trip (the anti-vacuity positive
+          # control) succeeds — i.e. the netns default-deny is applied on boot,
+          # converting C6 channels 5/10 from *documented* to *runtime-observed*.
+          # (DNS fail-closed, channel 6, is gated separately by
+          # the_dns_proxy_has_no_upstream_and_cannot_forward.) Same fail-closed shape
           # as the workload probe: PASS must be PRESENT (a probe that never ran
           # emits nothing and must not read as conformant), FAIL must be ABSENT.
           state=/var/lib/nucleus/state

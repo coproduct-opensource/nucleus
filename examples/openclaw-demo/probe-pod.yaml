@@ -7,9 +7,9 @@
 #     /proc/self/{environ,fd,status,mountinfo}).
 #   - nucleus-egress-probe   — the C6 phase-2 backstop: with `network.allow: []`
 #     below the pod runs under `net::apply_default_deny`, and the probe asserts
-#     from inside the booted guest that a non-allowlisted connect and an
-#     off-allowlist DNS name both FAIL while loopback (the positive control)
-#     succeeds — i.e. the netns default-deny is applied on the live guest.
+#     from inside the booted guest that a non-allowlisted TCP connect FAILS while
+#     a socketpair round-trip (the anti-vacuity positive control) succeeds — i.e.
+#     the netns default-deny is applied on the live guest.
 # The demo pod stays workload-free; this is the boot-gate variant.
 apiVersion: nucleus/v1
 kind: Pod
