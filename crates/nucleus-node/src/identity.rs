@@ -13,14 +13,14 @@
 
 use nucleus_identity::{
     CaClient, Identity, LaunchAttestation, SecretManager, SelfSignedCa, VmRegistry,
-    WorkloadApiClient, WorkloadApiServer,
+    WorkloadApiClient,
 };
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Identity manager for the node daemon.
