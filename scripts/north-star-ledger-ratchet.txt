@@ -60,11 +60,13 @@
 #   overclaim, vacuously satisfied. Re-earning is the graph-unification arc
 #   (Phase 2/3/4) validated under boot-a-real-pod; see the C4 note in
 #   docs/north-star.md.
-# 2026-08-10: lowered 6 -> 4. Two promotions, both earned by the
-#   declassification graph-unification arc (#2227-#2236), each with a falsifier
-#   that reds on regression:
+# 2026-08-10: lowered 6 -> 4. Two promotions out of NOT-YET (C4 -> TESTED,
+#   C5 -> PROVED), both earned by the declassification graph-unification arc
+#   (#2227-#2236), each with a falsifier that reds on regression:
 #   * C4 ("a governor deliberately released with a single-use token") NOT-YET ->
-#     PROVED. The dead-mechanism inversion that demoted it is closed: the Ed25519
+#     TESTED (held one notch below PROVED: the single-use theorem holds and the
+#     release now fires live, but the shipping-path e2e is boot-gated — see below).
+#     The dead-mechanism inversion that demoted it is closed: the Ed25519
 #     apply is re-homed onto state.flow_graph — the graph the live egress verdict
 #     reads (#2235) — so a single-use token now FLIPS the egress verdict Deny->Pass
 #     for the committed value (declassify_rehome_egress.rs#c4_flip_back_on_one_graph)

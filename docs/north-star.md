@@ -82,7 +82,7 @@ status is a visible event, not an edit.
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
 | C2 | "nor those of any other pod" | NOT-YET | `docs/cross-pod-view.md` | — |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
-| C4 | "a governor deliberately released with a single-use token" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
+| C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
 | C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
@@ -162,9 +162,16 @@ What each status means, and what it deliberately does not:
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
-- **C4 (PROVED — re-promoted 2026-08-10; had been demoted earlier the same day).**
+- **C4 (TESTED — promoted from NOT-YET 2026-08-10; held one notch below PROVED
+  while the live-release e2e is boot-gated).**
   The clause names a specific live mechanism: a governor release via *a single-use
-  token*. Both legs now hold on the graph the shipping egress verdict reads.
+  token*. Both legs now hold on the graph the shipping egress verdict reads — but
+  because the release's *shipping-path conformance* is a boot-gated end-to-end
+  (proven mechanism + unit-level flip over the real `FlowGraph` type + endpoint
+  wiring verified by inspection, not yet a running-pod HTTP e2e), the honest row
+  status is TESTED, not PROVED. It returns to PROVED when a `boot-a-real-pod` e2e
+  shows a `POST /v1/declassify` token flipping a live verdict for the committed
+  value and denying a substituted one.
   * **Single-use, PROVED.** The absorbing `declass_step` machine (`no_second_apply`,
     `single_use`) over the Aeneas-extracted decision core, enforced by the shared
     one-shot burn ledger (`FlowGraph::release_burn_ledger`) and exercised at the
