@@ -34,6 +34,13 @@ ignore = [
   # version. Not exploitable here: no custom logger in these deps calls rand::rng().
   "RUSTSEC-2026-0097",
 
+  # lru unsound — use-after-free from lack of panic safety in `LruCache::pop()`.
+  # `unsound` class, not directly exploitable (needs a panic inside pop()).
+  # Transitive via iroh-blobs (→ nucleus-cli) and ratatui-core (→ exposure-playground,
+  # a dev TUI), both pinning lru 0.18 — no patched version reachable without an
+  # upstream bump. Drops when iroh/ratatui move to a fixed lru.
+  "RUSTSEC-2026-0253",
+
   # rustls-webpki 0.101.x URI name-constraint / wildcard-name vulns (2026-04-14).
   # Transitive via aws-smithy-http-client 1.1.12 → rustls 0.21 → rustls-webpki 0.101.
   # AWS SDK fix path: BehaviorVersion v2025_01_17+ (hyper 1.x + rustls 0.23).

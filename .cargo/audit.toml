@@ -25,6 +25,16 @@ ignore = [
     # successor yet; drops when age/i18n-embed-fl migrate off it.
     "RUSTSEC-2026-0173",
 
+    # lru unsound (RUSTSEC-2026-0253, filed 2026-05-12) — potential use-after-free
+    # from lack of panic safety in `LruCache::pop()`. `unsound` class, not a
+    # directly exploitable vulnerability; the UAF requires a panic inside pop() in
+    # a specific usage. Nucleus does not use lru directly — it is transitive via
+    # iroh-blobs (→ nucleus-cli) and ratatui-core (→ exposure-playground, a dev TUI),
+    # both of which pin lru 0.18, so there is no patched version reachable without
+    # an upstream iroh/ratatui bump. Same unsound/transitive/no-patched class as the
+    # rand and proc-macro-error ignores; drops when iroh/ratatui move to a fixed lru.
+    "RUSTSEC-2026-0253",
+
     # tracing-subscriber ANSI escape (RUSTSEC-2025-0055) — transitive via
     # risc0-zkvm → ark-relations. Feature-gated behind `zkvm`, not in default build.
     "RUSTSEC-2025-0055",
