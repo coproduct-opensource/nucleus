@@ -79,6 +79,38 @@ inductive extracted.credential.CredSink where
 | Guest : extracted.credential.CredSink
 | ExternalService : extracted.credential.CredSink
 
+/-- [nucleus_ifc_kernel::extracted::mediation::MedOperation]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 56:0-70:1
+    Visibility: public -/
+@[discriminant u8]
+inductive extracted.mediation.MedOperation where
+| ReadFiles : extracted.mediation.MedOperation
+| WriteFiles : extracted.mediation.MedOperation
+| EditFiles : extracted.mediation.MedOperation
+| RunBash : extracted.mediation.MedOperation
+| GlobSearch : extracted.mediation.MedOperation
+| GrepSearch : extracted.mediation.MedOperation
+| WebSearch : extracted.mediation.MedOperation
+| WebFetch : extracted.mediation.MedOperation
+| GitCommit : extracted.mediation.MedOperation
+| GitPush : extracted.mediation.MedOperation
+| CreatePr : extracted.mediation.MedOperation
+| ManagePods : extracted.mediation.MedOperation
+| SpawnAgent : extracted.mediation.MedOperation
+
+/-- [nucleus_ifc_kernel::extracted::declassify::DeclassState]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 98:0-101:1
+    Visibility: public -/
+structure extracted.declassify.DeclassState where
+  burned : Bool
+
+/-- [nucleus_ifc_kernel::extracted::declassify::DeclassStepResult]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 111:0-119:1
+    Visibility: public -/
+structure extracted.declassify.DeclassStepResult where
+  ok : Bool
+  next : extracted.declassify.DeclassState
+
 /-- [nucleus_ifc_kernel::extracted::egress::Dest]
     Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 52:0-57:1
     Visibility: public -/
@@ -104,25 +136,6 @@ inductive extracted.ifc_integrity.IntegLevel where
 | Adversarial : extracted.ifc_integrity.IntegLevel
 | Untrusted : extracted.ifc_integrity.IntegLevel
 | Trusted : extracted.ifc_integrity.IntegLevel
-
-/-- [nucleus_ifc_kernel::extracted::mediation::MedOperation]
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 56:0-70:1
-    Visibility: public -/
-@[discriminant u8]
-inductive extracted.mediation.MedOperation where
-| ReadFiles : extracted.mediation.MedOperation
-| WriteFiles : extracted.mediation.MedOperation
-| EditFiles : extracted.mediation.MedOperation
-| RunBash : extracted.mediation.MedOperation
-| GlobSearch : extracted.mediation.MedOperation
-| GrepSearch : extracted.mediation.MedOperation
-| WebSearch : extracted.mediation.MedOperation
-| WebFetch : extracted.mediation.MedOperation
-| GitCommit : extracted.mediation.MedOperation
-| GitPush : extracted.mediation.MedOperation
-| CreatePr : extracted.mediation.MedOperation
-| ManagePods : extracted.mediation.MedOperation
-| SpawnAgent : extracted.mediation.MedOperation
 
 /-- [nucleus_ifc_kernel::extracted::mediation::MedSinkClass]
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 76:0-96:1

@@ -15,6 +15,267 @@ set_option maxRecDepth 2048
 
 namespace nucleus_ifc_kernel
 
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::caprank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 34:0-40:1
+    Visibility: public -/
+def extracted.capability_quantale.caprank
+  (l : extracted.capability_quantale.CapLevel) : Result Std.U8 := do
+  match l with
+  | extracted.capability_quantale.CapLevel.Never => ok 0#u8
+  | extracted.capability_quantale.CapLevel.LowRisk => ok 1#u8
+  | extracted.capability_quantale.CapLevel.Always => ok 2#u8
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capunit]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 43:0-45:1
+    Visibility: public -/
+def extracted.capability_quantale.capunit
+  : Result extracted.capability_quantale.CapLevel := do
+  ok extracted.capability_quantale.CapLevel.Always
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capbot]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 48:0-50:1
+    Visibility: public -/
+def extracted.capability_quantale.capbot
+  : Result extracted.capability_quantale.CapLevel := do
+  ok extracted.capability_quantale.CapLevel.Never
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capmeet]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 54:0-56:1
+    Visibility: public -/
+def extracted.capability_quantale.capmeet
+  (a : extracted.capability_quantale.CapLevel)
+  (b : extracted.capability_quantale.CapLevel) :
+  Result extracted.capability_quantale.CapLevel
+  := do
+  let i ← extracted.capability_quantale.caprank a
+  let i1 ← extracted.capability_quantale.caprank b
+  if i <= i1
+  then ok a
+  else ok b
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capjoin]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 59:0-61:1
+    Visibility: public -/
+def extracted.capability_quantale.capjoin
+  (a : extracted.capability_quantale.CapLevel)
+  (b : extracted.capability_quantale.CapLevel) :
+  Result extracted.capability_quantale.CapLevel
+  := do
+  let i ← extracted.capability_quantale.caprank a
+  let i1 ← extracted.capability_quantale.caprank b
+  if i >= i1
+  then ok a
+  else ok b
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capleq]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 65:0-67:1
+    Visibility: public -/
+def extracted.capability_quantale.capleq
+  (a : extracted.capability_quantale.CapLevel)
+  (b : extracted.capability_quantale.CapLevel) :
+  Result Bool
+  := do
+  let i ← extracted.capability_quantale.caprank a
+  let i1 ← extracted.capability_quantale.caprank b
+  ok (i <= i1)
+
+/-- [nucleus_ifc_kernel::extracted::capability_quantale::capresidual]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/capability_quantale.rs', lines 72:0-74:1
+    Visibility: public -/
+def extracted.capability_quantale.capresidual
+  (a : extracted.capability_quantale.CapLevel)
+  (c : extracted.capability_quantale.CapLevel) :
+  Result extracted.capability_quantale.CapLevel
+  := do
+  let b ← extracted.capability_quantale.capleq a c
+  if b
+  then ok extracted.capability_quantale.CapLevel.Always
+  else ok c
+
+/-- [nucleus_ifc_kernel::extracted::channel::chanrank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 99:0-109:1
+    Visibility: public -/
+def extracted.channel.chanrank
+  (c : extracted.channel.ChannelKind) : Result Std.U8 := do
+  match c with
+  | extracted.channel.ChannelKind.Env => ok 0#u8
+  | extracted.channel.ChannelKind.Argv => ok 1#u8
+  | extracted.channel.ChannelKind.Cwd => ok 2#u8
+  | extracted.channel.ChannelKind.Stdio => ok 3#u8
+  | extracted.channel.ChannelKind.ExtraFd => ok 4#u8
+  | extracted.channel.ChannelKind.Uid => ok 5#u8
+  | extracted.channel.ChannelKind.Cmdline => ok 6#u8
+
+/-- [nucleus_ifc_kernel::extracted::identity::mat_label]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 155:0-169:1
+    Visibility: public -/
+def extracted.identity.mat_label
+  (m : extracted.identity.MaterialKind) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  match m with
+  | extracted.identity.MaterialKind.SvidCert =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.SvidPrivateKey =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.TrustBundle =>
+    ok extracted.ifc_confidentiality.ConfLevel.Public
+  | extracted.identity.MaterialKind.TaskToken =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.BrokerSecret =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.ApprovalSecret =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.SandboxToken =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.DlcCredentials =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.MaterialKind.ProxyAuthSecret =>
+    ok extracted.ifc_confidentiality.ConfLevel.Internal
+  | extracted.identity.MaterialKind.EgressEnv =>
+    ok extracted.ifc_confidentiality.ConfLevel.Public
+  | extracted.identity.MaterialKind.OrdinaryData =>
+    ok extracted.ifc_confidentiality.ConfLevel.Public
+
+/-- [nucleus_ifc_kernel::extracted::channel::is_public]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 112:0-114:1
+    Visibility: public -/
+def extracted.channel.is_public
+  (m : extracted.identity.MaterialKind) : Result Bool := do
+  let cl ← extracted.identity.mat_label m
+  match cl with
+  | extracted.ifc_confidentiality.ConfLevel.Public => ok true
+  | extracted.ifc_confidentiality.ConfLevel.Internal => ok false
+  | extracted.ifc_confidentiality.ConfLevel.Secret => ok false
+
+/-- [nucleus_ifc_kernel::extracted::ifc_confidentiality::crank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs', lines 33:0-39:1
+    Visibility: public -/
+def extracted.ifc_confidentiality.crank
+  (l : extracted.ifc_confidentiality.ConfLevel) : Result Std.U8 := do
+  match l with
+  | extracted.ifc_confidentiality.ConfLevel.Public => ok 0#u8
+  | extracted.ifc_confidentiality.ConfLevel.Internal => ok 1#u8
+  | extracted.ifc_confidentiality.ConfLevel.Secret => ok 2#u8
+
+/-- [nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs', lines 58:0-60:1
+    Visibility: public -/
+def extracted.ifc_confidentiality.cflows_to
+  (a : extracted.ifc_confidentiality.ConfLevel)
+  (ceiling : extracted.ifc_confidentiality.ConfLevel) :
+  Result Bool
+  := do
+  let i ← extracted.ifc_confidentiality.crank a
+  let i1 ← extracted.ifc_confidentiality.crank ceiling
+  ok (i <= i1)
+
+/-- [nucleus_ifc_kernel::extracted::identity::principal_ceiling]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 177:0-183:1
+    Visibility: public -/
+def extracted.identity.principal_ceiling
+  (p : extracted.identity.Principal) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  match p with
+  | extracted.identity.Principal.Host =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.Principal.GuestRuntime =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+  | extracted.identity.Principal.Workload =>
+    ok extracted.ifc_confidentiality.ConfLevel.Internal
+
+/-- [nucleus_ifc_kernel::extracted::identity::ident_may_deliver]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 192:0-194:1
+    Visibility: public -/
+def extracted.identity.ident_may_deliver
+  (m : extracted.identity.MaterialKind) (p : extracted.identity.Principal) :
+  Result Bool
+  := do
+  let cl ← extracted.identity.mat_label m
+  let cl1 ← extracted.identity.principal_ceiling p
+  extracted.ifc_confidentiality.cflows_to cl cl1
+
+/-- [nucleus_ifc_kernel::extracted::channel::channel_admits]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 122:0-130:1
+    Visibility: public -/
+def extracted.channel.channel_admits
+  (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind)
+  (p : extracted.identity.Principal) :
+  Result Bool
+  := do
+  match c with
+  | extracted.channel.ChannelKind.Env =>
+    extracted.identity.ident_may_deliver m p
+  | extracted.channel.ChannelKind.Argv =>
+    let b ← extracted.channel.is_public m
+    if b
+    then extracted.identity.ident_may_deliver m p
+    else ok false
+  | extracted.channel.ChannelKind.Cwd =>
+    let b ← extracted.channel.is_public m
+    if b
+    then extracted.identity.ident_may_deliver m p
+    else ok false
+  | extracted.channel.ChannelKind.Stdio => ok false
+  | extracted.channel.ChannelKind.ExtraFd => ok false
+  | extracted.channel.ChannelKind.Uid => ok false
+  | extracted.channel.ChannelKind.Cmdline =>
+    let b ← extracted.channel.is_public m
+    if b
+    then extracted.identity.ident_may_deliver m p
+    else ok false
+
+/-- [nucleus_ifc_kernel::extracted::channel::channel_reaches_workload]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 136:0-138:1
+    Visibility: public -/
+def extracted.channel.channel_reaches_workload
+  (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind) :
+  Result Bool
+  := do
+  extracted.channel.channel_admits c m extracted.identity.Principal.Workload
+
+/-- [nucleus_ifc_kernel::extracted::credential::sinkrank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/credential.rs', lines 50:0-55:1
+    Visibility: public -/
+def extracted.credential.sinkrank
+  (s : extracted.credential.CredSink) : Result Std.U8 := do
+  match s with
+  | extracted.credential.CredSink.Guest => ok 0#u8
+  | extracted.credential.CredSink.ExternalService => ok 1#u8
+
+/-- [nucleus_ifc_kernel::extracted::credential::sink_ceiling]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/credential.rs', lines 63:0-68:1
+    Visibility: public -/
+def extracted.credential.sink_ceiling
+  (s : extracted.credential.CredSink) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  match s with
+  | extracted.credential.CredSink.Guest =>
+    ok extracted.ifc_confidentiality.ConfLevel.Public
+  | extracted.credential.CredSink.ExternalService =>
+    ok extracted.ifc_confidentiality.ConfLevel.Secret
+
+/-- [nucleus_ifc_kernel::extracted::credential::cred_may_deliver]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/credential.rs', lines 77:0-79:1
+    Visibility: public -/
+def extracted.credential.cred_may_deliver
+  (label : extracted.ifc_confidentiality.ConfLevel)
+  (sink : extracted.credential.CredSink) :
+  Result Bool
+  := do
+  let cl ← extracted.credential.sink_ceiling sink
+  extracted.ifc_confidentiality.cflows_to label cl
+
+/-- [nucleus_ifc_kernel::extracted::credential::credential_may_reach]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/credential.rs', lines 86:0-88:1
+    Visibility: public -/
+def extracted.credential.credential_may_reach
+  (sink : extracted.credential.CredSink) : Result Bool := do
+  extracted.credential.cred_may_deliver
+    extracted.ifc_confidentiality.ConfLevel.Secret sink
+
 /-- [nucleus_ifc_kernel::extracted::mediation::opcode]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 100:0-116:1
     Visibility: public -/
@@ -34,6 +295,263 @@ def extracted.mediation.opcode
   | extracted.mediation.MedOperation.CreatePr => ok 10#u8
   | extracted.mediation.MedOperation.ManagePods => ok 11#u8
   | extracted.mediation.MedOperation.SpawnAgent => ok 12#u8
+
+/-- [nucleus_ifc_kernel::extracted::declassify::mask_admits]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 50:0-53:1
+    Visibility: public -/
+def extracted.declassify.mask_admits
+  (mask : Std.U16) (op : extracted.mediation.MedOperation) : Result Bool := do
+  let i ← extracted.mediation.opcode op
+  let bit ← 1#u16 <<< i
+  let i1 ← lift (mask &&& bit)
+  ok (i1 != 0#u16)
+
+/-- [nucleus_ifc_kernel::extracted::declassify::effective_conf]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 62:0-73:1
+    Visibility: public -/
+def extracted.declassify.effective_conf
+  (strict : extracted.ifc_confidentiality.ConfLevel)
+  (released : extracted.ifc_confidentiality.ConfLevel) (mask : Std.U16)
+  (op : extracted.mediation.MedOperation) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  let b ← extracted.declassify.mask_admits mask op
+  if b
+  then ok released
+  else ok strict
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_release_ok]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 78:0-86:1
+    Visibility: public -/
+def extracted.declassify.declass_release_ok
+  (strict : extracted.ifc_confidentiality.ConfLevel)
+  (released : extracted.ifc_confidentiality.ConfLevel) (mask : Std.U16)
+  (op : extracted.mediation.MedOperation)
+  (sink_cap : extracted.ifc_confidentiality.ConfLevel) :
+  Result Bool
+  := do
+  let cl ← extracted.declassify.effective_conf strict released mask op
+  extracted.ifc_confidentiality.cflows_to cl sink_cap
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_fresh]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 104:0-106:1
+    Visibility: public -/
+def extracted.declassify.declass_fresh
+  : Result extracted.declassify.DeclassState := do
+  ok { burned := false }
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_step]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 129:0-141:1
+    Visibility: public -/
+def extracted.declassify.declass_step
+  (state : extracted.declassify.DeclassState) (sig_ok : Bool)
+  (precond_ok : Bool) :
+  Result extracted.declassify.DeclassStepResult
+  := do
+  if state.burned
+  then ok { ok := false, next := { burned := true } }
+  else
+    if sig_ok
+    then
+      if precond_ok
+      then ok { ok := true, next := { burned := true } }
+      else ok { ok := false, next := { burned := false } }
+    else ok { ok := false, next := { burned := false } }
+
+/-- [nucleus_ifc_kernel::extracted::declassify::value_authorized]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 172:0-179:1
+    Visibility: public -/
+def extracted.declassify.value_authorized
+  (committed_bound : Bool) (recorded_present : Bool) (committed : Std.U64)
+  (recorded : Std.U64) :
+  Result Bool
+  := do
+  if committed_bound
+  then if recorded_present
+       then ok (committed = recorded)
+       else ok false
+  else ok false
+
+/-- [nucleus_ifc_kernel::extracted::egress::netmask]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 91:0-128:1
+    Visibility: public -/
+def extracted.egress.netmask (prefix1 : Std.U8) : Result Std.U32 := do
+  match prefix1 with
+  | 0#uscalar => ok 0#u32
+  | 1#uscalar => ok 2147483648#u32
+  | 2#uscalar => ok 3221225472#u32
+  | 3#uscalar => ok 3758096384#u32
+  | 4#uscalar => ok 4026531840#u32
+  | 5#uscalar => ok 4160749568#u32
+  | 6#uscalar => ok 4227858432#u32
+  | 7#uscalar => ok 4261412864#u32
+  | 8#uscalar => ok 4278190080#u32
+  | 9#uscalar => ok 4286578688#u32
+  | 10#uscalar => ok 4290772992#u32
+  | 11#uscalar => ok 4292870144#u32
+  | 12#uscalar => ok 4293918720#u32
+  | 13#uscalar => ok 4294443008#u32
+  | 14#uscalar => ok 4294705152#u32
+  | 15#uscalar => ok 4294836224#u32
+  | 16#uscalar => ok 4294901760#u32
+  | 17#uscalar => ok 4294934528#u32
+  | 18#uscalar => ok 4294950912#u32
+  | 19#uscalar => ok 4294959104#u32
+  | 20#uscalar => ok 4294963200#u32
+  | 21#uscalar => ok 4294965248#u32
+  | 22#uscalar => ok 4294966272#u32
+  | 23#uscalar => ok 4294966784#u32
+  | 24#uscalar => ok 4294967040#u32
+  | 25#uscalar => ok 4294967168#u32
+  | 26#uscalar => ok 4294967232#u32
+  | 27#uscalar => ok 4294967264#u32
+  | 28#uscalar => ok 4294967280#u32
+  | 29#uscalar => ok 4294967288#u32
+  | 30#uscalar => ok 4294967292#u32
+  | 31#uscalar => ok 4294967294#u32
+  | 32#uscalar => ok 4294967295#u32
+  | _ => ok 4294967295#u32
+
+/-- [nucleus_ifc_kernel::extracted::egress::in_cidr]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 136:0-139:1
+    Visibility: public -/
+def extracted.egress.in_cidr
+  (net : Std.U32) (prefix1 : Std.U8) (addr : Std.U32) : Result Bool := do
+  let m ← extracted.egress.netmask prefix1
+  let i ← lift (net &&& m)
+  let i1 ← lift (addr &&& m)
+  ok (i = i1)
+
+/-- [nucleus_ifc_kernel::extracted::egress::rule_matches]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 142:0-150:1
+    Visibility: public -/
+def extracted.egress.rule_matches
+  (rule : extracted.egress.Rule) (dest : extracted.egress.Dest) :
+  Result Bool
+  := do
+  let b ← extracted.egress.in_cidr rule.net rule.«prefix» dest.addr
+  if b
+  then if rule.port_specific
+       then ok (rule.port = dest.port)
+       else ok true
+  else ok false
+
+/-- [nucleus_ifc_kernel::extracted::egress::rule_admits]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 157:0-159:1
+    Visibility: public -/
+def extracted.egress.rule_admits
+  (rule : extracted.egress.Rule) (dest : extracted.egress.Dest) :
+  Result Bool
+  := do
+  let b ← extracted.egress.rule_matches rule dest
+  if b
+  then ok rule.allow
+  else ok false
+
+/-- [nucleus_ifc_kernel::extracted::identity::matcode]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 125:0-139:1
+    Visibility: public -/
+def extracted.identity.matcode
+  (m : extracted.identity.MaterialKind) : Result Std.U8 := do
+  match m with
+  | extracted.identity.MaterialKind.SvidCert => ok 0#u8
+  | extracted.identity.MaterialKind.SvidPrivateKey => ok 1#u8
+  | extracted.identity.MaterialKind.TrustBundle => ok 2#u8
+  | extracted.identity.MaterialKind.TaskToken => ok 3#u8
+  | extracted.identity.MaterialKind.BrokerSecret => ok 4#u8
+  | extracted.identity.MaterialKind.ApprovalSecret => ok 5#u8
+  | extracted.identity.MaterialKind.SandboxToken => ok 6#u8
+  | extracted.identity.MaterialKind.DlcCredentials => ok 7#u8
+  | extracted.identity.MaterialKind.ProxyAuthSecret => ok 8#u8
+  | extracted.identity.MaterialKind.EgressEnv => ok 9#u8
+  | extracted.identity.MaterialKind.OrdinaryData => ok 10#u8
+
+/-- [nucleus_ifc_kernel::extracted::identity::prinrank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 142:0-148:1
+    Visibility: public -/
+def extracted.identity.prinrank
+  (p : extracted.identity.Principal) : Result Std.U8 := do
+  match p with
+  | extracted.identity.Principal.Host => ok 0#u8
+  | extracted.identity.Principal.GuestRuntime => ok 1#u8
+  | extracted.identity.Principal.Workload => ok 2#u8
+
+/-- [nucleus_ifc_kernel::extracted::identity::identity_reaches_workload]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 200:0-202:1
+    Visibility: public -/
+def extracted.identity.identity_reaches_workload
+  (m : extracted.identity.MaterialKind) : Result Bool := do
+  extracted.identity.ident_may_deliver m extracted.identity.Principal.Workload
+
+/-- [nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs', lines 48:0-50:1
+    Visibility: public -/
+def extracted.ifc_confidentiality.cjoin
+  (a : extracted.ifc_confidentiality.ConfLevel)
+  (b : extracted.ifc_confidentiality.ConfLevel) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  let i ← extracted.ifc_confidentiality.crank a
+  let i1 ← extracted.ifc_confidentiality.crank b
+  if i >= i1
+  then ok a
+  else ok b
+
+/-- [nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_confidentiality.rs', lines 65:0-67:1
+    Visibility: public -/
+def extracted.ifc_confidentiality.crun_step
+  (eff : extracted.ifc_confidentiality.ConfLevel)
+  (src : extracted.ifc_confidentiality.ConfLevel) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  extracted.ifc_confidentiality.cjoin eff src
+
+/-- [nucleus_ifc_kernel::extracted::ifc_integrity::irank]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs', lines 71:0-77:1
+    Visibility: public -/
+def extracted.ifc_integrity.irank
+  (l : extracted.ifc_integrity.IntegLevel) : Result Std.U8 := do
+  match l with
+  | extracted.ifc_integrity.IntegLevel.Adversarial => ok 0#u8
+  | extracted.ifc_integrity.IntegLevel.Untrusted => ok 1#u8
+  | extracted.ifc_integrity.IntegLevel.Trusted => ok 2#u8
+
+/-- [nucleus_ifc_kernel::extracted::ifc_integrity::imeet]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs', lines 86:0-88:1
+    Visibility: public -/
+def extracted.ifc_integrity.imeet
+  (a : extracted.ifc_integrity.IntegLevel)
+  (b : extracted.ifc_integrity.IntegLevel) :
+  Result extracted.ifc_integrity.IntegLevel
+  := do
+  let i ← extracted.ifc_integrity.irank a
+  let i1 ← extracted.ifc_integrity.irank b
+  if i <= i1
+  then ok a
+  else ok b
+
+/-- [nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs', lines 96:0-98:1
+    Visibility: public -/
+def extracted.ifc_integrity.iflows_to
+  (a : extracted.ifc_integrity.IntegLevel)
+  (ceiling : extracted.ifc_integrity.IntegLevel) :
+  Result Bool
+  := do
+  let i ← extracted.ifc_integrity.irank a
+  let i1 ← extracted.ifc_integrity.irank ceiling
+  ok (i >= i1)
+
+/-- [nucleus_ifc_kernel::extracted::ifc_integrity::irun_step]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_integrity.rs', lines 103:0-105:1
+    Visibility: public -/
+def extracted.ifc_integrity.irun_step
+  (eff : extracted.ifc_integrity.IntegLevel)
+  (src : extracted.ifc_integrity.IntegLevel) :
+  Result extracted.ifc_integrity.IntegLevel
+  := do
+  extracted.ifc_integrity.imeet eff src
 
 /-- [nucleus_ifc_kernel::extracted::mediation::sinkcode]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 119:0-141:1
@@ -81,7 +599,7 @@ def extracted.mediation.scope_admits
   else ok false
 
 /-- [nucleus_ifc_kernel::extracted::mediation::med_idle]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 199:0-205:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 223:0-229:1
     Visibility: public -/
 def extracted.mediation.med_idle : Result extracted.mediation.MedState := do
   ok
@@ -92,7 +610,7 @@ def extracted.mediation.med_idle : Result extracted.mediation.MedState := do
     }
 
 /-- [nucleus_ifc_kernel::extracted::mediation::med_step]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 222:0-243:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 246:0-270:1
     Visibility: public -/
 def extracted.mediation.med_step
   (state : extracted.mediation.MedState)

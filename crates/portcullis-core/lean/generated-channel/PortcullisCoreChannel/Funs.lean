@@ -93,7 +93,7 @@ def extracted.capability_quantale.capresidual
   else ok c
 
 /-- [nucleus_ifc_kernel::extracted::channel::chanrank]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 95:0-104:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 99:0-109:1
     Visibility: public -/
 def extracted.channel.chanrank
   (c : extracted.channel.ChannelKind) : Result Std.U8 := do
@@ -138,7 +138,7 @@ def extracted.identity.mat_label
     ok extracted.ifc_confidentiality.ConfLevel.Public
 
 /-- [nucleus_ifc_kernel::extracted::channel::is_public]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 94:0-96:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 112:0-114:1
     Visibility: public -/
 def extracted.channel.is_public
   (m : extracted.identity.MaterialKind) : Result Bool := do
@@ -197,7 +197,7 @@ def extracted.identity.ident_may_deliver
   extracted.ifc_confidentiality.cflows_to cl cl1
 
 /-- [nucleus_ifc_kernel::extracted::channel::channel_admits]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 121:0-130:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 122:0-130:1
     Visibility: public -/
 def extracted.channel.channel_admits
   (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind)
@@ -227,7 +227,7 @@ def extracted.channel.channel_admits
     else ok false
 
 /-- [nucleus_ifc_kernel::extracted::channel::channel_reaches_workload]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 143:0-145:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/channel.rs', lines 136:0-138:1
     Visibility: public -/
 def extracted.channel.channel_reaches_workload
   (c : extracted.channel.ChannelKind) (m : extracted.identity.MaterialKind) :
@@ -275,6 +275,102 @@ def extracted.credential.credential_may_reach
   (sink : extracted.credential.CredSink) : Result Bool := do
   extracted.credential.cred_may_deliver
     extracted.ifc_confidentiality.ConfLevel.Secret sink
+
+/-- [nucleus_ifc_kernel::extracted::mediation::opcode]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 100:0-116:1
+    Visibility: public -/
+def extracted.mediation.opcode
+  (op : extracted.mediation.MedOperation) : Result Std.U8 := do
+  match op with
+  | extracted.mediation.MedOperation.ReadFiles => ok 0#u8
+  | extracted.mediation.MedOperation.WriteFiles => ok 1#u8
+  | extracted.mediation.MedOperation.EditFiles => ok 2#u8
+  | extracted.mediation.MedOperation.RunBash => ok 3#u8
+  | extracted.mediation.MedOperation.GlobSearch => ok 4#u8
+  | extracted.mediation.MedOperation.GrepSearch => ok 5#u8
+  | extracted.mediation.MedOperation.WebSearch => ok 6#u8
+  | extracted.mediation.MedOperation.WebFetch => ok 7#u8
+  | extracted.mediation.MedOperation.GitCommit => ok 8#u8
+  | extracted.mediation.MedOperation.GitPush => ok 9#u8
+  | extracted.mediation.MedOperation.CreatePr => ok 10#u8
+  | extracted.mediation.MedOperation.ManagePods => ok 11#u8
+  | extracted.mediation.MedOperation.SpawnAgent => ok 12#u8
+
+/-- [nucleus_ifc_kernel::extracted::declassify::mask_admits]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 50:0-53:1
+    Visibility: public -/
+def extracted.declassify.mask_admits
+  (mask : Std.U16) (op : extracted.mediation.MedOperation) : Result Bool := do
+  let i ← extracted.mediation.opcode op
+  let bit ← 1#u16 <<< i
+  let i1 ← lift (mask &&& bit)
+  ok (i1 != 0#u16)
+
+/-- [nucleus_ifc_kernel::extracted::declassify::effective_conf]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 62:0-73:1
+    Visibility: public -/
+def extracted.declassify.effective_conf
+  (strict : extracted.ifc_confidentiality.ConfLevel)
+  (released : extracted.ifc_confidentiality.ConfLevel) (mask : Std.U16)
+  (op : extracted.mediation.MedOperation) :
+  Result extracted.ifc_confidentiality.ConfLevel
+  := do
+  let b ← extracted.declassify.mask_admits mask op
+  if b
+  then ok released
+  else ok strict
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_release_ok]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 78:0-86:1
+    Visibility: public -/
+def extracted.declassify.declass_release_ok
+  (strict : extracted.ifc_confidentiality.ConfLevel)
+  (released : extracted.ifc_confidentiality.ConfLevel) (mask : Std.U16)
+  (op : extracted.mediation.MedOperation)
+  (sink_cap : extracted.ifc_confidentiality.ConfLevel) :
+  Result Bool
+  := do
+  let cl ← extracted.declassify.effective_conf strict released mask op
+  extracted.ifc_confidentiality.cflows_to cl sink_cap
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_fresh]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 104:0-106:1
+    Visibility: public -/
+def extracted.declassify.declass_fresh
+  : Result extracted.declassify.DeclassState := do
+  ok { burned := false }
+
+/-- [nucleus_ifc_kernel::extracted::declassify::declass_step]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 129:0-141:1
+    Visibility: public -/
+def extracted.declassify.declass_step
+  (state : extracted.declassify.DeclassState) (sig_ok : Bool)
+  (precond_ok : Bool) :
+  Result extracted.declassify.DeclassStepResult
+  := do
+  if state.burned
+  then ok { ok := false, next := { burned := true } }
+  else
+    if sig_ok
+    then
+      if precond_ok
+      then ok { ok := true, next := { burned := true } }
+      else ok { ok := false, next := { burned := false } }
+    else ok { ok := false, next := { burned := false } }
+
+/-- [nucleus_ifc_kernel::extracted::declassify::value_authorized]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/declassify.rs', lines 172:0-179:1
+    Visibility: public -/
+def extracted.declassify.value_authorized
+  (committed_bound : Bool) (recorded_present : Bool) (committed : Std.U64)
+  (recorded : Std.U64) :
+  Result Bool
+  := do
+  if committed_bound
+  then if recorded_present
+       then ok (committed = recorded)
+       else ok false
+  else ok false
 
 /-- [nucleus_ifc_kernel::extracted::egress::netmask]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/egress.rs', lines 91:0-128:1
@@ -457,26 +553,6 @@ def extracted.ifc_integrity.irun_step
   := do
   extracted.ifc_integrity.imeet eff src
 
-/-- [nucleus_ifc_kernel::extracted::mediation::opcode]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 100:0-116:1
-    Visibility: public -/
-def extracted.mediation.opcode
-  (op : extracted.mediation.MedOperation) : Result Std.U8 := do
-  match op with
-  | extracted.mediation.MedOperation.ReadFiles => ok 0#u8
-  | extracted.mediation.MedOperation.WriteFiles => ok 1#u8
-  | extracted.mediation.MedOperation.EditFiles => ok 2#u8
-  | extracted.mediation.MedOperation.RunBash => ok 3#u8
-  | extracted.mediation.MedOperation.GlobSearch => ok 4#u8
-  | extracted.mediation.MedOperation.GrepSearch => ok 5#u8
-  | extracted.mediation.MedOperation.WebSearch => ok 6#u8
-  | extracted.mediation.MedOperation.WebFetch => ok 7#u8
-  | extracted.mediation.MedOperation.GitCommit => ok 8#u8
-  | extracted.mediation.MedOperation.GitPush => ok 9#u8
-  | extracted.mediation.MedOperation.CreatePr => ok 10#u8
-  | extracted.mediation.MedOperation.ManagePods => ok 11#u8
-  | extracted.mediation.MedOperation.SpawnAgent => ok 12#u8
-
 /-- [nucleus_ifc_kernel::extracted::mediation::sinkcode]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 119:0-141:1
     Visibility: public -/
@@ -523,7 +599,7 @@ def extracted.mediation.scope_admits
   else ok false
 
 /-- [nucleus_ifc_kernel::extracted::mediation::med_idle]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 199:0-205:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 223:0-229:1
     Visibility: public -/
 def extracted.mediation.med_idle : Result extracted.mediation.MedState := do
   ok
@@ -534,7 +610,7 @@ def extracted.mediation.med_idle : Result extracted.mediation.MedState := do
     }
 
 /-- [nucleus_ifc_kernel::extracted::mediation::med_step]:
-    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 222:0-246:1
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 246:0-270:1
     Visibility: public -/
 def extracted.mediation.med_step
   (state : extracted.mediation.MedState)
