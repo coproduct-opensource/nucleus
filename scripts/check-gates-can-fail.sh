@@ -382,8 +382,18 @@ UNCOVERED_CEILING=2
 #     raw-I/O sink to the sealed effect home and asserts the finding count goes
 #     non-zero; it runs in the `mediated` job of dylint-separation.yml, BEFORE the
 #     enforcing run, every CI invocation.
+#   check-egress-probe.sh — is itself a falsifier, not a watcher of an external
+#     subject: it reconstructs the net::apply_default_deny fence in a netns and
+#     asserts the probe PASSes with it present, FAILs when OUTPUT is opened
+#     (State 2 — the reds-on-regression), and FAILs on an empty target list
+#     (State 3 — the anti-vacuity guard). Those two perturbations run every CI
+#     invocation in the `egress-probe-falsifier` job of quickstart-boot.yml. It is
+#     not probed here because it needs netns + iptables + sudo, and because its
+#     perturbation is internal — there is no external subject for this script to
+#     break.
 SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
+    "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
 )
 
 echo
