@@ -419,4 +419,108 @@ theorem no_replay_without_a_fresh_discharge
 #print axioms refusal_preserves_the_authority
 #print axioms no_replay_without_a_fresh_discharge
 
+/-! ## C6 Tier-A headline — the OUTBOUND analogue of C1
+
+    Everything above establishes the machine's step semantics. This section
+    states the C6 Phase-1 Tier-A property in the SAME shape as C1's
+    `ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`,
+    but for the OUTBOUND effect surface. Over the closed `MedSinkClass` enum —
+    the 1:1 mirror of the production 19-variant `SinkClass`, pinned by the Rust
+    test `the_mirror_covers_every_production_variant` — no sink is reachable from
+    a fresh, un-discharged context: every effect is refused unless a matching
+    authority was discharged first.
+
+    C1 needed a Secret/Public SPLIT because some inbound channels legitimately
+    carry public material. The outbound machine needs no such split: it demands a
+    held authority for EVERY sink class, so the strongest true statement
+    quantifies over the WHOLE enum, and the consequential (exfil) sinks are named
+    below as witnesses rather than as a weaker restriction.
+
+    Closure: a new sink class forces a `MedSinkClass` variant and a `sinkcode`
+    match arm (extraction fails otherwise), and
+    `the_mirror_covers_every_production_variant` reds if the mirror drifts from
+    production `SinkClass`, so the quantification stays total against the real
+    enum. -/
+
+/-- **`no_sink_reachable_without_discharge` — the C6 Tier-A flagship.** From the
+    idle state (`med_idle`: nothing discharged), stepping an `Effect` at ANY
+    `(operation, sink)` pair is refused. Complete mediation over the closed sink
+    enum at a single step — no discharge, no sink — the outbound dual of
+    `no_channel_delivers_secret_to_the_workload`. -/
+theorem no_sink_reachable_without_discharge
+    (o : MedOperation) (k : MedSinkClass) (idle : MedState) (r : StepResult)
+    (hidle : nucleus_ifc_kernel.extracted.mediation.med_idle = ok idle)
+    (hstep : nucleus_ifc_kernel.extracted.mediation.med_step idle
+              (MedAction.Effect o k) = ok r) :
+    r.ok = false := by
+  have hheld : idle.held = false := by
+    unfold nucleus_ifc_kernel.extracted.mediation.med_idle at hidle
+    injection hidle with h; subst h; rfl
+  cases hro : r.ok with
+  | false => rfl
+  | true =>
+    have hh := effect_requires_held idle o k r hstep hro
+    rw [hheld] at hh
+    exact Bool.noConfusion hh
+
+/-- **Non-vacuity (the control): a discharged sink IS reachable.** The gate is
+    not "refuse everything" — once the matching authority is discharged, the
+    effect at that exact `(operation, sink)` succeeds. Without this the flagship
+    is satisfied by a machine that admits nothing. -/
+theorem a_discharged_sink_is_reachable
+    (s : MedState) (o : MedOperation) (k : MedSinkClass)
+    (r1 r2 : StepResult)
+    (hdis : nucleus_ifc_kernel.extracted.mediation.med_step s
+              (MedAction.Discharge o k) = ok r1)
+    (heff : nucleus_ifc_kernel.extracted.mediation.med_step r1.next
+              (MedAction.Effect o k) = ok r2) :
+    r2.ok = true := by
+  obtain ⟨_, hheld, hop, hsink⟩ := discharge_holds_its_own_scope s o k r1 hdis
+  have hadm : nucleus_ifc_kernel.extracted.mediation.scope_admits
+                r1.next.op r1.next.sink o k = ok true := by
+    rw [hop, hsink]; exact scope_admits_refl o k
+  unfold nucleus_ifc_kernel.extracted.mediation.med_step at heff
+  simp only [hheld, if_true, hadm, bind_tc_ok] at heff
+  unfold nucleus_ifc_kernel.extracted.mediation.med_idle at heff
+  simp only [bind_tc_ok] at heff
+  injection heff with heq
+  subst heq
+  rfl
+
+/-- **Named consequential-sink witnesses.** The exfil vectors — HTTP egress, git
+    push, PR/comment write, email, cloud mutation, agent spawn, ticket write (the
+    production `SinkClass::is_exfil_vector` set) — each refused from idle. Stated
+    redundantly with the quantified flagship: if a sink is ever mislabelled so the
+    machine would admit it un-discharged, THIS turns red rather than the flagship
+    going silently vacuous. Mirrors C1's `the_env_channel_refuses_every_secret`.
+    Holds for every operation, since with nothing held the refusal is independent
+    of the attempted pair. -/
+theorem the_consequential_sinks_are_refused_from_idle (o : MedOperation)
+    (idle : MedState)
+    (hidle : nucleus_ifc_kernel.extracted.mediation.med_idle = ok idle) :
+    (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.HTTPEgress) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.GitPush) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.PRCommentWrite) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.EmailSend) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.CloudMutation) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.AgentSpawn) = ok r → r.ok = false)
+    ∧ (∀ r, nucleus_ifc_kernel.extracted.mediation.med_step idle
+            (MedAction.Effect o MedSinkClass.TicketWrite) = ok r → r.ok = false) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+    intro r hstep <;>
+    exact no_sink_reachable_without_discharge o _ idle r hidle hstep
+
+/-! ### Axiom audit — the C6 Tier-A additions -/
+
+#print axioms no_sink_reachable_without_discharge
+#print axioms a_discharged_sink_is_reachable
+#print axioms the_consequential_sinks_are_refused_from_idle
+
+
 end MediationScopeExtracted
