@@ -131,10 +131,14 @@
 #       each manifest-covered predicate has a live production call site (test
 #       regions excluded); deleting the call site reds it (perturbation-verified
 #       in check-gates-can-fail.sh).
-#   TESTED not PROVED, and scoped honestly: covers the predicates wired to live
-#   enforcement (identity delivery direct; mediation/declassify/egress mirrors)
-#   plus structural anchors for the by-construction ones; the mediation/credential
-#   /channel/capability-quantale predicates are structural/proof-only (C1/C6's job,
-#   not a runtime call). Evidence: scripts/check-extracted-callsites.sh.
+#   TESTED not PROVED, and scoped honestly (a call-site audit classified every
+#   extracted family and confirmed none is proven-but-silently-unwired): the wired
+#   families carry a live anchor -- identity (ident_may_deliver direct), mediation
+#   (classify_sink + authorizes/require_scope), declassify (authorize_release),
+#   egress (egress_chain), capability (CapabilityLevel ordering in the trifecta);
+#   channel (channel_admits) and credential (cred_may_deliver) are structural/
+#   proof-only BY DESIGN (C1's uid/no-channel fence; credential built from node
+#   env not the guest spec) and the gate anchors those constructions. 9 entries,
+#   COUNT pinned. Evidence: scripts/check-extracted-callsites.sh.
 CLAUSES=9
 NOT_YET=2

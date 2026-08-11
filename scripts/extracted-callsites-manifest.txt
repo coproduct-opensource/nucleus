@@ -25,10 +25,19 @@
 # silently leaving coverage is a visible event; the gate reds on a mismatch).
 
 A | identity::ident_may_deliver     | ident_may_deliver(  | crates/nucleus-tool-proxy/src/workload.rs      | the FM-5 delivery guard calls the extracted predicate directly
-B | mediation::sinkcode/scope_admits | classify_sink       | crates/portcullis/src/kernel.rs                | mirrors SinkClass; classify_sink computes it on the live PDP path
+B | mediation::sinkcode              | classify_sink       | crates/portcullis/src/kernel.rs                | mirrors SinkClass; classify_sink computes it on the live PDP path
+B | mediation::scope_admits          | authorizes(         | crates/portcullis-effects/src/lib.rs           | mirrors DischargedBundle::authorizes; require_scope calls it as the live effect-gate scope check
 B | declassify::value_authorized     | authorize_release   | crates/portcullis/src/flow_graph.rs            | mirrors the live declassify authorize path (C4/C5)
 B | egress::rule_admits              | egress_chain        | crates/nucleus-node/src/net.rs                 | mirrors the CIDR/port matcher egress_chain applies
-C | channel::channel_admits          | PUBLIC_RESERVED     | crates/nucleus-tool-proxy/src/workload.rs      | structural: C1's public-reserved / no-secret-channel fence (proven in Lean, not a runtime channel_admits call)
+B | capability_quantale::capleq      | >= CapabilityLevel  | crates/portcullis/src/capability.rs            | mirrors CapabilityLevel's ordering; the trifecta risk classification uses it live
+C | channel::channel_admits          | PUBLIC_RESERVED     | crates/nucleus-tool-proxy/src/workload.rs      | structural: C1's public-reserved / no-secret-channel fence (proven in Lean, no runtime channel_admits call by design)
+C | credential::cred_may_deliver     | store_from_node_environment | crates/nucleus-node/src/broker_launch.rs | structural: the broker builds its credential store from the NODE env, never the guest spec — a Secret credential never reaches the Guest sink by construction
 C | identity uid fence               | DEFAULT_WORKLOAD_UID | crates/nucleus-tool-proxy/src/workload.rs      | structural: the distinct-unprivileged-uid fence (C1)
 
-COUNT=6
+# ifc_integrity::iflows_to and ifc_confidentiality::cflows_to are the base
+# flows-to relations the decision predicates above are COMPOSED from
+# (cred_may_deliver = cflows_to(label, ceiling); scope/egress admit via iflows_to)
+# — they are exercised transitively by every entry that calls them, not given a
+# separate row.
+
+COUNT=9

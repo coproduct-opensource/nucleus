@@ -298,15 +298,22 @@ What each status means, and what it deliberately does not:
   dead code. `scripts/check-extracted-callsites.sh` (required, runs every PR via
   `ci.yml`) now asserts each manifest-covered predicate has a live production
   call site (production region, test blocks excluded); it reds if the call site
-  is deleted. **Honest ceiling:** this covers the predicates *wired* to live
-  enforcement — identity delivery (`ident_may_deliver`, a direct call), and the
-  mediation / declassify / egress mirrors (`classify_sink`, `authorize_release`,
-  `egress_chain`) — plus structural anchors for the by-construction ones. It does
-  NOT claim every extracted predicate is re-checked against a runtime call: the
-  mediation, credential, channel, and capability-quantale predicates are
-  structural / proof-only, enforced by construction (their soundness is C1/C6's
-  job, not a runtime predicate call). TESTED, not PROVED: the correspondence is a
-  build-system + grep-gate check, not a proof.
+  is deleted. Every extracted family is accounted for (a call-site audit confirmed
+  none is proven-but-silently-unwired): the **wired** ones carry a live anchor —
+  identity delivery (`ident_may_deliver`, a direct call to the extracted
+  predicate), mediation (`classify_sink` for `sinkcode`, and `authorizes` — the
+  effect-gate `require_scope` — for `scope_admits`), declassify
+  (`authorize_release`), egress (`egress_chain`), and the capability lattice
+  (`CapabilityLevel`'s ordering, used live in the trifecta classifier for
+  `capleq`); the genuinely **structural** ones carry their construction anchor —
+  `channel_admits` (C1's no-secret-channel / distinct-uid fence) and
+  `cred_may_deliver` (the broker builds its store from the node env, never the
+  guest spec, so a Secret credential never reaches the Guest sink by
+  construction). **Ceiling:** these two are proof-only *by design* — there is no
+  runtime predicate call to check, so the gate anchors the construction instead;
+  and the base flows-to relations (`iflows_to`/`cflows_to`) are exercised
+  transitively by the decision predicates. TESTED, not PROVED: the correspondence
+  is a build-system + grep-gate check, not a proof.
 - **C9 (NOT-YET — demoted 2026-08-08, was TESTED).** The external-verification
   leg is not wired end to end, so a relying party CANNOT yet verify from the
   outside. Concretely: `FETCH_SVID` serves a plain certificate
