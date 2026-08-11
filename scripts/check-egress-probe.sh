@@ -35,6 +35,11 @@ VETH_H=vethep-h
 VETH_N=vethep-n
 HOST_IP=10.201.77.1
 NS_IP=10.201.77.2
+# An UNPRIVILEGED port: the peer listener runs without sudo, and CI runners keep
+# net.ipv4.ip_unprivileged_port_start at 1024, so a privileged port (e.g. 443)
+# would fail to bind there and make the peer unreachable — which would look like
+# the fence blocking traffic when in fact nothing was listening.
+PEER_PORT=34443
 PEER=""          # host:port the probe treats as a denied target
 LISTENER_PID=""
 
@@ -139,23 +144,36 @@ cleanup   # clear any stale leftovers from a killed run
 "${SUDO[@]}" ip -n "$NS" link set "$VETH_N" up
 "${SUDO[@]}" ip -n "$NS" link set lo up
 "${SUDO[@]}" ip -n "$NS" route add default via "$HOST_IP"
-PEER="$HOST_IP:443"
 
 # A listener on the host end, so that with the fence OFF the probe's connect
 # genuinely SUCCEEDS (proving the fence — not a dead peer — is what blocks it).
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$HOST_IP" <<'PY' &
+    python3 - "$HOST_IP" "$PEER_PORT" <<'PY' &
 import socket,sys,time
 s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-s.bind((sys.argv[1],443)); s.listen(16); time.sleep(120)
+s.bind((sys.argv[1],int(sys.argv[2]))); s.listen(16); time.sleep(120)
 PY
     LISTENER_PID=$!
 elif command -v nc >/dev/null 2>&1; then
-    nc -l -k "$HOST_IP" 443 >/dev/null 2>&1 & LISTENER_PID=$!
+    nc -l -k "$HOST_IP" "$PEER_PORT" >/dev/null 2>&1 & LISTENER_PID=$!
 else
     echo "ERROR: need python3 or nc to run the peer listener"; exit 1
 fi
-sleep 1
+
+# Readiness: the "fence removed → FAIL" state only means something if the peer is
+# genuinely reachable when the fence is down. Confirm the listener accepts BEFORE
+# running any state, so a listener problem is diagnosed here, not mistaken for a
+# fence. Uses bash's /dev/tcp from the host (default) namespace.
+ready=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if (exec 3<>"/dev/tcp/$HOST_IP/$PEER_PORT") 2>/dev/null; then ready=1; exec 3>&- 3<&-; break; fi
+    sleep 0.3
+done
+if [[ "$ready" -ne 1 ]]; then
+    echo "ERROR: peer listener never came up on $HOST_IP:$PEER_PORT — cannot run the fence-removed state"
+    exit 1
+fi
+PEER="$HOST_IP:$PEER_PORT"
 
 # apply_default_deny, mirrored from crates/nucleus-node/src/net.rs:385.
 apply_default_deny() {
