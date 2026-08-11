@@ -80,7 +80,7 @@ status is a visible event, not an edit.
 | # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
 | --- | --- | --- | --- | --- |
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
-| C2 | "nor those of any other pod" | NOT-YET | `crates/portcullis-core/lean/PodCrossView.lean#cross_pod_noninterference`, `crates/nucleus-node/src/pod_api.rs#caller_may_manage_matches_the_podview_lineage_filter`, `docs/cross-pod-view.md` | `.github/workflows/portcullis-core-proven-lean.yml` |
+| C2 | "nor those of any other pod" | NOT-YET | `crates/portcullis-core/lean/PodCrossView.lean#cross_pod_noninterference`, `crates/nucleus-node/src/pod_api.rs#caller_may_manage_matches_the_podview_lineage_filter`, `crates/nucleus-node/src/pod_api.rs#pod_b_cannot_observe_pod_a_across_the_auth_and_filter_path`, `docs/cross-pod-view.md` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
@@ -172,17 +172,24 @@ What each status means, and what it deliberately does not:
   relation breaks the proof rather than silently passing). Clean axiom profile
   (⊆ `[propext, Classical.choice, Quot.sound]`), gated by the proven-lean
   workflow. **What keeps C2 NOT-YET:** (a) only `pods` of the 8 shared-mutable
-  fields is mechanized — the rest are not yet in-Lean (all excluded: two pending
-  defect fixes, five availability/cardinality channels the sentence already
-  excludes); (b) two fields are excluded *because their code is currently
-  defective* (`lockdown_tx` broadcast, #2203; the identity registry,
-  #2197/#2198/#2204) and re-enter the model only when fixed; (c) the model↔runtime
-  parity for the `pods` filter is now **tied** — `caller_may_manage_matches_the_podview_lineage_filter`
+  fields is mechanized — the rest are not yet in-Lean (five are
+  availability/cardinality channels the sentence already excludes); (b) the two
+  fields that were excluded *because their code was defective* are now fixed —
+  the `lockdown_tx` broadcast leak (#2203, server-side filter) and the node-wide
+  identity socket handing out an arbitrary cert+key (#2204, retired) both landed —
+  so `lockdown_tx` and the identity registry can now **re-enter** the model in a
+  later increment (they are unblocked, not yet mechanized); (c) the model↔runtime
+  parity for the `pods` filter is **tied** — `caller_may_manage_matches_the_podview_lineage_filter`
   pins the shipped listing/management predicate (`pod_api.rs`, live at #2199) to
-  the abstract `ownedBy` relation exhaustively over its id domain — but the
-  broader serving-path correspondence and (d) a two-pod boot e2e remain. "Any
-  other pod" is not yet earned end to end — this is the substrate, first surface,
-  and its runtime filter parity, honestly scoped.
+  the abstract `ownedBy` relation exhaustively; (d) the cross-pod isolation is now
+  tested **over the live request path** — `pod_b_cannot_observe_pod_a_across_the_auth_and_filter_path`
+  drives both functions a request traverses (auth `identify_caller` + filter
+  `caller_may_manage`) through the B-cannot-observe-A scenario, including the
+  forgery the auth exists to stop. What remains: re-entering the now-unblocked
+  fields, a fully-booted-node HTTP e2e, and VM-level guest isolation (partly
+  covered by `scripts/net-guest-isolation-check.sh`). "Any other pod" is not yet
+  earned end to end — the substrate, first surface, filter parity, and
+  request-path isolation are in; the full booted-node proof is not.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.

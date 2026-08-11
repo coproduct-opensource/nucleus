@@ -245,6 +245,63 @@ mod ownership_tests {
         );
     }
 
+    /// **C2 cross-pod isolation, exercised over the live request path.** A pod's
+    /// listing is filtered by lineage — but only if the two functions a request
+    /// actually traverses agree: the node must (1) identify the caller from the
+    /// token it minted, then (2) filter by that identity. The `caller_may_manage`
+    /// tests above cover (2) in isolation; the `pod_caller_identity` tests cover
+    /// (1). This drives BOTH together through the pod-B-cannot-observe-pod-A
+    /// scenario, INCLUDING the forgery `identify_caller` exists to stop — a pod
+    /// that could claim another's identity would bypass the filter entirely.
+    ///
+    /// It is the request-path integration of the same relation `PodCrossView.lean`
+    /// proves and increment 2 pinned to the shipped predicate: auth binds the
+    /// caller, the filter isolates by lineage, and forgery is rejected. (VM-level
+    /// guest isolation and a fully-booted-node HTTP e2e are separate.)
+    #[test]
+    fn pod_b_cannot_observe_pod_a_across_the_auth_and_filter_path() {
+        use crate::pod_caller_identity::{derive_token, identify_caller};
+        const SECRET: &[u8] = b"node-wide-management-secret";
+        // A and B are node-created siblings — neither is the other's parent.
+        let (a, b, a_child) = (a(), b(), child_of_a());
+
+        // (1) Auth: B presents its OWN token and is identified as B.
+        let b_token = derive_token(SECRET, b);
+        assert_eq!(
+            identify_caller(SECRET, Some(&b.to_string()), Some(&b_token)),
+            Ok(b),
+            "B's own token must identify it as B"
+        );
+
+        // The attack the whole mechanism exists to stop: B, holding only its own
+        // token, cannot CLAIM to be A — else the lineage filter below is bypassed.
+        assert!(
+            identify_caller(SECRET, Some(&a.to_string()), Some(&b_token)).is_err(),
+            "B's token must NOT authenticate as A"
+        );
+
+        // (2) Filter: identified as B, the listing excludes sibling A and A's
+        // child, and keeps B itself.
+        assert!(!caller_may_manage(Some(b), a, None), "B must not see sibling A");
+        assert!(
+            !caller_may_manage(Some(b), a_child, Some(a)),
+            "B must not see A's child"
+        );
+        assert!(caller_may_manage(Some(b), b, None), "B still sees itself");
+
+        // Symmetric non-vacuity: A, correctly identified from its own token, DOES
+        // see A and A's child — so the isolation is not the vacuous "nobody sees
+        // anything" — but still not sibling B.
+        let a_token = derive_token(SECRET, a);
+        assert_eq!(
+            identify_caller(SECRET, Some(&a.to_string()), Some(&a_token)),
+            Ok(a)
+        );
+        assert!(caller_may_manage(Some(a), a, None));
+        assert!(caller_may_manage(Some(a), a_child, Some(a)));
+        assert!(!caller_may_manage(Some(a), b, None), "A must not see sibling B");
+    }
+
     /// A grandchild is NOT reachable: the rule is direct children, not the
     /// descendant closure. Pinned so the narrower scope is a decision on record
     /// rather than something a later reader assumes is a bug.
