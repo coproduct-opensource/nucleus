@@ -80,7 +80,7 @@ status is a visible event, not an edit.
 | # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
 | --- | --- | --- | --- | --- |
 | C1 | "learn the secrets Nucleus holds on its behalf" | PROVED | `crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean#identity_material_never_reaches_the_workload`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-tool-proxy/src/workload.rs#DEFAULT_WORKLOAD_UID`, `crates/nucleus-tool-proxy/src/workload.rs#PUBLIC_RESERVED` | `scripts/check-c1-inbound-fences.sh` |
-| C2 | "nor those of any other pod" | NOT-YET | `crates/portcullis-core/lean/PodCrossView.lean#cross_pod_noninterference`, `crates/nucleus-node/src/pod_api.rs#caller_may_manage_matches_the_podview_lineage_filter`, `crates/nucleus-node/src/pod_api.rs#pod_b_cannot_observe_pod_a_across_the_auth_and_filter_path`, `scripts/cross-pod-lineage-check.sh`, `docs/cross-pod-view.md` | `.github/workflows/portcullis-core-proven-lean.yml` |
+| C2 | "nor those of any other pod" | NOT-YET | `crates/portcullis-core/lean/PodCrossView.lean#cross_pod_noninterference`, `crates/nucleus-node/src/pod_api.rs#caller_may_manage_matches_the_podview_lineage_filter`, `crates/nucleus-node/src/pod_api.rs#pod_b_cannot_observe_pod_a_across_the_auth_and_filter_path`, `scripts/cross-pod-lineage-check.sh`, `scripts/cross-pod-scoped-check.sh`, `docs/cross-pod-view.md` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
@@ -189,15 +189,24 @@ What each status means, and what it deliberately does not:
   on a **running node** — `scripts/cross-pod-lineage-check.sh` boots the real
   `nucleus-node` (KVM-free local driver), creates two sibling pods and a child of
   one through the real signed `POST /v1/pods`, and asserts the listing serves the
-  recorded `parent_pod_id` (child→parent; siblings top-level). What remains: the
-  **scoped filter on a fully booted node** (a request carrying a pod's own caller
-  token, which is derived from a node-only secret and served over the per-pod
-  vsock — deliberately unforgeable — so it needs a real Firecracker pod, not the
-  local driver); re-entering the now-unblocked `lockdown_tx`/identity fields; and
-  VM-level guest isolation (partly covered by `net-guest-isolation-check.sh`).
-  "Any other pod" is not yet earned end to end — the substrate, first surface,
-  filter parity, request-path isolation, and live-node lineage are in; the fully
-  booted scoped proof is not.
+  recorded `parent_pod_id` (child→parent; siblings top-level); (f) the **scoped
+  exclusion itself** is verified on a running node — `scripts/cross-pod-scoped-check.sh`
+  boots the real node, creates an orchestrator pod A and a non-lineage sibling B,
+  and drives A's tool-proxy `POST /v1/pod/list` presenting A's OWN node-minted
+  caller token: the node scopes the listing server-side (`caller_may_manage`) so
+  A sees A but **not** B — a strict subset of the operator view that sees both.
+  This runs KVM-free because a pod's caller token is
+  `derive_token(caller_secret, id)` whether delivered as a local-driver env var or
+  over the Firecracker vsock — its unforgeability rests on the node-only
+  `caller_secret`, not on the transport (correcting an earlier over-strong note
+  that this "needs a real Firecracker pod"). What remains: a **two-pod Firecracker
+  boot** exercising the same path with the token delivered over the real vsock
+  (transport + real-guest-origin fidelity, `quickstart-boot`); re-entering the
+  now-unblocked `lockdown_tx`/identity fields; and VM-level guest isolation (partly
+  covered by `net-guest-isolation-check.sh`). "Any other pod" is not yet earned end
+  to end — the substrate, first surface, filter parity, request-path isolation,
+  live-node lineage, and running-node scoped exclusion are in; the Firecracker
+  two-pod boot is not.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.

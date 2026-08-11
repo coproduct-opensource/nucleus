@@ -1606,6 +1606,12 @@ async fn spawn_local_pod(
             "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET",
             &state.proxy_auth_secret,
         );
+        // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
+        command.env("NUCLEUS_POD_ID", id.to_string());
+        command.env(
+            "NUCLEUS_POD_CALLER_TOKEN",
+            pod_caller_identity::derive_token(state.caller_secret.as_ref(), id),
+        );
         // Pass delegation ceiling from pod metadata if provided
         if let Some(ceiling) = spec.metadata.labels.get("delegation_ceiling") {
             command.env("NUCLEUS_TOOL_PROXY_DELEGATION_CEILING", ceiling);

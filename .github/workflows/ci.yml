@@ -280,6 +280,12 @@ jobs:
           NUCLEUS_CLI_BIN=target/debug/nucleus \
           NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy \
             scripts/cross-pod-lineage-check.sh
+      - name: A pod's own scoped listing excludes a non-lineage sibling (C2)
+        run: |
+          NUCLEUS_NODE_BIN=target/debug/nucleus-node \
+          NUCLEUS_CLI_BIN=target/debug/nucleus \
+          NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy \
+            scripts/cross-pod-scoped-check.sh
 
   # Every gate above is a claim that something is checked. This checks the claim.
   #
