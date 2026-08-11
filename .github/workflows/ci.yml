@@ -257,6 +257,30 @@ jobs:
         shell: bash
         run: scripts/check-extracted-callsites.sh
 
+  # C2 — the node records pod lineage on the LIVE path. Boots the real
+  # nucleus-node with the KVM-free local-driver (so no Firecracker/KVM is needed),
+  # creates two sibling pods and a child through the real signed POST /v1/pods,
+  # and asserts the listing serves the recorded parent_pod_id — the input the
+  # cross-pod scoping filter reads. The scoped filter itself is function-tested
+  # (pod_api ownership tests); this covers the lineage it depends on, end to end.
+  cross-pod-lineage:
+    name: The node records pod lineage on the live path (C2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: true
+      - name: Build node (local-driver) + cli + tool-proxy
+        run: cargo build -p nucleus-node --features local-driver -p nucleus-cli -p nucleus-tool-proxy
+      - name: The create API records lineage the listing serves
+        run: |
+          NUCLEUS_NODE_BIN=target/debug/nucleus-node \
+          NUCLEUS_CLI_BIN=target/debug/nucleus \
+          NUCLEUS_TOOL_PROXY_BIN=target/debug/nucleus-tool-proxy \
+            scripts/cross-pod-lineage-check.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and

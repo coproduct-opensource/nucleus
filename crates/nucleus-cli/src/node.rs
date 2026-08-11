@@ -49,6 +49,12 @@ pub enum NodeCommand {
     Create {
         /// Path to pod spec YAML file
         spec_file: PathBuf,
+        /// Record this pod as a child of the given parent pod id (sets the
+        /// `x-nucleus-parent-pod-id` header). For orchestrator/test use — the
+        /// header is unauthenticated, so a real pod's lineage is instead
+        /// established by the node from the authenticated caller.
+        #[arg(long)]
+        parent_pod_id: Option<String>,
     },
 
     /// Cancel (stop) a pod
@@ -91,8 +97,18 @@ pub async fn execute(args: NodeArgs) -> Result<()> {
     match args.command {
         NodeCommand::Health => health(&args.url, &auth_secret, &args.actor).await,
         NodeCommand::Pods => list_pods(&args.url, &auth_secret, &args.actor).await,
-        NodeCommand::Create { spec_file } => {
-            create_pod(&args.url, &auth_secret, &args.actor, &spec_file).await
+        NodeCommand::Create {
+            spec_file,
+            parent_pod_id,
+        } => {
+            create_pod(
+                &args.url,
+                &auth_secret,
+                &args.actor,
+                &spec_file,
+                parent_pod_id.as_deref(),
+            )
+            .await
         }
         NodeCommand::Cancel { pod_id } => {
             cancel_pod(&args.url, &auth_secret, &args.actor, &pod_id).await
@@ -227,7 +243,13 @@ async fn list_pods(url: &str, secret: &[u8], actor: &str) -> Result<()> {
     }
 }
 
-async fn create_pod(url: &str, secret: &[u8], actor: &str, spec_file: &PathBuf) -> Result<()> {
+async fn create_pod(
+    url: &str,
+    secret: &[u8],
+    actor: &str,
+    spec_file: &PathBuf,
+    parent_pod_id: Option<&str>,
+) -> Result<()> {
     let agent = create_agent();
     let endpoint = format!("{url}/v1/pods");
 
@@ -247,6 +269,9 @@ async fn create_pod(url: &str, secret: &[u8], actor: &str, spec_file: &PathBuf) 
         req = req.header(key, value);
     }
     req = req.header("content-type", "application/json");
+    if let Some(parent) = parent_pod_id {
+        req = req.header("x-nucleus-parent-pod-id", parent);
+    }
 
     match req.send(&body) {
         Ok(mut response) => {
