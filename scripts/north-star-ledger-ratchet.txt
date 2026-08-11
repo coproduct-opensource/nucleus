@@ -117,5 +117,24 @@
 #   and the theorem proves only the API surface. Evidence handle:
 #   scripts/check-egress-probe.sh (reds if the live-path backstop regresses);
 #   no_channel_is_an_open_hole reds if any channel becomes an open hole.
+# 2026-08-11: lowered 3 -> 2. C8 ("re-checked on every change") NOT-YET -> TESTED.
+#   Two gaps closed:
+#   (a) aeneas-ifc-scoped.yml's paths filter was an allowlist of the extracted
+#       Lean files that MISSED the production types the parity tests bind against
+#       (IFCLabel/SinkClass/ConfLevel in ifc_ops.rs/lib.rs) -- so a change to the
+#       enforcement the theorems mirror did not re-run the proof. Now triggers on
+#       the whole crates/nucleus-ifc-kernel/** domain (derived, not enumerated).
+#   (b) Nothing checked the extracted predicates are still WIRED into the live
+#       path (a theorem about an uncalled fn is a proof about dead code). New
+#       required gate scripts/check-extracted-callsites.sh (runs every PR via
+#       ci.yml, covers the live-path crates the scoped proof job does not) asserts
+#       each manifest-covered predicate has a live production call site (test
+#       regions excluded); deleting the call site reds it (perturbation-verified
+#       in check-gates-can-fail.sh).
+#   TESTED not PROVED, and scoped honestly: covers the predicates wired to live
+#   enforcement (identity delivery direct; mediation/declassify/egress mirrors)
+#   plus structural anchors for the by-construction ones; the mediation/credential
+#   /channel/capability-quantale predicates are structural/proof-only (C1/C6's job,
+#   not a runtime call). Evidence: scripts/check-extracted-callsites.sh.
 CLAUSES=9
-NOT_YET=3
+NOT_YET=2

@@ -241,6 +241,22 @@ jobs:
         shell: bash
         run: scripts/check-north-star-ledger.sh
 
+  # C8 — the Aeneas-extracted predicates carry the flagship theorems; this
+  # asserts each manifest-covered predicate still has a LIVE production call site
+  # (production region, test blocks excluded), so a theorem cannot silently
+  # become a proof about dead code. Runs on every PR (no path filter), so it
+  # covers the live-path crates (nucleus-tool-proxy spawn path, portcullis
+  # kernel) that the scoped Aeneas proof job's trigger does not.
+  extracted-callsites:
+    name: Extracted predicates have live call sites (C8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every extracted predicate's enforcement is still wired
+        shell: bash
+        run: scripts/check-extracted-callsites.sh
+
   # Every gate above is a claim that something is checked. This checks the claim.
   #
   # It needs full history and a clean tree because it PERTURBS real files and

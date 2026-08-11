@@ -1,0 +1,34 @@
+# C8 — the extracted predicates' live call sites, as a checked manifest.
+#
+# The Aeneas-extracted predicates in `nucleus_ifc_kernel::extracted::*` carry the
+# noninterference/mediation theorems. A proof is only about the code that ships
+# if the production enforcement it models is still WIRED into the live path — a
+# predicate proven about a function nobody calls is a proof about dead code.
+#
+# `scripts/check-extracted-callsites.sh` reads this file and, for each entry,
+# asserts the named anchor still appears in a NON-test region of the named
+# production file (≥1 occurrence, count printed). Deleting the live call site
+# reds the gate.
+#
+# Three honest classes (the class is documentation of WHY the binding holds; the
+# gate mechanism is the same grep for all):
+#   A  direct     — production calls the EXTRACTED predicate itself.
+#   B  mirror      — production calls a fn the extracted predicate is parity-bound
+#                    to (the extracted fn mirrors it; parity tests pin them equal).
+#   C  structural  — enforced by construction, no runtime predicate call by design;
+#                    the anchor is the live structural artifact that stands in for
+#                    the call. "Proof-only" is itself a checked claim with a live
+#                    anchor, not an escape hatch.
+#
+# Format:  CLASS | extracted predicate (family) | anchor (literal) | file | note
+# Blank lines and #-comments are ignored. COUNT= pins the population (a family
+# silently leaving coverage is a visible event; the gate reds on a mismatch).
+
+A | identity::ident_may_deliver     | ident_may_deliver(  | crates/nucleus-tool-proxy/src/workload.rs      | the FM-5 delivery guard calls the extracted predicate directly
+B | mediation::sinkcode/scope_admits | classify_sink       | crates/portcullis/src/kernel.rs                | mirrors SinkClass; classify_sink computes it on the live PDP path
+B | declassify::value_authorized     | authorize_release   | crates/portcullis/src/flow_graph.rs            | mirrors the live declassify authorize path (C4/C5)
+B | egress::rule_admits              | egress_chain        | crates/nucleus-node/src/net.rs                 | mirrors the CIDR/port matcher egress_chain applies
+C | channel::channel_admits          | PUBLIC_RESERVED     | crates/nucleus-tool-proxy/src/workload.rs      | structural: C1's public-reserved / no-secret-channel fence (proven in Lean, not a runtime channel_admits call)
+C | identity uid fence               | DEFAULT_WORKLOAD_UID | crates/nucleus-tool-proxy/src/workload.rs      | structural: the distinct-unprivileged-uid fence (C1)
+
+COUNT=6

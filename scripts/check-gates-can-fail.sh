@@ -322,6 +322,23 @@ perturb_declassify_value_unbind() {
     fi
 }
 
+perturb_extracted_callsite() {
+    local f="$1"
+    # Break the live call to the extracted ident_may_deliver predicate (the FM-5
+    # delivery guard, manifest class A). Its production occurrence count drops to
+    # zero, so check-extracted-callsites.sh must red — a theorem about a predicate
+    # nothing on the live path calls is a proof about dead code.
+    sed -i.gate-bak \
+        's|if !ident_may_deliver(entry.material|if !ident_may_deliver_REMOVED(entry.material|' \
+        "$f"
+    rm -f "$f.gate-bak"
+    if ! grep -q 'ident_may_deliver_REMOVED' "$f"; then
+        echo "  ERROR: the ident_may_deliver call site in workload.rs changed shape;"
+        echo "         this perturbation no longer applies and must be updated."
+        return 1
+    fi
+}
+
 probe check-line-ratchet.sh   "--strict" crates/portcullis/src/kernel.rs \
       "400 lines past the ceiling"            perturb_line_ratchet
 probe check-mediation.sh      "" crates/nucleus-tool-proxy/src/egress.rs \
@@ -355,6 +372,10 @@ probe check-c1-inbound-fences.sh "" crates/nucleus-tool-proxy/src/workload.rs \
 probe check-declassify-value-bound.sh "" crates/portcullis/src/flow_graph.rs \
       "value_binding_ok neutered to accept a substituted value" \
       perturb_declassify_value_unbind
+
+probe check-extracted-callsites.sh "" crates/nucleus-tool-proxy/src/workload.rs \
+      "the live ident_may_deliver call site removed" \
+      perturb_extracted_callsite
 
 # ── Uncovered, listed rather than omitted ─────────────────────────────────
 #
