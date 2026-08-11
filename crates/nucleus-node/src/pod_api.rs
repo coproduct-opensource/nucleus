@@ -282,7 +282,10 @@ mod ownership_tests {
 
         // (2) Filter: identified as B, the listing excludes sibling A and A's
         // child, and keeps B itself.
-        assert!(!caller_may_manage(Some(b), a, None), "B must not see sibling A");
+        assert!(
+            !caller_may_manage(Some(b), a, None),
+            "B must not see sibling A"
+        );
         assert!(
             !caller_may_manage(Some(b), a_child, Some(a)),
             "B must not see A's child"
@@ -299,7 +302,10 @@ mod ownership_tests {
         );
         assert!(caller_may_manage(Some(a), a, None));
         assert!(caller_may_manage(Some(a), a_child, Some(a)));
-        assert!(!caller_may_manage(Some(a), b, None), "A must not see sibling B");
+        assert!(
+            !caller_may_manage(Some(a), b, None),
+            "A must not see sibling B"
+        );
     }
 
     /// A grandchild is NOT reachable: the rule is direct children, not the
