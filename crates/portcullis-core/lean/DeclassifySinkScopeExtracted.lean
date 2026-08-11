@@ -322,7 +322,18 @@ def releases (cb rp : Bool) (c r : Std.U64) : Bool := cb && rp && (c == r)
 theorem releases_eq_value_authorized (cb rp : Bool) (c r : Std.U64) :
     value_authorized cb rp c r = ok (releases cb rp c r) := by
   unfold value_authorized releases
-  cases cb <;> cases rp <;> simp
+  -- The fresh Aeneas extraction renders the Rust `committed == recorded` (U64)
+  -- as `decide (committed = recorded)`, whereas `releases` uses the `BEq` form
+  -- `c == r`: propositionally but NOT definitionally equal, so the old bare
+  -- `simp` (and a plain `rfl`) leave the (true,true) branch open and elaborate to
+  -- `sorryAx`. Close it with EXPLICIT, drift-stable tactics only (no reliance on
+  -- the mutable default `simp` set): collapse the nested Bool `if`s, then per
+  -- branch finish by `rfl` (the three deny branches) or by normalizing `==` to
+  -- `decide (·=·)` with `Bool.beq_eq_decide_eq` (the release branch).
+  cases cb <;> cases rp <;>
+    simp only [Bool.false_eq_true, if_false, if_true, reduceCtorEq, reduceIte,
+               Bool.true_and, Bool.and_true, ok.injEq] <;>
+    first | rfl | rw [Bool.beq_eq_decide_eq]
 
 /-- A run's observable outcome: a released value, or a denial. -/
 inductive Outcome where
