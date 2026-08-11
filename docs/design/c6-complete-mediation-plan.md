@@ -6,6 +6,14 @@ the confidentiality ledger (`docs/north-star.md`), written the way the
 declassification arc (#2227–#2238) was scoped, so a direction can be approved
 before any multi-PR execution.
 
+> **Execution status (2026-08-11):** Phase 0 (inventory) landed — the closed
+> `EgressChannel` table lives in `docs/architecture/mediated-set.md` with the
+> `documented_inventory_equals_the_enum` parity test. Phase 1a (Tier-A theorem
+> `no_sink_reachable_without_discharge`, #2241) and Phase 1b (the `mediated`
+> lint enforced-at-zero over `portcullis-effects`, #2244) landed. C6 remains
+> **NOT-YET**; Phase 2 (network backstop proven fail-closed on boot) and Phase 3
+> (`effects()` hatch + bash-curl gap) are the remaining Tier-B work.
+
 ## 0. The clause, and why it is genuinely the hard one
 
 C6 is the clause "*this covers explicit flows through **every mediated channel***"

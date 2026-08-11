@@ -84,7 +84,7 @@ status is a visible event, not an edit.
 | C3 | "nor influence which of them get released" | PROVED | `crates/portcullis-core/lean/PodMachineSpike.lean#noninterference` | `.github/workflows/portcullis-core-proven-lean.yml` |
 | C4 | "a governor deliberately released with a single-use token" | TESTED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#no_second_apply`, `crates/portcullis/src/kernel/declassify_authority.rs#apply_declassification_token_on`, `crates/portcullis/tests/declassify_rehome_egress.rs#c4_flip_back_on_one_graph`, `crates/portcullis/tests/kernel_token.rs` | `scripts/check-declassify-value-bound.sh` |
 | C5 | "cannot steer which value that is" | PROVED | `crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean#four_run_value_robustness`, `crates/portcullis/src/flow_graph.rs#value_binding_ok`, `crates/portcullis/tests/declassify_scope.rs#four_run_released_value_is_not_attacker_steerable` | `scripts/check-declassify-value-bound.sh` |
-| C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `docs/architecture/mediated-set.md` | — |
+| C6 | "every mediated channel" | NOT-YET | `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/portcullis-core/lean/ChannelAdmissionExtracted.lean#no_channel_delivers_secret_to_the_workload`, `crates/nucleus-ifc-kernel/src/egress_channel.rs#documented_inventory_equals_the_enum`, `docs/architecture/mediated-set.md` | `scripts/check-mediation-dylint.sh` |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | NOT-YET | `.github/workflows/aeneas-ifc-scoped.yml` | — |
 | C9 | "verify from the outside" | NOT-YET | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | — |
@@ -239,13 +239,25 @@ What each status means, and what it deliberately does not:
   gated: the falsifier `scripts/check-declassify-value-bound.sh` runs both the
   four-run test and the parity test, and reds if value-binding stops refusing a
   substituted value.
-- **C6 (NOT-YET)** — the seven child-inheritance channels (now including the
-  kernel command line) are proved total (the quantification is over the channel
-  enum, so a new channel forces a match arm); the effect/API set is enumerated
-  with named exclusions in
-  `docs/architecture/mediated-set.md` with its lint reporting-only; the
-  transport channels (vsock, pod-dir socket, in-guest HTTP, netns, DNS, node
-  gRPC) have no unified inventory. "Every" is not yet earned.
+- **C6 (NOT-YET — Phase 1 earned 2026-08-11, still short of "every").** Three
+  legs now hold. (a) *Tier-A total mediation is a theorem:* over the closed
+  `SinkClass`/`Operation` enum, `no_sink_reachable_without_discharge`
+  (`MediationScopeExtracted.lean`, Aeneas-extracted, `sorry`-free, axioms ⊆
+  `[propext, Classical.choice, Quot.sound]`) proves no consequential sink is
+  reachable from idle without discharging an `Authority`; a new sink forces a
+  match arm (#2241). (b) *The effect boundary is enforced, not advisory:* the
+  `mediated` dylint pass runs enforcing-at-zero over the sealed effect home
+  `portcullis-effects` — counted by report count, not exit status, with a
+  reds-on-revert self-test (`scripts/check-mediation-dylint.sh`, #2244). (c)
+  *The transport/egress surface now has a unified, gated inventory:*
+  `docs/architecture/mediated-set.md` enumerates every outbound channel against
+  the closed `EgressChannel` enum, and `documented_inventory_equals_the_enum`
+  reds if the table and enum disagree on the key set or a channel's status
+  (Phase 0). What keeps C6 **NOT-YET** is the Tier-B open surface the inventory
+  now names as such: in-shell / raw-socket egress (channels 5, 10) fenced only
+  by a *documented* netns default-deny, not yet proven-applied-on-boot (Phase 2);
+  the `partial` transport channels (7, 8); and the `effects()` escape hatch (12,
+  #1248). "Every" is not yet earned.
 - **C7 (TESTED — unchanged 2026-08-10; the declassify gap narrowed but C7 is
   broader).** The theorems are about a scalar-only extracted restatement of the
   enforcement predicates, re-extracted from the current Rust on every proof-workflow
