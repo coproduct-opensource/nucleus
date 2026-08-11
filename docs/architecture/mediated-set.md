@@ -18,6 +18,74 @@ described but not enforced is a claim, not a boundary.
 
 Everything else is outside, and the guarantee says nothing about it.
 
+## The egress channel inventory (C6)
+
+The set above answers "which crates does the mediation lint run on". This section
+answers the outbound question the C6 clause turns on: **every way an agent
+workload can move data out or reach a sink**, each tagged with how thoroughly
+that path is mediated. It is the §1 inventory of
+`docs/design/c6-complete-mediation-plan.md`, landed here so the taxonomy is a
+gated object rather than prose.
+
+"Mediated" means the effect is admitted only past a `preflight_action →
+DischargedBundle` (`crates/portcullis-effects/src/runtime.rs`) whose verdict is
+decided on the single proven `FlowGraph`. "Backstopped" means it is not mediated
+by the sink lattice but is physically confined by the netns/Firecracker
+default-deny network policy.
+
+Status vocabulary (the `Status` column, machine-stable):
+
+- **`type-enforced`** — the effect method takes an owned `Authority` by value, so
+  an un-preflighted call is a compile error, and the grep backstop
+  (`scripts/check-mediation.sh`) catches raw primitives.
+- **`backstopped-only`** — no sink-lattice mediation; the only fence is the
+  netns/iptables default-deny egress policy
+  (`crates/nucleus-node/src/net.rs:385` `apply_default_deny`), which is today
+  *documented*, not proven-applied-on-boot (C6 phase 2).
+- **`partial`** — some frames on the transport are mediated, the rest rest on a
+  structural property (peer-CID pin, identity refusal) rather than a token.
+- **`open-hole`** — a known unmediated path with no fence beyond "tracked open".
+- **`infra-out-of-set`** — operator/host authority, never agent-controlled;
+  excluded by the same reasoning as the "Excluded, with reasons" table below.
+
+The closed `EgressChannel` enum
+(`crates/nucleus-ifc-kernel/src/egress_channel.rs`) has exactly one variant per
+row, keyed by the `Key` column, and the
+`documented_inventory_equals_the_enum` parity test asserts the two agree on both
+the key set and the `Status` of each row. **Adding an egress or transport
+channel therefore requires editing both this table and the enum**, and changing
+a channel's status requires editing both too — that is the categorical gate. The
+enum is not yet consumed by any runtime path; C6 phase 1 proves the Tier-A
+total-mediation theorem over `SinkClass`/`Operation`, phase 2 promotes the
+network backstop to proven-on-boot.
+
+<!-- C6-INVENTORY-START -->
+
+| # | Channel | Key | Site (verified file:line) | Status | Fence that actually bites |
+|---|---------|-----|---------------------------|--------|---------------------------|
+| 1 | Agent process spawn (sync/async) | `agent_spawn` | `crates/nucleus/src` Executor → `portcullis-effects` `ShellEffect::run_argv[_async]` | `type-enforced` | Raw-spawn allowlist is empty (`scripts/mediation-allowlist.txt`); un-preflighted spawn is a compile error + grep-gate |
+| 2 | Agent HTTP egress (`web_fetch`/`web_search`) | `agent_http_egress` | `crates/nucleus-tool-proxy/src/run_gate.rs:99` `preflight_web` → `crates/portcullis-effects/src/async_traits.rs:140` `NetEffect::fetch` | `type-enforced` | `HTTPEgress` sink floor is `Untrusted`, trifecta guard bites on a tainted session; `DischargedBundle` + `.send()` grep-gate |
+| 3 | Agent filesystem write | `agent_fs_write` | `crates/nucleus-tool-proxy/src/run_gate.rs` `preflight_write` → `Sandbox::write(_proof)` | `type-enforced` | Every `Sandbox` method takes an owned `Authority`; `DischargedBundle` + `cap-std` |
+| 4 | Credentialed egress via broker (host performs call) | `broker_credentialed_egress` | `crates/nucleus-tool-proxy/src/egress.rs:309`, `broker_client.rs:173` `perform_line` | `type-enforced` | `perform_line` takes an `Authority`; the vsock frame is covered by the `VsockStream::connect` grep-gate |
+| 5 | In-shell egress (`bash -c curl`, `/dev/tcp`, `python`, `nc`) | `in_shell_egress` | inside the child spawned at #1 | `backstopped-only` | Sink label `BashExec` (`crates/nucleus-ifc-kernel/src/ifc_ops.rs:226`) is a heuristic, not a physical fact; only `apply_default_deny` (`crates/nucleus-node/src/net.rs:385`) confines it — documented, not proven-applied |
+| 6 | DNS (tunnel/exfil) | `dns` | dnsmasq guest config | `backstopped-only` | `no-resolv`, no upstream → an unlisted name fails locally (`the_dns_proxy_has_no_upstream_and_cannot_forward`) |
+| 7 | vsock (broker/task-token/SVID transport) | `vsock_transport` | `crates/nucleus-tool-proxy/src/broker_client.rs:223`, `crates/nucleus-node/src/workload_api_vsock.rs` | `partial` | Broker perform is mediated (#4); other frames are host-issued, peer-CID pinned to `VMADDR_CID_HOST` — no agent authority to discharge |
+| 8 | pod-dir Unix socket (container broker) | `pod_dir_socket` | `crates/nucleus-node/src/broker_transport.rs` `BrokerTransport::PodDirSocket` | `partial` | The container path registers no identity, so the broker refuses — a structural refusal, not a token |
+| 9 | node gRPC (control plane) | `node_grpc` | `crates/nucleus-tool-proxy/src/node_client.rs` (whole-file infra grep-gate) | `infra-out-of-set` | Operator-provisioned endpoint, never agent-controlled |
+| 10 | netns raw socket (`std::net`, any linked lib) | `netns_raw_socket` | anywhere in the guest | `backstopped-only` | Same open class as #5 — `apply_default_deny` netns egress policy only |
+| 11 | Audit / Article-12 egress (S3, webhook) | `audit_egress` | `crates/nucleus-tool-proxy/src/main.rs`, `art12_shipper.rs` (net allowlist) | `infra-out-of-set` | The runtime's record OF the agent, an operator sink |
+| 12 | Effect escape hatch `NucleusRuntime::effects()` | `effects_escape_hatch` | `production-delta.md:48` (#1248) | `open-hole` | Returns a raw `PolicyEnforced` bundle with no discharge/FlowTracker update — tracked open |
+
+<!-- C6-INVENTORY-END -->
+
+**Read of the table:** the *typed* effect API (1–4) is at the North Star floor —
+type-enforced, grep-backstopped. What keeps C6 honestly NOT-YET is (a) the open
+in-shell/raw-socket surface (5, 10) whose only fence is a *documented* netns
+policy, (b) the transport channels (7, 8) with no unified proof, and (c) the
+`effects()` escape hatch (12). This inventory is C6 phase 0's deliverable: it
+makes the taxonomy a closed, gated set. It does not change any egress verdict,
+ledger row, or ratchet.
+
 ## What "agent-attributed" means
 
 The distinction is not "does it touch the disk" but **on whose authority**. An effect

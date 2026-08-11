@@ -43,6 +43,11 @@ pub use ifc_lattice::*;
 mod ifc_ops;
 pub use ifc_ops::*;
 
+// C6 phase 0 — the closed outbound egress-channel inventory (additive,
+// verdict-neutral; not yet consumed by any runtime path).
+mod egress_channel;
+pub use egress_channel::{EgressChannel, MediationStatus};
+
 // The capability product lattice + the exposure detector / pure decision —
 // the rest of the Aeneas-verified surface (MVK M3 whole-core).
 mod capability_lattice;
