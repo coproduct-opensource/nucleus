@@ -18,6 +18,7 @@ ROOTFS_PACKAGES=(
     "nucleus-tool-proxy"
     "nucleus-net-probe"
     "nucleus-workload-probe"
+    "nucleus-egress-probe"
 )
 
 # Targets

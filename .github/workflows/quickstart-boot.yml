@@ -42,6 +42,10 @@ on:
       # The empirical FM-5 checker whose PASS/FAIL sentinel this gate reads —
       # a PR weakening only the probe or its spec must re-trigger the boot gate.
       - "crates/nucleus-workload-probe/**"
+      # The C6 phase-2 egress backstop probe and its host-side falsifier — a PR
+      # weakening only the probe must re-trigger the boot gate and the falsifier.
+      - "crates/nucleus-egress-probe/**"
+      - "scripts/check-egress-probe.sh"
       - "examples/openclaw-demo/probe-pod.yaml"
       - "scripts/firecracker/**"
       - "scripts/lima/**"
@@ -60,6 +64,30 @@ permissions:
   contents: read
 
 jobs:
+  egress-probe-falsifier:
+    # The C6 phase-2 host-side falsifier. It needs no KVM and no booted microVM —
+    # only netns + iptables + sudo, which an ubuntu runner has — so it runs on
+    # every triggering PR even though the boot job below is x86_64-KVM-gated and
+    # not required. It reconstructs the exact net::apply_default_deny fence in a
+    # namespace and asserts the probe PASSes with the fence present, FAILs when
+    # it is removed (reds-on-regression), and FAILs when loopback is also blocked
+    # (the anti-vacuity guard). This is the always-on guard against the probe
+    # silently rotting while the boot gate is unenforced.
+    name: egress probe tracks the default-deny fence (netns falsifier)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+      - name: Build the egress probe
+        run: cargo build --release -p nucleus-egress-probe
+      - name: Falsify — the probe must track the fence in all three states
+        run: |
+          # iptables is present on ubuntu-24.04; the script uses sudo for netns.
+          EGRESS_PROBE_BIN=target/release/nucleus-egress-probe \
+            scripts/check-egress-probe.sh
+
   pins-resolve:
     name: pinned artifacts still resolve
     runs-on: ubuntu-24.04
@@ -253,7 +281,8 @@ jobs:
           rustup target list --installed | grep -q x86_64-unknown-linux-musl
           cargo build --release --target x86_64-unknown-linux-musl \
             -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
-            -p nucleus-tool-proxy -p nucleus-net-probe -p nucleus-workload-probe
+            -p nucleus-tool-proxy -p nucleus-net-probe -p nucleus-workload-probe \
+            -p nucleus-egress-probe
 
       - name: Build the guest rootfs
         run: |
@@ -315,6 +344,32 @@ jobs:
             exit 1
           }
           echo "in-guest workload probe: PASS present, FAIL absent"
+
+      - name: The in-guest egress backstop actually held (C6 phase 2, presence + verdict)
+        run: |
+          # The egress probe runs as the same booted workload (network.allow: []),
+          # so the pod is under net::apply_default_deny. It asserts, from inside
+          # the live guest, that a non-allowlisted connect and an off-allowlist
+          # DNS name FAIL while loopback (the positive control) succeeds — i.e.
+          # the netns default-deny is applied on boot, converting C6 channels
+          # 5/10 from *documented* to *runtime-observed*. Same fail-closed shape
+          # as the workload probe: PASS must be PRESENT (a probe that never ran
+          # emits nothing and must not read as conformant), FAIL must be ABSENT.
+          state=/var/lib/nucleus/state
+          sudo grep -rq "NUCLEUS_EGRESS_PROBE: PASS" "$state" || {
+            echo "::error::in-guest egress probe did not report PASS (did it run? is the fence applied?)"
+            echo "--- egress markers across all pod logs (empty ⇒ the probe never ran) ---"
+            sudo grep -rhaE 'NUCLEUS_EGRESS_PROBE|NUCLEUS_EGRESS_CHECK' "$state" | head -40 || true
+            echo "--- last 60 lines of each guest log ---"
+            sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -60 "$1"' _ {} \; || true
+            exit 1
+          }
+          ! sudo grep -rq "NUCLEUS_EGRESS_PROBE: FAIL" "$state" || {
+            echo "::error::in-guest egress probe reported FAIL — the netns default-deny was NOT applied on the live guest"
+            sudo grep -rhaE 'NUCLEUS_EGRESS_PROBE: FAIL|NUCLEUS_EGRESS_CHECK' "$state" | head -40 || true
+            exit 1
+          }
+          echo "in-guest egress backstop: PASS present, FAIL absent"
 
       - name: Delivery conformance (observed inventory vs the extracted oracle)
         run: |

@@ -1,7 +1,15 @@
 # Same as firecracker-pod.yaml, but with a `workload` that runs the in-guest
-# FM-5 posture probe. Baked into the rootfs for the CI boot gate: the probe
-# reads the REAL workload child's /proc/self/{environ,fd,status,mountinfo} and
-# reports PASS/FAIL, which `nucleus verify --tier2` asserts via the guest log.
+# boot probes. Baked into the rootfs for the CI boot gate.
+#
+# TWO probes run, both reporting a PASS/FAIL sentinel `nucleus verify --tier2`
+# reads back from the guest log:
+#   - nucleus-workload-probe — the FM-5 posture (reads the REAL workload child's
+#     /proc/self/{environ,fd,status,mountinfo}).
+#   - nucleus-egress-probe   — the C6 phase-2 backstop: with `network.allow: []`
+#     below the pod runs under `net::apply_default_deny`, and the probe asserts
+#     from inside the booted guest that a non-allowlisted connect and an
+#     off-allowlist DNS name both FAIL while loopback (the positive control)
+#     succeeds — i.e. the netns default-deny is applied on the live guest.
 # The demo pod stays workload-free; this is the boot-gate variant.
 apiVersion: nucleus/v1
 kind: Pod
@@ -15,8 +23,15 @@ spec:
   # window (declared via `.uid()`/`.gid()` in spawn_admitted) — and the probe's
   # group-drop assertion is exercised on the real child (not just the
   # env/fd/mount checks).
+  #
+  # Both probes run via `/bin/sh -c`; the exit is nonzero if EITHER fails, and
+  # both sentinels reach the guest log regardless. The FM-5 probe runs first and
+  # unchanged (same uid/env/cwd), so its posture assertions are preserved.
   workload:
-    command: /usr/local/bin/nucleus-workload-probe
+    command: /bin/sh
+    args:
+      - "-c"
+      - "/usr/local/bin/nucleus-workload-probe; w=$?; /usr/local/bin/nucleus-egress-probe; e=$?; [ $w -eq 0 ] && [ $e -eq 0 ]"
     uid: 65534
   policy:
     type: profile

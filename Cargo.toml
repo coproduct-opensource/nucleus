@@ -17,6 +17,7 @@ members = [
     "crates/nucleus-guest-init", # Guest init for Firecracker images
     "crates/nucleus-net-probe", # TCP probe for network policy tests
     "crates/nucleus-workload-probe", # in-guest FM-5 posture probe (runs as the pod workload)
+    "crates/nucleus-egress-probe", # in-guest egress-confinement probe (C6 phase 2 backstop)
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
     "crates/nucleus-audit", # Audit log verifier CLI
     "crates/nucleus-ifc",      # Standalone IFC library for AI agents

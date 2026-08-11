@@ -1,0 +1,15 @@
+[package]
+name = "nucleus-egress-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-guest egress-confinement probe: proves the netns default-deny backstop is applied on the live guest (C6 phase 2)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-egress-probe"
+path = "src/main.rs"
+
+[dependencies]

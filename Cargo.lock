@@ -6770,6 +6770,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-egress-probe"
+version = "1.0.0"
+
+[[package]]
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
