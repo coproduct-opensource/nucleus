@@ -197,6 +197,54 @@ mod ownership_tests {
         assert!(caller_may_manage(Some(a()), a(), None));
     }
 
+    /// **C2 model↔runtime parity.** The abstract cross-pod noninterference theorem
+    /// (`crates/portcullis-core/lean/PodCrossView.lean`, `cross_pod_noninterference`)
+    /// proves a pod's view is independent of any other pod's secrets over the view
+    /// relation whose lineage filter is `ownedBy p q := q.parent == p || q.id == p`.
+    /// That theorem is only *about the code that ships* if the SHIPPED filter is
+    /// that same predicate. This pins it: exhaustively over a domain of pod ids,
+    /// `caller_may_manage(Some(caller), pod, parent)` — the predicate the live
+    /// listing (`.filter` above, #2199) and the management gate both use — equals
+    /// the abstract `ownedBy` formula. Change the shipped predicate and this reds,
+    /// so the Lean theorem cannot quietly describe a filter the node does not run.
+    ///
+    /// Scope: `Some(caller)` only — a pod is always an identified caller. The
+    /// `caller = None` branch is the node/operator (sees all), which is outside the
+    /// pod-vs-pod subject the theorem is about.
+    #[test]
+    fn caller_may_manage_matches_the_podview_lineage_filter() {
+        let ids = [a(), b(), child_of_a()];
+        let parents = [Some(a()), Some(b()), Some(child_of_a()), None];
+        let mut saw_true = false;
+        let mut saw_false = false;
+        for &caller in &ids {
+            for &pod in &ids {
+                for &parent in &parents {
+                    // PodCrossView `ownedBy caller {id = pod, parent}`:
+                    //   q.parent == p || q.id == p
+                    let abstract_owned = parent == Some(caller) || pod == caller;
+                    let shipped = caller_may_manage(Some(caller), pod, parent);
+                    assert_eq!(
+                        shipped, abstract_owned,
+                        "shipped caller_may_manage diverged from PodCrossView::ownedBy \
+                         at caller={caller}, pod={pod}, parent={parent:?}"
+                    );
+                    if abstract_owned {
+                        saw_true = true;
+                    } else {
+                        saw_false = true;
+                    }
+                }
+            }
+        }
+        // Non-vacuity: the domain must exercise BOTH verdicts, or the equivalence
+        // could hold trivially (a constant predicate would pass a one-sided sweep).
+        assert!(
+            saw_true && saw_false,
+            "parity domain did not exercise both owned and not-owned cases"
+        );
+    }
+
     /// A grandchild is NOT reachable: the rule is direct children, not the
     /// descendant closure. Pinned so the narrower scope is a decision on record
     /// rather than something a later reader assumes is a bug.
