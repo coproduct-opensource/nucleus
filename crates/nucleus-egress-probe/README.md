@@ -18,17 +18,32 @@ exit code.
 
 ## Anti-vacuity
 
-A fence that blocks everything (dead NIC, unconfigured loopback, a probe that
-cannot run) trivially passes a "connect fails" check. The probe carries a
-**positive control** beside the refutable negatives:
+A probe that reports PASS because it is *broken* — a no-op that never really
+attempts a connect — certifies nothing. The verdict rests on two independent
+witnesses:
 
-- **positive control** — a loopback connect the guest MUST be able to make (the
-  default-deny chain accepts `-o lo`). If it fails, the probe reports FAIL: it
-  will not certify a fence it cannot distinguish from a dead network.
-- **negative posture** — a raw TCP connect to a non-allowlisted host and a DNS
-  resolve of an off-allowlist name, which MUST both fail.
+- **positive control** — a `socketpair(AF_UNIX)` byte round-trip that MUST
+  succeed. It proves the probe is a live process that can create sockets and move
+  bytes, so a denied TCP connect is a *refusal*, not a broken binary. It is
+  AF_UNIX on purpose: the guest workload runs with **loopback DOWN** (documented
+  in `nucleus-guest-init`) and under `network.allow: []` there is no reachable TCP
+  endpoint by design, so a loopback/on-net control cannot exist here; a socketpair
+  needs neither an interface nor a route.
+- **negative posture** — a raw TCP connect to ≥1 non-allowlisted hosts and a DNS
+  resolve of an off-allowlist name, which MUST all fail. Refusing to pass when
+  *zero* targets were probed closes the empty-target vacuous door.
 
-PASS requires the positive control to succeed AND every negative to fail.
+PASS requires the socketpair witness AND ≥1 probed target AND every negative
+failing.
+
+## Bounded, non-hanging
+
+A fully-fenced pod has no resolver, so `getaddrinfo` on an off-list name blocks on
+its own multi-second timeout — long enough that the pod is torn down before the
+verdict. The DNS check runs on a worker thread with a short join bound; "no answer
+within the bound" is the expected fenced outcome. Connects use a short timeout.
+The sentinel is emitted promptly (a few ms in a fenced guest, where the connects
+fail instantly with `ENETUNREACH`).
 
 ## Configuration
 
@@ -47,5 +62,5 @@ hermetic peer it controls inside a netns:
 `scripts/check-egress-probe.sh` reconstructs the fence on real Linux (a netns
 with the exact `apply_default_deny` rules) and asserts: the probe PASSes with the
 fence present, FAILs when the OUTPUT policy is opened (fence removed), and FAILs
-when loopback is also blocked (the vacuity guard — a dead net must not read as
-confined).
+when it probed no targets (the vacuity guard — a probe that checked nothing must
+not read as confined).

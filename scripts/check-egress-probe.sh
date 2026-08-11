@@ -78,6 +78,16 @@ run_probe() {
         "$BIN" 2>&1
 }
 
+# Same, but with an EMPTY deny-target list — for the anti-vacuity guard: the
+# probe must refuse to pass when it probed zero targets.
+run_probe_empty() {
+    "$@" env \
+        NUCLEUS_EGRESS_PROBE_DENY_TARGETS="" \
+        NUCLEUS_EGRESS_PROBE_DENY_NAME="egress-probe.invalid" \
+        NUCLEUS_EGRESS_PROBE_TIMEOUT_MS=800 \
+        "$BIN" 2>&1
+}
+
 assert_pass() { # <label> <output> <exit>
     local label="$1" out="$2" rc="$3"
     if [[ "$rc" -eq 0 ]] && grep -q "NUCLEUS_EGRESS_PROBE: PASS" <<<"$out"; then
@@ -115,6 +125,9 @@ PY
     out="$(run_probe)"; rc=$?
     assert_fail "open-port (stands in for unfenced)" "$out" "$rc" "SUCCEEDED"
     kill "$lp" 2>/dev/null
+    # Anti-vacuity: no deny targets → FAIL.
+    out="$(run_probe_empty)"; rc=$?
+    assert_fail "no deny targets (vacuity guard)" "$out" "$rc" "vacuously"
     echo
     [[ "$failures" -eq 0 ]] && { echo "OK (degraded): the probe's verdict logic is correct; run on Linux for the real fence."; exit 0; }
     echo "FAILED: $failures problem(s)."; exit 1
@@ -200,15 +213,14 @@ assert_pass "fence present" "$out" "$rc"
 out="$(run_probe "${SUDO[@]}" ip netns exec "$NS")"; rc=$?
 assert_fail "fence removed" "$out" "$rc" "SUCCEEDED"
 
-# ── State 3: loopback also blocked → FAIL (anti-vacuity guard) ──────────────
-# Re-apply default-deny but withhold the loopback accept, so the positive
-# control cannot connect. A probe that still PASSes here is passing vacuously.
-"${SUDO[@]}" ip netns exec "$NS" iptables -w -F
-"${SUDO[@]}" ip netns exec "$NS" iptables -w -X
-"${SUDO[@]}" ip netns exec "$NS" iptables -w -P OUTPUT DROP
-"${SUDO[@]}" ip netns exec "$NS" iptables -w -P INPUT DROP
-out="$(run_probe "${SUDO[@]}" ip netns exec "$NS")"; rc=$?
-assert_fail "loopback blocked (vacuity guard)" "$out" "$rc" "vacuously"
+# ── State 3: no deny targets → FAIL (anti-vacuity guard) ────────────────────
+# The socketpair positive control cannot be broken with iptables, so the vacuity
+# door this state closes is the other one: a probe that checked NOTHING. With an
+# empty target list the fence is (re-)present, yet the probe must still FAIL
+# rather than pass on having probed zero targets.
+apply_default_deny
+out="$(run_probe_empty "${SUDO[@]}" ip netns exec "$NS")"; rc=$?
+assert_fail "no deny targets (vacuity guard)" "$out" "$rc" "vacuously"
 
 echo
 if [[ "$failures" -gt 0 ]]; then
@@ -216,5 +228,5 @@ if [[ "$failures" -gt 0 ]]; then
     exit 1
 fi
 echo "OK: the egress probe PASSes with the default-deny fence present, FAILs when it is"
-echo "removed, and FAILs when loopback is blocked (no vacuous pass). The fence the guest"
+echo "removed, and FAILs when it probed no targets (no vacuous pass). The fence the guest"
 echo "runs is the fence this probe observes."
