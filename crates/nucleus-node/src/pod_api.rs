@@ -79,6 +79,44 @@ pub(crate) async fn list_pods(
     Ok(Json(infos))
 }
 
+/// The lineage facts the cross-pod scoping predicate reads.
+///
+/// Abstracting the two fields the filter consults lets the SAME selection run
+/// over the live registry (`Arc<PodHandle>`) and over a lightweight test
+/// registry, so the shipped set operation cannot diverge from what the test
+/// checks — the pointwise `caller_may_manage` tests never exercised the actual
+/// `.filter` as a SET (a sibling being *excluded* vs never present).
+trait Lineage {
+    fn lineage_id(&self) -> Uuid;
+    fn lineage_parent(&self) -> Option<Uuid>;
+}
+
+impl Lineage for Arc<PodHandle> {
+    fn lineage_id(&self) -> Uuid {
+        self.id
+    }
+    fn lineage_parent(&self) -> Option<Uuid> {
+        self.parent_pod_id
+    }
+}
+
+/// Select the items an identified pod `caller` may manage, by the same
+/// `caller_may_manage` predicate the HTTP listing and the management gate use.
+///
+/// This is the SET operation the cross-pod listing performs. `caller` is a
+/// concrete pod id — never the operator `None` — because a pod view is always
+/// identified; the operator (all-pods) case stays in `collect_pod_infos` where
+/// the absence of an identity is what it means. It is factored out precisely so
+/// C2 G3's guest→host `PodList` command can apply the identical filter with a
+/// socket-bound caller, over this one tested function rather than a copy.
+fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: Uuid) -> Vec<T> {
+    items
+        .iter()
+        .filter(|it| caller_may_manage(Some(caller), it.lineage_id(), it.lineage_parent()))
+        .cloned()
+        .collect()
+}
+
 /// Pod summaries the caller is entitled to see.
 ///
 /// Filtering here rather than at the handler is deliberate: the listing is how a
@@ -88,11 +126,13 @@ pub(crate) async fn list_pods(
 pub(crate) async fn collect_pod_infos(state: &NodeState, caller: Option<Uuid>) -> Vec<PodInfo> {
     let pods: Vec<Arc<PodHandle>> = {
         let guard = state.pods.lock().await;
-        guard
-            .values()
-            .filter(|pod| caller_may_manage(caller, pod.id, pod.parent_pod_id))
-            .cloned()
-            .collect()
+        let all: Vec<Arc<PodHandle>> = guard.values().cloned().collect();
+        // An identified pod is scoped by the shared set filter; an operator
+        // (`None` — holds the node auth secret directly) sees every pod.
+        match caller {
+            Some(c) => scope_to_caller(&all, c),
+            None => all,
+        }
     };
 
     let mut infos = Vec::with_capacity(pods.len());
@@ -243,6 +283,64 @@ mod ownership_tests {
             saw_true && saw_false,
             "parity domain did not exercise both owned and not-owned cases"
         );
+    }
+
+    /// **C2 cross-pod set exclusion — the SET the listing actually computes.** The
+    /// parity test above pins `caller_may_manage` pointwise; this pins the `.filter`
+    /// in `collect_pod_infos` as a set operation: over a registry holding A, A's
+    /// child, and a non-lineage sibling B, the scope minted for A yields exactly
+    /// {A, child} and *excludes* B. This is the exact function C2 G3's guest→host
+    /// `PodList` command will run with a socket-bound caller, so proving it here
+    /// proves it for that path too — no second implementation to drift.
+    #[test]
+    fn scope_to_caller_excludes_a_non_lineage_sibling() {
+        #[derive(Clone)]
+        struct P {
+            id: Uuid,
+            parent: Option<Uuid>,
+        }
+        impl super::Lineage for P {
+            fn lineage_id(&self) -> Uuid {
+                self.id
+            }
+            fn lineage_parent(&self) -> Option<Uuid> {
+                self.parent
+            }
+        }
+        let (a, b, child) = (a(), b(), child_of_a());
+        let registry = [
+            P {
+                id: a,
+                parent: None,
+            }, // A: an operator-created orchestrator
+            P {
+                id: child,
+                parent: Some(a),
+            }, // A's direct child
+            P {
+                id: b,
+                parent: None,
+            }, // sibling B — NOT A's child
+        ];
+        let seen: std::collections::BTreeSet<Uuid> = super::scope_to_caller(&registry, a)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        // A sees itself and its child...
+        assert!(seen.contains(&a), "A's scoped listing must contain A");
+        assert!(seen.contains(&child), "A must see its own child");
+        // ...and NOT the sibling — cross-pod non-interference at the shared filter.
+        assert!(
+            !seen.contains(&b),
+            "sibling B leaked into A's scoped listing"
+        );
+        // Non-vacuity: B was genuinely in the input, so this is exclusion, not
+        // "B was never there"; and scoping strictly removed something (2 of 3).
+        assert!(
+            registry.iter().any(|p| p.id == b),
+            "test bug: B not in the input registry"
+        );
+        assert_eq!(seen.len(), 2, "expected exactly {{A, child}}");
     }
 
     /// **C2 cross-pod isolation, exercised over the live request path.** A pod's
