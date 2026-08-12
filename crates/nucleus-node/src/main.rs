@@ -2687,148 +2687,141 @@ async fn spawn_firecracker_pod(
         // guest held a capability the verifier had never seen.
         let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint();
 
-        let (pod_identity, identity_manager, workload_api_bridge) =
-            if let Some(manager) = identity_source {
-                // Use pod metadata for namespace/service_account context
-                let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
-                let service_account = spec.metadata.name.as_deref().unwrap_or("");
-                let identity = manager.identity_for_pod(id, namespace, service_account);
+        let (pod_identity, identity_manager, workload_api_bridge) = if let Some(manager) =
+            identity_source
+        {
+            // Use pod metadata for namespace/service_account context
+            let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
+            let service_account = spec.metadata.name.as_deref().unwrap_or("");
+            let identity = manager.identity_for_pod(id, namespace, service_account);
 
-                // Register the pod identity
-                let registry_key = id.to_string();
-                identity_registry_key = Some(registry_key.clone());
-                manager.register_pod(registry_key, identity.clone()).await;
+            // Register the pod identity
+            let registry_key = id.to_string();
+            identity_registry_key = Some(registry_key.clone());
+            manager.register_pod(registry_key, identity.clone()).await;
 
-                // Compute launch attestation for this pod
-                // This captures integrity measurements of kernel, rootfs, and config
-                let pod_id_str = id.to_string();
-                let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
-                match manager
-                    .compute_attestation(
-                        &pod_id_str,
-                        &image.kernel_path,
-                        &image.rootfs_path,
-                        &config_bytes,
-                    )
-                    .await
-                {
-                    Ok(attestation) => {
-                        info!(
-                            "computed launch attestation for pod {}: {}",
-                            id,
-                            attestation.to_hex_summary()
-                        );
-                        // Issue + cache the attested certificate so the served
-                        // FETCH_SVID path carries the measurement. If this fails the
-                        // pod keeps a plain (unattested) cert — a relying party that
-                        // requires attestation will then refuse it (fail-closed at
-                        // the verifier), so name that consequence here.
-                        if let Err(e) = manager
-                            .fetch_attested_certificate(&identity, &pod_id_str)
-                            .await
-                        {
-                            tracing::warn!(
-                                "pod {} will serve a PLAIN (unattested) SVID; attesting \
-                                 relying parties will refuse it: {}",
-                                id,
-                                e
-                            );
-                        }
+            // Compute launch attestation for this pod
+            // This captures integrity measurements of kernel, rootfs, and config
+            let pod_id_str = id.to_string();
+            let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
+            match manager
+                .compute_attestation(
+                    &pod_id_str,
+                    &image.kernel_path,
+                    &image.rootfs_path,
+                    &config_bytes,
+                )
+                .await
+            {
+                Ok(attestation) => {
+                    info!(
+                        "computed launch attestation for pod {}: {}",
+                        id,
+                        attestation.to_hex_summary()
+                    );
+                    // Cache the attested cert so the served FETCH_SVID carries the measurement;
+                    // else the pod serves a plain SVID an attesting relying party refuses.
+                    if let Err(e) = manager
+                        .fetch_attested_certificate(&identity, &pod_id_str)
+                        .await
+                    {
+                        tracing::warn!("pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}");
                     }
-                    Err(e) => {
-                        tracing::warn!(
+                }
+                Err(e) => {
+                    tracing::warn!(
                         "failed to compute attestation for pod {}, using standard certificate: {}",
                         id,
                         e
                     );
-                        // Fall back to standard certificate without attestation
-                        if let Err(e) = manager.prefetch_certificate(&identity).await {
-                            tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
-                        }
+                    // Fall back to standard certificate without attestation
+                    if let Err(e) = manager.prefetch_certificate(&identity).await {
+                        tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
                     }
                 }
+            }
 
-                // Start workload API vsock bridge for this pod
-                // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
-                // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
-                let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
-                    &vsock_path,
-                    state.identity_vsock_port,
-                    id,
-                    manager.clone(),
-                    workload_api_vsock::PodMaterial {
-                        // The same token that rides the kernel command line today.
-                        // Serving it here is what lets the cmdline copy go: a value
-                        // fetched after boot is not baked into a snapshot base.
-                        task_token: task_token.clone(),
-                        // This pod's caller identity for the management API, derived
-                        // from a NODE-ONLY secret. Deliberately not `auth_secret`:
-                        // every proxy already holds that one, so deriving from it
-                        // would let any pod compute any other pod's token and the
-                        // mechanism would prove nothing.
-                        caller_token: Some(pod_caller_identity::derive_token(
-                            state.caller_secret.as_ref(),
-                            id,
-                        )),
-                        // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                        dlc_admission: workload_api_vsock::DlcAdmissionMaterial::from_labels(
-                            &spec.metadata.labels,
-                        ),
-                        // The broker capability, minted per pod and served ONCE. See
-                        // `handle_fetch_broker_secret`: this is what lets the host
-                        // tell the mediating proxy from every other guest process.
-                        broker_secret: Some(broker_serve.into_served()),
-                        // Served WITH the capability, not separately — the proxy
-                        // needs both to reach the broker and neither is useful alone.
-                        broker_port: state.broker_vsock_port,
-                        broker_secret_served: std::sync::Arc::new(
-                            std::sync::atomic::AtomicBool::new(false),
-                        ),
-                        // The S3 audit-sink credentials, served once over this
-                        // socket instead of riding the world-readable kernel
-                        // command line (the C1 exposure).
-                        audit_creds: workload_api_vsock::AuditCredentials::from_node_env(
-                            spec.spec.audit_sink.is_some(),
-                        ),
-                        audit_creds_served: std::sync::Arc::default(),
-                    },
-                    // Only when jailed: unjailed Firecracker runs as this same user
-                    // and can already connect. Passing an owner there would hand our
-                    // own socket away for no reason.
-                    jail_layout
-                        .as_ref()
-                        .map(|_| (state.jailer_uid, state.jailer_gid)),
-                )
-                .await
-                {
-                    Ok(b) => {
-                        info!(
-                            "started workload API vsock bridge at {} for pod {}",
-                            b.socket_path().display(),
-                            id
-                        );
-                        Some(b)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to start workload API vsock bridge for pod {}: {}",
-                            id,
-                            e
-                        );
-                        None
-                    }
-                };
-
-                info!(
-                    "registered identity {} for pod {}",
-                    identity.to_spiffe_uri(),
-                    id
-                );
-
-                (Some(identity), Some(manager.clone()), bridge)
-            } else {
-                (None, None, None)
+            // Start workload API vsock bridge for this pod
+            // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
+            // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
+            let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
+                &vsock_path,
+                state.identity_vsock_port,
+                id,
+                manager.clone(),
+                workload_api_vsock::PodMaterial {
+                    // The same token that rides the kernel command line today.
+                    // Serving it here is what lets the cmdline copy go: a value
+                    // fetched after boot is not baked into a snapshot base.
+                    task_token: task_token.clone(),
+                    // This pod's caller identity for the management API, derived
+                    // from a NODE-ONLY secret. Deliberately not `auth_secret`:
+                    // every proxy already holds that one, so deriving from it
+                    // would let any pod compute any other pod's token and the
+                    // mechanism would prove nothing.
+                    caller_token: Some(pod_caller_identity::derive_token(
+                        state.caller_secret.as_ref(),
+                        id,
+                    )),
+                    // Pod-scoped DLC-D admission provisioning (PodSpec labels).
+                    dlc_admission: workload_api_vsock::DlcAdmissionMaterial::from_labels(
+                        &spec.metadata.labels,
+                    ),
+                    // The broker capability, minted per pod and served ONCE. See
+                    // `handle_fetch_broker_secret`: this is what lets the host
+                    // tell the mediating proxy from every other guest process.
+                    broker_secret: Some(broker_serve.into_served()),
+                    // Served WITH the capability, not separately — the proxy
+                    // needs both to reach the broker and neither is useful alone.
+                    broker_port: state.broker_vsock_port,
+                    broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    )),
+                    // The S3 audit-sink credentials, served once over this
+                    // socket instead of riding the world-readable kernel
+                    // command line (the C1 exposure).
+                    audit_creds: workload_api_vsock::AuditCredentials::from_node_env(
+                        spec.spec.audit_sink.is_some(),
+                    ),
+                    audit_creds_served: std::sync::Arc::default(),
+                },
+                // Only when jailed: unjailed Firecracker runs as this same user
+                // and can already connect. Passing an owner there would hand our
+                // own socket away for no reason.
+                jail_layout
+                    .as_ref()
+                    .map(|_| (state.jailer_uid, state.jailer_gid)),
+            )
+            .await
+            {
+                Ok(b) => {
+                    info!(
+                        "started workload API vsock bridge at {} for pod {}",
+                        b.socket_path().display(),
+                        id
+                    );
+                    Some(b)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to start workload API vsock bridge for pod {}: {}",
+                        id,
+                        e
+                    );
+                    None
+                }
             };
+
+            info!(
+                "registered identity {} for pod {}",
+                identity.to_spiffe_uri(),
+                id
+            );
+
+            (Some(identity), Some(manager.clone()), bridge)
+        } else {
+            (None, None, None)
+        };
 
         if let Err(err) = wait_for_proxy_health(health_addr).await {
             if let Some(proxy) = signed_proxy {
