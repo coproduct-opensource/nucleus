@@ -78,6 +78,12 @@ security-framework = "3.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# spike: "call SPIFFE agents anywhere" over iroh (examples/spiffe_iroh_*.rs)
+nucleus-node-binding = { path = "../nucleus-node-binding" }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+rcgen = "0.14"
+x509-parser = { workspace = true }
 
 [lints]
 workspace = true

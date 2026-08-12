@@ -6616,6 +6616,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "ed25519-dalek 3.0.0",
  "hex",
  "hmac 0.13.0",
  "iroh",
@@ -6625,10 +6626,12 @@ dependencies = [
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
+ "nucleus-node-binding",
  "nucleus-proto",
  "nucleus-spec",
  "portcullis",
  "rand 0.10.2",
+ "rcgen",
  "ring",
  "rust_decimal",
  "rustls 0.23.43",
@@ -6648,6 +6651,7 @@ dependencies = [
  "ureq",
  "uuid",
  "whoami 2.1.2",
+ "x509-parser",
 ]
 
 [[package]]
