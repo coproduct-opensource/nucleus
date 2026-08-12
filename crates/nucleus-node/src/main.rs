@@ -2718,13 +2718,18 @@ async fn spawn_firecracker_pod(
                             id,
                             attestation.to_hex_summary()
                         );
-                        // Fetch attested certificate (includes attestation in X.509 extension)
+                        // Issue + cache the attested certificate so the served
+                        // FETCH_SVID path carries the measurement. If this fails the
+                        // pod keeps a plain (unattested) cert — a relying party that
+                        // requires attestation will then refuse it (fail-closed at
+                        // the verifier), so name that consequence here.
                         if let Err(e) = manager
                             .fetch_attested_certificate(&identity, &pod_id_str)
                             .await
                         {
                             tracing::warn!(
-                                "failed to fetch attested certificate for pod {}: {}",
+                                "pod {} will serve a PLAIN (unattested) SVID; attesting \
+                                 relying parties will refuse it: {}",
                                 id,
                                 e
                             );

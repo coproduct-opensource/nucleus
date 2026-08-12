@@ -1,23 +1,27 @@
 //! Launch attestation for Firecracker VM integrity verification.
 //!
-//! This module provides attestation primitives that cryptographically bind
-//! SPIFFE identities to specific VM configurations. Attestation proves:
+//! This module provides attestation primitives that bind SPIFFE identities to the
+//! measurements the *node* computed for a VM's components. Each attestation carries:
 //!
-//! - **Kernel integrity**: SHA-256 hash of the kernel image
-//! - **Rootfs integrity**: SHA-256 hash of the root filesystem
-//! - **Configuration integrity**: SHA-256 hash of PodSpec + portcullis policy
+//! - **Kernel measurement**: SHA-256 hash of the kernel image
+//! - **Rootfs measurement**: SHA-256 hash of the root filesystem
+//! - **Configuration measurement**: SHA-256 hash of PodSpec + portcullis policy
 //!
-//! # TCG DICE Compliance
+//! # Trust boundary — NOT hardware-rooted
 //!
-//! The attestation encoding follows the TCG DICE Attestation Architecture,
-//! using proper ASN.1 DER encoding with OIDs from the TCG namespace.
+//! These are **first-party, software** measurements: the node hashes what it
+//! launched and signs the result with its own CA key. There is **no hardware root**
+//! — no TPM / SEV-SNP / TDX quote, no UDS-in-ROM DICE identity binding the signing
+//! key to silicon. A compromised node can sign any measurement, so the guarantee is
+//! conditional: *IF you trust the node's key, THEN the pod ran an artifact with
+//! these measurements.* Do not label this "hardware attestation" or "DICE measured
+//! boot."
 //!
-//! OID hierarchy:
-//! - `2.23.133` - TCG root
-//! - `2.23.133.5.4` - tcg-dice
-//! - `2.23.133.5.4.1` - DiceTcbInfo
+//! # DICE-format-compatible encoding
 //!
-//! See: [DICE Attestation Architecture v1.2](https://trustedcomputinggroup.org/wp-content/uploads/DICE-Attestation-Architecture-v1.2_pub.pdf)
+//! The DER encoding borrows the TCG DICE `DiceTcbInfo` *format* (FWID hash
+//! entries) so off-the-shelf ASN.1 tooling can parse it — it is not a hardware DICE
+//! layer. See: [DICE Attestation Architecture v1.2](https://trustedcomputinggroup.org/wp-content/uploads/DICE-Attestation-Architecture-v1.2_pub.pdf)
 //!
 //! # How It Works
 //!
@@ -703,6 +707,70 @@ fn parse_permission_fingerprint_der(der: &[u8]) -> Option<[u8; 32]> {
     let mut fingerprint = [0u8; 32];
     fingerprint.copy_from_slice(&der[pos..pos + 32]);
     Some(fingerprint)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LAUNCH ATTESTATION EXTRACTION + RELYING-PARTY VERIFICATION (North Star C9)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract a launch attestation from an X.509 certificate (DER).
+///
+/// Looks for OID `1.3.6.1.4.1.57212.1.1` (Nucleus Launch Attestation) among the
+/// certificate's extensions and parses the embedded [`LaunchAttestation`].
+///
+/// Returns `None` if the extension is absent or cannot be parsed.
+pub fn extract_launch_attestation(cert_der: &[u8]) -> Option<LaunchAttestation> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+    for ext in cert.extensions() {
+        if ext.oid.as_bytes() == crate::oid::OID_NUCLEUS_ATTESTATION_BYTES {
+            return LaunchAttestation::from_der(ext.value).ok();
+        }
+    }
+    None
+}
+
+/// Relying-party verification of an attested SVID served over `FETCH_SVID`.
+///
+/// This is the *outside* verifier for the North Star C9 leg: given the PEM cert
+/// chain a pod serves and the measurements an operator expects, decide whether to
+/// trust the pod. It parses the leaf certificate, extracts the embedded launch
+/// attestation, and checks it against `requirements`. Two teeth:
+///
+/// * **fail-closed on absent** — with `require_attestation` set, a served leaf that
+///   carries no launch-attestation extension is an `Err`, NOT a vacuous pass.
+///   (`AttestationRequirements::any().verify` would accept anything; this refuses a
+///   cert that carries no measurement at all.) With `require_attestation` cleared,
+///   an absent extension yields `Ok(None)`.
+/// * **drift** — a present measurement outside `requirements` is an `Err`.
+///
+/// # Trust boundary (read this)
+///
+/// The measurement is the *node's own* SHA-256 of the kernel+rootfs it launched,
+/// signed by the node's CA key. There is **no hardware root**: no TPM / SEV-SNP /
+/// TDX quote, no UDS-in-ROM DICE identity binding the signing key to silicon. The
+/// guarantee is therefore strictly conditional — *IF you trust this node's key,
+/// THEN the pod was launched from an artifact with these measurements.* A
+/// compromised node can sign any measurement. This is first-party **software**
+/// launch attestation, not hardware attestation.
+pub fn verify_attested_svid(
+    chain_pem: &str,
+    requirements: &AttestationRequirements,
+    require_attestation: bool,
+) -> Result<Option<LaunchAttestation>> {
+    let leaf = pem::parse(chain_pem)
+        .map_err(|e| Error::VerificationFailed(format!("cert PEM parse failed: {e}")))?;
+    match extract_launch_attestation(leaf.contents()) {
+        Some(att) => {
+            requirements.verify(&att)?;
+            Ok(Some(att))
+        }
+        None if require_attestation => Err(Error::VerificationFailed(
+            "served SVID carries no launch-attestation extension (fail-closed)".to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

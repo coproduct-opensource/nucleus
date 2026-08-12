@@ -265,9 +265,10 @@ impl IdentityManager {
 
     /// Fetches an attested certificate for the given identity and pod.
     ///
-    /// If attestation exists for the pod, it will be embedded in the certificate
-    /// as an X.509 extension.
-    #[allow(dead_code)]
+    /// If attestation exists for the pod, it will be embedded in the certificate as
+    /// an X.509 extension, and the result is written into the shared certificate
+    /// cache so the served `FETCH_SVID` path returns the *attested* cert rather than
+    /// a plain one. If no attestation is registered, falls back to a standard cert.
     #[tracing::instrument(skip_all, fields(boot.stage = "cert.issue"))]
     pub async fn fetch_attested_certificate(
         &self,
@@ -306,7 +307,13 @@ impl IdentityManager {
                     .await
                     .map_err(|e| format!("attested signing failed: {e}"))?;
 
-                Ok(Arc::new(cert))
+                // Warm the cache so the served FETCH_SVID fast-path returns THIS
+                // attested cert (carrying the measurement), not the plain one.
+                let cert = std::sync::Arc::new(cert);
+                self.secret_manager
+                    .cache_certificate(identity, cert.clone())
+                    .await;
+                Ok(cert)
             }
             None => {
                 warn!(
@@ -341,6 +348,97 @@ mod tests {
     async fn test_identity_manager_creation() {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         assert_eq!(manager.trust_domain(), "test.local");
+    }
+
+    /// North Star C9 (Inc 1): an attested SVID is served over the real cache path a
+    /// pod's `FETCH_SVID` reads, and a shipped relying-party verifier reds on
+    /// measurement drift and on an absent extension (fail-closed) — while passing
+    /// the correct measurement (non-vacuous). KVM-free: exercises the same
+    /// `fetch_certificate` fast-path the workload API serves, minus the UDS
+    /// transport and a real Firecracker rootfs (named gaps in the ledger).
+    #[tokio::test]
+    async fn attested_svid_is_served_and_verifier_reds_on_drift_and_absent() {
+        use nucleus_identity::{verify_attested_svid, AttestationRequirements};
+        use std::io::Write;
+
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+
+        // Two temp "images" the node measures, plus a config blob.
+        let mut kernel = tempfile::NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel-image-bytes").unwrap();
+        let mut rootfs = tempfile::NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs-image-bytes").unwrap();
+        let config = b"pod-config-blob";
+
+        // Attested pod: measure, then issue+cache the attested cert.
+        let attested_pod = Uuid::new_v4();
+        let attested_id = manager.identity_for_pod(attested_pod, "default", "attested");
+        let att = manager
+            .compute_attestation(
+                &attested_pod.to_string(),
+                kernel.path(),
+                rootfs.path(),
+                config,
+            )
+            .await
+            .expect("attestation computes");
+        manager
+            .fetch_attested_certificate(&attested_id, &attested_pod.to_string())
+            .await
+            .expect("attested cert issues");
+
+        // The SERVED path: fetch_certificate is exactly what FETCH_SVID calls. After
+        // caching it must return the ATTESTED cert (carrying the measurement).
+        let chain = manager
+            .fetch_certificate(&attested_id)
+            .await
+            .expect("served cert")
+            .chain_pem();
+
+        let expected = AttestationRequirements::exact(
+            *att.kernel_hash(),
+            *att.rootfs_hash(),
+            *att.config_hash(),
+        );
+
+        // (i) POSITIVE CONTROL — correct expectation verifies (proves it is not
+        //     always-red: teeth (ii)/(iii) below then mean something).
+        assert!(
+            verify_attested_svid(&chain, &expected, true)
+                .expect("correct measurement verifies")
+                .is_some(),
+            "served SVID must carry the launch attestation"
+        );
+
+        // (ii) TEETH — one byte of drift in the expected artifact reds the verifier.
+        let mut wrong_kernel = *att.kernel_hash();
+        wrong_kernel[0] ^= 0x01;
+        let drifted =
+            AttestationRequirements::exact(wrong_kernel, *att.rootfs_hash(), *att.config_hash());
+        assert!(
+            verify_attested_svid(&chain, &drifted, true).is_err(),
+            "one byte of measurement drift must red the verifier"
+        );
+
+        // (iii) TEETH — a plain (unattested) pod's SVID fails closed when required,
+        //       and yields no attestation (not a spurious one) when not required.
+        let plain_pod = Uuid::new_v4();
+        let plain_id = manager.identity_for_pod(plain_pod, "default", "plain");
+        let plain_chain = manager
+            .fetch_certificate(&plain_id)
+            .await
+            .expect("plain cert")
+            .chain_pem();
+        assert!(
+            verify_attested_svid(&plain_chain, &AttestationRequirements::any(), true).is_err(),
+            "absent extension + require_attestation must fail closed"
+        );
+        assert!(
+            verify_attested_svid(&plain_chain, &AttestationRequirements::any(), false)
+                .expect("absent-not-required is ok")
+                .is_none(),
+            "absent extension without requirement yields no attestation"
+        );
     }
 
     #[tokio::test]

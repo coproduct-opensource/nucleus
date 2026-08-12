@@ -6607,6 +6607,7 @@ dependencies = [
  "nucleus-bundle-cas",
  "nucleus-client",
  "nucleus-envelope",
+ "nucleus-identity",
  "nucleus-lineage",
  "nucleus-proto",
  "nucleus-spec",

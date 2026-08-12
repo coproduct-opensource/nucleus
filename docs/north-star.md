@@ -87,7 +87,7 @@ status is a visible event, not an edit.
 | C6 | "every mediated channel" | TESTED | `crates/nucleus-ifc-kernel/src/egress_channel.rs#no_channel_is_an_open_hole`, `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/nucleus-ifc-kernel/src/egress_channel.rs#documented_inventory_equals_the_enum`, `scripts/check-egress-probe.sh`, `docs/architecture/mediated-set.md` | `scripts/check-egress-probe.sh` |
 | C7 | "a theorem about the code that ships" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `crates/nucleus-ifc-kernel/src/extracted/identity.rs` | `.github/workflows/aeneas-ifc-scoped.yml` |
 | C8 | "re-checked on every change" | TESTED | `.github/workflows/aeneas-ifc-scoped.yml`, `scripts/check-extracted-callsites.sh`, `scripts/extracted-callsites-manifest.txt` | `scripts/check-extracted-callsites.sh` |
-| C9 | "verify from the outside" | NOT-YET | `crates/nucleus-identity/src/attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | — |
+| C9 | "verify from the outside" | NOT-YET | `crates/nucleus-identity/src/attestation.rs#verify_attested_svid`, `crates/nucleus-node/src/identity.rs#attested_svid_is_served_and_verifier_reds_on_drift_and_absent`, `crates/nucleus-cli/src/verify_attestation.rs`, `crates/nucleus-node/src/posture.rs#admit_posture` | — |
 *The clause fragments quote the sentence above, whose exclusions travel with
 them: the claim covers explicit flows only, excluding timing, cache, and other
 microarchitectural channels, and excluding availability and resource-contention
@@ -362,28 +362,40 @@ What each status means, and what it deliberately does not:
   and the base flows-to relations (`iflows_to`/`cflows_to`) are exercised
   transitively by the decision predicates. TESTED, not PROVED: the correspondence
   is a build-system + grep-gate check, not a proof.
-- **C9 (NOT-YET — demoted 2026-08-08, was TESTED).** The external-verification
-  leg is not wired end to end, so a relying party CANNOT yet verify from the
-  outside. Concretely: `FETCH_SVID` serves a plain certificate
-  (`manager.fetch_certificate` → `sign_csr`) with **no** DICE attestation
-  extension; the only producer that would embed measurements,
-  `fetch_attested_certificate`, is `#[allow(dead_code)]` and, at its single call
-  site, its success value is **discarded** (only the error arm is handled), and
-  no CA implements `sign_attested_csr` — every backend falls through to plain
-  `sign_csr`. So no served cert carries a measurement. On the consumer side,
-  `AttestationRequirements::verify` / `LaunchAttestation::from_der` have no
-  production caller, so no shipped relying party extracts and checks a launch
-  attestation. What DOES exist and is real: `admit_posture` verifies a claimed
-  `posture@digest` against a self-measured rootfs digest, fail-closed and
-  perturbation-tested (`admit_posture_one_byte_of_drift_reds_the_gate`) — but it
-  is the pod's own self-characterization at admission, not outside verification,
-  and it is inert unless a pod carries a `dlc_posture` label (no shipped spec or
-  the CI probe emits one, so the boot gate never exercises it — which is also
-  why the former `quickstart-boot.yml` falsifier could not red on a regression).
-  Re-earning C9 needs: embed the measurement on the served SVID (implement
-  `sign_attested_csr`, stop discarding the attested cert), a shipped
-  relying-party verifier that checks it, and signed provenance binding the
-  artifact digest to the theorem set.
+- **C9 (NOT-YET — demoted 2026-08-08, was TESTED; Inc 1 landed 2026-08-11).**
+  Increment 1 wired the first end-to-end vertical, but the leg is not yet fully
+  earned. **What now holds (node-signed *software* launch attestation):** the
+  producer no longer discards the attested cert — `fetch_attested_certificate`
+  caches it (`SecretManager::cache_certificate`) so the served `FETCH_SVID`
+  fast-path (`manager.fetch_certificate`) returns the cert carrying the
+  measurement, and `SelfSignedCa::sign_attested_csr` really does embed the DICE
+  extension (the prior note's "no CA implements `sign_attested_csr`" and
+  "`#[allow(dead_code)]`/discarded" facts are now false for the shipping path). A
+  **shipped relying party** exists — `nucleus_identity::verify_attested_svid`
+  (extract `LaunchAttestation` from the leaf, check against
+  `AttestationRequirements`) with a production CLI caller `nucleus
+  verify-attestation`. The teeth are exercised over the real serve path:
+  `identity::tests::attested_svid_is_served_and_verifier_reds_on_drift_and_absent`
+  proves (i) correct measurement verifies (non-vacuous), (ii) one byte of drift
+  reds, (iii) an absent extension fails closed under `require_attestation`;
+  `cli_verifies_attested_and_reds_on_drift_and_absent` proves the same through
+  the CLI entrypoint. **Trust boundary (why still NOT-YET, not overclaim):** the
+  measurement is the node's own SHA-256 of the kernel+rootfs it launched, signed
+  by the node's CA key — there is **no hardware root** (no TPM/SEV-SNP/TDX quote,
+  no UDS-in-ROM DICE identity), so the guarantee is conditional on trusting the
+  node key; a compromised node can sign any measurement. **Remaining for TESTED:**
+  (a) the verifier must run on a *live request/admission* path (peer mTLS gate /
+  node admission, fail-closed), not only a CLI self-check — the tool-proxy
+  `sandbox_proof.rs` verifier is still dead; (b) the served-attestation path is
+  exercised on the Firecracker driver only (a local-driver pod has no VM image to
+  measure) and the round-trip test drives the real cache→serve fast-path minus the
+  UDS transport; (c) signed provenance binding the artifact digest to the theorem
+  set (in-toto-style: subject = rootfs/kernel digest, predicate = ledger commit);
+  (d) the hardware-root gap named above. The adjacent real thing remains
+  `admit_posture` (self-measured rootfs digest, fail-closed,
+  `admit_posture_one_byte_of_drift_reds_the_gate`) — same TCB boundary, now also
+  exposed to an *outside* verifier. Note: OID PEN 57212 is an unregistered
+  placeholder; register it before any external-interop claim.
 
 The cross-pod leg is the open one, and it is deliberately sequenced audit-first:
 a lookup keyed on something a guest can forge is a far likelier defect than a

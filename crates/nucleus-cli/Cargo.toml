@@ -20,6 +20,7 @@ path = "src/main.rs"
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
+nucleus-identity = { path = "../nucleus-identity" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }

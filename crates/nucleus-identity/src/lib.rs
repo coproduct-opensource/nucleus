@@ -50,7 +50,9 @@ pub mod workload_api;
 pub use approval_bundle::{
     ApprovalBundleBuilder, ApprovalBundleClaims, ApprovalBundleHeader, ApprovalBundleVerifier,
 };
-pub use attestation::{AttestationRequirements, LaunchAttestation};
+pub use attestation::{
+    extract_launch_attestation, verify_attested_svid, AttestationRequirements, LaunchAttestation,
+};
 #[cfg(feature = "spire")]
 pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 pub use ca::{CaClient, SelfSignedCa};

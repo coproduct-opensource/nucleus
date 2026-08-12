@@ -52,6 +52,7 @@ mod token;
 mod twosafety;
 mod twosafety_boot;
 mod verify;
+mod verify_attestation;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -144,6 +145,9 @@ enum Commands {
 
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
+
+    /// Verify an attested SVID against expected measurements (relying party, C9)
+    VerifyAttestation(verify_attestation::VerifyAttestationArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -201,5 +205,6 @@ async fn main() -> Result<()> {
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
+        Commands::VerifyAttestation(args) => verify_attestation::execute(args),
     }
 }

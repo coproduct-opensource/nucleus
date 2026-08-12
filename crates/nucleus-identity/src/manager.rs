@@ -153,6 +153,25 @@ impl<C: CaClient + 'static> SecretManager<C> {
         self.fetch_new_certificate(identity).await
     }
 
+    /// Warms the certificate cache with a pre-signed certificate for an identity.
+    ///
+    /// This is how an *attested* certificate (one carrying an embedded
+    /// launch-attestation X.509 extension, signed out-of-band via
+    /// `CaClient::sign_attested_csr`) reaches the served `FETCH_SVID` fast-path,
+    /// which reads this same cache in [`Self::fetch_certificate`]. Without warming
+    /// the cache, an attested cert is signed and then dropped — the fast-path keeps
+    /// serving the plain cert and the measurement never leaves the node.
+    pub async fn cache_certificate(&self, identity: &Identity, cert: Arc<WorkloadCertificate>) {
+        let mut certs = self.certs.write().await;
+        certs.insert(
+            identity.clone(),
+            CertState::Available {
+                cert,
+                last_refresh_attempt: Instant::now(),
+            },
+        );
+    }
+
     /// Fetches a session-scoped certificate derived from a parent workload identity.
     ///
     /// Session certificates enable audit correlation across multiple tool calls within
