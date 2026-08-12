@@ -24,8 +24,11 @@
 //! `libtss2`/`tss-esapi` are never in this path — a TPM (or `swtpm`) is only a
 //! *producer* of the blobs this module consumes.
 
-use crate::assurance::{AssuranceLevel, AttestedSubject, Claim, VerifiedAttestation};
-use crate::{Error, Result};
+use crate::assurance::{
+    AssuranceLevel, AttestedSubject, Claim, SvidAttestationBackend, VerifiedAttestation,
+};
+use crate::attestation::AttestationRequirements;
+use crate::{oid, Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -305,6 +308,147 @@ pub fn verify_residency(
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// X.509 residency evidence + relying-party backend (Inc 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RESIDENCY_EVIDENCE_V1: u8 = 1;
+
+/// A TPM residency proof carried by (or to be embedded in) an X.509 certificate.
+///
+/// Bundles everything [`verify_residency`] needs: the signed `TPMS_ATTEST`, the
+/// certify signature, the AK public, and the certified subject public.
+#[derive(Clone, Debug)]
+pub struct ResidencyEvidence {
+    /// Marshaled `TPMS_ATTEST` (CERTIFY).
+    pub attest: Vec<u8>,
+    /// `TPMT_SIGNATURE` over `attest`.
+    pub sig: Vec<u8>,
+    /// `TPM2B_PUBLIC` of the attestation key.
+    pub ak_pub: Vec<u8>,
+    /// `TPM2B_PUBLIC` of the certified subject key.
+    pub subject_pub: Vec<u8>,
+}
+
+impl ResidencyEvidence {
+    /// Encodes the evidence as the value of the nucleus TPM-residency X.509 extension
+    /// (OID `1.3.6.1.4.1.57212.1.3`). Internal length-prefixed format (version byte +
+    /// four `u16`-length-prefixed fields); deliberately NOT TCG SKAE (see [`oid`]).
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![RESIDENCY_EVIDENCE_V1];
+        for field in [&self.attest, &self.sig, &self.ak_pub, &self.subject_pub] {
+            out.extend_from_slice(&(field.len() as u16).to_be_bytes());
+            out.extend_from_slice(field);
+        }
+        out
+    }
+
+    /// Parses an extension value produced by [`Self::encode`].
+    pub fn parse(value: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(value);
+        if r.take(1)?[0] != RESIDENCY_EVIDENCE_V1 {
+            return Err(vfail("residency evidence: unsupported version"));
+        }
+        Ok(ResidencyEvidence {
+            attest: r.tpm2b()?.to_vec(),
+            sig: r.tpm2b()?.to_vec(),
+            ak_pub: r.tpm2b()?.to_vec(),
+            subject_pub: r.tpm2b()?.to_vec(),
+        })
+    }
+}
+
+/// Extracts TPM-residency evidence from an X.509 certificate (DER), if present.
+pub fn extract_residency_evidence(cert_der: &[u8]) -> Option<ResidencyEvidence> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+    for ext in cert.extensions() {
+        if ext.oid.as_bytes() == oid::OID_NUCLEUS_TPM_RESIDENCY_BYTES {
+            return ResidencyEvidence::parse(ext.value).ok();
+        }
+    }
+    None
+}
+
+/// The uncompressed EC point (`0x04 || X || Y`, 65 bytes) of a certificate's leaf
+/// public key. Accepts either the bare BIT STRING content or a full SPKI DER (the
+/// point is its trailing 65 bytes for P-256 uncompressed keys).
+fn leaf_ec_point(cert_der: &[u8]) -> Result<Vec<u8>> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) =
+        X509Certificate::from_der(cert_der).map_err(|_| vfail("cert: X.509 parse failed"))?;
+    let raw = cert.public_key().subject_public_key.data.as_ref();
+    if raw.len() == 65 && raw[0] == 0x04 {
+        Ok(raw.to_vec())
+    } else if raw.len() >= 65 && raw[raw.len() - 65] == 0x04 {
+        Ok(raw[raw.len() - 65..].to_vec())
+    } else {
+        Err(vfail("cert: leaf key is not an uncompressed P-256 point"))
+    }
+}
+
+/// Relying-party backend: verifies a served SVID that carries a TPM DevID residency
+/// proof, and **binds the proof to the certificate's own key**.
+///
+/// The binding is the load-bearing SVID property: without it, a valid residency
+/// proof for *some other* TPM key could be replayed into an unrelated certificate.
+/// This backend refuses unless the certified subject key is exactly the leaf key.
+///
+/// [`AttestationRequirements`] constrain launch measurements and do not apply to
+/// residency, so they are ignored here (the trait shares one signature across roots).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TpmDevidBackend;
+
+impl SvidAttestationBackend for TpmDevidBackend {
+    fn id(&self) -> &'static str {
+        "tpm-devid-residency"
+    }
+
+    fn assurance(&self) -> AssuranceLevel {
+        AssuranceLevel::L1Software
+    }
+
+    fn verify_svid(
+        &self,
+        chain_pem: &str,
+        _requirements: &AttestationRequirements,
+        require_attestation: bool,
+    ) -> Result<Option<VerifiedAttestation>> {
+        let leaf =
+            pem::parse(chain_pem).map_err(|e| vfail(format!("cert PEM parse failed: {e}")))?;
+        let cert_der = leaf.contents();
+
+        let evidence = match extract_residency_evidence(cert_der) {
+            Some(ev) => ev,
+            None if require_attestation => {
+                return Err(vfail(
+                    "served SVID carries no TPM residency evidence (fail-closed)",
+                ))
+            }
+            None => return Ok(None),
+        };
+
+        // The residency proof itself: signature, non-exportability, Name binding.
+        let va = verify_residency(
+            &evidence.attest,
+            &evidence.ak_pub,
+            &evidence.sig,
+            &evidence.subject_pub,
+        )?;
+
+        // SVID binding: the certified TPM key must BE this certificate's key.
+        let subject = parse_ecc_public(&evidence.subject_pub)?;
+        if leaf_ec_point(cert_der)? != subject.sec1_uncompressed {
+            return Err(vfail(
+                "TPM residency proof certifies a different key than the certificate (possible replay)",
+            ));
+        }
+        Ok(Some(va))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +540,115 @@ mod tests {
         let err = verify_residency(&a[..8], &ak_pub(), &sig(), &subj_pub()).unwrap_err();
         let s = err.to_string();
         assert!(s.contains("truncated") || s.contains("magic"), "cause: {s}");
+    }
+
+    // ── Inc 2: X.509 residency extension + relying-party backend ──────────────
+
+    fn evidence() -> ResidencyEvidence {
+        ResidencyEvidence {
+            attest: attest(),
+            sig: sig(),
+            ak_pub: ak_pub(),
+            subject_pub: subj_pub(),
+        }
+    }
+
+    fn point_of(pub2b: &[u8]) -> Vec<u8> {
+        parse_ecc_public(pub2b).unwrap().sec1_uncompressed
+    }
+
+    /// P-256 uncompressed SPKI DER = fixed 26-byte prefix + the 65-byte point.
+    fn p256_spki_der(point_sec1: &[u8]) -> Vec<u8> {
+        const PREFIX: &[u8] = &[
+            0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06,
+            0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+        ];
+        let mut v = PREFIX.to_vec();
+        v.extend_from_slice(point_sec1);
+        v
+    }
+
+    /// A raw SPKI wrapped so rcgen can sign a cert for a public key we don't hold the
+    /// private half of (mirrors `SelfSignedCa`'s `CsrPublicKey`).
+    struct RawSpki(Vec<u8>);
+    impl rcgen::PublicKeyData for RawSpki {
+        fn der_bytes(&self) -> &[u8] {
+            &self.0
+        }
+        fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+            &rcgen::PKCS_ECDSA_P256_SHA256
+        }
+    }
+
+    /// Builds a leaf cert whose key is `leaf_point`, optionally embedding a
+    /// residency extension, signed by a throwaway CA. Returns the leaf PEM.
+    fn build_cert(leaf_point: &[u8], residency_ext: Option<&[u8]>) -> String {
+        use rcgen::{
+            BasicConstraints, CertificateParams, CustomExtension, IsCa, Issuer, KeyPair,
+            PKCS_ECDSA_P256_SHA256,
+        };
+        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let issuer = Issuer::from_params(&ca_params, &ca_key);
+
+        let spki = RawSpki(p256_spki_der(leaf_point));
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        if let Some(value) = residency_ext {
+            params
+                .custom_extensions
+                .push(CustomExtension::from_oid_content(
+                    oid::OID_NUCLEUS_TPM_RESIDENCY_TUPLE,
+                    value.to_vec(),
+                ));
+        }
+        params.signed_by(&spki, &issuer).unwrap().pem()
+    }
+
+    #[test]
+    fn evidence_codec_roundtrips() {
+        let ev = evidence();
+        let parsed = ResidencyEvidence::parse(&ev.encode()).expect("roundtrip");
+        assert_eq!(parsed.attest, ev.attest);
+        assert_eq!(parsed.subject_pub, ev.subject_pub);
+    }
+
+    /// POSITIVE — a served SVID whose key IS the TPM subject key, carrying a real
+    /// residency proof, verifies end to end.
+    #[test]
+    fn backend_accepts_svid_bound_to_the_tpm_key() {
+        let pem = build_cert(&point_of(&subj_pub()), Some(&evidence().encode()));
+        let va = TpmDevidBackend
+            .verify_svid(&pem, &AttestationRequirements::any(), true)
+            .expect("verify ok")
+            .expect("attested");
+        assert!(va.proves(Claim::KeyNonExportable));
+        assert!(va.cannot_prove(Claim::HardwareRootedKey));
+        assert!(matches!(va.subject, AttestedSubject::TpmResidentKey { .. }));
+    }
+
+    /// RED (anti-replay) — the SAME valid residency proof embedded in a cert whose
+    /// key is a DIFFERENT key (the AK's point) must red on the binding, not pass.
+    #[test]
+    fn backend_reds_when_proof_is_replayed_into_a_foreign_cert() {
+        let pem = build_cert(&point_of(&ak_pub()), Some(&evidence().encode()));
+        let err = TpmDevidBackend
+            .verify_svid(&pem, &AttestationRequirements::any(), true)
+            .unwrap_err();
+        assert!(err.to_string().contains("different key"), "cause: {err}");
+    }
+
+    /// RED (fail-closed) — a cert with no residency extension is refused when
+    /// required, and yields no attestation when not required.
+    #[test]
+    fn backend_fails_closed_when_evidence_absent() {
+        let pem = build_cert(&point_of(&subj_pub()), None);
+        assert!(TpmDevidBackend
+            .verify_svid(&pem, &AttestationRequirements::any(), true)
+            .is_err());
+        assert!(TpmDevidBackend
+            .verify_svid(&pem, &AttestationRequirements::any(), false)
+            .expect("absent-not-required ok")
+            .is_none());
     }
 }

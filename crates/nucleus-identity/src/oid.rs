@@ -49,6 +49,28 @@ pub const OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 2];
 
+/// OID for Nucleus TPM DevID residency evidence (same PEN arc, component .1.3).
+///
+/// OID: 1.3.6.1.4.1.57212.1.3
+/// - PEN: 57212 (same unregistered placeholder)
+/// - Component: .1.3 (attestation.tpm_residency)
+///
+/// The extension carries a `TPM2_Certify` residency proof (attest + signature + AK
+/// public + subject public) binding the certificate's key to a non-exportable,
+/// TPM-resident key.
+///
+/// **INTERNAL / NOT TCG SKAE.** This deliberately uses the nucleus PEN arc, not the
+/// standard TCG SKAE OID (2.23.133.x), so it is unambiguously an internal,
+/// in-tree format with no interop commitment. Adopting standard TCG SKAE for
+/// external interoperability is a separate, outward-facing decision (with PEN/
+/// wire-format-stability implications) reserved for a later increment.
+pub const OID_NUCLEUS_TPM_RESIDENCY_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x03, // .1.3 (attestation.tpm_residency)
+];
+
+pub const OID_NUCLEUS_TPM_RESIDENCY_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 3];
+
 #[cfg(test)]
 mod tests {
     use super::*;
