@@ -7366,6 +7366,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-spiffe-hail"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
+ "iroh",
+ "nucleus-identity",
+ "nucleus-node-binding",
+ "rcgen",
+ "rustls 0.23.43",
+ "serde",
+ "serde_json",
+ "tokio",
+ "x509-parser",
+]
+
+[[package]]
 name = "nucleus-tool-proxy"
 version = "1.0.0"
 dependencies = [

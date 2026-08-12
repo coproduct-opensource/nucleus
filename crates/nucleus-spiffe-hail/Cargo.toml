@@ -1,0 +1,25 @@
+[package]
+name = "nucleus-spiffe-hail"
+version = "1.0.0"
+edition = "2021"
+description = "Call SPIFFE agents anywhere over iroh: reach an agent by its SPIFFE identity, dial it P2P, and authenticate it (CA-rooted SVID + NodeId binding). Wire format INTERNAL/unstable."
+license = "MIT"
+
+[dependencies]
+iroh = "=1.0.3"
+nucleus-identity = { path = "../nucleus-identity" }
+nucleus-node-binding = { path = "../nucleus-node-binding" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+x509-parser = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+rcgen = "0.14"
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
