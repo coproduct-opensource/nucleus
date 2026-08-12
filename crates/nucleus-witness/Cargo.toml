@@ -35,7 +35,7 @@ ct-merkle = { version = "0.3", features = ["serde"] }
 # Ed25519 cosignature minting + log-key signature verification. Matches
 # the workspace-wide pin so cargo-deny's duplicate-version ban stays
 # green (nucleus-lineage / nucleus-verifier-service both pin this).
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
+ed25519-dalek = { version = "=3.0.0", features = ["rand_core"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

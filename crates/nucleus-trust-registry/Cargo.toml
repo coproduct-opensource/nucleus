@@ -36,7 +36,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 ct-merkle = { version = "0.3", features = ["serde"] }
-ed25519-dalek = { version = "=3.0.0-pre.7" }
+ed25519-dalek = { version = "=3.0.0" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

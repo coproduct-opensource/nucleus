@@ -120,6 +120,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -328,12 +334,12 @@ dependencies = [
 
 [[package]]
 name = "curve25519-dalek"
-version = "5.0.0-pre.6"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "335f1947f241137a14106b6f5acc5918a5ede29c9d71d3f2cb1678d5075d9fc3"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.2.17",
+ "cpufeatures 0.3.0",
  "curve25519-dalek-derive",
  "digest 0.11.3",
  "fiat-crypto",
@@ -468,9 +474,9 @@ dependencies = [
 
 [[package]]
 name = "ed25519-dalek"
-version = "3.0.0-pre.7"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20449acd54b660981ae5caa2bcb56d1fe7f25f2e37a38ec507400fab034d4bb6"
+checksum = "6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
@@ -840,7 +846,7 @@ dependencies = [
 name = "nucleus-agent-card"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
@@ -886,7 +892,7 @@ dependencies = [
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
  "hex",
@@ -901,7 +907,7 @@ dependencies = [
 name = "nucleus-externality"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "ed25519-dalek",
  "hex",
  "nucleus-lineage",
@@ -916,10 +922,10 @@ name = "nucleus-identity"
 version = "1.0.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.23.1",
  "chrono",
  "hex",
- "pem",
+ "pem 4.0.0",
  "portcullis-core",
  "prost",
  "rcgen",
@@ -953,7 +959,7 @@ version = "1.0.0"
 name = "nucleus-lineage"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "chrono",
  "ct-merkle",
  "ed25519-dalek",
@@ -970,7 +976,7 @@ dependencies = [
 name = "nucleus-receipt"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "blake3",
  "ed25519-dalek",
  "hex",
@@ -999,7 +1005,7 @@ dependencies = [
 name = "nucleus-verifier-wasm"
 version = "0.1.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "chrono",
  "console_error_panic_hook",
  "ed25519-dalek",
@@ -1028,7 +1034,7 @@ dependencies = [
 name = "nucleus-witness-olog"
 version = "1.0.0"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "ct-merkle",
  "ed25519-dalek",
  "hex",
@@ -1113,7 +1119,17 @@ version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
- "base64",
+ "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
+name = "pem"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
+dependencies = [
+ "base64 0.23.1",
  "serde_core",
 ]
 
@@ -1239,7 +1255,7 @@ version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
 dependencies = [
- "pem",
+ "pem 3.0.6",
  "ring",
  "rustls-pki-types",
  "time",

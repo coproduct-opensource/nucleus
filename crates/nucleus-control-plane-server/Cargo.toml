@@ -26,7 +26,7 @@ nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0"
 base64 = "0.23"
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }

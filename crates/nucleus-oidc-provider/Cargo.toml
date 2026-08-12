@@ -47,7 +47,7 @@ clap = { workspace = true }
 
 # Crypto — explicit zeroize feature (closes #31 GA-8: never rely on
 # transitive default-features for key-material zeroization). Version is
-# centralized in [workspace.dependencies] (the exact `=3.0.0-pre.7` pin that
+# centralized in [workspace.dependencies] (the exact `=3.0.0` pin that
 # forces single-version resolution across the workspace); features stay local.
 ed25519-dalek = { workspace = true, features = ["zeroize", "rand_core", "pkcs8"] }
 

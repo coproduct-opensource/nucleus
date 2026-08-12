@@ -23,10 +23,10 @@ serde_json = { workspace = true }
 blake3 = "1.8.5"
 
 # Peer-to-peer content-addressed blob transfer. iroh/iroh-blobs are pre-1.0
-# (expect churn): iroh-blobs 0.102.0 pins iroh =1.0.0-rc.1, so both move
+# (expect churn): iroh-blobs 0.102.0 pins iroh =1.0.3, so both move
 # together. The QUIC/TLS stack rides on rustls 0.23 (already in-workspace).
-iroh = "=1.0.0-rc.1"
-iroh-blobs = "=0.102.0"
+iroh = "=1.0.3"
+iroh-blobs = "=0.103.0"
 
 # Error handling
 thiserror = { workspace = true }

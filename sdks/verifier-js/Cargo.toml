@@ -71,7 +71,7 @@ wasm-bindgen-test = "0.3"
 # Test-only signing for receipt round-trips. Pinned to the single
 # workspace-wide dalek line so the test signer and the SDK verifier
 # share one ed25519 implementation.
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0"
 
 # Native-only test deps: minting+signing an Agent Card (the `sign` feature
 # pulls ring-backed nucleus-identity, which does NOT compile to wasm32 —

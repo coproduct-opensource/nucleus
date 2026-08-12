@@ -51,7 +51,7 @@ base64 = { workspace = true }
 # signatures) and for the production `Pkcs8FileSigner` (decode-only: `pkcs8` +
 # `alloc` + `pem`, no CSPRNG). The `insecure-local-issuer` feature additionally
 # enables `rand_core` for the in-process key-GENERATING LocalIssuer. Version
-# (`=3.0.0-pre.7`) inherited from the workspace pin; only features are local.
+# (`=3.0.0`) inherited from the workspace pin; only features are local.
 ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc", "pem"] }
 # RFC 6962 / RFC 9162-style Merkle tree for the `MerkleSink` checkpointing
 # layer (transparency-log style append-only integrity). serde feature lets

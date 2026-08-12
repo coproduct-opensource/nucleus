@@ -20,7 +20,7 @@ hex = { workspace = true }
 base64 = "0.23"
 # Pinned to the single workspace-wide dalek line (see workspace Cargo.toml);
 # signing + verification only, no key generation, so no rand features.
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0"
 blake3 = "1"
 # RFC 8785 (JCS) canonical JSON for the signing bytes. Plain
 # `serde_json::to_vec` is NOT canonical here: its key order flips with

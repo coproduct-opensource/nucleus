@@ -57,7 +57,7 @@ webpki-roots = "1.0"
 base64 = { workspace = true }
 # `alloc` is required (alongside `pkcs8`) for the EncodePrivateKey/DecodePrivateKey
 # (`to_pkcs8_der`/`from_pkcs8_der`) impls — dalek 3 split alloc out of `pkcs8`.
-# Version comes from the workspace pin (=3.0.0-pre.7); only the extra features
+# Version comes from the workspace pin (=3.0.0); only the extra features
 # are declared here.
 ed25519-dalek = { workspace = true, features = ["rand_core", "pkcs8", "alloc"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

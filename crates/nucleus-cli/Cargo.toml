@@ -28,8 +28,8 @@ nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
-iroh = "=1.0.0-rc.1"
-iroh-blobs = "=0.102.0"
+iroh = "=1.0.3"
+iroh-blobs = "=0.103.0"
 
 # gRPC client
 tonic = { workspace = true }

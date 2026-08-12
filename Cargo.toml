@@ -197,12 +197,12 @@ regex = "1.12"
 # Encoding
 base64 = "0.23"
 
-# Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Pinned to the
-# exact prerelease iroh requires (=3.0.0-pre.7) so the WHOLE workspace resolves a
-# SINGLE ed25519-dalek — first-party crates, iroh, and (with the aws_lc_rs JWT
-# backend) jsonwebtoken no longer split across v2/v3. rc.0 is the newer published
-# release but iroh pins =3.0.0-pre.7 exactly, so pre.7 is the unifying version.
-ed25519-dalek = "=3.0.0-pre.7"
+# Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Pinned exact so
+# the WHOLE workspace resolves a SINGLE ed25519-dalek — first-party crates, iroh,
+# and (with the aws_lc_rs JWT backend) jsonwebtoken no longer split across v2/v3.
+# iroh 1.0.3 requires ed25519-dalek >=3.0.0-rc.0,<4; 3.0.0 (stable) is the unifying
+# version (bumped from the pre.7 the iroh 1.0.0-rc.1 line required).
+ed25519-dalek = "=3.0.0"
 
 # Testing
 tempfile = "3"
