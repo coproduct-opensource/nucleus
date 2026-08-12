@@ -1,0 +1,17 @@
+[package]
+name = "nucleus-podlist-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-guest cross-pod-listing probe: proves a booted pod's scoped POD_LIST over the real vsock excludes a non-lineage sibling (C2 G4)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-podlist-probe"
+path = "src/main.rs"
+
+[dependencies]
+vsock = "0.5"
+serde_json = { workspace = true }

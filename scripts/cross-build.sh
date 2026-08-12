@@ -19,6 +19,7 @@ ROOTFS_PACKAGES=(
     "nucleus-net-probe"
     "nucleus-workload-probe"
     "nucleus-egress-probe"
+    "nucleus-podlist-probe"
 )
 
 # Targets

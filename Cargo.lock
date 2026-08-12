@@ -7217,6 +7217,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-podlist-probe"
+version = "1.0.0"
+dependencies = [
+ "serde_json",
+ "vsock",
+]
+
+[[package]]
 name = "nucleus-policy-cert"
 version = "1.0.0"
 dependencies = [
