@@ -30,6 +30,7 @@ use crate::certificate::WorkloadCertificate;
 use crate::identity::Identity;
 use crate::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A Certificate Authority client that can sign CSRs.
@@ -174,4 +175,73 @@ pub trait CaClient: Send + Sync {
 
     /// Returns the trust domain this CA serves.
     fn trust_domain(&self) -> &str;
+}
+
+/// Blanket impl so a runtime-selected `Arc<dyn CaClient>` satisfies `CaClient`
+/// anywhere a concrete CA is required (e.g. `SecretManager<Arc<dyn CaClient>>`). This
+/// is the seam that lets a host choose its attestation root at runtime instead of
+/// being monomorphized to one CA type.
+///
+/// Every method — INCLUDING the defaulted `sign_attested_csr` / `sign_fused_csr` — is
+/// forwarded through the trait object, so the inner concrete CA's overrides are what
+/// runs. This matters: if the defaults were inherited here, an `Arc<dyn CaClient>`
+/// wrapping a `SelfSignedCa` would silently drop the attestation extension and serve
+/// a plain cert. The `attested_svid_is_served_*` round-trip test guards against that.
+#[async_trait]
+impl CaClient for Arc<dyn CaClient> {
+    async fn sign_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<WorkloadCertificate> {
+        (**self).sign_csr(csr, private_key, identity, ttl).await
+    }
+
+    async fn sign_attested_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+    ) -> Result<WorkloadCertificate> {
+        (**self)
+            .sign_attested_csr(csr, private_key, identity, ttl, attestation)
+            .await
+    }
+
+    async fn sign_fused_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        permission_fingerprint: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        (**self)
+            .sign_fused_csr(
+                csr,
+                private_key,
+                identity,
+                ttl,
+                attestation,
+                permission_fingerprint,
+            )
+            .await
+    }
+
+    async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String> {
+        (**self).sign_csr_only(csr, identity, ttl).await
+    }
+
+    fn trust_bundle(&self) -> &crate::certificate::TrustBundle {
+        (**self).trust_bundle()
+    }
+
+    fn trust_domain(&self) -> &str {
+        (**self).trust_domain()
+    }
 }

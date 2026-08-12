@@ -30,9 +30,11 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct IdentityManager {
     /// The secret manager for certificate operations.
-    secret_manager: Arc<SecretManager<SelfSignedCa>>,
-    /// The CA client (needed for trust bundle access).
-    ca: Arc<SelfSignedCa>,
+    secret_manager: Arc<SecretManager<Arc<dyn CaClient>>>,
+    /// The CA client (needed for trust bundle access). Held as `dyn` so the node is
+    /// not monomorphized to one CA type — a future hardware-rooted or SPIRE-issued
+    /// root can be injected via [`IdentityManager::with_ca`].
+    ca: Arc<dyn CaClient>,
     /// Registry mapping pod IDs to their SPIFFE identities.
     vm_registry: Arc<VmRegistry>,
     /// Trust domain for this node.
@@ -49,21 +51,38 @@ impl IdentityManager {
     /// For production, this should be replaced with a SPIRE CA client.
     pub fn new(trust_domain: impl Into<String>, cert_ttl: Duration) -> Result<Self, String> {
         let trust_domain = trust_domain.into();
-        let ca = Arc::new(
+        let ca: Arc<dyn CaClient> = Arc::new(
             SelfSignedCa::new(&trust_domain)
                 .map_err(|e| format!("failed to create self-signed CA: {e}"))?,
         );
-        let secret_manager = SecretManager::new(ca.clone(), cert_ttl);
+        Ok(Self::with_ca(trust_domain, cert_ttl, ca))
+    }
+
+    /// Creates an identity manager backed by an arbitrary attestation root.
+    ///
+    /// [`Self::new`] uses a self-signed CA; this constructor lets a host inject any
+    /// [`CaClient`] — a future hardware-rooted backend (TPM DevID, cloud KMS), a
+    /// SPIRE-issued root, etc. — without the node being monomorphized to one CA type.
+    /// The injected CA must override `sign_attested_csr` for attested SVIDs to carry
+    /// a measurement; a CA that only signs plainly yields plain SVIDs (which an
+    /// attesting relying party then refuses, fail-closed).
+    pub fn with_ca(
+        trust_domain: impl Into<String>,
+        cert_ttl: Duration,
+        ca: Arc<dyn CaClient>,
+    ) -> Self {
+        let trust_domain = trust_domain.into();
+        let secret_manager = SecretManager::new(Arc::new(ca.clone()), cert_ttl);
         let vm_registry = Arc::new(RwLock::new(HashMap::new()));
 
-        Ok(Self {
+        Self {
             secret_manager,
             ca,
             vm_registry,
             trust_domain,
             attestation_registry: Arc::new(RwLock::new(HashMap::new())),
             cert_ttl,
-        })
+        }
     }
 
     /// Returns the trust domain.
@@ -348,6 +367,56 @@ mod tests {
     async fn test_identity_manager_creation() {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         assert_eq!(manager.trust_domain(), "test.local");
+    }
+
+    /// C9 Phase 0: a CA injected via `with_ca` (as `Arc<dyn CaClient>`) flows through
+    /// the `dyn` seam AND still embeds launch attestation — proving the blanket
+    /// `impl CaClient for Arc<dyn CaClient>` forwards `sign_attested_csr` to the
+    /// concrete override rather than the extension-dropping trait default.
+    #[tokio::test]
+    async fn with_ca_injects_a_root_that_still_attests_through_the_dyn_seam() {
+        use nucleus_identity::{verify_attested_svid, AttestationRequirements, SelfSignedCa};
+        use std::io::Write;
+
+        let injected: Arc<dyn CaClient> = Arc::new(SelfSignedCa::new("injected.local").unwrap());
+        let manager =
+            IdentityManager::with_ca("injected.local", Duration::from_secs(3600), injected);
+        assert_eq!(manager.trust_domain(), "injected.local");
+
+        let mut kernel = tempfile::NamedTempFile::new().unwrap();
+        kernel.write_all(b"k").unwrap();
+        let mut rootfs = tempfile::NamedTempFile::new().unwrap();
+        rootfs.write_all(b"r").unwrap();
+
+        let pod = Uuid::new_v4();
+        let id = manager.identity_for_pod(pod, "default", "svc");
+        let att = manager
+            .compute_attestation(&pod.to_string(), kernel.path(), rootfs.path(), b"cfg")
+            .await
+            .expect("attest");
+        manager
+            .fetch_attested_certificate(&id, &pod.to_string())
+            .await
+            .expect("issue attested cert via injected dyn CA");
+
+        // The served cert (from the cache the injected CA wrote through) must carry
+        // the measurement — i.e. the dyn seam did NOT drop the attestation.
+        let chain = manager
+            .fetch_certificate(&id)
+            .await
+            .expect("served")
+            .chain_pem();
+        let req = AttestationRequirements::exact(
+            *att.kernel_hash(),
+            *att.rootfs_hash(),
+            *att.config_hash(),
+        );
+        assert!(
+            verify_attested_svid(&chain, &req, true)
+                .expect("verify ok")
+                .is_some(),
+            "injected dyn CA must still embed the launch attestation"
+        );
     }
 
     /// North Star C9 (Inc 1): an attested SVID is served over the real cache path a
