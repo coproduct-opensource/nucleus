@@ -43,6 +43,8 @@ pub mod manager;
 pub mod oid;
 pub mod session;
 pub mod tls;
+#[cfg(feature = "tpm-devid")]
+pub mod tpm_devid;
 pub mod verifier;
 pub mod wallet;
 pub mod webfinger;

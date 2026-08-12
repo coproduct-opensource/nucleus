@@ -15,6 +15,9 @@ categories = ["cryptography", "network-programming"]
 default = []
 # Enable SPIRE integration for production deployments
 spire = ["dep:spiffe", "dep:futures-util"]
+# Enable the TPM 2.0 DevID residency verifier (pure-Rust verify path; opt-in until
+# wired to issuance). Uses only in-tree crypto (ring + sha2) — no libtss2 in the TCB.
+tpm-devid = []
 # Enable HTTP-based did:web resolution (requires network)
 resolver = ["dep:reqwest"]
 

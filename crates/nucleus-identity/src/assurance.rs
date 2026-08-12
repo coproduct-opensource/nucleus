@@ -79,8 +79,17 @@ pub enum Claim {
 pub enum AttestedSubject {
     /// The nucleus node's self-measurement of the artifact it launched.
     SelfMeasuredNode,
+    /// A TPM-resident key whose residency was proven by `TPM2_Certify`: the
+    /// attestation key (by TPM Name) certified that the subject key (by TPM Name)
+    /// is `fixedTPM|fixedParent` — i.e. non-exportable. Does NOT by itself prove the
+    /// TPM is genuine silicon (that needs an EK-manufacturer root — a later step).
+    TpmResidentKey {
+        /// SHA-256 of the attestation key's TPM Name.
+        ak_name_sha256: [u8; 32],
+        /// SHA-256 of the certified subject key's TPM Name.
+        subject_name_sha256: [u8; 32],
+    },
     // Future roots land here as typed variants, e.g.:
-    //   TpmDevice { ek_pub_sha256: [u8; 32], devid_subject: String },
     //   AppleApp  { team_id: String, bundle_id: String },
     //   CloudInstance { provider: String, instance_id: String },
 }
