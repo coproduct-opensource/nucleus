@@ -29,6 +29,7 @@ use crate::assurance::{
 };
 use crate::attestation::AttestationRequirements;
 use crate::{oid, Error, Result};
+use rustls::pki_types::{CertificateDer, UnixTime};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -306,6 +307,283 @@ pub fn verify_residency(
         not_proven,
         launch: None,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EK-manufacturer-root chain verification (North Star C9, Phase 1 Inc 3, brick 1)
+//
+// `verify_residency` above proves a key is non-exportable on SOME TPM; it
+// deliberately does not prove the TPM is genuine manufacturer silicon (see its
+// `not_proven` set). That proof is an Endorsement Key (EK) certificate that
+// chains to a PINNED manufacturer root CA. This brick verifies exactly that
+// chain and yields an INERT `EkIdentity` witness — nothing here adds a `Claim`,
+// a `VerifiedAttestation`, or an `AssuranceLevel`.
+//
+// Hardware rooting (`Claim::HardwareRootedKey`, `AssuranceLevel::L2Device`) stays
+// UNREACHABLE until a later brick binds this EK to the residency AK (credential
+// activation) and a single composition constructor consumes residency + EK +
+// binding at once. A genuine EK with an UNBOUND AK proves "a TPM exists",
+// never "THIS key lives in it" — so the witness must not be sayable as a claim
+// on its own. Keeping it inert makes the half-done state unsayable by
+// construction, not merely omitted.
+
+/// tcg-kp-EKCertificate EKU (OID 2.23.133.8.1), DER OID value bytes. A real EK
+/// certificate carries this; requiring it stops a non-EK cert (e.g. a TLS leaf
+/// with serverAuth) from masquerading as an EK.
+const EK_EKU_OID: &[u8] = &[0x67, 0x81, 0x05, 0x08, 0x01];
+
+/// EK-chain signature algorithms: EK certs are RSA-2048/3072/4096 or ECC P-256/384
+/// across manufacturers — all verified through `ring`, no new crypto in the TCB.
+static EK_CHAIN_ALGS: &[&dyn rustls::pki_types::SignatureVerificationAlgorithm] = &[
+    webpki::ring::ECDSA_P256_SHA256,
+    webpki::ring::ECDSA_P384_SHA384,
+    webpki::ring::RSA_PKCS1_2048_8192_SHA256,
+    webpki::ring::RSA_PKCS1_2048_8192_SHA384,
+    webpki::ring::RSA_PKCS1_2048_8192_SHA512,
+];
+
+/// PINNED TPM-manufacturer root CAs an EK certificate may chain to.
+///
+/// Brick 1 ships only an in-repo TEST root (exercised by fixtures). Which REAL
+/// manufacturer roots to trust (Infineon/Nuvoton/Intel/STMicro/AMD…) and their
+/// update/revocation policy is a federation-trust decision reserved for the
+/// operator — an empty store proves nothing, by design.
+#[derive(Default)]
+pub struct EkTrustStore {
+    anchors: Vec<(String, Vec<u8>)>,
+}
+
+impl EkTrustStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Pin a manufacturer root (DER). The label names the manufacturer this root
+    /// vouches for; it is carried into `EkIdentity` on a successful chain.
+    pub fn pin_root(&mut self, manufacturer: impl Into<String>, root_der: impl Into<Vec<u8>>) {
+        self.anchors.push((manufacturer.into(), root_der.into()));
+    }
+    pub fn is_empty(&self) -> bool {
+        self.anchors.is_empty()
+    }
+}
+
+/// The genuine-silicon witness: an EK whose certificate chained to a pinned
+/// manufacturer root. INERT by construction — no method turns it into a `Claim`
+/// or an `AssuranceLevel`; only a later composition constructor (given an AK↔EK
+/// binding and residency) may.
+#[derive(Clone, Debug)]
+pub struct EkIdentity {
+    /// The EK certificate's subjectPublicKeyInfo (DER) — the handle a future
+    /// credential-activation brick challenges to bind the residency AK.
+    pub ek_spki_der: Vec<u8>,
+    /// The manufacturer whose pinned root this EK chained to.
+    pub manufacturer: String,
+}
+
+/// Verify that `ek_cert_der` chains, through `intermediates`, to a PINNED root in
+/// `store`, and carries the EK EKU. Returns the inert [`EkIdentity`] witness.
+///
+/// EK-leaf `notAfter` is ADVISORY (TCG EK Credential Profile: it is manufacturer
+/// discretion and may be `99991231235959Z` or already past), so the chain is
+/// validated at the leaf's own `notBefore` instant rather than wall clock —
+/// trust rests on the chain signatures and the pinned root, not on leaf expiry.
+/// A bad signature or a chain to an UNPINNED root still fails.
+pub fn verify_ek_chain(
+    ek_cert_der: &[u8],
+    intermediates: &[Vec<u8>],
+    store: &EkTrustStore,
+) -> Result<EkIdentity> {
+    if store.is_empty() {
+        return Err(vfail(
+            "EK trust store is empty — no pinned root to chain to, so genuine silicon cannot be established",
+        ));
+    }
+
+    let ee_der = CertificateDer::from(ek_cert_der);
+    let ee = webpki::EndEntityCert::try_from(&ee_der)
+        .map_err(|e| vfail(format!("EK leaf certificate did not parse: {e}")))?;
+
+    let inter_ders: Vec<CertificateDer> = intermediates
+        .iter()
+        .map(|d| CertificateDer::from(d.as_slice()))
+        .collect();
+
+    // Validate at the leaf's own notBefore so leaf expiry is advisory (see above).
+    let time = ek_not_before(ek_cert_der)?;
+
+    // Try each pinned root individually so a success also tells us WHICH
+    // manufacturer vouched — the label goes into the witness.
+    let mut last_err = String::from("no pinned root matched");
+    for (manufacturer, root_der) in &store.anchors {
+        let anchor_der = CertificateDer::from(root_der.as_slice());
+        let anchor = match webpki::anchor_from_trusted_cert(&anchor_der) {
+            Ok(a) => a,
+            Err(e) => {
+                last_err = format!("pinned root {manufacturer:?} is not a valid trust anchor: {e}");
+                continue;
+            }
+        };
+        match ee.verify_for_usage(
+            EK_CHAIN_ALGS,
+            &[anchor],
+            &inter_ders,
+            time,
+            webpki::KeyUsage::required(EK_EKU_OID),
+            None,
+            None,
+        ) {
+            Ok(_) => {
+                return Ok(EkIdentity {
+                    ek_spki_der: ek_spki(ek_cert_der)?,
+                    manufacturer: manufacturer.clone(),
+                });
+            }
+            Err(e) => last_err = format!("chain to {manufacturer:?}: {e}"),
+        }
+    }
+    Err(vfail(format!(
+        "EK certificate does not chain to any pinned manufacturer root ({last_err})"
+    )))
+}
+
+/// The EK certificate's notBefore, as a webpki `UnixTime`.
+fn ek_not_before(cert_der: &[u8]) -> Result<UnixTime> {
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|e| vfail(format!("EK certificate did not parse (validity): {e}")))?;
+    let secs = cert.validity().not_before.timestamp();
+    let secs = u64::try_from(secs).map_err(|_| vfail("EK notBefore is before the Unix epoch"))?;
+    Ok(UnixTime::since_unix_epoch(std::time::Duration::from_secs(
+        secs,
+    )))
+}
+
+/// The EK certificate's subjectPublicKeyInfo (DER).
+fn ek_spki(cert_der: &[u8]) -> Result<Vec<u8>> {
+    let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
+        .map_err(|e| vfail(format!("EK certificate did not parse (spki): {e}")))?;
+    Ok(cert.public_key().raw.to_vec())
+}
+
+#[cfg(test)]
+mod ek_chain_tests {
+    use super::{verify_ek_chain, EkTrustStore};
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    };
+
+    /// A self-signed CA: returns its DER (for pinning) and an `Issuer` for signing
+    /// leaves under it.
+    fn ca(name: &str) -> (Vec<u8>, Issuer<'static, KeyPair>) {
+        let key = KeyPair::generate().unwrap();
+        let mut p = CertificateParams::new(vec![name.to_string()]).unwrap();
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let der = p.self_signed(&key).unwrap().der().to_vec();
+        (der, Issuer::new(p, key))
+    }
+
+    /// The tcg-kp-EKCertificate EKU as an `extKeyUsage` extension (2.5.29.37 =
+    /// SEQUENCE { OID 2.23.133.8.1 }) — rcgen has no built-in EK EKU variant.
+    fn ek_eku_ext() -> rcgen::CustomExtension {
+        rcgen::CustomExtension::from_oid_content(
+            &[2, 5, 29, 37],
+            vec![0x30, 0x07, 0x06, 0x05, 0x67, 0x81, 0x05, 0x08, 0x01],
+        )
+    }
+
+    /// An EK leaf signed by `issuer`. By default it carries the EK EKU; passing
+    /// `eku` gives it a NON-EK EKU instead, to prove the requirement bites.
+    fn ek_leaf(
+        issuer: &Issuer<'_, KeyPair>,
+        eku: Option<ExtendedKeyUsagePurpose>,
+        validity: Option<(i32, i32)>,
+    ) -> Vec<u8> {
+        let key = KeyPair::generate().unwrap();
+        let mut p = CertificateParams::new(vec!["ek".to_string()]).unwrap();
+        match eku {
+            Some(e) => p.extended_key_usages = vec![e],
+            None => p.custom_extensions.push(ek_eku_ext()),
+        }
+        if let Some((from, to)) = validity {
+            p.not_before = rcgen::date_time_ymd(from, 1, 1);
+            p.not_after = rcgen::date_time_ymd(to, 1, 1);
+        }
+        p.signed_by(&key, issuer).unwrap().der().to_vec()
+    }
+
+    /// Positive: an EK leaf chaining to a PINNED root verifies, and the witness
+    /// carries the manufacturer label and a non-empty EK SPKI.
+    #[test]
+    fn ek_chains_to_a_pinned_root() {
+        let (root_der, issuer) = ca("test-root");
+        let ek = ek_leaf(&issuer, None, None);
+        let mut store = EkTrustStore::new();
+        store.pin_root("nucleus-test-root", root_der);
+
+        let id = verify_ek_chain(&ek, &[], &store).expect("EK should chain to the pinned root");
+        assert_eq!(id.manufacturer, "nucleus-test-root");
+        assert!(!id.ek_spki_der.is_empty());
+    }
+
+    /// **The bite (anti-overclaim).** An EK signed by a root that is NOT pinned —
+    /// the shape of swtpm's own self-signed EK — must NOT verify, so genuine
+    /// silicon stays unprovable without a real manufacturer root. Reds if the
+    /// pinning is ever weakened to accept unrooted EKs.
+    #[test]
+    fn an_unpinned_root_is_rejected() {
+        let (pinned_der, _pinned) = ca("pinned");
+        let (_other_der, other) = ca("swtpm-like-unpinned");
+        let ek = ek_leaf(&other, None, None);
+        let mut store = EkTrustStore::new();
+        // Pin ONLY the first root; the EK chains to the other.
+        store.pin_root("pinned", pinned_der);
+        assert!(verify_ek_chain(&ek, &[], &store).is_err());
+    }
+
+    /// A tampered EK certificate (a flipped signature byte) must not verify.
+    #[test]
+    fn a_tampered_ek_is_rejected() {
+        let (root_der, issuer) = ca("test-root");
+        let mut ek = ek_leaf(&issuer, None, None);
+        let n = ek.len();
+        ek[n - 1] ^= 0xff; // corrupt the trailing signature bytes
+        let mut store = EkTrustStore::new();
+        store.pin_root("test-root", root_der);
+        assert!(verify_ek_chain(&ek, &[], &store).is_err());
+    }
+
+    /// The EK EKU requirement bites: a leaf carrying a NON-EK EKU (serverAuth),
+    /// even when it chains to a pinned root, is refused — a TLS cert cannot pose
+    /// as an EK.
+    #[test]
+    fn a_non_ek_eku_is_rejected() {
+        let (root_der, issuer) = ca("test-root");
+        let ek = ek_leaf(&issuer, Some(ExtendedKeyUsagePurpose::ServerAuth), None);
+        let mut store = EkTrustStore::new();
+        store.pin_root("test-root", root_der);
+        assert!(verify_ek_chain(&ek, &[], &store).is_err());
+    }
+
+    /// An empty store proves nothing — refuse rather than accept any EK.
+    #[test]
+    fn an_empty_store_refuses() {
+        let (_d, issuer) = ca("test-root");
+        let ek = ek_leaf(&issuer, None, None);
+        assert!(verify_ek_chain(&ek, &[], &EkTrustStore::new()).is_err());
+    }
+
+    /// EK-leaf expiry is ADVISORY (TCG): an EK whose `notAfter` is in the past but
+    /// which chains validly to a pinned root still verifies, because the chain is
+    /// checked at the leaf's `notBefore`. (A bad signature still fails — proven by
+    /// `a_tampered_ek_is_rejected` — so this did not disable validation.)
+    #[test]
+    fn an_expired_ek_leaf_still_verifies() {
+        let (root_der, issuer) = ca("test-root");
+        // Long-lived root; short, already-expired leaf.
+        let ek = ek_leaf(&issuer, None, Some((2020, 2021)));
+        let mut store = EkTrustStore::new();
+        store.pin_root("test-root", root_der);
+        assert!(verify_ek_chain(&ek, &[], &store).is_ok());
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
