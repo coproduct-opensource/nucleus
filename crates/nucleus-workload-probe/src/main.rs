@@ -45,6 +45,12 @@ const IDENTITY_VARS: &[&str] = &[
     "NUCLEUS_DLC_ISSUER",
 ];
 
+/// The e2e canary's non-secret PREFIX. The CI plants `NUCLEUS_E2E_CANARY=<prefix><hex>`
+/// in the NODE's environment; this probe searches the guest's reachable leak sites
+/// for the prefix and reports only a boolean, never a value — so the guest never
+/// learns the full canary and no secret ever reaches the console.
+const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
+
 fn main() {
     let mut fails: Vec<String> = Vec::new();
 
@@ -52,6 +58,7 @@ fn main() {
     check_file_descriptors(&mut fails);
     check_groups(&mut fails);
     check_root_readonly(&mut fails);
+    check_credential_absence();
 
     if fails.is_empty() {
         // Both streams: the proxy drains stderr, but /v1/run captures stdout.
@@ -62,6 +69,51 @@ fn main() {
         println!("{FAIL_SENTINEL}: {reason}");
         eprintln!("{FAIL_SENTINEL}: {reason}");
         std::process::exit(1);
+    }
+}
+
+/// Sweep the enumerable places a node-held secret could surface inside the guest,
+/// and report — as booleans, never values — whether the e2e canary prefix appears.
+///
+/// The guest DUMPS nothing and the host SEARCHES nothing here: to avoid putting the
+/// secret in the guest AND to avoid putting any value on the console, the probe reads
+/// each site, searches it in-process, and prints only `looked` (a per-site
+/// positive-control token was present, so the read+search actually work — "no leak"
+/// is distinguishable from "no look") and `canary` (prefix present or absent). Values
+/// never leave this process. `nucleus verify --tier2` reads these lines back off the
+/// guest console. Emitted on BOTH streams because the proxy drains stderr to the
+/// console log and `/v1/run` captures stdout.
+fn check_credential_absence() {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let env_blob: String = std::env::vars()
+        .map(|(k, v)| format!("{k}={v}\n"))
+        .collect();
+    let proxy_environ = std::fs::read("/proc/1/environ")
+        .map(|b| String::from_utf8_lossy(&b).replace('\0', "\n"))
+        .unwrap_or_default();
+    let pod_spec = std::fs::read_to_string("/etc/nucleus/pod.yaml").unwrap_or_default();
+
+    // (site, content, a token known to be present in that site = the positive control)
+    let sites: [(&str, &str, &str); 4] = [
+        ("cmdline", cmdline.as_str(), "console"),
+        ("workload-env", env_blob.as_str(), "NUCLEUS_TOOL_PROXY_URL"),
+        (
+            "proxy-environ",
+            proxy_environ.as_str(),
+            "NUCLEUS_TOOL_PROXY",
+        ),
+        ("pod-spec", pod_spec.as_str(), "apiVersion"),
+    ];
+    for (name, content, token) in sites {
+        let looked = if content.contains(token) { "yes" } else { "no" };
+        let canary = if content.contains(CANARY_PREFIX) {
+            "PRESENT"
+        } else {
+            "absent"
+        };
+        let line = format!("NUCLEUS_E2E_LEAK {name}: looked={looked} canary={canary}");
+        println!("{line}");
+        eprintln!("{line}");
     }
 }
 

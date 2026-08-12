@@ -380,41 +380,6 @@ struct CreatePodResponse {
 /// The DLC-D labels provision verified admission for THIS pod only (the node
 /// forwards them to the pod's tool-proxy as `NUCLEUS_DLC_*`); the issuer key
 /// doubles as its own trust anchor, matching dlc-d's principal convention.
-/// A value planted where the guest CAN legitimately see it.
-///
-/// The positive control for [`check_credential_absent_from_guest`]. Every
-/// assertion there is that the canary is ABSENT, and a dump that captured
-/// nothing satisfies all of them — so the sweep must first be shown to find
-/// something it is supposed to find.
-const DECOY: &str = "nucleus-e2e-decoy-6f21a0";
-
-/// What the pod's workload prints, and why it prints rather than searches.
-///
-/// # The guest must never learn the canary
-///
-/// The obvious design hands the workload the secret so it can `grep` for it —
-/// which puts the secret IN the guest and destroys the property the test exists
-/// to check. So the guest DUMPS and the host SEARCHES: the workload writes the
-/// enumerable places a node-held secret could surface, and
-/// `check_credential_absent_from_guest`, which knows the canary, greps that.
-///
-/// A whole-filesystem grep cannot work this way. These four are bounded and are
-/// where a leak would actually land: the kernel command line (where
-/// `nucleus.auth_secret` already rides), the workload's own environment, the
-/// mediating proxy's environment, and the pod spec baked into the rootfs.
-///
-/// Each section is fenced by a marker so a section that failed to run is
-/// distinguishable from a section that ran and found nothing — the difference
-/// between "no leak" and "no look".
-const LEAK_SITE_DUMP: &str = concat!(
-    "echo E2E-DUMP-BEGIN; ",
-    "echo E2E-CMDLINE; cat /proc/cmdline 2>/dev/null; ",
-    "echo E2E-WORKLOAD-ENV; env; ",
-    "echo E2E-PROXY-ENV; tr '\\0' '\\n' < /proc/1/environ 2>/dev/null; ",
-    "echo E2E-POD-SPEC; cat /etc/nucleus/pod.yaml 2>/dev/null; ",
-    "echo E2E-DUMP-END"
-);
-
 fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
     let secret = node_auth_secret(host)?;
     let issuer = &admission.issuer_hex;
@@ -430,10 +395,7 @@ fn create_pod(host: &Tier2Host, admission: &AdmissionMaterial) -> Result<Pod> {
               "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
                         "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
                         "read_only":false}},
-              "vsock":{{"guest_cid":3,"port":5005}},
-              "workload":{{"command":"/bin/sh",
-                "args":["-c","{LEAK_SITE_DUMP}"],
-                "env":{{"NUCLEUS_E2E_DECOY":"{DECOY}"}}}}}}}}"#
+              "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
     );
 
     // Do NOT treat a 4xx as a transport error: ureq's default turns the response
@@ -828,8 +790,10 @@ fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()>
 
     let log = format!("{HOST_STATE_DIR}/pods/{}/firecracker.log", pod.id);
     let contents = host.sh(&format!("cat {log}"))?;
-    assess_leak_dump(&contents, &canary, DECOY)?;
-    println!("  [ok] no node-held secret surfaced in the guest (dump ran, decoy found)");
+    assess_leak_sweep(&contents, &canary)?;
+    println!(
+        "  [OK] no node-held secret surfaced in the guest (sweep read its sites; canary absent)"
+    );
     Ok(())
 }
 
@@ -839,41 +803,55 @@ fn check_credential_absent_from_guest(host: &Tier2Host, pod: &Pod) -> Result<()>
 /// A booted pod needs `/dev/kvm`, so on a dev machine the check above cannot
 /// execute and every claim about it would rest on reading. This half takes the
 /// log as a string and is exercised against each state a real run produces —
-/// including the two that used to be indistinguishable from success.
-fn assess_leak_dump(contents: &str, canary: &str, decoy: &str) -> Result<()> {
-    for fence in [
-        "E2E-DUMP-BEGIN",
-        "E2E-CMDLINE",
-        "E2E-WORKLOAD-ENV",
-        "E2E-DUMP-END",
-    ] {
-        if !contents.contains(fence) {
+/// including the ones that used to be indistinguishable from success.
+///
+/// The in-guest sweep (`nucleus-workload-probe::check_credential_absence`) emits one
+/// `NUCLEUS_E2E_LEAK <site>: looked=<y/n> canary=<absent|PRESENT>` line per leak site
+/// — booleans only, never values. This asserts the sweep RAN and READ its sites
+/// (`looked=yes` on the always-readable ones — otherwise "no canary" means "no
+/// look"), then that no site saw the canary, and finally that the canary value does
+/// not appear anywhere on the console (a path the four sites might not enumerate).
+fn assess_leak_sweep(contents: &str, canary: &str) -> Result<()> {
+    let sweep: Vec<&str> = contents
+        .lines()
+        .filter(|l| l.contains("NUCLEUS_E2E_LEAK"))
+        .collect();
+    if sweep.is_empty() {
+        bail!(
+            "the guest log has no NUCLEUS_E2E_LEAK lines: the in-guest leak sweep never \
+             ran, so 'the canary was not found' would mean 'nobody looked'."
+        );
+    }
+
+    // Non-vacuity: the always-readable sites must report looked=yes.
+    for site in ["cmdline", "workload-env", "pod-spec"] {
+        let looked = sweep
+            .iter()
+            .any(|l| l.contains(&format!("{site}:")) && l.contains("looked=yes"));
+        if !looked {
             bail!(
-                "the guest log has no {fence} marker, so the leak-site dump did not run \
-                 to completion. 'the canary was not found' would mean 'nobody looked'."
+                "the leak sweep did not read the {site} site (no looked=yes line): it is \
+                 not reading the places it claims to, so its silence about the canary is \
+                 not evidence."
             );
         }
     }
 
-    if !contents.contains(decoy) {
+    // The leak, reported by the in-guest sweep as a PATH, never a value.
+    if let Some(hit) = sweep.iter().find(|l| l.contains("canary=PRESENT")) {
         bail!(
-            "the dump ran but did not capture the decoy planted in the workload's \
-             environment. It is not reading the places it claims to read, so its \
-             silence about the canary says nothing."
+            "a node-held secret surfaced in the guest — {}. The value is deliberately \
+             not printed here.",
+            hit.trim()
         );
     }
 
+    // Belt-and-suspenders: the canary VALUE must not appear anywhere on the console,
+    // catching a leak on any path the four enumerated sites do not cover.
     if contents.contains(canary) {
-        // The section, never the value.
-        let where_at = contents
-            .lines()
-            .take_while(|l| !l.contains(canary))
-            .filter(|l| l.starts_with("E2E-"))
-            .last()
-            .unwrap_or("<unknown section>");
         bail!(
-            "a secret from the node's environment reached the guest, in the {where_at} \
-             section of the leak-site dump. The value is deliberately not printed here."
+            "the node's canary value appears in the guest console log — a leak on a path \
+             the site sweep does not enumerate. The value is deliberately not printed here."
         );
     }
     Ok(())
@@ -1012,67 +990,73 @@ mod tests {
 }
 
 #[cfg(test)]
-mod leak_dump {
+mod leak_sweep {
     use super::*;
 
     const CANARY: &str = "nucleus-e2e-canary-deadbeef";
 
-    fn clean_dump() -> String {
-        format!(
-            "E2E-DUMP-BEGIN\nE2E-CMDLINE\nconsole=ttyS0\nE2E-WORKLOAD-ENV\n\
-             NUCLEUS_E2E_DECOY={DECOY}\nPATH=/usr/bin\nE2E-PROXY-ENV\n\
-             E2E-POD-SPEC\nE2E-DUMP-END\n"
-        )
+    /// A sweep from a healthy boot: the always-readable sites report `looked=yes`,
+    /// `proxy-environ` is `looked=no` (the uid fence legitimately keeps a workload
+    /// out of PID 1's environ), and nothing saw the canary.
+    fn clean_sweep() -> String {
+        "NUCLEUS_E2E_LEAK cmdline: looked=yes canary=absent\n\
+         NUCLEUS_E2E_LEAK workload-env: looked=yes canary=absent\n\
+         NUCLEUS_E2E_LEAK proxy-environ: looked=no canary=absent\n\
+         NUCLEUS_E2E_LEAK pod-spec: looked=yes canary=absent\n"
+            .to_string()
     }
 
     /// **The control, first.** Everything else asserts a refusal, and a function
-    /// that refused every dump would satisfy all of them while making the check
-    /// useless.
+    /// that refused every sweep would satisfy all of them while being useless.
     #[test]
-    fn a_clean_dump_passes() {
-        assert!(assess_leak_dump(&clean_dump(), CANARY, DECOY).is_ok());
+    fn a_clean_sweep_passes() {
+        assert!(assess_leak_sweep(&clean_sweep(), CANARY).is_ok());
     }
 
-    /// The workload never started, so nothing was inspected. This is the state
+    /// The probe never ran the sweep, so nothing was inspected. This is the state
     /// that used to be indistinguishable from success.
     #[test]
-    fn a_dump_that_never_ran_is_refused() {
-        let err = assess_leak_dump("some unrelated boot log\n", CANARY, DECOY)
-            .expect_err("no fences means nobody looked");
+    fn a_sweep_that_never_ran_is_refused() {
+        let err = assess_leak_sweep("some unrelated boot log\n", CANARY)
+            .expect_err("no NUCLEUS_E2E_LEAK lines means nobody looked");
         assert!(format!("{err}").contains("nobody looked"));
     }
 
-    /// The dump ran but captured nothing — fences present, content absent.
+    /// A required site reports `looked=no` — its read or search is broken, so its
+    /// silence about the canary is not evidence.
     #[test]
-    fn a_dump_that_captured_nothing_is_refused() {
-        let empty = "E2E-DUMP-BEGIN\nE2E-CMDLINE\nE2E-WORKLOAD-ENV\nE2E-DUMP-END\n";
-        let err = assess_leak_dump(empty, CANARY, DECOY)
-            .expect_err("no decoy means the dump read nowhere");
-        assert!(format!("{err}").contains("decoy"));
+    fn a_site_that_did_not_read_is_refused() {
+        let blind = clean_sweep().replace("cmdline: looked=yes", "cmdline: looked=no");
+        let err = assess_leak_sweep(&blind, CANARY).expect_err("a blind site is not evidence");
+        assert!(format!("{err}").contains("cmdline"));
     }
 
-    /// A truncated dump — the workload was killed partway — must not pass on
-    /// the strength of the sections that did run.
-    #[test]
-    fn a_truncated_dump_is_refused() {
-        let cut =
-            format!("E2E-DUMP-BEGIN\nE2E-CMDLINE\nE2E-WORKLOAD-ENV\nNUCLEUS_E2E_DECOY={DECOY}\n");
-        assert!(assess_leak_dump(&cut, CANARY, DECOY).is_err());
-    }
-
-    /// **The leak, caught — and the error must not become the leak.**
+    /// **The leak, caught — and the error must not become the leak.** A site that
+    /// saw the canary reports `canary=PRESENT` (never the value).
     #[test]
     fn a_leaked_canary_is_reported_without_printing_it() {
-        let leaked = clean_dump().replace("PATH=/usr/bin", &format!("SOME_VAR={CANARY}"));
-        let err = assess_leak_dump(&leaked, CANARY, DECOY).expect_err("the canary is present");
+        let leaked = clean_sweep().replace(
+            "workload-env: looked=yes canary=absent",
+            "workload-env: looked=yes canary=PRESENT",
+        );
+        let err = assess_leak_sweep(&leaked, CANARY).expect_err("the canary is present");
         let msg = format!("{err}");
         assert!(
             !msg.contains(CANARY),
             "the failure printed the secret it exists to protect: {msg}"
         );
         assert!(
-            msg.contains("E2E-WORKLOAD-ENV"),
-            "it must name the section so the leak is actionable: {msg}"
+            msg.contains("workload-env"),
+            "it must name the site so the leak is actionable: {msg}"
         );
+    }
+
+    /// Belt-and-suspenders: the canary VALUE on the console (a path the four sites
+    /// do not enumerate) is caught even when every sweep line says `absent`.
+    #[test]
+    fn the_canary_value_anywhere_on_the_console_is_caught() {
+        let sneaky = format!("{}some_other_line SECRET={CANARY}\n", clean_sweep());
+        let err = assess_leak_sweep(&sneaky, CANARY).expect_err("the value is on the console");
+        assert!(!format!("{err}").contains(CANARY));
     }
 }
