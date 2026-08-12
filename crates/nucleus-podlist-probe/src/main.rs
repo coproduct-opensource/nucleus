@@ -49,6 +49,14 @@ const VMADDR_CID_HOST: u32 = 2;
 const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
 /// A bound so a wedged host cannot make the probe hang past its drain window.
 const READ_TIMEOUT_MS: u64 = 2000;
+/// Poll POD_LIST a few times: a child or sibling created around the same instant
+/// as this pod may still be REGISTERING when the probe first fires. The node's
+/// filter excludes a non-lineage sibling on every poll, so a view that GROWS
+/// across polls can only mean a lineage member (a child) appeared — never a leak
+/// — so reporting the largest view is sound and races-free. Bounded well within
+/// the pod lifetime.
+const POLL_ATTEMPTS: u32 = 10;
+const POLL_INTERVAL_MS: u64 = 1000;
 
 const PASS_SENTINEL: &str = "NUCLEUS_PODLIST_PROBE: PASS";
 const FAIL_SENTINEL: &str = "NUCLEUS_PODLIST_PROBE: FAIL";
@@ -88,24 +96,35 @@ fn main() {
         },
     };
 
-    let response = match fetch_over_vsock(port, "POD_LIST") {
-        Ok(r) => r,
-        Err(e) => {
-            fail(&format!("could not fetch POD_LIST over vsock: {e}"));
-            return;
+    // Poll for the settled scoped view (see POLL_ATTEMPTS): keep the largest
+    // valid, self-containing listing seen; a sibling can never enter it, so
+    // larger is strictly more of this pod's own lineage.
+    let mut best: Option<Vec<String>> = None;
+    let mut last_reason = "no POD_LIST reply".to_string();
+    for _ in 0..POLL_ATTEMPTS {
+        match fetch_over_vsock(port, "POD_LIST") {
+            Ok(reply) => match decide(&reply, &self_id) {
+                Verdict::Pass { ids } => {
+                    if best.as_ref().is_none_or(|b| ids.len() > b.len()) {
+                        best = Some(ids);
+                    }
+                }
+                Verdict::Fail { reason } => last_reason = reason,
+            },
+            Err(e) => last_reason = format!("could not fetch POD_LIST over vsock: {e}"),
         }
-    };
+        std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+    }
 
-    match decide(&response, &self_id) {
-        Verdict::Pass { ids } => {
-            // `ids=` is what the host harness parses for the B-exclusion /
-            // C-inclusion assertions. The listing carries no secrets (same data
-            // as `/v1/pods`), so emitting it to the console is safe.
+    match best {
+        // `ids=` is what the host harness parses for the B-exclusion / C-inclusion
+        // assertions. The listing carries no secrets (same data as `/v1/pods`).
+        Some(ids) => {
             let line = format!("{PASS_SENTINEL} self={self_id} ids={}", ids.join(","));
             println!("{line}");
             eprintln!("{line}");
         }
-        Verdict::Fail { reason } => fail(&reason),
+        None => fail(&last_reason),
     }
 }
 
