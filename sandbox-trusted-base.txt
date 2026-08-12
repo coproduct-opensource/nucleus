@@ -44,7 +44,7 @@ seccomp verification fails closed when it cannot check | pinned_by:seccomp_verif
 netns plan never omits the netns or default-deny    | pinned_by:netns_plan_never_omits_netns_or_default_deny
 
 # ── Not yet pinned. This is the honest part of the file. ────────────────────
-vsock workload API request surface                  | pinned_by:guest_request_surface_is_exactly_three
+vsock workload API request surface                  | pinned_by:the_guest_request_surface_is_exactly_the_declared_set
 vsock request surface cannot grow silently          | pinned_by:guest_request_surface_is_exhaustive
 guest command frames are length-bounded             | pinned_by:oversized_frame_rejected_before_utf8_decode
 an unknown guest command is rejected, not executed  | pinned_by:unknown_command_is_rejected_not_executed

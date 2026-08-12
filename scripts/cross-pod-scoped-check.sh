@@ -35,17 +35,21 @@
 #        bridge is host->guest. The chosen shape is a scoped `PodList` over the
 #        workload-API vsock command enum, its caller BOUND to the socket's pod id,
 #        filtered by the same `caller_may_manage` predicate. Two bricks:
-#          brick 1 [LANDED — this change] factors that set filter out of
-#            `collect_pod_infos` (`pod_api::scope_to_caller`) and adds the cross-pod
-#            SET-exclusion test, so the vsock path will run the identical, tested
-#            selection rather than a copy — the live `/v1/pods` behaviour is
-#            unchanged and no guest-observable surface moved.
-#          brick 2 [not yet, held for review] adds `WorkloadApiCommand::PodList` +
-#            a read-only `PodListView` + dispatch. That variant WIDENS the
-#            guest->host vsock surface, so it trips the `guest_request_surface_*`
-#            pin-tests on purpose — that diff is the human-notice signal.
-# Brick 2 remains, so C2 stays NOT-YET and this local-driver check remains the
-# KVM-free proof of the identical auth+filter composition.
+#          brick 1 [LANDED] factored that set filter out of `collect_pod_infos`
+#            (`pod_api::scope_to_caller`) and added the cross-pod SET-exclusion
+#            test, so the vsock path runs the identical, tested selection.
+#          brick 2 [LANDED] adds `WorkloadApiCommand::PodList` + a read-only
+#            `PodListView` (frozen to the socket's pod id, holds no node secret) +
+#            dispatch. It WIDENS the guest->host vsock surface, so it deliberately
+#            trips the guest-request-surface pin-tests (the human-notice signal),
+#            and it turned the stale `..._is_exactly_three` pin — which silently
+#            covered only 3 of 9 commands — into a full-surface pin.
+# The guest->node ROUTE now exists on the real path. What REMAINS for C2:
+#   G4 — the two-pod Firecracker boot that exercises it end to end (pod A booted,
+#        POD_LIST over its real vsock, sibling B absent). Runs on Lima nucleus-kvm
+#        (needs /dev/kvm). Until G4 proves it live AND Brandon promotes the claim,
+#        C2 stays NOT-YET, and this local-driver check remains the KVM-free proof
+#        of the identical auth+filter composition.
 #
 # Path exercised: A's workload → A's tool-proxy `POST /v1/pod/list`
 # (`pod_mgmt::list_sub_pods`) → `node_client.list_pods()` attaching A's

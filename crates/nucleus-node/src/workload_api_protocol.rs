@@ -142,6 +142,30 @@ pub enum WorkloadApiCommand {
     /// so this gets the broker secret's delivery discipline, not the task
     /// token's.
     FetchAuditCredentials,
+    /// `POD_LIST` — request the pod summaries THIS pod is entitled to manage:
+    /// itself and its direct children, never a sibling.
+    ///
+    /// # This is the one command that ANSWERS rather than provisions
+    ///
+    /// Every command above serves this pod its OWN material. `POD_LIST` is
+    /// different in kind — it reports on OTHER pods — so it is the one that
+    /// widens what a guest can learn about the node, and it is gated accordingly:
+    ///
+    /// * **The socket is the authority.** The host creates one vsock socket per
+    ///   VM and knows which pod owns it; the caller is bound to THAT pod id, not
+    ///   to anything the guest sends. So no caller token and no node secret ride
+    ///   this channel — unlike the HTTP `/v1/pods` path, nothing authenticating
+    ///   is delivered into the guest at all.
+    /// * **The answer is lineage-scoped.** It is served through `PodListView`,
+    ///   which applies the identical `pod_api::caller_may_manage` filter the
+    ///   HTTP listing uses, frozen to the socket's pod id. A pod sees its own
+    ///   row and its direct children — the exact `PodInfo`s it could already
+    ///   obtain over `/v1/pods` with its own token — and a sibling is excluded.
+    ///
+    /// It exists so a booted orchestrator pod can make the scoped management
+    /// call on the real Firecracker path (C2 cross-pod), which the HTTP route
+    /// cannot reach from inside a default-deny netns.
+    PodList,
 }
 
 impl WorkloadApiCommand {
@@ -162,6 +186,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
             WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
             WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
+            WorkloadApiCommand::PodList => "POD_LIST",
         }
     }
 }
@@ -229,6 +254,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
         "FETCH_POD_CALLER_TOKEN" => Ok(WorkloadApiCommand::FetchPodCallerToken),
         "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
+        "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -376,8 +402,11 @@ mod tests {
     //   * `guest_request_surface_is_exhaustive` cannot COMPILE if a variant is
     //     added to WorkloadApiCommand. A runtime assertion can be forgotten by
     //     someone adding a variant; a non-exhaustive match cannot.
-    //   * `guest_request_surface_is_exactly_three` pins the wire spellings, so
-    //     renaming one on the wire is also a visible diff.
+    //   * `the_guest_request_surface_is_exactly_the_declared_set` pins the whole
+    //     set of wire spellings, so adding, removing or renaming one is a visible
+    //     diff. (It once listed only three of the commands and silently stopped
+    //     covering the five added since; it now enumerates the whole surface, and
+    //     the compile-time pin above is what forces that list to stay complete.)
     //
     // IS THE FIRST ONE REDUNDANT? The dispatcher in workload_api_vsock.rs
     // already matches exhaustively, so a new variant fails to compile there too
@@ -403,6 +432,7 @@ mod tests {
                 WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
                 WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
                 WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
+                WorkloadApiCommand::PodList => "POD_LIST",
             }
         }
         for cmd in [
@@ -411,6 +441,7 @@ mod tests {
             WorkloadApiCommand::FetchDlcAdmission,
             WorkloadApiCommand::FetchBrokerSecret,
             WorkloadApiCommand::FetchAuditCredentials,
+            WorkloadApiCommand::PodList,
             WorkloadApiCommand::Ping,
         ] {
             assert_eq!(assert_known(cmd), cmd.as_wire());
@@ -418,23 +449,53 @@ mod tests {
     }
 
     #[test]
-    fn guest_request_surface_is_exactly_three() {
-        let accepted: std::collections::BTreeSet<String> = [
+    fn the_guest_request_surface_is_exactly_the_declared_set() {
+        // Every variant the host accepts. Kept in lockstep with the exhaustive
+        // match above — a new variant fails THAT test's compile, which is what
+        // stops this list from silently going stale (as its 3-command ancestor
+        // did while five commands were added past it).
+        let surface = [
             WorkloadApiCommand::FetchSvid,
             WorkloadApiCommand::FetchBundle,
             WorkloadApiCommand::Ping,
+            WorkloadApiCommand::FetchTaskToken,
+            WorkloadApiCommand::FetchDlcAdmission,
+            WorkloadApiCommand::FetchBrokerSecret,
+            WorkloadApiCommand::FetchPodCallerToken,
+            WorkloadApiCommand::FetchAuditCredentials,
+            WorkloadApiCommand::PodList,
+        ];
+        let accepted: std::collections::BTreeSet<String> =
+            surface.iter().map(|c| c.as_wire().to_string()).collect();
+        let want: std::collections::BTreeSet<String> = [
+            "FETCH_SVID",
+            "FETCH_BUNDLE",
+            "PING",
+            "FETCH_TASK_TOKEN",
+            "FETCH_DLC_ADMISSION",
+            "FETCH_BROKER_SECRET",
+            "FETCH_POD_CALLER_TOKEN",
+            "FETCH_AUDIT_CREDENTIALS",
+            "POD_LIST",
         ]
         .iter()
-        .map(|c| c.as_wire().to_string())
+        .map(|s| s.to_string())
         .collect();
-        let want: std::collections::BTreeSet<String> = ["FETCH_BUNDLE", "FETCH_SVID", "PING"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
         assert_eq!(
             accepted, want,
             "the guest-to-host request surface changed — a command a guest can \
              make the host act on was added, removed or renamed"
         );
+        // No two commands collapsed onto one wire spelling (9 variants → 9 forms).
+        assert_eq!(
+            accepted.len(),
+            surface.len(),
+            "two commands share a wire spelling"
+        );
+        // The set is the REAL accepted surface: each declared spelling parses
+        // back to its command, so this pins what the host acts on, not just text.
+        for cmd in surface {
+            assert_eq!(parse_command(cmd.as_wire().as_bytes()), Ok(cmd));
+        }
     }
 }

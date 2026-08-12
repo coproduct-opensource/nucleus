@@ -166,6 +166,12 @@ pub struct PodMaterial {
     /// Whether the audit credentials have been served — one flag across every
     /// connection, for the same reason as `broker_secret_served`.
     pub audit_creds_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A read-only clone of the node's live pod registry, so a `POD_LIST` over
+    /// this pod's socket can be answered without the vsock server holding any
+    /// node secret. `PodListView` freezes the caller to the socket's pod id and
+    /// applies the same lineage filter as `/v1/pods`. `Default` is an empty
+    /// registry (tests that never issue `POD_LIST` are unaffected).
+    pub pod_registry: crate::pod_api::PodRegistry,
 }
 
 impl WorkloadApiVsockBridge {
@@ -490,6 +496,22 @@ async fn handle_connection(
                     &material.audit_creds_served,
                 )
             }
+            Ok(WorkloadApiCommand::PodList) => {
+                debug!("workload API POD_LIST for pod {}", pod_id);
+                // Bound to THIS socket's pod id — the guest names no pod, and
+                // could not be believed if it did. `PodListView` holds only a
+                // read-only registry clone (no node secret) and applies the same
+                // `caller_may_manage` lineage filter `/v1/pods` uses, so the reply
+                // is this pod's own row and its direct children; a sibling is not
+                // in it. Encoding cannot leak on failure — a fixed error string.
+                let view = crate::pod_api::PodListView::for_pod(
+                    std::sync::Arc::clone(&material.pod_registry),
+                    pod_id,
+                );
+                let infos = view.scoped_infos().await;
+                serde_json::to_string(&infos)
+                    .unwrap_or_else(|_| r#"{"error":"failed to encode pod list"}"#.to_string())
+            }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
                 // Build the error response via serde so the (attacker-controlled)
@@ -719,6 +741,57 @@ mod tests {
         let mut response = String::new();
         reader.read_line(&mut response).await.unwrap();
         assert!(response.contains("ok"));
+
+        bridge.shutdown().await;
+    }
+
+    /// `POD_LIST` is wired end-to-end: a guest frame reaches `PodListView` and
+    /// comes back a valid JSON ARRAY, not an unknown-command error. The registry
+    /// here is empty (`PodMaterial::default`), so the array is empty — the
+    /// LINEAGE filtering that excludes a sibling is proven over the exact function
+    /// this path calls in `pod_api::scope_to_caller_excludes_a_non_lineage_sibling`
+    /// (a `PodHandle` cannot be built in a unit test — it needs a live driver).
+    /// This closes the other half: that the new command is dispatched and encoded,
+    /// so brick 1's tested filter is actually reachable from the guest.
+    #[tokio::test]
+    async fn pod_list_is_dispatched_and_returns_a_json_array() {
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let pod_id = uuid::Uuid::new_v4();
+
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            pod_id,
+            manager,
+            PodMaterial::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stream = tokio::net::UnixStream::connect(bridge.socket_path())
+            .await
+            .unwrap();
+        let (reader, mut writer): (OwnedReadHalf, OwnedWriteHalf) = stream.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        writer.write_all(b"POD_LIST\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        // A real JSON array (empty here) — NOT an `{"error":...}` unknown-command
+        // object, which is what a guest would get if the command were unwired.
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(response.trim()).expect("POD_LIST must return a JSON array");
+        assert!(
+            parsed.is_empty(),
+            "empty registry must yield an empty listing, got {parsed:?}"
+        );
 
         bridge.shutdown().await;
     }

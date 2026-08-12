@@ -314,7 +314,7 @@ enum DriverKind {
 
 #[derive(Clone)]
 struct NodeState {
-    pods: Arc<Mutex<HashMap<Uuid, Arc<PodHandle>>>>,
+    pods: pod_api::PodRegistry,
     state_dir: PathBuf,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
@@ -2784,6 +2784,7 @@ async fn spawn_firecracker_pod(
                         spec.spec.audit_sink.is_some(),
                     ),
                     audit_creds_served: std::sync::Arc::default(),
+                    pod_registry: state.pods.clone(),
                 },
                 // Only when jailed: unjailed Firecracker runs as this same user
                 // and can already connect. Passing an owner there would hand our

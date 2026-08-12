@@ -15,6 +15,12 @@ use axum::Json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// The node's live pod registry: pod id → handle, behind an async lock. A
+/// read-only clone of this `Arc` is what a [`PodListView`] holds to serve the
+/// guest→host `PodList` command, so `NodeState.pods` and that seam name one type.
+pub(crate) type PodRegistry =
+    Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, Arc<PodHandle>>>>;
+
 /// May `caller` manage `pod`?
 ///
 /// # Why this is node-side
@@ -115,6 +121,48 @@ fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: Uuid) -> Vec<T> {
         .filter(|it| caller_may_manage(Some(caller), it.lineage_id(), it.lineage_parent()))
         .cloned()
         .collect()
+}
+
+/// A read-only, scope-frozen window on the pod registry for ONE pod.
+///
+/// This is the authority the guest→host `PodList` command (`workload_api_vsock`)
+/// is given, and it is deliberately the least it can be: a clone of the registry
+/// `Arc` and a `caller` bound at construction with no setter, so no dispatch path
+/// can widen the scope by supplying a different pod id. The caller is the pod
+/// that owns the vsock socket the request arrived on — the socket authenticates
+/// it, so nothing the guest says is trusted.
+///
+/// It carries NONE of the node's secrets (`caller_secret`, `proxy_auth_secret`,
+/// the signing keys live on `NodeState`, not here), and exposes only
+/// `scoped_infos`. A pod reaching it learns exactly the `PodInfo`s its own
+/// lineage already entitles it to over `/v1/pods` — its own row and its direct
+/// children — and nothing about a sibling.
+pub(crate) struct PodListView {
+    pods: PodRegistry,
+    caller: Uuid,
+}
+
+impl PodListView {
+    /// Bind the view to `caller` — the pod that owns the socket the request
+    /// arrived on. Frozen here; there is no setter and no other constructor.
+    pub(crate) fn for_pod(pods: PodRegistry, caller: Uuid) -> Self {
+        Self { pods, caller }
+    }
+
+    /// The pod summaries this pod is entitled to — its own lineage only, by the
+    /// SAME `scope_to_caller` filter the `/v1/pods` listing runs, so a sibling
+    /// is excluded. Identical composition to `collect_pod_infos(_, Some(caller))`.
+    pub(crate) async fn scoped_infos(&self) -> Vec<PodInfo> {
+        let pods: Vec<Arc<PodHandle>> = {
+            let guard = self.pods.lock().await;
+            scope_to_caller(&guard.values().cloned().collect::<Vec<_>>(), self.caller)
+        };
+        let mut infos = Vec::with_capacity(pods.len());
+        for pod in pods {
+            infos.push(pod.info().await);
+        }
+        infos
+    }
 }
 
 /// Pod summaries the caller is entitled to see.
