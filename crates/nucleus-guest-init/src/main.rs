@@ -187,9 +187,17 @@ fn run() -> Result<(), String> {
         // the socket says which pod this is, and nothing the guest can write
         // does.
         match identity::fetch_pod_caller_token(port) {
-            Ok(token) => {
+            Ok(id) => {
                 eprintln!("fetched pod caller token over vsock");
-                std::env::set_var("NUCLEUS_POD_CALLER_TOKEN", token);
+                std::env::set_var("NUCLEUS_POD_CALLER_TOKEN", id.token);
+                // The node verifies the (pod_id, token) PAIR; set the id only when
+                // the same socket served it, so a token is never presented without
+                // the id it was minted with. A legacy node serves no id, leaving
+                // the pod unidentified exactly as before (fail-closed to operator).
+                if let Some(pod_id) = id.pod_id {
+                    eprintln!("fetched pod id over vsock");
+                    std::env::set_var("NUCLEUS_POD_ID", pod_id);
+                }
             }
             Err(err) => {
                 // Not fatal: the node still accepts unidentified callers today,

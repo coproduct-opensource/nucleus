@@ -454,9 +454,13 @@ async fn handle_connection(
             Ok(WorkloadApiCommand::FetchPodCallerToken) => {
                 debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
                 // Served for the pod bound to THIS socket. The request carries no
-                // pod id and could not be believed if it did.
+                // pod id and could not be believed if it did — so the id is served
+                // ALONGSIDE the token, from the same socket-authenticated source.
+                // Both are needed: `identify_caller` requires the (id, token) pair,
+                // and on Firecracker the guest has no other way to learn its own id
+                // (it is not on the cmdline or in the spec the guest can read).
                 match &material.caller_token {
-                    Some(t) => format!(r#"{{"caller_token":"{t}"}}"#),
+                    Some(t) => format!(r#"{{"caller_token":"{t}","pod_id":"{pod_id}"}}"#),
                     None => r#"{"error":"no caller token minted for this pod"}"#.to_string(),
                 }
             }

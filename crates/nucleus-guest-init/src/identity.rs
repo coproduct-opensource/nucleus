@@ -244,12 +244,27 @@ pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, St
     }))
 }
 
-/// Fetch this pod's caller-identity token for the node's management API.
+/// This pod's caller identity, served over its own workload-API socket.
+///
+/// Both fields come from the same socket-authenticated source. `pod_id` is
+/// `None` only against an older node that serves the token alone; the node
+/// verifies the `(pod_id, token)` PAIR, so a token without an id proves nothing
+/// and yields no identity — the guest presents an id only when it also has the
+/// token it was minted with.
+pub struct PodCallerIdentity {
+    /// The per-pod caller token minted by the node.
+    pub token: String,
+    /// The pod's own id (hyphenated UUID). `None` against a legacy node.
+    pub pod_id: Option<String>,
+}
+
+/// Fetch this pod's caller identity for the node's management API.
 ///
 /// Over the per-pod workload-API socket, like every other per-pod artifact: the
-/// host serves the token belonging to whichever pod's socket this is, so the
-/// guest never states which pod it wants a token for.
-pub fn fetch_pod_caller_token(port: u32) -> Result<String, String> {
+/// host serves the identity belonging to whichever pod's socket this is, so the
+/// guest never states which pod it is — the socket says so, and nothing the guest
+/// can write does.
+pub fn fetch_pod_caller_token(port: u32) -> Result<PodCallerIdentity, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -265,12 +280,21 @@ pub fn fetch_pod_caller_token(port: u32) -> Result<String, String> {
         .read_line(&mut response)
         .map_err(|e| format!("failed to read caller token: {e}"))?;
 
-    let v: serde_json::Value = serde_json::from_str(&response)
+    parse_caller_identity(&response)
+}
+
+/// Parse the `FETCH_POD_CALLER_TOKEN` response. Split out so it is testable
+/// without a live vsock.
+fn parse_caller_identity(response: &str) -> Result<PodCallerIdentity, String> {
+    let v: serde_json::Value = serde_json::from_str(response)
         .map_err(|e| format!("caller token response is not JSON: {e}"))?;
-    v.get("caller_token")
+    let token = v
+        .get("caller_token")
         .and_then(|t| t.as_str())
         .map(str::to_string)
-        .ok_or_else(|| "no caller_token in response".to_string())
+        .ok_or_else(|| "no caller_token in response".to_string())?;
+    let pod_id = v.get("pod_id").and_then(|t| t.as_str()).map(str::to_string);
+    Ok(PodCallerIdentity { token, pod_id })
 }
 
 /// Fetch this pod's live-path session capability token.
@@ -450,4 +474,41 @@ pub fn parse_workload_api_port(cmdline: &str) -> Option<u32> {
 #[allow(dead_code)]
 pub fn should_fetch_identity(cmdline: &str) -> bool {
     parse_workload_api_port(cmdline).is_some()
+}
+
+#[cfg(test)]
+mod caller_identity_tests {
+    use super::parse_caller_identity;
+
+    /// A current node serves both fields; the guest gets a complete identity.
+    #[test]
+    fn parses_both_token_and_pod_id() {
+        let id = parse_caller_identity(
+            r#"{"caller_token":"deadbeef","pod_id":"11111111-1111-4111-8111-111111111111"}"#,
+        )
+        .expect("valid response");
+        assert_eq!(id.token, "deadbeef");
+        assert_eq!(
+            id.pod_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    }
+
+    /// Fail-closed: a legacy node serves the token alone. The guest gets NO id, so
+    /// it never presents an id without the token it was minted with — the node then
+    /// treats it as an unidentified caller, exactly as before this brick.
+    #[test]
+    fn a_legacy_token_only_response_yields_no_pod_id() {
+        let id = parse_caller_identity(r#"{"caller_token":"deadbeef"}"#).expect("valid response");
+        assert_eq!(id.token, "deadbeef");
+        assert!(id.pod_id.is_none());
+    }
+
+    /// A response without a token is an error, not a partial identity.
+    #[test]
+    fn a_response_without_a_token_is_refused() {
+        assert!(
+            parse_caller_identity(r#"{"pod_id":"11111111-1111-4111-8111-111111111111"}"#).is_err()
+        );
+    }
 }

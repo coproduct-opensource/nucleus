@@ -12,13 +12,28 @@
 # so a non-lineage sibling B is excluded, while an operator (no pod token) sees
 # both.
 #
-# It runs KVM-free: the local driver now presents each orchestrator pod's caller
-# token (NUCLEUS_POD_ID / NUCLEUS_POD_CALLER_TOKEN, env-parity with what guest-init
-# fetches over vsock in Firecracker — the token is `derive_token(caller_secret,id)`
-# either way, so its unforgeability rests on the node-only `caller_secret`, not on
-# the vsock transport). The full Firecracker two-pod boot (token delivered over the
-# REAL vsock) is a separate increment; this exercises the identical auth+filter
-# composition on a booted node in an ordinary CI lane.
+# It runs KVM-free: the local driver presents each orchestrator pod's caller
+# identity by env (NUCLEUS_POD_ID / NUCLEUS_POD_CALLER_TOKEN); the token is
+# `derive_token(caller_secret,id)`, so its unforgeability rests on the node-only
+# `caller_secret`, not on any transport.
+#
+# Getting the SAME scoped call on the REAL Firecracker path is NOT merely a
+# transport swap (an earlier version of this header implied it was). It needs three
+# things the local driver supplies by env that a booted guest does not have:
+#   G1 — the pod's own id over vsock. guest-init now fetches `pod_id` alongside the
+#        token via FETCH_POD_CALLER_TOKEN, so a caller IDENTITY can form. Without it
+#        the guest is unidentified and the node serves the OPERATOR view (all pods)
+#        — the fail-OPEN direction, which would make a two-pod boot "pass" vacuously.
+#        [LANDED — this brick.]
+#   G2 — the pod-mgmt config (enable flag, node URL, node auth secret) delivered to
+#        the guest. [not yet]
+#   G3 — a guest->node management ROUTE. `/v1/pods` is served on the host TCP
+#        listener only, and the orchestrator pod runs default-deny netns; the vsock
+#        bridge is host->guest. [not yet — the intended shape is a scoped `pod/list`
+#        over the workload-API vsock command enum, authenticated by the caller token
+#        and filtered by `caller_may_manage`.]
+# G2/G3 remain, so C2 stays NOT-YET and this local-driver check remains the KVM-free
+# proof of the identical auth+filter composition.
 #
 # Path exercised: A's workload → A's tool-proxy `POST /v1/pod/list`
 # (`pod_mgmt::list_sub_pods`) → `node_client.list_pods()` attaching A's
