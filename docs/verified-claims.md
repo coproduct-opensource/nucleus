@@ -9,6 +9,10 @@ that enforces it on every pull request.
 - **Kani BMC** bounded model checking of Rust implementations (114 harnesses repo-wide: portcullis 64, portcullis-core 31, ck-kernel 17, +2)
 - **Rust type system** structural enforcement via sealed types and phantom tags
 
+For why the enforcement boundary is proved rather than tested — and how that
+compares to what other agent-isolation runtimes ship — see
+[Landscape and Rationale](architecture/landscape.md).
+
 ---
 
 ## Tier 1: Algebraic Properties (Lean 4 + Kani BMC)

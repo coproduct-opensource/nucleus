@@ -90,3 +90,7 @@ What must be true before Nucleus can be called enterprise-ready. This page conso
 - **Not started**: no work has been done.
 
 This page is updated with each release. If you find a gap not listed here, please [file an issue](https://github.com/coproduct-opensource/nucleus/issues).
+
+For how these gaps compare to what other agent-isolation runtimes ship — and
+which of them are commodity rather than differentiating — see
+[Landscape and Rationale](architecture/landscape.md).
