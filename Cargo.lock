@@ -2030,6 +2030,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 
 [[package]]
+name = "cfb-mode"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "738b8d467867f80a71351933f70461f5b56f24d5c93e0cf216e59229c968d330"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6911,8 +6920,10 @@ dependencies = [
 name = "nucleus-identity"
 version = "1.0.0"
 dependencies = [
+ "aes",
  "async-trait",
  "base64 0.23.1",
+ "cfb-mode",
  "chrono",
  "futures-util",
  "hex",

@@ -464,6 +464,291 @@ fn ek_spki(cert_der: &[u8]) -> Result<Vec<u8>> {
     Ok(cert.public_key().raw.to_vec())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AK↔EK binding via TPM credential activation (North Star C9, Phase 1 Inc 3, brick 2)
+//
+// Brick 1 proved an EK certificate chains to a manufacturer root; the residency
+// verifier proved an AK is non-exportable. Neither proves the AK and that EK are
+// on the SAME TPM — a genuine EK with an unrelated AK proves nothing about the
+// AK's key. Credential activation closes that: nucleus (the verifier) builds a
+// challenge that ONLY a TPM holding BOTH the EK and the object named `ak_name`
+// can decrypt (TPM2_ActivateCredential), and getting our secret back proves
+// co-residency.
+//
+// This is the VERIFIER's `TPM2_MakeCredential` half, pure and in-tree (ring ECDH
+// + sha2 + AES-128-CFB), constructed to be byte-identical to what a real TPM's
+// ActivateCredential consumes — validated by a swtpm round-trip (producer=nucleus,
+// verifier=real TPM), the same producer≠verifier discipline as the residency work.
+//
+// INERT, like brick 1: the witness `AkEkBound` carries no `Claim` and no
+// `AssuranceLevel`; only brick 3's composition (residency ∧ EK ∧ this) may reach
+// L2Device. This brick covers ECC endorsement keys; RSA EKs are a disclosed
+// follow-brick (RSA-OAEP-encrypt would add a primitive to the TCB).
+
+/// INERT AK↔EK co-residency witness: a credential activation proved the residency
+/// AK and the manufacturer-rooted EK are on the SAME TPM. No method yields a
+/// `Claim` or `AssuranceLevel` — only brick 3's composition may. Fields tie back
+/// to residency (`ak_name_sha256`) and brick 1 (`ek_spki_sha256`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AkEkBound {
+    pub ak_name_sha256: [u8; 32],
+    pub ek_spki_sha256: [u8; 32],
+}
+
+/// A credential-activation challenge — exactly the two TPM2Bs `tpm2_activatecredential`
+/// consumes (`TPM2B_ID_OBJECT` and, for an ECC EK, a `TPM2B_ENCRYPTED_SECRET`
+/// carrying the ephemeral `TPMS_ECC_POINT`).
+pub struct CredentialChallenge {
+    pub credential_blob: Vec<u8>,
+    pub encrypted_secret: Vec<u8>,
+}
+
+#[cfg(feature = "tpm-devid")]
+/// HMAC-SHA256 — hand-rolled over `sha2` (already in the TCB), so no `hmac` dep.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    const B: usize = 64;
+    let mut k0 = [0u8; B];
+    if key.len() > B {
+        k0[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k0[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; B];
+    let mut opad = [0x5cu8; B];
+    for i in 0..B {
+        ipad[i] ^= k0[i];
+        opad[i] ^= k0[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let ih = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(ih);
+    outer.finalize().into()
+}
+
+#[cfg(feature = "tpm-devid")]
+/// KDFa (TPM 2.0 Part 1 §11.4.10.2, SP800-108 counter mode). Single HMAC block —
+/// valid for `bits <= 256`, which covers every use here (128-bit AES key, 256-bit
+/// HMAC key). `K = HMAC(key, counter(1) || label || 0x00 || contextU || contextV || bits)`.
+fn kdfa(key: &[u8], label: &str, context_u: &[u8], context_v: &[u8], bits: u32) -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(&1u32.to_be_bytes());
+    msg.extend_from_slice(label.as_bytes());
+    msg.push(0x00);
+    msg.extend_from_slice(context_u);
+    msg.extend_from_slice(context_v);
+    msg.extend_from_slice(&bits.to_be_bytes());
+    hmac_sha256(key, &msg)[..(bits as usize) / 8].to_vec()
+}
+
+#[cfg(feature = "tpm-devid")]
+/// KDFe (TPM 2.0 Part 1 §11.4.10.3, SP800-56A one-step). Single hash block —
+/// valid for `bits <= 256`. `K = H(counter(1) || Z || label || 0x00 || contextU || contextV)`.
+fn kdfe(z: &[u8], label: &str, context_u: &[u8], context_v: &[u8], bits: u32) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update(1u32.to_be_bytes());
+    h.update(z);
+    h.update(label.as_bytes());
+    h.update([0x00]);
+    h.update(context_u);
+    h.update(context_v);
+    h.finalize()[..(bits as usize) / 8].to_vec()
+}
+
+#[cfg(feature = "tpm-devid")]
+/// `len(2 BE) || data` — a TPM2B.
+fn tpm2b(data: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(2 + data.len());
+    v.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    v.extend_from_slice(data);
+    v
+}
+
+/// The pure, seed-driven half (TPM 2.0 "SensitiveToCredential"): given the KDF
+/// `seed`, protect `secret` for the object named `ak_name`. Returns the
+/// `TPM2B_ID_OBJECT` (`credential_blob`). The AK name is bound TWICE — it keys the
+/// STORAGE KDFa and is covered by the integrity HMAC — which is what makes a
+/// credential built for one AK fail to activate on another.
+#[cfg(feature = "tpm-devid")]
+fn sensitive_to_credential(seed: &[u8], ak_name: &[u8], secret: &[u8]) -> Vec<u8> {
+    use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
+
+    let sym_key = kdfa(seed, "STORAGE", ak_name, &[], 128);
+    let mut enc_identity = tpm2b(secret); // plaintext = TPM2B(secret)
+    let iv = [0u8; 16];
+    cfb_mode::Encryptor::<aes::Aes128>::new(sym_key.as_slice().into(), (&iv).into())
+        .encrypt(&mut enc_identity);
+
+    let hmac_key = kdfa(seed, "INTEGRITY", &[], &[], 256);
+    let mut integrity_input = enc_identity.clone();
+    integrity_input.extend_from_slice(ak_name);
+    let outer_hmac = hmac_sha256(&hmac_key, &integrity_input);
+
+    // TPMS_ID_OBJECT = TPM2B_DIGEST(integrityHMAC) || encIdentity(raw)
+    let mut id_object = tpm2b(&outer_hmac);
+    id_object.extend_from_slice(&enc_identity);
+    tpm2b(&id_object) // TPM2B_ID_OBJECT
+}
+
+/// Build a credential-activation challenge for an ECC endorsement key: only a TPM
+/// holding that EK and the object named `ak_name` can recover `secret`.
+///
+/// `ek_pub` is the TPM's `TPM2B_PUBLIC` for the EK (ECC P-256). `secret` is a
+/// fresh random challenge (≤ 32 bytes). A one-pass ECDH ephemeral × EK derives the
+/// seed (KDFe), so the returned `encrypted_secret` carries the ephemeral point the
+/// TPM needs to recompute it.
+#[cfg(feature = "tpm-devid")]
+pub fn make_credential_ecc(
+    ek_pub: &[u8],
+    ak_name: &[u8],
+    secret: &[u8],
+) -> Result<CredentialChallenge> {
+    use ring::agreement::{agree_ephemeral, EphemeralPrivateKey, UnparsedPublicKey, ECDH_P256};
+
+    if secret.len() > 32 {
+        return Err(vfail("credential secret exceeds the SHA-256 digest size"));
+    }
+    let ek = parse_ecc_public(ek_pub)?; // 0x04 || EK_x || EK_y in ek.sec1_uncompressed
+    let ek_x = ek.sec1_uncompressed[1..33].to_vec();
+
+    let rng = ring::rand::SystemRandom::new();
+    let eph = EphemeralPrivateKey::generate(&ECDH_P256, &rng)
+        .map_err(|_| vfail("ephemeral key generation failed"))?;
+    let eph_pub = eph
+        .compute_public_key()
+        .map_err(|_| vfail("ephemeral public key failed"))?;
+    let eph_bytes = eph_pub.as_ref(); // 0x04 || eph_x || eph_y
+    if eph_bytes.len() != 65 {
+        return Err(vfail("unexpected ephemeral point encoding"));
+    }
+    let eph_x = eph_bytes[1..33].to_vec();
+    let eph_y = eph_bytes[33..65].to_vec();
+
+    let peer = UnparsedPublicKey::new(&ECDH_P256, &ek.sec1_uncompressed);
+    let z = agree_ephemeral(eph, &peer, |shared| shared.to_vec())
+        .map_err(|_| vfail("ECDH with the EK public key failed"))?;
+
+    // seed = KDFe(SHA256, Z, "IDENTITY", ephemeral.x, EK.x, 256)
+    let seed = kdfe(&z, "IDENTITY", &eph_x, &ek_x, 256);
+    let credential_blob = sensitive_to_credential(&seed, ak_name, secret);
+
+    // TPM2B_ENCRYPTED_SECRET = TPM2B( TPMS_ECC_POINT{ TPM2B(x), TPM2B(y) } )
+    let mut point = tpm2b(&eph_x);
+    point.extend_from_slice(&tpm2b(&eph_y));
+    let encrypted_secret = tpm2b(&point);
+
+    Ok(CredentialChallenge {
+        credential_blob,
+        encrypted_secret,
+    })
+}
+
+/// Mint the inert [`AkEkBound`] iff the TPM returned EXACTLY the challenge secret —
+/// i.e. a TPM holding both the manufacturer-rooted EK and the residency AK
+/// recovered it, so the two keys are co-resident. Constant-time comparison; `Err`
+/// on any mismatch. Produces no `Claim` (L2 stays unreachable until brick 3).
+pub fn verify_activation(
+    expected_secret: &[u8],
+    recovered_secret: &[u8],
+    ak_name: &[u8],
+    ek_spki_der: &[u8],
+) -> Result<AkEkBound> {
+    if !ct_eq(expected_secret, recovered_secret) {
+        return Err(vfail(
+            "credential activation did not recover the challenge secret — the AK and EK are not co-resident (or a different TPM answered)",
+        ));
+    }
+    Ok(AkEkBound {
+        ak_name_sha256: sha256_32(ak_name),
+        ek_spki_sha256: sha256_32(ek_spki_der),
+    })
+}
+
+/// Constant-time byte-slice equality. Length is compared first and non-secret
+/// (the challenge length is fixed), then every byte is folded so the comparison
+/// time does not depend on WHERE a mismatch is.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+#[cfg(all(test, feature = "tpm-devid"))]
+mod credential_activation_tests {
+    use super::{hmac_sha256, kdfa, sensitive_to_credential, verify_activation};
+
+    fn name(tag: u8) -> Vec<u8> {
+        let mut n = vec![0x00, 0x0b]; // nameAlg = SHA-256
+        n.extend_from_slice(&[tag; 32]);
+        n
+    }
+
+    /// The credential blob depends on the AK name — a credential built for one AK
+    /// differs from one built for another (same seed + secret). Necessary (not
+    /// sufficient) for the wrong-AK activation to fail; the sufficiency is the
+    /// swtpm bite in `scripts/tpm-credential-activation-check.sh`.
+    #[test]
+    fn credential_blob_is_ak_name_bound() {
+        let seed = [7u8; 32];
+        let secret = [0xa5u8; 16];
+        let b1 = sensitive_to_credential(&seed, &name(1), &secret);
+        let b2 = sensitive_to_credential(&seed, &name(2), &secret);
+        assert_ne!(b1, b2, "the credential blob must depend on the AK name");
+    }
+
+    /// **The integrity HMAC genuinely covers the AK name** — the exact check a TPM
+    /// runs in ActivateCredential. Reconstruct the blob's HMAC and confirm it
+    /// matches an HMAC over `encIdentity || name`, and that swapping the name
+    /// breaks it. Reds if the name is dropped from the integrity input.
+    #[test]
+    fn integrity_hmac_binds_the_name() {
+        let seed = [3u8; 32];
+        let secret = [0x11u8; 16];
+        let n1 = name(1);
+        let blob = sensitive_to_credential(&seed, &n1, &secret);
+        // blob = TPM2B( TPM2B(hmac=32) || encIdentity ); parse it out.
+        let id_object = &blob[2..];
+        let hmac_in_blob = &id_object[2..2 + 32];
+        let enc_identity = &id_object[2 + 32..];
+
+        let hmac_key = kdfa(&seed, "INTEGRITY", &[], &[], 256);
+        let mut over_correct = enc_identity.to_vec();
+        over_correct.extend_from_slice(&n1);
+        assert_eq!(
+            hmac_sha256(&hmac_key, &over_correct),
+            hmac_in_blob,
+            "the blob's integrity HMAC must be HMAC(encIdentity || name)"
+        );
+
+        let mut over_wrong = enc_identity.to_vec();
+        over_wrong.extend_from_slice(&name(2)); // swap the name
+        assert_ne!(
+            hmac_sha256(&hmac_key, &over_wrong).as_slice(),
+            hmac_in_blob,
+            "a name-swapped HMAC must NOT match — the name is what binds the AK"
+        );
+    }
+
+    /// `verify_activation` mints the witness only on an exact secret match.
+    #[test]
+    fn verify_activation_requires_exact_recovery() {
+        let ak = vec![9u8; 34];
+        let ek = vec![4u8; 91];
+        let bound = verify_activation(b"the-secret", b"the-secret", &ak, &ek).unwrap();
+        assert_eq!(bound.ak_name_sha256, super::sha256_32(&ak));
+        assert!(verify_activation(b"the-secret", b"the-secre_", &ak, &ek).is_err());
+        assert!(verify_activation(b"the-secret", b"short", &ak, &ek).is_err());
+    }
+}
+
 #[cfg(test)]
 mod ek_chain_tests {
     use super::{verify_ek_chain, EkTrustStore};
