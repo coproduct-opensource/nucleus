@@ -366,7 +366,9 @@ cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
-cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
+# Only the C2 podlist boot lane builds this probe; the default probe-pod boot
+# does not, so bake it only when it was built (an absent binary is not an error).
+[ -f "$PODLIST_PROBE_BIN" ] && cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -416,7 +418,9 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
     cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
     cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
     cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
-    cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
+    # Conditional for the same reason as the primary copy above (podlist probe is
+    # built only by the C2 boot lane).
+    [ -f "$PODLIST_PROBE_BIN" ] && cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
     cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
