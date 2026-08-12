@@ -25,6 +25,7 @@
 //! - [`approval_bundle`] - Signed preflight approval bundles (JWS ES256)
 
 pub mod approval_bundle;
+pub mod assurance;
 pub mod attestation;
 pub mod ca;
 pub mod certificate;
@@ -49,6 +50,10 @@ pub mod workload_api;
 
 pub use approval_bundle::{
     ApprovalBundleBuilder, ApprovalBundleClaims, ApprovalBundleHeader, ApprovalBundleVerifier,
+};
+pub use assurance::{
+    AssuranceLevel, AttestedSubject, Claim, SelfMeasuredBackend, SvidAttestationBackend,
+    VerifiedAttestation,
 };
 pub use attestation::{
     extract_launch_attestation, verify_attested_svid, AttestationRequirements, LaunchAttestation,

@@ -21,7 +21,10 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
-use nucleus_identity::{verify_attested_svid, AttestationRequirements};
+use nucleus_identity::{
+    AttestationRequirements, Claim, SelfMeasuredBackend, SvidAttestationBackend,
+};
+use std::collections::BTreeSet;
 
 #[derive(Args)]
 pub struct VerifyAttestationArgs {
@@ -72,9 +75,25 @@ pub fn execute(args: VerifyAttestationArgs) -> Result<()> {
         req = req.allow_config(parse_hash(h)?);
     }
 
-    match verify_attested_svid(&chain, &req, args.require_attestation) {
-        Ok(Some(att)) => {
-            println!("OK: attested SVID verified — {}", att.to_hex_summary());
+    // Verify through the attestation-backend seam. Today the only root is the
+    // node's self-measurement; other roots (TPM DevID, Apple App Attest, cloud IID)
+    // will plug in behind the same `SvidAttestationBackend` + normalized result.
+    let backend = SelfMeasuredBackend;
+    match backend.verify_svid(&chain, &req, args.require_attestation) {
+        Ok(Some(va)) => {
+            let measurement = va
+                .launch
+                .as_ref()
+                .map(|l| l.to_hex_summary())
+                .unwrap_or_default();
+            println!(
+                "OK: attested SVID verified via '{}' (assurance L{}) — {}",
+                va.backend,
+                va.assurance().as_u8(),
+                measurement
+            );
+            println!("  proves:     {}", fmt_claims(&va.proves));
+            println!("  not proven: {}", fmt_claims(&va.not_proven));
             println!(
                 "NOTE: node-signed SOFTWARE launch attestation (no hardware root); \
                  trust is conditional on the node's signing key."
@@ -87,6 +106,18 @@ pub fn execute(args: VerifyAttestationArgs) -> Result<()> {
         }
         Err(e) => bail!("attestation verification FAILED: {e}"),
     }
+}
+
+/// Render a closed claim set as a readable list (or `(none)`).
+fn fmt_claims(claims: &BTreeSet<Claim>) -> String {
+    if claims.is_empty() {
+        return "(none)".to_string();
+    }
+    claims
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
