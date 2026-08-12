@@ -52,6 +52,7 @@ PROXY_BIN="${PROXY_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-tool-proxy}"
 NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
 WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
+PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
 # NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
@@ -152,6 +153,7 @@ while [[ $# -gt 0 ]]; do
             NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
 WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
+PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
             shift 2
             ;;
         --output)
@@ -363,7 +365,8 @@ fi
 cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
-    cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
+cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
+cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -413,6 +416,7 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
     cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
     cp "$WORKLOAD_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
     cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
+    cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
     cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2

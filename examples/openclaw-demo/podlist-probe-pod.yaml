@@ -1,0 +1,56 @@
+# Same shape as probe-pod.yaml, but the workload is `nucleus-podlist-probe` and
+# the pod is an ORCHESTRATOR with pod-management enabled — because the probe
+# needs two things an ordinary pod does not get:
+#
+#   * `enable_pod_mgmt: "true"` (+ the orchestrator profile) makes the node mint
+#     this pod a caller token, and `FETCH_POD_CALLER_TOKEN` then serves its
+#     `pod_id` alongside it (G1). `nucleus-guest-init` sets `NUCLEUS_POD_ID` from
+#     that, which the probe requires to self-check its listing.
+#   * The probe reaches the workload-API vsock (CID 2, port 15012) and sends
+#     `POD_LIST`; the node answers this pod's lineage-scoped listing (G3).
+#
+# This is pod A of the C2 G4 live scenario. The boot harness also creates a
+# non-lineage sibling B on the node, so A's listing being {A} (B excluded) over
+# the REAL vsock transport — not {A,B} — is the live cross-pod isolation proof.
+# (C-inclusion / lineage-scoping is enforced KVM-free by cross-pod-scoped-check.sh
+# over the same `scope_to_caller` filter this path uses.)
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: podlist-probe-a
+  labels:
+    enable_pod_mgmt: "true"
+spec:
+  work_dir: /work
+  timeout_seconds: 2700
+  # A distinct unprivileged uid, so the launch's privilege-drop path runs before
+  # the probe does — matching probe-pod.yaml, so the probe observes the same
+  # dropped-privilege child the other boot probes assert against.
+  workload:
+    command: /bin/sh
+    args:
+      - "-c"
+      - "/usr/local/bin/nucleus-podlist-probe"
+    uid: 65534
+  policy:
+    type: profile
+    name: orchestrator
+  # The probe talks to the host only over the workload-API vsock, never the
+  # network, so the pod stays default-deny — a leaking listing must not be
+  # explainable by an open egress path.
+  network:
+    allow: []
+    deny: []
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  image:
+    kernel_path: ./build/firecracker/vmlinux
+    rootfs_path: ./build/firecracker/rootfs.ext4
+    read_only: true
+    scratch_path: ./build/firecracker/scratch.ext4
+  vsock:
+    guest_cid: 3
+    port: 5005
+  seccomp:
+    mode: default
