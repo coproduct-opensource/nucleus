@@ -66,19 +66,29 @@ enum Verdict {
 }
 
 fn main() {
-    // The pod's OWN id, delivered over the same socket-authenticated vsock as the
-    // caller token (G1) and set into the environment by `nucleus-guest-init`.
-    // Without it there is no self-check, so a listing could not be told apart
-    // from an unscoped one — refuse to pass rather than certify vacuously.
+    let port = workload_api_port();
+
+    // The pod's own id. As a WORKLOAD — spawned by the tool-proxy, not the same
+    // process as guest-init — this does NOT inherit the NUCLEUS_POD_ID that
+    // guest-init sets for itself (verified on a live boot: the env var is absent
+    // here). So the id is fetched from the same socket-authenticated vsock that
+    // serves POD_LIST: FETCH_POD_CALLER_TOKEN answers {caller_token, pod_id}, and
+    // the socket — not the guest — says which pod that is. An env override is
+    // honored first, for the KVM-free harness and tests.
     let self_id = match resolve_self_id(std::env::var("NUCLEUS_POD_ID").ok()) {
         Ok(id) => id,
-        Err(reason) => {
-            fail(&reason);
-            return;
-        }
+        Err(_) => match fetch_pod_id(port) {
+            Ok(id) => id,
+            Err(e) => {
+                fail(&format!(
+                    "no NUCLEUS_POD_ID in the environment and could not fetch this pod's id over vsock ({e}) — cannot self-check the listing; refusing to pass vacuously"
+                ));
+                return;
+            }
+        },
     };
 
-    let response = match fetch_pod_list() {
+    let response = match fetch_over_vsock(port, "POD_LIST") {
         Ok(r) => r,
         Err(e) => {
             fail(&format!("could not fetch POD_LIST over vsock: {e}"));
@@ -99,15 +109,36 @@ fn main() {
     }
 }
 
-/// Resolve this pod's own id from `NUCLEUS_POD_ID` (set by `nucleus-guest-init`
-/// over the socket-authenticated vsock, G1). Absent or blank is a refusal, not a
-/// default: without it the probe cannot tell a scoped listing from an unscoped
-/// one, so it must not pass. Pure, so the refusal is unit-tested.
+/// Resolve this pod's own id from an optional `NUCLEUS_POD_ID` override. Absent
+/// or blank is an `Err` (not a default) — the caller then falls back to fetching
+/// the id over vsock. Pure, so both branches are unit-tested.
 fn resolve_self_id(env_value: Option<String>) -> Result<String, String> {
     match env_value {
         Some(id) if !id.trim().is_empty() => Ok(id.trim().to_string()),
-        _ => Err("no NUCLEUS_POD_ID in the environment — cannot self-check the listing, so a scoped result is indistinguishable from an unscoped one; refusing to pass vacuously".into()),
+        _ => Err("NUCLEUS_POD_ID not set".into()),
     }
+}
+
+/// This pod's own id, fetched over the socket-authenticated vsock. The socket is
+/// per-pod, so `FETCH_POD_CALLER_TOKEN` answers THIS pod's `{caller_token,
+/// pod_id}` — the id cannot be forged by the guest. The token is ignored here;
+/// only the id is needed, to self-check the listing.
+fn fetch_pod_id(port: u32) -> Result<String, String> {
+    let reply = fetch_over_vsock(port, "FETCH_POD_CALLER_TOKEN")?;
+    parse_pod_id(&reply).ok_or_else(|| {
+        format!(
+            "FETCH_POD_CALLER_TOKEN reply carried no pod_id: {:?}",
+            reply.trim()
+        )
+    })
+}
+
+/// Extract `pod_id` from a `FETCH_POD_CALLER_TOKEN` reply
+/// (`{"caller_token":"…","pod_id":"…"}`). Pure, so it is unit-tested; returns
+/// `None` on a legacy token-only reply or an error object.
+fn parse_pod_id(reply: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
+    v.get("pod_id")?.as_str().map(str::to_string)
 }
 
 /// Emit the FAIL sentinel on both streams and exit non-zero, matching the
@@ -119,14 +150,18 @@ fn fail(reason: &str) {
     std::process::exit(1);
 }
 
-/// Connect the workload-API vsock, send `POD_LIST`, and read the one reply line.
-/// Mirrors the client in `nucleus-guest-init::identity` (same CID/port/framing).
-fn fetch_pod_list() -> Result<String, String> {
-    let port = std::env::var("NUCLEUS_WORKLOAD_API_PORT")
+/// The workload-API vsock port (env override, else the default guest-init uses).
+fn workload_api_port() -> u32 {
+    std::env::var("NUCLEUS_WORKLOAD_API_PORT")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_WORKLOAD_API_PORT);
+        .unwrap_or(DEFAULT_WORKLOAD_API_PORT)
+}
 
+/// Connect the workload-API vsock, send one `command`, and read the one reply
+/// line. Mirrors the client in `nucleus-guest-init::identity` (same CID/port/
+/// framing); each call is a fresh connection, matching the per-frame handler.
+fn fetch_over_vsock(port: u32, command: &str) -> Result<String, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("connect (cid {VMADDR_CID_HOST} port {port}): {e}"))?;
     // Bound the read so a host that accepts but never answers cannot wedge the
@@ -135,8 +170,8 @@ fn fetch_pod_list() -> Result<String, String> {
         .set_read_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS)))
         .map_err(|e| format!("set read timeout: {e}"))?;
     stream
-        .write_all(b"POD_LIST\n")
-        .map_err(|e| format!("write POD_LIST: {e}"))?;
+        .write_all(format!("{command}\n").as_bytes())
+        .map_err(|e| format!("write {command}: {e}"))?;
     stream.flush().map_err(|e| format!("flush: {e}"))?;
 
     let mut reader = BufReader::new(&mut stream);
@@ -208,7 +243,7 @@ fn decide(response: &str, self_id: &str) -> Verdict {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, resolve_self_id, Verdict};
+    use super::{decide, parse_pod_id, resolve_self_id, Verdict};
 
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -290,12 +325,26 @@ mod tests {
         assert!(is_fail(decide(r#"[{"id":42}]"#, A)));
     }
 
-    /// Missing or blank `NUCLEUS_POD_ID` → refusal, not a default: without a
-    /// self-id the probe cannot self-check, so it must not pass vacuously.
+    /// Missing or blank `NUCLEUS_POD_ID` → `Err` (the caller then fetches the id
+    /// over vsock); a set value is trimmed and used as the override.
     #[test]
-    fn missing_or_blank_self_id_is_refused() {
+    fn missing_or_blank_self_id_falls_through() {
         assert!(resolve_self_id(None).is_err());
         assert!(resolve_self_id(Some("   ".into())).is_err());
         assert_eq!(resolve_self_id(Some("  a-b  ".into())).unwrap(), "a-b");
+    }
+
+    /// The vsock self-id path: `pod_id` is lifted from a FETCH_POD_CALLER_TOKEN
+    /// reply, and a legacy token-only reply or an error object yields `None` (so
+    /// the probe fails rather than self-checks against a missing id).
+    #[test]
+    fn parse_pod_id_reads_the_id_or_none() {
+        assert_eq!(
+            parse_pod_id(&format!(r#"{{"caller_token":"t","pod_id":"{A}"}}"#)).as_deref(),
+            Some(A)
+        );
+        assert_eq!(parse_pod_id(r#"{"caller_token":"t"}"#), None);
+        assert_eq!(parse_pod_id(r#"{"error":"none"}"#), None);
+        assert_eq!(parse_pod_id("not json"), None);
     }
 }
