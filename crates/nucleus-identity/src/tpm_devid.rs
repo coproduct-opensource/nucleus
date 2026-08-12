@@ -681,6 +681,160 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// L2 composition (North Star C9, Phase 1 Inc 3, brick 3)
+//
+// The ONLY place `HardwareRootedKey` / `StableDeviceIdentity` / `GenuineSilicon`
+// are emitted and assurance rises to L2Device. Bricks 1 and 2 produce inert
+// witnesses precisely so this composition is the single choke point: a caller
+// literally cannot construct an L2 result without holding all three witness
+// values, so a partial Inc-3 (EK chain alone, or a binding alone) is structurally
+// unable to claim hardware rooting — unsayable, not merely undocumented.
+//
+// It refuses unless the three witnesses are about the SAME TPM — the coherence
+// tooth that stops a genuine EK *here* and a non-exportable key *there* from
+// composing into a false hardware-rooted claim.
+
+/// Compose residency (non-exportability), an EK-manufacturer-root chain, and an
+/// AK↔EK binding into an `L2Device` attestation. Refuses unless all three name
+/// the same TPM: the binding's AK is the residency AK, the binding's EK is the
+/// manufacturer-rooted EK, and residency actually established non-exportability.
+pub fn compose_l2(
+    residency: &VerifiedAttestation,
+    ek: &EkIdentity,
+    binding: &AkEkBound,
+) -> Result<VerifiedAttestation> {
+    let ak_name_sha256 = match &residency.subject {
+        AttestedSubject::TpmResidentKey { ak_name_sha256, .. } => *ak_name_sha256,
+        _ => return Err(vfail("residency attestation is not a TPM resident key")),
+    };
+    if !residency.proves(Claim::KeyNonExportable) {
+        return Err(vfail(
+            "residency proof does not establish KeyNonExportable — there is nothing to root",
+        ));
+    }
+    if binding.ak_name_sha256 != ak_name_sha256 {
+        return Err(vfail(
+            "the AK↔EK binding names a different AK than the residency proof — not the same key",
+        ));
+    }
+    if binding.ek_spki_sha256 != sha256_32(&ek.ek_spki_der) {
+        return Err(vfail(
+            "the AK↔EK binding names a different EK than the manufacturer-rooted one — not the same TPM",
+        ));
+    }
+
+    // Coherent: a non-exportable AK, bound to the EK of a genuine manufacturer TPM.
+    let proves = BTreeSet::from([
+        Claim::KeyNonExportable,     // carried from residency
+        Claim::GenuineSilicon,       // from the EK-manufacturer-root chain (brick 1)
+        Claim::HardwareRootedKey,    // GenuineSilicon ∧ AkEkBound ∧ KeyNonExportable
+        Claim::StableDeviceIdentity, // the EK is the permanent per-device identity
+    ]);
+    let not_proven = BTreeSet::from([
+        Claim::MeasuredBoot, // a PCR/TEE quote is L3, not established here
+        Claim::ContinuousLiveness,
+        Claim::UnmodifiedArtifact,
+    ]);
+    Ok(VerifiedAttestation {
+        backend: "tpm-devid-l2",
+        assurance: AssuranceLevel::L2Device,
+        subject: residency.subject.clone(),
+        proves,
+        not_proven,
+        launch: None,
+    })
+}
+
+#[cfg(test)]
+mod l2_composition_tests {
+    use super::{compose_l2, sha256_32, AkEkBound, EkIdentity};
+    use crate::assurance::{AssuranceLevel, AttestedSubject, Claim, VerifiedAttestation};
+    use std::collections::BTreeSet;
+
+    fn residency(ak: [u8; 32]) -> VerifiedAttestation {
+        VerifiedAttestation {
+            backend: "tpm-devid-residency",
+            assurance: AssuranceLevel::L1Software,
+            subject: AttestedSubject::TpmResidentKey {
+                ak_name_sha256: ak,
+                subject_name_sha256: [0u8; 32],
+            },
+            proves: BTreeSet::from([Claim::KeyNonExportable]),
+            not_proven: BTreeSet::from([Claim::HardwareRootedKey, Claim::StableDeviceIdentity]),
+            launch: None,
+        }
+    }
+    fn ek() -> EkIdentity {
+        EkIdentity {
+            ek_spki_der: vec![1, 2, 3, 4, 5],
+            manufacturer: "test-root".into(),
+        }
+    }
+
+    /// Coherent witnesses → L2Device, emitting exactly the four claims, with
+    /// MeasuredBoot still `not_proven` (L3 unreachable) and the sets disjoint.
+    #[test]
+    fn coherent_witnesses_compose_to_l2() {
+        let ak = [7u8; 32];
+        let e = ek();
+        let b = AkEkBound {
+            ak_name_sha256: ak,
+            ek_spki_sha256: sha256_32(&e.ek_spki_der),
+        };
+        let va = compose_l2(&residency(ak), &e, &b).expect("coherent → L2");
+        assert_eq!(va.assurance(), AssuranceLevel::L2Device);
+        for c in [
+            Claim::KeyNonExportable,
+            Claim::GenuineSilicon,
+            Claim::HardwareRootedKey,
+            Claim::StableDeviceIdentity,
+        ] {
+            assert!(va.proves(c), "must prove {c:?}");
+        }
+        assert!(va.cannot_prove(Claim::MeasuredBoot), "MeasuredBoot is L3");
+        assert!(va.proves.is_disjoint(&va.not_proven));
+    }
+
+    /// **Coherence bite — wrong AK.** A binding for a different AK than the
+    /// residency proof must not compose (three proofs, not the same key).
+    #[test]
+    fn a_binding_for_a_different_ak_is_refused() {
+        let e = ek();
+        let b = AkEkBound {
+            ak_name_sha256: [9u8; 32], // != residency's AK
+            ek_spki_sha256: sha256_32(&e.ek_spki_der),
+        };
+        assert!(compose_l2(&residency([7u8; 32]), &e, &b).is_err());
+    }
+
+    /// **Coherence bite — wrong EK.** A binding whose EK is not the
+    /// manufacturer-rooted one must not compose (not the same TPM).
+    #[test]
+    fn a_binding_for_a_different_ek_is_refused() {
+        let ak = [7u8; 32];
+        let b = AkEkBound {
+            ak_name_sha256: ak,
+            ek_spki_sha256: sha256_32(b"some other EK"),
+        };
+        assert!(compose_l2(&residency(ak), &ek(), &b).is_err());
+    }
+
+    /// Residency that never established non-exportability cannot be rooted.
+    #[test]
+    fn residency_without_nonexportable_is_refused() {
+        let ak = [7u8; 32];
+        let mut r = residency(ak);
+        r.proves = BTreeSet::new(); // strip KeyNonExportable
+        let e = ek();
+        let b = AkEkBound {
+            ak_name_sha256: ak,
+            ek_spki_sha256: sha256_32(&e.ek_spki_der),
+        };
+        assert!(compose_l2(&r, &e, &b).is_err());
+    }
+}
+
 #[cfg(all(test, feature = "tpm-devid"))]
 mod credential_activation_tests {
     use super::{hmac_sha256, kdfa, sensitive_to_credential, verify_activation};

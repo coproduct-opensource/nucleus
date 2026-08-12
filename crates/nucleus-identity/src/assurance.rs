@@ -64,6 +64,12 @@ pub enum Claim {
     UnmodifiedArtifact,
     /// The private key cannot be exported from where it was generated.
     KeyNonExportable,
+    /// The TPM is genuine manufacturer silicon: its Endorsement Key certificate
+    /// chains to a pinned manufacturer root CA. A prerequisite for
+    /// [`Claim::HardwareRootedKey`] — a real TPM must exist before a key can be
+    /// rooted in it — but not sufficient on its own (it says nothing about WHICH
+    /// key lives in that TPM until an AK↔EK binding is added).
+    GenuineSilicon,
     /// The signing key is bound to genuine vendor hardware (TPM EK / SEP).
     HardwareRootedKey,
     /// A persistent device / instance identifier is attested.
