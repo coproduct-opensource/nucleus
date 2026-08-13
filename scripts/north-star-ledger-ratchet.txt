@@ -140,5 +140,16 @@
 #   proof-only BY DESIGN (C1's uid/no-channel fence; credential built from node
 #   env not the guest spec) and the gate anchors those constructions. 9 entries,
 #   COUNT pinned. Evidence: scripts/check-extracted-callsites.sh.
+# 2026-08-13: added DORMANT_GATES pin (=0). An assurance review found the
+#   cross-declaration guard in check-north-star-ledger.sh had gone SILENTLY IDLE:
+#   it loops over scripts/check-*dormant*.sh, and when declassify went live its
+#   check-declassify-token-dormant.sh was retired, leaving zero such files — so
+#   the one check built to catch "the table is the thing that's lying" iterated
+#   nothing, while the OK line still advertised it as active. The count is now
+#   pinned like CLAUSES/NOT_YET: a dormancy gate appearing or disappearing must be
+#   acknowledged here in the same change, so the guard can never again go idle
+#   unnoticed. Currently 0 (no path is declared dormant); a future dormant subject
+#   raises it to 1 and re-arms the differential.
 CLAUSES=9
 NOT_YET=2
+DORMANT_GATES=0

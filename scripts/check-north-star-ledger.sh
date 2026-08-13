@@ -70,8 +70,14 @@ fi
 # acknowledge by editing this file in the same change.
 clauses_pinned="$(grep -E '^CLAUSES=' "$RATCHET" | cut -d= -f2)"
 not_yet_pinned="$(grep -E '^NOT_YET=' "$RATCHET" | cut -d= -f2)"
-if [[ -z "$clauses_pinned" || -z "$not_yet_pinned" ]]; then
-    echo "ERROR: $RATCHET must pin CLAUSES=<n> and NOT_YET=<n>"
+# The cross-declaration guard below compares the table against in-tree
+# check-*dormant*.sh gates. That domain is pinned too: a dormancy gate silently
+# disappearing (declassify's did, when it went live) is precisely how the guard
+# went idle with nobody noticing — a count that can silently reach zero is a
+# guard that can silently stop guarding.
+dormant_pinned="$(grep -E '^DORMANT_GATES=' "$RATCHET" | cut -d= -f2)"
+if [[ -z "$clauses_pinned" || -z "$not_yet_pinned" || -z "$dormant_pinned" ]]; then
+    echo "ERROR: $RATCHET must pin CLAUSES=<n>, NOT_YET=<n>, and DORMANT_GATES=<n>"
     exit 1
 fi
 
@@ -174,8 +180,10 @@ fi
 # subject is exercised on the live path. This compares two independent
 # declarations that run in the same CI; when they disagree, one of them is
 # lying, and the gate refuses to let the table be the one that wins.
+dormant_gates=0
 for dg in scripts/check-*dormant*.sh; do
     [[ -f "$dg" ]] || continue
+    dormant_gates=$((dormant_gates + 1))
     # Subject word derived from the gate's own filename: check-<subject>-…-dormant.sh
     # Stemmed (trailing 'y' dropped) so "declassify" also matches
     # "declassification" — the noun is how the table talks about it.
@@ -211,6 +219,14 @@ for dg in scripts/check-*dormant*.sh; do
     done <<< "$all_rows"
 done
 
+# The guard's domain must match its pin. A dormancy gate added (a new dormant
+# subject the table must not claim live) or retired (its subject went live, or
+# someone deleted the counterparty) both change what this guard can catch — and
+# the retirement case is exactly how it silently went idle. Force acknowledgment.
+if [[ "$dormant_gates" -ne "$dormant_pinned" ]]; then
+    fail "dormancy-gate count is $dormant_gates but $RATCHET pins DORMANT_GATES=$dormant_pinned — the cross-declaration guard's domain changed (a check-*dormant*.sh was added or retired). Update the pin in the same change; if one was retired, confirm no ledger row still claims live-path for a now-unguarded subject, and if one was added, confirm no row contradicts it."
+fi
+
 echo
 if [[ "$failures" -gt 0 ]]; then
     echo "FAILED: $failures problem(s) in the North Star ledger."
@@ -218,6 +234,11 @@ if [[ "$failures" -gt 0 ]]; then
     echo "the exact overclaim the doc's own preamble warns about."
     exit 1
 fi
+if [[ "$dormant_gates" -gt 0 ]]; then
+    cross="contradicts each of $dormant_gates in-tree dormancy declaration(s)"
+else
+    cross="has no in-tree dormancy gate to cross-check (DORMANT_GATES=0, pinned) — the differential is idle by pin, not by silent drift"
+fi
 echo "OK: every ledger row covers a verbatim clause, resolves its evidence,"
-echo "names its falsifier, and contradicts no in-tree dormancy declaration."
-echo "($valid_rows clauses, $not_yet_count NOT-YET — both pinned by $RATCHET)"
+echo "names its falsifier, and $cross."
+echo "($valid_rows clauses, $not_yet_count NOT-YET, $dormant_gates dormancy gate(s) — all pinned by $RATCHET)"

@@ -73,9 +73,11 @@ tense is how a claim outruns its wiring. This table is a **machine-checked
 ledger** (`scripts/check-north-star-ledger.sh`, run on every change): each row
 names a clause of the sentence verbatim, carries exactly one status from
 {PROVED, TESTED, NOT-YET}, an evidence handle CI can dereference, and the gate
-that reds if the status regresses. The row count and the NOT-YET count are
-pinned (`scripts/north-star-ledger-ratchet.txt`) — deleting a row or demoting a
-status is a visible event, not an edit.
+that reds if the status regresses. The row count, the NOT-YET count, and the
+count of in-tree dormancy gates the ledger is cross-checked against are all
+pinned (`scripts/north-star-ledger-ratchet.txt`) — deleting a row, demoting a
+status, or a dormancy gate silently appearing or disappearing is a visible
+event, not an edit.
 
 | # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
 | --- | --- | --- | --- | --- |
