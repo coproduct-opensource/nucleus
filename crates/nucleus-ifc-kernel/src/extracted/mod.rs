@@ -22,6 +22,7 @@ pub mod credential;
 pub mod declassify;
 pub mod egress;
 pub mod identity;
+pub mod ifc_authority;
 pub mod ifc_confidentiality;
 pub mod ifc_integrity;
 pub mod mediation;

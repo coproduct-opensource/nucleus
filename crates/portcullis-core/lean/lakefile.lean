@@ -137,6 +137,13 @@ lean_lib «ChannelAdmissionExtracted» where
 lean_lib «ConfidentialityNoninterferenceExtracted» where
   roots := #[`ConfidentialityNoninterferenceExtracted]
 
+-- Authority-axis noninterference over the extracted core (twin of integrity;
+-- builds once aeneas-ifc-scoped extracts the ifc_authority functions). Proves
+-- the AUTHORITY half of the anti-prompt-injection guarantee: web content
+-- (NoAuthority) can never direct a Directive-privileged action.
+lean_lib «AuthorityNoninterferenceExtracted» where
+  roots := #[`AuthorityNoninterferenceExtracted]
+
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]
