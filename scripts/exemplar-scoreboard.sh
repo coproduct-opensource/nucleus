@@ -20,7 +20,24 @@ OUT="${1:-scoreboard.json}"
 
 RS=(--include='*.rs' --exclude-dir=target --exclude-dir=.lake --exclude-dir=.claude)
 LN=(--include='*.lean' --exclude-dir=.lake --exclude-dir=.claude)
-nt() { grep -rnE "$1" "${RS[@]}" crates 2>/dev/null | grep -vE '/tests/|_test\.rs|#\[cfg\(test\)\]|//|///'; }
+# "non-test" match. Beyond the coarse per-LINE filters (test files, comment
+# lines), strip whole inline `#[cfg(test)]` module/item BODIES. The old filter
+# dropped only the `#[cfg(test)]` attribute LINE, so a verify_strict-backed
+# `.verify()` inside an inline test module in a normal .rs file leaked into the
+# "non-test" counts and repeatedly inflated permissive_verify. Track brace depth
+# from the attribute through its guarded item's closing brace (fresh awk per file,
+# so no cross-file bleed). Verified to keep production `.verify(` and drop only
+# test-module bodies.
+nt() {
+    grep -rlE "$1" "${RS[@]}" crates 2>/dev/null | while IFS= read -r f; do
+        awk '
+            state==0 && $0 ~ /#\[cfg\(test\)\]/ { state=1; next }
+            state==1 { o=gsub(/\{/,"{"); c=gsub(/\}/,"}"); if (o>0){ depth=o-c; state=(depth>0?2:0) } next }
+            state==2 { depth += gsub(/\{/,"{") - gsub(/\}/,"}"); if (depth<=0) state=0; next }
+            { print FILENAME ":" FNR ":" $0 }
+        ' "$f"
+    done | grep -E "$1" | grep -vE '/tests/|_test\.rs|//|///'
+}
 
 # ── Formal verification ──────────────────────────────────────────────────────
 # extraction frontier: proven-over-EXTRACTED-Rust vs hand-model (the machine-
