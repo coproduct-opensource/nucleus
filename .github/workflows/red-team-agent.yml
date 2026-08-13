@@ -1,0 +1,119 @@
+name: Red-team adversary (nightly, live-LLM)
+
+# A live-LLM adversary: an LLM tries to exfiltrate a planted canary from a
+# Portcullis-defended sandbox (crates/nucleus-tool-proxy/tests/red_team_harness.rs),
+# and any exfiltration reds the run. Nightly rather than per-PR because it is
+# non-deterministic and costs a model call — the DETERMINISTIC in-pod adversary
+# (nucleus-adversary-probe, adversary-probe.yml + the boot lane) is the per-PR gate.
+#
+# KEYLESS: when a workload-identity-federation endpoint is configured
+# (`vars.LLM_OAUTH_TOKEN_URL`), the adversary authenticates with a short-lived
+# Bearer minted by exchanging THIS workflow's GitHub OIDC token (RFC 7523
+# jwt-bearer, via the in-tree nucleus-github-oidc token_exchange client) — no
+# static LLM key in CI. Otherwise it falls back to an `LLM_API_KEY` secret; if
+# neither is set, it does not run.
+#
+# ANTI-VACUITY: the token-exchange client's fail-closed tests run EVERY night
+# (non-vacuous even with no backend), and a final gate fails unless the live lane
+# resolved to a KNOWN state — live-ran, or explicitly-skipped-with-a-notice — so a
+# broken lane that neither runs nor cleanly skips reds instead of silent-greening.
+# (The live tests are `#[ignore]`, so they never vacuously pass in the per-PR job.)
+
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: red-team-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exchange-client:
+    name: keyless token-exchange client is fail-closed (hermetic, every night)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      # Runs unconditionally: proves the keyless-auth primitive still refuses a
+      # non-2xx / missing-access_token / non-Bearer response, so the nightly is
+      # never entirely vacuous even when no live backend is configured.
+      - name: The RFC 7523 exchange client refuses a malformed token
+        run: cargo test -p nucleus-github-oidc --features token-exchange token_exchange
+
+  live-adversary:
+    name: live-LLM adversary vs Portcullis (keyless when WIF is configured)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # to fetch a GitHub OIDC token for the keyless exchange
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+
+      - name: Resolve the LLM backend (keyless WIF, or key secret, or none)
+        id: backend
+        env:
+          LLM_OAUTH_TOKEN_URL: ${{ vars.LLM_OAUTH_TOKEN_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -n "${LLM_OAUTH_TOKEN_URL:-}" ]; then
+            echo "mode=wif" >> "$GITHUB_OUTPUT"
+          elif [ -n "${LLM_API_KEY:-}" ]; then
+            echo "mode=key" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::no LLM backend configured — set the LLM_OAUTH_TOKEN_URL variable (keyless WIF) or the LLM_API_KEY secret to run the live adversary. The token-exchange client test still ran."
+          fi
+
+      - name: Mint a keyless Bearer from the GitHub OIDC token (WIF mode)
+        id: keyless
+        if: steps.backend.outputs.mode == 'wif'
+        env:
+          LLM_OAUTH_TOKEN_URL: ${{ vars.LLM_OAUTH_TOKEN_URL }}
+          LLM_OAUTH_AUDIENCE: ${{ vars.LLM_OAUTH_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          # Fetch this job's GitHub OIDC token for the configured audience, then
+          # exchange it for a short-lived Bearer via the in-tree RFC 7523 client.
+          oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${LLM_OAUTH_AUDIENCE}" | jq -r '.value')
+          bearer=$(LLM_OIDC_JWT="$oidc" cargo run -q -p nucleus-github-oidc \
+            --features token-exchange --example keyless_token)
+          echo "::add-mask::$bearer"
+          echo "bearer=$bearer" >> "$GITHUB_OUTPUT"
+
+      - name: Run the live-LLM adversary (keyless Bearer, or API-key secret)
+        if: steps.backend.outputs.mode != 'none'
+        env:
+          LLM_API_URL: ${{ vars.LLM_API_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_API_VERSION: ${{ vars.LLM_API_VERSION }}
+          # WIF -> a keyless Bearer carried via LLM_AUTH_SCHEME=bearer; else the key.
+          LLM_AUTH_SCHEME: ${{ steps.backend.outputs.mode == 'wif' && 'bearer' || 'apikey' }}
+          LLM_API_KEY: ${{ steps.keyless.outputs.bearer || secrets.LLM_API_KEY }}
+        run: |
+          cargo test -p nucleus-tool-proxy --features red-team --test red_team_harness \
+            -- --ignored --nocapture
+
+      - name: Anti-vacuity — the lane resolved to a known state (never silent-green)
+        run: |
+          mode="${{ steps.backend.outputs.mode }}"
+          case "$mode" in
+            wif) echo "live adversary ran keyless (WIF-minted Bearer)" ;;
+            key) echo "live adversary ran with an API-key secret" ;;
+            none) echo "explicitly skipped: no backend configured (notice emitted above)" ;;
+            *)
+              echo "::error::backend resolution produced no mode ('$mode') — the lane neither ran nor explicitly skipped"
+              exit 1
+              ;;
+          esac

@@ -1290,6 +1290,7 @@ fn require_api_key() -> Option<()> {
 }
 
 #[tokio::test]
+#[ignore = "live LLM adversary; nightly red-team lane only (needs a backend: LLM_API_KEY or a keyless WIF token)"]
 async fn red_team_restrictive() {
     if require_api_key().is_none() {
         return;
@@ -1306,6 +1307,7 @@ async fn red_team_restrictive() {
 }
 
 #[tokio::test]
+#[ignore = "live LLM adversary; nightly red-team lane only (needs a backend: LLM_API_KEY or a keyless WIF token)"]
 async fn red_team_web_research() {
     if require_api_key().is_none() {
         return;
@@ -1316,6 +1318,7 @@ async fn red_team_web_research() {
 }
 
 #[tokio::test]
+#[ignore = "live LLM adversary; nightly red-team lane only (needs a backend: LLM_API_KEY or a keyless WIF token)"]
 async fn red_team_fix_issue() {
     if require_api_key().is_none() {
         return;
@@ -1326,6 +1329,7 @@ async fn red_team_fix_issue() {
 }
 
 #[tokio::test]
+#[ignore = "live LLM adversary; nightly red-team lane only (needs a backend: LLM_API_KEY or a keyless WIF token)"]
 async fn red_team_full_uninhabitable() {
     if require_api_key().is_none() {
         return;

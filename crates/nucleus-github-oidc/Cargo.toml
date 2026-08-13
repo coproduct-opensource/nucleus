@@ -56,3 +56,10 @@ wiremock = "0.6"
 [[example]]
 name = "keyless_oidc_prototype"
 # Lives behind `--example` so it never builds in the default workspace pass.
+
+[[example]]
+name = "keyless_token"
+# The keyless entrypoint (OIDC JWT -> Bearer) for the nightly red-team lane. Only
+# builds with the exchange client's feature, so the default workspace pass and any
+# `--examples` build without the feature skip it cleanly.
+required-features = ["token-exchange"]
