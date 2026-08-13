@@ -59,6 +59,52 @@ const ENV_API_URL: &str = "LLM_API_URL";
 const ENV_API_KEY: &str = "LLM_API_KEY";
 const ENV_MODEL: &str = "LLM_MODEL";
 const ENV_API_VERSION: &str = "LLM_API_VERSION";
+const ENV_AUTH_SCHEME: &str = "LLM_AUTH_SCHEME";
+
+/// How the backend is authenticated. `ApiKey` sends `x-api-key` (the default,
+/// back-compat); `Bearer` sends `Authorization: Bearer <token>` — for a token
+/// minted by a keyless RFC 7523 exchange (workload identity federation), so the
+/// harness can run keyless with a SPIFFE/OIDC-derived token instead of a static
+/// key. The credential itself is still supplied via `LLM_API_KEY`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AuthScheme {
+    ApiKey,
+    Bearer,
+}
+
+impl AuthScheme {
+    fn from_env() -> Self {
+        match std::env::var(ENV_AUTH_SCHEME).ok().as_deref() {
+            Some(s) if s.eq_ignore_ascii_case("bearer") => Self::Bearer,
+            _ => Self::ApiKey,
+        }
+    }
+}
+
+/// The single auth header for a scheme + credential. A pure function, unit-tested
+/// without a network: `(header_name, value)`.
+fn auth_headers(scheme: AuthScheme, credential: &str) -> (&'static str, String) {
+    match scheme {
+        AuthScheme::ApiKey => ("x-api-key", credential.to_string()),
+        AuthScheme::Bearer => ("authorization", format!("Bearer {credential}")),
+    }
+}
+
+#[test]
+fn auth_headers_bearer_scheme_uses_authorization_not_api_key() {
+    // ApiKey (the default / back-compat) is unchanged.
+    let (name, value) = auth_headers(AuthScheme::ApiKey, "sk-static-key");
+    assert_eq!(name, "x-api-key");
+    assert_eq!(value, "sk-static-key");
+
+    // Bearer (a keyless-exchange token) is carried as Authorization: Bearer, and
+    // never as x-api-key — a token minted by workload-identity federation is an
+    // OAuth Bearer, not an API key.
+    let (name, value) = auth_headers(AuthScheme::Bearer, "sk-ant-oat01-minted");
+    assert_eq!(name, "authorization");
+    assert_eq!(value, "Bearer sk-ant-oat01-minted");
+    assert_ne!(name, "x-api-key");
+}
 
 const MAX_TOOL_CALLS: usize = 20;
 const MAX_TOKENS: usize = 4096;
@@ -683,6 +729,7 @@ struct LlmConfig {
     model: String,
     /// Optional protocol/version header value, sent as `api-version` when set.
     api_version: Option<String>,
+    auth_scheme: AuthScheme,
 }
 
 impl LlmConfig {
@@ -692,6 +739,7 @@ impl LlmConfig {
             api_key: std::env::var(ENV_API_KEY).map_err(|_| format!("{ENV_API_KEY} required"))?,
             model: std::env::var(ENV_MODEL).map_err(|_| format!("{ENV_MODEL} required"))?,
             api_version: std::env::var(ENV_API_VERSION).ok(),
+            auth_scheme: AuthScheme::from_env(),
         })
     }
 }
@@ -701,6 +749,7 @@ struct LlmClient {
     endpoint: String,
     api_key: String,
     api_version: Option<String>,
+    auth_scheme: AuthScheme,
 }
 
 #[derive(Serialize)]
@@ -752,14 +801,16 @@ impl LlmClient {
             endpoint: config.endpoint.clone(),
             api_key: config.api_key.clone(),
             api_version: config.api_version.clone(),
+            auth_scheme: config.auth_scheme,
         }
     }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse, String> {
+        let (auth_name, auth_value) = auth_headers(self.auth_scheme, &self.api_key);
         let mut builder = self
             .client
             .post(&self.endpoint)
-            .header("x-api-key", &self.api_key)
+            .header(auth_name, auth_value)
             .header("content-type", "application/json");
         if let Some(version) = &self.api_version {
             builder = builder.header("api-version", version);

@@ -27,6 +27,10 @@ mod claims;
 /// code in [`claims`] is bound to it by parity proptests. See the module docs
 /// for the trust chain and the (honest) lossiness/collision finding.
 pub mod extracted;
+/// Generic RFC 7523 JWT-bearer token exchange (the keyless-auth primitive).
+/// Behind the `token-exchange` feature so the base crate stays network-free.
+#[cfg(feature = "token-exchange")]
+pub mod token_exchange;
 mod validator;
 
 pub use claims::{derive_spiffe_id, GitHubClaims};

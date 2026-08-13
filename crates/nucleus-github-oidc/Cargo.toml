@@ -14,6 +14,13 @@ readme = "README.md"
 [lints]
 workspace = true
 
+[features]
+# The keyless-auth primitive (src/token_exchange.rs): a generic RFC 7523
+# jwt-bearer exchange. Off by default so the base identity crate builds
+# network-free (no reqwest on any production path); the exchange pulls reqwest in
+# only when a consumer opts in.
+token-exchange = ["dep:reqwest"]
+
 [dependencies]
 base64 = { workspace = true }
 jsonwebtoken = { workspace = true }
@@ -23,6 +30,9 @@ serde_json = { workspace = true }
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Only for the `token-exchange` feature (the HTTP exchange). Optional so the
+# default build stays network-free.
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `rt-multi-thread` for the example's `#[tokio::main]`; `reqwest` for the live
@@ -39,6 +49,9 @@ rustls = { workspace = true }
 # to the Aeneas-extractable `extracted/` mirror (byte-identical across random
 # Unicode), plus the lossiness/collision finding.
 proptest = { workspace = true }
+# Hermetic mock HTTP for the token-exchange fail-closed tests (same version the
+# rest of the workspace uses). Plain HTTP; no crypto provider needed to serve.
+wiremock = "0.6"
 
 [[example]]
 name = "keyless_oidc_prototype"
