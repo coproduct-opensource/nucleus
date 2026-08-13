@@ -1,0 +1,52 @@
+name: quickstart-boot
+
+# NO-OP TWIN of quickstart-boot.yml's `boot-a-real-pod` job, so that job can be a
+# REQUIRED status check. Branch protection evaluates required contexts on the PR;
+# the real job is path-filtered on pull_request, so a PR not touching its paths
+# would never report the context and would block forever. This twin has the SAME
+# workflow name (`quickstart-boot`) and SAME job name, with `paths-ignore`
+# mirroring the real job's `paths`: exactly one of the two reports the context on
+# every PR.
+#
+# WHY THIS TWIN ALSO COVERS merge_group (unlike the aeneas-*-noop twins)
+#
+# The other required path-filtered gates run their REAL workflow on `merge_group`
+# too, so their twins deliberately skip it. `quickstart-boot.yml` does NOT —
+# booting a real Firecracker/KVM microVM on every queued PR is the cost/flakiness
+# that kept this gate non-required in the first place. So the real boot runs on
+# boot-affecting PULL REQUESTS (enforced there), and this twin carries the
+# merge_group context as a no-op: the queue trusts the PR's boot result rather
+# than re-booting. Net: a boot-affecting PR cannot merge without the real boot
+# passing, and the merge queue never stalls on (or pays for) a re-boot.
+#
+# To actually enforce it, add `quickstart-boot / a real nucleus pod boots and is
+# enforced (x86_64)` to the branch-protection required set (a GitHub-side toggle).
+
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/nucleus-cli/**"
+      - "crates/nucleus-node/**"
+      - "crates/nucleus-spec/**"
+      - "crates/nucleus-guest-init/**"
+      - "crates/nucleus-tool-proxy/**"
+      - "crates/nucleus-workload-probe/**"
+      - "crates/nucleus-egress-probe/**"
+      - "scripts/check-egress-probe.sh"
+      - "examples/openclaw-demo/probe-pod.yaml"
+      - "scripts/firecracker/**"
+      - "scripts/lima/**"
+      - ".github/workflows/quickstart-boot.yml"
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  boot-a-real-pod:
+    name: a real nucleus pod boots and is enforced (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (boot paths not touched, or in the merge queue)
+        run: echo "no boot-affecting paths changed (or merge_group) — gate vacuously green; the real boot ran on the PR that touched them"
