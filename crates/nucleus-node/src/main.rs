@@ -11,7 +11,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
+use driver::DriverKind;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
@@ -49,6 +50,7 @@ mod broker_rollout;
 mod broker_transport;
 mod cgroup;
 mod cred_split;
+mod driver;
 mod envelope_frame;
 mod guest_socket;
 mod lifecycle;
@@ -302,14 +304,6 @@ struct Args {
         default_value_t = 3600
     )]
     oidc_github_cert_ttl_secs: u64,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum DriverKind {
-    #[cfg(feature = "local-driver")]
-    Local,
-    Firecracker,
-    Container,
 }
 
 #[derive(Clone)]
@@ -1128,6 +1122,7 @@ async fn create_pod_internal(
         DriverKind::Container => {
             spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await?
         }
+        DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await?,
     };
     boot_trace::log_guest_console_timeline(&log_path).await;
 
