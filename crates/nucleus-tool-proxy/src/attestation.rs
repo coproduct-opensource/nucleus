@@ -21,7 +21,9 @@
 //! If no allowed hashes are specified but attestation is required, any valid
 //! attestation is accepted (useful for logging without enforcement).
 
-use nucleus_identity::{AssuranceLevel, LaunchAttestation};
+use ed25519_dalek::VerifyingKey;
+use nucleus_identity::{AssuranceLevel, LaunchAttestation, VerifiedAttestation};
+use portcullis::mediation_receipt::MediationReceipt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -391,6 +393,55 @@ impl AttestationVerifier {
     }
 }
 
+/// Relying-party cross-check for a forensic [`MediationReceipt`] (North Star C9 /
+/// signed-agent-actions): verify the mediator's signature **and** that the
+/// receipt's self-claimed `{signer_assurance, signer_backend}` **exactly match** an
+/// independently-verified attestation of the signer's SVID.
+///
+/// This is what makes the receipt's self-claim non-load-bearing: a receipt is a
+/// perfectly valid signature over whatever assurance the signer *wrote*, so the
+/// claim is believed only when it equals the attestation a relying party derived
+/// itself (e.g. via [`effective_assurance`](nucleus_identity::tpm_devid::effective_assurance)
+/// over the signer's SVID). An inflated claim — an `L1Software` signer asserting
+/// `L2Device` / `apple-sep` — is rejected here, never trusted on the signer's word.
+///
+/// Returns the cross-checked assurance level. Fail-closed on any mismatch.
+///
+/// Not yet wired to a live path: emitting receipts on the mediation path (the
+/// tool-proxy issuing them with its own assurance) and invoking this from a
+/// relying party are follow bricks; this is the verified cross-check primitive.
+#[allow(dead_code)]
+pub fn verify_attested_receipt(
+    receipt: &MediationReceipt,
+    signer_pubkey: &VerifyingKey,
+    attestation: &VerifiedAttestation,
+) -> Result<AssuranceLevel, String> {
+    // 1. The signature must hold. Because `{signer_assurance, signer_backend}` are
+    //    in the signed preimage, a post-issue tamper of either breaks this.
+    receipt
+        .verify(signer_pubkey)
+        .map_err(|e| format!("receipt signature invalid: {e}"))?;
+
+    // 2. The self-claim must EQUAL the independently-verified attestation — the
+    //    load-bearing check. Backend first, then the assurance level.
+    if receipt.signer_backend != attestation.backend {
+        return Err(format!(
+            "signer backend claim {:?} does not match verified attestation backend {:?}",
+            receipt.signer_backend, attestation.backend
+        ));
+    }
+    if receipt.signer_assurance != attestation.assurance().as_u8() {
+        return Err(format!(
+            "signer assurance claim L{} does not match verified attestation L{} \
+             (inflated claim rejected)",
+            receipt.signer_assurance,
+            attestation.assurance().as_u8()
+        ));
+    }
+
+    Ok(attestation.assurance())
+}
+
 /// Extracts attestation from a DER-encoded X.509 certificate.
 #[allow(dead_code)]
 fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttestation>, String> {
@@ -625,5 +676,102 @@ mod tests {
         assert_eq!(info.kernel_hash, "11".repeat(32));
         assert_eq!(info.rootfs_hash, "22".repeat(32));
         assert_eq!(info.config_hash, "33".repeat(32));
+    }
+
+    // ── Forensic receipt cross-check (signed-agent-actions brick 2) ────────────
+    use ed25519_dalek::{Signer, SigningKey};
+    use nucleus_identity::AttestedSubject;
+    use portcullis::mediation_receipt::MEDIATION_RECEIPT_SCHEMA_VERSION;
+    use std::collections::BTreeSet;
+
+    /// A validly-signed receipt whose signer self-claims `{assurance, backend}`.
+    fn signed_receipt(sk: &SigningKey, assurance: u8, backend: &str) -> MediationReceipt {
+        let mut r = MediationReceipt {
+            schema_version: MEDIATION_RECEIPT_SCHEMA_VERSION,
+            mediator_spiffe_id: "spiffe://demo/proxy".into(),
+            session_id: "sess-1".into(),
+            decision_seq: 1,
+            operation: "read_file".into(),
+            subject: "/etc/hosts".into(),
+            verdict: "allow".into(),
+            art12_record_hash: "abc".into(),
+            signer_assurance: assurance,
+            signer_backend: backend.into(),
+            signature: String::new(),
+        };
+        r.signature = hex::encode(sk.sign(&r.preimage()).to_bytes());
+        r
+    }
+
+    /// An independently-verified attestation — what a relying party derives itself.
+    fn att(backend: &'static str, level: AssuranceLevel) -> VerifiedAttestation {
+        VerifiedAttestation {
+            backend,
+            assurance: level,
+            subject: AttestedSubject::SelfMeasuredNode,
+            proves: BTreeSet::new(),
+            not_proven: BTreeSet::new(),
+            launch: None,
+        }
+    }
+
+    #[test]
+    fn attested_receipt_admits_when_claim_matches_the_verified_attestation() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let r = signed_receipt(&sk, 1, "self-measured");
+        let level = verify_attested_receipt(
+            &r,
+            &sk.verifying_key(),
+            &att("self-measured", AssuranceLevel::L1Software),
+        )
+        .expect("a matching claim is admitted");
+        assert_eq!(level, AssuranceLevel::L1Software);
+    }
+
+    /// THE load-bearing test: a validly-signed receipt inflating its assurance (an
+    /// L1 signer claiming L2Device, same backend) is REJECTED against the real L1
+    /// attestation — the self-claim is never believed on the signer's own word.
+    /// Reverting the assurance cross-check turns this green.
+    #[test]
+    fn attested_receipt_rejects_an_inflated_assurance_claim() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let inflated = signed_receipt(&sk, 2, "self-measured"); // signs a claim of L2Device
+        let err = verify_attested_receipt(
+            &inflated,
+            &sk.verifying_key(),
+            &att("self-measured", AssuranceLevel::L1Software),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("assurance") && err.contains("inflated"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn attested_receipt_rejects_a_backend_mismatch() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let r = signed_receipt(&sk, 1, "apple-sep"); // claims a hardware backend it isn't
+        let err = verify_attested_receipt(
+            &r,
+            &sk.verifying_key(),
+            &att("self-measured", AssuranceLevel::L1Software),
+        )
+        .unwrap_err();
+        assert!(err.contains("backend"), "{err}");
+    }
+
+    #[test]
+    fn attested_receipt_rejects_a_wrong_signer_key() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let r = signed_receipt(&sk, 1, "self-measured");
+        let other = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
+        let err = verify_attested_receipt(
+            &r,
+            &other,
+            &att("self-measured", AssuranceLevel::L1Software),
+        )
+        .unwrap_err();
+        assert!(err.contains("signature"), "{err}");
     }
 }
