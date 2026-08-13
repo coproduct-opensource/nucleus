@@ -412,9 +412,17 @@ UNCOVERED_CEILING=2
 #     not probed here because it needs netns + iptables + sudo, and because its
 #     perturbation is internal — there is no external subject for this script to
 #     break.
+#   check-adversary-probe.sh — likewise a self-falsifier for the in-pod adversary:
+#     it reconstructs each attack surface and asserts the probe reports CONTAINED
+#     when confined, BREACH:<stage> when a surface is opened (reds-on-regression),
+#     and INCONCLUSIVE when the positive control is dead (anti-vacuity), plus a
+#     meta-anti-leak check. Those perturbations run every CI invocation in the
+#     'adversary-probe-falsifier' job of adversary-probe.yml; the perturbation is
+#     internal, so there is no external subject for this script to break.
 SELF_FALSIFIED=(
     "check-mediation-dylint.sh    --self-test in the 'mediated' job (dylint-separation.yml)"
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)"
+    "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)"
 )
 
 echo
