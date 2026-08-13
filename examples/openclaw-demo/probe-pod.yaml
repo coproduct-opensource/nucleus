@@ -10,6 +10,11 @@
 #     from inside the booted guest that a non-allowlisted TCP connect FAILS while
 #     a socketpair round-trip (the anti-vacuity positive control) succeeds — i.e.
 #     the netns default-deny is applied on the live guest.
+#   - nucleus-adversary-probe — the offensive twin: an ACTIVE attacker that, from
+#     inside the live guest, tries to steal a mediator secret from PID 1, tamper
+#     the read-only rootfs, and exfiltrate — and reports NUCLEUS_ADVERSARY:
+#     CONTAINED only if every attack was attempted and blocked (exit 0). It runs
+#     LAST so its attacks see the fully-booted, mediated workload environment.
 # The demo pod stays workload-free; this is the boot-gate variant.
 apiVersion: nucleus/v1
 kind: Pod
@@ -31,7 +36,7 @@ spec:
     command: /bin/sh
     args:
       - "-c"
-      - "/usr/local/bin/nucleus-workload-probe; w=$?; /usr/local/bin/nucleus-egress-probe; e=$?; [ $w -eq 0 ] && [ $e -eq 0 ]"
+      - "/usr/local/bin/nucleus-workload-probe; w=$?; /usr/local/bin/nucleus-egress-probe; e=$?; /usr/local/bin/nucleus-adversary-probe; a=$?; [ $w -eq 0 ] && [ $e -eq 0 ] && [ $a -eq 0 ]"
     uid: 65534
   policy:
     type: profile

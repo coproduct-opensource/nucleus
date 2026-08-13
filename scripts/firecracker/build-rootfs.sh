@@ -53,6 +53,7 @@ NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-pro
 WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
+ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
 # NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
@@ -154,6 +155,7 @@ while [[ $# -gt 0 ]]; do
 WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
+ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
             shift 2
             ;;
         --output)
@@ -369,6 +371,10 @@ cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 # Only the C2 podlist boot lane builds this probe; the default probe-pod boot
 # does not, so bake it only when it was built (an absent binary is not an error).
 [ -f "$PODLIST_PROBE_BIN" ] && cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
+# The adversary probe is baked for the probe-pod boot lane (which builds it and
+# runs it as the workload); guarded like podlist so lanes that do not build it
+# skip cleanly rather than error.
+[ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -421,6 +427,10 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
     # Conditional for the same reason as the primary copy above (podlist probe is
     # built only by the C2 boot lane).
     [ -f "$PODLIST_PROBE_BIN" ] && cp "$PODLIST_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-podlist-probe"
+# The adversary probe is baked for the probe-pod boot lane (which builds it and
+# runs it as the workload); guarded like podlist so lanes that do not build it
+# skip cleanly rather than error.
+[ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
     cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
@@ -438,6 +448,7 @@ chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
+[ -f "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Build ext4 image from directory
@@ -453,7 +464,7 @@ echo "Architecture: $ARCH"
 # Print binary info
 echo ""
 echo "Included binaries:"
-for bin in init usr/local/bin/nucleus-tool-proxy usr/local/bin/nucleus-net-probe usr/local/bin/nucleus-workload-probe usr/local/bin/nucleus-egress-probe; do
+for bin in init usr/local/bin/nucleus-tool-proxy usr/local/bin/nucleus-net-probe usr/local/bin/nucleus-workload-probe usr/local/bin/nucleus-egress-probe usr/local/bin/nucleus-adversary-probe; do
     if [ -f "$ROOTFS_DIR/$bin" ]; then
         size=$(du -h "$ROOTFS_DIR/$bin" | cut -f1)
         echo "  /$bin ($size)"

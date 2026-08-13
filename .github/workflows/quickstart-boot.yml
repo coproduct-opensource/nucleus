@@ -282,7 +282,7 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl \
             -p nucleus-cli -p nucleus-node -p nucleus-guest-init \
             -p nucleus-tool-proxy -p nucleus-net-probe -p nucleus-workload-probe \
-            -p nucleus-egress-probe
+            -p nucleus-egress-probe -p nucleus-adversary-probe
 
       - name: Build the guest rootfs
         run: |
@@ -392,6 +392,45 @@ jobs:
             exit 1
           }
           echo "in-guest egress backstop: PASS present, FAIL absent"
+
+      - name: The in-guest adversary was contained (active attacker, presence + verdict)
+        run: |
+          # nucleus-adversary-probe runs as the same booted workload — an ACTIVE
+          # attacker that tries to steal a mediator secret from PID 1, tamper the
+          # read-only rootfs, and exfiltrate. It emits NUCLEUS_ADVERSARY: CONTAINED
+          # only if a live positive control AND every stage attempted AND every
+          # attack was blocked. Same fail-closed + anti-vacuity shape as the other
+          # probes, plus the mid-crash guard: assert CONTAINED present, BREACH
+          # absent, the positive control live, and every expected stage line
+          # present (a probe that died after stage 1 is missing later stages and
+          # must not read as contained).
+          state=/var/lib/nucleus/state
+          sudo grep -rq "NUCLEUS_ADVERSARY: CONTAINED" "$state" || {
+            echo "::error::in-guest adversary probe did not report CONTAINED (did it run? was it contained?)"
+            echo "--- adversary markers across all pod logs (empty ⇒ the probe never ran) ---"
+            sudo grep -rhaE 'NUCLEUS_ADVERSARY' "$state" | head -40 || true
+            echo "--- last 60 lines of each guest log ---"
+            sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -60 "$1"' _ {} \; || true
+            exit 1
+          }
+          if sudo grep -rqE "NUCLEUS_ADVERSARY: BREACH" "$state"; then
+            echo "::error::in-guest adversary BREACHED the sandbox — an attack succeeded on the live guest"
+            sudo grep -rhaE 'NUCLEUS_ADVERSARY' "$state" | head -40 || true
+            exit 1
+          fi
+          sudo grep -rq "NUCLEUS_ADVERSARY_CONTROL: live" "$state" || {
+            echo "::error::adversary positive control was not live — a dead attacker cannot certify containment"
+            exit 1
+          }
+          # Every stage must have run: a crash after stage 1 would be missing later
+          # stage lines, and CONTAINED-with-missing-stages is the mid-crash hole.
+          for stage in pid1-secret-theft rootfs-tamper exfil; do
+            sudo grep -rq "NUCLEUS_ADVERSARY_STAGE $stage: attempted=yes" "$state" || {
+              echo "::error::adversary stage '$stage' did not run (attempted=yes line absent) — the campaign was incomplete"
+              exit 1
+            }
+          done
+          echo "in-guest adversary: CONTAINED present, BREACH absent, control live, all stages attempted"
 
       - name: Delivery conformance (observed inventory vs the extracted oracle)
         run: |
