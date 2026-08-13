@@ -144,6 +144,13 @@ lean_lib «ConfidentialityNoninterferenceExtracted» where
 lean_lib «AuthorityNoninterferenceExtracted» where
   roots := #[`AuthorityNoninterferenceExtracted]
 
+-- Derivation-axis noninterference over the extracted core (the determinism-
+-- provenance lattice; builds once aeneas-ifc-scoped extracts the ifc_derivation
+-- functions). Proves AI-derived / opaque data can never reach a sink that
+-- requires Deterministic (reproducible) provenance.
+lean_lib «DerivationNoninterferenceExtracted» where
+  roots := #[`DerivationNoninterferenceExtracted]
+
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]
