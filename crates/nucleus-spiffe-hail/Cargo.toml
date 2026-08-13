@@ -7,7 +7,9 @@ license = "MIT"
 
 [dependencies]
 iroh = "=1.0.3"
-nucleus-identity = { path = "../nucleus-identity" }
+# tpm-devid: the assurance floor on a hail reuses `effective_assurance` (the C9
+# relying-party decision), which lives behind this feature.
+nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid"] }
 nucleus-node-binding = { path = "../nucleus-node-binding" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

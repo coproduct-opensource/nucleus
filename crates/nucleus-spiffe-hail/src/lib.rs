@@ -22,9 +22,11 @@
 //! # Composability
 //!
 //! The passport key is the stable, attestable identity; the iroh node key is a
-//! separate transport key it vouches for (so transport keys may rotate). With
-//! `require_attestation`, the SVID must additionally carry a verifiable attestation
-//! (launch measurement today; a TPM-residency backend composes here later).
+//! separate transport key it vouches for (so transport keys may rotate). A caller
+//! sets a `min_assurance` floor: above `L0Bearer` the SVID must clear it, scored by
+//! the same [`effective_assurance`] the tool-proxy relying-party gate uses (North
+//! Star C9) — launch measurement is `L1Software`, TPM residency composes here, and
+//! an `L2Device` floor refuses every peer until the EK-manufacturer root lands.
 //!
 //! # Stability
 //!
@@ -39,8 +41,8 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use nucleus_identity::{
-    AttestationRequirements, SelfMeasuredBackend, SvidAttestationBackend, TrustBundle,
-    VerifiedAttestation,
+    tpm_devid::effective_assurance, AssuranceLevel, AttestationRequirements, SelfMeasuredBackend,
+    SvidAttestationBackend, TrustBundle, VerifiedAttestation,
 };
 use nucleus_node_binding::{verify_binding, NodeBinding};
 use serde::{Deserialize, Serialize};
@@ -135,16 +137,23 @@ impl ProtocolHandler for SpiffeHailProtocol {
 /// This is the pure security decision — no transport — so it is exercised directly in
 /// tests. It asserts, in order: the SVID chains to a trusted CA root and names the
 /// requested principal; the binding is signed by the SVID's passport key, is for that
-/// principal, and is for the exact `NodeId` dialed (anti-replay); and — when
-/// `require_attestation` — the SVID carries a verifiable attestation (fail-closed).
+/// principal, and is for the exact `NodeId` dialed (anti-replay); and that the peer's
+/// SVID clears the caller's `min_assurance` floor.
+///
+/// The floor reuses [`effective_assurance`] — the *same* North Star C9 decision the
+/// tool-proxy relying-party gate enforces — so calling an agent over iroh applies the
+/// identical assurance semantics as reaching one locally. `L0Bearer` imposes no floor;
+/// a floor above it requires a verifiable attestation and fails closed on an
+/// absent/invalid/replayed one. Residency-rooted evidence on the SVID raises the level;
+/// a floor of `L2Device` refuses every peer until the EK-manufacturer root lands.
 pub fn authenticate_hail(
     hail: &Hail,
     connected_node: [u8; 32],
     trust_bundle: &TrustBundle,
     requested_spiffe_id: &str,
-    require_attestation: bool,
+    min_assurance: AssuranceLevel,
 ) -> Result<VerifiedPeer> {
-    let (svid_id, passport_pk) = verify_svid_chain(&hail.svid_chain_pem, trust_bundle)?;
+    let (svid_id, passport_pk, leaf_der) = verify_svid_chain(&hail.svid_chain_pem, trust_bundle)?;
     if svid_id != requested_spiffe_id {
         bail!("SVID is for {svid_id}, not the requested {requested_spiffe_id}");
     }
@@ -160,10 +169,18 @@ pub fn authenticate_hail(
         bail!("binding is for a different NodeId than the connection (possible replay)");
     }
 
-    let attestation = if require_attestation {
-        SelfMeasuredBackend
+    let attestation = if min_assurance > AssuranceLevel::L0Bearer {
+        // Require a verifiable software attestation (fail-closed) as the launch base,
+        let attestation = SelfMeasuredBackend
             .verify_svid(&hail.svid_chain_pem, &AttestationRequirements::any(), true)
-            .map_err(|e| anyhow!("attestation required but not verified: {e}"))?
+            .map_err(|e| anyhow!("attestation required but not verified: {e}"))?;
+        // then raise the level by any TPM residency evidence and enforce the floor.
+        let level = effective_assurance(&leaf_der, attestation.is_some())
+            .map_err(|e| anyhow!("residency evidence invalid: {e}"))?;
+        if level < min_assurance {
+            bail!("peer assurance {level:?} is below the required floor {min_assurance:?}");
+        }
+        attestation
     } else {
         None
     };
@@ -182,7 +199,7 @@ pub async fn call_spiffe(
     directory: &dyn SpiffeDirectory,
     spiffe_id: &str,
     trust_bundle: &TrustBundle,
-    require_attestation: bool,
+    min_assurance: AssuranceLevel,
 ) -> Result<(Connection, VerifiedPeer)> {
     let addr = directory
         .resolve(spiffe_id)
@@ -209,13 +226,19 @@ pub async fn call_spiffe(
         connected_node,
         trust_bundle,
         spiffe_id,
-        require_attestation,
+        min_assurance,
     )?;
     Ok((conn, peer))
 }
 
-/// Verify an SVID chain to the trust bundle; returns `(spiffe_id, ed25519 passport pk)`.
-fn verify_svid_chain(chain_pem: &str, trust_bundle: &TrustBundle) -> Result<(String, [u8; 32])> {
+/// Verify an SVID chain to the trust bundle; returns
+/// `(spiffe_id, ed25519 passport pk, leaf DER)`. The leaf DER is returned so the
+/// caller can derive the peer's assurance level ([`effective_assurance`]) without
+/// re-parsing the PEM.
+fn verify_svid_chain(
+    chain_pem: &str,
+    trust_bundle: &TrustBundle,
+) -> Result<(String, [u8; 32], Vec<u8>)> {
     use x509_parser::prelude::{FromDer, X509Certificate};
 
     let (_, leaf_pem) = x509_parser::pem::parse_x509_pem(chain_pem.as_bytes())
@@ -258,7 +281,7 @@ fn verify_svid_chain(chain_pem: &str, trust_bundle: &TrustBundle) -> Result<(Str
     }
     let mut pk = [0u8; 32];
     pk.copy_from_slice(&raw[raw.len() - 32..]);
-    Ok((spiffe_id, pk))
+    Ok((spiffe_id, pk, leaf_pem.contents))
 }
 
 #[cfg(test)]
@@ -302,6 +325,33 @@ mod tests {
         (cert.chain_pem(), canonical, sk)
     }
 
+    /// Like [`mint`], but the SVID carries a verifiable launch attestation
+    /// (`SelfMeasuredBackend` → `L1Software`), for exercising the assurance floor's
+    /// admit path.
+    async fn mint_attested(ca: &SelfSignedCa, spiffe_uri: &str) -> (String, String, SigningKey) {
+        let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let sk = SigningKey::from_bytes(&ed25519_seed(&kp.serialize_der()));
+        let identity = Identity::from_spiffe_uri(spiffe_uri).unwrap();
+        let canonical = identity.to_spiffe_uri();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![rcgen::SanType::URI(
+            rcgen::string::Ia5String::try_from(canonical.clone()).unwrap(),
+        )];
+        let csr = params.serialize_request(&kp).unwrap().pem().unwrap();
+        let att = nucleus_identity::LaunchAttestation::from_hashes([7u8; 32], [8u8; 32], [9u8; 32]);
+        let cert = ca
+            .sign_attested_csr(
+                &csr,
+                &kp.serialize_pem(),
+                &identity,
+                Duration::from_secs(3600),
+                &att,
+            )
+            .await
+            .unwrap();
+        (cert.chain_pem(), canonical, sk)
+    }
+
     fn hail(chain: &str, node: [u8; 32], principal: &str, sk: &SigningKey) -> Hail {
         Hail {
             svid_chain_pem: chain.to_string(),
@@ -320,7 +370,7 @@ mod tests {
             node,
             ca.trust_bundle(),
             &id,
-            false,
+            AssuranceLevel::L0Bearer,
         )
         .expect("verifies");
         assert_eq!(peer.spiffe_id, id);
@@ -335,7 +385,14 @@ mod tests {
         let ca = SelfSignedCa::new("demo").unwrap();
         let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
         let h = hail(&chain, [11u8; 32], &id, &sk);
-        let err = authenticate_hail(&h, [22u8; 32], ca.trust_bundle(), &id, false).unwrap_err();
+        let err = authenticate_hail(
+            &h,
+            [22u8; 32],
+            ca.trust_bundle(),
+            &id,
+            AssuranceLevel::L0Bearer,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("different NodeId"), "{err}");
     }
 
@@ -350,7 +407,7 @@ mod tests {
             node,
             ca.trust_bundle(),
             "spiffe://demo/ns/default/sa/someone-else",
-            false,
+            AssuranceLevel::L0Bearer,
         )
         .unwrap_err();
         assert!(err.to_string().contains("not the requested"), "{err}");
@@ -368,7 +425,7 @@ mod tests {
             node,
             stranger.trust_bundle(),
             &id,
-            false,
+            AssuranceLevel::L0Bearer,
         )
         .unwrap_err();
         assert!(err.to_string().contains("not signed"), "{err}");
@@ -386,15 +443,15 @@ mod tests {
             node,
             ca.trust_bundle(),
             &id,
-            false,
+            AssuranceLevel::L0Bearer,
         )
         .unwrap_err();
         assert!(err.to_string().contains("node binding"), "{err}");
     }
 
-    /// `require_attestation` fails closed on a plain (unattested) SVID.
+    /// An `L1Software` floor fails closed on a plain (unattested) SVID.
     #[tokio::test]
-    async fn require_attestation_fails_closed_on_a_plain_svid() {
+    async fn an_l1_floor_fails_closed_on_a_plain_svid() {
         let ca = SelfSignedCa::new("demo").unwrap();
         let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
         let node = [11u8; 32];
@@ -403,10 +460,52 @@ mod tests {
             node,
             ca.trust_bundle(),
             &id,
-            true,
+            AssuranceLevel::L1Software,
         )
         .unwrap_err();
         assert!(err.to_string().contains("attestation required"), "{err}");
+    }
+
+    /// An `L1Software` floor ADMITS an attested SVID (the positive teeth), and the
+    /// verified attestation rides along on the peer.
+    #[tokio::test]
+    async fn an_l1_floor_admits_an_attested_svid() {
+        let ca = SelfSignedCa::new("demo").unwrap();
+        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/agent-x").await;
+        let node = [11u8; 32];
+        let peer = authenticate_hail(
+            &hail(&chain, node, &id, &sk),
+            node,
+            ca.trust_bundle(),
+            &id,
+            AssuranceLevel::L1Software,
+        )
+        .expect("an attested SVID clears an L1 floor");
+        assert_eq!(peer.spiffe_id, id);
+        assert!(peer.attestation.is_some(), "attestation must ride along");
+    }
+
+    /// An `L2Device` floor REFUSES an attested SVID: self-measured attestation tops
+    /// out at L1Software, so calling over iroh never over-admits an L2 claim the
+    /// evidence cannot back (genuine-silicon needs the EK root, a later increment) —
+    /// the identical never-over-admit property the tool-proxy floor enforces.
+    #[tokio::test]
+    async fn an_l2_floor_refuses_a_merely_software_attested_svid() {
+        let ca = SelfSignedCa::new("demo").unwrap();
+        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/agent-x").await;
+        let node = [11u8; 32];
+        let err = authenticate_hail(
+            &hail(&chain, node, &id, &sk),
+            node,
+            ca.trust_bundle(),
+            &id,
+            AssuranceLevel::L2Device,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("below the required floor"),
+            "{err}"
+        );
     }
 
     /// The full path over a live iroh connection. Ignored in CI (live QUIC between two
@@ -437,7 +536,14 @@ mod tests {
         dir.register(&id, server.addr());
 
         let client = Endpoint::builder(presets::N0DisableRelay).bind().await?;
-        let (_conn, peer) = call_spiffe(&client, &dir, &id, ca.trust_bundle(), false).await?;
+        let (_conn, peer) = call_spiffe(
+            &client,
+            &dir,
+            &id,
+            ca.trust_bundle(),
+            AssuranceLevel::L0Bearer,
+        )
+        .await?;
         assert_eq!(peer.spiffe_id, id);
         assert_eq!(peer.node_id, node_id);
         Ok(())
