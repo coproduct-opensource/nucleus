@@ -151,6 +151,13 @@ lean_lib «AuthorityNoninterferenceExtracted» where
 lean_lib «DerivationNoninterferenceExtracted» where
   roots := #[`DerivationNoninterferenceExtracted]
 
+-- Provenance-axis noninterference over the extracted core (the source-set
+-- powerset lattice; builds once aeneas-ifc-scoped extracts the ifc_provenance
+-- functions). The FIFTH and final flows_to conjunct: a datum carrying a source
+-- the sink does not accept can never be admitted over any op sequence.
+lean_lib «ProvenanceNoninterferenceExtracted» where
+  roots := #[`ProvenanceNoninterferenceExtracted]
+
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]
