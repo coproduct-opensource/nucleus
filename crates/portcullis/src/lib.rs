@@ -116,6 +116,7 @@ pub mod uninhabitable_state;
 /// `nucleus-audit`) enable the feature.
 #[cfg(feature = "serde")]
 pub mod art12_record;
+// Mediation receipt: a portable proof of one agent↔tool crossing (crypto-gated).
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
 pub mod dropout;
@@ -151,6 +152,8 @@ pub mod manifest_enforcement;
 pub mod manifest_registry;
 #[cfg(feature = "spec")]
 pub mod mcp_mediation;
+#[cfg(feature = "crypto")]
+pub mod mediation_receipt;
 /// Progressive discovery: observe agent behavior and generate minimal policies.
 ///
 /// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
