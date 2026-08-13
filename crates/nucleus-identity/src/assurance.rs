@@ -32,9 +32,10 @@ use crate::Result;
 ///
 /// The level is *derived* for policy convenience (e.g. "require ≥ `L2Device`");
 /// [`VerifiedAttestation::proves`] / `not_proven` are the authoritative ground truth.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default)]
 pub enum AssuranceLevel {
     /// No hardware; bearer / OIDC. Baseline, for migration.
+    #[default]
     L0Bearer = 0,
     /// Non-exportable hardware key + single-vendor *online* attestation, app/instance
     /// scope, no stable device identity — or first-party *software* measurement.
@@ -50,6 +51,24 @@ impl AssuranceLevel {
     /// The level as its ordinal, for wire encoding and comparison.
     pub fn as_u8(self) -> u8 {
         self as u8
+    }
+}
+
+impl std::str::FromStr for AssuranceLevel {
+    type Err = String;
+
+    /// Parses `l0`/`l1`/`l2`/`l3` or a bare ordinal `0`..=`3` (case-insensitive),
+    /// for CLI/config authoring of an assurance floor.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "l0" | "l0bearer" | "0" | "bearer" => Ok(Self::L0Bearer),
+            "l1" | "l1software" | "1" | "software" => Ok(Self::L1Software),
+            "l2" | "l2device" | "2" | "device" => Ok(Self::L2Device),
+            "l3" | "l3measuredboot" | "3" | "measuredboot" => Ok(Self::L3MeasuredBoot),
+            other => Err(format!(
+                "invalid assurance level {other:?} (expected one of L0..L3)"
+            )),
+        }
     }
 }
 

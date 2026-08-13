@@ -64,7 +64,9 @@ chrono = { workspace = true, features = ["serde"] }
 
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
-nucleus-identity = { path = "../nucleus-identity" }
+# tpm-devid: compile the TPM residency verifier into the relying-party binary so
+# the assurance floor (--min-assurance) enforces on the live path (North Star C9).
+nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid"] }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto", "dlc"] }

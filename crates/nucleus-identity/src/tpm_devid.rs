@@ -401,25 +401,20 @@ fn leaf_ec_point(cert_der: &[u8]) -> Result<Vec<u8>> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TpmDevidBackend;
 
-impl SvidAttestationBackend for TpmDevidBackend {
-    fn id(&self) -> &'static str {
-        "tpm-devid-residency"
-    }
-
-    fn assurance(&self) -> AssuranceLevel {
-        AssuranceLevel::L1Software
-    }
-
-    fn verify_svid(
-        &self,
-        chain_pem: &str,
-        _requirements: &AttestationRequirements,
+impl TpmDevidBackend {
+    /// The PEM-free core of [`Self::verify_svid`]: verify a leaf certificate's TPM
+    /// residency proof and **bind it to the leaf's own key**, working directly on
+    /// DER (what a relying party holds after a TLS handshake). Kept as the single
+    /// source of truth for the load-bearing binding check so a live gate and the
+    /// SVID trait path cannot drift.
+    ///
+    /// `require_attestation`: when set, an absent residency extension is a hard
+    /// error (fail-closed); when cleared, absence yields `Ok(None)`. A present but
+    /// invalid, or replayed, proof is **always** an `Err`.
+    pub fn verify_leaf_der(
+        cert_der: &[u8],
         require_attestation: bool,
     ) -> Result<Option<VerifiedAttestation>> {
-        let leaf =
-            pem::parse(chain_pem).map_err(|e| vfail(format!("cert PEM parse failed: {e}")))?;
-        let cert_der = leaf.contents();
-
         let evidence = match extract_residency_evidence(cert_der) {
             Some(ev) => ev,
             None if require_attestation => {
@@ -446,6 +441,61 @@ impl SvidAttestationBackend for TpmDevidBackend {
             ));
         }
         Ok(Some(va))
+    }
+}
+
+impl SvidAttestationBackend for TpmDevidBackend {
+    fn id(&self) -> &'static str {
+        "tpm-devid-residency"
+    }
+
+    fn assurance(&self) -> AssuranceLevel {
+        AssuranceLevel::L1Software
+    }
+
+    fn verify_svid(
+        &self,
+        chain_pem: &str,
+        _requirements: &AttestationRequirements,
+        require_attestation: bool,
+    ) -> Result<Option<VerifiedAttestation>> {
+        let leaf =
+            pem::parse(chain_pem).map_err(|e| vfail(format!("cert PEM parse failed: {e}")))?;
+        Self::verify_leaf_der(leaf.contents(), require_attestation)
+    }
+}
+
+/// The effective assurance a served SVID's leaf certificate carries, for a
+/// relying-party **assurance floor** (North Star C9 live enforcement).
+///
+/// `launch_verified` is the caller's already-computed self-measured
+/// launch-attestation result — [`AssuranceLevel::L1Software`] when the cert's
+/// [`crate::LaunchAttestation`] matched the configured requirements, else the
+/// baseline. This adds the TPM-residency contribution:
+///
+/// * **absent** residency evidence ⇒ the launch-derived base level (no change);
+/// * **present and valid** (verifies *and* binds to the leaf key) ⇒ raised to the
+///   residency backend's level;
+/// * **present but invalid or replayed** ⇒ a hard [`Err`] — a floor can never be
+///   satisfied by malformed residency evidence (fail-closed).
+///
+/// Residency alone is [`AssuranceLevel::L1Software`] (it proves
+/// [`Claim::KeyNonExportable`], not hardware rooting). Reaching
+/// [`AssuranceLevel::L2Device`] additionally requires anchoring the AK to a
+/// manufacturer-signed EK (a later increment), so an `L2Device` floor currently
+/// refuses **every** SVID — correct fail-closed behavior, not a defect.
+pub fn effective_assurance(cert_der: &[u8], launch_verified: bool) -> Result<AssuranceLevel> {
+    let base = if launch_verified {
+        AssuranceLevel::L1Software
+    } else {
+        AssuranceLevel::L0Bearer
+    };
+    // `require_attestation = false`: an SVID may carry its assurance via launch
+    // attestation instead of residency, so *absence* is not itself a failure —
+    // but a present-yet-invalid proof still errs (verify_leaf_der is fail-closed).
+    match TpmDevidBackend::verify_leaf_der(cert_der, false)? {
+        Some(va) => Ok(base.max(va.assurance)),
+        None => Ok(base),
     }
 }
 
@@ -650,5 +700,69 @@ mod tests {
             .verify_svid(&pem, &AttestationRequirements::any(), false)
             .expect("absent-not-required ok")
             .is_none());
+    }
+
+    // ── Inc 2 (live floor): effective_assurance for a relying-party gate ───────
+
+    fn der_of(pem: &str) -> Vec<u8> {
+        pem::parse(pem).expect("pem").contents().to_vec()
+    }
+
+    /// A valid residency proof bound to the leaf key raises the effective level to
+    /// L1Software — so an `L1Software` floor ADMITS it (the positive teeth).
+    #[test]
+    fn effective_assurance_admits_valid_residency_at_l1() {
+        let der = der_of(&build_cert(
+            &point_of(&subj_pub()),
+            Some(&evidence().encode()),
+        ));
+        let level = effective_assurance(&der, false).expect("valid residency");
+        assert_eq!(level, AssuranceLevel::L1Software);
+        assert!(level >= AssuranceLevel::L1Software);
+    }
+
+    /// With no residency evidence, the level is exactly the launch-derived base:
+    /// L0Bearer without launch attestation, L1Software with it. An `L1Software`
+    /// floor therefore REFUSES a bare bearer SVID (the negative teeth).
+    #[test]
+    fn effective_assurance_falls_back_to_launch_base_when_absent() {
+        let der = der_of(&build_cert(&point_of(&subj_pub()), None));
+        assert_eq!(
+            effective_assurance(&der, false).expect("ok"),
+            AssuranceLevel::L0Bearer
+        );
+        assert_eq!(
+            effective_assurance(&der, true).expect("ok"),
+            AssuranceLevel::L1Software
+        );
+    }
+
+    /// FAIL-CLOSED — a valid proof REPLAYED into a cert whose key is a different key
+    /// must make the floor decision err, never silently pass at the base level.
+    #[test]
+    fn effective_assurance_fails_closed_on_replayed_proof() {
+        let der = der_of(&build_cert(
+            &point_of(&ak_pub()),
+            Some(&evidence().encode()),
+        ));
+        // Even claiming a launch base of true must not rescue a replayed proof.
+        assert!(effective_assurance(&der, true).is_err());
+    }
+
+    /// HONEST CEILING — residency alone is L1Software, so an `L2Device` floor
+    /// refuses even a valid device-resident SVID today (genuine-silicon needs the
+    /// EK-manufacturer root, a later increment). This asserts the gate never
+    /// over-admits an L2 claim the evidence cannot back.
+    #[test]
+    fn effective_assurance_l2_floor_refuses_residency_only() {
+        let der = der_of(&build_cert(
+            &point_of(&subj_pub()),
+            Some(&evidence().encode()),
+        ));
+        let level = effective_assurance(&der, false).expect("valid residency");
+        assert!(
+            level < AssuranceLevel::L2Device,
+            "residency-only must not satisfy an L2 floor"
+        );
     }
 }

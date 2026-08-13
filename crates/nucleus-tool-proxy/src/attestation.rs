@@ -21,7 +21,7 @@
 //! If no allowed hashes are specified but attestation is required, any valid
 //! attestation is accepted (useful for logging without enforcement).
 
-use nucleus_identity::LaunchAttestation;
+use nucleus_identity::{AssuranceLevel, LaunchAttestation};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -45,6 +45,13 @@ pub struct AttestationConfig {
     /// Set of allowed config hashes (SHA-256, hex-encoded).
     /// Empty means any config hash is allowed.
     pub allowed_config_hashes: HashSet<String>,
+    /// Minimum normalized assurance level a request's SVID must carry (North Star
+    /// C9). `L0Bearer` (the default) imposes no floor. A floor above `L0Bearer`
+    /// makes attestation effectively required and refuses any SVID whose verified
+    /// assurance is below it — fail-closed on absent/invalid evidence. Note a
+    /// `L2Device`+ floor refuses every SVID until the EK-manufacturer root lands
+    /// (residency alone is `L1Software`).
+    pub min_assurance: AssuranceLevel,
 }
 
 impl AttestationConfig {
@@ -85,6 +92,16 @@ impl AttestationConfig {
             if !hash.is_empty() {
                 self.allowed_config_hashes.insert(hash);
             }
+        }
+        self
+    }
+
+    /// Sets the minimum assurance floor. A floor above `L0Bearer` also makes
+    /// attestation required (a floor cannot be checked without a client cert).
+    pub fn with_min_assurance(mut self, level: AssuranceLevel) -> Self {
+        self.min_assurance = level;
+        if level > AssuranceLevel::L0Bearer {
+            self.require_attestation = true;
         }
         self
     }
@@ -343,6 +360,35 @@ impl AttestationVerifier {
     pub fn is_required(&self) -> bool {
         self.config.require_attestation
     }
+
+    /// Enforces the assurance floor (North Star C9) for a request whose launch
+    /// attestation already passed.
+    ///
+    /// The launch attestation establishes at most `L1Software`; TPM residency
+    /// evidence carried by the client certificate can raise the effective level,
+    /// and a present-but-invalid or replayed proof makes this err (fail-closed).
+    /// Returns `Err(reason)` when the SVID's verified assurance is below the floor.
+    /// A no-op (`Ok`) when the floor is `L0Bearer`.
+    pub fn enforce_floor(
+        &self,
+        client_cert_der: Option<&[u8]>,
+        attestation_result: &AttestationResult,
+    ) -> Result<(), String> {
+        let min = self.config.min_assurance;
+        if min <= AssuranceLevel::L0Bearer {
+            return Ok(());
+        }
+        let cert_der = client_cert_der
+            .ok_or_else(|| "assurance floor requires an mTLS client certificate".to_string())?;
+        let launch_verified =
+            attestation_result.attestation_present && attestation_result.matches_requirements;
+        let level = nucleus_identity::tpm_devid::effective_assurance(cert_der, launch_verified)
+            .map_err(|e| format!("residency evidence invalid: {e}"))?;
+        if level < min {
+            return Err(format!("assurance {level:?} below required floor {min:?}"));
+        }
+        Ok(())
+    }
 }
 
 /// Extracts attestation from a DER-encoded X.509 certificate.
@@ -396,6 +442,61 @@ mod tests {
         assert!(!config.require_attestation);
         assert!(config.allowed_kernel_hashes.is_empty());
         assert!(config.allowed_rootfs_hashes.is_empty());
+        // No floor by default — existing deployments are unaffected.
+        assert_eq!(config.min_assurance, AssuranceLevel::L0Bearer);
+    }
+
+    #[test]
+    fn enforce_floor_admits_refuses_and_fails_closed() {
+        // Any DER works here: with no residency extension the effective assurance is
+        // exactly the launch base, so this exercises the floor RESULT mapping without
+        // TPM fixtures. (A garbage DER simply parses to "no residency" → base level.)
+        let dummy_cert = [0x30u8, 0x00];
+        let launch_ok = AttestationResult {
+            attestation_present: true,
+            attestation: None,
+            matches_requirements: true, // launch verified → base L1Software
+            rejection_reason: None,
+        };
+        let bearer = AttestationResult {
+            attestation_present: false,
+            attestation: None,
+            matches_requirements: false, // no launch → base L0Bearer
+            rejection_reason: None,
+        };
+
+        // No floor → always Ok, even without a client cert.
+        let v0 = AttestationVerifier::new(AttestationConfig::default());
+        assert!(v0.enforce_floor(None, &bearer).is_ok());
+
+        // L1 floor: a launch-verified SVID is admitted; a bare bearer is refused.
+        let v1 = AttestationVerifier::new(
+            AttestationConfig::default().with_min_assurance(AssuranceLevel::L1Software),
+        );
+        assert!(v1.enforce_floor(Some(&dummy_cert), &launch_ok).is_ok());
+        assert!(v1.enforce_floor(Some(&dummy_cert), &bearer).is_err());
+        // A floor with no client certificate fails closed.
+        assert!(v1.enforce_floor(None, &launch_ok).is_err());
+
+        // L2 floor refuses even a launch-verified SVID: residency-only tops out at
+        // L1Software until the EK-manufacturer root lands (never over-admits L2).
+        let v2 = AttestationVerifier::new(
+            AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device),
+        );
+        assert!(v2.enforce_floor(Some(&dummy_cert), &launch_ok).is_err());
+    }
+
+    #[test]
+    fn test_min_assurance_floor_implies_required() {
+        // A floor above L0 makes attestation required (can't check a floor without
+        // a client cert); an L0 floor leaves require_attestation untouched.
+        let floored = AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device);
+        assert_eq!(floored.min_assurance, AssuranceLevel::L2Device);
+        assert!(floored.require_attestation);
+
+        let no_floor = AttestationConfig::default().with_min_assurance(AssuranceLevel::L0Bearer);
+        assert_eq!(no_floor.min_assurance, AssuranceLevel::L0Bearer);
+        assert!(!no_floor.require_attestation);
     }
 
     #[test]

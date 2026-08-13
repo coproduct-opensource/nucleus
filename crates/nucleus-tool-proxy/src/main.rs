@@ -192,6 +192,11 @@ struct Args {
     /// If empty, any config hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_CONFIG_HASHES")]
     allowed_config_hashes: Option<String>,
+    /// Minimum assurance floor an SVID must carry (North Star C9): `L0`..`L3`. `L0`
+    /// (default) imposes no floor; above `L0` makes attestation required and refuses
+    /// SVIDs below it (fail-closed). See `AttestationVerifier::enforce_floor`.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_MIN_ASSURANCE", default_value = "L0")]
+    min_assurance: nucleus_identity::AssuranceLevel,
 
     // === Sandbox Proof Configuration ===
     /// Path to identity certificate PEM for sandbox proof (tier 1/2).
@@ -1593,6 +1598,7 @@ async fn main() -> Result<(), ApiError> {
         if let Some(ref hashes) = args.allowed_config_hashes {
             config = config.with_config_hashes(hashes);
         }
+        config = config.with_min_assurance(args.min_assurance); // C9 floor (>L0 ⇒ required)
         config
     };
     let attestation_verifier = AttestationVerifier::new(attestation_config);
@@ -2327,6 +2333,14 @@ async fn auth_middleware(
                 .unwrap_or_else(|| "unknown attestation failure".to_string());
             return Err(ApiError::AttestationFailed(reason));
         }
+
+        // North Star C9 — enforce the assurance floor on the live path (fail-closed
+        // on absent/invalid/replayed residency evidence). No-op when the floor is
+        // L0Bearer. Logic lives in `AttestationVerifier::enforce_floor` (unit-tested).
+        state
+            .attestation_verifier
+            .enforce_floor(client_cert_der, &attestation_result)
+            .map_err(ApiError::AttestationFailed)?;
 
         // Log successful attestation verification
         if let Some(ref info) = attestation_result.attestation {
