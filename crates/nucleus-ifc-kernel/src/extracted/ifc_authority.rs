@@ -191,8 +191,7 @@ mod tests {
         for a in LEVELS {
             for ceiling in LEVELS {
                 let extracted = aflows_to(a, ceiling);
-                let real =
-                    label_with_authority(a).flows_to(label_with_authority(ceiling));
+                let real = label_with_authority(a).flows_to(label_with_authority(ceiling));
                 assert_eq!(
                     extracted, real,
                     "aflows_to parity failed for a={a:?}, ceiling={ceiling:?}"
