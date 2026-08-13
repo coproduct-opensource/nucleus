@@ -26,7 +26,7 @@ permissions:
 env:
   # Pin to the Aeneas build that generated the committed Lean code.
   # Update this when regenerating: run ./scripts/aeneas-translate.sh
-  AENEAS_RELEASE: nightly-2026.06.10
+  AENEAS_RELEASE: nightly-2026.08.13-daa85d7
   # Charon needs a specific nightly for rustc-dev components
   CHARON_NIGHTLY: nightly-2026-06-01
 
