@@ -19,7 +19,10 @@
 //!
 //!   1. this receipt's signature verifies under the mediator's key *(here)*;
 //!   2. that key's SVID is **attested** (C9 EK/DevID) — the mediator is the
-//!      genuine, hardware-rooted nucleus mediator, not an impostor;
+//!      genuine, hardware-rooted nucleus mediator, not an impostor — AND the
+//!      receipt's self-claimed `signer_assurance` / `signer_backend` **equal** that
+//!      independently-verified attestation (so an inflated self-claim is rejected,
+//!      never believed on the signer's own word);
 //!   3. the `art12_record_hash` is **included in the witnessed lineage** (the
 //!      Article 12 signed-tree-head / witness federation) — the crossing was
 //!      recorded and the record cannot have been rewritten.
@@ -61,6 +64,24 @@ pub struct MediationReceipt {
     pub verdict: String,
     /// SHA-256 hash of the [`Art12Record`] that recorded this decision.
     pub art12_record_hash: String,
+    /// The mediator's **self-claimed** normalized assurance level (0..=3, the
+    /// `AssuranceLevel` ordinal) for the key it signed with.
+    ///
+    /// This is the signer's own word and is **not self-authenticating**: a valid
+    /// signature over `signer_assurance = 2` proves only that the key-holder
+    /// *wrote* `2`, not that its key is genuinely device-rooted. A relying party
+    /// MUST treat it as unverified metadata until it is cross-checked against an
+    /// independently-verified attestation of the mediator's SVID (the tool-proxy's
+    /// `verify_attested`, which admits the claim only if it *equals* the derived
+    /// [`nucleus_identity::assurance::VerifiedAttestation`]). Carrying the claim in
+    /// the signed preimage is what lets that cross-check detect an inflated claim;
+    /// it does not by itself establish the level.
+    pub signer_assurance: u8,
+    /// The mediator's **self-claimed** attestation backend id (e.g.
+    /// `"self-measured"`, `"tpm-devid-residency"`, `"apple-sep"`). Same trust
+    /// caveat as [`Self::signer_assurance`]: believed only when it equals the
+    /// backend of the independently-verified attestation.
+    pub signer_backend: String,
     /// Ed25519 signature over [`MediationReceipt::preimage`], hex-encoded.
     pub signature: String,
 }
@@ -98,7 +119,7 @@ impl MediationReceipt {
     #[must_use]
     pub fn preimage(&self) -> Vec<u8> {
         format!(
-            "{PREIMAGE_DOMAIN}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{PREIMAGE_DOMAIN}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.schema_version,
             self.mediator_spiffe_id,
             self.session_id,
@@ -107,6 +128,8 @@ impl MediationReceipt {
             self.subject,
             self.verdict,
             self.art12_record_hash,
+            self.signer_assurance,
+            self.signer_backend,
         )
         .into_bytes()
     }
@@ -115,8 +138,19 @@ impl MediationReceipt {
     /// verdict in `record`, binding that record's content hash. The verdict fields
     /// are taken from `record` so the receipt cannot describe a decision other
     /// than the one recorded.
+    ///
+    /// `signer_assurance` / `signer_backend` are the mediator's **self-claimed**
+    /// attestation level and backend for its signing key (see the field docs): they
+    /// are signed so a relying party's cross-check can detect an inflated claim, but
+    /// they are not proof on their own.
     #[must_use]
-    pub fn issue(record: &Art12Record, mediator_spiffe_id: &str, key: &SigningKey) -> Self {
+    pub fn issue(
+        record: &Art12Record,
+        mediator_spiffe_id: &str,
+        signer_assurance: u8,
+        signer_backend: &str,
+        key: &SigningKey,
+    ) -> Self {
         let mut receipt = Self {
             schema_version: MEDIATION_RECEIPT_SCHEMA_VERSION,
             mediator_spiffe_id: mediator_spiffe_id.to_string(),
@@ -126,6 +160,8 @@ impl MediationReceipt {
             subject: record.subject.clone(),
             verdict: record.verdict.clone(),
             art12_record_hash: record.hash.clone(),
+            signer_assurance,
+            signer_backend: signer_backend.to_string(),
             signature: String::new(),
         };
         receipt.signature = hex::encode(key.sign(&receipt.preimage()).to_bytes());
@@ -210,8 +246,16 @@ mod tests {
     fn issue_then_verify_round_trips() {
         let (sk, vk) = keypair();
         let r = record("read_file");
-        let receipt = MediationReceipt::issue(&r, "spiffe://demo/ns/default/sa/proxy", &sk);
+        let receipt = MediationReceipt::issue(
+            &r,
+            "spiffe://demo/ns/default/sa/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
         assert!(receipt.verify(&vk).is_ok());
+        assert_eq!(receipt.signer_assurance, 1);
+        assert_eq!(receipt.signer_backend, "self-measured");
         assert!(
             receipt.binds_record(&r),
             "the receipt must bind its source record"
@@ -221,7 +265,13 @@ mod tests {
     #[test]
     fn a_tampered_field_fails_verification() {
         let (sk, vk) = keypair();
-        let mut receipt = MediationReceipt::issue(&record("read_file"), "spiffe://demo/proxy", &sk);
+        let mut receipt = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
         receipt.operation = "run_bash".into(); // forge the operation, keep the signature
         assert_eq!(
             receipt.verify(&vk),
@@ -232,7 +282,13 @@ mod tests {
     #[test]
     fn a_swapped_record_hash_fails_verification() {
         let (sk, vk) = keypair();
-        let mut receipt = MediationReceipt::issue(&record("read_file"), "spiffe://demo/proxy", &sk);
+        let mut receipt = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
         receipt.art12_record_hash = "hash-of-something-else".into();
         assert_eq!(
             receipt.verify(&vk),
@@ -243,7 +299,13 @@ mod tests {
     #[test]
     fn a_different_mediator_key_does_not_verify() {
         let (sk, _vk) = keypair();
-        let receipt = MediationReceipt::issue(&record("read_file"), "spiffe://demo/proxy", &sk);
+        let receipt = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
         let other = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
         assert_eq!(
             receipt.verify(&other),
@@ -257,15 +319,56 @@ mod tests {
     fn binds_only_its_own_record() {
         let (sk, _vk) = keypair();
         let r = record("read_file");
-        let receipt = MediationReceipt::issue(&r, "spiffe://demo/proxy", &sk);
+        let receipt = MediationReceipt::issue(&r, "spiffe://demo/proxy", 1, "self-measured", &sk);
         assert!(receipt.binds_record(&r));
         assert!(!receipt.binds_record(&record("run_bash")));
+    }
+
+    /// The self-claimed assurance/backend are in the signed preimage, so an
+    /// attacker cannot inflate `L1 → L2` (or swap the backend) on a captured
+    /// receipt without breaking the signature. (The *semantic* cross-check that the
+    /// claim equals an independently-verified attestation lives in the tool-proxy;
+    /// this guards the cryptographic half — the claim is bound, not free-floating.)
+    #[test]
+    fn a_forged_signer_assurance_or_backend_fails_verification() {
+        let (sk, vk) = keypair();
+        let mut inflated = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
+        inflated.signer_assurance = 2; // claim L2Device on an L1 signature
+        assert_eq!(
+            inflated.verify(&vk),
+            Err(MediationReceiptError::SignatureInvalid)
+        );
+
+        let mut swapped = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
+        swapped.signer_backend = "apple-sep".into(); // claim a hardware backend
+        assert_eq!(
+            swapped.verify(&vk),
+            Err(MediationReceiptError::SignatureInvalid)
+        );
     }
 
     #[test]
     fn a_future_schema_is_rejected_not_guessed() {
         let (sk, vk) = keypair();
-        let mut receipt = MediationReceipt::issue(&record("read_file"), "spiffe://demo/proxy", &sk);
+        let mut receipt = MediationReceipt::issue(
+            &record("read_file"),
+            "spiffe://demo/proxy",
+            1,
+            "self-measured",
+            &sk,
+        );
         receipt.schema_version = 999;
         assert_eq!(
             receipt.verify(&vk),
