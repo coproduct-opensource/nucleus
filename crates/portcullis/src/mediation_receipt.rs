@@ -31,7 +31,11 @@
 //! a tamper-evident, witnessed log.* This module is (1) plus the binding object;
 //! (2) and (3) are the attestation and lineage verifiers, unchanged.
 
-#![cfg(feature = "crypto")]
+// Needs `crypto` (ed25519 signing) AND `serde` (the receipt derives Serialize/
+// Deserialize and binds an `Art12Record`). Gating on `crypto` alone breaks the
+// single-feature build (`cargo hack --each-feature --features crypto`), where
+// serde is absent.
+#![cfg(all(feature = "crypto", feature = "serde"))]
 
 use crate::art12_record::Art12Record;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
