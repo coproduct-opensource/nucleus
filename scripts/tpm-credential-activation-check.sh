@@ -16,8 +16,18 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
+# In CI set TPM_REQUIRE=1: a missing tool then FAILS (exit 1) instead of SKIPping
+# (exit 0). Without it, a broken swtpm/tpm2-tools install would silently pass —
+# the false-green this check was added to CI to prevent. Locally (unset) it still
+# skips gracefully so `make check` works without a TPM stack installed.
 for t in swtpm tpm2_startup tpm2_createek tpm2_createak tpm2_activatecredential; do
-    command -v "$t" >/dev/null || { echo "SKIP: $t not installed"; exit 0; }
+    command -v "$t" >/dev/null && continue
+    if [[ "${TPM_REQUIRE:-0}" == "1" ]]; then
+        echo "FAIL: $t not installed but TPM_REQUIRE=1 — the activation proof cannot run"
+        exit 1
+    fi
+    echo "SKIP: $t not installed"
+    exit 0
 done
 
 EX="${TPM_MAKECRED_BIN:-}"

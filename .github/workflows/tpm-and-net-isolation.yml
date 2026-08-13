@@ -1,0 +1,92 @@
+name: TPM activation + guest-net isolation (hardware-adjacent checks)
+
+# Two checks that prove things a #[test] cannot, and that were sitting in
+# scripts/ invoked by NO workflow — so the property they guard was never
+# exercised in CI (an assurance review found both unwired):
+#
+#   * tpm-credential-activation-check.sh — the ONLY proof that nucleus's pure
+#     `make_credential_ecc` output is byte-accepted by a REAL TPM's
+#     TPM2_ActivateCredential, and that the AK↔EK binding BITES (a credential for
+#     one AK does not activate on another; a tampered blob is rejected). swtpm is
+#     a userspace software TPM — no KVM/hardware — and is only a producer/verifier
+#     of the blobs, never in nucleus's TCB. This is the producer≠verifier proof
+#     behind the C9 hardware-root arc; the pure unit tests alone cannot establish
+#     it.
+#   * net-guest-isolation-check.sh — two pods whose GUESTS carry the SAME constant
+#     subnet on one host, proving the constant guest address is translated before
+#     it escapes (the #2205 assumption the whole change rests on; unit tests cover
+#     addressing agreement, not real packets).
+#
+# Both scripts SKIP (exit 0) when their tooling is absent, so they could silently
+# pass on a broken install. Here the tooling is installed and REQUIRE flags turn a
+# missing tool into a failure — no false green.
+#
+# Not (yet) in the required set: these run on every relevant PR so the properties
+# are exercised, but promoting them to required is a branch-protection decision.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-identity/**"
+      - "crates/nucleus-node/src/net.rs"
+      - "scripts/tpm-credential-activation-check.sh"
+      - "scripts/net-guest-isolation-check.sh"
+      - ".github/workflows/tpm-and-net-isolation.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-identity/**"
+      - "crates/nucleus-node/src/net.rs"
+      - "scripts/tpm-credential-activation-check.sh"
+      - "scripts/net-guest-isolation-check.sh"
+      - ".github/workflows/tpm-and-net-isolation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tpm-net-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tpm-credential-activation:
+    name: TPM ActivateCredential accepts make_credential_ecc (C9)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+
+      - name: Install swtpm + tpm2-tools
+        run: sudo apt-get update && sudo apt-get install -y -qq swtpm tpm2-tools
+
+      # Assert the stack is actually present, so a broken install cannot make the
+      # check skip to a false green (belt-and-braces with TPM_REQUIRE below).
+      - name: Assert the TPM stack is present
+        run: |
+          for t in swtpm tpm2_startup tpm2_createek tpm2_createak tpm2_activatecredential; do
+            command -v "$t" >/dev/null || { echo "::error::$t missing after install"; exit 1; }
+          done
+
+      - name: make_credential_ecc is byte-accepted by a real TPM, and the binding bites
+        env:
+          TPM_REQUIRE: "1"
+        run: bash scripts/tpm-credential-activation-check.sh
+
+  guest-net-isolation:
+    name: Constant guest address never reaches the host (#2205)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Assert netns + iptables are available
+        run: |
+          command -v ip >/dev/null || { echo "::error::iproute2 missing"; exit 1; }
+          command -v iptables >/dev/null || { echo "::error::iptables missing"; exit 1; }
+          sudo ip netns add nuc-ci-probe && sudo ip netns del nuc-ci-probe \
+            || { echo "::error::root network namespaces unavailable on this runner"; exit 1; }
+
+      - name: Two same-subnet guests, one host — the constant address is translated
+        run: sudo -E bash scripts/net-guest-isolation-check.sh
