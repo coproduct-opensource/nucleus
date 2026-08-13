@@ -1,0 +1,18 @@
+[package]
+name = "nucleus-adversary-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-guest ADVERSARIAL workload: an active attacker that tries to steal secrets, tamper the rootfs, and exfiltrate — and proves the pod contained it (the offensive twin of nucleus-workload-probe)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-adversary-probe"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,59 @@
+name: Adversary probe contains a live attacker (falsifier)
+
+# The in-guest ADVERSARIAL workload (nucleus-adversary-probe) earns its real
+# verdict inside a booted microVM, where it runs as the pod workload and actively
+# attacks the sandbox — the offensive twin of the benign nucleus-workload-probe.
+# That boot assertion (brick 2) lands in quickstart-boot.yml's x86_64-KVM job,
+# which is non-required.
+#
+# This lane is the always-on guard, no boot needed: scripts/check-adversary-
+# probe.sh reconstructs each attack surface hermetically (via the env overrides the
+# probe exposes) and asserts the campaign's verdict logic distinguishes the three
+# states a real attacker-containment probe must —
+#
+#   CONFINED        -> CONTAINED
+#   SECRET/ROOTFS/EGRESS reachable -> BREACH:<stage>   (reds-on-regression)
+#   CONTROL DEAD    -> INCONCLUSIVE, never CONTAINED    (anti-vacuity)
+#
+# plus a meta-anti-leak check that a reported breach never echoes the secret VALUE
+# to the host-readable console (the reporter must not become the exfil channel). A
+# refactor that made the probe always-CONTAINED, dropped the control, or leaked the
+# value reds here on every PR, even though the boot gate is unenforced.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-adversary-probe/**"
+      - "scripts/check-adversary-probe.sh"
+      - ".github/workflows/adversary-probe.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-adversary-probe/**"
+      - "scripts/check-adversary-probe.sh"
+      - ".github/workflows/adversary-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adversary-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adversary-probe-falsifier:
+    name: adversary probe distinguishes contained / breach / inconclusive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - name: Build the adversary probe
+        run: cargo build --release -p nucleus-adversary-probe
+      - name: Falsify — the campaign must distinguish all three verdict states
+        run: |
+          ADVERSARY_PROBE_BIN=target/release/nucleus-adversary-probe \
+            scripts/check-adversary-probe.sh
