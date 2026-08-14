@@ -132,6 +132,13 @@ lean_lib «PortcullisCoreChannel» where
 lean_lib «ChannelAdmissionExtracted» where
   roots := #[`ChannelAdmissionExtracted]
 
+-- Binds the snapshot clone-safety per-pod keys to the extracted Cmdline
+-- noninterference proof above: the keys with a Secret-labelled MaterialKind
+-- inherit `the_cmdline_delivers_no_secret_to_the_workload`; the residue
+-- (auth_secret=Internal, AWS creds=no material) is a checked boundary.
+lean_lib «SnapshotChannelBindingProofs» where
+  roots := #[`SnapshotChannelBindingProofs]
+
 -- Confidentiality-axis noninterference over the extracted core (D1/C1; STAGED —
 -- builds once aeneas-ifc-scoped extracts the ifc_confidentiality functions)
 lean_lib «ConfidentialityNoninterferenceExtracted» where

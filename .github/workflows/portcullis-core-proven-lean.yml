@@ -110,6 +110,7 @@ jobs:
             IdentityMaterialNoninterferenceExtracted \
             PortcullisCoreChannel \
             ChannelAdmissionExtracted \
+            SnapshotChannelBindingProofs \
             AssuranceCoverage \
             UniversalDetection \
             PodMachineSpike \
@@ -214,6 +215,7 @@ jobs:
           import GkatSyntaxProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
+          import SnapshotChannelBindingProofs
           #print axioms FlowProofs.authority_confinement_left
           #print axioms GkatSyntax.salomaa_solutions_agree
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
@@ -227,6 +229,7 @@ jobs:
           #print axioms GkatWhile.solution_unique
           #print axioms SnapshotCloneSafety.unsafe_persists_under_superset
           #print axioms DerivationCascade.user_cascade_ratchets
+          #print axioms SnapshotChannelBinding.mappable_keys_never_reach_workload_via_cmdline
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
           echo "$AXIOMS"
