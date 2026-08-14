@@ -39,6 +39,9 @@ pub use capability_level::*;
 mod ifc_lattice;
 pub use ifc_lattice::*;
 
+mod cascade;
+pub use cascade::{Cascade, CascadeStep};
+
 // Operation & sink-class vocabulary (MVK M1b).
 mod ifc_ops;
 pub use ifc_ops::*;

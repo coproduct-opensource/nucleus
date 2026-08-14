@@ -244,6 +244,13 @@ lean_lib «GkatGuardedLoopBridge» where
 lean_lib «GkatWhileStep» where
   roots := #[`GkatWhileStep]
 
+-- User-authored cascades over the REAL derivation diamond inherit the ratchet:
+-- RankedLattice instance for the DerivationClass lattice + monotone step
+-- vocabulary + the one-theorem cascade admissibility (loop_admissible fired at
+-- the shipped lattice). Anchored to production by the Rust parity test (Brick B).
+lean_lib «DerivationCascadeAdmissible» where
+  roots := #[`DerivationCascadeAdmissible]
+
 lean_lib «ReceiptChainProofs» where
   roots := #[`ReceiptChainProofs]
 

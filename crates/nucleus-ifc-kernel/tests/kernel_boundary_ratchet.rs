@@ -47,6 +47,7 @@ const KERNEL_FILES: &[&str] = &[
     "src/storage_lane.rs",
     "src/discharge.rs",
     "src/env_classifier.rs",
+    "src/cascade.rs",
     "src/extracted/mod.rs",
     "src/extracted/ifc_integrity.rs",
     "src/extracted/ifc_confidentiality.rs",
@@ -69,6 +70,7 @@ const KERNEL_MODULES: &[&str] = &[
     "storage_lane",
     "discharge",
     "env_classifier",
+    "cascade",
     "extracted",
 ];
 
