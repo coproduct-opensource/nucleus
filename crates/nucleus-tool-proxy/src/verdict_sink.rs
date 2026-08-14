@@ -65,6 +65,7 @@ pub fn build_monitored_sink(
     dlc_provisioned: bool,
     art12_log: Option<Arc<crate::art12::Art12Log>>,
     art12_shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
+    mediation_receipt_log: Option<std::path::PathBuf>,
 ) -> (Arc<dyn VerdictSink>, Arc<TraceMonitor>) {
     let inner: Arc<dyn VerdictSink> = Arc::new(ToolProxyVerdictSink::new(
         file_lockdown,
@@ -89,7 +90,9 @@ pub fn build_monitored_sink(
             art12_shipper,
             // Opt-in: emits signed MediationReceipts only when a mediator key is
             // configured (NUCLEUS_MEDIATION_SIGNING_KEY / _SPIFFE_ID); else None.
-            crate::art12_sink::ReceiptSigner::from_env(),
+            // The path (when given) is where the full signed receipts are
+            // persisted for offline verification — opened only once a key exists.
+            crate::art12_sink::ReceiptSigner::from_env(mediation_receipt_log.as_deref()),
         )) as Arc<dyn VerdictSink>,
         None => inner,
     };
@@ -421,6 +424,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
     }
 
@@ -472,6 +476,7 @@ mod tests {
             "test-checksum".to_string(),
             "test-session".to_string(),
             false,
+            None,
             None,
             None,
         )

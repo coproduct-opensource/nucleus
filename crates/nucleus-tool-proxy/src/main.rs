@@ -1764,6 +1764,7 @@ async fn main() -> Result<(), ApiError> {
         dlc_provisioned,
         art12_log.clone(),
         art12_shipper.clone(),
+        art12_sink::mediation_receipt_log_path(args.art12_log.as_deref(), &spec.spec.work_dir),
     );
 
     if dlc_provisioned {

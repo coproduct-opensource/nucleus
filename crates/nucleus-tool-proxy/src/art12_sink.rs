@@ -40,6 +40,58 @@ use portcullis::Operation;
 
 use crate::art12::Art12Log;
 
+/// Append-only forensic log of the full signed [`MediationReceipt`]s.
+///
+/// The console mirror and telemetry carry only `seq|hash|verdict` — enough to
+/// notice a receipt, not enough to verify one offline (no signature, no signed
+/// fields). This is the durable copy `nucleus-audit verify-mediation-receipts`
+/// reads back: one `serde_json` line per receipt, the same encoding the reader
+/// deserializes.
+///
+/// Fail-soft, deliberately: the Article 12 log is the fail-CLOSED authority (a
+/// dropped record latches degraded and refuses the next op). A receipt is the
+/// portable non-repudiation layer ON TOP of that record — losing one loses a
+/// convenience copy, not the evidence — so a write failure is logged, never
+/// latched. The receipt's content is forensic, not secret; the signing key is
+/// never written here.
+pub(crate) struct ReceiptLog {
+    file: Mutex<std::fs::File>,
+}
+
+impl ReceiptLog {
+    /// Open (or create) the append-only log.
+    ///
+    /// # Errors
+    /// If the file cannot be opened for appending.
+    fn open(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            file: Mutex::new(file),
+        })
+    }
+
+    /// Append one receipt as a JSON line. Best-effort: a serialization or write
+    /// failure is logged, not propagated (see the type docs).
+    fn append(&self, receipt: &MediationReceipt) {
+        match serde_json::to_string(receipt) {
+            Ok(line) => {
+                if let Ok(mut f) = self.file.lock() {
+                    if writeln!(f, "{line}").and_then(|()| f.flush()).is_err() {
+                        tracing::error!(
+                            "a MediationReceipt could not be written to the forensic log \
+                             (the Article 12 record still holds; only the portable copy is lost)"
+                        );
+                    }
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "could not serialize a MediationReceipt"),
+        }
+    }
+}
+
 /// Opt-in signer that issues a signed [`MediationReceipt`] for each recorded
 /// verdict, binding the receipt's `art12_record_hash` to the record's chained
 /// hash. Absent ⇒ no receipts are issued (behavior unchanged). Activated only by
@@ -55,6 +107,9 @@ pub(crate) struct ReceiptSigner {
     key: SigningKey,
     /// Receipts emitted so far — durable via telemetry and readable in-process.
     pub(crate) emitted: Arc<Mutex<Vec<MediationReceipt>>>,
+    /// The durable forensic log, when a path was configured. `None` ⇒ receipts
+    /// live only in telemetry + the console mirror + `emitted` (in-process).
+    receipt_log: Option<ReceiptLog>,
 }
 
 impl ReceiptSigner {
@@ -62,7 +117,13 @@ impl ReceiptSigner {
     /// `NUCLEUS_MEDIATION_SIGNING_KEY` (64 hex chars = a 32-byte ed25519 seed) and
     /// `NUCLEUS_MEDIATION_SPIFFE_ID`. Returns `None` when unset or malformed — a
     /// malformed key is a warn, never the key value.
-    pub(crate) fn from_env() -> Option<Self> {
+    ///
+    /// `receipt_log_path`, when given, is where the full signed receipts are
+    /// persisted for offline verification (opened only once a key is present, so
+    /// no empty file appears for a keyless pod). A path that cannot be opened is a
+    /// warn and degrades to no durable log, never a refusal — the receipt is a
+    /// layer atop the fail-closed Article 12 record, not the record itself.
+    pub(crate) fn from_env(receipt_log_path: Option<&Path>) -> Option<Self> {
         let key_hex = std::env::var("NUCLEUS_MEDIATION_SIGNING_KEY").ok()?;
         let mediator_spiffe_id = std::env::var("NUCLEUS_MEDIATION_SPIFFE_ID").ok()?;
         let seed = match hex::decode(key_hex.trim()) {
@@ -79,12 +140,28 @@ impl ReceiptSigner {
                 return None;
             }
         };
+        // Opened only now that a key is confirmed present, so a keyless pod
+        // never creates an empty receipts file. A failure to open degrades to
+        // no durable log rather than dropping the whole signer.
+        let receipt_log = receipt_log_path.and_then(|p| match ReceiptLog::open(p) {
+            Ok(log) => Some(log),
+            Err(e) => {
+                tracing::warn!(
+                    path = %p.display(),
+                    error = %e,
+                    "could not open the MediationReceipt forensic log — receipts will not be \
+                     persisted durably (they remain in telemetry and the console mirror)"
+                );
+                None
+            }
+        });
         Some(Self {
             mediator_spiffe_id,
             signer_assurance: 0,
             signer_backend: "software".to_string(),
             key: SigningKey::from_bytes(&seed),
             emitted: Arc::new(Mutex::new(Vec::new())),
+            receipt_log,
         })
     }
 }
@@ -196,6 +273,27 @@ pub(crate) fn open_log(
     let log = Art12Log::open(path, secret, genesis, false)
         .map_err(|e| format!("failed to open Article 12 log: {e:?}"))?;
     Ok(Arc::new(log))
+}
+
+/// Derive where the full signed MediationReceipts are persisted for offline
+/// verification (`nucleus-audit verify-mediation-receipts`): a sibling of the
+/// Article 12 log, so it shares that log's already-chosen host-private
+/// directory. `None` when Article 12 is off, or when the sibling would land in
+/// the agent workspace — the receipt log is a strictly-similar record ABOUT the
+/// session and must not be in the session's own read surface (#2145), so it is
+/// re-checked here rather than assumed safe by proximity.
+pub(crate) fn mediation_receipt_log_path(
+    art12_log: Option<&Path>,
+    work_dir: &Path,
+) -> Option<PathBuf> {
+    let path = art12_log?.with_file_name("mediation-receipts.jsonl");
+    match reject_workspace_path(&path, work_dir) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            tracing::warn!("MediationReceipt forensic log disabled: {e}");
+            None
+        }
+    }
 }
 
 /// The Article 12 log's state, for `/v1/health`.
@@ -419,6 +517,13 @@ impl VerdictSink for Art12Sink {
                         &signer.signer_backend,
                         &signer.key,
                     );
+                    // Durable forensic log: the FULL signed receipt, one JSON
+                    // line, the copy `verify-mediation-receipts` reads back. The
+                    // console mirror and telemetry below carry only seq/hash/
+                    // verdict — enough to notice a receipt, not to verify it.
+                    if let Some(log) = &signer.receipt_log {
+                        log.append(&receipt);
+                    }
                     // Durable telemetry — the receipt (signature + hashes) is
                     // forensic, not secret; the signing key is never logged.
                     tracing::info!(
@@ -547,6 +652,7 @@ mod tests {
                 signer_backend: "software".to_string(),
                 key,
                 emitted: Arc::clone(&emitted),
+                receipt_log: None,
             }),
         );
 
@@ -568,6 +674,62 @@ mod tests {
         // Anti-forgery: a different key does NOT verify.
         let other = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
         assert!(r.verify(&other).is_err());
+    }
+
+    /// **D1: the durable forensic log.** A configured `ReceiptLog` persists one
+    /// full JSON line per verdict, and each line deserializes back to a receipt
+    /// that verifies under the mediator key — i.e. the copy
+    /// `verify-mediation-receipts` reads is the copy the signer signed. Console
+    /// markers and telemetry alone cannot be verified offline; this is what can.
+    #[test]
+    fn the_receipt_log_persists_verifiable_lines_one_per_verdict() {
+        let dir = TempDir::new().unwrap();
+        let log = open_log(&dir);
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey = key.verifying_key();
+        let receipt_path = dir.path().join("mediation-receipts.jsonl");
+        let sink = Art12Sink::new(
+            Arc::new(NullSink),
+            Arc::clone(&log),
+            "sess".to_string(),
+            "checksum".to_string(),
+            false,
+            None,
+            Some(ReceiptSigner {
+                mediator_spiffe_id: "spiffe://td/mediator".to_string(),
+                signer_assurance: 0,
+                signer_backend: "software".to_string(),
+                key,
+                emitted: Arc::new(Mutex::new(Vec::new())),
+                receipt_log: Some(ReceiptLog::open(&receipt_path).unwrap()),
+            }),
+        );
+
+        sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
+        sink.record(ctx(
+            VerdictOutcome::Deny {
+                reason: "blocked".to_string(),
+            },
+            &[("deny_code", "command_blocked")],
+        ))
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&receipt_path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "one persisted receipt per recorded verdict");
+        let verdicts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                let r: MediationReceipt =
+                    serde_json::from_str(l).expect("a persisted line must deserialize");
+                assert!(
+                    r.verify(&pubkey).is_ok(),
+                    "the persisted receipt must verify under the mediator key"
+                );
+                r.verdict
+            })
+            .collect();
+        assert_eq!(verdicts, vec!["allow".to_string(), "deny".to_string()]);
     }
 
     /// Without a signer, no receipt is emitted (default behavior unchanged).
