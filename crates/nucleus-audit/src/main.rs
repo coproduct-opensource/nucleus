@@ -9,6 +9,7 @@ mod suggest;
 mod tool_pattern;
 mod verify_art12;
 mod verify_build;
+mod verify_mediation_receipts;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -250,6 +251,29 @@ enum Command {
         /// The executor's Ed25519 public key, hex-encoded (32 bytes).
         #[arg(long, requires = "attestation")]
         executor_pubkey: Option<String>,
+    },
+    /// Verify a log of signed MediationReceipts and render a scoreboard.
+    ///
+    /// Distinct from `verify-receipts` (the receipt-hook chain): a
+    /// [`MediationReceipt`] is the tool-proxy's own signed word about ONE
+    /// agent↔tool crossing, binding the Article 12 record hash. Checks each
+    /// receipt's Ed25519 signature (strict) under a supplied mediator public key
+    /// and tallies verdicts, mediators, sessions, and distinct recorded decisions.
+    /// Prints what was established AND what was not — a verified receipt is only
+    /// the mediator-key-holder's own word, not proof the mediator is genuine nor
+    /// that the crossing is in a witnessed log. Exits non-zero if any receipt
+    /// fails to verify.
+    VerifyMediationReceipts {
+        /// Path to the JSONL MediationReceipt log.
+        #[arg(long)]
+        log: PathBuf,
+        /// The mediator's Ed25519 public key, hex-encoded (32 bytes). Without it,
+        /// receipts are only parsed and tallied — signatures are NOT checked.
+        #[arg(long)]
+        mediator_pubkey: Option<String>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -690,6 +714,79 @@ fn main() -> Result<(), AuditError> {
                 for l in &report.limitations {
                     println!("    - {l}");
                 }
+            }
+        }
+        Command::VerifyMediationReceipts {
+            log,
+            mediator_pubkey,
+            json,
+        } => {
+            let key = match mediator_pubkey {
+                Some(hex_key) => {
+                    let bytes: [u8; 32] = hex::decode(&hex_key)
+                        .ok()
+                        .and_then(|v| v.try_into().ok())
+                        .ok_or_else(|| AuditError::Invalid {
+                            line: 0,
+                            message: "--mediator-pubkey must be 32 hex-encoded bytes".to_string(),
+                        })?;
+                    Some(
+                        ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|_| {
+                            AuditError::Invalid {
+                                line: 0,
+                                message: "--mediator-pubkey is not a valid Ed25519 public key"
+                                    .to_string(),
+                            }
+                        })?,
+                    )
+                }
+                None => None,
+            };
+            let report = verify_mediation_receipts::verify_receipt_log(&log, key.as_ref())?;
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?
+                );
+            } else {
+                println!("MediationReceipt log: {}", log.display());
+                println!("  receipts:            {}", report.receipts);
+                println!(
+                    "  signatures checked:  {}",
+                    if report.signatures_checked {
+                        "yes"
+                    } else {
+                        "NO"
+                    }
+                );
+                println!(
+                    "  verified:            {} of {}",
+                    report.verified, report.receipts
+                );
+                println!("  failed:              {}", report.failures.len());
+                println!("  distinct decisions:  {}", report.distinct_record_hashes);
+                for (verdict, n) in &report.verdicts {
+                    println!("  verdict {verdict:<18} {n}");
+                }
+                for (mediator, n) in &report.mediators {
+                    println!("  mediator {mediator} — {n}");
+                }
+                if !report.failures.is_empty() {
+                    println!("\n  FAILURES (a receipt that does not verify is the tamper case):");
+                    for f in &report.failures {
+                        println!("    - line {}: {}", f.line, f.reason);
+                    }
+                }
+                println!("\n  This run did NOT establish:");
+                for l in &report.limitations {
+                    println!("    - {l}");
+                }
+            }
+            // A receipt that does not verify is a hard problem, not a note.
+            if !report.failures.is_empty() {
+                std::process::exit(1);
             }
         }
         Command::VerifyNoninterference { input } => {

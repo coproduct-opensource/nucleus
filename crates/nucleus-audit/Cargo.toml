@@ -11,7 +11,7 @@ clap = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
-portcullis = { path = "../portcullis", features = ["serde"] }
+portcullis = { path = "../portcullis", features = ["serde", "crypto"] }
 portcullis-core = { path = "../portcullis-core", features = ["serde"] }
 nucleus-spec = { path = "../nucleus-spec" }
 serde = { workspace = true }
