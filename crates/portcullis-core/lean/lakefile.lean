@@ -219,6 +219,13 @@ lean_lib «DeclassifyProofs» where
 lean_lib «SessionCeilingProofs» where
   roots := #[`SessionCeilingProofs]
 
+-- Snapshot clone-safety: the cmdline key classification is disjoint, the
+-- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
+-- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs
+-- parity test.
+lean_lib «SnapshotCloneSafetyProofs» where
+  roots := #[`SnapshotCloneSafetyProofs]
+
 -- One-theorem admissibility for user-defined loops: a monotone endomap on the
 -- exposure lattice inherits the ratchet at its least fixpoint (Knaster–Tarski by
 -- strict rank ascent). Ties the shipped session-ceiling fold to that lfp.

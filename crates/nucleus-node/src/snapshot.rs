@@ -265,6 +265,51 @@ mod tests {
         }
     }
 
+    /// **Parity with the Lean proof** (`SnapshotCloneSafetyProofs.lean`): the
+    /// `CmdKey.isPerPodSecret` / `isSharedConfig` classification the Lean
+    /// disjointness / fail-closed / sound-guard theorems are proven over must
+    /// equal the production key sets, so those theorems govern the SHIPPED guard.
+    /// Same discipline as #2299 (bind the model to production, exhaustively). A
+    /// drift in either the model or production is caught as a set-inequality.
+    #[test]
+    fn lean_model_classification_matches_production() {
+        use std::collections::BTreeSet;
+        // Mirrors the Lean `CmdKey` per-pod-secret and shared-config variants.
+        const MODEL_PER_POD: &[&str] = &[
+            "nucleus.approval_secret",
+            "nucleus.auth_secret",
+            "nucleus.sandbox_token",
+            "nucleus.task_token_hex",
+            "nucleus.task_token_issuer",
+            "nucleus.task_token_nonce",
+            "nucleus.aws_access_key_id",
+            "nucleus.aws_secret_access_key",
+            "nucleus.aws_session_token",
+        ];
+        const MODEL_SHARED: &[&str] = &[
+            "nucleus.approval_pubkeys",
+            "nucleus.audit_s3_bucket",
+            "nucleus.audit_s3_endpoint",
+            "nucleus.audit_s3_prefix",
+            "nucleus.audit_s3_region",
+            "nucleus.aws_default_region",
+            "nucleus.workload_api_port",
+            "nucleus.net",
+        ];
+        assert_eq!(
+            MODEL_PER_POD.iter().collect::<BTreeSet<_>>(),
+            PER_POD_SECRET_KEYS.iter().collect::<BTreeSet<_>>(),
+            "Lean CmdKey per-pod-secret set drifted from production PER_POD_SECRET_KEYS \
+             — update SnapshotCloneSafetyProofs.lean and this mirror together"
+        );
+        assert_eq!(
+            MODEL_SHARED.iter().collect::<BTreeSet<_>>(),
+            SHARED_CONFIG_KEYS.iter().collect::<BTreeSet<_>>(),
+            "Lean CmdKey shared-config set drifted from production SHARED_CONFIG_KEYS \
+             — update SnapshotCloneSafetyProofs.lean and this mirror together"
+        );
+    }
+
     /// Shared config must NOT block snapshotting, or no base is ever buildable
     /// and the guard is just an off switch.
     #[test]
