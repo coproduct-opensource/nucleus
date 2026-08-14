@@ -86,6 +86,7 @@ jobs:
             DerivationProofs \
             SessionCeilingProofs \
             GkatSyntaxProofs \
+            GkatFrontierProofs \
             ExposureLoopFixpointProofs \
             SnapshotCloneSafetyProofs \
             ReceiptChainProofs \
