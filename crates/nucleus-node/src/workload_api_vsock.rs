@@ -30,7 +30,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
 use crate::identity::IdentityManager;
-use crate::workload_api_protocol::{parse_command, WorkloadApiCommand, MAX_COMMAND_LEN};
+use crate::workload_api_protocol::{
+    parse_command, WorkloadApiCommand, MAX_COMMAND_LEN, MAX_RECEIPT_BODY_LEN,
+};
 
 /// Default port for the Workload API vsock server.
 #[allow(dead_code)]
@@ -178,6 +180,9 @@ pub struct PodMaterial {
     /// Whether the mediation key has been served — one flag across connections,
     /// for the same reason as `broker_secret_served`.
     pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The pod's node-side directory, where shipped `MediationReceipt`s are
+    /// durably collected (`SHIP_RECEIPT`). `None` disables collection.
+    pub receipt_dir: Option<std::path::PathBuf>,
     /// A read-only clone of the node's live pod registry, so a `POD_LIST` over
     /// this pod's socket can be answered without the vsock server holding any
     /// node secret. `PodListView` freezes the caller to the socket's pod id and
@@ -407,6 +412,40 @@ fn handle_fetch_mediation_key(
     serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string()
 }
 
+/// Handle `SHIP_RECEIPT`: read the receipt body frame (its own larger bound) and
+/// durably collect it under this pod's node-side dir.
+///
+/// The connection is already bound to ONE pod, so the receipt can only be filed
+/// under that pod — no session id is read from the guest. A failure returns an
+/// error the guest shipper treats as "not witnessed" (and latches degraded), so a
+/// pod whose receipts stop reaching the host stops deciding.
+async fn handle_ship_receipt<R>(reader: &mut R, receipt_dir: Option<&std::path::Path>) -> String
+where
+    R: AsyncReadExt + Unpin,
+{
+    let Some(dir) = receipt_dir else {
+        return r#"{"error":"receipt collection not configured for this pod"}"#.to_string();
+    };
+    let body = match read_bounded_frame(reader, MAX_RECEIPT_BODY_LEN).await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return r#"{"error":"no receipt body after SHIP_RECEIPT"}"#.to_string(),
+        Err(e) => {
+            tracing::warn!(error = %e, "SHIP_RECEIPT body frame rejected");
+            return r#"{"error":"receipt body too long or unreadable"}"#.to_string();
+        }
+    };
+    // The body is opaque here: its Ed25519 signature is verified later by
+    // `nucleus-audit verify-mediation-receipts`, not re-implemented on the hot path.
+    let line = String::from_utf8_lossy(&body);
+    match crate::mediation_receipt_collector::append_receipt(dir, line.trim_end()).await {
+        Ok(()) => r#"{"status":"collected"}"#.to_string(),
+        Err(e) => {
+            tracing::error!(error = %e, "could not collect a shipped MediationReceipt");
+            r#"{"error":"receipt storage failed"}"#.to_string()
+        }
+    }
+}
+
 fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
     match material {
         Some(m) => serde_json::json!({
@@ -557,6 +596,11 @@ async fn handle_connection(
                 serde_json::to_string(&infos)
                     .unwrap_or_else(|_| r#"{"error":"failed to encode pod list"}"#.to_string())
             }
+            Ok(WorkloadApiCommand::ShipReceipt) => {
+                // Followed by a second frame (the receipt body), read under its own
+                // larger bound. The connection already binds this to `pod_id`.
+                handle_ship_receipt(&mut reader, material.receipt_dir.as_deref()).await
+            }
             Err(err) => {
                 debug!("workload API rejected command for pod {}: {err}", pod_id);
                 // Build the error response via serde so the (attacker-controlled)
@@ -592,6 +636,17 @@ async fn read_command_frame<R>(reader: &mut R) -> std::io::Result<Option<Vec<u8>
 where
     R: AsyncReadExt + Unpin,
 {
+    read_bounded_frame(reader, MAX_COMMAND_LEN).await
+}
+
+/// The OOM-safe newline-frame reader, bounded to `max` buffered bytes. Backs both
+/// [`read_command_frame`] (the 256-byte command guard) and the `SHIP_RECEIPT`
+/// body read (a larger [`MAX_RECEIPT_BODY_LEN`] cap for one receipt) — the same
+/// never-grow-past-the-cap discipline at two different, explicit bounds.
+async fn read_bounded_frame<R>(reader: &mut R, max: usize) -> std::io::Result<Option<Vec<u8>>>
+where
+    R: AsyncReadExt + Unpin,
+{
     let mut frame: Vec<u8> = Vec::with_capacity(16);
     loop {
         let mut byte = [0u8; 1];
@@ -605,10 +660,10 @@ where
         if byte[0] == b'\n' {
             return Ok(Some(frame));
         }
-        if frame.len() > MAX_COMMAND_LEN {
+        if frame.len() > max {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "workload API command exceeds maximum length",
+                "workload API frame exceeds maximum length",
             ));
         }
     }

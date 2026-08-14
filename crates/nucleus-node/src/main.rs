@@ -36,10 +36,10 @@ mod grpc_tls;
 mod identity;
 mod lockdown;
 mod mediation;
+mod mediation_receipt_collector;
 mod oidc;
 mod pod_api;
 mod pod_caller_identity;
-
 mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
@@ -2770,9 +2770,7 @@ async fn spawn_firecracker_pod(
                     // Served WITH the capability, not separately — the proxy
                     // needs both to reach the broker and neither is useful alone.
                     broker_port: state.broker_vsock_port,
-                    broker_secret_served: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                        false,
-                    )),
+                    broker_secret_served: std::sync::Arc::default(),
                     // The S3 audit-sink credentials, served once over this
                     // socket instead of riding the world-readable kernel
                     // command line (the C1 exposure).
@@ -2785,6 +2783,8 @@ async fn spawn_firecracker_pod(
                     mediation_signing_key: mediation::new_seed_hex(pod_dir),
                     mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
                     mediation_key_served: std::sync::Arc::default(),
+                    // Where the host durably collects SHIP_RECEIPT receipts.
+                    receipt_dir: Some(pod_dir.to_path_buf()),
                     pod_registry: state.pods.clone(),
                 },
                 // Only when jailed: unjailed Firecracker runs as this same user

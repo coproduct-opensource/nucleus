@@ -173,7 +173,26 @@ pub enum WorkloadApiCommand {
     /// call on the real Firecracker path (C2 cross-pod), which the HTTP route
     /// cannot reach from inside a default-deny netns.
     PodList,
+
+    /// `SHIP_RECEIPT` — stream one signed `MediationReceipt` to the host for
+    /// durable, completeness-bounded collection (see [`crate::mediation_receipt_collector`]).
+    ///
+    /// Unlike every other command here, this one is followed by a SECOND frame:
+    /// the receipt JSON body. It is read separately, under its own larger length
+    /// bound ([`MAX_RECEIPT_BODY_LEN`]), so the 256-byte command guard that
+    /// protects `parse_command` from unbounded buffering is untouched — a receipt
+    /// (~0.5 KB) would not fit a command frame, and widening that bound for every
+    /// command would weaken the OOM guard the fuzz target asserts.
+    ///
+    /// The Firecracker guest has no HTTP path to the node, so this vsock channel
+    /// is how a real pod's receipts reach the host as they are produced.
+    ShipReceipt,
 }
+
+/// The largest receipt body the host will buffer from a `SHIP_RECEIPT` frame.
+/// Bounds a single receipt (a fixed-shape JSON object, well under 1 KB) with
+/// headroom, without widening the 256-byte command guard.
+pub const MAX_RECEIPT_BODY_LEN: usize = 8192;
 
 impl WorkloadApiCommand {
     /// The canonical, on-the-wire spelling of this command (no trailing newline).
@@ -195,6 +214,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
             WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
             WorkloadApiCommand::PodList => "POD_LIST",
+            WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
         }
     }
 }
@@ -264,6 +284,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
         "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
+        "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
 }
@@ -443,6 +464,7 @@ mod tests {
                 WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
                 WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
+                WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
             }
         }
         for cmd in [
@@ -475,6 +497,7 @@ mod tests {
             WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::FetchMediationKey,
             WorkloadApiCommand::PodList,
+            WorkloadApiCommand::ShipReceipt,
         ];
         let accepted: std::collections::BTreeSet<String> =
             surface.iter().map(|c| c.as_wire().to_string()).collect();
@@ -489,6 +512,7 @@ mod tests {
             "FETCH_AUDIT_CREDENTIALS",
             "FETCH_MEDIATION_KEY",
             "POD_LIST",
+            "SHIP_RECEIPT",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -498,7 +522,7 @@ mod tests {
             "the guest-to-host request surface changed — a command a guest can \
              make the host act on was added, removed or renamed"
         );
-        // No two commands collapsed onto one wire spelling (9 variants → 9 forms).
+        // No two commands collapsed onto one wire spelling (N variants → N forms).
         assert_eq!(
             accepted.len(),
             surface.len(),
