@@ -491,12 +491,18 @@ mod tests {
     #[test]
     fn every_tag_binds_to_its_named_lattice_level() {
         // Confidentiality tags → ConfLevel (all three points of the chain).
-        assert_eq!(<Public as ConfTag>::runtime_level(), crate::ConfLevel::Public);
+        assert_eq!(
+            <Public as ConfTag>::runtime_level(),
+            crate::ConfLevel::Public
+        );
         assert_eq!(
             <Internal as ConfTag>::runtime_level(),
             crate::ConfLevel::Internal
         );
-        assert_eq!(<Secret as ConfTag>::runtime_level(), crate::ConfLevel::Secret);
+        assert_eq!(
+            <Secret as ConfTag>::runtime_level(),
+            crate::ConfLevel::Secret
+        );
         // Integrity tags → IntegLevel (all three points).
         assert_eq!(
             <Adversarial as IntegTag>::runtime_level(),
