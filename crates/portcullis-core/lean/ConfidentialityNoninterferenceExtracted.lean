@@ -172,6 +172,25 @@ theorem secret_tainted_never_flows_public (ops : List CL) :
   · decide
   · decide
 
+/-- **Read-path instantiation (issue #1249): a file-read session can NEVER reach a
+    public sink**, over the GENERATED defs. `NucleusRuntime::read_file` returns
+    `Labeled<Vec<u8>, Trusted, Internal>` — file contents carry `Internal`
+    confidentiality (rank 1). This theorem names the guarantee the runtime facade's
+    type already claims: `Internal` file data is never admitted at a `Public`
+    ceiling (rank 0 — the true-egress sinks like HTTPEgress impose), over ANY
+    operation sequence. It is the anti-exfiltration half of the labeled read: what
+    a file read produced cannot leave through a public channel.
+    Non-vacuous: `h_joined = 1 ≤ 1`, `h_blocked = 0 < 1`. -/
+theorem file_read_internal_never_flows_public (ops : List CL) :
+    ¬ cadmitted (crun ops .Internal) .Public := by
+  apply confidentiality_sink_never_admitted
+    (L_src := .Internal)
+    (eff := .Internal)
+    (ceiling := .Public)
+    (ops := ops)
+  · decide
+  · decide
+
 end ConfidentialityNoninterferenceExtracted
 
 /-
@@ -184,3 +203,4 @@ end ConfidentialityNoninterferenceExtracted
 -/
 #print axioms ConfidentialityNoninterferenceExtracted.confidentiality_sink_never_admitted
 #print axioms ConfidentialityNoninterferenceExtracted.secret_tainted_never_flows_public
+#print axioms ConfidentialityNoninterferenceExtracted.file_read_internal_never_flows_public
