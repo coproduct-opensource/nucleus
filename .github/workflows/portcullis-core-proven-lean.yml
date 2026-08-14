@@ -87,6 +87,7 @@ jobs:
             SessionCeilingProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
+            GkatWhileStep \
             SnapshotCloneSafetyProofs \
             ReceiptChainProofs \
             IFCSemilatticeProofs \
@@ -207,6 +208,7 @@ jobs:
           import UniversalDetection
           import ExposureLoopFixpointProofs
           import GkatGuardedLoopBridge
+          import GkatWhileStep
           import SnapshotCloneSafetyProofs
           #print axioms FlowProofs.authority_confinement_left
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
@@ -216,6 +218,7 @@ jobs:
           #print axioms ExposureLoop.loop_admissible
           #print axioms ExposureLoop.ceilingFold_eq_lfp
           #print axioms GkatBridge.guarded_loop_is_lfp
+          #print axioms GkatWhile.whileStep_ratchets
           #print axioms SnapshotCloneSafety.unsafe_persists_under_superset
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"

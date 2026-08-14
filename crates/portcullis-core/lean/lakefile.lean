@@ -238,6 +238,12 @@ lean_lib «ExposureLoopFixpointProofs» where
 lean_lib «GkatGuardedLoopBridge» where
   roots := #[`GkatGuardedLoopBridge]
 
+-- GKAT `while b do body` as a monotone cascade step: under a guardedness
+-- condition on the test, the guarded loop is a monotone endomap that inherits the
+-- ratchet — extends the cascade surface to if/while.
+lean_lib «GkatWhileStep» where
+  roots := #[`GkatWhileStep]
+
 lean_lib «ReceiptChainProofs» where
   roots := #[`ReceiptChainProofs]
 
