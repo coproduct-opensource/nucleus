@@ -166,6 +166,18 @@ pub struct PodMaterial {
     /// Whether the audit credentials have been served — one flag across every
     /// connection, for the same reason as `broker_secret_served`.
     pub audit_creds_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The per-pod ed25519 signing seed (64 hex chars) the tool-proxy signs
+    /// `MediationReceipt`s with, and the mediator SPIFFE id they carry. `None`
+    /// when receipts are not provisioned for this pod. Served ONCE, before the
+    /// workload exists — the broker secret's discipline — because possession lets
+    /// the holder sign receipts as this mediator.
+    pub mediation_signing_key: Option<String>,
+    /// The mediator SPIFFE id carried in emitted receipts. `None` disables the
+    /// signer even if a key is present.
+    pub mediation_spiffe_id: Option<String>,
+    /// Whether the mediation key has been served — one flag across connections,
+    /// for the same reason as `broker_secret_served`.
+    pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// A read-only clone of the node's live pod registry, so a `POD_LIST` over
     /// this pod's socket can be answered without the vsock server holding any
     /// node secret. `PodListView` freezes the caller to the socket's pod id and
@@ -371,6 +383,30 @@ fn handle_fetch_broker_secret(
     serde_json::json!({ "secret": secret, "port": port }).to_string()
 }
 
+/// Serve the per-pod mediation signing key exactly once, before the workload
+/// exists. Same discipline as [`handle_fetch_broker_secret`]: the key value is
+/// never logged, and a second request is refused (a workload trying to obtain
+/// the mediator's receipt-signing key). Both the key and the SPIFFE id must be
+/// present, or the signer stays off.
+fn handle_fetch_mediation_key(
+    signing_key: Option<&str>,
+    spiffe_id: Option<&str>,
+    already_served: &std::sync::atomic::AtomicBool,
+) -> String {
+    use std::sync::atomic::Ordering;
+    let (Some(signing_key), Some(spiffe_id)) = (signing_key, spiffe_id) else {
+        return r#"{"error":"no mediation key provisioned for this pod"}"#.to_string();
+    };
+    if already_served.swap(true, Ordering::AcqRel) {
+        tracing::warn!(
+            "refused a repeat FETCH_MEDIATION_KEY — the signing key is served once, before the \
+             workload exists; a second request is a bug or an attempt to obtain it"
+        );
+        return r#"{"error":"mediation key already served"}"#.to_string();
+    }
+    serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string()
+}
+
 fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> String {
     match material {
         Some(m) => serde_json::json!({
@@ -494,6 +530,15 @@ async fn handle_connection(
                 handle_fetch_audit_credentials(
                     material.audit_creds.as_ref(),
                     &material.audit_creds_served,
+                )
+            }
+            Ok(WorkloadApiCommand::FetchMediationKey) => {
+                // Like the broker secret: the signing key value is never logged.
+                debug!("workload API FETCH_MEDIATION_KEY for pod {}", pod_id);
+                handle_fetch_mediation_key(
+                    material.mediation_signing_key.as_deref(),
+                    material.mediation_spiffe_id.as_deref(),
+                    &material.mediation_key_served,
                 )
             }
             Ok(WorkloadApiCommand::PodList) => {
@@ -1022,6 +1067,47 @@ mod tests {
         assert!(
             !second.contains("cap"),
             "and must not leak the secret in the refusal: {second}"
+        );
+    }
+
+    /// The mediation signing key is served exactly once and never leaked in a
+    /// refusal — a workload that races for the mediator's receipt-signing key
+    /// after the proxy has it gets nothing.
+    #[test]
+    fn the_mediation_key_is_served_exactly_once() {
+        let served = AtomicBool::new(false);
+        let first =
+            handle_fetch_mediation_key(Some("deadbeef"), Some("spiffe://td/mediator/p"), &served);
+        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(
+            v["signing_key"], "deadbeef",
+            "the first request must be served"
+        );
+        assert_eq!(v["spiffe_id"], "spiffe://td/mediator/p");
+
+        let second =
+            handle_fetch_mediation_key(Some("deadbeef"), Some("spiffe://td/mediator/p"), &served);
+        assert!(
+            second.contains("already served"),
+            "a second request must be refused: {second}"
+        );
+        assert!(
+            !second.contains("deadbeef"),
+            "and must not leak the key in the refusal: {second}"
+        );
+    }
+
+    /// With no key (or no SPIFFE id), the signer stays off — an error, never a
+    /// partial reply — and the one-shot flag is NOT spent, so a real provision
+    /// later can still be served.
+    #[test]
+    fn the_mediation_key_is_withheld_when_unprovisioned() {
+        let served = AtomicBool::new(false);
+        let none = handle_fetch_mediation_key(None, Some("spiffe://td/x"), &served);
+        assert!(none.contains("error"), "no key ⇒ error: {none}");
+        assert!(
+            !served.load(std::sync::atomic::Ordering::Acquire),
+            "the not-provisioned path must not spend the one-shot"
         );
     }
 

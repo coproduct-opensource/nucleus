@@ -176,6 +176,62 @@ pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
     })
 }
 
+/// A per-pod mediation signing key: the ed25519 seed the tool-proxy signs
+/// `MediationReceipt`s with, plus the mediator SPIFFE id they carry.
+pub struct MediationKey {
+    /// 32-byte ed25519 seed, hex-encoded (never logged).
+    pub signing_key: String,
+    /// The mediator SPIFFE id.
+    pub spiffe_id: String,
+}
+
+/// Fetch this pod's mediation signing key, once, before `exec_proxy`.
+///
+/// Returns `Ok(None)` when the host provisioned none (or refuses a repeat):
+/// signed receipts are ADDITIVE forensics, so their absence is a graceful
+/// degrade, not a reason to fail the pod. Like the broker secret, the key value
+/// is never logged — errors name the failure, never the payload.
+pub fn fetch_mediation_key(port: u32) -> Result<Option<MediationKey>, String> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_MEDIATION_KEY\n")
+        .map_err(|e| format!("failed to send FETCH_MEDIATION_KEY: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read mediation-key response: {e}"))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&response)
+        // Never echo the body: a parse error that printed it could put the
+        // signing key in the guest console log.
+        .map_err(|_| "mediation-key response was not valid JSON".to_string())?;
+    // A host with no key provisioned answers with an error; treat that as "no
+    // receipts", not a boot failure.
+    if parsed.get("error").is_some() {
+        return Ok(None);
+    }
+    let signing_key = parsed
+        .get("signing_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "mediation-key response had no `signing_key`".to_string())?;
+    let spiffe_id = parsed
+        .get("spiffe_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "mediation-key response had no `spiffe_id`".to_string())?;
+    Ok(Some(MediationKey {
+        signing_key,
+        spiffe_id,
+    }))
+}
+
 /// The S3 audit-sink credentials, fetched over the workload API instead of
 /// read off the world-readable kernel command line.
 pub struct AuditCredentials {

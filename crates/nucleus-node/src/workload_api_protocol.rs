@@ -142,6 +142,13 @@ pub enum WorkloadApiCommand {
     /// so this gets the broker secret's delivery discipline, not the task
     /// token's.
     FetchAuditCredentials,
+    /// `FETCH_MEDIATION_KEY` — the per-pod signing key the tool-proxy signs
+    /// forensic `MediationReceipt`s with. Served with the broker secret's
+    /// delivery discipline: exactly once, before any workload exists, value never
+    /// logged. Possession lets the holder sign receipts as this mediator, so a
+    /// workload that grabbed it could forge them — the one-shot before-workload
+    /// delivery is what keeps it out of the workload's reach.
+    FetchMediationKey,
     /// `POD_LIST` — request the pod summaries THIS pod is entitled to manage:
     /// itself and its direct children, never a sibling.
     ///
@@ -186,6 +193,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
             WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
             WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
+            WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
             WorkloadApiCommand::PodList => "POD_LIST",
         }
     }
@@ -254,6 +262,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_BROKER_SECRET" => Ok(WorkloadApiCommand::FetchBrokerSecret),
         "FETCH_POD_CALLER_TOKEN" => Ok(WorkloadApiCommand::FetchPodCallerToken),
         "FETCH_AUDIT_CREDENTIALS" => Ok(WorkloadApiCommand::FetchAuditCredentials),
+        "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
@@ -432,6 +441,7 @@ mod tests {
                 WorkloadApiCommand::FetchBrokerSecret => "FETCH_BROKER_SECRET",
                 WorkloadApiCommand::FetchPodCallerToken => "FETCH_POD_CALLER_TOKEN",
                 WorkloadApiCommand::FetchAuditCredentials => "FETCH_AUDIT_CREDENTIALS",
+                WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
             }
         }
@@ -463,6 +473,7 @@ mod tests {
             WorkloadApiCommand::FetchBrokerSecret,
             WorkloadApiCommand::FetchPodCallerToken,
             WorkloadApiCommand::FetchAuditCredentials,
+            WorkloadApiCommand::FetchMediationKey,
             WorkloadApiCommand::PodList,
         ];
         let accepted: std::collections::BTreeSet<String> =
@@ -476,6 +487,7 @@ mod tests {
             "FETCH_BROKER_SECRET",
             "FETCH_POD_CALLER_TOKEN",
             "FETCH_AUDIT_CREDENTIALS",
+            "FETCH_MEDIATION_KEY",
             "POD_LIST",
         ]
         .iter()

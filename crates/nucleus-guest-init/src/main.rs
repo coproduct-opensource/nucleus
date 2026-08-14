@@ -155,6 +155,21 @@ fn run() -> Result<(), String> {
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
 
+        // The mediation signing key, fetched with the same before-`exec_proxy`
+        // ordering: the host serves it once, before any workload exists, so the
+        // key that signs this pod's MediationReceipts is out of the workload's
+        // reach. Absent ⇒ no receipts (additive forensics), never a boot failure.
+        // The key VALUE is never logged — only its presence.
+        match identity::fetch_mediation_key(port) {
+            Ok(Some(mk)) => {
+                std::env::set_var("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
+                std::env::set_var("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
+                eprintln!("fetched mediation signing key over vsock (receipts enabled)");
+            }
+            Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),
+            Err(err) => eprintln!("no mediation key over vsock (receipts disabled): {err}"),
+        }
+
         // The S3 audit-sink credentials, fetched with the same before-
         // `exec_proxy` ordering as the broker capability (the host serves them
         // once; arriving before any workload exists is the property). They

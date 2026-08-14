@@ -26,6 +26,7 @@
 //! Calls whose effect has already happened are not failed retroactively — the
 //! latch is read at preflight, not at record.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -428,6 +429,18 @@ impl VerdictSink for Art12Sink {
                         mediator = %signer.mediator_spiffe_id,
                         "emitted signed MediationReceipt"
                     );
+                    // Console mirror, for a guest whose telemetry the host does
+                    // not otherwise read (same reason as the Article 12 log's).
+                    // Only the seq/hash/verdict — never the signature or key.
+                    {
+                        let mut out = std::io::stdout().lock();
+                        let _ = writeln!(
+                            out,
+                            "NUCLEUS-MEDIATION-RECEIPT {seq}|{hash}|{}",
+                            rec.verdict
+                        );
+                        let _ = out.flush();
+                    }
                     if let Ok(mut v) = signer.emitted.lock() {
                         v.push(receipt);
                     }

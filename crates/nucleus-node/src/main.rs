@@ -2779,6 +2779,29 @@ async fn spawn_firecracker_pod(
                         spec.spec.audit_sink.is_some(),
                     ),
                     audit_creds_served: std::sync::Arc::default(),
+                    // A per-pod ed25519 seed the in-guest tool-proxy signs
+                    // MediationReceipts with, minted here and served ONCE (before
+                    // the workload exists) so a workload cannot obtain it and
+                    // forge receipts. Never rides the world-readable cmdline.
+                    mediation_signing_key: {
+                        // Fill a 32-byte ed25519 seed directly (the guest
+                        // reconstructs the key with `SigningKey::from_bytes`).
+                        // NOT `SigningKey::generate(OsRng)`: ed25519-dalek pins its
+                        // own rand_core, and the workspace `OsRng` is a different
+                        // version, so it does not satisfy that `CryptoRng`.
+                        use rand_core::RngCore;
+                        let mut seed = [0u8; 32];
+                        rand_core::OsRng.fill_bytes(&mut seed);
+                        Some(hex::encode(seed))
+                    },
+                    // The mediator SPIFFE id the receipts carry (self-claimed; a
+                    // relying party cross-checks the SVID via verify_attested_receipt).
+                    mediation_spiffe_id: Some(format!(
+                        "spiffe://{}/mediator/{}",
+                        manager.trust_domain(),
+                        id
+                    )),
+                    mediation_key_served: std::sync::Arc::default(),
                     pod_registry: state.pods.clone(),
                 },
                 // Only when jailed: unjailed Firecracker runs as this same user
