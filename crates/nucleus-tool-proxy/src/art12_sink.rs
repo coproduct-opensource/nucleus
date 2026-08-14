@@ -27,15 +27,66 @@
 //! latch is read at preflight, not at record.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use ed25519_dalek::SigningKey;
 use portcullis::art12_record::{Actor, Art12Record, DenyInfo};
+use portcullis::mediation_receipt::MediationReceipt;
 use portcullis::verdict_sink::{
     ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink,
 };
 use portcullis::Operation;
 
 use crate::art12::Art12Log;
+
+/// Opt-in signer that issues a signed [`MediationReceipt`] for each recorded
+/// verdict, binding the receipt's `art12_record_hash` to the record's chained
+/// hash. Absent ⇒ no receipts are issued (behavior unchanged). Activated only by
+/// configuring a mediator signing key; the key VALUE is never logged.
+///
+/// `signer_assurance` is L0 (self-claimed) by design: the receipt proves only
+/// that the mediator key-holder witnessed this record — a relying party still
+/// cross-checks that key's SVID is attested (`verify_attested_receipt`).
+pub(crate) struct ReceiptSigner {
+    mediator_spiffe_id: String,
+    signer_assurance: u8,
+    signer_backend: String,
+    key: SigningKey,
+    /// Receipts emitted so far — durable via telemetry and readable in-process.
+    pub(crate) emitted: Arc<Mutex<Vec<MediationReceipt>>>,
+}
+
+impl ReceiptSigner {
+    /// Build from the environment, opt-in and fail-closed:
+    /// `NUCLEUS_MEDIATION_SIGNING_KEY` (64 hex chars = a 32-byte ed25519 seed) and
+    /// `NUCLEUS_MEDIATION_SPIFFE_ID`. Returns `None` when unset or malformed — a
+    /// malformed key is a warn, never the key value.
+    pub(crate) fn from_env() -> Option<Self> {
+        let key_hex = std::env::var("NUCLEUS_MEDIATION_SIGNING_KEY").ok()?;
+        let mediator_spiffe_id = std::env::var("NUCLEUS_MEDIATION_SPIFFE_ID").ok()?;
+        let seed = match hex::decode(key_hex.trim()) {
+            Ok(b) if b.len() == 32 => {
+                let mut s = [0u8; 32];
+                s.copy_from_slice(&b);
+                s
+            }
+            _ => {
+                tracing::warn!(
+                    "NUCLEUS_MEDIATION_SIGNING_KEY is not 32 hex-encoded bytes — \
+                     mediation receipts disabled"
+                );
+                return None;
+            }
+        };
+        Some(Self {
+            mediator_spiffe_id,
+            signer_assurance: 0,
+            signer_backend: "software".to_string(),
+            key: SigningKey::from_bytes(&seed),
+            emitted: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+}
 
 /// Why a log path was refused.
 #[derive(Debug)]
@@ -185,6 +236,8 @@ pub(crate) struct Art12Sink {
     session_id: String,
     policy_checksum: String,
     dlc_provisioned: bool,
+    /// Opt-in: issue a signed `MediationReceipt` per verdict (default `None`).
+    receipt_signer: Option<ReceiptSigner>,
 }
 
 impl Art12Sink {
@@ -195,6 +248,7 @@ impl Art12Sink {
         policy_checksum: String,
         dlc_provisioned: bool,
         shipper: Option<Arc<crate::art12_shipper::Art12Shipper>>,
+        receipt_signer: Option<ReceiptSigner>,
     ) -> Self {
         Self {
             inner,
@@ -203,6 +257,7 @@ impl Art12Sink {
             session_id,
             policy_checksum,
             dlc_provisioned,
+            receipt_signer,
         }
     }
 
@@ -329,6 +384,11 @@ fn operation_name(op: Operation) -> &'static str {
 impl VerdictSink for Art12Sink {
     fn record(&self, ctx: VerdictContext) -> Result<(), SinkError> {
         let draft = self.project(&ctx);
+        // Clone the draft for the receipt ONLY when one will be issued (so the
+        // append can move `draft` on the common path). The receipt binds the
+        // record's chained hash, including its `extensions`/`dlc_admission` —
+        // which is where an upstream checkpoint's authority record flows.
+        let receipt_draft = self.receipt_signer.as_ref().map(|_| draft.clone());
 
         // Ship BEFORE the local append. The record the host witnesses is the
         // one built from this decision, and ordering it first means a pod that
@@ -343,12 +403,43 @@ impl VerdictSink for Art12Sink {
             }
         }
 
-        if let Err(e) = self.log.append(draft) {
-            // The log has latched `degraded` and counted the drop; the next
-            // preflight fails closed. Do not fail this call: its effect may
-            // already have happened, and returning an error here would invite a
-            // retry that duplicates it.
-            tracing::error!(error = ?e, "article 12 record could not be written -- evidence gap");
+        match self.log.append(draft) {
+            Ok((hash, seq)) => {
+                // Opt-in signed MediationReceipt binding this record's hash.
+                if let (Some(signer), Some(mut rec)) = (self.receipt_signer.as_ref(), receipt_draft)
+                {
+                    rec.hash = hash.clone();
+                    rec.seq = seq;
+                    rec.decision_sequence = Some(seq);
+                    let receipt = MediationReceipt::issue(
+                        &rec,
+                        &signer.mediator_spiffe_id,
+                        signer.signer_assurance,
+                        &signer.signer_backend,
+                        &signer.key,
+                    );
+                    // Durable telemetry — the receipt (signature + hashes) is
+                    // forensic, not secret; the signing key is never logged.
+                    tracing::info!(
+                        target: "nucleus_mediation_receipt",
+                        seq,
+                        art12_record_hash = %hash,
+                        verdict = %rec.verdict,
+                        mediator = %signer.mediator_spiffe_id,
+                        "emitted signed MediationReceipt"
+                    );
+                    if let Ok(mut v) = signer.emitted.lock() {
+                        v.push(receipt);
+                    }
+                }
+            }
+            Err(e) => {
+                // The log has latched `degraded` and counted the drop; the next
+                // preflight fails closed. Do not fail this call: its effect may
+                // already have happened, and returning an error here would invite
+                // a retry that duplicates it.
+                tracing::error!(error = ?e, "article 12 record could not be written -- evidence gap");
+            }
         }
         self.inner.record(ctx)
     }
@@ -403,6 +494,7 @@ mod tests {
             "checksum".to_string(),
             false,
             None,
+            None,
         )
     }
 
@@ -416,6 +508,62 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// **Brick 5 (b): a signed MediationReceipt is emitted per verdict, binding
+    /// the record's chained hash.** With a signer, `record` issues a receipt whose
+    /// `art12_record_hash` equals the log head, whose verdict matches, and which
+    /// verifies (strict) under the mediator's public key.
+    #[test]
+    fn a_configured_signer_emits_a_verifying_receipt_bound_to_the_record_hash() {
+        let dir = TempDir::new().unwrap();
+        let log = open_log(&dir);
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey = key.verifying_key();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let sink = Art12Sink::new(
+            Arc::new(NullSink),
+            Arc::clone(&log),
+            "sess".to_string(),
+            "checksum".to_string(),
+            false,
+            None,
+            Some(ReceiptSigner {
+                mediator_spiffe_id: "spiffe://td/mediator".to_string(),
+                signer_assurance: 0,
+                signer_backend: "software".to_string(),
+                key,
+                emitted: Arc::clone(&emitted),
+            }),
+        );
+
+        sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
+
+        let receipts = emitted.lock().unwrap();
+        assert_eq!(receipts.len(), 1, "one receipt per recorded verdict");
+        let r = &receipts[0];
+        let (head_hash, _seq) = log.head().unwrap();
+        assert_eq!(
+            r.art12_record_hash, head_hash,
+            "receipt binds the record's chained hash"
+        );
+        assert_eq!(r.verdict, "allow");
+        assert!(
+            r.verify(&pubkey).is_ok(),
+            "receipt verifies under the mediator key"
+        );
+        // Anti-forgery: a different key does NOT verify.
+        let other = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
+        assert!(r.verify(&other).is_err());
+    }
+
+    /// Without a signer, no receipt is emitted (default behavior unchanged).
+    #[test]
+    fn without_a_signer_no_receipt_is_emitted() {
+        let dir = TempDir::new().unwrap();
+        let sink = sink_with(open_log(&dir));
+        // Records fine; there is simply no receipt path.
+        assert!(sink.record(ctx(VerdictOutcome::Allow, &[])).is_ok());
     }
 
     fn ctx(outcome: VerdictOutcome, ext: &[(&str, &str)]) -> VerdictContext {

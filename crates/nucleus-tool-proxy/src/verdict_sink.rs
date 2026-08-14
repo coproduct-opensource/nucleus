@@ -87,6 +87,9 @@ pub fn build_monitored_sink(
             policy_checksum,
             dlc_provisioned,
             art12_shipper,
+            // Opt-in: emits signed MediationReceipts only when a mediator key is
+            // configured (NUCLEUS_MEDIATION_SIGNING_KEY / _SPIFFE_ID); else None.
+            crate::art12_sink::ReceiptSigner::from_env(),
         )) as Arc<dyn VerdictSink>,
         None => inner,
     };

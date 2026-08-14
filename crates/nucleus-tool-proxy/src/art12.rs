@@ -189,13 +189,19 @@ impl Art12Log {
     /// [`Art12Error`] on serialize/IO failure; the log latches `degraded` and
     /// increments `dropped` before returning, so the caller may continue while
     /// the next `preflight` fails closed.
-    pub fn append(&self, mut draft: Art12Record) -> Result<(), Art12Error> {
-        let result = self.append_inner(&mut draft);
-        if result.is_err() {
-            self.degraded.store(true, Ordering::Release);
-            self.dropped.fetch_add(1, Ordering::AcqRel);
+    /// Append a record and return its assigned `(hash, seq)` — the chained
+    /// identity a [`MediationReceipt`](portcullis::mediation_receipt::MediationReceipt)
+    /// binds as its `art12_record_hash`. Returned from under the same lock that
+    /// assigned it, so it is race-free with concurrent appends.
+    pub fn append(&self, mut draft: Art12Record) -> Result<(String, u64), Art12Error> {
+        match self.append_inner(&mut draft) {
+            Ok(()) => Ok((draft.hash, draft.seq)),
+            Err(e) => {
+                self.degraded.store(true, Ordering::Release);
+                self.dropped.fetch_add(1, Ordering::AcqRel);
+                Err(e)
+            }
         }
-        result
     }
 
     fn append_inner(&self, draft: &mut Art12Record) -> Result<(), Art12Error> {
