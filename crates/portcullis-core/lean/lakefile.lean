@@ -225,6 +225,12 @@ lean_lib «SessionCeilingProofs» where
 lean_lib «ExposureLoopFixpointProofs» where
   roots := #[`ExposureLoopFixpointProofs]
 
+-- GKAT guarded loop ↔ least fixed point: GKAT's unique guarded fixed point of a
+-- monotone body coincides with the Knaster–Tarski lfp our ratchet computes, so a
+-- guarded loop inherits the ratchet; the general-guard boundary is a falsification.
+lean_lib «GkatGuardedLoopBridge» where
+  roots := #[`GkatGuardedLoopBridge]
+
 lean_lib «ReceiptChainProofs» where
   roots := #[`ReceiptChainProofs]
 
