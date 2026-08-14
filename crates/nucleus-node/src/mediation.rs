@@ -42,7 +42,11 @@ mod tests {
     fn a_minted_seed_is_32_bytes_and_distinct_each_time() {
         let a = new_seed_hex().unwrap();
         let b = new_seed_hex().unwrap();
-        assert_eq!(hex::decode(&a).unwrap().len(), 32, "an ed25519 seed is 32 bytes");
+        assert_eq!(
+            hex::decode(&a).unwrap().len(),
+            32,
+            "an ed25519 seed is 32 bytes"
+        );
         assert_ne!(a, b, "two mints must not collide — the key is per-pod");
     }
 
