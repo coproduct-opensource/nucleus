@@ -631,7 +631,19 @@ fn is_writable(dir: &str) -> bool {
 }
 
 fn exec_proxy(spec_path: &str) {
-    let err = Command::new(PROXY_BIN).arg("--spec").arg(spec_path).exec();
+    // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
+    // mediation verdict is recorded, and — when a mediator key was delivered
+    // (`fetch_mediation_key` above) — signed into a MediationReceipt. The log
+    // lives on the `/run` tmpfs: writable, root-owned before the uid drop (so the
+    // workload cannot tamper), and NOT under the agent workspace (which the
+    // proxy's own path check would refuse). The chain is session-derived when no
+    // audit secret is configured — weaker than an operator secret, but present.
+    let err = Command::new(PROXY_BIN)
+        .arg("--spec")
+        .arg(spec_path)
+        .arg("--art12-log")
+        .arg("/run/nucleus/art12.jsonl")
+        .exec();
     eprintln!("failed to exec {PROXY_BIN}: {err}");
 }
 

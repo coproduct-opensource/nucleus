@@ -432,6 +432,33 @@ jobs:
           done
           echo "in-guest adversary: CONTAINED present, BREACH absent, control live, all stages attempted"
 
+      - name: A signed MediationReceipt was emitted on the live path (presence + shape)
+        run: |
+          # The end-to-end tooth for the receipt arc: `verify --tier2` runs a
+          # PERMITTED command (allow) and a FORBIDDEN command (deny) through the
+          # guest tool-proxy. With Article 12 record-keeping on (exec_proxy passes
+          # --art12-log) and a mediator signing key delivered to the guest over
+          # vsock (FETCH_MEDIATION_KEY), each of those verdicts is signed into a
+          # MediationReceipt, and the proxy mirrors the seq|hash|verdict to the
+          # guest console (NUCLEUS-MEDIATION-RECEIPT) — the one telemetry the host
+          # can read back. If the key delivery, the art12 wiring, or the signer
+          # regressed, NO marker appears here and this step reds. That is the
+          # point: the receipt must exist on a REAL booted pod, not only in a
+          # unit test.
+          state=/var/lib/nucleus/state
+          markers=$(sudo grep -rhaE 'NUCLEUS-MEDIATION-RECEIPT [0-9]+\|[0-9a-f]+\|' "$state" || true)
+          if [ -z "$markers" ]; then
+            echo "::error::no signed MediationReceipt was emitted on the live path (receipt wiring regressed: key delivery, --art12-log, or the signer)"
+            echo "--- any receipt markers across all pod logs (empty ⇒ none emitted) ---"
+            sudo grep -rhaE 'NUCLEUS-MEDIATION-RECEIPT' "$state" | head -40 || true
+            echo "--- last 60 lines of each guest log ---"
+            sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -60 "$1"' _ {} \; || true
+            exit 1
+          fi
+          count=$(printf '%s\n' "$markers" | grep -c .)
+          echo "signed MediationReceipt emitted on the live path: $count well-formed marker(s)"
+          printf '%s\n' "$markers" | head -8
+
       - name: Delivery conformance (observed inventory vs the extracted oracle)
         run: |
           # The probe emits its observed environment inventory
