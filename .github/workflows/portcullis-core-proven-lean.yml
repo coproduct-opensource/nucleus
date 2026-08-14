@@ -85,6 +85,7 @@ jobs:
             DelegationProofs \
             DerivationProofs \
             SessionCeilingProofs \
+            ExposureLoopFixpointProofs \
             ReceiptChainProofs \
             IFCSemilatticeProofs \
             DelegationCategoryProofs \
@@ -202,11 +203,14 @@ jobs:
           import CapabilityResiduatedQuantaleProofs
           import AssuranceCoverage
           import UniversalDetection
+          import ExposureLoopFixpointProofs
           #print axioms FlowProofs.authority_confinement_left
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
           #print axioms PortcullisCore.UniversalDetection.universal_detection_impossibility
+          #print axioms ExposureLoop.loop_admissible
+          #print axioms ExposureLoop.ceilingFold_eq_lfp
           EOF
           AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
           echo "$AXIOMS"

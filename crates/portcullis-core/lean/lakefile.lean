@@ -219,6 +219,12 @@ lean_lib «DeclassifyProofs» where
 lean_lib «SessionCeilingProofs» where
   roots := #[`SessionCeilingProofs]
 
+-- One-theorem admissibility for user-defined loops: a monotone endomap on the
+-- exposure lattice inherits the ratchet at its least fixpoint (Knaster–Tarski by
+-- strict rank ascent). Ties the shipped session-ceiling fold to that lfp.
+lean_lib «ExposureLoopFixpointProofs» where
+  roots := #[`ExposureLoopFixpointProofs]
+
 lean_lib «ReceiptChainProofs» where
   roots := #[`ReceiptChainProofs]
 
