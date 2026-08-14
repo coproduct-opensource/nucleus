@@ -131,6 +131,22 @@ pub struct VerifiedAttestation {
     pub assurance: AssuranceLevel,
     /// What the backend names as the attested subject.
     pub subject: AttestedSubject,
+    /// SHA-256 of the attested subject's **signing key** — the 32-byte Ed25519
+    /// public key that this subject signs on its own behalf with — when the
+    /// backend binds such a key. This is what lets a relying party close the
+    /// substitution hole: a forensic `MediationReceipt` claiming this attestation
+    /// must be signed by THIS key, not merely by some key the relying party was
+    /// handed alongside the attestation.
+    ///
+    /// `None` when the backend attests something that is not an Ed25519 signing
+    /// key comparable to a receipt signer — a self-measured launch (an artifact,
+    /// not a key), or a TPM-resident key named by a TPM Name (a hash over the TPM
+    /// public area, not the bare public key). A relying party that needs the
+    /// key-binding must treat `None` as "cannot establish", never as "waived":
+    /// `verify_attested_receipt` enforces the binding only when this is `Some`,
+    /// and its contract requires the caller to have obtained `signer_pubkey` from
+    /// the attested SVID itself when it is `None`.
+    pub subject_key_sha256: Option<[u8; 32]>,
     /// Claims the backend affirmatively established.
     pub proves: BTreeSet<Claim>,
     /// Claims the backend explicitly could NOT establish.
@@ -232,6 +248,9 @@ impl SvidAttestationBackend for SelfMeasuredBackend {
                     backend: self.id(),
                     assurance: self.assurance(),
                     subject: AttestedSubject::SelfMeasuredNode,
+                    // Self-measurement attests the launched artifact, not an
+                    // Ed25519 signing key, so it cannot bind a receipt signer.
+                    subject_key_sha256: None,
                     proves,
                     not_proven,
                     launch: Some(launch),

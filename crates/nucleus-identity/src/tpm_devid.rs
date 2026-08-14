@@ -303,6 +303,10 @@ pub fn verify_residency(
             ak_name_sha256: sha256_32(&ak_name),
             subject_name_sha256: sha256_32(&subject_name),
         },
+        // A TPM Name is a hash over the TPM public area, not the bare Ed25519
+        // public key a receipt signer presents, so this residency proof cannot
+        // bind a receipt signer directly (that binding is a later brick).
+        subject_key_sha256: None,
         proves,
         not_proven,
         launch: None,
@@ -740,6 +744,9 @@ pub fn compose_l2(
         backend: "tpm-devid-l2",
         assurance: AssuranceLevel::L2Device,
         subject: residency.subject.clone(),
+        // Inherits residency's key-binding: still a TPM Name, not a bare
+        // Ed25519 receipt-signer key.
+        subject_key_sha256: residency.subject_key_sha256,
         proves,
         not_proven,
         launch: None,
@@ -760,6 +767,7 @@ mod l2_composition_tests {
                 ak_name_sha256: ak,
                 subject_name_sha256: [0u8; 32],
             },
+            subject_key_sha256: None,
             proves: BTreeSet::from([Claim::KeyNonExportable]),
             not_proven: BTreeSet::from([Claim::HardwareRootedKey, Claim::StableDeviceIdentity]),
             launch: None,

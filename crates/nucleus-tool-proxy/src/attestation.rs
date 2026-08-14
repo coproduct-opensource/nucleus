@@ -24,6 +24,7 @@
 use ed25519_dalek::VerifyingKey;
 use nucleus_identity::{AssuranceLevel, LaunchAttestation, VerifiedAttestation};
 use portcullis::mediation_receipt::MediationReceipt;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -394,9 +395,12 @@ impl AttestationVerifier {
 }
 
 /// Relying-party cross-check for a forensic [`MediationReceipt`] (North Star C9 /
-/// signed-agent-actions): verify the mediator's signature **and** that the
-/// receipt's self-claimed `{signer_assurance, signer_backend}` **exactly match** an
-/// independently-verified attestation of the signer's SVID.
+/// signed-agent-actions): verify the mediator's signature, that the receipt's
+/// self-claimed `{signer_assurance, signer_backend}` **exactly match** an
+/// independently-verified attestation of the signer's SVID, **and** — when the
+/// attestation names a signing key ([`VerifiedAttestation::subject_key_sha256`]) —
+/// that the receipt was signed by THAT key (the deep key-binding, closing the
+/// key-substitution hole).
 ///
 /// This is what makes the receipt's self-claim non-load-bearing: a receipt is a
 /// perfectly valid signature over whatever assurance the signer *wrote*, so the
@@ -437,6 +441,27 @@ pub fn verify_attested_receipt(
             receipt.signer_assurance,
             attestation.assurance().as_u8()
         ));
+    }
+
+    // 3. The DEEP key-binding, when the attestation names a signing key: the
+    //    receipt must be signed by THAT key, not merely by some key handed in
+    //    alongside the attestation. Without this, a receipt signed by any key
+    //    could borrow a hardware-rooted SVID's backend+assurance by presenting
+    //    that SVID's attestation next to an unrelated `signer_pubkey`. When the
+    //    attestation does NOT name a key (`None` — a self-measured launch, or a
+    //    TPM Name that is not a bare Ed25519 key), the binding cannot be checked
+    //    here; the caller's contract is then to have obtained `signer_pubkey`
+    //    from the attested SVID itself.
+    if let Some(expected) = attestation.subject_key_sha256 {
+        let mut hasher = Sha256::new();
+        hasher.update(signer_pubkey.to_bytes());
+        let got: [u8; 32] = hasher.finalize().into();
+        if got != expected {
+            return Err(
+                "receipt signing key is not the attested subject key -- key substitution rejected"
+                    .to_string(),
+            );
+        }
     }
 
     Ok(attestation.assurance())
@@ -704,15 +729,27 @@ mod tests {
     }
 
     /// An independently-verified attestation — what a relying party derives itself.
-    fn att(backend: &'static str, level: AssuranceLevel) -> VerifiedAttestation {
+    /// `key_fp` binds a specific signing key (the deep key-binding); `None` leaves
+    /// the binding unestablished, as a self-measured or TPM-Name subject does.
+    fn att_bound(
+        backend: &'static str,
+        level: AssuranceLevel,
+        key_fp: Option<[u8; 32]>,
+    ) -> VerifiedAttestation {
         VerifiedAttestation {
             backend,
             assurance: level,
             subject: AttestedSubject::SelfMeasuredNode,
+            subject_key_sha256: key_fp,
             proves: BTreeSet::new(),
             not_proven: BTreeSet::new(),
             launch: None,
         }
+    }
+
+    /// The common case in these tests: no key-binding declared.
+    fn att(backend: &'static str, level: AssuranceLevel) -> VerifiedAttestation {
+        att_bound(backend, level, None)
     }
 
     #[test]
@@ -759,6 +796,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("backend"), "{err}");
+    }
+
+    /// SHA-256 of a verifying key's 32 bytes — the same encoding
+    /// `verify_attested_receipt` hashes `signer_pubkey` under.
+    fn key_fp(vk: &VerifyingKey) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(vk.to_bytes());
+        h.finalize().into()
+    }
+
+    /// When the attestation binds THIS signing key, a receipt signed by it is
+    /// admitted — the control for the substitution test below (so that test is
+    /// detecting the mismatch, not a broken binding).
+    #[test]
+    fn attested_receipt_admits_when_the_bound_key_signed_it() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let r = signed_receipt(&sk, 1, "self-measured");
+        let level = verify_attested_receipt(
+            &r,
+            &sk.verifying_key(),
+            &att_bound(
+                "self-measured",
+                AssuranceLevel::L1Software,
+                Some(key_fp(&sk.verifying_key())),
+            ),
+        )
+        .expect("the bound key's own receipt is admitted");
+        assert_eq!(level, AssuranceLevel::L1Software);
+    }
+
+    /// **THE deep-key-binding load-bearing test.** A receipt validly signed by
+    /// key K, whose `{backend, assurance}` match the attestation exactly, is still
+    /// REJECTED when the attestation binds a DIFFERENT key K' — the attestation of
+    /// a hardware-rooted identity cannot be borrowed by a receipt some other key
+    /// signed. Both `signer_pubkey` and the receipt's signature are K's here
+    /// (internally consistent), so only the subject-key binding catches it;
+    /// deleting the step turns this green.
+    #[test]
+    fn attested_receipt_rejects_a_receipt_signed_by_a_key_the_attestation_does_not_bind() {
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let attested = SigningKey::from_bytes(&[8u8; 32]); // the key the SVID actually binds
+        let r = signed_receipt(&signer, 1, "self-measured"); // internally valid under `signer`
+        let err = verify_attested_receipt(
+            &r,
+            &signer.verifying_key(),
+            &att_bound(
+                "self-measured",
+                AssuranceLevel::L1Software,
+                Some(key_fp(&attested.verifying_key())),
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("substitution") || err.contains("not the attested subject key"),
+            "{err}"
+        );
     }
 
     #[test]
