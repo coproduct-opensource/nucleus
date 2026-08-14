@@ -143,6 +143,32 @@ pub trait CaClient: Send + Sync {
             .await
     }
 
+    /// Signs a CSR with launch attestation AND a mediator-key binding (OID .1.4).
+    ///
+    /// Binds the attested SVID to the Ed25519 key that signs this pod's forensic
+    /// `MediationReceipt`s: `mediator_pubkey_sha256` is `SHA-256(that public key)`,
+    /// embedded so a relying party can require the receipts to be signed by exactly
+    /// that key (`verify_attested_receipt`), not merely by a key handed in beside
+    /// the attestation.
+    ///
+    /// # Default Implementation
+    ///
+    /// Falls back to `sign_attested_csr()` (ignoring the binding), so a CA that
+    /// does not embed nucleus extensions degrades to a plain attested cert rather
+    /// than failing.
+    async fn sign_attested_and_bound_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        _mediator_pubkey_sha256: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        self.sign_attested_csr(csr, private_key, identity, ttl, attestation)
+            .await
+    }
+
     /// Signs a CSR and returns only the certificate chain (not the private key).
     ///
     /// This is used for OIDC token exchange flows where the client generates
@@ -229,6 +255,27 @@ impl CaClient for Arc<dyn CaClient> {
                 ttl,
                 attestation,
                 permission_fingerprint,
+            )
+            .await
+    }
+
+    async fn sign_attested_and_bound_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        mediator_pubkey_sha256: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        (**self)
+            .sign_attested_and_bound_csr(
+                csr,
+                private_key,
+                identity,
+                ttl,
+                attestation,
+                mediator_pubkey_sha256,
             )
             .await
     }

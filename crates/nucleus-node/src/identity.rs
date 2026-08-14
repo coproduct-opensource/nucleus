@@ -43,6 +43,14 @@ pub struct IdentityManager {
     attestation_registry: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
     /// Default certificate TTL.
     cert_ttl: Duration,
+    /// Base directory holding each pod's node-side state (`<dir>/<pod_id>/…`),
+    /// where the node records `mediator-pubkey.hex` when it mints the pod's
+    /// mediation key. When set, an attested SVID also carries a mediator-key
+    /// binding extension (OID .1.4) bound to that key, so a relying party can
+    /// require the pod's forensic receipts to be signed by exactly it. `None`
+    /// leaves SVIDs unbound (attestation only) — a graceful default, not a
+    /// failure.
+    mediation_binding_dir: Option<std::path::PathBuf>,
 }
 
 impl IdentityManager {
@@ -82,7 +90,32 @@ impl IdentityManager {
             trust_domain,
             attestation_registry: Arc::new(RwLock::new(HashMap::new())),
             cert_ttl,
+            mediation_binding_dir: None,
         }
+    }
+
+    /// Sets the base directory (`<dir>/<pod_id>/mediator-pubkey.hex`) from which an
+    /// attested SVID's mediator-key binding is read at issuance. Chainable so the
+    /// node can wire it at construction; absent, SVIDs are attestation-only.
+    #[must_use]
+    pub fn with_mediation_binding_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.mediation_binding_dir = Some(dir);
+        self
+    }
+
+    /// The mediator-key binding for a pod: `SHA-256` of the Ed25519 public key the
+    /// node minted for it, read from `mediator-pubkey.hex`. `None` when no binding
+    /// dir is configured or the file is absent/malformed — issuance then falls back
+    /// to an attestation-only SVID rather than failing.
+    fn mediation_binding_for(&self, pod_id: &str) -> Option<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let dir = self.mediation_binding_dir.as_ref()?;
+        let hex = std::fs::read_to_string(dir.join(pod_id).join("mediator-pubkey.hex")).ok()?;
+        let pubkey = hex::decode(hex.trim()).ok()?;
+        if pubkey.len() != 32 {
+            return None;
+        }
+        Some(Sha256::digest(&pubkey).into())
     }
 
     /// Returns the trust domain.
@@ -313,18 +346,37 @@ impl IdentityManager {
                     .generate()
                     .map_err(|e| format!("CSR generation failed: {e}"))?;
 
-                // Sign with attestation using configured TTL
-                let cert = self
-                    .ca
-                    .sign_attested_csr(
-                        cert_sign.csr(),
-                        cert_sign.private_key(),
-                        identity,
-                        self.cert_ttl,
-                        &att,
-                    )
-                    .await
-                    .map_err(|e| format!("attested signing failed: {e}"))?;
+                // Sign with attestation using configured TTL. When the pod has a
+                // minted mediation key, ALSO bind it into the SVID (OID .1.4) so a
+                // relying party can require the pod's receipts to be signed by that
+                // exact key; otherwise a plain attested SVID.
+                let cert = match self.mediation_binding_for(pod_id) {
+                    Some(binding) => {
+                        info!("binding mediation key into attested SVID for pod {pod_id}");
+                        self.ca
+                            .sign_attested_and_bound_csr(
+                                cert_sign.csr(),
+                                cert_sign.private_key(),
+                                identity,
+                                self.cert_ttl,
+                                &att,
+                                &binding,
+                            )
+                            .await
+                    }
+                    None => {
+                        self.ca
+                            .sign_attested_csr(
+                                cert_sign.csr(),
+                                cert_sign.private_key(),
+                                identity,
+                                self.cert_ttl,
+                                &att,
+                            )
+                            .await
+                    }
+                }
+                .map_err(|e| format!("attested signing failed: {e}"))?;
 
                 // Warm the cache so the served FETCH_SVID fast-path returns THIS
                 // attested cert (carrying the measurement), not the plain one.
@@ -670,6 +722,88 @@ mod tests {
             .unwrap();
 
         assert_eq!(cert.identity(), &identity);
+    }
+
+    /// **Track-1 live-embed.** When the pod has a minted mediation key (recorded
+    /// as `mediator-pubkey.hex`), its attested SVID carries the mediator-key
+    /// binding (OID .1.4) = SHA-256 of that pubkey — the value a relying party
+    /// then requires the pod's forensic receipts to be signed under.
+    #[tokio::test]
+    async fn an_attested_svid_binds_the_pods_minted_mediation_key() {
+        use nucleus_identity::attestation::extract_mediation_key_binding;
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600))
+            .unwrap()
+            .with_mediation_binding_dir(dir.path().to_path_buf());
+
+        let pod_id = "bound-pod";
+        // The node's minted mediator key: record its pubkey where the mint would.
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let pubkey = sk.verifying_key().to_bytes();
+        std::fs::create_dir_all(dir.path().join(pod_id)).unwrap();
+        std::fs::write(
+            dir.path().join(pod_id).join("mediator-pubkey.hex"),
+            format!("{}\n", hex::encode(pubkey)),
+        )
+        .unwrap();
+
+        let mut kernel = NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+        let mut rootfs = NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+        manager
+            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .await
+            .unwrap();
+
+        let identity = Identity::new("test.local", "default", "bound-service");
+        let cert = manager
+            .fetch_attested_certificate(&identity, pod_id)
+            .await
+            .unwrap();
+
+        let expect: [u8; 32] = Sha256::digest(pubkey).into();
+        assert_eq!(
+            extract_mediation_key_binding(cert.leaf().der()),
+            Some(expect),
+            "the attested SVID must bind the pod's minted mediation key"
+        );
+    }
+
+    /// The control: with a binding dir configured but no `mediator-pubkey.hex` for
+    /// the pod, the attested SVID carries NO binding (attestation only) — a missing
+    /// key degrades gracefully, it does not fail issuance or fabricate a binding.
+    #[tokio::test]
+    async fn an_attested_svid_without_a_minted_key_carries_no_binding() {
+        use nucleus_identity::attestation::extract_mediation_key_binding;
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600))
+            .unwrap()
+            .with_mediation_binding_dir(dir.path().to_path_buf());
+
+        let pod_id = "unbound-pod";
+        let mut kernel = NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+        let mut rootfs = NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+        manager
+            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .await
+            .unwrap();
+
+        let identity = Identity::new("test.local", "default", "unbound-service");
+        let cert = manager
+            .fetch_attested_certificate(&identity, pod_id)
+            .await
+            .unwrap();
+        assert_eq!(extract_mediation_key_binding(cert.leaf().der()), None);
     }
 }
 

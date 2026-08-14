@@ -385,7 +385,6 @@ impl SelfSignedCa {
     /// forensic `MediationReceipt`s, so a relying party can reject a receipt signed
     /// by any other key (see `verify_attested_receipt`). Same wire shape as the
     /// permission-fingerprint extension — a version-tagged 32-byte octet string.
-    #[allow(dead_code)]
     fn create_mediation_key_binding_extension(pubkey_sha256: &[u8; 32]) -> CustomExtension {
         let mut content = vec![
             0x02, // INTEGER tag
@@ -626,6 +625,54 @@ impl CaClient for SelfSignedCa {
             identity,
             ttl,
             vec![attestation_ext, fingerprint_ext],
+        )?;
+
+        let expiry = chain[0].not_after()?;
+        let private_key_obj = PrivateKey::from_pem(private_key)?;
+
+        Ok(WorkloadCertificate::new(
+            chain,
+            private_key_obj,
+            expiry,
+            identity.clone(),
+        ))
+    }
+
+    async fn sign_attested_and_bound_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        mediator_pubkey_sha256: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        let csr_spiffe_uri = self.validate_csr(csr)?;
+        let expected_uri = identity.to_spiffe_uri();
+        if csr_spiffe_uri != expected_uri {
+            return Err(Error::VerificationFailed(format!(
+                "CSR SPIFFE URI mismatch: expected {}, got {}",
+                expected_uri, csr_spiffe_uri
+            )));
+        }
+        if identity.trust_domain() != self.trust_domain {
+            return Err(Error::TrustDomainMismatch {
+                expected: self.trust_domain.clone(),
+                actual: identity.trust_domain().to_string(),
+            });
+        }
+
+        let key_pair = KeyPair::from_pem(private_key)
+            .map_err(|e| Error::CaSigning(format!("failed to load private key: {e}")))?;
+
+        let attestation_ext = Self::create_attestation_extension(attestation);
+        let binding_ext = Self::create_mediation_key_binding_extension(mediator_pubkey_sha256);
+
+        let chain = self.sign_with_keypair_and_extensions(
+            &key_pair,
+            identity,
+            ttl,
+            vec![attestation_ext, binding_ext],
         )?;
 
         let expiry = chain[0].not_after()?;
@@ -1145,6 +1192,47 @@ mod tests {
             Some(binding),
             "the verifier must surface the bound key as subject_key_sha256"
         );
+    }
+
+    /// **The production issuance path.** `sign_attested_and_bound_csr` (what the
+    /// node calls for a pod with a minted mediation key) yields an SVID that
+    /// carries BOTH the launch attestation and the mediator-key binding, and the
+    /// verifier surfaces the bound key.
+    #[tokio::test]
+    async fn sign_attested_and_bound_csr_embeds_a_verifiable_binding() {
+        use crate::assurance::{SelfMeasuredBackend, SvidAttestationBackend};
+        use crate::attestation::{extract_mediation_key_binding, AttestationRequirements};
+        use crate::ca::CaClient;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "mediator-agent");
+        let cert_sign = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let binding = [0x77u8; 32];
+
+        let cert = ca
+            .sign_attested_and_bound_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+                &attestation,
+                &binding,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            extract_mediation_key_binding(cert.leaf().der()),
+            Some(binding)
+        );
+        let va = SelfMeasuredBackend
+            .verify_svid(cert.leaf().to_pem(), &AttestationRequirements::any(), true)
+            .unwrap()
+            .expect("attested");
+        assert_eq!(va.subject_key_sha256, Some(binding));
     }
 
     /// The control: an attested SVID WITHOUT the binding extension surfaces
