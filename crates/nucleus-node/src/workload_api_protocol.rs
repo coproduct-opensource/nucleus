@@ -178,21 +178,16 @@ pub enum WorkloadApiCommand {
     /// durable, completeness-bounded collection (see [`crate::mediation_receipt_collector`]).
     ///
     /// Unlike every other command here, this one is followed by a SECOND frame:
-    /// the receipt JSON body. It is read separately, under its own larger length
-    /// bound ([`MAX_RECEIPT_BODY_LEN`]), so the 256-byte command guard that
-    /// protects `parse_command` from unbounded buffering is untouched — a receipt
-    /// (~0.5 KB) would not fit a command frame, and widening that bound for every
-    /// command would weaken the OOM guard the fuzz target asserts.
+    /// the receipt JSON body. That body is read by the vsock handler under its own
+    /// larger length bound (`MAX_RECEIPT_BODY_LEN` there), so the 256-byte command
+    /// guard that protects `parse_command` from unbounded buffering is untouched —
+    /// a receipt (~0.5 KB) would not fit a command frame, and widening that bound
+    /// for every command would weaken the OOM guard the fuzz target asserts.
     ///
     /// The Firecracker guest has no HTTP path to the node, so this vsock channel
     /// is how a real pod's receipts reach the host as they are produced.
     ShipReceipt,
 }
-
-/// The largest receipt body the host will buffer from a `SHIP_RECEIPT` frame.
-/// Bounds a single receipt (a fixed-shape JSON object, well under 1 KB) with
-/// headroom, without widening the 256-byte command guard.
-pub const MAX_RECEIPT_BODY_LEN: usize = 8192;
 
 impl WorkloadApiCommand {
     /// The canonical, on-the-wire spelling of this command (no trailing newline).

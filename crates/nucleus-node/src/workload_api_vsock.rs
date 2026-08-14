@@ -30,9 +30,15 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
 use crate::identity::IdentityManager;
-use crate::workload_api_protocol::{
-    parse_command, WorkloadApiCommand, MAX_COMMAND_LEN, MAX_RECEIPT_BODY_LEN,
-};
+use crate::workload_api_protocol::{parse_command, WorkloadApiCommand, MAX_COMMAND_LEN};
+
+/// The largest receipt body the host buffers from a `SHIP_RECEIPT`'s second frame.
+/// Bounds a single receipt (a fixed-shape JSON object, well under 1 KB) with
+/// headroom, without widening the 256-byte command guard `parse_command` enforces.
+/// Lives here, beside `read_bounded_frame` that applies it, rather than in the
+/// protocol module — which the fuzz target compiles in isolation, where a const
+/// only the handler uses would read as dead.
+const MAX_RECEIPT_BODY_LEN: usize = 8192;
 
 /// Default port for the Workload API vsock server.
 #[allow(dead_code)]
