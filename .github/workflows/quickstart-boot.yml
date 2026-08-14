@@ -499,11 +499,15 @@ jobs:
             any_json=1
             tmp=$(mktemp -d)
             sudo cp "$log" "$tmp/fc.log"; sudo chown "$(id -u)" "$tmp/fc.log"
+            # The guest SERIAL console uses CRLF line endings, so strip the
+            # trailing CR (\r) — otherwise the JSON carries a stray \r and, more
+            # sharply, the pubkey below would be "…\r" and never whole-line-match
+            # the node's clean anchor. (Substring greps elsewhere never hit this.)
             grep -aE '^NUCLEUS-MEDIATION-RECEIPT-JSON ' "$tmp/fc.log" \
-              | sed -E 's/^NUCLEUS-MEDIATION-RECEIPT-JSON //' > "$tmp/receipts.jsonl"
+              | sed -E 's/^NUCLEUS-MEDIATION-RECEIPT-JSON //; s/\r$//' > "$tmp/receipts.jsonl"
             [ -s "$tmp/receipts.jsonl" ] || continue
 
-            guest_pk=$(grep -aE '^NUCLEUS-MEDIATION-PUBKEY ' "$tmp/fc.log" | tail -1 | awk '{print $2}')
+            guest_pk=$(grep -aE '^NUCLEUS-MEDIATION-PUBKEY ' "$tmp/fc.log" | tail -1 | awk '{print $2}' | tr -cd '0-9a-f')
             if [ -z "${guest_pk:-}" ]; then
               echo "::error::pod log $log has receipts but no NUCLEUS-MEDIATION-PUBKEY — cannot verify"
               exit 1
