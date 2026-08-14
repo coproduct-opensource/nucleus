@@ -219,6 +219,12 @@ lean_lib «DeclassifyProofs» where
 lean_lib «SessionCeilingProofs» where
   roots := #[`SessionCeilingProofs]
 
+-- GKAT syntax + equational axioms (POPL'20 Fig.1) and the single-state Salomaa
+-- reduction (existence via W1/U5/S1/S4, uniqueness via W3) — the base case of the
+-- completeness reduction, done syntactically. General-n existence is open.
+lean_lib «GkatSyntaxProofs» where
+  roots := #[`GkatSyntaxProofs]
+
 -- Snapshot clone-safety: the cmdline key classification is disjoint, the
 -- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
 -- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs
