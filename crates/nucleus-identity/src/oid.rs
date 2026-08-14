@@ -71,6 +71,29 @@ pub const OID_NUCLEUS_TPM_RESIDENCY_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_TPM_RESIDENCY_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 3];
 
+/// OID for Nucleus mediator-key binding (same PEN arc, component .1.4).
+///
+/// OID: 1.3.6.1.4.1.57212.1.4
+/// - PEN: 57212 (same unregistered placeholder)
+/// - Component: .1.4 (attestation.mediation_key_binding)
+///
+/// The extension carries `SHA-256(mediator Ed25519 public key)`, binding the
+/// attested SVID to the specific key that signs this pod's forensic
+/// [`MediationReceipt`](crate)s. It is what lets a relying party close the
+/// key-substitution hole: a receipt claiming this SVID's attestation must be
+/// signed by the key named here, not merely by a key handed in beside it (see
+/// `verify_attested_receipt` / [`VerifiedAttestation::subject_key_sha256`]).
+///
+/// **INTERNAL / no interop commitment.** Like the rest of the 57212 arc, this is
+/// an in-tree format; external interoperability (and PEN registration) is a
+/// separate outward-facing decision.
+pub const OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x04, // .1.4 (attestation.mediation_key_binding)
+];
+
+pub const OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 4];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +152,31 @@ mod tests {
         );
         assert_eq!(OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE[8], 2);
         assert_eq!(OID_NUCLEUS_ATTESTATION_TUPLE[8], 1);
+    }
+
+    #[test]
+    fn test_mediation_key_binding_oid_consistency() {
+        // Shares the PEN arc, distinct component .1.4.
+        assert_eq!(
+            &OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES[..8],
+            &OID_NUCLEUS_ATTESTATION_BYTES[..8],
+            "mediation-key-binding OID must share the same PEN arc"
+        );
+        assert_eq!(OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES[8], 0x01); // .1
+        assert_eq!(OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES[9], 0x04); // .4
+        assert_eq!(OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE.len(), 9);
+        assert_eq!(
+            &OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE[..8],
+            &OID_NUCLEUS_ATTESTATION_TUPLE[..8]
+        );
+        assert_eq!(OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE[8], 4);
+        // Distinct from every other allocated component in the arc.
+        for other in [
+            OID_NUCLEUS_ATTESTATION_BYTES,
+            OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES,
+            OID_NUCLEUS_TPM_RESIDENCY_BYTES,
+        ] {
+            assert_ne!(OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES, other);
+        }
     }
 }

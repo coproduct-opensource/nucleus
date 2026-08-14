@@ -138,14 +138,16 @@ pub struct VerifiedAttestation {
     /// must be signed by THIS key, not merely by some key the relying party was
     /// handed alongside the attestation.
     ///
-    /// `None` when the backend attests something that is not an Ed25519 signing
-    /// key comparable to a receipt signer — a self-measured launch (an artifact,
-    /// not a key), or a TPM-resident key named by a TPM Name (a hash over the TPM
-    /// public area, not the bare public key). A relying party that needs the
-    /// key-binding must treat `None` as "cannot establish", never as "waived":
-    /// `verify_attested_receipt` enforces the binding only when this is `Some`,
-    /// and its contract requires the caller to have obtained `signer_pubkey` from
-    /// the attested SVID itself when it is `None`.
+    /// `Some` when the SVID names a bound Ed25519 signing key: the self-measured
+    /// backend reads it from the mediator-key-binding extension (OID .1.4) the node
+    /// embeds at issuance, and a future backend may bind a key directly. `None`
+    /// when no such binding is present — including a TPM-resident key named only by
+    /// a TPM Name (a hash over the TPM public area, not a bare public key). A
+    /// relying party that needs the key-binding must treat `None` as "cannot
+    /// establish", never as "waived": `verify_attested_receipt` enforces the
+    /// binding only when this is `Some`, and its contract requires the caller to
+    /// have obtained `signer_pubkey` from the attested SVID itself when it is
+    /// `None`.
     pub subject_key_sha256: Option<[u8; 32]>,
     /// Claims the backend affirmatively established.
     pub proves: BTreeSet<Claim>,
@@ -244,13 +246,20 @@ impl SvidAttestationBackend for SelfMeasuredBackend {
         match verify_attested_svid(chain_pem, requirements, require_attestation)? {
             Some(launch) => {
                 let (proves, not_proven) = Self::claim_profile();
+                // Self-measurement attests the launched artifact, not a key — but
+                // the node can ALSO bind a mediator signing key to this SVID via
+                // the mediator-key-binding extension (OID .1.4). When present,
+                // surface it so `verify_attested_receipt` can require the receipt
+                // to be signed by exactly that key; absent, the binding is simply
+                // not established (`None`).
+                let subject_key_sha256 = pem::parse(chain_pem).ok().and_then(|leaf| {
+                    crate::attestation::extract_mediation_key_binding(leaf.contents())
+                });
                 Ok(Some(VerifiedAttestation {
                     backend: self.id(),
                     assurance: self.assurance(),
                     subject: AttestedSubject::SelfMeasuredNode,
-                    // Self-measurement attests the launched artifact, not an
-                    // Ed25519 signing key, so it cannot bind a receipt signer.
-                    subject_key_sha256: None,
+                    subject_key_sha256,
                     proves,
                     not_proven,
                     launch: Some(launch),

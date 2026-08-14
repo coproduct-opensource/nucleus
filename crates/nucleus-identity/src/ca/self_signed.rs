@@ -375,6 +375,36 @@ impl SelfSignedCa {
         ext
     }
 
+    /// Creates a custom X.509 extension binding the SVID to a mediator signing key.
+    ///
+    /// OID: 1.3.6.1.4.1.57212.1.4 (Nucleus mediator-key binding)
+    /// Content: DER-encoded SEQUENCE { INTEGER(version=1), OCTET STRING(32 bytes) }
+    /// where the 32 bytes are `SHA-256(mediator Ed25519 public key)`.
+    ///
+    /// This binds the attested identity to the specific key that signs this pod's
+    /// forensic `MediationReceipt`s, so a relying party can reject a receipt signed
+    /// by any other key (see `verify_attested_receipt`). Same wire shape as the
+    /// permission-fingerprint extension — a version-tagged 32-byte octet string.
+    #[allow(dead_code)]
+    fn create_mediation_key_binding_extension(pubkey_sha256: &[u8; 32]) -> CustomExtension {
+        let mut content = vec![
+            0x02, // INTEGER tag
+            0x01, // length 1
+            0x01, // version 1
+            0x04, // OCTET STRING tag
+            0x20, // length 32
+        ];
+        content.extend_from_slice(pubkey_sha256);
+
+        let mut der = vec![0x30, content.len() as u8];
+        der.extend_from_slice(&content);
+
+        let mut ext =
+            CustomExtension::from_oid_content(oid::OID_NUCLEUS_MEDIATION_KEY_BINDING_TUPLE, der);
+        ext.set_criticality(false);
+        ext
+    }
+
     /// Signs a certificate using only a public key (no private key needed).
     ///
     /// This is used for CSR-only signing flows (like OIDC) where the client
@@ -1068,6 +1098,85 @@ mod tests {
             extracted.is_none(),
             "standard cert without fingerprint extension should return None"
         );
+    }
+
+    /// **Brick E2 round-trip.** An SVID carrying the mediator-key-binding
+    /// extension (OID .1.4) makes the bound key visible to the relying party:
+    /// `extract_mediation_key_binding` returns it, and the self-measured backend
+    /// surfaces it as `VerifiedAttestation::subject_key_sha256` — the value
+    /// `verify_attested_receipt` then requires the receipt to be signed under.
+    #[tokio::test]
+    async fn a_mediator_key_binding_extension_is_surfaced_by_the_verifier() {
+        use crate::assurance::{SelfMeasuredBackend, SvidAttestationBackend};
+        use crate::attestation::{extract_mediation_key_binding, AttestationRequirements};
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "mediator-agent");
+        let cert_sign = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let key_pair = KeyPair::from_pem(cert_sign.private_key()).unwrap();
+
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let binding = [0x42u8; 32]; // stand-in for SHA-256(mediator pubkey)
+        let att_ext = SelfSignedCa::create_attestation_extension(&attestation);
+        let bind_ext = SelfSignedCa::create_mediation_key_binding_extension(&binding);
+        let chain = ca
+            .sign_with_keypair_and_extensions(
+                &key_pair,
+                &identity,
+                Duration::from_secs(3600),
+                vec![att_ext, bind_ext],
+            )
+            .unwrap();
+        let leaf = &chain[0];
+
+        assert_eq!(
+            extract_mediation_key_binding(leaf.der()),
+            Some(binding),
+            "the binding must be extractable straight from the leaf DER"
+        );
+        let va = SelfMeasuredBackend
+            .verify_svid(leaf.to_pem(), &AttestationRequirements::any(), true)
+            .unwrap()
+            .expect("an attested leaf verifies");
+        assert_eq!(
+            va.subject_key_sha256,
+            Some(binding),
+            "the verifier must surface the bound key as subject_key_sha256"
+        );
+    }
+
+    /// The control: an attested SVID WITHOUT the binding extension surfaces
+    /// `subject_key_sha256 = None` — so the key-binding is "not established", never
+    /// silently waived.
+    #[tokio::test]
+    async fn an_svid_without_the_binding_surfaces_no_bound_key() {
+        use crate::assurance::{SelfMeasuredBackend, SvidAttestationBackend};
+        use crate::attestation::AttestationRequirements;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "plain-agent");
+        let cert_sign = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let key_pair = KeyPair::from_pem(cert_sign.private_key()).unwrap();
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let att_ext = SelfSignedCa::create_attestation_extension(&attestation);
+        let chain = ca
+            .sign_with_keypair_and_extensions(
+                &key_pair,
+                &identity,
+                Duration::from_secs(3600),
+                vec![att_ext],
+            )
+            .unwrap();
+
+        let va = SelfMeasuredBackend
+            .verify_svid(chain[0].to_pem(), &AttestationRequirements::any(), true)
+            .unwrap()
+            .expect("an attested leaf verifies");
+        assert_eq!(va.subject_key_sha256, None);
     }
 
     #[test]

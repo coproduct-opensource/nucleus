@@ -731,6 +731,28 @@ pub fn extract_launch_attestation(cert_der: &[u8]) -> Option<LaunchAttestation> 
     None
 }
 
+/// Extract the mediator-key binding from an X.509 certificate extension.
+///
+/// Looks for OID `1.3.6.1.4.1.57212.1.4` (Nucleus mediator-key binding) and
+/// returns the embedded `SHA-256(mediator Ed25519 public key)`. This is the value
+/// a relying party places in [`VerifiedAttestation::subject_key_sha256`] so
+/// `verify_attested_receipt` can require the receipt to be signed by exactly this
+/// key. The wire shape is identical to the permission fingerprint (a
+/// version-tagged 32-byte octet string), so the same DER parser reads it.
+///
+/// Returns `None` if the extension is absent or cannot be parsed.
+pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+    for ext in cert.extensions() {
+        if ext.oid.as_bytes() == crate::oid::OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES {
+            return parse_permission_fingerprint_der(ext.value);
+        }
+    }
+    None
+}
+
 /// Relying-party verification of an attested SVID served over `FETCH_SVID`.
 ///
 /// This is the *outside* verifier for the North Star C9 leg: given the PEM cert
