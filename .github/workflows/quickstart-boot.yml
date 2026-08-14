@@ -324,6 +324,11 @@ jobs:
           # EnvironmentFile'd into the systemd unit — see provision::node_env_body.
           CANARY="nucleus-e2e-canary-$(openssl rand -hex 12)"
           echo "NUCLEUS_E2E_CANARY=$CANARY" | sudo tee -a /etc/nucleus/node.env >/dev/null
+          # The node's tracing filter is EnvFilter::from_default_env (boot_trace),
+          # so its INFO logs — including the per-pod NUCLEUS-MEDIATOR-PUBKEY line
+          # the receipt-verification step anchors on — only reach journald when
+          # RUST_LOG selects info. Set it here so that anchor is present.
+          echo "RUST_LOG=info" | sudo tee -a /etc/nucleus/node.env >/dev/null
           sudo systemctl restart nucleus-node || sudo nucleus start || true
           # Exported for the verifier, NOT written anywhere the guest can read.
           echo "NUCLEUS_E2E_CANARY=$CANARY" >> "$GITHUB_ENV"
@@ -458,6 +463,73 @@ jobs:
           count=$(printf '%s\n' "$markers" | grep -c .)
           echo "signed MediationReceipt emitted on the live path: $count well-formed marker(s)"
           printf '%s\n' "$markers" | head -8
+
+      - name: A relying party verifies the pod's receipts against a node-anchored key
+        run: |
+          # The marker step above proves receipts were EMITTED. This one is the
+          # host-side relying-party check: recover the FULL signed receipts from
+          # the guest console (a Firecracker host cannot read the guest's /run
+          # receipt file, so the proxy mirrors each full receipt as
+          # NUCLEUS-MEDIATION-RECEIPT-JSON) and verify every signature with the
+          # OFFLINE verifier — the same `nucleus-audit verify-mediation-receipts`
+          # a third party would run.
+          #
+          # The key those signatures verify under is not taken on the guest's
+          # word: the guest self-publishes its mediator pubkey
+          # (NUCLEUS-MEDIATION-PUBKEY), and this step accepts it only after
+          # finding the SAME pubkey in the node's own journal
+          # (NUCLEUS-MEDIATOR-PUBKEY <pod> <key>), where the node recorded the key
+          # it MINTED for the pod. So the receipts verify under a node-anchored
+          # key, not a self-asserted one. (Trust of that key's SVID attestation is
+          # the further cross-check verify_attested_receipt performs; it is not
+          # claimed here.)
+          set -uo pipefail
+          state=/var/lib/nucleus/state
+          cargo build --release -p nucleus-audit
+          audit="$PWD/target/release/nucleus-audit"
+
+          # Every pod log carrying full-receipt JSON.
+          mapfile -t logs < <(sudo grep -rlaE 'NUCLEUS-MEDIATION-RECEIPT-JSON ' "$state" 2>/dev/null || true)
+          if [ "${#logs[@]}" -eq 0 ]; then
+            echo "::error::no pod emitted full-receipt JSON — the host cannot recover receipts to verify (NUCLEUS-MEDIATION-RECEIPT-JSON absent)"
+            sudo find "$state" -name firecracker.log -exec sh -c 'echo "== $1 =="; tail -40 "$1"' _ {} \; || true
+            exit 1
+          fi
+
+          journal=$(sudo journalctl -u nucleus-node --no-pager 2>/dev/null || true)
+          verified_any=0
+          for log in "${logs[@]}"; do
+            tmp=$(mktemp -d)
+            sudo cp "$log" "$tmp/fc.log"; sudo chown "$(id -u)" "$tmp/fc.log"
+            grep -aE '^NUCLEUS-MEDIATION-RECEIPT-JSON ' "$tmp/fc.log" \
+              | sed -E 's/^NUCLEUS-MEDIATION-RECEIPT-JSON //' > "$tmp/receipts.jsonl"
+            [ -s "$tmp/receipts.jsonl" ] || continue
+
+            guest_pk=$(grep -aE '^NUCLEUS-MEDIATION-PUBKEY ' "$tmp/fc.log" | tail -1 | awk '{print $2}')
+            if [ -z "${guest_pk:-}" ]; then
+              echo "::error::pod log $log has receipts but no NUCLEUS-MEDIATION-PUBKEY — cannot verify"
+              exit 1
+            fi
+            # The node must have MINTED this exact pubkey (its journal records it
+            # per pod). Keys are per-pod-unique, so finding the value there is the
+            # anchor — no fragile pod-id path parsing needed.
+            if ! printf '%s\n' "$journal" | grep -qaE "NUCLEUS-MEDIATOR-PUBKEY [^ ]+ ${guest_pk}\b"; then
+              echo "::error::the guest-published mediator pubkey ${guest_pk} was never minted by the node — receipts are not node-anchored"
+              echo "--- node NUCLEUS-MEDIATOR-PUBKEY lines ---"
+              printf '%s\n' "$journal" | grep -aE 'NUCLEUS-MEDIATOR-PUBKEY' | head -20 || true
+              exit 1
+            fi
+
+            # Offline relying-party verification under the node-anchored key.
+            # verify-mediation-receipts exits non-zero if ANY receipt fails.
+            "$audit" verify-mediation-receipts --log "$tmp/receipts.jsonl" --mediator-pubkey "$guest_pk"
+            echo "verified $(grep -c . "$tmp/receipts.jsonl") receipt(s) for a pod under its node-anchored mediator key ${guest_pk:0:16}…"
+            verified_any=1
+          done
+          if [ "$verified_any" -ne 1 ]; then
+            echo "::error::no pod produced a verifiable, node-anchored receipt set"
+            exit 1
+          fi
 
       - name: Delivery conformance (observed inventory vs the extracted oracle)
         run: |

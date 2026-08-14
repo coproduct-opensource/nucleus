@@ -2782,7 +2782,7 @@ async fn spawn_firecracker_pod(
                     audit_creds_served: std::sync::Arc::default(),
                     // A per-pod ed25519 seed the guest proxy signs receipts with,
                     // served ONCE before the workload exists. See `mediation`.
-                    mediation_signing_key: mediation::new_seed_hex(),
+                    mediation_signing_key: mediation::new_seed_hex(id),
                     mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
                     mediation_key_served: std::sync::Arc::default(),
                     pod_registry: state.pods.clone(),

@@ -155,11 +155,27 @@ impl ReceiptSigner {
                 None
             }
         });
+        let key = SigningKey::from_bytes(&seed);
+        // Publish the PUBLIC key once, to the guest console: a Firecracker host
+        // (which cannot read the guest's /run receipt file) recovers it here to
+        // verify the pod's receipts. This is the guest's SELF-asserted copy — a
+        // relying party cross-checks it against the node's own record of the key
+        // it minted for this pod (the boot lane asserts the two match). Public
+        // key only; the signing key never leaves the guest.
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(
+                out,
+                "NUCLEUS-MEDIATION-PUBKEY {}",
+                hex::encode(key.verifying_key().to_bytes())
+            );
+            let _ = out.flush();
+        }
         Some(Self {
             mediator_spiffe_id,
             signer_assurance: 0,
             signer_backend: "software".to_string(),
-            key: SigningKey::from_bytes(&seed),
+            key,
             emitted: Arc::new(Mutex::new(Vec::new())),
             receipt_log,
         })
@@ -536,7 +552,11 @@ impl VerdictSink for Art12Sink {
                     );
                     // Console mirror, for a guest whose telemetry the host does
                     // not otherwise read (same reason as the Article 12 log's).
-                    // Only the seq/hash/verdict — never the signature or key.
+                    // The short marker (seq/hash/verdict) is the human/at-a-glance
+                    // line; the JSON marker carries the FULL signed receipt, so a
+                    // Firecracker host — which cannot read the guest's /run receipt
+                    // file — can still recover and verify it from the console. The
+                    // receipt is forensic, not secret; the signing key never appears.
                     {
                         let mut out = std::io::stdout().lock();
                         let _ = writeln!(
@@ -544,6 +564,9 @@ impl VerdictSink for Art12Sink {
                             "NUCLEUS-MEDIATION-RECEIPT {seq}|{hash}|{}",
                             rec.verdict
                         );
+                        if let Ok(json) = serde_json::to_string(&receipt) {
+                            let _ = writeln!(out, "NUCLEUS-MEDIATION-RECEIPT-JSON {json}");
+                        }
                         let _ = out.flush();
                     }
                     if let Ok(mut v) = signer.emitted.lock() {

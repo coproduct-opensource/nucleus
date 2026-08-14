@@ -12,17 +12,32 @@
 //! boilerplate, and belongs somewhere a test can name it.
 
 /// Mint a fresh 32-byte ed25519 seed, hex-encoded — the guest reconstructs the
-/// key with `SigningKey::from_bytes`.
+/// key with `SigningKey::from_bytes` — and log the corresponding PUBLIC key to
+/// the node journal, keyed by pod id.
+///
+/// The public-key log is the node's own record of the key it minted for this
+/// pod, written host-side where the guest cannot reach it. A relying party
+/// verifying the pod's receipts cross-checks the guest's self-published pubkey
+/// against this one (the boot lane does exactly that): the key the receipts
+/// verify under is then anchored in what the NODE minted, not only what the pod
+/// claims. Only the public half is logged; the seed never leaves this function
+/// except over the one-shot vsock delivery to the guest.
 ///
 /// Fills the seed directly rather than `SigningKey::generate(OsRng)`:
 /// ed25519-dalek pins its own `rand_core`, and the workspace `OsRng` is a
 /// different version that does not satisfy that crate's `CryptoRng` bound. The
 /// bytes are the same either way — a CSPRNG-filled 32-byte seed.
 #[must_use]
-pub(crate) fn new_seed_hex() -> Option<String> {
+pub(crate) fn new_seed_hex(pod_id: impl std::fmt::Display) -> Option<String> {
     use rand_core::RngCore;
     let mut seed = [0u8; 32];
     rand_core::OsRng.fill_bytes(&mut seed);
+    let pubkey = hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes(),
+    );
+    tracing::info!("NUCLEUS-MEDIATOR-PUBKEY {pod_id} {pubkey}");
     Some(hex::encode(seed))
 }
 
@@ -40,8 +55,8 @@ mod tests {
 
     #[test]
     fn a_minted_seed_is_32_bytes_and_distinct_each_time() {
-        let a = new_seed_hex().unwrap();
-        let b = new_seed_hex().unwrap();
+        let a = new_seed_hex("pod-a").unwrap();
+        let b = new_seed_hex("pod-b").unwrap();
         assert_eq!(
             hex::decode(&a).unwrap().len(),
             32,
