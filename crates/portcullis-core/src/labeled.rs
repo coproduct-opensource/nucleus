@@ -465,6 +465,53 @@ mod tests {
         assert_eq!(data.conf_level(), crate::ConfLevel::Secret);
     }
 
+    /// **Newtype↔lattice binding (issue #1249, brick 2).** Every phantom tag maps,
+    /// via `runtime_level()`, to the correspondingly-named production lattice level
+    /// — EXHAUSTIVELY. `runtime_levels_match` above checks only `(Trusted, Secret)`,
+    /// leaving `Internal` and `Adversarial` — the exact read/fetch labels the
+    /// noninterference theorems are about — unbound. This is the last hand-off in
+    /// the chain that makes a facade value's compile-time tag the SAME lattice
+    /// point the Lean proof covers:
+    ///
+    /// ```text
+    ///   Labeled<_, I, C>  --runtime_level()-->  production ConfLevel / IntegLevel
+    ///       [THIS test, exhaustive over all 6 tags]
+    ///   production ConfLevel::Internal == extracted ConfLevel::Internal (disc 1)
+    ///       [ifc_confidentiality::tests::discriminants_match_real_conflevel]
+    ///   extracted Internal ⇏ Public over any op sequence
+    ///       [Lean file_read_internal_never_flows_public]
+    /// ```
+    ///
+    /// So `read_file()`'s `Labeled<_, Trusted, Internal>` is provably the `Internal`
+    /// lattice point that can never reach a `Public` sink, and `fetch_url()`'s
+    /// `Labeled<_, Adversarial, Public>` is the `Adversarial` point that can never
+    /// reach a `Trusted` sink (`web_tainted_never_git_pushes`). If a tag's
+    /// `runtime_level()` ever drifted from its name, this test — not a silent
+    /// mislabel — is what fails.
+    #[test]
+    fn every_tag_binds_to_its_named_lattice_level() {
+        // Confidentiality tags → ConfLevel (all three points of the chain).
+        assert_eq!(<Public as ConfTag>::runtime_level(), crate::ConfLevel::Public);
+        assert_eq!(
+            <Internal as ConfTag>::runtime_level(),
+            crate::ConfLevel::Internal
+        );
+        assert_eq!(<Secret as ConfTag>::runtime_level(), crate::ConfLevel::Secret);
+        // Integrity tags → IntegLevel (all three points).
+        assert_eq!(
+            <Adversarial as IntegTag>::runtime_level(),
+            crate::IntegLevel::Adversarial
+        );
+        assert_eq!(
+            <Untrusted as IntegTag>::runtime_level(),
+            crate::IntegLevel::Untrusted
+        );
+        assert_eq!(
+            <Trusted as IntegTag>::runtime_level(),
+            crate::IntegLevel::Trusted
+        );
+    }
+
     // ── Flow constraint trait bounds ────────────────────────────────────
 
     fn requires_trusted_or_higher<I: IntegAtLeast<Trusted>, C: ConfTag>(
