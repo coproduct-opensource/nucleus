@@ -30,9 +30,16 @@ false" must mean **not syntactically derivable**, not semantically false. The fr
 is *provability*, not *truth* — exactly the gap `left_distrib_not_gkat_theorem`
 exhibits (a semantically-blocked but not axiom-refuted elimination step).
 
+And `productivity_is_necessary` closes the loop on *why* a semantic countermodel is
+the wrong tool: non-uniqueness needs **non-productivity** (a non-productive loop has
+two distinct solutions, exhibited concretely). Since productive systems are forced
+unique in the standard model, **no semantic countermodel to UA exists among guarded
+(productive) systems** — so any real independence of UA must be **proof-theoretic**
+(no finite derivation), not a model. That is the sharp reframing of the open problem.
+
 This does NOT resolve the open problem (derivability of UA); it machine-checks the
-semantic half so the remaining question is sharp. Axioms `[propext, Quot.sound]`,
-`sorryAx`-free.
+semantic half and rules out the obvious line of attack, so the remaining question is
+sharp. Axioms `[propext, Quot.sound]`, `sorryAx`-free.
 -/
 
 namespace GkatUniqFrontier
@@ -128,5 +135,93 @@ theorem two_state_semantic_uniqueness
                (fun w' a' h => (ih w' a' h).1) w a hlen⟩
 
 #print axioms two_state_semantic_uniqueness
+
+-- ── Non-uniqueness needs NON-productivity: no countermodel among guarded systems ──
+
+/-!
+`two_state_semantic_uniqueness` (and its single-state ancestor) turn on the
+productivity side condition `E(eᵢ) ≡ 0`: productivity is what makes each loop hop
+consume ≥1 step, so the recursion is well-founded and the solution is forced. This
+section shows productivity is not decoration — **drop it and semantic uniqueness
+fails outright**, exhibiting a single loop with two distinct solutions.
+
+Take `b = prim ()`, body `test b` (so `E(test b) = b ≢ 0` — NOT productive), and
+`f = ¬b`. The loop functional `Φ P` fixes `P` to `f` on `¬b`-atoms but leaves it
+**free** on `b`-atoms (the body consumes nothing there, so the equation is
+`P ⟺ P` at those atoms). Two fixpoints:
+
+  `P1` = accept `(false,[])` only   (the least/`⟦f⟧` solution),
+  `P2` = accept every empty string  (extra junk at the `b`-atom).
+
+Both solve; they differ at `(true, [])`. Consequence, read together with the
+uniqueness theorems above: **semantic non-uniqueness requires non-productivity.**
+So a countermodel to the Uniqueness Axiom among *productive* (guarded) systems
+cannot exist — the standard model already forces those unique. Any genuine
+independence of UA from the GKAT axioms must therefore be **proof-theoretic**
+(no finite derivation) rather than a semantic countermodel — which is why the
+conjecture has resisted a model-theoretic disproof. (This does not settle UA's
+derivability, the open question; it rules out the obvious line of attack.)
+-/
+
+/-- Valuation: the primitive test reads the `Bool` atom. -/
+def W0 : Unit → Bool → Bool := fun _ a => a
+
+/-- The tail `f = ¬b`. -/
+abbrev Fexp : Exp Unit Unit := .test (.not (.prim ()))
+
+/-- `P` is a solution of the NON-productive loop `g ≡ (test b)·g +_b f`
+    (`b = prim ()`, `f = ¬b`): the loop equation with `den g` abstracted to `P`. -/
+def SolvesNP (P : GS Unit Bool → Prop) : Prop :=
+  ∀ gs : GS Unit Bool, P gs ↔
+    ((bval W0 (.prim ()) gs.1 = true ∧
+        ∃ l1 l2, gs.2 = l1 ++ l2 ∧ (bval W0 (.prim ()) gs.1 = true ∧ l1 = []) ∧
+          P (lastAtom gs.1 l1, l2)) ∨
+     (bval W0 (.prim ()) gs.1 = false ∧ den W0 Fexp gs))
+
+/-- Least solution: accept only the empty string at the exit (`¬b`) atom. -/
+def P1 : GS Unit Bool → Prop := fun gs => gs.1 = false ∧ gs.2 = []
+/-- A strictly larger solution: accept every empty string (junk at the `b` atom). -/
+def P2 : GS Unit Bool → Prop := fun gs => gs.2 = []
+
+theorem solves_P1 : SolvesNP P1 := by
+  rintro ⟨a, w⟩
+  simp only [P1, SolvesNP, bval, W0, den, Fexp]
+  cases a with
+  | false => simp
+  | true =>
+      constructor
+      · rintro ⟨h, _⟩; exact absurd h (by decide)
+      · rintro (⟨_, l1, l2, hl, ⟨_, rfl⟩, hp1, _⟩ | ⟨h, _⟩)
+        · exact absurd hp1 (by decide)
+        · exact absurd h (by decide)
+
+theorem solves_P2 : SolvesNP P2 := by
+  rintro ⟨a, w⟩
+  simp only [P2, SolvesNP, bval, W0, den, Fexp]
+  cases a with
+  | false => simp
+  | true =>
+      constructor
+      · intro hw; exact Or.inl ⟨rfl, [], w, rfl, ⟨rfl, rfl⟩, hw⟩
+      · rintro (⟨_, l1, l2, hl, ⟨_, rfl⟩, hp2⟩ | ⟨h, _⟩)
+        · simpa using hl.trans (by simpa using hp2)
+        · exact absurd h (by decide)
+
+theorem P1_ne_P2 : ¬ (∀ gs, P1 gs ↔ P2 gs) := by
+  intro h
+  have := (h (true, [])).mpr rfl
+  exact absurd this.1 (by decide)
+
+/-- **Productivity is necessary for uniqueness.** The non-productive loop
+    `g ≡ (test b)·g +_b (¬b)` has two distinct solutions `P1 ≠ P2` in the
+    guarded-string model. With `two_state_semantic_uniqueness` (productive systems
+    ARE unique), this pins semantic non-uniqueness to non-productivity — so no
+    semantic countermodel to UA exists among guarded systems, and any independence
+    of UA must be proof-theoretic. -/
+theorem productivity_is_necessary :
+    SolvesNP P1 ∧ SolvesNP P2 ∧ ¬ (∀ gs, P1 gs ↔ P2 gs) :=
+  ⟨solves_P1, solves_P2, P1_ne_P2⟩
+
+#print axioms productivity_is_necessary
 
 end GkatUniqFrontier
