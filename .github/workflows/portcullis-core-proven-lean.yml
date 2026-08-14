@@ -86,6 +86,7 @@ jobs:
             DerivationProofs \
             SessionCeilingProofs \
             GkatSyntaxProofs \
+            GkatGuardedStringProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
             GkatWhileStep \
@@ -212,10 +213,12 @@ jobs:
           import GkatGuardedLoopBridge
           import GkatWhileStep
           import GkatSyntaxProofs
+          import GkatGuardedStringProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
           #print axioms FlowProofs.authority_confinement_left
           #print axioms GkatSyntax.salomaa_solutions_agree
+          #print axioms GkatGS.left_distrib_fails
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
