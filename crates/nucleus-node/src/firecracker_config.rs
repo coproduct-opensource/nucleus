@@ -1114,7 +1114,7 @@ mod tests {
     }
 
     /// A MAXIMAL spec's boot args: every optional emission triggered — an audit
-    /// sink with all four S3 fields (→ `nucleus.audit_s3_*`), identity (→
+    /// sink with all four S3 fields (→ the `audit_s3_*` keys), identity (→
     /// `nucleus.workload_api_port`), and the always-emitted `nucleus.approval_pubkeys`
     /// — so the completeness check below sees the emitter's full `nucleus.*`
     /// vocabulary, not the thin slice `base_spec` produces.
