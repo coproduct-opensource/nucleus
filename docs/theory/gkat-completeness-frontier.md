@@ -15,19 +15,33 @@ A Salomaa system for an automaton `(X, β)` assigns each state `x` an equation
 `τ(x) = +_α ( ⨁_d β(x)_α(d) · sys(d) )` — a guarded sum, over atoms `α`, of the
 transitions out of `x`. It is **Salomaa** (productive) when each prefix
 coefficient `g` satisfies `E(g)_α = 0` ("cannot terminate immediately"), so loops
-make progress. **Pham (2026)** proved **uniqueness** of solutions to
-Thompson-generated systems and reduced completeness to the remaining half:
-**existence** of a provable solution.
+make progress.
+
+Completeness proofs **incorporate uniqueness into the axiomatization via a
+Uniqueness Axiom (UA)** — an *axiom scheme* (one axiom per number of unknowns).
+GKAT/wGKAT/ProbGKAT are complete **with** UA; completeness of the **finite**
+axiomatization (without the infinite UA scheme) is the open problem. **Pham (2026)**
+showed the UA *content* — uniqueness of solutions — is *derivable* for
+Thompson-generated systems, reducing the remaining gap to **existence**: producing
+a provable solution to such a system using only the finite axioms.
 
 ## What is solved, and the exact gap
 
 - **Kleene theorem (solved).** Smolka et al. identified the class of **well-nested**
   G-automata: every GKAT expression yields a well-nested automaton, and every
   well-nested automaton is expressible by a GKAT term. So for well-nested systems,
-  a solution exists.
+  a solution exists. But well-nestedness is only **sufficient, not necessary** —
+  there are non-well-nested automata that *do* admit a solution, and whether every
+  solvable automaton is well-nested is *also* open.
+- **Inexpressibility.** Some G-automata have **no** GKAT-expression solution at all
+  — GKAT lacks `goto`, so it cannot express arbitrary control flow. A concrete
+  criterion: no GKAT behavior can accept both a test `b` and its negation `¬b`
+  *infinitely often* on one branch. Such two-exit / non-local-flow automata are
+  genuinely outside the language.
 - **The gap.** Bisimulation of two expressions yields a **general** n-state system
-  (a product/pairing automaton), which need **not** be well-nested. Whether such a
-  system has a *provable* GKAT solution is open.
+  (a product/pairing automaton) that need **not** be well-nested — but *is*
+  expressible (it came from expressions). Producing its solution *provably* in the
+  finite axiom system is open.
 
 ### Why it is hard — the one unsound law
 
@@ -63,12 +77,25 @@ smallest non-trivial case, **n = 2**:
   `LeftDistrib` and nothing else — *not even guardedness*. So **n = 2 existence
   reduces exactly to the one unsound law.**
 
+And it isolates *where* the obstruction lives — **mutual recursion, not loops**:
+
+- `SequentialTwoStateSolvable` / `sequential_two_state_solvable` — a **sequential**
+  2-state system (state 1 self-loops then falls through to state 2, which
+  self-loops then exits) is solvable with **no extra law**, just the loop axiom
+  applied per state (`g₂ = q^(c)·f`, `g₁ = p^(b)·g₂`). Depends on no axioms.
+
+So multiple states and loops alone are fine; it is exactly **cross-recursion
+between states** (the 2-cycle) that forces `LeftDistrib`. That matches the
+characterization above: well-nested automata — nested self-loops, no problematic
+cross-edges — are the solved class.
+
 This is not a proof of general-n existence (open), nor a proof that `LeftDistrib`
 fails — that needs a ≥2-atom guarded-string model, the classical fact we cite. It
 localizes the obstruction: existence is blocked precisely at, and only at, the law
-GKAT cannot soundly have. A real attack must either (a) find a non-distributive
-elimination that solves n-state systems using only sound GKAT reasoning, or
-(b) extend the syntax past well-structured control flow.
+GKAT cannot soundly have, and precisely for **mutually-recursive** systems. A real
+attack must either (a) find a non-distributive elimination that solves
+mutually-recursive systems using only sound GKAT reasoning, or (b) extend the
+syntax past well-structured control flow (a `goto`, as the weighted-GKAT work notes).
 
 ## Sources
 - [GKAT (POPL'20), arXiv:1907.05920](https://arxiv.org/abs/1907.05920) — syntax,

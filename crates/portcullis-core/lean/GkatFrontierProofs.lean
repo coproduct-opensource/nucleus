@@ -82,4 +82,26 @@ theorem two_cycle_solvable_of_left_distrib (hld : LeftDistrib A T)
   show Equiv g1 (.ite b (.seq (.act p) g2) f1)
   exact Equiv.trans stepA stepB.symm
 
+/-- A **sequential** 2-state system: state 1 self-loops on `p` (guard `b`) then
+    falls through to state 2; state 2 self-loops on `q` (guard `c`) then outputs
+    `f`. No mutual recursion — this is well-nested. -/
+def SequentialTwoStateSolvable (p q : A) (b c : BExp T) (f : Exp A T) : Prop :=
+  ∃ g1 g2 : Exp A T,
+    Equiv g1 (.ite b (.seq (.act p) g1) g2) ∧
+    Equiv g2 (.ite c (.seq (.act q) g2) f)
+
+/-- **The obstruction is MUTUAL RECURSION, not loops.** A sequential (nested
+    self-loop) system is solvable with NO extra law — just the loop axiom
+    (`salomaa_solution_exists`) applied per state: `g₂ = q^(c)·f`,
+    `g₁ = p^(b)·g₂`. Contrast `two_cycle_solvable_of_left_distrib`: the 2-CYCLE
+    (states depending on each other) is what needs the unsound `LeftDistrib`. So
+    existence is blocked specifically by mutual recursion / cross-edges — which is
+    exactly what well-nested automata (the solved class) lack. -/
+theorem sequential_two_state_solvable (p q : A) (b c : BExp T) (f : Exp A T) :
+    SequentialTwoStateSolvable p q b c f := by
+  refine ⟨.seq (.wh b (.act p)) (.seq (.wh c (.act q)) f),
+          .seq (.wh c (.act q)) f, ?_, ?_⟩
+  · exact salomaa_solution_exists b (.act p) (.seq (.wh c (.act q)) f)
+  · exact salomaa_solution_exists c (.act q) f
+
 end GkatFrontier
