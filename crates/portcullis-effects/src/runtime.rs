@@ -2451,16 +2451,22 @@ mod tests {
             let p = rt.preflight_read().unwrap();
             rt.read_file(std::path::Path::new("Cargo.toml"), p)
         };
-        if let Ok(output) = result {
-            assert_eq!(
-                output.data().integrity_level(),
-                portcullis_core::IntegLevel::Trusted
-            );
-            assert_eq!(
-                output.data().conf_level(),
-                portcullis_core::ConfLevel::Internal
-            );
-        }
+        // NOT `if let Ok(output) = result` — that skips every assertion when the
+        // read errors, so the test would pass while proving nothing about the
+        // labels. The read MUST succeed here (Codegen policy + a discharged
+        // preflight proof, reading a file that exists) for the tags to be checkable.
+        let output = result.expect("read_file must succeed so its IFC tags can be asserted");
+        assert_eq!(
+            output.data().integrity_level(),
+            portcullis_core::IntegLevel::Trusted,
+            "a file read carries Trusted integrity"
+        );
+        assert_eq!(
+            output.data().conf_level(),
+            portcullis_core::ConfLevel::Internal,
+            "a file read carries Internal confidentiality (the label the Lean \
+             theorem file_read_internal_never_flows_public proves cannot reach Public)"
+        );
     }
 
     #[test]
