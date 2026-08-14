@@ -105,8 +105,172 @@ example :
     (fun x => RankedLattice.le_join_left x L3.mid)
     (by intro x y hxy hx hy; cases x <;> cases y <;> revert hxy hx hy <;> decide)
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- The Salomaa equation of the `while` loop has a UNIQUE solution (semantically)
+--
+-- GKAT completeness reduces two bisimilar expressions to solutions of one Salomaa
+-- equation system, then invokes the Uniqueness Axiom. Pham (2026) proved
+-- uniqueness of those solutions; EXISTENCE is the open syntactic half. In our
+-- finite exposure-lattice model BOTH hold constructively — this section proves it
+-- for the `while` loop's one-state equation `g x = if b x then g (body x) else x`:
+--   • existence  — `whileStep b body` solves it (`whileStep_solves`);
+--   • uniqueness — any solution equals it (`solution_unique`).
+-- Existence needs only inflationarity (the loop makes progress up the lattice);
+-- uniqueness needs `Progress` (the guard never sits on a fixed point of the body —
+-- the semantic analogue of GKAT's guardedness side condition, which is exactly
+-- what forces uniqueness). This is the semantic instance of the completeness
+-- ingredient whose SYNTACTIC existence half is open.
+-- ════════════════════════════════════════════════════════════════════════════
+
+/-- The guard never rests on a fixed point of the body — the loop always makes
+    progress while it runs. Semantic analogue of GKAT's guardedness. -/
+def Progress (b : Test α) (body : α → α) : Prop := ∀ x, b x = true → body x ≠ x
+
+/-- `g` solves the `while b do body` Salomaa equation. -/
+def Solves (b : Test α) (body : α → α) (g : α → α) : Prop :=
+  ∀ x, g x = if b x then g (body x) else x
+
+omit [RankedLattice α] in
+/-- Shifting one iteration to the argument: `f^{n+1}(x) = f^n(f x)`. -/
+theorem iter_shift (f : α → α) : ∀ n x, iter f (n + 1) x = iter f n (f x) := by
+  intro n
+  induction n with
+  | zero => intro x; rfl
+  | succ n ih => intro x; show f (iter f (n + 1) x) = f (iter f n (f x)); rw [ih x]
+
+/-- The guarded step is inflationary when the body is. -/
+theorem guardedStep_inflationary (b : Test α) (body : α → α) (hinf : Inflationary body) :
+    ∀ x, RankedLattice.le x (guardedStep b body x) := by
+  intro x
+  simp only [guardedStep]
+  by_cases hb : b x = true
+  · rw [if_pos hb]; exact hinf x
+  · rw [if_neg hb]; exact RankedLattice.le_refl x
+
+/-- An inflationary map's rank climbs by at least the step count while it keeps
+    moving — the termination measure for reaching a fixed point. -/
+theorem rank_ge_of_moving (g : α → α) (hg : ∀ x, RankedLattice.le x (g x)) (x : α) :
+    ∀ n, (∀ k, k < n → g (iter g k x) ≠ iter g k x) → n ≤ RankedLattice.rank (iter g n x) := by
+  intro n
+  induction n with
+  | zero => intro _; exact Nat.zero_le _
+  | succ n ih =>
+      intro hmov
+      have ihn := ih (fun k hk => hmov k (Nat.lt_succ_of_lt hk))
+      have hne := hmov n (Nat.lt_succ_self n)
+      have hlt : RankedLattice.rank (iter g n x) < RankedLattice.rank (iter g (n + 1) x) :=
+        RankedLattice.rank_strict (hg (iter g n x)) (fun h => hne h.symm)
+      exact Nat.lt_of_le_of_lt ihn hlt
+
+/-- An inflationary map reaches a fixed point within `height + 1` steps. -/
+theorem exists_fixed_index (g : α → α) (hg : ∀ x, RankedLattice.le x (g x)) (x : α) :
+    ∃ k, k ≤ RankedLattice.height (α := α) ∧ g (iter g k x) = iter g k x := by
+  refine Classical.byContradiction (fun hne => ?_)
+  have hmov : ∀ k, k < RankedLattice.height (α := α) + 1 → g (iter g k x) ≠ iter g k x := by
+    intro k hk hEq; exact hne ⟨k, Nat.lt_succ_iff.mp hk, hEq⟩
+  have hge := rank_ge_of_moving g hg x (RankedLattice.height (α := α) + 1) hmov
+  have hle := RankedLattice.rank_le_height (iter g (RankedLattice.height (α := α) + 1) x)
+  exact absurd (Nat.le_trans hge hle) (Nat.not_succ_le_self _)
+
+omit [RankedLattice α] in
+theorem iter_const_from (g : α → α) (x : α) (k : Nat)
+    (hfix : g (iter g k x) = iter g k x) : ∀ j, iter g (k + j) x = iter g k x := by
+  intro j
+  induction j with
+  | zero => rfl
+  | succ j ih => show g (iter g (k + j) x) = iter g k x; rw [ih]; exact hfix
+
+/-- `height + 1` iterations of an inflationary map land on a fixed point. -/
+theorem iter_reaches_fixed (g : α → α) (hg : ∀ x, RankedLattice.le x (g x)) (x : α) :
+    g (iter g (RankedLattice.height (α := α) + 1) x)
+      = iter g (RankedLattice.height (α := α) + 1) x := by
+  obtain ⟨k, hkH, hfix⟩ := exists_fixed_index g hg x
+  have hconst := iter_const_from g x k hfix
+  have hkH1 : k ≤ RankedLattice.height (α := α) + 1 := Nat.le_trans hkH (Nat.le_succ _)
+  have e1 : iter g (RankedLattice.height (α := α) + 1) x = iter g k x := by
+    obtain ⟨d, hd⟩ := Nat.le.dest hkH1; rw [← hd]; exact hconst d
+  have e2 : iter g (RankedLattice.height (α := α) + 2) x = iter g k x := by
+    have hkH2 : k ≤ RankedLattice.height (α := α) + 2 := Nat.le_trans hkH1 (Nat.le_succ _)
+    obtain ⟨d, hd⟩ := Nat.le.dest hkH2; rw [← hd]; exact hconst d
+  calc g (iter g (RankedLattice.height (α := α) + 1) x)
+        = iter g (RankedLattice.height (α := α) + 2) x := rfl
+      _ = iter g k x := e2
+      _ = iter g (RankedLattice.height (α := α) + 1) x := e1.symm
+
+/-- **EXISTENCE.** `whileStep b body` solves the `while` Salomaa equation — it needs
+    only that the body is inflationary (the loop climbs the lattice). -/
+theorem whileStep_solves (b : Test α) (body : α → α) (hinf : Inflationary body) :
+    Solves b body (whileStep b body) := by
+  intro x
+  have hgsinf := guardedStep_inflationary b body hinf
+  have hWfix : guardedStep b body (whileStep b body x) = whileStep b body x :=
+    iter_reaches_fixed (guardedStep b body) hgsinf x
+  by_cases hb : b x = true
+  · rw [if_pos hb]
+    -- whileStep x = iter gs (H+1) x = iter gs H (gs x) = iter gs H (body x);
+    -- whileStep (body x) = iter gs (H+1) (body x) = gs (iter gs H (body x)) = gs (whileStep x)
+    have hgsx : guardedStep b body x = body x := by simp only [guardedStep]; rw [if_pos hb]
+    show whileStep b body x = whileStep b body (body x)
+    have lhs : whileStep b body x
+        = iter (guardedStep b body) (RankedLattice.height (α := α)) (body x) := by
+      show iter (guardedStep b body) (RankedLattice.height (α := α) + 1) x = _
+      rw [iter_shift, hgsx]
+    have rhs : whileStep b body (body x)
+        = guardedStep b body (iter (guardedStep b body) (RankedLattice.height (α := α)) (body x)) := by
+      show iter (guardedStep b body) (RankedLattice.height (α := α) + 1) (body x) = _
+      rfl
+    rw [lhs, rhs, ← lhs, hWfix]
+  · rw [if_neg hb]
+    have hgsx : guardedStep b body x = x := by simp only [guardedStep]; rw [if_neg hb]
+    show whileStep b body x = x
+    have : guardedStep b body (iter (guardedStep b body) 0 x) = iter (guardedStep b body) 0 x := hgsx
+    have hconst := iter_const_from (guardedStep b body) x 0 this
+    show iter (guardedStep b body) (RankedLattice.height (α := α) + 1) x = x
+    have := hconst (RankedLattice.height (α := α) + 1)
+    simpa using this
+
+/-- **UNIQUENESS.** Any two solutions of the `while` Salomaa equation agree —
+    given `Progress` (the guard never sits on a body fixed point). Proof: fuel
+    induction on `height + 1 − rank x`; each looping step raises the rank, so the
+    measure strictly decreases. This is Pham's uniqueness theorem, in the model. -/
+theorem solution_unique (b : Test α) (body : α → α)
+    (hinf : Inflationary body) (hprog : Progress b body)
+    (g₁ g₂ : α → α) (h₁ : Solves b body g₁) (h₂ : Solves b body g₂) :
+    ∀ x, g₁ x = g₂ x := by
+  suffices key : ∀ n x,
+      RankedLattice.height (α := α) + 1 - RankedLattice.rank x ≤ n → g₁ x = g₂ x by
+    intro x; exact key (RankedLattice.height (α := α) + 1) x (Nat.sub_le _ _)
+  intro n
+  induction n with
+  | zero =>
+      intro x hx
+      exact absurd hx (by have := RankedLattice.rank_le_height x; omega)
+  | succ n ih =>
+      intro x hx
+      by_cases hb : b x = true
+      · have e1 : g₁ x = g₁ (body x) := by rw [h₁ x, if_pos hb]
+        have e2 : g₂ x = g₂ (body x) := by rw [h₂ x, if_pos hb]
+        have hlt : RankedLattice.rank x < RankedLattice.rank (body x) :=
+          RankedLattice.rank_strict (hinf x) (fun h => (hprog x hb) h.symm)
+        have hmeas : RankedLattice.height (α := α) + 1 - RankedLattice.rank (body x) ≤ n := by
+          have := RankedLattice.rank_le_height (body x); omega
+        rw [e1, e2]; exact ih (body x) hmeas
+      · rw [h₁ x, h₂ x, if_neg hb, if_neg hb]
+
+/-- **The while-equation has a unique solution, and it is `whileStep`.** The
+    semantic instance of the GKAT completeness ingredient: Pham's uniqueness
+    (`solution_unique`) plus the syntactically-open existence (`whileStep_solves`),
+    both constructive here because the lattice is finite and the loop is guarded. -/
+theorem whileStep_is_unique_solution (b : Test α) (body : α → α)
+    (hinf : Inflationary body) (hprog : Progress b body)
+    (g : α → α) (hg : Solves b body g) :
+    ∀ x, g x = whileStep b body x :=
+  solution_unique b body hinf hprog g (whileStep b body) hg (whileStep_solves b body hinf)
+
 #print axioms whileStep_ratchets
 #print axioms notFixed_guarded
 #print axioms arbitrary_guard_not_guarded
+#print axioms whileStep_solves
+#print axioms solution_unique
 
 end GkatWhile
