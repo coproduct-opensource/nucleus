@@ -243,6 +243,28 @@ mod tests {
         );
     }
 
+    /// **The two classifications PARTITION — they are disjoint.** No key is both
+    /// per-pod-secret and shared-config. This is the soundness heart of
+    /// `SafeToClone`: a key in BOTH lists would be refused by `snapshot_safety`
+    /// (per-pod is checked first) yet read as clonable by a reviewer who added it
+    /// to the shared list — an ambiguous classification is the exact seam a
+    /// per-pod secret slips through onto a cloned base. It was caught only
+    /// INDIRECTLY (a both-listed key would fail `shared_configuration_does_not_block_a_base`);
+    /// this makes the partition a DIRECT, exhaustive property, so the two lists
+    /// can never disagree about a key even as they grow. Finite domain, so the
+    /// check is a complete proof of disjointness, not a sample.
+    #[test]
+    fn the_two_key_classifications_are_disjoint() {
+        for k in PER_POD_SECRET_KEYS {
+            assert!(
+                !SHARED_CONFIG_KEYS.contains(k),
+                "{k} is classified BOTH per-pod-secret and shared-config — a key must be \
+                 exactly one, and the 'shared' reading leaks it to every clone restored \
+                 from a snapshot base"
+            );
+        }
+    }
+
     /// Shared config must NOT block snapshotting, or no base is ever buildable
     /// and the guard is just an off switch.
     #[test]
