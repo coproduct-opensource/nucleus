@@ -228,6 +228,9 @@ lean_lib «GkatSyntaxProofs» where
 lean_lib «GkatGuardedStringProofs» where
   roots := #[`GkatGuardedStringProofs]
 
+lean_lib «GkatInexpressibleProofs» where
+  roots := #[`GkatInexpressibleProofs]
+
 -- Snapshot clone-safety: the cmdline key classification is disjoint, the
 -- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
 -- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs

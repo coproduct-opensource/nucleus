@@ -87,6 +87,7 @@ jobs:
             SessionCeilingProofs \
             GkatSyntaxProofs \
             GkatGuardedStringProofs \
+            GkatInexpressibleProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
             GkatWhileStep \
@@ -214,6 +215,7 @@ jobs:
           import GkatWhileStep
           import GkatSyntaxProofs
           import GkatGuardedStringProofs
+          import GkatInexpressibleProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
           #print axioms FlowProofs.authority_confinement_left
@@ -221,6 +223,8 @@ jobs:
           #print axioms GkatGS.sound
           #print axioms GkatGS.left_distrib_fails
           #print axioms GkatGS.left_distrib_not_gkat_theorem
+          #print axioms GkatInexpr.InLoop_exits_on_not_b
+          #print axioms GkatInexpr.single_b_loop_strictly_weaker
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
