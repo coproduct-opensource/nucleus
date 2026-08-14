@@ -1113,6 +1113,72 @@ mod tests {
         }
     }
 
+    /// A MAXIMAL spec's boot args: every optional emission triggered — an audit
+    /// sink with all four S3 fields (→ `nucleus.audit_s3_*`), identity (→
+    /// `nucleus.workload_api_port`), and the always-emitted `nucleus.approval_pubkeys`
+    /// — so the completeness check below sees the emitter's full `nucleus.*`
+    /// vocabulary, not the thin slice `base_spec` produces.
+    #[cfg(target_os = "linux")]
+    fn boot_args_maximal() -> String {
+        let spec: PodSpec = serde_json::from_str(
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"b","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
+        )
+        .expect("maximal spec must deserialize");
+        let config = FirecrackerConfig::from_spec(
+            &spec,
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
+            &image(true, false),
+            None,
+            "aa00bb11-approval-pubkeys",
+            Some(15012),
+            None,
+        );
+        config.boot_source.boot_args.unwrap_or_default()
+    }
+
+    /// **Behavioral completeness — the robust replacement for the source-scrape.**
+    /// Over the REAL generated boot args of a maximal spec, EVERY `nucleus.*` key
+    /// present must be classified (per-pod-secret or shared-config). The old
+    /// `snapshot::every_cmdline_key_is_classified` scraped THIS file's SOURCE for
+    /// `nucleus.` substrings — which its own docstring distrusts: it counts key
+    /// names quoted in tests and comments (false positives) and would miss a key
+    /// built by `format!` / concatenation (false negative). Running the emitter and
+    /// reading its ACTUAL output removes both failure modes: a new key can only
+    /// reach a snapshot base by being emitted, and if it is emitted, it is caught
+    /// here unless someone classified it. The partition into per-pod vs shared then
+    /// decides whether the base is `SafeToClone` — so an unclassified key fails
+    /// LOUDLY rather than defaulting to clonable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_emitted_cmdline_key_is_classified() {
+        let args = boot_args_maximal();
+        let emitted: Vec<&str> = args
+            .split_whitespace()
+            .map(|t| t.split('=').next().unwrap_or(t))
+            .filter(|k| k.starts_with("nucleus."))
+            .collect();
+        // Non-vacuity: the maximal spec must actually exercise the emitter. If it
+        // emitted nothing, the loop below would pass while checking nothing.
+        assert!(
+            emitted.len() >= 5,
+            "the maximal spec emitted only {} nucleus.* keys — it has stopped \
+             exercising the emitter, so this completeness check proves nothing. \
+             Args: {args}",
+            emitted.len()
+        );
+        for k in &emitted {
+            assert!(
+                crate::snapshot::PER_POD_SECRET_KEYS.contains(k)
+                    || crate::snapshot::SHARED_CONFIG_KEYS.contains(k),
+                "{k} is emitted onto the guest command line but classified NEITHER \
+                 per-pod-secret nor shared-config. Classify it in snapshot.rs: getting \
+                 it wrong in the 'shared' direction leaks it to every clone restored \
+                 from a snapshot base."
+            );
+        }
+    }
+
     /// **The precondition that makes the identity-bearing path work**, pinned
     /// against the source rather than trusted, and now load-bearing: with the
     /// Tier-3 fallback retired, an identity-bearing pod's SVID is its ONLY proof,
