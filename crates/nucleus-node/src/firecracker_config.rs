@@ -550,12 +550,6 @@ fn enforce_pci_off(args: &str) -> String {
 
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
-    /// The assembled guest kernel command line, for the clone-safety guard
-    /// (`snapshot::snapshot_safety`). `None` when no boot args were set.
-    pub(crate) fn boot_args(&self) -> Option<&str> {
-        self.boot_source.boot_args.as_deref()
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_spec(
         spec: &PodSpec,
@@ -1066,38 +1060,6 @@ mod tests {
             assert!(
                 !args.contains("nucleus.sandbox_token"),
                 "identity={identity}: the retired Tier-3 token must not be emitted: {args}"
-            );
-        }
-    }
-
-    /// **The launch-site clone-safety guard passes on every real emitter output.**
-    /// `spawn_firecracker_pod` refuses any pod whose cmdline `snapshot_safety`
-    /// judges `WouldDuplicateSecret`. This asserts the REAL `from_spec` output is
-    /// `SafeToClone` for both identity states, so the guard never spuriously
-    /// refuses a legitimate pod (it fires only on a regression that re-adds a
-    /// per-pod key). Exercises the `FirecrackerConfig::boot_args()` accessor the
-    /// launch guard reads, over the same emitter the guard runs on in production.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn from_spec_output_passes_the_clone_safety_guard() {
-        for will_have_identity in [true, false] {
-            let config = FirecrackerConfig::from_spec(
-                &base_spec(),
-                std::path::Path::new("/unused/firecracker.log"),
-                std::path::Path::new("/unused/vsock.sock"),
-                &image(true, false),
-                None,
-                "aa00bb11-approval-pubkeys",
-                will_have_identity.then_some(15012),
-                None,
-            );
-            let boot_args = config.boot_args().expect("from_spec sets boot_args");
-            assert!(
-                matches!(
-                    crate::snapshot::snapshot_safety(boot_args),
-                    crate::snapshot::SnapshotSafety::SafeToClone
-                ),
-                "identity={will_have_identity}: the launch guard would refuse a real pod: {boot_args}"
             );
         }
     }

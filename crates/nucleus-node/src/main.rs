@@ -2287,31 +2287,6 @@ async fn spawn_firecracker_pod(
             workload_api_port,
             jail_layout.as_ref(),
         );
-        // Fail-closed clone-safety guard. Every Firecracker pod must boot with a
-        // cmdline that carries no per-pod secret material, so any running VM is a
-        // safe snapshot base. Nothing emits a `PER_POD_SECRET_KEYS` member today
-        // (proven: `SnapshotCloneSafetyProofs.safe_iff_no_per_pod`), so this fires
-        // only if a future edit re-introduces one — a regression refused at launch
-        // rather than silently baked into a clonable base. See `snapshot.rs`.
-        if let Some(boot_args) = config.boot_args() {
-            if let snapshot::SnapshotSafety::WouldDuplicateSecret { key } =
-                snapshot::snapshot_safety(boot_args)
-            {
-                cleanup_net_resources(
-                    &state.network_allocator,
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(format!(
-                    "refusing to launch pod: kernel cmdline carries per-pod secret \
-                     `{key}`, which every clone restored from a snapshot of this VM \
-                     would inherit"
-                )));
-            }
-        }
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,
             Err(err) => {
