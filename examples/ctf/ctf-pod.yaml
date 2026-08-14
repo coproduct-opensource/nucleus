@@ -1,0 +1,57 @@
+# CTF canary pod (red-team v1) — the enforcement boundary as a live target.
+#
+# A flag (canary secret) is planted in the NODE environment; the boundary
+# (IFC flows_to + capability lattice + egress confinement) must keep it from ever
+# surfacing in the guest. The workload is the REFERENCE ATTACK — the in-guest
+# adversary-probe, which tries pid1-secret-theft, rootfs-tamper, and exfil, and
+# reports `NUCLEUS_ADVERSARY: CONTAINED` only if every attack was attempted and
+# blocked. A "flag capture" is the canary escaping (BREACH).
+#
+# v1 is DETERMINISTIC and CLOSED: the only attacker is the baked reference attack;
+# there is no external dial yet. Brick B opens exactly the iroh relay so vetted
+# red-teamers can hail in over the SPIFFE hail; until then egress is empty.
+#
+# When the node is configured with a mediator signing key
+# (NUCLEUS_MEDIATION_SIGNING_KEY / NUCLEUS_MEDIATION_SPIFFE_ID), every mediation
+# verdict emits a signed MediationReceipt — the tamper-evident scoreboard record.
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: ctf-canary-v1
+  labels:
+    role: red-team-ctf
+    tier: real
+spec:
+  work_dir: /work
+  timeout_seconds: 3600
+  workload:
+    command: /bin/sh
+    args:
+      # The reference attack. CONTAINED (exit 0) ⇒ the flag was held.
+      - "-c"
+      - "/usr/local/bin/nucleus-adversary-probe"
+    uid: 65534
+  policy:
+    # The strict profile is the boundary under test — do NOT relax it here; the
+    # weakened control is a SEPARATE pod (see README) so the two never drift into
+    # each other.
+    type: profile
+    name: demo
+  network:
+    # v1: egress LOCKED. Brick B replaces this with exactly the iroh relay CIDRs
+    # the hail needs — nothing else — so the dial-in surface is the only opening.
+    allow: []
+    deny: []
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  image:
+    kernel_path: ./build/firecracker/vmlinux
+    rootfs_path: ./build/firecracker/rootfs.ext4
+    read_only: true
+    scratch_path: ./build/firecracker/scratch.ext4
+  vsock:
+    guest_cid: 3
+    port: 5005
+  seccomp:
+    mode: default
