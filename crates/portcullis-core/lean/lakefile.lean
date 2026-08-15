@@ -262,6 +262,12 @@ lean_lib «GkatPullbackWitnessProofs» where
 lean_lib «GkatDerivativeProofs» where
   roots := #[`GkatDerivativeProofs]
 
+-- Where the pullback witnesses come from: well-nested systems are witness-free
+-- (Track 1), and the regime-1 witness is sound under a test-invariance hypothesis
+-- (Track 2, KA-with-hypotheses).
+lean_lib «GkatWellNestedProofs» where
+  roots := #[`GkatWellNestedProofs]
+
 lean_lib «GkatBisimulationProofs» where
   roots := #[`GkatBisimulationProofs]
 

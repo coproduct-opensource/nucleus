@@ -94,6 +94,7 @@ jobs:
             GkatObservationProofs \
             GkatPullbackWitnessProofs \
             GkatDerivativeProofs \
+            GkatWellNestedProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \
