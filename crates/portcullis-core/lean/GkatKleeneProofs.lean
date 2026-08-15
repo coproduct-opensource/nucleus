@@ -331,6 +331,59 @@ inductive AutReaches (V : T → Atom → Bool) (aut : GAut S A T) : S → S → 
 def AutReaches1 (V : T → Atom → Bool) (aut : GAut S A T) (s s' : S) : Prop :=
   ∃ x, AutStep1 V aut s x ∧ AutReaches V aut x s'
 
+/-- Reachability is transitive. -/
+theorem AutReaches.trans {V : T → Atom → Bool} {aut : GAut S A T} {s s' s'' : S}
+    (h1 : AutReaches V aut s s') (h2 : AutReaches V aut s' s'') : AutReaches V aut s s'' := by
+  induction h2 with
+  | refl => exact h1
+  | tail _ hstep ih => exact AutReaches.tail ih hstep
+
+/-- Reachability is transitive on the left through a step. -/
+theorem AutReaches.head {V : T → Atom → Bool} {aut : GAut S A T} {s s' s'' : S}
+    (hstep : AutStep1 V aut s s') (h : AutReaches V aut s' s'') : AutReaches V aut s s'' :=
+  AutReaches.trans (AutReaches.tail (AutReaches.refl s) hstep) h
+
+-- ── SCC decomposition: mutual reachability and the condensation order ──────────────
+
+/-- **Same strongly-connected component.** Two states are mutually reachable — they lie on a
+    common cycle (or are equal). This is the equivalence relation whose classes are the SCCs;
+    a nontrivial class (with `AutReaches1 s s`) is a loop, and the SCC quotient is the DAG the
+    synthesis recurses over. -/
+def AutMutReach (V : T → Atom → Bool) (aut : GAut S A T) (s s' : S) : Prop :=
+  AutReaches V aut s s' ∧ AutReaches V aut s' s
+
+theorem AutMutReach.refl {V : T → Atom → Bool} {aut : GAut S A T} (s : S) :
+    AutMutReach V aut s s := ⟨AutReaches.refl s, AutReaches.refl s⟩
+
+theorem AutMutReach.symm {V : T → Atom → Bool} {aut : GAut S A T} {s s' : S}
+    (h : AutMutReach V aut s s') : AutMutReach V aut s' s := ⟨h.2, h.1⟩
+
+theorem AutMutReach.trans {V : T → Atom → Bool} {aut : GAut S A T} {s s' s'' : S}
+    (h1 : AutMutReach V aut s s') (h2 : AutMutReach V aut s' s'') : AutMutReach V aut s s'' :=
+  ⟨AutReaches.trans h1.1 h2.1, AutReaches.trans h2.2 h1.2⟩
+
+/-- **The strict SCC order.** `s'` is *downstream* of `s` — reachable from it but not back.
+    This is the strict order on the condensation DAG; the synthesis eliminates SCCs from the
+    bottom of this order, and its irreflexivity (a state is never strictly below itself) is
+    what makes the elimination recursion well-founded. -/
+def AutBelow (V : T → Atom → Bool) (aut : GAut S A T) (s' s : S) : Prop :=
+  AutReaches V aut s s' ∧ ¬ AutReaches V aut s' s
+
+/-- The SCC order is irreflexive: no state is strictly downstream of itself. -/
+theorem AutBelow.irrefl {V : T → Atom → Bool} {aut : GAut S A T} (s : S) :
+    ¬ AutBelow V aut s s := fun h => h.2 (AutReaches.refl s)
+
+/-- The SCC order is transitive. -/
+theorem AutBelow.trans {V : T → Atom → Bool} {aut : GAut S A T} {s s' s'' : S}
+    (h1 : AutBelow V aut s' s) (h2 : AutBelow V aut s'' s') : AutBelow V aut s'' s :=
+  ⟨AutReaches.trans h1.1 h2.1, fun hb => h2.2 (AutReaches.trans hb h1.1)⟩
+
+/-- **`AutBelow` respects SCCs**: mutually-reachable states are downstream of exactly the
+    same states — so the strict order descends to the condensation (SCC quotient). -/
+theorem AutBelow.congr_left {V : T → Atom → Bool} {aut : GAut S A T} {s s' t : S}
+    (h : AutMutReach V aut s s') (hb : AutBelow V aut t s) : AutBelow V aut t s' :=
+  ⟨AutReaches.trans h.2 hb.1, fun hr => hb.2 (AutReaches.trans hr h.2)⟩
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1115,6 +1168,10 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms wnSol_solves
 #print axioms wn_expressible
 #print axioms loop2Aut_semsolves
+#print axioms AutReaches.trans
+#print axioms AutMutReach.trans
+#print axioms AutBelow.trans
+#print axioms AutBelow.congr_left
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves

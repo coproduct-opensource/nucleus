@@ -306,6 +306,9 @@ jobs:
           #print axioms GkatKleene.loopExitAut_expressible
           #print axioms GkatKleene.wnSol_solves
           #print axioms GkatKleene.wn_expressible
+          #print axioms GkatKleene.AutMutReach.trans
+          #print axioms GkatKleene.AutBelow.trans
+          #print axioms GkatKleene.AutBelow.congr_left
           #print axioms GkatKleene.wnSolE_solves
           #print axioms GkatKleene.loopChain_solves
           #print axioms GkatKleene.loop2Aut_semsolves
