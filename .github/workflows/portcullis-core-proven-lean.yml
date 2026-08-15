@@ -309,6 +309,8 @@ jobs:
           #print axioms GkatKleene.AutMutReach.trans
           #print axioms GkatKleene.AutBelow.trans
           #print axioms GkatKleene.AutBelow.congr_left
+          #print axioms GkatKleene.reachCount_lt_of_below
+          #print axioms GkatKleene.reachCount_eq_of_mutReach
           #print axioms GkatKleene.wnSolE_solves
           #print axioms GkatKleene.loopChain_solves
           #print axioms GkatKleene.loop2Aut_semsolves

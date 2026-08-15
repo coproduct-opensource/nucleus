@@ -384,6 +384,81 @@ theorem AutBelow.congr_left {V : T → Atom → Bool} {aut : GAut S A T} {s s' t
     (h : AutMutReach V aut s s') (hb : AutBelow V aut t s) : AutBelow V aut t s' :=
   ⟨AutReaches.trans h.2 hb.1, fun hr => hb.2 (AutReaches.trans hr h.2)⟩
 
+/-- **Monotone `filter` length** (Mathlib-free): a pointwise-weaker predicate keeps no more
+    elements. -/
+theorem filter_len_le {α : Type} (l : List α) (p q : α → Bool)
+    (hmono : ∀ a ∈ l, p a = true → q a = true) :
+    (l.filter p).length ≤ (l.filter q).length := by
+  induction l with
+  | nil => simp
+  | cons a t ih =>
+      have iht := ih (fun a' ha' h => hmono a' (List.mem_cons_of_mem a ha') h)
+      by_cases hp : p a = true
+      · have hq : q a = true := hmono a List.mem_cons_self hp
+        simp [hp, hq]; omega
+      · by_cases hq : q a = true
+        · simp [hp, hq]; omega
+        · simp only [List.filter_cons, hp, hq]; exact iht
+
+/-- **Strict `filter` length** (Mathlib-free): if additionally some element of `l` is kept by
+    `q` but not `p`, strictly fewer are kept by `p`. -/
+theorem filter_len_lt {α : Type} (l : List α) (p q : α → Bool)
+    (hmono : ∀ a ∈ l, p a = true → q a = true)
+    (x : α) (hx : x ∈ l) (hqx : q x = true) (hpx : p x = false) :
+    (l.filter p).length < (l.filter q).length := by
+  induction l with
+  | nil => exact absurd hx (List.not_mem_nil)
+  | cons a t ih =>
+      have hmono' : ∀ a' ∈ t, p a' = true → q a' = true :=
+        fun a' ha' h => hmono a' (List.mem_cons_of_mem a ha') h
+      by_cases hp : p a = true
+      · have hq : q a = true := hmono a List.mem_cons_self hp
+        have hxt : x ∈ t := by
+          rcases List.mem_cons.mp hx with rfl | h
+          · rw [hpx] at hp; exact absurd hp (by simp)
+          · exact h
+        have := ih hmono' hxt
+        simp [hp, hq]; omega
+      · by_cases hq : q a = true
+        · have := filter_len_le t p q hmono'
+          simp [hp, hq]; omega
+        · have hxt : x ∈ t := by
+            rcases List.mem_cons.mp hx with rfl | h
+            · rw [hqx] at hq; exact absurd hq (by simp)
+            · exact h
+          have := ih hmono' hxt
+          simp only [List.filter_cons, hp, hq]; exact this
+
+/-- **The termination measure.** The number of states reachable from `s`. Same across an SCC
+    (mutually reachable ⇒ same reachable set), and strictly larger than anything strictly
+    downstream — so it is the SCC-topological rank the elimination recursion descends. -/
+noncomputable def reachCount (V : T → Atom → Bool) (aut : GAut S A T) (s : S) : Nat :=
+  (aut.states.filter (fun t => @decide (AutReaches V aut s t) (Classical.propDecidable _))).length
+
+/-- **The measure strictly decreases downstream.** If `s'` is strictly below `s`, fewer states
+    are reachable from `s'` — `s` reaches everything `s'` does, plus itself. -/
+theorem reachCount_lt_of_below (V : T → Atom → Bool) (aut : GAut S A T) {s s' : S}
+    (hs : s ∈ aut.states) (hb : AutBelow V aut s' s) :
+    reachCount V aut s' < reachCount V aut s := by
+  unfold reachCount
+  refine filter_len_lt aut.states _ _ ?_ s hs ?_ ?_
+  · intro t _ ht
+    simp only [decide_eq_true_eq] at ht ⊢
+    exact AutReaches.trans hb.1 ht
+  · simp only [decide_eq_true_eq]; exact AutReaches.refl s
+  · simp only [decide_eq_false_iff_not]; exact hb.2
+
+/-- **The measure is constant on an SCC.** Mutually-reachable states reach exactly the same
+    states, so `reachCount` is well-defined on the condensation — a genuine SCC-rank. -/
+theorem reachCount_eq_of_mutReach (V : T → Atom → Bool) (aut : GAut S A T) {s s' : S}
+    (h : AutMutReach V aut s s') : reachCount V aut s = reachCount V aut s' := by
+  unfold reachCount
+  apply Nat.le_antisymm
+  · apply filter_len_le; intro t _ ht
+    simp only [decide_eq_true_eq] at ht ⊢; exact AutReaches.trans h.2 ht
+  · apply filter_len_le; intro t _ ht
+    simp only [decide_eq_true_eq] at ht ⊢; exact AutReaches.trans h.1 ht
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1172,6 +1247,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms AutMutReach.trans
 #print axioms AutBelow.trans
 #print axioms AutBelow.congr_left
+#print axioms reachCount_lt_of_below
+#print axioms reachCount_eq_of_mutReach
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
