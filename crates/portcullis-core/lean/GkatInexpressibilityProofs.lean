@@ -126,6 +126,15 @@ theorem Reaches.head {d d' d'' : Exp A T}
     (hstep : Step V d d') (h : Reaches V d' d'') : Reaches V d d'' :=
   Reaches.trans V (Reaches.tail (Reaches.refl d) hstep) h
 
+/-- **Reachability stays inside `derivs e`** (from `derivs_closed`). Every state a run
+    from a derivative of `e` can reach is itself a derivative of `e` — so all cycles
+    live in the finite set `derivs e`, the confinement every remaining case rests on. -/
+theorem reaches_mem_derivs {e d d' : Exp A T} (hd : d ∈ derivs e)
+    (h : Reaches V d d') : d' ∈ derivs e := by
+  induction h with
+  | refl => exact hd
+  | tail _ hstep ih => obtain ⟨a, q, hn⟩ := hstep; exact derivs_closed e ih hn
+
 -- ── LoopActive: "inside a loop with guard b, under outer composition" ────────────
 
 /-- `d` is a state inside a loop with guard `b`: either a derivative of some `e^(b)`,
