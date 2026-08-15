@@ -457,6 +457,48 @@ theorem gbisim_derivAut (V : T → Atom → Bool) (e : Exp A T) :
   · intro a q s' h; rw [autStep_derivAut] at h; exact ⟨s', h, rfl⟩
   · intro a q e' h; exact ⟨e', by rw [autStep_derivAut]; exact h, rfl⟩
 
+/-- **A bisimulation between two `GAut`s** (possibly over different carriers): related states
+    halt on the same atoms and their transitions match step-for-step. -/
+def GAutBisim {S1 S2 : Type} (V : T → Atom → Bool) (aut1 : GAut S1 A T) (aut2 : GAut S2 A T)
+    (R : S1 → S2 → Prop) : Prop :=
+  ∀ s1 s2, R s1 s2 →
+    (∀ a, bval V (aut1.hlt s1) a = bval V (aut2.hlt s2) a) ∧
+    (∀ a q s1', autStep V aut1 s1 a = some (q, s1') →
+       ∃ s2', autStep V aut2 s2 a = some (q, s2') ∧ R s1' s2') ∧
+    (∀ a q s2', autStep V aut2 s2 a = some (q, s2') →
+       ∃ s1', autStep V aut1 s1 a = some (q, s1') ∧ R s1' s2')
+
+/-- **Bisimilar automata recognize the same language** (the paper's Lemma 5.2, at the
+    concrete `GAut` level): if `R s1 s2` for a `GAutBisim R`, then `autLang aut1 s1 =
+    autLang aut2 s2`. Length induction on the guarded string. The tool for reasoning about
+    language-preserving automaton transformations (state elimination, the Thompson
+    presentation of a covariety behavior) — and it subsumes the expression transfer
+    (`autLang_eq_of_gbisim`) by taking `aut2 = derivAut e`. -/
+theorem autLang_eq_of_gautBisim {S1 S2 : Type} {V : T → Atom → Bool}
+    {aut1 : GAut S1 A T} {aut2 : GAut S2 A T} {R : S1 → S2 → Prop}
+    (hR : GAutBisim V aut1 aut2 R) {s1 : S1} {s2 : S2} (h : R s1 s2) :
+    autLang V aut1 s1 = autLang V aut2 s2 := by
+  have H : ∀ (l : List (A × Atom)) (s1 : S1) (s2 : S2) (a : Atom),
+      R s1 s2 → (autRun V aut1 s1 a l ↔ autRun V aut2 s2 a l) := by
+    intro l
+    induction l with
+    | nil =>
+        intro s1 s2 a hr
+        simp only [autRun, (hR s1 s2 hr).1 a]
+    | cons hd tl ih =>
+        intro s1 s2 a hr; obtain ⟨q, a'⟩ := hd
+        obtain ⟨_, hfwd, hbwd⟩ := hR s1 s2 hr
+        simp only [autRun]
+        constructor
+        · rintro ⟨s1', hst, hrun⟩
+          obtain ⟨s2', hst2, hrel⟩ := hfwd a q s1' hst
+          exact ⟨s2', hst2, (ih s1' s2' a' hrel).mp hrun⟩
+        · rintro ⟨s2', hst, hrun⟩
+          obtain ⟨s1', hst1, hrel⟩ := hbwd a q s2' hst
+          exact ⟨s1', hst1, (ih s1' s2' a' hrel).mpr hrun⟩
+  funext gs; obtain ⟨a, w⟩ := gs
+  exact propext (H w s1 s2 a h)
+
 -- ── The Salomaa equation system of a `GAut` (Def 4.3) and its solutions ────────────
 
 /-- Denotation of an action-prefixed expression: `⟦q·X⟧` accepts `(a, w)` iff `w` begins
@@ -818,6 +860,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms fig3_not_nested
 #print axioms autLang_eq_of_gbisim
 #print axioms gbisim_derivAut
+#print axioms autLang_eq_of_gautBisim
 #print axioms den_seq_act
 #print axioms den_foldr_ite
 #print axioms loopAut_solves
