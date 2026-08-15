@@ -896,6 +896,41 @@ theorem wn_expressible (V : T → Atom → Bool) (w : WNAut S A T) (hwf : WF V (
     ∀ s ∈ (wnGAut w).states, autLang V (wnGAut w) s = den V (wnSol w s) :=
   solves_autLang hwf (wnSol_solves w)
 
+-- ── General multi-state loop body: an arbitrary-length linear cycle ────────────────
+
+/-- The loop body of an action chain `[q₁,…,qₖ]` as one expression: `q₁·(q₂·…·(qₖ·1))`. -/
+def bodyChain : List A → Exp A T
+  | []      => Exp.test BExp.one
+  | q :: qs => Exp.seq (Exp.act q) (bodyChain qs)
+
+/-- Prepend an action chain to an expression: `[q₁,…,qₖ] X ↦ q₁·(q₂·…·(qₖ·X))` — the body
+    executed, then continuing with `X`. This is how the equation of a linear cycle reads. -/
+def seqActs : List A → Exp A T → Exp A T
+  | [],      X => X
+  | q :: qs, X => Exp.seq (Exp.act q) (seqActs qs X)
+
+/-- Running the body chain then `X` is the same as prepending the chain to `X` — the state
+    elimination that collapses a linear cycle into one composed body, by `S1`/`S4`. -/
+theorem seq_bodyChain (qs : List A) (X : Exp A T) :
+    Equiv (Exp.seq (bodyChain qs) X) (seqActs qs X) := by
+  induction qs generalizing X with
+  | nil => exact Equiv.s4 X
+  | cons q qs ih =>
+      exact Equiv.trans (Equiv.s1 (Exp.act q) (bodyChain qs) X)
+        (Equiv.seq_c (Equiv.refl _) (ih X))
+
+/-- **General linear-loop elimination.** A loop whose body is an arbitrary-length action
+    chain — the multi-state cycle equation `g ≡ q₁·q₂·…·qₖ·g +_b f` — is solved by
+    `(q₁·…·qₖ)^(b)·f`. `salomaa_solution_exists` handles the (composed) body, and
+    `seq_bodyChain` performs the state elimination that turns the `k`-state cycle into that
+    single composed body. This is `selfLoop_solves` (k = 1) and `loop2Aut` (k = 2) unified
+    to any length — the engine that synthesizes a linear SCC once its states are collapsed. -/
+theorem loopChain_solves (b : BExp T) (qs : List A) (f : Exp A T) :
+    Equiv (Exp.seq (Exp.wh b (bodyChain qs)) f)
+          (Exp.ite b (seqActs qs (Exp.seq (Exp.wh b (bodyChain qs)) f)) f) :=
+  Equiv.trans (salomaa_solution_exists b (bodyChain qs) f)
+    (Equiv.ite_c (seq_bodyChain qs _) (Equiv.refl f))
+
 -- ── Multi-state loop body: `while b do (p; q)` as a two-state cycle ────────────────
 
 /-- The two states of `while b do (p; q)`: `h` (head, branches on `b`), `k` (does `q`,
@@ -1019,6 +1054,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms wnSol_solves
 #print axioms wn_expressible
 #print axioms loop2Aut_semsolves
+#print axioms seq_bodyChain
+#print axioms loopChain_solves
 #print axioms loop2Aut_expressible
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
