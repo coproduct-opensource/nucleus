@@ -271,6 +271,14 @@ lean_lib «GkatCoequationProofs» where
 lean_lib «GkatFaithfulnessProofs» where
   roots := #[`GkatFaithfulnessProofs]
 
+-- Kleene synthesis, Phase 1: the GKAT automaton carrier `GAut` (finite, BExp-guarded,
+-- deterministic), the derivative automaton `derivAut e` (guarded transitions read off
+-- `next`, `autLang = den`), well-formedness, and the automaton-level nesting coequation
+-- `Nested` — proven for every `derivAut e` and shown to reject the Fig 3 witness. Toward
+-- the completeness half `W ⊆ {⟦e⟧}` (rel UA).
+lean_lib «GkatKleeneProofs» where
+  roots := #[`GkatKleeneProofs]
+
 -- Snapshot clone-safety: the cmdline key classification is disjoint, the
 -- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
 -- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs

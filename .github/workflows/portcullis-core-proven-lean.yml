@@ -99,6 +99,7 @@ jobs:
             GkatInexpressibilityProofs \
             GkatCoequationProofs \
             GkatFaithfulnessProofs \
+            GkatKleeneProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
             GkatWhileStep \
@@ -239,6 +240,7 @@ jobs:
           import GkatInexpressibilityProofs
           import GkatCoequationProofs
           import GkatFaithfulnessProofs
+          import GkatKleeneProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
           import SnapshotChannelBindingProofs
@@ -286,6 +288,11 @@ jobs:
           #print axioms GkatFaithful.left_distrib_not_ba_theorem
           #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
           #print axioms GkatFaithful.loop_is_union_of_iterations
+          #print axioms GkatKleene.firstMatch_transG
+          #print axioms GkatKleene.autLang_derivAut
+          #print axioms GkatKleene.WF_derivAut
+          #print axioms GkatKleene.Nested_derivAut
+          #print axioms GkatKleene.fig3_not_nested
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
