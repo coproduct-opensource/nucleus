@@ -548,18 +548,24 @@ theorem den_foldr_ite (V : T → Atom → Bool) (sol : S → Exp A T) (base : Ex
           · exact ih.mp h
         · intro h; exact Or.inr ⟨hgf, ih.mpr h⟩
 
-/-- **Semantic soundness of solving — the Kleene synthesis, semantic half.** If `sol` solves
-    a *well-formed* automaton's equation system, then at every state the automaton's language
-    is exactly the denotation of the solution: `autLang aut s = ⟦sol s⟧`. So a solution of the
-    start state's equation denotes the automaton's behavior. This needs **no UA** — UA is for
-    *uniqueness* of the solution; its *correctness as a language* is this theorem. The other
-    half of the Kleene theorem is *existence* of a solution (the state-elimination
-    construction, guaranteed for well-nested automata) — the remaining Phase-2 crux.
-    Length induction on the guarded string: at each step `den (sol s) = den (eqRHS)` (by
-    `sound` of `Solves`), and `den (eqRHS)` reads the guards exactly as `autStep`
-    (`den_foldr_ite`); well-formedness supplies halt/step exclusion and successor closure. -/
-theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S → Exp A T}
-    (hwf : WF V aut) (hsol : Solves aut sol) :
+/-- **`sol` semantically solves the system**: at every state its assigned expression *denotes*
+    the equation RHS. Weaker than `Solves` (which asks for provable `Equiv`) — and crucially
+    it is **not blocked** by the missing `ite`-guard axioms, since `den (ite 1 X Y) = den X`
+    holds outright. This is the form the existence construction can actually establish. -/
+def SemSolves (V : T → Atom → Bool) (aut : GAut S A T) (sol : S → Exp A T) : Prop :=
+  ∀ s ∈ aut.states, den V (sol s) = den V (eqRHS aut sol s)
+
+/-- **Semantic soundness of solving — the Kleene synthesis, semantic half.** If `sol`
+    *semantically* solves a *well-formed* automaton's system, then at every state the
+    automaton's language is exactly the denotation of the solution: `autLang aut s = ⟦sol s⟧`.
+    Needs **no UA** — UA is for *uniqueness*; correctness-as-a-language is this theorem. The
+    remaining half of the Kleene theorem is *existence* of a solution (the state-elimination
+    construction for well-nested automata) — the Phase-2 crux. Length induction on the guarded
+    string: at each step `den (sol s) = den (eqRHS)` (`SemSolves`), and `den (eqRHS)` reads the
+    guards exactly as `autStep` (`den_foldr_ite`); well-formedness supplies halt/step exclusion
+    and successor closure. -/
+theorem sem_solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S → Exp A T}
+    (hwf : WF V aut) (hsol : SemSolves V aut sol) :
     ∀ s ∈ aut.states, autLang V aut s = den V (sol s) := by
   have key : ∀ (w : List (A × Atom)) (s : S) (a : Atom), s ∈ aut.states →
       (autRun V aut s a w ↔ den V (sol s) (a, w)) := by
@@ -567,7 +573,7 @@ theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S →
     induction w with
     | nil =>
         intro s a hs
-        rw [GkatGS.sound V (hsol s hs) (a, [])]
+        rw [congrFun (hsol s hs) (a, [])]
         simp only [autRun, eqRHS]
         rw [den_foldr_ite]
         have haS : autStep V aut s a = firstMatch V a (aut.trans s) := rfl
@@ -582,7 +588,7 @@ theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S →
             exact iff_of_false hne (by simp)
     | cons hd tl ih =>
         intro s a hs; obtain ⟨q'', a''⟩ := hd
-        rw [GkatGS.sound V (hsol s hs) (a, (q'', a'') :: tl)]
+        rw [congrFun (hsol s hs) (a, (q'', a'') :: tl)]
         simp only [autRun, eqRHS]
         rw [den_foldr_ite]
         have haS : autStep V aut s a = firstMatch V a (aut.trans s) := rfl
@@ -613,6 +619,59 @@ theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S →
               · apply (ih s' a'' hs').mpr; rw [ha, hw]; exact hden
   intro s hs; funext gs; obtain ⟨a, w⟩ := gs
   simp only [autLang]; exact propext (key w s a hs)
+
+/-- A provable (`Equiv`) solution is a fortiori a semantic one (`sound`). -/
+theorem solves_semSolves {V : T → Atom → Bool} {aut : GAut S A T} {sol : S → Exp A T}
+    (hsol : Solves aut sol) : SemSolves V aut sol := by
+  intro s hs; funext gs; exact propext (GkatGS.sound V (hsol s hs) gs)
+
+/-- **Semantic soundness for a provable solution** — the `Solves` corollary of
+    `sem_solves_autLang`, via `solves_semSolves`. -/
+theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S → Exp A T}
+    (hwf : WF V aut) (hsol : Solves aut sol) :
+    ∀ s ∈ aut.states, autLang V aut s = den V (sol s) :=
+  sem_solves_autLang hwf (solves_semSolves hsol)
+
+/-- **The semantic fundamental theorem of derivatives.** Every expression *semantically*
+    solves its own derivative system with `sol = id` (each derivative stands for itself):
+    `⟦s⟧ = ⟦eqRHS (derivAut e) id s⟧` — an expression equals the guarded choice of its
+    Brzozowski derivatives. This is exactly the identity the *syntactic* `Solves (derivAut e)
+    id` cannot prove (it would need `ite 1 X Y ≡ X` for the `one`-guarded `act`-transitions),
+    yet it holds semantically because `next`/`den` compute the guards. So the semantic route
+    succeeds precisely where the syntactic one is axiom-blocked — the enabling fact for the
+    existence construction. -/
+theorem semSolves_derivAut (V : T → Atom → Bool) (e : Exp A T) :
+    SemSolves V (derivAut e) (fun s => s) := by
+  intro s _
+  funext gs; obtain ⟨a, w⟩ := gs
+  show den V s (a, w) = den V (eqRHS (derivAut e) (fun x => x) s) (a, w)
+  rw [eqRHS, den_foldr_ite V (fun x => x) (Exp.test ((derivAut e).hlt s)) ((derivAut e).trans s) a w]
+  have hnext : firstMatch V a ((derivAut e).trans s) = next V s a := firstMatch_transG V s a
+  rw [hnext]
+  cases hn : next V s a with
+  | none =>
+      cases w with
+      | nil => simp [den_nil, E, derivAut]
+      | cons hd tl => obtain ⟨q, a'⟩ := hd; rw [den_cons, hn]; simp [den_test]
+  | some x =>
+      obtain ⟨q0, s'⟩ := x
+      show den V s (a, w) = den V (Exp.seq (Exp.act q0) s') (a, w)
+      cases w with
+      | nil =>
+          rw [den_nil, next_halt_exclusive V s a (q0, s') hn, den_seq_act]; simp
+      | cons hd tl =>
+          obtain ⟨q, a'⟩ := hd
+          rw [den_cons, hn, den_seq_act]
+          apply propext
+          constructor
+          · rintro ⟨e', h, hd'⟩
+            rw [Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨hq, he⟩ := h
+            exact ⟨a', tl, by rw [hq], by rw [he]; exact hd'⟩
+          · rintro ⟨a'', w'', heq, hd'⟩
+            rw [List.cons.injEq, Prod.mk.injEq] at heq
+            obtain ⟨⟨hq, ha⟩, hw⟩ := heq
+            exact ⟨s', by rw [hq], by rw [ha, hw]; exact hd'⟩
 
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
@@ -651,7 +710,9 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms den_seq_act
 #print axioms den_foldr_ite
 #print axioms loopAut_solves
+#print axioms sem_solves_autLang
 #print axioms solves_autLang
+#print axioms semSolves_derivAut
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
 
