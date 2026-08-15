@@ -293,6 +293,10 @@ jobs:
           #print axioms GkatKleene.WF_derivAut
           #print axioms GkatKleene.Nested_derivAut
           #print axioms GkatKleene.fig3_not_nested
+          #print axioms GkatKleene.autLang_eq_of_gbisim
+          #print axioms GkatKleene.den_foldr_ite
+          #print axioms GkatKleene.loopAut_solves
+          #print axioms GkatKleene.solves_autLang
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
