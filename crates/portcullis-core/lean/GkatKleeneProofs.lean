@@ -520,6 +520,16 @@ theorem reachCount_lt_of_step_not_mutReach (V : T → Atom → Bool) (aut : GAut
   · exact h
   · exact absurd (mutReach_of_step_reachCount_eq V aut hs hstep (Nat.le_antisymm h hle)) hnm
 
+/-- **The condensation is well-founded** — a DAG. The strict SCC order `AutBelow`, on the
+    automaton's states, embeds into `Nat.lt` via `reachCount` (`reachCount_lt_of_below`), so it
+    is well-founded. This is the termination guarantee for the SCC elimination recursion: one
+    cannot descend the condensation forever. -/
+theorem autBelow_wf (V : T → Atom → Bool) (aut : GAut S A T) :
+    WellFounded (fun s' s : {x // x ∈ aut.states} => AutBelow V aut s'.1 s.1) :=
+  Subrelation.wf
+    (fun {s' s} h => reachCount_lt_of_below V aut s.2 h)
+    (invImage (fun s : {x // x ∈ aut.states} => reachCount V aut s.1) Nat.lt_wfRel).wf
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1313,6 +1323,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms reachCount_step_le
 #print axioms mutReach_of_step_reachCount_eq
 #print axioms reachCount_lt_of_step_not_mutReach
+#print axioms autBelow_wf
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
