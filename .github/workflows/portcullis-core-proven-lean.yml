@@ -316,6 +316,7 @@ jobs:
           #print axioms GkatKleene.autBelow_wf
           #print axioms GkatKleene.firstMatch_eq_of_mem_det
           #print axioms GkatKleene.acyclic_flat_expressible
+          #print axioms GkatKleene.flat_selfloop_expressible
           #print axioms GkatKleene.wnSolE_solves
           #print axioms GkatKleene.loopChain_solves
           #print axioms GkatKleene.loop2Aut_semsolves

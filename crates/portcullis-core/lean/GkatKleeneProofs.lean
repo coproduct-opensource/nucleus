@@ -1163,6 +1163,35 @@ theorem wn_expressible (V : T → Atom → Bool) (w : WNAut S A T) (hwf : WF V (
     ∀ s ∈ (wnGAut w).states, autLang V (wnGAut w) s = den V (wnSol w s) :=
   solves_autLang hwf (wnSol_solves w)
 
+/-- **Construction body, step 2: singleton-SCC flat automata, rank computed.** A flat GAut
+    presented as (optional) self-loop + exits — the singleton-SCC shape, where the only cycles
+    are self-loops — is expressible, with the rank *computed* by `reachCount`. The `WNAut`
+    well-formedness `hexit` (exits strictly smaller) is **derived** from a semantic condition:
+    each exit is a live edge whose target is *not* mutually reachable (`hcross`), hence drops
+    the rank by `reachCount_lt_of_step_not_mutReach`. So the caller supplies a reachability
+    fact instead of a hand-built rank; the SCC machinery produces the loop nesting. -/
+theorem flat_selfloop_expressible (V : T → Atom → Bool) (states : List S) (hlt : S → BExp T)
+    (loop : S → Option (BExp T × A)) (exits : S → List (BExp T × A × S)) (start : S)
+    (A0 : GAut S A T)
+    (hA0 : A0 = ⟨states, hlt,
+      fun s => (match loop s with | some (b, q) => [(b, q, s)] | none => []) ++ exits s, start⟩)
+    (hwf : WF V A0) (hall : ∀ s : S, s ∈ states)
+    (hlive : ∀ s : S, ∀ t ∈ exits s, AutStep1 V A0 s t.2.2)
+    (hcross : ∀ s : S, ∀ t ∈ exits s, ¬ AutMutReach V A0 s t.2.2) :
+    ∃ sol : S → Exp A T, ∀ s ∈ states, autLang V A0 s = den V (sol s) := by
+  have hexit : ∀ s : S, ∀ t ∈ exits s, reachCount V A0 t.2.2 < reachCount V A0 s := by
+    intro s t ht
+    have hsA0 : s ∈ A0.states := by rw [hA0]; exact hall s
+    exact reachCount_lt_of_step_not_mutReach V A0 hsA0 (hlive s t ht) (hcross s t ht)
+  let w : WNAut S A T :=
+    { states := states, rank := reachCount V A0, hlt := hlt, loop := loop, exits := exits,
+      hexit := hexit, start := start }
+  have hwn : wnGAut w = A0 := by rw [hA0]; rfl
+  refine ⟨wnSol w, fun s hs => ?_⟩
+  have key := wn_expressible V w (by rw [hwn]; exact hwf) s (by
+    show s ∈ (wnGAut w).states; rw [hwn, hA0]; exact hs)
+  rw [hwn] at key; exact key
+
 -- ── State elimination, step 1: the expression-labeled generalized automaton ────────
 
 /-- **An expression-labeled generalized automaton** (the target of state elimination). Each
@@ -1382,6 +1411,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms loopExitAut_expressible
 #print axioms wnSol_solves
 #print axioms wn_expressible
+#print axioms flat_selfloop_expressible
 #print axioms loop2Aut_semsolves
 #print axioms AutReaches.trans
 #print axioms AutMutReach.trans
