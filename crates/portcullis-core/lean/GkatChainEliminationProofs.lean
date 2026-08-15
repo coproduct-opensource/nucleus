@@ -75,7 +75,44 @@ theorem three_cycle_solvable_of_pullbacks
   -- fold g₁ (g₀ now over g₂), then fold g₂ (g₀ now a self-loop), then W3
   salomaa_solution_unique hguard (chain_elim hpb2 (chain_elim hpb1 h0 h1) h2)
 
+/-- **The reverse kernel (for EXISTENCE).** If `h` satisfies the *reduced* equation over
+    the next state `g₂`, then `h` satisfies the *original* two-state form with the
+    intermediate state reconstructed as `g₁ := b₁?(e₁·g₂):f₁`. This is `chain_elim`'s
+    reshaping run backwards; iterating it rebuilds every intermediate state of the cycle,
+    so the witness-built closed form provably SOLVES the system. -/
+theorem chain_intro {b0 b1 c1 : BExp T} {e0 e1 f0 f1 g2 h : Exp A T}
+    (hpb : ∀ x y : Exp A T, Equiv (.seq e0 (.ite b1 x y)) (.ite c1 (.seq e0 x) (.seq e0 y)))
+    (hred : Equiv h (.ite (.and c1 b0) (.seq (.seq e0 e1) g2) (.ite b0 (.seq e0 f1) f0))) :
+    Equiv h (.ite b0 (.seq e0 (.ite b1 (.seq e1 g2) f1)) f0) :=
+  Equiv.trans hred (Equiv.symm
+    (Equiv.trans (Equiv.ite_c (hpb (.seq e1 g2) f1) (Equiv.refl f0))
+    (Equiv.trans
+      (Equiv.ite_c (Equiv.ite_c (Equiv.symm (Equiv.s1 e0 e1 g2)) (Equiv.refl (.seq e0 f1)))
+        (Equiv.refl f0))
+      (Equiv.u3 c1 b0 (.seq (.seq e0 e1) g2) (.seq e0 f1) f0))))
+
+/-- **EXISTENCE for the 3-cycle (no productivity needed).** The witness-built closed form
+    `CF` actually solves the 3-state cycle: reconstructing `g₂ := b₂?(e₂·CF):f₂` and
+    `g₁ := b₁?(e₁·g₂):f₁`, `CF ≡ b₀?(e₀·g₁):f₀`. Two `chain_intro`s on top of the canonical
+    loop solution (`salomaa_solution_exists`, which needs no side-condition) — the existence
+    direction the completeness programme actually needs (Pham reduced completeness to
+    existence). The `chain_intro^(n-1) ∘ salomaa_solution_exists` pattern gives general `n`. -/
+theorem three_cycle_solves_of_pullbacks
+    {b0 b1 b2 c1 c2 : BExp T} {e0 e1 e2 f0 f1 f2 : Exp A T}
+    (hpb1 : ∀ x y : Exp A T, Equiv (.seq e0 (.ite b1 x y)) (.ite c1 (.seq e0 x) (.seq e0 y)))
+    (hpb2 : ∀ x y : Exp A T,
+      Equiv (.seq (.seq e0 e1) (.ite b2 x y))
+            (.ite c2 (.seq (.seq e0 e1) x) (.seq (.seq e0 e1) y))) :
+    let CF : Exp A T := .seq (.wh (.and c2 (.and c1 b0)) (.seq (.seq e0 e1) e2))
+              (.ite (.and c1 b0) (.seq (.seq e0 e1) f2) (.ite b0 (.seq e0 f1) f0))
+    Equiv CF (.ite b0 (.seq e0 (.ite b1 (.seq e1 (.ite b2 (.seq e2 CF) f2)) f1)) f0) :=
+  chain_intro hpb1 (chain_intro hpb2
+    (salomaa_solution_exists (.and c2 (.and c1 b0)) (.seq (.seq e0 e1) e2)
+      (.ite (.and c1 b0) (.seq (.seq e0 e1) f2) (.ite b0 (.seq e0 f1) f0))))
+
 #print axioms chain_elim
+#print axioms chain_intro
 #print axioms three_cycle_solvable_of_pullbacks
+#print axioms three_cycle_solves_of_pullbacks
 
 end GkatChainElim
