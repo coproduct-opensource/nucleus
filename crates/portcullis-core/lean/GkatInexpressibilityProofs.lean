@@ -287,6 +287,84 @@ theorem reaches_loop_split {b : BExp T} {e e' y : Exp A T}
             · rw [if_neg hE] at hn; simp at hn
       · exact Or.inr hb
 
+/-- **The `Dom` lemma.** A self-cyclic derivative of `e` is `LoopActive` by a
+    *satisfiable* guard. By induction on `e`: base cases have no self-cycle; `seq`/`ite`
+    project cycles to a part (IH) or land in `derivs f`/`derivs e`; `wh` either
+    witnesses `b` satisfiable (loop-back) and is a loop core, or projects to a body
+    cycle (IH). This is the "cycle ⟹ satisfiable enclosing loop" fact — with the
+    would-be well-founded acyclicity absorbed into the structural induction. -/
+theorem selfCyclic_loopActive {e : Exp A T} :
+    ∀ {d : Exp A T}, d ∈ derivs e → Reaches1 V d d →
+      ∃ b', (∃ a, bval V b' a = true) ∧ LoopActive b' d := by
+  induction e with
+  | act p => intro d hd hcyc; exact absurd hcyc (no_selfcycle_act V hd)
+  | test t => intro d hd hcyc; exact absurd hcyc (no_selfcycle_test V hd)
+  | seq e f ihe ihf =>
+      intro d hd hcyc
+      simp only [derivs, List.mem_append, List.mem_map] at hd
+      rcases hd with ⟨d0, hd0, rfl⟩ | hdf
+      · obtain ⟨x, ⟨a, q, hn⟩, hr⟩ := id hcyc
+        simp only [next] at hn
+        cases hne : next V d0 a with
+        | some pe =>
+            rw [hne] at hn; obtain ⟨q', d0'⟩ := pe
+            rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2] at hr
+            rcases reaches_seq_split V hr with ⟨d0'', heq, hrr⟩ | hin
+            · rw [Exp.seq.injEq] at heq
+              obtain ⟨b', hsat, hla⟩ := ihe hd0 ⟨d0', ⟨a, q', hne⟩, heq.1.symm ▸ hrr⟩
+              exact ⟨b', hsat, LoopActive.comp hla⟩
+            · exact ihf hin hcyc
+        | none =>
+            rw [hne] at hn
+            by_cases hE : bval V (E d0) a = true
+            · rw [if_pos hE] at hn
+              exact ihf (reaches_mem_derivs V (deriv_mem f hn) hr) hcyc
+            · rw [if_neg hE] at hn; simp at hn
+      · exact ihf hdf hcyc
+  | ite b e f ihe ihf =>
+      intro d hd hcyc
+      simp only [derivs, List.mem_cons, List.mem_append] at hd
+      rcases hd with rfl | hde | hdf
+      · obtain ⟨x, ⟨a, q, hn⟩, hr⟩ := id hcyc
+        simp only [next] at hn
+        by_cases hb : bval V b a = true
+        · rw [if_pos hb] at hn
+          exact ihe (reaches_mem_derivs V (deriv_mem e hn) hr) hcyc
+        · rw [if_neg hb] at hn
+          exact ihf (reaches_mem_derivs V (deriv_mem f hn) hr) hcyc
+      · exact ihe hde hcyc
+      · exact ihf hdf hcyc
+  | wh b e ihe =>
+      intro d hd hcyc
+      have hmem : ∀ {e' : Exp A T}, e' ∈ derivs e → .seq e' (.wh b e) ∈ derivs (.wh b e) :=
+        fun he' => by simp only [derivs, List.mem_cons, List.mem_map]; exact Or.inr ⟨_, he', rfl⟩
+      simp only [derivs, List.mem_cons, List.mem_map] at hd
+      rcases hd with rfl | ⟨e', he', rfl⟩
+      · obtain ⟨x, ⟨a, q, hn⟩, _⟩ := hcyc
+        simp only [next] at hn
+        by_cases hb : bval V b a = true
+        · exact ⟨b, ⟨a, hb⟩, LoopActive.core (mem_self (.wh b e))⟩
+        · rw [if_neg hb] at hn; simp at hn
+      · obtain ⟨x, ⟨a, q, hn⟩, hr⟩ := hcyc
+        simp only [next] at hn
+        cases hne : next V e' a with
+        | some pe =>
+            rw [hne] at hn; obtain ⟨q', e''⟩ := pe
+            rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2] at hr
+            rcases reaches_loop_split V hr with ⟨e''', heq, hrr⟩ | ⟨a0, hb0⟩
+            · rw [Exp.seq.injEq] at heq
+              obtain ⟨b', hsat, hla⟩ := ihe he' ⟨e'', ⟨a, q', hne⟩, heq.1.symm ▸ hrr⟩
+              exact ⟨b', hsat, LoopActive.comp hla⟩
+            · exact ⟨b, ⟨a0, hb0⟩, LoopActive.core (hmem he')⟩
+        | none =>
+            rw [hne] at hn
+            by_cases hE : bval V (E e') a = true
+            · rw [if_pos hE] at hn
+              by_cases hb : bval V b a = true
+              · exact ⟨b, ⟨a, hb⟩, LoopActive.core (hmem he')⟩
+              · rw [if_neg hb] at hn; simp at hn
+            · rw [if_neg hE] at hn; simp at hn
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
@@ -296,5 +374,6 @@ theorem reaches_loop_split {b : BExp T} {e e' y : Exp A T}
 #print axioms no_selfcycle_act
 #print axioms reaches_seq_split
 #print axioms reaches_loop_split
+#print axioms selfCyclic_loopActive
 
 end GkatDeriv
