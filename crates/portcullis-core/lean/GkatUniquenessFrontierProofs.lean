@@ -30,15 +30,17 @@ false" must mean **not syntactically derivable**, not semantically false. The fr
 is *provability*, not *truth* — exactly the gap `left_distrib_not_gkat_theorem`
 exhibits (a semantically-blocked but not axiom-refuted elimination step).
 
-And `productivity_is_necessary` closes the loop on *why* a semantic countermodel is
-the wrong tool: non-uniqueness needs **non-productivity** (a non-productive loop has
-two distinct solutions, exhibited concretely). Since productive systems are forced
-unique in the standard model, **no semantic countermodel to UA exists among guarded
-(productive) systems** — so any real independence of UA must be **proof-theoretic**
-(no finite derivation), not a model. That is the sharp reframing of the open problem.
+And `productivity_is_necessary` sharpens *which* model can witness independence:
+non-uniqueness needs **non-productivity** (a non-productive loop has two distinct
+solutions, exhibited concretely). Since productive systems are forced unique **in the
+standard model**, the **standard language model cannot witness the independence** for
+productive systems — so any independence proof must use a *non-standard* model (or be
+proof-theoretic). It does NOT rule out non-standard countermodels (constructing one is
+exactly the open route); it only closes off the standard model.
 
 This does NOT resolve the open problem (derivability of UA); it machine-checks the
-semantic half and rules out the obvious line of attack, so the remaining question is
+standard-model half and localizes where a countermodel could still live, so the
+remaining question is
 sharp. Axioms `[propext, Quot.sound]`, `sorryAx`-free.
 -/
 
@@ -136,7 +138,7 @@ theorem two_state_semantic_uniqueness
 
 #print axioms two_state_semantic_uniqueness
 
--- ── Non-uniqueness needs NON-productivity: no countermodel among guarded systems ──
+-- ── Non-uniqueness needs NON-productivity: the STANDARD model can't witness it ──
 
 /-!
 `two_state_semantic_uniqueness` (and its single-state ancestor) turn on the
@@ -154,13 +156,18 @@ Take `b = prim ()`, body `test b` (so `E(test b) = b ≢ 0` — NOT productive),
   `P2` = accept every empty string  (extra junk at the `b`-atom).
 
 Both solve; they differ at `(true, [])`. Consequence, read together with the
-uniqueness theorems above: **semantic non-uniqueness requires non-productivity.**
-So a countermodel to the Uniqueness Axiom among *productive* (guarded) systems
-cannot exist — the standard model already forces those unique. Any genuine
-independence of UA from the GKAT axioms must therefore be **proof-theoretic**
-(no finite derivation) rather than a semantic countermodel — which is why the
-conjecture has resisted a model-theoretic disproof. (This does not settle UA's
-derivability, the open question; it rules out the obvious line of attack.)
+uniqueness theorems above: in the **standard (guarded-string) model**, semantic
+non-uniqueness requires non-productivity.
+
+**Scope — an earlier, stronger claim retracted.** `two_state_semantic_uniqueness`
+establishes n=2 UA in the *standard* model only; its well-foundedness comes from
+guarded strings being finite. It does **not** show n=2 UA holds in every model of the
+GKAT axioms. So this does **not** rule out a countermodel: a model-theoretic
+independence proof would construct a *non-standard* model where UA fails, and nothing
+here touches that. The honest conclusion is only that **the standard language model
+cannot witness the independence** for productive systems — so any independence proof
+must use a non-standard model (or be proof-theoretic). Whether such a model exists is
+exactly the open question; this does not settle it.
 -/
 
 /-- Valuation: the primitive test reads the `Bool` atom. -/
@@ -215,9 +222,10 @@ theorem P1_ne_P2 : ¬ (∀ gs, P1 gs ↔ P2 gs) := by
 /-- **Productivity is necessary for uniqueness.** The non-productive loop
     `g ≡ (test b)·g +_b (¬b)` has two distinct solutions `P1 ≠ P2` in the
     guarded-string model. With `two_state_semantic_uniqueness` (productive systems
-    ARE unique), this pins semantic non-uniqueness to non-productivity — so no
-    semantic countermodel to UA exists among guarded systems, and any independence
-    of UA must be proof-theoretic. -/
+    ARE unique *in the standard model*), this pins standard-model non-uniqueness to
+    non-productivity — so the standard language model cannot witness UA's
+    independence for productive systems. It does NOT rule out a non-standard
+    countermodel (the open route); it only closes off the standard model. -/
 theorem productivity_is_necessary :
     SolvesNP P1 ∧ SolvesNP P2 ∧ ¬ (∀ gs, P1 gs ↔ P2 gs) :=
   ⟨solves_P1, solves_P2, P1_ne_P2⟩
