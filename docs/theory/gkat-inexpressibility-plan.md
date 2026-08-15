@@ -62,32 +62,78 @@ witness `L ∉ W` are provable) is the crux. Options to evaluate in Milestone 2:
    non-well-nested 2-cycle-with-two-exits behavior) and prove `L ∉ W`, hence `∀ e,
    ⟦e⟧ ≠ L`. *Risk: high — depends on Milestones 2–4.*
 
-## BLOCKER (before M2 can start faithfully)
+## UNBLOCKED — precise definitions obtained (from the paper, §5–6, verbatim)
 
-Two prerequisites must be obtained from the primary source — and could **not** be
-extracted reliably in-session (the arXiv PDF is Flate-compressed binary; the HTML
-rendering only yields an AI-summarised, imprecise reading of the rules):
+**The final coalgebra `Z`** (§4): trees `t : A⁺ ⇀ 2+Σ` (partial functions, `A ⊆ dom
+t`), where `t(a)=0` reject, `t(a)=1` accept, `t(a)=p∈Σ` action. Output/derivative:
+`t↓a` iff `t(a)=0`; `t⇓a` iff `t(a)=1`; `t —a|p→ ∂ₐt` iff `t(a)=p`, with `∂ₐt := λw.
+t(aw)`. (Remark 4.1: trees ≅ deterministic guarded languages `L ⊆ (A·Σ)*·A ∪
+(A·Σ)ω`.) This is exactly our behavior coalgebra `⟨Lhalt, langDeriv⟩` (M1), extended
+to record *which* action and to infinite (`ω`) branches.
 
-1. **The exact text of Definition 12** — especially rule 2 (derivative closure): its
-   precise premise, the definition of `N(t)`, and how the least-fixpoint reading of a
-   rule with a universal-over-derivatives premise is intended. Encoding an
-   *approximation* of `W` would make M3–M5 vacuous or wrong; faithfulness forbids it.
+**Behavioral differential equations (§5), the operations `W` uses:**
+- Tests `⟦b⟧(a) = 1` if `a∈b` else `0`.  Action `⟦p⟧(a)=p`, `∂ₐ⟦p⟧ = ⟦1⟧`.
+- Sequential `·`:  `(s·t)(a) = t(a)` if `s(a)=1` else `s(a)`;  `∂ₐ(s·t) = ∂ₐt` if
+  `s(a)=1` else `(∂ₐs)·t`.  (= the fusion product; our `langSeq`.)
+- Guarded union `+_b`:  `(s+_b t)(a) = s(a)` if `a∈b` else `t(a)`;  `∂ₐ(s+_b t) = ∂ₐs`
+  if `a∈b` else `∂ₐt`.
+- Guarded exponential `t^(b)`:  `t^(b)(a) = 1` if `a∉b`; `t(a)` if `a∈b ∧ t(a)∈Σ`; `0`
+  otherwise.  `∂ₐ(t^(b)) = ∂ₐt · t^(b)`.
+- **Continuation `▷`** (NOT a GKAT op; the loop primitive, dual to Kleene star):
+  `(s▷t)(a) = t(a)` if `s(a)=1` else `s(a)`;  `∂ₐ(s▷t) = (∂ₐt)▷t` if `s(a)=1` else
+  `(∂ₐs)▷t`.  "attaches infinitely many copies of `t` to `s`."
 
-2. **A concrete *confirmed* inexpressible witness.** The paper proves one *exists*
-   but the concrete automaton was not extractable. Critically, the Fig. 4 lesson
-   (non-well-nested **but expressible**) means our earlier intuition — "the two-exit
-   2-cycle is inexpressible" — is **unverified and may be false**. `L ∉ W` needs a `L`
-   the paper actually certifies inexpressible, not a guessed one.
+**Definition 6.1 (the nesting coequation `W`), verbatim.** `W` is the smallest subset
+of `Z` containing the discrete coequation `D := {⟦b⟧ | b ⊆ A}` and closed under:
+```
+  t,s ∈ W          (∀a∈A) t(a)∈Σ ⟹ ∂ₐt ∈ W          t,s ∈ W
+  ─────────        ──────────────────────────         ─────────
+  t·s ∈ W                   t ∈ W                     t▷s ∈ W
+```
+**Prop 6.2:** `W = {⟦e⟧ | e ∈ Exp}`. Soundness (`⟦e⟧ ∈ W`) uses: `∂ₐ⟦p⟧=1` so `p∈W`
+by rule 2; `·` by rule 1; `+_b` since every derivative of `s+_b t` is a derivative of
+`s` or of `t` (rule 2); and the **key identity** `t^(b) = 1 ▷ (t̃ +_b 1)` where `t̃ :=
+Σ_{a|pₐ→tₐ} pₐ·tₐ`, giving loops via rule 3.
 
-**Until (1) and (2) are in hand, M2+ are on hold by discipline, not for lack of
-effort.** The unblock is source material: the paper's Def. 12 text and its concrete
-inexpressibility witness (e.g. from the authors, a text/HTML copy that renders, or a
-version with extractable text).
+**The concrete inexpressible witness — Figure 3 (§6).** The two-state automaton:
+`v₀ —b|p→ v₁`, `v₁ —b̄|q→ v₀`, i.e. state `v₀` acts `p` and moves to `v₁` on atoms
+`a∈b`, and `v₁` acts `q` and moves back to `v₀` on atoms `a∈b̄`. Its single infinite
+branch reads atoms alternating `b, b̄, b, b̄, …`. **It exhibits no behavior `⟦e⟧`**
+when `b ≠ 0 ≠ b̄`, because (Appendix D, *not in the pages we have*) **no branch of a
+GKAT behavior accepts both `b` and `b̄` infinitely often.** (Cf. our
+`InLoop_exits_on_not_b`: a single loop continues only on `b`-atoms.)
+
+## CRITICAL: the obstruction is an ω-property — our finite `den` cannot witness it
+
+The Fig. 3 automaton (b/b̄-alternating 2-cycle) has, if neither state accepts, **no
+finite accepting strings** — so `den(Fig 3) = ∅ = ⟦0⟧`, which is *finitely
+expressible*. Its inexpressibility lives entirely in the **infinite branch** (the
+`ω`-word alternating `b, b̄, …`), which the "accept `b` and `b̄` infinitely often"
+criterion is about. **Our `den` (finite guarded strings) is blind to this.** Trees in
+`Z` are `L ⊆ (A·Σ)*·A ∪ (A·Σ)ω` — the `ω` part carries the obstruction (Remark 4.1).
+
+**Consequence:** M1's finite-string behavior coalgebra is the *finite shadow* of `Z`
+and is genuinely insufficient for M4/M5. Both routes below require modelling the
+**infinite (coinductive) tree**, not just finite acceptance:
+
+- **(A) via `W`:** build the tree coalgebra `Z` (coinductive `t : A⁺ ⇀ 2+Σ`), the ops
+  `·, +_b, ^(b), ▷` by their BDEs, `W` (Def 6.1) as an inductive predicate on trees,
+  prove `⟦e⟧ ∈ W` (Prop 6.2), and `Fig 3 ∉ W`.
+- **(B) via the criterion:** model behaviors as trees / `ω`-branches, formalize "no
+  branch accepts both `b` and `b̄` infinitely often", prove every `⟦e⟧` satisfies it
+  (Appendix D — **not in the pages we have**), show Fig. 3 violates it.
+
+Either way, **Milestone 2 is now: construct the coinductive tree coalgebra `Z`** (with
+`Σ`-labelled transitions and `ω`-branches) and re-establish `den`/`⟦·⟧` as its
+finite-plus-infinite unfolding. Our existing `next`/`E`/`InLoop` corpus feeds the
+transition structure, but the `ω`-completion is new, coinductive work.
 
 ## Honest assessment
 
-Milestone 1 (behavior coalgebra) is solid and correct on its own. Milestones 2–5 are
-each substantial research formalization AND are gated on the blocker above. This plan
-exists so the effort is scoped and resumable the moment the precise definition and a
-certified witness are available — rather than risk mechanising a wrong `W` or chasing
-an unconfirmed `L`.
+Milestone 1 is solid but is the *finite shadow* of the real object. The project is
+UNBLOCKED on definitions (`W` = Def 6.1 exact; witness = Fig. 3; criterion known), and
+the true M2 is now precisely identified: the **coinductive tree coalgebra `Z`** — a
+different and larger formalization than the finite-string work so far. Route B also
+needs Appendix D (still to obtain). This is a genuine research-mechanisation project;
+the honest near-term deliverable is `Z` + the BDE operations + `W`'s definition, then
+`⟦e⟧ ∈ W`. That is the resumable next step, now fully specified.
