@@ -260,6 +260,7 @@ jobs:
           #print axioms GkatDeriv.loop_no_complementary
           #print axioms GkatDeriv.complementary_accBounded_false
           #print axioms GkatDeriv.Reaches.trans
+          #print axioms GkatDeriv.loopActive_step
           #print axioms GkatFaithful.left_distrib_not_ba_theorem
           #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
           #print axioms GkatFaithful.loop_is_union_of_iterations

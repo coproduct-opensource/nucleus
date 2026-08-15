@@ -126,9 +126,74 @@ theorem Reaches.head {d d' d'' : Exp A T}
     (hstep : Step V d d') (h : Reaches V d' d'') : Reaches V d d'' :=
   Reaches.trans V (Reaches.tail (Reaches.refl d) hstep) h
 
+-- ── LoopActive: "inside a loop with guard b, under outer composition" ────────────
+
+/-- `d` is a state inside a loop with guard `b`: either a derivative of some `e^(b)`,
+    or such a state under outer right-composition `·f`. Captures exactly the states
+    whose cycle lives in the loop `e^(b)` — `derivs (e^(b))` closed under `·f`. -/
+inductive LoopActive (b : BExp T) : Exp A T → Prop where
+  | core {e d0 : Exp A T} : d0 ∈ derivs (.wh b e) → LoopActive b d0
+  | comp {d0 f : Exp A T} : LoopActive b d0 → LoopActive b (.seq d0 f)
+
+/-- Every `LoopActive b` state is `AccBounded b` (accepts only on `¬b`). -/
+theorem loopActive_accBounded {b : BExp T} {d : Exp A T} (h : LoopActive b d) :
+    AccBounded V b d := by
+  induction h with
+  | core hd0 => exact accBounded_loop V hd0
+  | comp _ ih => exact AccBounded.seq V ih
+
+/-- **`LoopActive` is preserved by a step at a `b`-atom.** At a `b`-atom the loop
+    cannot exit (exits happen at `¬b`, by `AccBounded`), so a step stays inside the
+    loop. This is what keeps a cycle within one loop guard. -/
+theorem loopActive_next {b : BExp T} {d : Exp A T} (h : LoopActive b d) :
+    ∀ {a : Atom} {q : A} {d' : Exp A T},
+      bval V b a = true → next V d a = some (q, d') → LoopActive b d' := by
+  induction h with
+  | @core e d0 hd0 => intro a q d' _ hn; exact LoopActive.core (derivs_closed (.wh b e) hd0 hn)
+  | @comp d0 f h_inner ih =>
+      intro a q d' hb hn
+      simp only [next] at hn
+      cases hne : next V d0 a with
+      | some pe =>
+          rw [hne] at hn; obtain ⟨q0, d0'⟩ := pe
+          rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2]
+          exact LoopActive.comp (ih hb hne)
+      | none =>
+          rw [hne] at hn
+          by_cases hE : bval V (E d0) a = true
+          · exact absurd (by rw [loopActive_accBounded V h_inner a hE] at hb; exact hb) (by simp)
+          · rw [if_neg hE] at hn; simp at hn
+
+/-- **`LoopActive` step dichotomy.** A step from a `LoopActive b` state either stays
+    `LoopActive b`, or was taken at a `¬b`-atom (the only way to exit the loop). So
+    along a path that only uses `b`-atoms — or that never leaves the loop — `LoopActive`
+    is preserved. The clean engine for the cycle argument. -/
+theorem loopActive_step {b : BExp T} {d : Exp A T} (h : LoopActive b d) :
+    ∀ {a : Atom} {q : A} {d' : Exp A T},
+      next V d a = some (q, d') → LoopActive b d' ∨ bval V b a = false := by
+  induction h with
+  | @core e d0 hd0 => intro a q d' hn; exact Or.inl (LoopActive.core (derivs_closed (.wh b e) hd0 hn))
+  | @comp d0 f h_inner ih =>
+      intro a q d' hn
+      simp only [next] at hn
+      cases hne : next V d0 a with
+      | some pe =>
+          rw [hne] at hn; obtain ⟨q0, d0'⟩ := pe
+          rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2]
+          rcases ih hne with h' | h'
+          · exact Or.inl (LoopActive.comp h')
+          · exact Or.inr h'
+      | none =>
+          rw [hne] at hn
+          by_cases hE : bval V (E d0) a = true
+          · exact Or.inr (loopActive_accBounded V h_inner a hE)
+          · rw [if_neg hE] at hn; simp at hn
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
 #print axioms Reaches.trans
+#print axioms loopActive_next
+#print axioms loopActive_step
 
 end GkatDeriv
