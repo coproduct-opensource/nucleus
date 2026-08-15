@@ -279,6 +279,12 @@ lean_lib «GkatFaithfulnessProofs» where
 lean_lib «GkatKleeneProofs» where
   roots := #[`GkatKleeneProofs]
 
+-- The n-ary decomposition of the Uniqueness Axiom: chain-elimination reduces an
+-- n-state guarded cycle to a single W3 loop given a pullback witness per crossing
+-- (UAₙ = UA₁ + (n−1) witnesses).
+lean_lib «GkatChainEliminationProofs» where
+  roots := #[`GkatChainEliminationProofs]
+
 -- Snapshot clone-safety: the cmdline key classification is disjoint, the
 -- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
 -- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs

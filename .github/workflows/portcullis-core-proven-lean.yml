@@ -100,6 +100,7 @@ jobs:
             GkatCoequationProofs \
             GkatFaithfulnessProofs \
             GkatKleeneProofs \
+            GkatChainEliminationProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
             GkatWhileStep \
