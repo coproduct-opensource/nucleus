@@ -459,6 +459,17 @@ theorem reachCount_eq_of_mutReach (V : T → Atom → Bool) (aut : GAut S A T) {
   · apply filter_len_le; intro t _ ht
     simp only [decide_eq_true_eq] at ht ⊢; exact AutReaches.trans h.1 ht
 
+/-- **Every edge is rank-non-increasing.** A step never raises `reachCount` — its target
+    reaches no more than its source. So an edge either stays within an SCC (equal rank) or
+    descends to a lower one; there are no back-edges up the condensation. The structural fact
+    the elimination order rests on. -/
+theorem reachCount_step_le (V : T → Atom → Bool) (aut : GAut S A T) {s s' : S}
+    (hstep : AutStep1 V aut s s') : reachCount V aut s' ≤ reachCount V aut s := by
+  unfold reachCount
+  apply filter_len_le; intro t _ ht
+  simp only [decide_eq_true_eq] at ht ⊢
+  exact AutReaches.trans (AutReaches.head hstep (AutReaches.refl s')) ht
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1249,6 +1260,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms AutBelow.congr_left
 #print axioms reachCount_lt_of_below
 #print axioms reachCount_eq_of_mutReach
+#print axioms reachCount_step_le
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
