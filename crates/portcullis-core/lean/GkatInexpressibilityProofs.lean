@@ -235,6 +235,58 @@ theorem no_selfcycle_act {p : A} {d : Exp A T} (hd : d ∈ derivs (.act p)) :
     exact absurd (reaches_test V hr) (by simp)
   · rintro ⟨x, hstep, _⟩; exact step_test V hstep
 
+/-- **Reachability through a sequence splits.** A run from `d0·g` either stays in the
+    `d0`-part (so its endpoint is `d0'·g` and `d0` reaches `d0'`), or it has exited
+    into `g`'s derivatives. The engine for the `seq` case of `selfCyclic`: a cycle
+    through `d0·g` either projects to a cycle of `d0`, or lands `d0·g ∈ derivs g`. -/
+theorem reaches_seq_split {d0 g y : Exp A T} (h : Reaches V (.seq d0 g) y) :
+    (∃ d0', y = .seq d0' g ∧ Reaches V d0 d0') ∨ y ∈ derivs g := by
+  induction h with
+  | refl => exact Or.inl ⟨d0, rfl, Reaches.refl d0⟩
+  | tail hR hstep ih =>
+      rcases ih with ⟨d0', rfl, hr⟩ | hg
+      · obtain ⟨a, q, hn⟩ := hstep
+        simp only [next] at hn
+        cases hne : next V d0' a with
+        | some pe =>
+            rw [hne] at hn; obtain ⟨q', d⟩ := pe
+            rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2]
+            exact Or.inl ⟨d, rfl, Reaches.tail hr ⟨a, q', hne⟩⟩
+        | none =>
+            rw [hne] at hn
+            by_cases hE : bval V (E d0') a = true
+            · rw [if_pos hE] at hn; exact Or.inr (deriv_mem g hn)
+            · rw [if_neg hE] at hn; simp at hn
+      · obtain ⟨a, q, hn⟩ := hstep; exact Or.inr (derivs_closed g hg hn)
+
+/-- **Reachability through a loop-tailed state splits.** A run from `e'·e^(b)` either
+    stays via pure body-steps (endpoint `e''·e^(b)`, `e'` reaches `e''`), or it took a
+    loop-back — which needs a `b`-atom, so `b` is satisfiable. The engine for the `wh`
+    case: a cycle either projects to a body cycle (IH) or witnesses `b` satisfiable. -/
+theorem reaches_loop_split {b : BExp T} {e e' y : Exp A T}
+    (h : Reaches V (.seq e' (.wh b e)) y) :
+    (∃ e'', y = .seq e'' (.wh b e) ∧ Reaches V e' e'') ∨ (∃ a, bval V b a = true) := by
+  induction h with
+  | refl => exact Or.inl ⟨e', rfl, Reaches.refl e'⟩
+  | tail hR hstep ih =>
+      rcases ih with ⟨e'', rfl, hr⟩ | hb
+      · obtain ⟨a, q, hn⟩ := hstep
+        simp only [next] at hn
+        cases hne : next V e'' a with
+        | some pe =>
+            rw [hne] at hn; obtain ⟨q', d⟩ := pe
+            rw [Option.some.injEq, Prod.mk.injEq] at hn; rw [← hn.2]
+            exact Or.inl ⟨d, rfl, Reaches.tail hr ⟨a, q', hne⟩⟩
+        | none =>
+            rw [hne] at hn
+            by_cases hE : bval V (E e'') a = true
+            · rw [if_pos hE] at hn
+              by_cases hb : bval V b a = true
+              · exact Or.inr ⟨a, hb⟩
+              · rw [if_neg hb] at hn; simp at hn
+            · rw [if_neg hE] at hn; simp at hn
+      · exact Or.inr hb
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
@@ -242,5 +294,7 @@ theorem no_selfcycle_act {p : A} {d : Exp A T} (hd : d ∈ derivs (.act p)) :
 #print axioms loopActive_next
 #print axioms loopActive_step
 #print axioms no_selfcycle_act
+#print axioms reaches_seq_split
+#print axioms reaches_loop_split
 
 end GkatDeriv
