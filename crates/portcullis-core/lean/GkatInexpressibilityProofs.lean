@@ -68,7 +68,45 @@ theorem loop_no_complementary {b : BExp T} {e d1 d2 : Exp A T}
   have hd2 := loop_deriv_no_halt_in_b V h2 hb0
   rw [hcomp a0, hd1] at hd2; simp at hd2
 
+-- ── The domination invariant: `AccBounded b' d` (d accepts only outside b') ──────
+
+/-- `d` accepts only on `¬b'`-atoms — the acceptance set of `d` is disjoint from `b'`.
+    The invariant that dominates all states inside a loop (guard `b'`) and, crucially,
+    is preserved by right-composition `·f` (which only shrinks acceptance). -/
+def AccBounded (b' : BExp T) (d : Exp A T) : Prop := ∀ a, bval V (E d) a = true → bval V b' a = false
+
+/-- Every derivative of a loop `e^(b)` is `AccBounded` by `b` (= `loop_deriv_halts_on_not_b`). -/
+theorem accBounded_loop {b : BExp T} {e d : Exp A T} (h : d ∈ derivs (.wh b e)) :
+    AccBounded V b d := fun _ hE => loop_deriv_halts_on_not_b V h hE
+
+/-- **`AccBounded` is preserved by right-composition.** `E(d'·f) = E(d')∧E(f) ⊆ E(d')`,
+    so if `d'` avoids `b'` then so does `d'·f`. This is what carries the loop
+    domination through the `seq`/`ite` derivatives in the induction. -/
+theorem AccBounded.seq {b' : BExp T} {d' f : Exp A T} (hd : AccBounded V b' d') :
+    AccBounded V b' (.seq d' f) := by
+  intro a hE; simp only [E, bval, Bool.and_eq_true] at hE; exact hd a hE.1
+
+/-- **Two `AccBounded`, complementary, on a satisfiable `b'` — contradiction.** If
+    `d₁,d₂` both avoid `b'` and accept on complementary atom-sets, then at any `b'`-atom
+    both reject, yet complementarity forces one to accept. This is the finite kernel of
+    D.2: mutually-reachable states share a satisfiable loop guard `b'` that bounds both,
+    so complementary acceptance is impossible. -/
+theorem complementary_accBounded_false {b' : BExp T} {d1 d2 : Exp A T}
+    (hb1 : AccBounded V b' d1) (hb2 : AccBounded V b' d2)
+    (hcomp : ∀ a, bval V (E d2) a = ! bval V (E d1) a)
+    (a0 : Atom) (ha0 : bval V b' a0 = true) : False := by
+  have h1 : bval V (E d1) a0 = false := by
+    cases h : bval V (E d1) a0 with
+    | false => rfl
+    | true => rw [hb1 a0 h] at ha0; exact absurd ha0 (by simp)
+  have h2 : bval V (E d2) a0 = false := by
+    cases h : bval V (E d2) a0 with
+    | false => rfl
+    | true => rw [hb2 a0 h] at ha0; exact absurd ha0 (by simp)
+  rw [hcomp a0, h1] at h2; simp at h2
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
+#print axioms complementary_accBounded_false
 
 end GkatDeriv
