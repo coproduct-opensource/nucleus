@@ -1466,6 +1466,20 @@ theorem not_dom_of_reachAvoid (V : T → Atom → Bool) (aut : GAut S A T) {H T 
   · exact hne heq
   · exact hnr h
 
+/-- **The natural loop of a back edge `T→H`**: the header `H`, plus every node that can reach
+    the tail `T` without passing through `H`. This is the loop body the decomposition peels —
+    all nodes are dominated by `H`, and control enters only through `H`. -/
+def InNaturalLoop (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) (s : S) : Prop :=
+  s = H ∨ ReachAvoid V aut H s T
+
+/-- The header is in its own natural loop. -/
+theorem loop_mem_head (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) :
+    InNaturalLoop V aut H T H := Or.inl rfl
+
+/-- The tail is in the natural loop (it reaches itself, trivially avoiding `H`). -/
+theorem loop_mem_tail (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) :
+    InNaturalLoop V aut H T T := Or.inr (AutReaches.refl T)
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
