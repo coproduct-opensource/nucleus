@@ -1365,20 +1365,27 @@ theorem loop2Aut_expressible (V : T → Atom → Bool) (b : BExp T) (p q : A) :
 -- ═══ Multi-state (branching) SCC synthesis — WIP (gkat-kleene-multistate) ═══════════
 /-!
 The last case of `W ⊆ {⟦e⟧}`: a strongly-connected component with several mutually-
-reachable states is a loop whose *body spans the SCC*. Plan (natural-loop decomposition):
+reachable states is a loop whose *body spans the SCC*.
 
-1. Pick the SCC's entry `e`. Under the well-nested restriction each SCC is single-entry.
-2. **Remove the back-edges** (edges inside the SCC targeting `e`). The SCC-minus-back-edges
-   is acyclic — a DAG rooted at `e` — so `acyclic_flat_expressible` synthesizes it into a
-   body expression `body`, one per SCC state, with the back-edge action deferred.
-3. The loop at `e` is `body^(guard)·(exits)`, by `salomaa_solution_exists` (arbitrary body —
-   `wnSolE_solves`), with the SCC's cross-edges as exits (strictly lower rank, `brick 3a`).
-4. Collapse the SCC to one node and recurse over `autBelow_wf`.
+**Corrected plan** (web-checked against reducible-flow-graph theory — the earlier
+"remove edges to the entry ⇒ acyclic" was too naive):
+
+* The well-nested restriction is exactly **reducibility**: a back edge `T→H` has its head
+  `H` *dominating* its tail, and removing *all* back edges leaves a DAG. GKAT's Fig-3
+  inexpressibility is the irreducible case (a two-entry cycle, no dominating header).
+* So the decomposition is over the **loop-nesting forest**, recursively, not a single
+  back-edge cut: remove the outermost natural loop's back edges (to its header `H`, which
+  dominates the loop), synthesize the resulting DAG body with `acyclic_flat_expressible`,
+  wrap it with `salomaa` (arbitrary body — `wnSolE_solves`), then recurse into the inner
+  loops (deeper in the forest) and outward over the condensation (`autBelow_wf`).
+* This needs a **dominator / natural-loop** layer on top of the SCC infrastructure —
+  genuinely more machinery than the condensation alone. It is the paper's Def-4.6
+  well-nested induction in graph form.
 
 **Load-bearing subtlety** (already mapped): restricting to a sub-automaton changes *which*
 guard fires unless guards are disjoint — so the whole construction is over a `Deterministic`
 GAut (`GuardsDisjoint` at every atom), where `firstMatch_eq_of_mem_det` makes edge selection
-position-independent. `restrictAut` below is the sub-automaton primitive step 2 uses.
+position-independent. `restrictAut` below is the sub-automaton primitive the recursion uses.
 -/
 
 /-- **Sub-automaton on a state subset.** Keep the `keep`-states and only transitions whose
@@ -1400,6 +1407,26 @@ theorem restrict_trans_keep (aut : GAut S A T) (keep : S → Bool) {s : S}
     {t : BExp T × A × S} (h : t ∈ (restrictAut aut keep).trans s) : keep t.2.2 = true := by
   have := (List.mem_filter.mp h).2
   simpa using this
+
+/-- A step in the restricted automaton targets a kept state. -/
+theorem autStep_restrict_keep (V : T → Atom → Bool) (aut : GAut S A T) (keep : S → Bool)
+    {s : S} {a : Atom} {q : A} {s' : S}
+    (h : autStep V (restrictAut aut keep) s a = some (q, s')) : keep s' = true := by
+  obtain ⟨g, hmem, _⟩ := firstMatch_some_mem V a ((restrictAut aut keep).trans s) h
+  exact restrict_trans_keep aut keep hmem
+
+/-- **Restriction confines reachability.** In `restrictAut aut keep`, a run from a kept state
+    only visits kept states — every step targets a kept one (`restrict_trans_keep`), so the
+    sub-automaton stays inside the subset. The invariant the loop-nesting recursion needs to
+    keep an SCC's body sealed off from the rest of the automaton. -/
+theorem restrict_reaches_confine (V : T → Atom → Bool) (aut : GAut S A T) (keep : S → Bool)
+    {s s' : S} (h : AutReaches V (restrictAut aut keep) s s') (hs : keep s = true) :
+    keep s' = true := by
+  induction h with
+  | refl => exact hs
+  | tail _ hstep _ =>
+      obtain ⟨a, q, hst⟩ := hstep
+      exact autStep_restrict_keep V aut keep hst
 
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
