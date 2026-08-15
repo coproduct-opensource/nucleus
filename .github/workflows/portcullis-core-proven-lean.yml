@@ -268,6 +268,8 @@ jobs:
           #print axioms GkatDeriv.selfCyclic_loopActive
           #print axioms GkatDeriv.cycle_common_bound
           #print axioms GkatDeriv.no_mutreach_complementary
+          #print axioms GkatDeriv.list_pigeonhole
+          #print axioms GkatDeriv.fig3_inexpressible
           #print axioms GkatFaithful.left_distrib_not_ba_theorem
           #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
           #print axioms GkatFaithful.loop_is_union_of_iterations

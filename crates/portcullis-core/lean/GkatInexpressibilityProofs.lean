@@ -1,26 +1,34 @@
 import GkatDerivativeFiniteProofs
 
 /-!
-# Toward inexpressibility: the loop derivatives all halt on ¬b (the D.2 `^(b)` crux)
+# The first machine-checked GKAT inexpressibility (Fig. 3 of ICALP 2021)
 
-Route B to the first GKAT inexpressibility (Fig. 3 of Schmid–Kappé–Kozen–Silva, ICALP
-2021). Their **Lemma D.2**: every infinite branch of a GKAT behavior is *finitely
-alternating* — it cannot have `E(∂_w t)=b` and `E(∂_w t)=b̄` both infinitely often.
-Fig. 3's b/b̄-alternating 2-cycle violates this, so it is denoted by no expression.
+`fig3_inexpressible`: **no GKAT expression denotes the Figure 3 behavior** of
+Schmid–Kappé–Kozen–Silva (ICALP 2021) — the 2-state `b/b̄`-alternating automaton.
+Their **Lemma D.2**: every infinite branch of a GKAT behavior is *finitely alternating*
+— it cannot have `E(∂_w t)=b` and `E(∂_w t)=b̄` both infinitely often. Fig. 3's cycle
+violates this, so it is denoted by no expression.
 
 **Finitization.** `⟦e⟧` has finitely many derivatives (`derivs`, Lemma F.1), so an
-infinite branch must cycle; the ω-property reduces to a **cycle** property of the
-finite derivative automaton `⟨E, next⟩`. No coinductive trees are needed.
+infinite branch must cycle; the ω-property reduces to a **cycle** property of the finite
+derivative automaton `⟨E, next⟩`. No coinductive trees are needed.
 
-D.2's proof inducts on `e`; the `^(b)` (loop) case is the crux, and it is exactly our
-`InLoop_exits_on_not_b` generalized to *all* loop derivatives: **every derivative of
-`e^(b)` accepts only on `¬b`-atoms** (`E(e^(b)) = ¬b`, and any derivative is
-`e'·e^(b)` with `E = E(e')∧¬b ⊆ ¬b`). Hence no cycle inside a loop can ever reach an
-`E=b` state — the loop's branches are finitely alternating (never `b` at all). This
-file machine-checks that crux.
+The argument, all machine-checked here:
+1. **`loop_deriv_halts_on_not_b`** — the D.2 loop crux: every derivative of `e^(b)`
+   accepts only on `¬b`-atoms (`E(e^(b))=¬b`; any derivative is `e'·e^(b)` with
+   `E = E(e')∧¬b ⊆ ¬b`). Generalized to the `AccBounded` invariant, preserved by `·f`.
+2. **`selfCyclic_loopActive`** (the `Dom` lemma) — a self-cyclic derivative is
+   `LoopActive` by a *satisfiable* guard; full induction on `e`, acyclicity absorbed.
+3. **`cycle_common_bound`** — mutually-reachable derivatives share a *common*
+   satisfiable guard (resolving the nested-loop guard-switch).
+4. **`no_mutreach_complementary`** — hence no `b/b̄`-alternating 2-cycle exists in any
+   GKAT behavior (D.2's finite obstruction).
+5. **`fig3_inexpressible`** — a bisimulation `e ~ v0` yields (via `Nat.rec`+choice) an
+   alternating derivative run in the finite `derivs e`; `list_pigeonhole` forces a
+   same-parity repeat, i.e. exactly such a 2-cycle — contradiction.
 
-Axioms `[propext, Classical.choice, Quot.sound]` (the three standard Lean axioms;
-`Classical.choice` enters via `by_cases` on the derivative-equality split), `sorryAx`-free.
+Axioms `[propext, Classical.choice, Quot.sound]` (the three standard Lean axioms),
+`sorryAx`-free.
 -/
 
 namespace GkatDeriv
@@ -490,6 +498,130 @@ theorem no_mutreach_complementary {e d1 d2 : Exp A T} (hd1 : d1 ∈ derivs e)
   obtain ⟨b', ⟨a0, ha0⟩, ha1, ha2⟩ := cycle_common_bound V hd1 h12 h21
   exact complementary_accBounded_false V ha1 ha2 hcomp a0 ha0
 
+-- ── Finite pigeonhole (Mathlib-free) ───────────────────────────────────────────
+
+/-- A `Nodup` list included in `L` is no longer than `L`. -/
+theorem nodup_subset_length_le {α : Type} [DecidableEq α] :
+    ∀ (M L : List α), M.Nodup → (∀ x ∈ M, x ∈ L) → M.length ≤ L.length := by
+  intro M
+  induction M with
+  | nil => intro L _ _; simp
+  | cons x M' ih =>
+      intro L hnd hsub
+      rw [List.nodup_cons] at hnd
+      obtain ⟨hxM, hM'⟩ := hnd
+      have hxL : x ∈ L := hsub x List.mem_cons_self
+      have hsub' : ∀ y ∈ M', y ∈ L.erase x := by
+        intro y hy
+        have hyx : y ≠ x := by intro heq; subst heq; exact hxM hy
+        exact (List.mem_erase_of_ne hyx).mpr (hsub y (List.mem_cons_of_mem x hy))
+      have hle := ih (L.erase x) hM' hsub'
+      rw [List.length_erase_of_mem hxL] at hle
+      have : 1 ≤ L.length := List.length_pos_of_mem hxL
+      simp only [List.length_cons]; omega
+
+/-- **Finite pigeonhole.** A `ℕ`-sequence landing in a finite list repeats: some
+    `i < j` have `g i = g j`. (Applied to the alternating derivative run, whose values
+    all lie in the finite `derivs e₀`.) -/
+theorem list_pigeonhole {α : Type} [DecidableEq α] (g : Nat → α) (L : List α)
+    (hg : ∀ k, g k ∈ L) : ∃ i j, i < j ∧ g i = g j := by
+  apply Classical.byContradiction
+  intro hcon
+  have h : ∀ i j, i < j → g i ≠ g j := fun i j hij heq => hcon ⟨i, j, hij, heq⟩
+  have hMnd : ((List.range (L.length + 1)).map g).Nodup := by
+    rw [List.Nodup, List.pairwise_map]
+    exact (List.pairwise_lt_range).imp (fun {a b} hab => h a b hab)
+  have hMsub : ∀ x ∈ (List.range (L.length + 1)).map g, x ∈ L := by
+    intro x hx; rw [List.mem_map] at hx; obtain ⟨a, _, rfl⟩ := hx; exact hg a
+  have hle := nodup_subset_length_le ((List.range (L.length + 1)).map g) L hMnd hMsub
+  rw [List.length_map, List.length_range] at hle; omega
+
+-- ── The Figure 3 witness: no expression is bisimilar to `v0` ─────────────────────
+
+/-- **The first machine-checked GKAT inexpressibility.** No GKAT expression denotes the
+    Figure 3 behavior (Schmid–Kappé–Kozen–Silva, ICALP 2021). We take an arbitrary
+    bisimulation `R` between `e₀`'s derivative coalgebra `⟨E, next⟩` and the 2-state
+    Figure 3 automaton — `v0` (`s = false`, `E = ¬b`, steps to `v1` on every `b`-atom
+    `ab`) and `v1` (`s = true`, `E = b`, steps to `v0` on every `¬b`-atom `anb`), with
+    `b`, `¬b` both satisfiable — and show `R e₀ v0` is impossible.
+
+    Proof: the bisimulation makes the run never die, so it yields an infinite `b/b̄`-
+    alternating derivative sequence `seq 0 = e₀, seq 1, …` (built by `Nat.rec` + choice),
+    all in the finite `derivs e₀`. `list_pigeonhole` on the even indices gives `seq p =
+    seq q` with `p < q` both even; then `seq p` (`E = ¬b`) and `seq (p+1)` (`E = b`) are
+    mutually reachable and accept on complementary atom-sets — impossible by
+    `no_mutreach_complementary`. -/
+theorem fig3_inexpressible {b : BExp T} (e0 : Exp A T) (ab anb : Atom)
+    (hab : bval V b ab = true) (hanb : bval V b anb = false)
+    (R : Exp A T → Bool → Prop) (hR0 : R e0 false)
+    (hRE : ∀ e s, R e s → ∀ a, bval V (E e) a = cond s (bval V b a) (!bval V b a))
+    (hnext0 : ∀ e, R e false → ∃ q e', next V e ab = some (q, e') ∧ R e' true)
+    (hnext1 : ∀ e, R e true → ∃ q e', next V e anb = some (q, e') ∧ R e' false) : False := by
+  classical
+  -- one step of the run, staying in derivs e0 and flipping the state bit
+  have advance : ∀ (e : Exp A T) (s : Bool), R e s → e ∈ derivs e0 →
+      ∃ e', R e' (!s) ∧ e' ∈ derivs e0 ∧ Step V e e' := by
+    intro e s hRe hmem
+    cases s with
+    | false => obtain ⟨q, e', hne, hR'⟩ := hnext0 e hRe
+               exact ⟨e', hR', derivs_closed e0 hmem hne, ⟨ab, q, hne⟩⟩
+    | true  => obtain ⟨q, e', hne, hR'⟩ := hnext1 e hRe
+               exact ⟨e', hR', derivs_closed e0 hmem hne, ⟨anb, q, hne⟩⟩
+  -- the state sequence, by recursion on ℕ
+  let st : Nat → Σ' (e : Exp A T) (s : Bool), R e s ∧ e ∈ derivs e0 := fun n =>
+    Nat.rec (⟨e0, false, hR0, mem_self e0⟩ : Σ' (e : Exp A T) (s : Bool), R e s ∧ e ∈ derivs e0)
+      (fun _ prev =>
+        let ex := advance prev.1 prev.2.1 prev.2.2.1 prev.2.2.2
+        ⟨ex.choose, !prev.2.1, ex.choose_spec.1, ex.choose_spec.2.1⟩) n
+  let seq : Nat → Exp A T := fun n => (st n).1
+  let sval : Nat → Bool := fun n => (st n).2.1
+  have hRn : ∀ n, R (seq n) (sval n) := fun n => (st n).2.2.1
+  have hmem : ∀ n, seq n ∈ derivs e0 := fun n => (st n).2.2.2
+  have hstep : ∀ n, Step V (seq n) (seq (n + 1)) :=
+    fun n => (advance (seq n) (sval n) (hRn n) (hmem n)).choose_spec.2.2
+  have hflip : ∀ n, sval (n + 1) = !(sval n) := fun _ => rfl
+  -- parity of the state bit
+  have heven : ∀ n, sval (2 * n) = false := by
+    intro n
+    induction n with
+    | zero => show sval 0 = false; rfl
+    | succ k ih =>
+        have e1 : 2 * (k + 1) = (2 * k + 1) + 1 := by omega
+        rw [e1, hflip (2 * k + 1), hflip (2 * k), ih, Bool.not_not]
+  -- reachability along the run
+  have hchain : ∀ i k, Reaches V (seq i) (seq (i + k)) := by
+    intro i k
+    induction k with
+    | zero => exact Reaches.refl _
+    | succ m ih =>
+        have : i + (m + 1) = (i + m) + 1 := by omega
+        rw [this]; exact Reaches.tail ih (hstep (i + m))
+  have hchain1 : ∀ i k, Reaches1 V (seq i) (seq (i + (k + 1))) := by
+    intro i k
+    refine ⟨seq (i + 1), hstep i, ?_⟩
+    have : i + (k + 1) = (i + 1) + k := by omega
+    rw [this]; exact hchain (i + 1) k
+  -- pigeonhole on the even-indexed (v0-like) states
+  obtain ⟨i, j, hij, hpe⟩ := list_pigeonhole (fun k => seq (2 * k)) (derivs e0) (fun k => hmem (2 * k))
+  -- d1 = seq (2i) (E = ¬b), d2 = seq (2i+1) (E = b): mutually reachable + complementary
+  have h12 : Reaches1 V (seq (2 * i)) (seq (2 * i + 1)) := ⟨seq (2 * i + 1), hstep (2 * i), Reaches.refl _⟩
+  have h21 : Reaches1 V (seq (2 * i + 1)) (seq (2 * i)) := by
+    have hstart : Reaches1 V (seq (2 * i + 1)) (seq (2 * j)) := by
+      have hqe : 2 * j = (2 * i + 1) + ((2 * j - 2 * i - 2) + 1) := by omega
+      rw [hqe]; exact hchain1 (2 * i + 1) (2 * j - 2 * i - 2)
+    rw [← hpe] at hstart; exact hstart
+  have hcomp : ∀ a, bval V (E (seq (2 * i + 1))) a = ! bval V (E (seq (2 * i))) a := by
+    intro a
+    have hE1 : bval V (E (seq (2 * i))) a = !bval V b a := by
+      have hr := hRn (2 * i); rw [heven i] at hr
+      simpa using hRE (seq (2 * i)) false hr a
+    have hE2 : bval V (E (seq (2 * i + 1))) a = bval V b a := by
+      have hs1 : sval (2 * i + 1) = true := by rw [hflip (2 * i), heven i, Bool.not_false]
+      have hr := hRn (2 * i + 1); rw [hs1] at hr
+      simpa using hRE (seq (2 * i + 1)) true hr a
+    rw [hE1, hE2, Bool.not_not]
+  exact no_mutreach_complementary V (hmem (2 * i)) h12 h21 hcomp
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
@@ -502,5 +634,7 @@ theorem no_mutreach_complementary {e d1 d2 : Exp A T} (hd1 : d1 ∈ derivs e)
 #print axioms selfCyclic_loopActive
 #print axioms cycle_common_bound
 #print axioms no_mutreach_complementary
+#print axioms list_pigeonhole
+#print axioms fig3_inexpressible
 
 end GkatDeriv
