@@ -470,6 +470,56 @@ theorem reachCount_step_le (V : T → Atom → Bool) (aut : GAut S A T) {s s' : 
   simp only [decide_eq_true_eq] at ht ⊢
   exact AutReaches.trans (AutReaches.head hstep (AutReaches.refl s')) ht
 
+/-- **Equal `filter` length forces the reverse inclusion** (Mathlib-free): if `p ⊆ q` on `l`
+    yet keeps as many, then everything `q` keeps `p` keeps too. -/
+theorem filter_mem_of_len_eq {α : Type} (l : List α) (p q : α → Bool)
+    (hmono : ∀ a ∈ l, p a = true → q a = true)
+    (hlen : (l.filter p).length = (l.filter q).length)
+    (x : α) (hx : x ∈ l) (hqx : q x = true) : p x = true := by
+  cases hpx : p x with
+  | true => rfl
+  | false =>
+      have hlt := filter_len_lt l p q hmono x hx hqx hpx
+      omega
+
+/-- **An edge that does not drop rank stays in the SCC.** If `s` steps to `s'` and they have
+    the same `reachCount`, they are mutually reachable — everything `s` reaches, `s'` reaches
+    too (equal counts + the forward inclusion), so `s'` reaches `s` back. The converse of
+    `reachCount_step_le`'s strictness: rank is constant *only* within an SCC. -/
+theorem mutReach_of_step_reachCount_eq (V : T → Atom → Bool) (aut : GAut S A T) {s s' : S}
+    (hs : s ∈ aut.states) (hstep : AutStep1 V aut s s')
+    (heq : reachCount V aut s = reachCount V aut s') :
+    AutMutReach V aut s s' := by
+  refine ⟨AutReaches.head hstep (AutReaches.refl s'), ?_⟩
+  have hmono : ∀ t ∈ aut.states,
+      (fun t => @decide (AutReaches V aut s' t) (Classical.propDecidable _)) t = true →
+      (fun t => @decide (AutReaches V aut s t) (Classical.propDecidable _)) t = true := by
+    intro t _ ht
+    simp only [decide_eq_true_eq] at ht ⊢
+    exact AutReaches.trans (AutReaches.head hstep (AutReaches.refl s')) ht
+  have hlen : (aut.states.filter
+        (fun t => @decide (AutReaches V aut s' t) (Classical.propDecidable _))).length
+      = (aut.states.filter
+        (fun t => @decide (AutReaches V aut s t) (Classical.propDecidable _))).length :=
+    heq.symm
+  have hps := filter_mem_of_len_eq aut.states _ _ hmono hlen s hs
+    (by simp only [decide_eq_true_eq]; exact AutReaches.refl s)
+  simp only [decide_eq_true_eq] at hps
+  exact hps
+
+/-- **Cross-SCC edges strictly drop the rank.** If `s` steps to a state `s'` *not* mutually
+    reachable with it (a genuine descent in the condensation, not an in-SCC cycle), then
+    `reachCount s' < reachCount s`. This is what certifies that the exits of a collapsed SCC
+    go to strictly-smaller rank — the `WNAutE` well-formedness the construction needs. -/
+theorem reachCount_lt_of_step_not_mutReach (V : T → Atom → Bool) (aut : GAut S A T) {s s' : S}
+    (hs : s ∈ aut.states) (hstep : AutStep1 V aut s s')
+    (hnm : ¬ AutMutReach V aut s s') :
+    reachCount V aut s' < reachCount V aut s := by
+  have hle := reachCount_step_le V aut hstep
+  rcases Nat.lt_or_ge (reachCount V aut s') (reachCount V aut s) with h | h
+  · exact h
+  · exact absurd (mutReach_of_step_reachCount_eq V aut hs hstep (Nat.le_antisymm h hle)) hnm
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1261,6 +1311,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms reachCount_lt_of_below
 #print axioms reachCount_eq_of_mutReach
 #print axioms reachCount_step_le
+#print axioms mutReach_of_step_reachCount_eq
+#print axioms reachCount_lt_of_step_not_mutReach
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
