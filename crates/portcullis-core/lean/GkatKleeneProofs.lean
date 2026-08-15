@@ -997,6 +997,26 @@ theorem acyclic_expressible (V : T → Atom → Bool) (aut : GAut S A T) (rank :
     ∀ s ∈ aut.states, autLang V aut s = den V (buildSol aut rank hac s) :=
   solves_autLang hwf (buildSol_solves aut rank hac)
 
+/-- **Construction body, step 1: an acyclic flat automaton is expressible with the rank
+    *computed*.** No rank is assumed — `reachCount` (the SCC-topological rank) is used, and its
+    strict descent across every (live) edge is *derived* from acyclicity: a live edge whose
+    target reached back would make a cycle, so by `reachCount_lt_of_step_not_mutReach` it drops
+    the rank, discharging `buildSol`'s `hac`. This is where the SCC graph-algorithm layer first
+    produces a synthesis from a raw transition graph. (`hall`: the state type is exactly the
+    automaton's states; `hlive`: no dead edges — every listed transition genuinely fires.) -/
+theorem acyclic_flat_expressible (V : T → Atom → Bool) (aut : GAut S A T) (hwf : WF V aut)
+    (hall : ∀ s : S, s ∈ aut.states)
+    (hlive : ∀ s : S, ∀ t ∈ aut.trans s, AutStep1 V aut s t.2.2)
+    (hacyclic : ∀ s : S, ¬ AutReaches1 V aut s s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, autLang V aut s = den V (sol s) := by
+  have hac : ∀ s : S, ∀ t ∈ aut.trans s, reachCount V aut t.2.2 < reachCount V aut s := by
+    intro s t ht
+    have hstep : AutStep1 V aut s t.2.2 := hlive s t ht
+    have hnm : ¬ AutMutReach V aut s t.2.2 := by
+      rintro ⟨_, hr2⟩; exact hacyclic s ⟨t.2.2, hstep, hr2⟩
+    exact reachCount_lt_of_step_not_mutReach V aut (hall s) hstep hnm
+  exact ⟨buildSol aut (reachCount V aut) hac, acyclic_expressible V aut (reachCount V aut) hac hwf⟩
+
 -- ── Cyclic case: self-loop elimination via `wh` ───────────────────────────────────
 
 /-- **Self-loop elimination — the cyclic inductive step.** A state whose equation is a
@@ -1356,6 +1376,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms semSolves_derivAut
 #print axioms buildSol_solves
 #print axioms acyclic_expressible
+#print axioms acyclic_flat_expressible
 #print axioms selfLoop_solves
 #print axioms loopExitAut_solves
 #print axioms loopExitAut_expressible
