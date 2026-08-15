@@ -1428,6 +1428,44 @@ theorem restrict_reaches_confine (V : T → Atom → Bool) (aut : GAut S A T) (k
       obtain ⟨a, q, hst⟩ := hstep
       exact autStep_restrict_keep V aut keep hst
 
+-- ── The dominator layer (for natural-loop decomposition) ──────────────────────────
+
+/-- **Reachability avoiding `H`**: reachability once every edge into `H` is deleted, so `H` is
+    never entered. `ReachAvoid H s t` witnesses a run `s → t` that never visits `H` (`s ≠ H`). -/
+def ReachAvoid (V : T → Atom → Bool) (aut : GAut S A T) (H : S) (s t : S) : Prop :=
+  AutReaches V (restrictAut aut (fun s => @decide (s ≠ H) (Classical.propDecidable _))) s t
+
+/-- **Dominance.** `H` dominates `T` if every run from the start to `T` passes through `H` —
+    equivalently `T = H`, or `T` is unreachable from the start once all edges into `H` are cut
+    (Zhao et al.'s node-removal characterization, ITP'15). Reflexive; the relation the
+    natural-loop decomposition rests on: a back edge `T→H` requires `H` to dominate `T`. -/
+def Dominates (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) : Prop :=
+  T = H ∨ ¬ ReachAvoid V aut H aut.start T
+
+/-- Every node dominates itself. -/
+theorem dom_refl (V : T → Atom → Bool) (aut : GAut S A T) (H : S) : Dominates V aut H H :=
+  Or.inl rfl
+
+/-- A run avoiding `H` from a non-`H` state never reaches `H` — the defining property of the
+    node-removal characterization. -/
+theorem reachAvoid_ne (V : T → Atom → Bool) (aut : GAut S A T) (H s t : S)
+    (h : ReachAvoid V aut H s t) (hs : s ≠ H) : t ≠ H := by
+  have hks : (fun s => @decide (s ≠ H) (Classical.propDecidable _)) s = true := by
+    simp only [decide_eq_true_eq]; exact hs
+  have hkt := restrict_reaches_confine V aut
+    (fun s => @decide (s ≠ H) (Classical.propDecidable _)) h hks
+  simp only [decide_eq_true_eq] at hkt; exact hkt
+
+/-- **A back edge's head dominates its tail on any avoiding run** (the key monotonicity):
+    if `T` is reachable from the start avoiding `H`, then `H` does not dominate `T`. So
+    dominance is exactly "no avoiding run exists" — the contrapositive used to detect that an
+    edge `T→H` is a genuine back edge. -/
+theorem not_dom_of_reachAvoid (V : T → Atom → Bool) (aut : GAut S A T) {H T : S}
+    (hne : T ≠ H) (h : ReachAvoid V aut H aut.start T) : ¬ Dominates V aut H T := by
+  rintro (heq | hnr)
+  · exact hne heq
+  · exact hnr h
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
