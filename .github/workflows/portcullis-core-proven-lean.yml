@@ -90,6 +90,9 @@ jobs:
             GkatInexpressibleProofs \
             GkatUniquenessFrontierProofs \
             GkatExistenceFrontierProofs \
+            GkatUAIndependenceProofs \
+            GkatObservationProofs \
+            GkatPullbackWitnessProofs \
             GkatDerivativeProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \

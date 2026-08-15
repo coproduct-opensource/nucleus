@@ -244,6 +244,21 @@ lean_lib «GkatUniquenessFrontierProofs» where
 lean_lib «GkatExistenceFrontierProofs» where
   roots := #[`GkatExistenceFrontierProofs]
 
+-- UA₂ = UA₁ + a guard-pullback witness: the wp-definability decomposition of the
+-- Uniqueness Axiom, and a new sufficient condition for GKAT-solvability.
+lean_lib «GkatUAIndependenceProofs» where
+  roots := #[`GkatUAIndependenceProofs]
+
+-- Semantic observation layer: guard-definability ⟺ descent to the observation
+-- quotient, with a certified non-definable (regime-3) crossing.
+lean_lib «GkatObservationProofs» where
+  roots := #[`GkatObservationProofs]
+
+-- No guard-pullback witness exists for a genuine action (the model side of the
+-- obstruction, via GkatGS.sound in the guarded-string model).
+lean_lib «GkatPullbackWitnessProofs» where
+  roots := #[`GkatPullbackWitnessProofs]
+
 lean_lib «GkatDerivativeProofs» where
   roots := #[`GkatDerivativeProofs]
 
