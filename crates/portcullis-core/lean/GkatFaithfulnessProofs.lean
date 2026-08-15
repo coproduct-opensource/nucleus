@@ -121,7 +121,42 @@ theorem two_state_uniqueness_nonvacuous :
   · rintro a ⟨x, y, h⟩; exact absurd (congrArg Prod.snd h) (by simp)
   · exact InLoop.exit false rfl
 
+-- ── (c) The loop matches the official `L^(B) = ⋃ₙ (B ◇ L)ⁿ ◇ B̄` ─────────────
+
+/-- `n` iterations of "enter at a `b`-atom, run the body" followed by an exit at a
+    `¬b`-atom — the `n`-th summand of the official guarded-iteration language
+    `L^(B) = ⋃_{n≥0} (B ◇ L)ⁿ ◇ B̄` (Smolka et al. POPL'20). -/
+def iterate (b : BExp T) (dene : GS A Atom → Prop) : Nat → GS A Atom → Prop
+  | 0,   gs => bval V b gs.1 = false ∧ gs.2 = []
+  | n+1, gs => bval V b gs.1 = true ∧
+      ∃ l1 l2, gs.2 = l1 ++ l2 ∧ dene (gs.1, l1) ∧ iterate b dene n (lastAtom gs.1 l1, l2)
+
+/-- **The loop is the union of finite iterations.** Our inductive least-fixpoint loop
+    `InLoop` equals the official denotational loop `L^(B) = ⋃_{n≥0} (B ◇ L)ⁿ ◇ B̄`: a
+    guarded string is in `⟦e^(b)⟧` iff it is `n` body-iterations (each entered at a
+    `b`-atom) followed by an exit at a `¬b`-atom, for some `n`. This bridges our
+    `den (e^(b))` to the literature's denotational loop semantics. -/
+theorem loop_is_union_of_iterations (b : BExp T) (dene : GS A Atom → Prop)
+    (gs : GS A Atom) : InLoop V b dene gs ↔ ∃ n, iterate V b dene n gs := by
+  constructor
+  · intro h
+    induction h with
+    | exit a hb => exact ⟨0, hb, rfl⟩
+    | step a l1 rest hb hbody _ ih => obtain ⟨n, hn⟩ := ih; exact ⟨n + 1, hb, l1, rest, rfl, hbody, hn⟩
+  · rintro ⟨n, hn⟩
+    suffices H : ∀ m (gs : GS A Atom), iterate V b dene m gs → InLoop V b dene gs from H n gs hn
+    intro m
+    induction m with
+    | zero =>
+        intro gs hg; obtain ⟨hb, hnil⟩ := hg
+        rw [show gs = (gs.1, []) from by rw [← hnil]]; exact InLoop.exit gs.1 hb
+    | succ n ih =>
+        intro gs hg; obtain ⟨hb, l1, l2, hl, hbody, hrec⟩ := hg
+        rw [show gs = (gs.1, l1 ++ l2) from by rw [← hl]]
+        exact InLoop.step gs.1 l1 l2 hb hbody (ih _ hrec)
+
 #print axioms left_distrib_not_ba_theorem
 #print axioms two_state_uniqueness_nonvacuous
+#print axioms loop_is_union_of_iterations
 
 end GkatFaithful

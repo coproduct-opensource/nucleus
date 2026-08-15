@@ -243,6 +243,9 @@ lean_lib «GkatDerivativeProofs» where
 lean_lib «GkatBisimulationProofs» where
   roots := #[`GkatBisimulationProofs]
 
+lean_lib «GkatCompletenessProofs» where
+  roots := #[`GkatCompletenessProofs]
+
 lean_lib «GkatDerivativeFiniteProofs» where
   roots := #[`GkatDerivativeFiniteProofs]
 
