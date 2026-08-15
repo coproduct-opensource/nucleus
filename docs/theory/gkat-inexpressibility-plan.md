@@ -62,11 +62,32 @@ witness `L ∉ W` are provable) is the crux. Options to evaluate in Milestone 2:
    non-well-nested 2-cycle-with-two-exits behavior) and prove `L ∉ W`, hence `∀ e,
    ⟦e⟧ ≠ L`. *Risk: high — depends on Milestones 2–4.*
 
+## BLOCKER (before M2 can start faithfully)
+
+Two prerequisites must be obtained from the primary source — and could **not** be
+extracted reliably in-session (the arXiv PDF is Flate-compressed binary; the HTML
+rendering only yields an AI-summarised, imprecise reading of the rules):
+
+1. **The exact text of Definition 12** — especially rule 2 (derivative closure): its
+   precise premise, the definition of `N(t)`, and how the least-fixpoint reading of a
+   rule with a universal-over-derivatives premise is intended. Encoding an
+   *approximation* of `W` would make M3–M5 vacuous or wrong; faithfulness forbids it.
+
+2. **A concrete *confirmed* inexpressible witness.** The paper proves one *exists*
+   but the concrete automaton was not extractable. Critically, the Fig. 4 lesson
+   (non-well-nested **but expressible**) means our earlier intuition — "the two-exit
+   2-cycle is inexpressible" — is **unverified and may be false**. `L ∉ W` needs a `L`
+   the paper actually certifies inexpressible, not a guessed one.
+
+**Until (1) and (2) are in hand, M2+ are on hold by discipline, not for lack of
+effort.** The unblock is source material: the paper's Def. 12 text and its concrete
+inexpressibility witness (e.g. from the authors, a text/HTML copy that renders, or a
+version with extractable text).
+
 ## Honest assessment
 
-Milestones 2–5 are each a substantial formalization; the fixpoint encoding (M2) and
-the `L ∉ W` argument (M4/M5) are genuine research. This plan exists so the effort is
-scoped and resumable rather than open-ended. The realistic near-term value is
-M1 (done) + M2 + M3 — a machine-checked nesting coequation with the soundness of the
-GKAT-behaviors characterization; M4/M5 (the actual inexpressibility) follow only once
-the encoding in M2 is settled.
+Milestone 1 (behavior coalgebra) is solid and correct on its own. Milestones 2–5 are
+each substantial research formalization AND are gated on the blocker above. This plan
+exists so the effort is scoped and resumable the moment the precise definition and a
+certified witness are available — rather than risk mechanising a wrong `W` or chasing
+an unconfirmed `L`.
