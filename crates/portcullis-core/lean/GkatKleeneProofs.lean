@@ -530,6 +530,54 @@ theorem autBelow_wf (V : T → Atom → Bool) (aut : GAut S A T) :
     (fun {s' s} h => reachCount_lt_of_below V aut s.2 h)
     (invImage (fun s : {x // x ∈ aut.states} => reachCount V aut s.1) Nat.lt_wfRel).wf
 
+/-- **`firstMatch` returns a firing member.** If the guarded list steps `(q,s')` at `a`, then
+    `(g,q,s')` is genuinely in the list with `g` firing at `a` — the transition is real, not an
+    artifact of ordering. The bridge for reading a `GAut`'s edges off `firstMatch`. -/
+theorem firstMatch_some_mem (V : T → Atom → Bool) (a : Atom) (L : List (BExp T × A × S))
+    {q : A} {s' : S} (h : firstMatch V a L = some (q, s')) :
+    ∃ g, (g, q, s') ∈ L ∧ bval V g a = true := by
+  induction L with
+  | nil => simp [firstMatch] at h
+  | cons hd tl ih =>
+      obtain ⟨g, q0, s0⟩ := hd
+      simp only [firstMatch] at h
+      by_cases hg : bval V g a
+      · rw [if_pos hg, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨g, List.mem_cons_self, hg⟩
+      · rw [if_neg hg] at h
+        obtain ⟨g', hmem, hg'⟩ := ih h
+        exact ⟨g', List.mem_cons_of_mem _ hmem, hg'⟩
+
+/-- **Guards fire disjointly at `a`**: at most one transition of the list is active. The
+    determinism condition that makes `firstMatch` order-independent. -/
+def GuardsDisjoint (V : T → Atom → Bool) (a : Atom) (L : List (BExp T × A × S)) : Prop :=
+  ∀ t1 ∈ L, ∀ t2 ∈ L, bval V t1.1 a = true → bval V t2.1 a = true → t1 = t2
+
+/-- **`firstMatch` is position-independent under determinism.** If a guarded transition fires
+    at `a` and the guards are disjoint there, `firstMatch` returns *that* transition wherever it
+    sits — so a self-edge may be read (and extracted to a Salomaa loop) regardless of order. -/
+theorem firstMatch_eq_of_mem_det (V : T → Atom → Bool) (a : Atom) (L : List (BExp T × A × S))
+    (hdisj : GuardsDisjoint V a L) {g : BExp T} {q : A} {s' : S}
+    (hmem : (g, q, s') ∈ L) (hg : bval V g a = true) :
+    firstMatch V a L = some (q, s') := by
+  induction L with
+  | nil => simp at hmem
+  | cons hd tl ih =>
+      obtain ⟨g0, q0, s0⟩ := hd
+      simp only [firstMatch]
+      by_cases h0 : bval V g0 a
+      · rw [if_pos h0]
+        have heq := hdisj (g0, q0, s0) List.mem_cons_self (g, q, s') hmem h0 hg
+        rw [Prod.mk.injEq, Prod.mk.injEq] at heq
+        rw [heq.2.1, heq.2.2]
+      · rw [if_neg h0]
+        rcases List.mem_cons.mp hmem with heq | htl
+        · have hgg : g = g0 := congrArg (·.1) heq
+          exact absurd (hgg ▸ hg) h0
+        · exact ih (fun t1 h1 t2 h2 => hdisj t1 (List.mem_cons_of_mem _ h1) t2
+            (List.mem_cons_of_mem _ h2)) htl
+
 /-- **The nesting coequation, at the automaton level.** No two mutually-reachable states
     have *complementary* halt-guards. This is the finite kernel of Lemma D.2 — the
     condition that excludes the Fig 3 `b/b̄`-alternating 2-cycle — lifted to an arbitrary
@@ -1324,6 +1372,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms mutReach_of_step_reachCount_eq
 #print axioms reachCount_lt_of_step_not_mutReach
 #print axioms autBelow_wf
+#print axioms firstMatch_some_mem
+#print axioms firstMatch_eq_of_mem_det
 #print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
