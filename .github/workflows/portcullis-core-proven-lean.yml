@@ -92,6 +92,7 @@ jobs:
             GkatExistenceFrontierProofs \
             GkatDerivativeProofs \
             GkatBisimulationProofs \
+            GkatDerivativeFiniteProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
             GkatWhileStep \
@@ -224,6 +225,7 @@ jobs:
           import GkatExistenceFrontierProofs
           import GkatDerivativeProofs
           import GkatBisimulationProofs
+          import GkatDerivativeFiniteProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
           #print axioms FlowProofs.authority_confinement_left
@@ -239,6 +241,7 @@ jobs:
           #print axioms GkatDeriv.den_cons
           #print axioms GkatDeriv.decDen
           #print axioms GkatBisim.bisim_sound
+          #print axioms GkatDeriv.derivs_closed
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
           #print axioms Nucleus.Assurance.suite_not_full
