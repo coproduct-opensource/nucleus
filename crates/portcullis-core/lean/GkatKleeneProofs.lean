@@ -1480,6 +1480,43 @@ theorem loop_mem_head (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) :
 theorem loop_mem_tail (V : T → Atom → Bool) (aut : GAut S A T) (H T : S) :
     InNaturalLoop V aut H T T := Or.inr (AutReaches.refl T)
 
+/-- **Reachability head-decomposition**: a run either is trivial or begins with a first step.
+    (`AutReaches` is built tail-first; this exposes the head.) -/
+theorem autReaches_head (V : T → Atom → Bool) (aut : GAut S A T) {s t : S}
+    (h : AutReaches V aut s t) :
+    s = t ∨ ∃ x, AutStep1 V aut s x ∧ AutReaches V aut x t := by
+  induction h with
+  | refl => exact Or.inl rfl
+  | tail hr hstep ih =>
+      rcases ih with rfl | ⟨x, hx1, hxr⟩
+      · exact Or.inr ⟨_, hstep, AutReaches.refl _⟩
+      · exact Or.inr ⟨x, hx1, AutReaches.tail hxr hstep⟩
+
+/-- **Reducibility** — the well-nested condition in graph form. Every state's SCC has a
+    *header* `H` (mutually reachable with it) that **dominates the entire SCC**, so control
+    enters the SCC only through `H` (single entry). GKAT's Fig-3 witness is exactly the
+    irreducible failure (a two-entry cycle with no dominating header). Under reducibility the
+    loops nest along the dominator forest and the peel-a-loop-and-recurse construction
+    terminates — this is the hypothesis the multi-state synthesis runs under. -/
+def Reducible (V : T → Atom → Bool) (aut : GAut S A T) : Prop :=
+  ∀ s ∈ aut.states, ∃ H, AutMutReach V aut H s ∧
+    ∀ s', AutMutReach V aut H s' → Dominates V aut H s'
+
+/-- **Acyclic automata are reducible** (vacuously) — every SCC is a singleton, its own header,
+    dominating itself. So reducibility is a genuine generalization of the acyclic case, and
+    the multi-state construction degenerates to `acyclic_flat_expressible` when there are no
+    real loops. -/
+theorem acyclic_reducible (V : T → Atom → Bool) (aut : GAut S A T)
+    (hacyclic : ∀ s : S, ¬ AutReaches1 V aut s s) : Reducible V aut := by
+  intro s _
+  refine ⟨s, AutMutReach.refl s, ?_⟩
+  intro s' hms'
+  have hss' : s' = s := by
+    rcases autReaches_head V aut hms'.1 with h | ⟨x, hx1, hxr⟩
+    · exact h.symm
+    · exact absurd ⟨x, hx1, AutReaches.trans hxr hms'.2⟩ (hacyclic s)
+  rw [hss']; exact dom_refl V aut s
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
