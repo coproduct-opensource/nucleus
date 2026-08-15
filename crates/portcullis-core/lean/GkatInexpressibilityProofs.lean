@@ -19,7 +19,8 @@ D.2's proof inducts on `e`; the `^(b)` (loop) case is the crux, and it is exactl
 `E=b` state — the loop's branches are finitely alternating (never `b` at all). This
 file machine-checks that crux.
 
-Axioms `[propext, Quot.sound]`, `sorryAx`-free.
+Axioms `[propext, Classical.choice, Quot.sound]` (the three standard Lean axioms;
+`Classical.choice` enters via `by_cases` on the derivative-equality split), `sorryAx`-free.
 -/
 
 namespace GkatDeriv
@@ -365,6 +366,130 @@ theorem selfCyclic_loopActive {e : Exp A T} :
               · rw [if_neg hb] at hn; simp at hn
             · rw [if_neg hE] at hn; simp at hn
 
+/-- A `Reaches1` (one-or-more steps) yields a plain `Reaches`. -/
+theorem reaches1_reaches {d d' : Exp A T} (h : Reaches1 V d d') : Reaches V d d' := by
+  obtain ⟨x, hs, hr⟩ := h; exact Reaches.head V hs hr
+
+/-- A run is either trivial or a real (≥1-step) `Reaches1`. -/
+theorem reaches_refl_or_step {d d' : Exp A T} (h : Reaches V d d') :
+    d = d' ∨ Reaches1 V d d' := by
+  induction h with
+  | refl => exact Or.inl rfl
+  | tail hR hstep ih =>
+      rcases ih with rfl | ⟨x, hs, hr⟩
+      · exact Or.inr ⟨_, hstep, Reaches.refl _⟩
+      · exact Or.inr ⟨x, hs, Reaches.tail hr hstep⟩
+
+/-- Reachability between *distinct* states is a real (≥1-step) `Reaches1`. -/
+theorem reaches_ne_reaches1 {d d' : Exp A T} (h : Reaches V d d') (hne : d ≠ d') :
+    Reaches1 V d d' := (reaches_refl_or_step V h).resolve_left hne
+
+/-- **The pair `Dom` lemma.** Two mutually-reachable derivatives of `e` are
+    `AccBounded` by a *common satisfiable* guard. Induction on `e` — the guard-switch
+    across nesting is handled by descending into the right loop: in `seq`, an exit
+    lands both states in `derivs f` (IH_f); in `wh`, a loop-back witnesses `b`
+    satisfiable (both `AccBounded b`), else a body cycle recurses (IH_e + `AccBounded.seq`).
+    The `d1 = d2` collapse is discharged uniformly by `selfCyclic_loopActive`. -/
+theorem cycle_common_bound {e : Exp A T} :
+    ∀ {d1 d2 : Exp A T}, d1 ∈ derivs e → Reaches1 V d1 d2 → Reaches1 V d2 d1 →
+      ∃ b', (∃ a, bval V b' a = true) ∧ AccBounded V b' d1 ∧ AccBounded V b' d2 := by
+  induction e with
+  | act p =>
+      intro d1 d2 hd1 h12 h21
+      obtain ⟨x, hs, hr⟩ := id h12
+      exact absurd ⟨x, hs, Reaches.trans V hr (reaches1_reaches V h21)⟩ (no_selfcycle_act V hd1)
+  | test t =>
+      intro d1 d2 hd1 h12 h21
+      obtain ⟨x, hs, hr⟩ := id h12
+      exact absurd ⟨x, hs, Reaches.trans V hr (reaches1_reaches V h21)⟩ (no_selfcycle_test V hd1)
+  | seq e f ihe ihf =>
+      intro d1 d2 hd1 h12 h21
+      by_cases hd12 : d1 = d2
+      · subst hd12
+        obtain ⟨b', hsat, hla⟩ := selfCyclic_loopActive V hd1 h12
+        exact ⟨b', hsat, loopActive_accBounded V hla, loopActive_accBounded V hla⟩
+      · simp only [derivs, List.mem_append, List.mem_map] at hd1
+        rcases hd1 with ⟨d01, hd01, rfl⟩ | hd1f
+        · -- d1 = d01·f
+          rcases reaches_seq_split V (reaches1_reaches V h12) with ⟨d0', rfl, hR12⟩ | hd2f
+          · -- d2 = d0'·f, Reaches d01 d0'
+            rcases reaches_seq_split V (reaches1_reaches V h21) with ⟨d0'', heq, hR21⟩ | hd1f2
+            · rw [Exp.seq.injEq] at heq
+              have hne01 : d01 ≠ d0' := fun h => hd12 (by rw [h])
+              obtain ⟨b', hsat, ha1, ha2⟩ :=
+                ihe hd01 (reaches_ne_reaches1 V hR12 hne01)
+                  (reaches_ne_reaches1 V (heq.1 ▸ hR21) (fun h => hne01 h.symm))
+              exact ⟨b', hsat, AccBounded.seq V ha1, AccBounded.seq V ha2⟩
+            · exact ihf hd1f2 h12 h21  -- d1·f ∈ derivs f (overlap)
+          · -- d2 ∈ derivs f ⟹ d1 ∈ derivs f (reaches back) ⟹ IH_f
+            exact ihf (reaches_mem_derivs V hd2f (reaches1_reaches V h21)) h12 h21
+        · exact ihf hd1f h12 h21
+  | ite b e f ihe ihf =>
+      intro d1 d2 hd1 h12 h21
+      by_cases hd12 : d1 = d2
+      · subst hd12
+        obtain ⟨b', hsat, hla⟩ := selfCyclic_loopActive V hd1 h12
+        exact ⟨b', hsat, loopActive_accBounded V hla, loopActive_accBounded V hla⟩
+      · simp only [derivs, List.mem_cons, List.mem_append] at hd1
+        rcases hd1 with rfl | hde | hdf
+        · -- d1 = ite b e f (head): first step lands in derivs e / derivs f
+          obtain ⟨x, ⟨a, q, hn⟩, hr⟩ := id h12
+          simp only [next] at hn
+          by_cases hb : bval V b a = true
+          · rw [if_pos hb] at hn
+            have hd2 : d2 ∈ derivs e := reaches_mem_derivs V (deriv_mem e hn) hr
+            exact ihe (reaches_mem_derivs V hd2 (reaches1_reaches V h21)) h12 h21
+          · rw [if_neg hb] at hn
+            have hd2 : d2 ∈ derivs f := reaches_mem_derivs V (deriv_mem f hn) hr
+            exact ihf (reaches_mem_derivs V hd2 (reaches1_reaches V h21)) h12 h21
+        · exact ihe hde h12 h21
+        · exact ihf hdf h12 h21
+  | wh b e ihe =>
+      intro d1 d2 hd1 h12 h21
+      by_cases hd12 : d1 = d2
+      · subst hd12
+        obtain ⟨b', hsat, hla⟩ := selfCyclic_loopActive V hd1 h12
+        exact ⟨b', hsat, loopActive_accBounded V hla, loopActive_accBounded V hla⟩
+      · have hmem : ∀ {e' : Exp A T}, e' ∈ derivs e →
+            Exp.seq e' (.wh b e) ∈ derivs (.wh b e) :=
+          fun he' => by simp only [derivs, List.mem_cons, List.mem_map]; exact Or.inr ⟨_, he', rfl⟩
+        simp only [derivs, List.mem_cons, List.mem_map] at hd1
+        rcases hd1 with rfl | ⟨e1', he1', rfl⟩
+        · -- d1 = e^(b) (loop head): the first step needs a b-atom ⟹ b satisfiable
+          obtain ⟨x, ⟨a, q, hn⟩, _⟩ := id h12
+          simp only [next] at hn
+          by_cases hb : bval V b a = true
+          · have hd2 : d2 ∈ derivs (.wh b e) :=
+              reaches_mem_derivs V (mem_self (.wh b e)) (reaches1_reaches V h12)
+            exact ⟨b, ⟨a, hb⟩, accBounded_loop V (mem_self (.wh b e)), accBounded_loop V hd2⟩
+          · rw [if_neg hb] at hn; simp at hn
+        · -- d1 = e1'·e^(b): loop-back ⟹ b sat, else body cycle ⟹ IH_e
+          have hd1m : Exp.seq e1' (.wh b e) ∈ derivs (.wh b e) := hmem he1'
+          have hd2m : d2 ∈ derivs (.wh b e) :=
+            reaches_mem_derivs V hd1m (reaches1_reaches V h12)
+          rcases reaches_loop_split V (reaches1_reaches V h12) with ⟨e2', rfl, hR12⟩ | ⟨a0, hb0⟩
+          · rcases reaches_loop_split V (reaches1_reaches V h21) with ⟨e1'', heq, hR21⟩ | ⟨a0, hb0⟩
+            · rw [Exp.seq.injEq] at heq
+              have hne1 : e1' ≠ e2' := fun h => hd12 (by rw [h])
+              obtain ⟨b', hsat, ha1, ha2⟩ :=
+                ihe he1' (reaches_ne_reaches1 V hR12 hne1)
+                  (reaches_ne_reaches1 V (heq.1 ▸ hR21) (fun h => hne1 h.symm))
+              exact ⟨b', hsat, AccBounded.seq V ha1, AccBounded.seq V ha2⟩
+            · exact ⟨b, ⟨a0, hb0⟩, accBounded_loop V hd1m, accBounded_loop V hd2m⟩
+          · exact ⟨b, ⟨a0, hb0⟩, accBounded_loop V hd1m, accBounded_loop V hd2m⟩
+
+/-- **No mutually-reachable complementary pair.** Two derivatives of `e` that are
+    mutually reachable and accept on complementary atom-sets cannot exist. They share a
+    common satisfiable loop guard (`cycle_common_bound`) that bounds both acceptance
+    sets away from it — but complementarity forces one to accept on a guard-atom
+    (`complementary_accBounded_false`). This is the finite kernel of Lemma D.2's
+    obstruction: a b/b̄-alternating 2-cycle is impossible in any GKAT behavior. -/
+theorem no_mutreach_complementary {e d1 d2 : Exp A T} (hd1 : d1 ∈ derivs e)
+    (h12 : Reaches1 V d1 d2) (h21 : Reaches1 V d2 d1)
+    (hcomp : ∀ a, bval V (E d2) a = ! bval V (E d1) a) : False := by
+  obtain ⟨b', ⟨a0, ha0⟩, ha1, ha2⟩ := cycle_common_bound V hd1 h12 h21
+  exact complementary_accBounded_false V ha1 ha2 hcomp a0 ha0
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
@@ -375,5 +500,7 @@ theorem selfCyclic_loopActive {e : Exp A T} :
 #print axioms reaches_seq_split
 #print axioms reaches_loop_split
 #print axioms selfCyclic_loopActive
+#print axioms cycle_common_bound
+#print axioms no_mutreach_complementary
 
 end GkatDeriv
