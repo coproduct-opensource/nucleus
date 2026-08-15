@@ -246,6 +246,9 @@ lean_lib «GkatBisimulationProofs» where
 lean_lib «GkatDerivativeFiniteProofs» where
   roots := #[`GkatDerivativeFiniteProofs]
 
+lean_lib «GkatFaithfulnessProofs» where
+  roots := #[`GkatFaithfulnessProofs]
+
 -- Snapshot clone-safety: the cmdline key classification is disjoint, the
 -- snapshot_safety guard is sound+complete, and unsafety is fail-closed (monotone).
 -- Lifts the Rust test-gates #2300/#2301; bound to production by the snapshot.rs
