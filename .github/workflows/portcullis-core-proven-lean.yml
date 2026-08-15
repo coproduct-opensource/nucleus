@@ -96,6 +96,7 @@ jobs:
             GkatDerivativeFiniteProofs \
             GkatDecisionProofs \
             GkatBehaviorProofs \
+            GkatInexpressibilityProofs \
             GkatFaithfulnessProofs \
             ExposureLoopFixpointProofs \
             GkatGuardedLoopBridge \
@@ -233,6 +234,7 @@ jobs:
           import GkatDerivativeFiniteProofs
           import GkatDecisionProofs
           import GkatBehaviorProofs
+          import GkatInexpressibilityProofs
           import GkatFaithfulnessProofs
           import SnapshotCloneSafetyProofs
           import DerivationCascadeAdmissible
@@ -254,6 +256,7 @@ jobs:
           #print axioms GkatDeriv.den_run
           #print axioms GkatDeriv.nonempty_iff_run_halts
           #print axioms GkatBehavior.langDeriv_den
+          #print axioms GkatDeriv.loop_deriv_halts_on_not_b
           #print axioms GkatFaithful.left_distrib_not_ba_theorem
           #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
           #print axioms GkatFaithful.loop_is_union_of_iterations

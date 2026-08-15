@@ -103,7 +103,44 @@ when `b ≠ 0 ≠ b̄`, because (Appendix D, *not in the pages we have*) **no br
 GKAT behavior accepts both `b` and `b̄` infinitely often.** (Cf. our
 `InLoop_exits_on_not_b`: a single loop continues only on `b`-atoms.)
 
-## CRITICAL: the obstruction is an ω-property — our finite `den` cannot witness it
+## BREAKTHROUGH: the ω-property FINITIZES — route B is tractable with our corpus
+
+**Appendix D (obtained).** `N(t) := {a | t(a)∈Σ}`. **Lemma D.2:** for `t ∈ W` and any
+infinite branch `B ⊆ Node(t)`, `B` is *finitely alternating*: either
+`|{w∈B | E(∂_w t)=b}| < ω` or `|{w∈B | E(∂_w t)=b̄}| < ω`. **Example D.1 / Fig. 3:**
+`v₀ —b|p→ v₁`, `v₁ —b̄|q→ v₀` is not nested when `b,b̄ ≠ 0` — its single branch has
+`E` alternating `b, b̄, …` infinitely, violating D.2. D.2's proof inducts on the
+nesting construction (·, +, ▷); the ▷ case is a contradiction argument.
+
+**Finitization (the key move).** `⟦e⟧` has finitely many derivatives (Lemma F.1 =
+our `derivs`, `derivs_closed`). So an infinite branch must **cycle**, and "infinitely
+often" collapses to a **cycle** property of the finite automaton `⟨E, next⟩`: no
+cycle contains derivatives `e'` with `E(e')=b` and `e''` with `E(e'')=b̄`. **No
+coinductive trees needed** — this lives entirely in our finite `derivs`/`next`/`E`
+world. (This *revises* the earlier "needs coinductive Z" assessment below: that was
+right about the raw tree, wrong about the *decidable* image `⟦e⟧`.)
+
+**Crux `^(b)` case — DONE** (`GkatInexpressibilityProofs.loop_deriv_halts_on_not_b`):
+every derivative of `e^(b)` accepts only on `¬b`-atoms (`E(e^(b))=¬b`; a derivative is
+`e'·e^(b)` with `E = E(e')∧¬b ⊆ ¬b`). So a loop's cycle never reaches an `E=b` state —
+its branches are finitely alternating (never `b`). This generalizes
+`InLoop_exits_on_not_b` to all loop derivatives; `[propext, Quot.sound]`, sorryAx-free.
+
+**Revised remaining route B (tractable):**
+- (i) [DONE] loop case: `loop_deriv_halts_on_not_b`.
+- (ii) `·` and `+_b` cases: derivatives of `seq e f` / `ite b e f` are derivatives of
+  the parts (we have `derivs`/`deriv_mem` for this); a cycle in the composite lives in
+  one part. Prove the finite criterion by induction on `e`.
+- (iii) State the finite criterion (no cycle with both `E=b` and `E=b̄`) over
+  `derivs`/`next`, and prove `∀ e, ⟦e⟧` satisfies it.
+- (iv) Define Fig. 3's automaton (over `derivs`/`next` or as a small language) and
+  show it has a cycle with `E=b` and `E=b̄` → violates (iii) → inexpressible.
+
+The hard conceptual barriers are gone: no coinductive `Z`, no full `W` encoding —
+just the finite derivative automaton we already built. (ii)–(iv) are structural-
+induction + finite-graph work.
+
+## SUPERSEDED: earlier "the obstruction is an ω-property" note (kept for the record)
 
 The Fig. 3 automaton (b/b̄-alternating 2-cycle) has, if neither state accepts, **no
 finite accepting strings** — so `den(Fig 3) = ∅ = ⟦0⟧`, which is *finitely
