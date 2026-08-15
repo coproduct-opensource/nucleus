@@ -252,6 +252,9 @@ lean_lib «GkatDerivativeFiniteProofs» where
 lean_lib «GkatDecisionProofs» where
   roots := #[`GkatDecisionProofs]
 
+lean_lib «GkatBehaviorProofs» where
+  roots := #[`GkatBehaviorProofs]
+
 lean_lib «GkatFaithfulnessProofs» where
   roots := #[`GkatFaithfulnessProofs]
 
