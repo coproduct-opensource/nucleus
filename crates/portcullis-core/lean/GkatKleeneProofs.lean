@@ -614,6 +614,33 @@ theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S →
   intro s hs; funext gs; obtain ⟨a, w⟩ := gs
   simp only [autLang]; exact propext (key w s a hs)
 
+-- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
+
+/-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
+    which makes it well-formed: at a halt atom (`¬b`) the self-loop guard `b` is false, so it
+    cannot step. -/
+theorem WF_loopAut (V : T → Atom → Bool) (b : BExp T) (q : A) :
+    WF V (loopAut b q (BExp.not b)) := by
+  constructor
+  · intro s _ a hhalt
+    have hbf : bval V b a = false := by
+      have : bval V (BExp.not b) a = true := hhalt
+      simpa [bval] using this
+    simp [autStep, loopAut, firstMatch, hbf]
+  · intro s _ a q' s' _
+    cases s'; simp [loopAut]
+
+/-- **End-to-end synthesis, validated.** The `while` automaton `x ─(b|q)→ x` (halting on
+    `¬b`) is well-formed and solved by `q^(b)·¬b`; running the whole Phase-2 pipeline
+    (`solves_autLang` on `WF_loopAut` + `loopAut_solves`) yields its language *as a
+    denotation*: `autLang (loopAut …) () = ⟦q^(b)·¬b⟧`. Non-vacuity of the entire chain —
+    a genuine automaton is synthesized into an expression whose behavior it provably has. -/
+theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
+    autLang V (loopAut b q (BExp.not b)) () =
+      den V (Exp.seq (Exp.wh b (Exp.act q)) (Exp.test (BExp.not b))) := by
+  simpa using
+    solves_autLang (WF_loopAut V b q) (loopAut_solves b q (BExp.not b)) () (by simp [loopAut])
+
 #print axioms firstMatch_transG
 #print axioms autLang_derivAut
 #print axioms WF_derivAut
@@ -625,5 +652,7 @@ theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S →
 #print axioms den_foldr_ite
 #print axioms loopAut_solves
 #print axioms solves_autLang
+#print axioms WF_loopAut
+#print axioms loopAut_expressible
 
 end GkatKleene
