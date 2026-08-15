@@ -237,4 +237,73 @@ theorem W_not_subset_den (a0 : Atom) (p : A) :
     rw [next_halt_exclusive V e a0 (p, e') hne] at hhalt
     exact absurd hhalt (by simp)
 
+-- ── Determinism, for the corrected completeness `W ∩ Deterministic = {⟦e⟧}` ────────
+
+/-- **Local (one-step) determinism.** At each atom, halting excludes stepping, and at
+    most one action is active — the coalgebra `⟨Lhalt, langDeriv⟩` is deterministic. -/
+def LocalDet (L : GS A Atom → Prop) : Prop :=
+  (∀ a, Lhalt L a → ∀ q v, ¬ langDeriv L a q v) ∧
+  (∀ a q q', (∃ v, langDeriv L a q v) → (∃ v, langDeriv L a q' v) → q = q')
+
+/-- Residuals reachable from `L` by iterated `(a,q)`-derivatives. -/
+inductive IsResid : (GS A Atom → Prop) → (GS A Atom → Prop) → Prop where
+  | self (L) : IsResid L L
+  | step {L R} (a) (q) : IsResid L R → IsResid L (langDeriv R a q)
+
+/-- **A behavior is deterministic** if every reachable residual is locally deterministic
+    (the hereditary closure — a residual set that stays deterministic under derivatives). -/
+def Deterministic (L : GS A Atom → Prop) : Prop := ∀ R, IsResid L R → LocalDet R
+
+/-- An inactive derivative of `⟦e0⟧` is the empty behavior `⟦0⟧` — still a `den`. -/
+theorem langDeriv_den_dead {e0 : Exp A T} {a : Atom} {q : A}
+    (h : ∀ e0', next V e0 a ≠ some (q, e0')) :
+    langDeriv (den V e0) a q = den V (Exp.test .zero : Exp A T) := by
+  funext v
+  apply propext
+  rw [langDeriv_den]
+  constructor
+  · rintro ⟨e', hne, _⟩; exact absurd hne (h e')
+  · intro hz; obtain ⟨h1, _⟩ := hz; simp [bval] at h1
+
+/-- Every residual of `⟦e⟧` is itself a `den` — of a derivative expression, or `⟦0⟧`. -/
+theorem resid_den {e : Exp A T} {R : GS A Atom → Prop} (h : IsResid (den V e) R) :
+    ∃ e' : Exp A T, R = den V e' := by
+  induction h with
+  | self => exact ⟨e, rfl⟩
+  | @step R a q _ ih =>
+      obtain ⟨e0, rfl⟩ := ih
+      cases hne : next V e0 a with
+      | none => exact ⟨.test .zero, langDeriv_den_dead V (by rw [hne]; simp)⟩
+      | some qe =>
+          obtain ⟨q', e0'⟩ := qe
+          by_cases hq : q' = q
+          · rw [hq] at hne; exact ⟨e0', langDeriv_den_step V e0 a q hne⟩
+          · refine ⟨.test .zero, langDeriv_den_dead V ?_⟩
+            intro e1 he1; rw [hne, Option.some.injEq, Prod.mk.injEq] at he1; exact hq he1.1
+
+/-- `⟦e⟧` is locally deterministic: `next e` is a partial function and steps exclude
+    halting (`next_halt_exclusive`). -/
+theorem localDet_den (e : Exp A T) : LocalDet (den V e) := by
+  refine ⟨?_, ?_⟩
+  · intro a hhalt q v hstep
+    rw [langDeriv_den] at hstep
+    obtain ⟨e', hne, _⟩ := hstep
+    rw [Lhalt_den, next_halt_exclusive V e a (q, e') hne] at hhalt
+    exact absurd hhalt (by simp)
+  · intro a q q' h1 h2
+    obtain ⟨v, hv⟩ := h1; obtain ⟨v', hv'⟩ := h2
+    rw [langDeriv_den] at hv hv'
+    obtain ⟨e', hne, _⟩ := hv
+    obtain ⟨e'', hne', _⟩ := hv'
+    rw [hne, Option.some.injEq, Prod.mk.injEq] at hne'
+    exact hne'.1
+
+/-- **`⟦e⟧` is deterministic (task #3, sub-brick b).** Every expression's behavior is a
+    deterministic member of `W` — so `den` lands in `W ∩ Deterministic`, the carrier of
+    the corrected completeness `W ∩ Deterministic = {⟦e⟧}`. -/
+theorem deterministic_den (e : Exp A T) : Deterministic (den V e) := by
+  intro R hR
+  obtain ⟨e', rfl⟩ := resid_den V hR
+  exact localDet_den V e'
+
 end GkatCoequation
