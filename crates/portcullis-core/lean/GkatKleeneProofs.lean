@@ -673,6 +673,41 @@ theorem semSolves_derivAut (V : T → Atom → Bool) (e : Exp A T) :
             obtain ⟨⟨hq, ha⟩, hw⟩ := heq
             exact ⟨s', by rw [hq], by rw [ha, hw]; exact hd'⟩
 
+-- ── Existence for acyclic automata: the guarded-choice solution ───────────────────
+
+/-- **The guarded-choice solution of an acyclic automaton.** `rank` witnesses acyclicity
+    (every transition target is strictly smaller), so `buildSol s := s`'s equation RHS with
+    each successor solved recursively — is a *finite* expression. There is no loop to
+    finitize, so no `wh` and no fixpoint reasoning is needed. -/
+def buildSol (aut : GAut S A T) (rank : S → Nat)
+    (hac : ∀ s : S, ∀ t ∈ aut.trans s, rank t.2.2 < rank s) : S → Exp A T := fun s =>
+  (aut.trans s).foldr
+    (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (buildSol aut rank hac t.2.2)) acc)
+    (Exp.test (aut.hlt s))
+  termination_by s => rank s
+  decreasing_by exact hac _ t (by assumption)
+
+/-- **The guarded-choice solution solves the system — by construction.** `buildSol s` *is*
+    its own equation RHS (`eqRHS` with the successors filled in by `buildSol`), so it solves
+    the system with `Equiv` by reflexivity — no `ite`-guard axiom needed, since nothing is
+    collapsed. -/
+theorem buildSol_solves (aut : GAut S A T) (rank : S → Nat)
+    (hac : ∀ s : S, ∀ t ∈ aut.trans s, rank t.2.2 < rank s) :
+    Solves aut (buildSol aut rank hac) := by
+  intro s _
+  have heq : buildSol aut rank hac s = eqRHS aut (buildSol aut rank hac) s := by
+    rw [buildSol]; rfl
+  rw [heq]; exact Equiv.refl _
+
+/-- **Existence for acyclic automata (Kleene, the loop-free half).** Every well-formed
+    automaton with a rank witnessing acyclicity is expressible: `autLang aut s = ⟦buildSol s⟧`
+    at every state — an expression synthesized with no `wh`, no fixpoint, no UA. The loop-free
+    fragment of `W ⊆ {⟦e⟧}` is now machine-checked; cycles (needing `wh`) are the remainder. -/
+theorem acyclic_expressible (V : T → Atom → Bool) (aut : GAut S A T) (rank : S → Nat)
+    (hac : ∀ s : S, ∀ t ∈ aut.trans s, rank t.2.2 < rank s) (hwf : WF V aut) :
+    ∀ s ∈ aut.states, autLang V aut s = den V (buildSol aut rank hac s) :=
+  solves_autLang hwf (buildSol_solves aut rank hac)
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
@@ -713,6 +748,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms sem_solves_autLang
 #print axioms solves_autLang
 #print axioms semSolves_derivAut
+#print axioms buildSol_solves
+#print axioms acyclic_expressible
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
 
