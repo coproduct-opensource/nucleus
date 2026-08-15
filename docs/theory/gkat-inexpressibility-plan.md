@@ -151,6 +151,38 @@ Barriers gone: no coinductive `Z`, no `W`. Remaining = (ii) reachability/SCC (th
 real structural lemma) + (iv) the Fig. 3 bisimulation refutation. Both finite-graph /
 bisimulation work on the corpus we have.
 
+### Progress + corrected architecture (the acyclicity blocker dissolves)
+
+**Landed** (`GkatInexpressibilityProofs.lean`): the `AccBounded` domination kernel
+(`accBounded_loop`, `AccBounded.seq`, `complementary_accBounded_false`) and the
+**reachability infrastructure** (`Step`, `Reaches`, `Reaches.trans`, `Reaches.head`).
+
+**Key architectural insight — no separate well-founded acyclicity is needed.** The
+domination lemma
+```
+Dom e :  MutReach d₁ d₂  (both in derivs e)  ⟹  ∃ b', b' satisfiable ∧
+                                                    AccBounded b' d₁ ∧ AccBounded b' d₂
+```
+is proved by **induction on `e`**, and the `wh b e` case splits cleanly:
+- *the cycle uses a loop-back* (some `Step` is `next(e^(b))` at a `b`-atom) ⟹ `b`
+  satisfiable, take `b' = b`, both `AccBounded b` by `accBounded_loop`. Done.
+- *the cycle is entirely body-steps* (`e'·e^(b) → e''·e^(b)` via the body `e'`
+  stepping) ⟹ it mirrors a `MutReach` in `derivs e`, so the **IH on `e`** gives a
+  satisfiable `b'` bounding the body parts, and `AccBounded.seq` lifts it to the
+  `·e^(b)` states. Done.
+
+So the "cycle ⟹ satisfiable enclosing guard" that looked like a standalone
+well-founded lemma is *absorbed into the structural induction* — the body-cycle case
+is just the IH. `seq`/`ite` cases: cycles live in one part (cross-part pairs aren't
+mutually reachable — `f`-part never returns to `e`-part); IH + `AccBounded.seq`.
+
+**Remaining formalization** (substantial but now cleanly structured, no conceptual
+gap): (1) `Dom` by induction on `e` with the two `wh` subcases + the `Step`-in-
+`derivs(wh b e)` ⟺ loop-back-or-body-step case analysis; (2) the Fig. 3 pigeonhole
+(`e ~ v₀` ⟹ an alternating derivative sequence ⟹ a `MutReach` complementary pair)
+closed by `Dom` + `complementary_accBounded_false`. Both are finite-graph/bisimulation
+work; the hard *conceptual* kernel (D.2's loop domination) is already machine-checked.
+
 ## SUPERSEDED: earlier "the obstruction is an ω-property" note (kept for the record)
 
 The Fig. 3 automaton (b/b̄-alternating 2-cycle) has, if neither state accepts, **no

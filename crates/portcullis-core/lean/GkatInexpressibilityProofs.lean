@@ -105,8 +105,30 @@ theorem complementary_accBounded_false {b' : BExp T} {d1 d2 : Exp A T}
     | true => rw [hb2 a0 h] at ha0; exact absurd ha0 (by simp)
   rw [hcomp a0, h1] at h2; simp at h2
 
+-- ── Reachability in the derivative automaton ────────────────────────────────
+
+/-- One-step transition: `d` steps to `d'` on some atom via some action. -/
+def Step (d d' : Exp A T) : Prop := ∃ (a : Atom) (q : A), next V d a = some (q, d')
+
+/-- Reachability — reflexive-transitive closure of `Step`. -/
+inductive Reaches (V : T → Atom → Bool) : Exp A T → Exp A T → Prop where
+  | refl (d) : Reaches V d d
+  | tail {d d' d''} : Reaches V d d' → Step V d' d'' → Reaches V d d''
+
+theorem Reaches.trans {d d' d'' : Exp A T}
+    (h1 : Reaches V d d') (h2 : Reaches V d' d'') : Reaches V d d'' := by
+  induction h2 with
+  | refl => exact h1
+  | tail _ hstep ih => exact Reaches.tail ih hstep
+
+/-- `Step` composed on the left gives reachability. -/
+theorem Reaches.head {d d' d'' : Exp A T}
+    (hstep : Step V d d') (h : Reaches V d' d'') : Reaches V d d'' :=
+  Reaches.trans V (Reaches.tail (Reaches.refl d) hstep) h
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
+#print axioms Reaches.trans
 
 end GkatDeriv
