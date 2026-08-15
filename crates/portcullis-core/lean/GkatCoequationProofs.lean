@@ -194,4 +194,47 @@ theorem den_derivs_mem_W : ∀ (e : Exp A T), ∀ d ∈ derivs e, W V (den V d) 
 theorem den_mem_W (e : Exp A T) : W V (den V e) :=
   den_derivs_mem_W V e e (mem_self e)
 
+-- ── The completeness direction needs a determinism restriction ───────────────────
+
+/-- **`W` is strictly larger than `{⟦e⟧}`: the converse `W ⊆ {⟦e⟧}` is FALSE as stated.**
+    The unrestricted derivative-closure rule admits *non-deterministic* behaviors. The
+    language that **both halts and performs `p` at every atom** is in `W` — its only
+    active derivative is `⟦1⟧`, a generator — yet no expression denotes it: an expression
+    cannot both halt and step at one atom (`next_halt_exclusive`). So Prop 6.2's
+    completeness half must be stated over *deterministic* behaviors (the paper works in
+    the final coalgebra `Z`, deterministic by construction); over arbitrary languages the
+    exact characterization is `W ∩ Deterministic = {⟦e⟧}`. -/
+theorem W_not_subset_den (a0 : Atom) (p : A) :
+    ∃ L, W V L ∧ ¬ ∃ e : Exp A T, den V e = L := by
+  refine ⟨fun gs => gs.2 = [] ∨ ∃ a', gs.2 = [(p, a')], ?_, ?_⟩
+  · -- in `W` by derivative closure: every active `(a,q)`-derivative is `⟦1⟧`
+    apply W.deriv
+    intro a q hact
+    obtain ⟨v, hv⟩ := hact
+    simp only [Deriv, langDeriv] at hv
+    have hqp : q = p := by
+      rcases hv with h | ⟨a', h⟩
+      · exact absurd h (by simp)
+      · rw [List.cons.injEq, Prod.mk.injEq] at h; exact h.1.1
+    rw [hqp]
+    have hd : Deriv (fun gs : GS A Atom => gs.2 = [] ∨ ∃ a', gs.2 = [(p, a')]) a p
+        = testL V (BExp.one : BExp T) := by
+      funext w
+      simp only [Deriv, langDeriv, testL, bval, eq_iff_iff]
+      constructor
+      · rintro (h | ⟨a', h⟩)
+        · exact absurd h (by simp)
+        · rw [List.cons.injEq] at h; exact ⟨trivial, h.2⟩
+      · rintro ⟨_, hw⟩; exact Or.inr ⟨w.1, by rw [hw]⟩
+    rw [hd]; exact W.gen _
+  · -- not denoted: it would halt and step at `a0`, impossible for an expression
+    rintro ⟨e, he⟩
+    have hhalt : bval V (E e) a0 = true := by
+      rw [← Lhalt_den]; show den V e (a0, []); rw [he]; exact Or.inl rfl
+    have hstep : den V e (a0, [(p, a0)]) := by rw [he]; exact Or.inr ⟨a0, rfl⟩
+    rw [den_cons] at hstep
+    obtain ⟨e', hne, _⟩ := hstep
+    rw [next_halt_exclusive V e a0 (p, e') hne] at hhalt
+    exact absurd hhalt (by simp)
+
 end GkatCoequation
