@@ -54,6 +54,21 @@ theorem loop_deriv_no_halt_in_b {b : BExp T} {e : Exp A T} {e' : Exp A T}
   | false => rfl
   | true => rw [loop_deriv_halts_on_not_b V h h'] at hb; exact absurd hb (by simp)
 
+/-- **The loop case of D.2, in strong form.** No two derivatives of a loop `e^(b)`
+    (with `b` satisfiable) accept on *complementary* atom-sets. So a loop's cycle can
+    never contain a state accepting exactly on `c` and one accepting exactly on `c̄` —
+    the finite obstruction to the b/b̄-alternation of Figure 3. Both derivatives accept
+    only on `¬b`-atoms (`loop_deriv_no_halt_in_b`); at a `b`-atom `a₀` both reject, but
+    complementarity forces one to accept there. -/
+theorem loop_no_complementary {b : BExp T} {e d1 d2 : Exp A T}
+    (h1 : d1 ∈ derivs (.wh b e)) (h2 : d2 ∈ derivs (.wh b e))
+    (hcomp : ∀ a, bval V (E d2) a = ! bval V (E d1) a)
+    (a0 : Atom) (hb0 : bval V b a0 = true) : False := by
+  have hd1 := loop_deriv_no_halt_in_b V h1 hb0
+  have hd2 := loop_deriv_no_halt_in_b V h2 hb0
+  rw [hcomp a0, hd1] at hd2; simp at hd2
+
 #print axioms loop_deriv_halts_on_not_b
+#print axioms loop_no_complementary
 
 end GkatDeriv

@@ -126,19 +126,30 @@ every derivative of `e^(b)` accepts only on `¬b`-atoms (`E(e^(b))=¬b`; a deriv
 its branches are finitely alternating (never `b`). This generalizes
 `InLoop_exits_on_not_b` to all loop derivatives; `[propext, Quot.sound]`, sorryAx-free.
 
-**Revised remaining route B (tractable):**
-- (i) [DONE] loop case: `loop_deriv_halts_on_not_b`.
-- (ii) `·` and `+_b` cases: derivatives of `seq e f` / `ite b e f` are derivatives of
-  the parts (we have `derivs`/`deriv_mem` for this); a cycle in the composite lives in
-  one part. Prove the finite criterion by induction on `e`.
-- (iii) State the finite criterion (no cycle with both `E=b` and `E=b̄`) over
-  `derivs`/`next`, and prove `∀ e, ⟦e⟧` satisfies it.
-- (iv) Define Fig. 3's automaton (over `derivs`/`next` or as a small language) and
-  show it has a cycle with `E=b` and `E=b̄` → violates (iii) → inexpressible.
+**Revised remaining route B (`GkatInexpressibilityProofs.lean`):**
+- (i) **[DONE] loop case, strong form.** `loop_deriv_halts_on_not_b` (every deriv of
+  `e^(b)` accepts only on `¬b`), `loop_deriv_no_halt_in_b` (dual), and
+  **`loop_no_complementary`**: no two derivatives of `e^(b)` (with `b` satisfiable)
+  accept on complementary atom-sets. This is D.2's `▷` case — the conceptual heart —
+  fully machine-checked, `[propext, Quot.sound]`.
+- (ii) **Reachability + SCC-in-a-loop.** Define `Reaches` (reflexive-transitive
+  closure of `next`) over `derivs`. Show every *mutually-reachable* pair
+  (`Reaches d₁ d₂ ∧ Reaches d₂ d₁`) lies in `derivs (e^(b'))` for some loop
+  subexpression with `b'` satisfiable — cycles only come from loops (base cases have
+  no cycles; `seq`/`ite` inherit; `wh` creates the loop). This is the missing
+  structural lemma; then `loop_no_complementary` closes every cyclic complementary
+  pair.
+- (iii) **The criterion:** `∀ e`, no mutually-reachable complementary pair in
+  `derivs e` — immediate from (ii)+(i).
+- (iv) **Fig. 3 witness + bisimulation refutation.** Fig. 3: `E(v₀)=b̄, E(v₁)=b`,
+  `v₀ —(a∈b)|p→ v₁`, `v₁ —(a∈b̄)|q→ v₀` (b,b̄≠0). If `e ~ v₀` (bisimilar,
+  `GkatBisim`), the bisimulation maps the `v₀,v₁` cycle to a mutually-reachable
+  complementary pair in `derivs e` — contradicting (iii). Hence `∀ e, ¬(e ~ v₀)`:
+  **Fig. 3 is inexpressible.**
 
-The hard conceptual barriers are gone: no coinductive `Z`, no full `W` encoding —
-just the finite derivative automaton we already built. (ii)–(iv) are structural-
-induction + finite-graph work.
+Barriers gone: no coinductive `Z`, no `W`. Remaining = (ii) reachability/SCC (the one
+real structural lemma) + (iv) the Fig. 3 bisimulation refutation. Both finite-graph /
+bisimulation work on the corpus we have.
 
 ## SUPERSEDED: earlier "the obstruction is an ω-property" note (kept for the record)
 
