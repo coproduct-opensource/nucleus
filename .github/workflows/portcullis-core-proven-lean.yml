@@ -277,6 +277,8 @@ jobs:
           #print axioms GkatCoequation.W_den_seq
           #print axioms GkatCoequation.W_derivs_seq
           #print axioms GkatCoequation.W_derivs_ite
+          #print axioms GkatCoequation.W_derivs_wh
+          #print axioms GkatCoequation.den_mem_W
           #print axioms GkatFaithful.left_distrib_not_ba_theorem
           #print axioms GkatFaithful.two_state_uniqueness_nonvacuous
           #print axioms GkatFaithful.loop_is_union_of_iterations

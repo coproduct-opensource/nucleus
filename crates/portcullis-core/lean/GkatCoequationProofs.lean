@@ -2,31 +2,28 @@ import GkatBehaviorProofs
 import GkatDerivativeFiniteProofs
 
 /-!
-# The nesting coequation `W` and soundness `{⟦e⟧} ⊆ W` (Prop 6.2, `⊆` half)
+# The nesting coequation `W` and soundness `{⟦e⟧} ⊆ W` (Prop 6.2, `⊆` half — COMPLETE)
 
-Toward `W = {⟦e⟧}` (Schmid–Kappé–Kozen–Silva, ICALP 2021, Prop 6.2/13) — the covariety
+Half of `W = {⟦e⟧}` (Schmid–Kappé–Kozen–Silva, ICALP 2021, Prop 6.2/13) — the covariety
 characterization of the GKAT-expressible behaviors, the completeness dual to the
 `fig3_inexpressible` result. **Def 6.1**: `W` is the smallest set of behaviors (here:
 guarded-string languages) containing the *tests* `{⟦b⟧}` and closed under
 
-  1. sequential composition `L · M`   (`Comp`),
+  1. sequential composition `L · M`   (`Comp` / `W.comp`),
   2. **derivative closure**: `(∀ (a,q) active, ∂₍ₐ,q₎ L ∈ W) ⟹ L ∈ W`   (`W.deriv`),
-  3. continuation `L ▷ M`   (the loop primitive — pending).
+  3. the loop `InLoop V b L`   (`W.loop`) — GKAT's concrete `while` closure, the
+     GKAT-specific instantiation of the paper's abstract continuation `▷`.
 
 Because `den` denotes each expression constructor by exactly one of these operations
-(`den (seq e f)` *is* the fusion product `Comp ⟦e⟧ ⟦f⟧`, definitionally), soundness
-`⟦e⟧ ∈ W` is an induction on `e`. Two forms are proved:
+(`den (seq e f)` *is* `Comp ⟦e⟧ ⟦f⟧`; `den (wh b e)` *is* `InLoop V b ⟦e⟧`,
+definitionally), soundness `⟦e⟧ ∈ W` is an induction on `e`. The key move is stating it
+over *every* derivative `d ∈ derivs e` (`W_derivs_{test,act,seq,ite,wh}`): then the
+derivative-closure cases (`act`, `ite` head) draw `W (⟦e'⟧)` for their next-states
+straight from the hypothesis — no separate "`W` closed under derivatives" lemma, and the
+composition-derivative union / determinism question never arises.
 
-* the **simple** cases `W_den_test`, `W_den_seq`, `W_den_act` (`∂⟦p⟧ = ⟦1⟧`); and
-* the **strengthened** bricks `W_derivs_{test,act,seq,ite}`, stated over *every*
-  derivative `d ∈ derivs e`. The strengthening is exactly what the `ite` head needs:
-  each active derivative of `⟦ite b e f⟧` is `⟦e'⟧` for a next-state `e'` of `e` or `f`
-  (`e' ∈ derivs e`/`derivs f`), so `⟦e'⟧ ∈ W` comes straight from the hypothesis — no
-  separate "`W` closed under derivatives" lemma, and the composition's derivative-union
-  determinism question never arises.
-
-Remaining: the **`while`** case — the continuation `▷` and the key identity
-`e^(b) = 1 ▷ (ẽ +_b 1)` — which completes `den_mem_W : ∀ e, W (den e)`.
+`den_mem_W : ∀ e, W (den e)` assembles the five bricks — the **soundness direction of
+Prop 6.2, complete**. Remaining for `W = {⟦e⟧}`: the synthesis half `W ⊆ {⟦e⟧}`.
 
 Axioms `[propext, Quot.sound]`, `sorryAx`-free.
 -/
@@ -61,13 +58,18 @@ theorem den_test_testL (b : BExp T) : den V (Exp.test b : Exp A T) = testL V b :
 
 -- ── The nesting coequation (Def 6.1; rules 1–2 fragment) ─────────────────────────
 
-/-- **The nesting coequation `W`** (Def 6.1, sequential + derivative-closure rules).
-    Smallest set of behaviors containing every test `⟦b⟧` and closed under composition
-    and derivative closure. (The continuation rule `▷` is added with the `while` case.) -/
+/-- **The nesting coequation `W`** (Def 6.1). Smallest set of behaviors containing every
+    test `⟦b⟧` and closed under composition, derivative closure, and the loop. The loop
+    rule uses GKAT's concrete `while` closure `InLoop` — `den (wh b e)` *is*
+    `InLoop V b (den e)` definitionally — in place of the paper's abstract continuation
+    `▷` (its GKAT-specific instantiation via `e^(b) = 1 ▷ (ẽ +_b 1)`); the resulting `W`
+    is the same set `{⟦e⟧}`. The derivative-closure rule carries the nesting content that
+    excludes Fig 3. -/
 inductive W : (GS A Atom → Prop) → Prop where
   | gen (b : BExp T) : W (testL V b)
   | comp {L M} : W L → W M → W (Comp L M)
   | deriv {L} : (∀ a q, Active L a q → W (Deriv L a q)) → W L
+  | loop (b : BExp T) {L} : W L → W (InLoop V b L)
 
 /-- **`test` case:** `⟦b⟧` is a generator of `W`. -/
 theorem W_den_test (b : BExp T) : W V (den V (Exp.test b : Exp A T)) := by
@@ -161,5 +163,35 @@ theorem W_derivs_ite {b : BExp T} {e f : Exp A T}
     · rw [if_neg hb] at hne; exact hf e' (deriv_mem f hne)
   · exact he d hde
   · exact hf d hdf
+
+/-- **`while` case (task #2).** If every derivative of `e` is in `W`, so is every
+    derivative of `wh b e`. The loop head `⟦wh b e⟧ = InLoop V b ⟦e⟧` enters by the loop
+    rule; each body state `e'·⟦wh b e⟧` is a composition of `⟦e'⟧` (`e' ∈ derivs e`, IH)
+    with the loop head. -/
+theorem W_derivs_wh {b : BExp T} {e : Exp A T}
+    (he : ∀ d ∈ derivs e, W V (den V d)) :
+    ∀ d ∈ derivs (.wh b e), W V (den V d) := by
+  have hwh : W V (den V (Exp.wh b e)) := W.loop b (he e (mem_self e))
+  intro d hd
+  simp only [derivs, List.mem_cons, List.mem_map] at hd
+  rcases hd with rfl | ⟨e', he', rfl⟩
+  · exact hwh
+  · rw [den_seq_comp]; exact W.comp (he e' he') hwh
+
+/-- **Soundness of the coequation (Prop 6.2, `⊆` half), full form.** Every derivative of
+    every expression is in `W` — a clean induction on `e` assembling the five bricks. -/
+theorem den_derivs_mem_W : ∀ (e : Exp A T), ∀ d ∈ derivs e, W V (den V d) := by
+  intro e
+  induction e with
+  | act p => exact W_derivs_act V p
+  | test t => exact W_derivs_test V t
+  | seq e f ihe ihf => exact W_derivs_seq V ihe ihf
+  | ite b e f ihe ihf => exact W_derivs_ite V ihe ihf
+  | wh b e ihe => exact W_derivs_wh V ihe
+
+/-- **`{⟦e⟧} ⊆ W`.** Every GKAT expression's behavior satisfies the nesting coequation
+    — the soundness direction of Prop 6.2, complete. -/
+theorem den_mem_W (e : Exp A T) : W V (den V e) :=
+  den_derivs_mem_W V e e (mem_self e)
 
 end GkatCoequation
