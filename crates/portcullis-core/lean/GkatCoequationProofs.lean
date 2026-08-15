@@ -20,7 +20,7 @@ so `⟦p⟧ ∈ W` by derivative closure), and **`seq`** (composition). The `ite
 derivative closure, needing `W` closed under derivatives) and the `while` case (via `▷`
 and the key identity `e^(b) = 1 ▷ (ẽ +_b 1)`) are the next bricks.
 
-Axioms `[propext]`, `sorryAx`-free.
+Axioms `[propext, Quot.sound]`, `sorryAx`-free.
 -/
 
 namespace GkatCoequation
