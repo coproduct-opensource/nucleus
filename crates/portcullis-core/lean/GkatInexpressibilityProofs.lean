@@ -198,11 +198,49 @@ theorem loopActive_step {b : BExp T} {d : Exp A T} (h : LoopActive b d) :
           · exact Or.inr (loopActive_accBounded V h_inner a hE)
           · rw [if_neg hE] at hn; simp at hn
 
+-- ── Base-case acyclicity: `act`/`test` derivatives have no self-cycle ────────────
+
+/-- `test t` performs no step. -/
+theorem step_test {t : BExp T} {d' : Exp A T} : ¬ Step V (.test t) d' := by
+  rintro ⟨a, q, h⟩; simp [next] at h
+
+/-- Anything reachable from `test t` is `test t` (it is a sink). -/
+theorem reaches_test {t : BExp T} {d' : Exp A T} (h : Reaches V (.test t) d') :
+    d' = .test t := by
+  induction h with
+  | refl => rfl
+  | tail _ hstep ih => subst ih; exact absurd hstep (step_test V)
+
+/-- `act p` steps only to `test 1`. -/
+theorem step_act {p : A} {d' : Exp A T} (h : Step V (.act p) d') : d' = .test .one := by
+  obtain ⟨a, q, hn⟩ := h
+  simp only [next, Option.some.injEq, Prod.mk.injEq] at hn; exact hn.2.symm
+
+/-- ≥1-step reachability (a genuine cycle when `Reaches1 d d`). -/
+def Reaches1 (d d' : Exp A T) : Prop := ∃ x, Step V d x ∧ Reaches V x d'
+
+/-- `test t` derivatives have no self-cycle. -/
+theorem no_selfcycle_test {t : BExp T} {d : Exp A T} (hd : d ∈ derivs (.test t)) :
+    ¬ Reaches1 V d d := by
+  simp only [derivs, List.mem_singleton] at hd; subst hd
+  rintro ⟨x, hstep, _⟩; exact step_test V hstep
+
+/-- `act p` derivatives have no self-cycle (`act p → test 1 → ⊥`). -/
+theorem no_selfcycle_act {p : A} {d : Exp A T} (hd : d ∈ derivs (.act p)) :
+    ¬ Reaches1 V d d := by
+  simp only [derivs, List.mem_cons, List.mem_singleton, List.not_mem_nil, or_false] at hd
+  rcases hd with rfl | rfl
+  · rintro ⟨x, hstep, hr⟩
+    rw [step_act V hstep] at hr
+    exact absurd (reaches_test V hr) (by simp)
+  · rintro ⟨x, hstep, _⟩; exact step_test V hstep
+
 #print axioms loop_deriv_halts_on_not_b
 #print axioms loop_no_complementary
 #print axioms complementary_accBounded_false
 #print axioms Reaches.trans
 #print axioms loopActive_next
 #print axioms loopActive_step
+#print axioms no_selfcycle_act
 
 end GkatDeriv
