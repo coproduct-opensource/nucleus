@@ -1430,10 +1430,16 @@ theorem restrict_reaches_confine (V : T → Atom → Bool) (aut : GAut S A T) (k
 
 -- ── The dominator layer (for natural-loop decomposition) ──────────────────────────
 
+/-- The `keep`-predicate "`≠ H`" (classical, since `S` need not have decidable equality). -/
+noncomputable def neK (H : S) : S → Bool := fun s => @decide (s ≠ H) (Classical.propDecidable _)
+
+@[simp] theorem neK_iff (H s : S) : neK H s = true ↔ s ≠ H := by
+  simp only [neK, decide_eq_true_eq]
+
 /-- **Reachability avoiding `H`**: reachability once every edge into `H` is deleted, so `H` is
     never entered. `ReachAvoid H s t` witnesses a run `s → t` that never visits `H` (`s ≠ H`). -/
 def ReachAvoid (V : T → Atom → Bool) (aut : GAut S A T) (H : S) (s t : S) : Prop :=
-  AutReaches V (restrictAut aut (fun s => @decide (s ≠ H) (Classical.propDecidable _))) s t
+  AutReaches V (restrictAut aut (neK H)) s t
 
 /-- **Dominance.** `H` dominates `T` if every run from the start to `T` passes through `H` —
     equivalently `T = H`, or `T` is unreachable from the start once all edges into `H` are cut
@@ -1450,11 +1456,8 @@ theorem dom_refl (V : T → Atom → Bool) (aut : GAut S A T) (H : S) : Dominate
     node-removal characterization. -/
 theorem reachAvoid_ne (V : T → Atom → Bool) (aut : GAut S A T) (H s t : S)
     (h : ReachAvoid V aut H s t) (hs : s ≠ H) : t ≠ H := by
-  have hks : (fun s => @decide (s ≠ H) (Classical.propDecidable _)) s = true := by
-    simp only [decide_eq_true_eq]; exact hs
-  have hkt := restrict_reaches_confine V aut
-    (fun s => @decide (s ≠ H) (Classical.propDecidable _)) h hks
-  simp only [decide_eq_true_eq] at hkt; exact hkt
+  have hkt := restrict_reaches_confine V aut (neK H) h ((neK_iff H s).mpr hs)
+  exact (neK_iff H t).mp hkt
 
 /-- **A back edge's head dominates its tail on any avoiding run** (the key monotonicity):
     if `T` is reachable from the start avoiding `H`, then `H` does not dominate `T`. So
@@ -1516,6 +1519,43 @@ theorem acyclic_reducible (V : T → Atom → Bool) (aut : GAut S A T)
     · exact h.symm
     · exact absurd ⟨x, hx1, AutReaches.trans hxr hms'.2⟩ (hacyclic s)
   rw [hss']; exact dom_refl V aut s
+
+/-- **Removing non-firing edges preserves `firstMatch`.** If `firstMatch` selects `(q,s')` and
+    `s'` is kept by `P`, then filtering the list to `P`-targets still selects `(q,s')`: the
+    edges dropped came *before* the winner and did not fire (else they'd have won), so the
+    winner is still first. This is why the dominance split needs no determinism. -/
+theorem firstMatch_filter_target (V : T → Atom → Bool) (a : Atom) (P : S → Bool)
+    (L : List (BExp T × A × S)) {q : A} {s' : S}
+    (h : firstMatch V a L = some (q, s')) (hP : P s' = true) :
+    firstMatch V a (L.filter (fun t => P t.2.2)) = some (q, s') := by
+  induction L with
+  | nil => simp [firstMatch] at h
+  | cons hd tl ih =>
+      obtain ⟨g, q0, s0⟩ := hd
+      simp only [firstMatch] at h
+      by_cases hg : bval V g a
+      · rw [if_pos hg, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        simp only [List.filter_cons, hP, if_true, firstMatch, hg]
+      · rw [if_neg hg] at h
+        simp only [List.filter_cons]
+        by_cases hP0 : P s0
+        · simp only [hP0, if_true, firstMatch, hg, if_false]; exact ih h
+        · simp only [hP0, if_false]; exact ih h
+
+/-- A step avoiding `A` whose target is not `B` is also a step avoiding both `A` and `B`. -/
+theorem autStep_avoid_both (V : T → Atom → Bool) (aut : GAut S A T) (Ha Hb : S)
+    {X : S} {a : Atom} {q : A} {C : S}
+    (h : autStep V (restrictAut aut (neK Ha)) X a = some (q, C)) (hC : C ≠ Hb) :
+    autStep V (restrictAut aut (fun s => neK Ha s && neK Hb s)) X a = some (q, C) := by
+  have hkey := firstMatch_filter_target V a (neK Hb)
+    ((restrictAut aut (neK Ha)).trans X) h ((neK_iff Hb C).mpr hC)
+  show firstMatch V a ((restrictAut aut (fun s => neK Ha s && neK Hb s)).trans X) = some (q, C)
+  have heq : (restrictAut aut (fun s => neK Ha s && neK Hb s)).trans X
+      = ((restrictAut aut (neK Ha)).trans X).filter (fun t => neK Hb t.2.2) := by
+    simp only [restrictAut, List.filter_filter]
+    exact List.filter_congr (fun t _ => Bool.and_comm _ _)
+  rw [heq]; exact hkey
 
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
