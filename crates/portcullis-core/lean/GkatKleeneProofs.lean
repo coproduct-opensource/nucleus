@@ -1362,6 +1362,45 @@ theorem loop2Aut_expressible (V : T → Atom → Bool) (b : BExp T) (p q : A) :
     autLang V (loop2Aut b p q) Q2c.h = den V (loop2Sol b p q Q2c.h) :=
   sem_solves_autLang (loop2Aut_wf V b p q) (loop2Aut_semsolves V b p q) Q2c.h (by simp [loop2Aut])
 
+-- ═══ Multi-state (branching) SCC synthesis — WIP (gkat-kleene-multistate) ═══════════
+/-!
+The last case of `W ⊆ {⟦e⟧}`: a strongly-connected component with several mutually-
+reachable states is a loop whose *body spans the SCC*. Plan (natural-loop decomposition):
+
+1. Pick the SCC's entry `e`. Under the well-nested restriction each SCC is single-entry.
+2. **Remove the back-edges** (edges inside the SCC targeting `e`). The SCC-minus-back-edges
+   is acyclic — a DAG rooted at `e` — so `acyclic_flat_expressible` synthesizes it into a
+   body expression `body`, one per SCC state, with the back-edge action deferred.
+3. The loop at `e` is `body^(guard)·(exits)`, by `salomaa_solution_exists` (arbitrary body —
+   `wnSolE_solves`), with the SCC's cross-edges as exits (strictly lower rank, `brick 3a`).
+4. Collapse the SCC to one node and recurse over `autBelow_wf`.
+
+**Load-bearing subtlety** (already mapped): restricting to a sub-automaton changes *which*
+guard fires unless guards are disjoint — so the whole construction is over a `Deterministic`
+GAut (`GuardsDisjoint` at every atom), where `firstMatch_eq_of_mem_det` makes edge selection
+position-independent. `restrictAut` below is the sub-automaton primitive step 2 uses.
+-/
+
+/-- **Sub-automaton on a state subset.** Keep the `keep`-states and only transitions whose
+    target is kept — the SCC's internal automaton (with back-edges dropped when `keep` also
+    excludes the entry). The primitive the multi-state loop-body extraction runs on. -/
+def restrictAut (aut : GAut S A T) (keep : S → Bool) : GAut S A T where
+  states := aut.states.filter keep
+  hlt    := aut.hlt
+  trans  := fun s => (aut.trans s).filter (fun t => keep t.2.2)
+  start  := aut.start
+
+/-- A kept transition is a transition of the original automaton. -/
+theorem restrict_trans_mem (aut : GAut S A T) (keep : S → Bool) {s : S}
+    {t : BExp T × A × S} (h : t ∈ (restrictAut aut keep).trans s) : t ∈ aut.trans s :=
+  (List.mem_filter.mp h).1
+
+/-- A kept transition targets a kept state — restriction confines reachability to the subset. -/
+theorem restrict_trans_keep (aut : GAut S A T) (keep : S → Bool) {s : S}
+    {t : BExp T × A × S} (h : t ∈ (restrictAut aut keep).trans s) : keep t.2.2 = true := by
+  have := (List.mem_filter.mp h).2
+  simpa using this
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
