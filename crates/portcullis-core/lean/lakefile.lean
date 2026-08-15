@@ -304,6 +304,12 @@ lean_lib «GkatGuardedLoopBridge» where
 lean_lib «GkatWhileStep» where
   roots := #[`GkatWhileStep]
 
+-- A minimal ordered (inequational) GKAT: the least-fixpoint / star-induction rule,
+-- proven sound for guarded-string language inclusion. The Kozen/DDP-style order the
+-- equational theory drops (using Salomaa/UA instead).
+lean_lib «GkatOrderedProofs» where
+  roots := #[`GkatOrderedProofs]
+
 -- User-authored cascades over the REAL derivation diamond inherit the ratchet:
 -- RankedLattice instance for the DerivationClass lattice + monotone step
 -- vocabulary + the one-theorem cascade admissibility (loop_admissible fired at
