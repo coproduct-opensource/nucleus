@@ -896,6 +896,67 @@ theorem wn_expressible (V : T → Atom → Bool) (w : WNAut S A T) (hwf : WF V (
     ∀ s ∈ (wnGAut w).states, autLang V (wnGAut w) s = den V (wnSol w s) :=
   solves_autLang hwf (wnSol_solves w)
 
+-- ── State elimination, step 1: the expression-labeled generalized automaton ────────
+
+/-- **An expression-labeled generalized automaton** (the target of state elimination). Each
+    state carries an optional self-loop whose body is an arbitrary *expression* `loopB s =
+    some (b, e)`, and a list of *expression-labeled* `exits` to strictly-smaller states. When
+    a flat single-action automaton has a state eliminated, its through-paths become such
+    expression labels; iterating elimination drives any well-nested automaton into this shape,
+    where the loop body may be any synthesized sub-expression (not just one action). -/
+structure WNAutE (S A T : Type) where
+  rank   : S → Nat
+  hlt    : S → BExp T
+  loopB  : S → Option (BExp T × Exp A T)
+  exits  : S → List (BExp T × Exp A T × S)
+  hexit  : ∀ s : S, ∀ t ∈ exits s, rank t.2.2 < rank s
+
+/-- The generalized equation of state `s`: expression-labeled guarded choice over the exits,
+    with the self-loop (if any) as the outer Salomaa fixpoint `e·g +_b (exits)`. -/
+def eqRHSE (w : WNAutE S A T) (sol : S → Exp A T) (s : S) : Exp A T :=
+  match w.loopB s with
+  | some (b, e) => Exp.ite b (Exp.seq e (sol s))
+      ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (sol t.2.2)) acc)
+        (Exp.test (w.hlt s)))
+  | none => (w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (sol t.2.2)) acc)
+      (Exp.test (w.hlt s))
+
+/-- **The synthesized solution** — recursion only over the strictly-smaller exits; the
+    self-loop's arbitrary body `e` is wrapped by `wh`, never recursed. -/
+def wnSolE (w : WNAutE S A T) : S → Exp A T := fun s =>
+  match w.loopB s with
+  | some (b, e) => Exp.seq (Exp.wh b e)
+      ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (wnSolE w t.2.2)) acc)
+        (Exp.test (w.hlt s)))
+  | none => (w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (wnSolE w t.2.2)) acc)
+      (Exp.test (w.hlt s))
+  termination_by s => w.rank s
+  decreasing_by all_goals exact w.hexit _ _ (by assumption)
+
+/-- **The generalized system is solved** — for an *arbitrary* loop body `e`. Loop states are
+    the Salomaa fixpoint `e·g +_b f` (`salomaa_solution_exists`, any `e`); loop-free states
+    are their own generalized guarded choice (`refl`). This is the synthesis end of state
+    elimination: once a flat automaton is driven into `WNAutE` form, `wnSolE` is the program. -/
+theorem wnSolE_solves (w : WNAutE S A T) (s : S) :
+    Equiv (wnSolE w s) (eqRHSE w (wnSolE w) s) := by
+  cases hl : w.loopB s with
+  | none =>
+      have e : wnSolE w s = eqRHSE w (wnSolE w) s := by
+        rw [wnSolE]; simp only [hl, eqRHSE]
+      rw [e]; exact Equiv.refl _
+  | some be =>
+      obtain ⟨b, e⟩ := be
+      have e1 : wnSolE w s = Exp.seq (Exp.wh b e)
+          ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (wnSolE w t.2.2)) acc)
+            (Exp.test (w.hlt s))) := by
+        rw [wnSolE]; simp only [hl]
+      have e2 : eqRHSE w (wnSolE w) s = Exp.ite b (Exp.seq e (wnSolE w s))
+          ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq t.2.1 (wnSolE w t.2.2)) acc)
+            (Exp.test (w.hlt s))) := by
+        simp only [eqRHSE, hl]
+      rw [e2, e1]
+      exact salomaa_solution_exists b e _
+
 -- ── General multi-state loop body: an arbitrary-length linear cycle ────────────────
 
 /-- The loop body of an action chain `[q₁,…,qₖ]` as one expression: `q₁·(q₂·…·(qₖ·1))`. -/
@@ -1054,6 +1115,7 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms wnSol_solves
 #print axioms wn_expressible
 #print axioms loop2Aut_semsolves
+#print axioms wnSolE_solves
 #print axioms seq_bodyChain
 #print axioms loopChain_solves
 #print axioms loop2Aut_expressible
