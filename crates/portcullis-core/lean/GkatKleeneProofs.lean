@@ -826,6 +826,76 @@ theorem loopExitAut_expressible (V : T → Atom → Bool) (b : BExp T) (p r : A)
     autLang V (loopExitAut b p r) Q2.loop = den V (loopExitSol b p r Q2.loop) :=
   solves_autLang (loopExitAut_wf V b p r) (loopExitAut_solves b p r) Q2.loop (by simp [loopExitAut])
 
+-- ── The assembly: nested single-action loops + acyclic glue ───────────────────────
+
+/-- **A hierarchically-ranked automaton with (optional) self-loops.** Each state carries an
+    optional self-loop `loop s = some (b, q)` (iterate on `b` via `q`) and a list of `exits`
+    to *strictly-smaller* states (`hexit`). Cycles are exactly the self-loops; everything else
+    descends in rank — so loops may nest (an exit into a smaller loop head) and be glued by
+    acyclic structure, all under one well-founded recursion. This is the well-nested class for
+    single-action loop bodies. -/
+structure WNAut (S A T : Type) where
+  states : List S
+  rank   : S → Nat
+  hlt    : S → BExp T
+  loop   : S → Option (BExp T × A)
+  exits  : S → List (BExp T × A × S)
+  hexit  : ∀ s : S, ∀ t ∈ exits s, rank t.2.2 < rank s
+  start  : S
+
+/-- The induced `GAut`: the self-loop (if any) is the first transition, then the exits. -/
+def wnGAut (w : WNAut S A T) : GAut S A T where
+  states := w.states
+  hlt    := w.hlt
+  trans  := fun s => (match w.loop s with | some (b, q) => [(b, q, s)] | none => []) ++ w.exits s
+  start  := w.start
+
+/-- **The synthesized solution.** Solve the exits into a guarded-choice continuation `f`
+    (recursion only over the strictly-smaller exits), then wrap the self-loop around it with
+    `wh`: `loop s = some (b,q)` gives `q^(b)·f`, `none` gives `f`. Well-founded on `rank`. -/
+def wnSol (w : WNAut S A T) : S → Exp A T := fun s =>
+  match w.loop s with
+  | some (b, q) => Exp.seq (Exp.wh b (Exp.act q))
+      ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (wnSol w t.2.2)) acc)
+        (Exp.test (w.hlt s)))
+  | none => (w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (wnSol w t.2.2)) acc)
+      (Exp.test (w.hlt s))
+  termination_by s => w.rank s
+  decreasing_by all_goals exact w.hexit _ _ (by assumption)
+
+/-- **The solution solves the system.** At a loop state the equation is the Salomaa self-loop
+    `g ≡ q·g +_b f` — discharged by `selfLoop_solves` — and at a loop-free state it *is* its
+    own guarded choice (`refl`). -/
+theorem wnSol_solves (w : WNAut S A T) : Solves (wnGAut w) (wnSol w) := by
+  intro s _
+  cases hl : w.loop s with
+  | none =>
+      have e : wnSol w s = eqRHS (wnGAut w) (wnSol w) s := by
+        rw [wnSol]; simp only [hl, eqRHS, wnGAut, List.nil_append]
+      rw [e]; exact Equiv.refl _
+  | some bq =>
+      obtain ⟨b, q⟩ := bq
+      have e1 : wnSol w s = Exp.seq (Exp.wh b (Exp.act q))
+          ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (wnSol w t.2.2)) acc)
+            (Exp.test (w.hlt s))) := by
+        rw [wnSol]; simp only [hl]
+      have e2 : eqRHS (wnGAut w) (wnSol w) s = Exp.ite b (Exp.seq (Exp.act q) (wnSol w s))
+          ((w.exits s).foldr (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (wnSol w t.2.2)) acc)
+            (Exp.test (w.hlt s))) := by
+        simp only [eqRHS, wnGAut, hl, List.singleton_append, List.foldr_cons]
+      rw [e2, e1]
+      exact selfLoop_solves b q _
+
+/-- **The assembly, as far as single-action loop bodies reach.** Every well-formed `WNAut`
+    is expressible: `autLang (wnGAut w) s = ⟦wnSol w s⟧` at every state — nested loops glued by
+    acyclic structure, synthesized into a `wh`/`·`/`+_b` expression, via `solves_autLang`.
+    This closes `W ⊆ {⟦e⟧}` for the hierarchically-ranked single-action-loop class; the
+    remaining gap to full completeness is multi-state loop *bodies* (cycles longer than a
+    self-loop), where the loop body is itself a sub-automaton to be synthesized first. -/
+theorem wn_expressible (V : T → Atom → Bool) (w : WNAut S A T) (hwf : WF V (wnGAut w)) :
+    ∀ s ∈ (wnGAut w).states, autLang V (wnGAut w) s = den V (wnSol w s) :=
+  solves_autLang hwf (wnSol_solves w)
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
@@ -872,6 +942,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms selfLoop_solves
 #print axioms loopExitAut_solves
 #print axioms loopExitAut_expressible
+#print axioms wnSol_solves
+#print axioms wn_expressible
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
 
