@@ -708,6 +708,82 @@ theorem acyclic_expressible (V : T → Atom → Bool) (aut : GAut S A T) (rank :
     ∀ s ∈ aut.states, autLang V aut s = den V (buildSol aut rank hac s) :=
   solves_autLang hwf (buildSol_solves aut rank hac)
 
+-- ── Cyclic case: self-loop elimination via `wh` ───────────────────────────────────
+
+/-- **Self-loop elimination — the cyclic inductive step.** A state whose equation is a
+    self-loop with continuation, `g ≡ q·g +_b f`, is solved by `q^(b)·f`: the `wh` finitizes
+    the back-edge that a plain guarded-choice recursion (`buildSol`) would unfold forever.
+    This is exactly `salomaa_solution_exists` (a unique guarded fixpoint, Salomaa-style), and
+    it is the step the full well-nested construction applies at each loop, with `buildSol` as
+    the acyclic glue between loops. -/
+theorem selfLoop_solves (b : BExp T) (q : A) (f : Exp A T) :
+    Equiv (Exp.seq (Exp.wh b (Exp.act q)) f)
+          (Exp.ite b (Exp.seq (Exp.act q) (Exp.seq (Exp.wh b (Exp.act q)) f)) f) :=
+  salomaa_solution_exists b (Exp.act q) f
+
+/-- A two-state loop-with-exit: `loop` iterates on `b` via `p`, and on `¬b` steps to `acc`
+    via `r`; `acc` accepts. A genuine cycle whose exit continues into (acyclic) structure —
+    the smallest "uniform continuation of a loop". -/
+inductive Q2 where
+  | loop
+  | acc
+  deriving DecidableEq, Repr
+
+def loopExitAut (b : BExp T) (p r : A) : GAut Q2 A T where
+  states := [Q2.loop, Q2.acc]
+  hlt    := fun s => match s with | .loop => BExp.zero | .acc => BExp.one
+  trans  := fun s => match s with
+    | .loop => [(b, p, Q2.loop), (BExp.not b, r, Q2.acc)]
+    | .acc  => []
+  start  := Q2.loop
+
+/-- The synthesized solution: `loop ↦ p^(b)·(if ¬b then r else 0)`, `acc ↦ 1`. -/
+def loopExitSol (b : BExp T) (p r : A) : Q2 → Exp A T := fun s => match s with
+  | .loop => Exp.seq (Exp.wh b (Exp.act p))
+      (Exp.ite (BExp.not b) (Exp.seq (Exp.act r) (Exp.test BExp.one)) (Exp.test BExp.zero))
+  | .acc  => Exp.test BExp.one
+
+theorem loopExitAut_solves (b : BExp T) (p r : A) :
+    Solves (loopExitAut b p r) (loopExitSol b p r) := by
+  intro s _
+  cases s with
+  | loop =>
+      show Equiv (loopExitSol b p r .loop) (eqRHS (loopExitAut b p r) (loopExitSol b p r) .loop)
+      simp only [loopExitSol, eqRHS, loopExitAut, List.foldr_cons, List.foldr_nil]
+      exact selfLoop_solves b p _
+  | acc =>
+      show Equiv (loopExitSol b p r .acc) (eqRHS (loopExitAut b p r) (loopExitSol b p r) .acc)
+      simp only [loopExitSol, eqRHS, loopExitAut, List.foldr_nil]
+      exact Equiv.refl _
+
+theorem loopExitAut_wf (V : T → Atom → Bool) (b : BExp T) (p r : A) :
+    WF V (loopExitAut b p r) := by
+  constructor
+  · intro s _ a hhalt
+    cases s with
+    | loop => simp only [loopExitAut] at hhalt; simp [bval] at hhalt
+    | acc  => simp [autStep, loopExitAut, firstMatch]
+  · intro s _ a q s' hst
+    cases s with
+    | loop =>
+        simp only [autStep, loopExitAut, firstMatch] at hst
+        by_cases hb : bval V b a
+        · rw [if_pos hb, Option.some.injEq, Prod.mk.injEq] at hst
+          simp [loopExitAut, hst.2]
+        · rw [if_neg hb] at hst
+          by_cases hnb : bval V (BExp.not b) a
+          · rw [if_pos hnb, Option.some.injEq, Prod.mk.injEq] at hst; simp [loopExitAut, hst.2]
+          · rw [if_neg hnb] at hst; exact absurd hst (by simp)
+    | acc => simp [autStep, loopExitAut, firstMatch] at hst
+
+/-- **First machine-checked synthesis of a looping automaton with a continuation.** The
+    loop-with-exit automaton is well-formed and solved, so `solves_autLang` yields
+    `autLang (loopExitAut …) loop = ⟦p^(b)·(¬b → r)⟧` — a genuine cycle synthesized into a
+    `wh`-expression whose behavior it provably has. The cyclic pipeline works end-to-end. -/
+theorem loopExitAut_expressible (V : T → Atom → Bool) (b : BExp T) (p r : A) :
+    autLang V (loopExitAut b p r) Q2.loop = den V (loopExitSol b p r Q2.loop) :=
+  solves_autLang (loopExitAut_wf V b p r) (loopExitAut_solves b p r) Q2.loop (by simp [loopExitAut])
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
@@ -750,6 +826,9 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms semSolves_derivAut
 #print axioms buildSol_solves
 #print axioms acyclic_expressible
+#print axioms selfLoop_solves
+#print axioms loopExitAut_solves
+#print axioms loopExitAut_expressible
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
 
