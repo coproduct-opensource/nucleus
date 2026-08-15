@@ -896,6 +896,80 @@ theorem wn_expressible (V : T → Atom → Bool) (w : WNAut S A T) (hwf : WF V (
     ∀ s ∈ (wnGAut w).states, autLang V (wnGAut w) s = den V (wnSol w s) :=
   solves_autLang hwf (wnSol_solves w)
 
+-- ── Multi-state loop body: `while b do (p; q)` as a two-state cycle ────────────────
+
+/-- The two states of `while b do (p; q)`: `h` (head, branches on `b`), `k` (does `q`,
+    returns to `h`). The cycle `h ⇄ k` is a loop whose *body spans two states* — longer than
+    a self-loop. -/
+inductive Q2c where
+  | h
+  | k
+  deriving DecidableEq, Repr
+
+def loop2Aut (b : BExp T) (p q : A) : GAut Q2c A T where
+  states := [Q2c.h, Q2c.k]
+  hlt    := fun s => match s with | .h => BExp.not b | .k => BExp.zero
+  trans  := fun s => match s with
+    | .h => [(b, p, Q2c.k)]           -- on `b`: do `p`, go to `k`
+    | .k => [(BExp.one, q, Q2c.h)]    -- unconditionally: do `q`, return to `h`
+  start  := Q2c.h
+
+/-- The synthesized head expression: `(p·q)^(b)·¬b` — the loop body `p·q` is the composition
+    of the two states' actions, recovered by state elimination (`S1` associativity). -/
+def loop2Sol0 (b : BExp T) (p q : A) : Exp A T :=
+  Exp.seq (Exp.wh b (Exp.seq (Exp.act p) (Exp.act q))) (Exp.test (BExp.not b))
+
+def loop2Sol (b : BExp T) (p q : A) : Q2c → Exp A T := fun s => match s with
+  | .h => loop2Sol0 b p q
+  | .k => Exp.seq (Exp.act q) (loop2Sol0 b p q)
+
+theorem loop2Aut_wf (V : T → Atom → Bool) (b : BExp T) (p q : A) :
+    WF V (loop2Aut b p q) := by
+  constructor
+  · intro s _ a hhalt
+    cases s with
+    | h => have hbf : bval V b a = false := by
+             have : bval V (BExp.not b) a = true := hhalt; simpa [bval] using this
+           simp [autStep, loop2Aut, firstMatch, hbf]
+    | k => simp only [loop2Aut] at hhalt; simp [bval] at hhalt
+  · intro s _ a q' s' hst
+    cases s with
+    | h => simp only [autStep, loop2Aut, firstMatch] at hst
+           by_cases hb : bval V b a
+           · rw [if_pos hb, Option.some.injEq, Prod.mk.injEq] at hst; simp [loop2Aut, hst.2]
+           · rw [if_neg hb] at hst; exact absurd hst (by simp)
+    | k => simp only [autStep, loop2Aut, firstMatch, bval, if_true, Option.some.injEq,
+             Prod.mk.injEq] at hst
+           simp [loop2Aut, hst.2]
+
+/-- **The two-state loop is solved — *semantically*.** The head equation is the Salomaa
+    fixpoint for the *composed* body `p·q` (`salomaa_solution_exists` + `S1` to re-associate
+    `(p·q)·g` into `p·(q·g)`); the body state `k` steps unconditionally, so its equation
+    carries an `ite 1` that only the semantic solve (`den (ite 1 X Y) = den X`) discharges. -/
+theorem loop2Aut_semsolves (V : T → Atom → Bool) (b : BExp T) (p q : A) :
+    SemSolves V (loop2Aut b p q) (loop2Sol b p q) := by
+  intro s _
+  cases s with
+  | h =>
+      have hEq : Equiv (loop2Sol b p q Q2c.h) (eqRHS (loop2Aut b p q) (loop2Sol b p q) Q2c.h) := by
+        simp only [eqRHS, loop2Aut, loop2Sol, loop2Sol0, List.foldr_cons, List.foldr_nil]
+        exact Equiv.trans
+          (salomaa_solution_exists b (Exp.seq (Exp.act p) (Exp.act q)) (Exp.test (BExp.not b)))
+          (Equiv.ite_c (Equiv.s1 (Exp.act p) (Exp.act q) _) (Equiv.refl _))
+      funext gs; exact propext (GkatGS.sound V hEq gs)
+  | k =>
+      funext gs
+      show den V (loop2Sol b p q Q2c.k) gs = den V (eqRHS (loop2Aut b p q) (loop2Sol b p q) Q2c.k) gs
+      simp [loop2Sol, eqRHS, loop2Aut, den_ite, bval]
+
+/-- **First synthesis of a loop whose body spans multiple states.** `autLang (loop2Aut …) h =
+    ⟦(p·q)^(b)·¬b⟧` — a `while b do (p; q)` cycle recovered as an expression, its two-action
+    body composed by state elimination. The multi-state loop body is handled; the general
+    case (arbitrary well-nested bodies) iterates this composition. -/
+theorem loop2Aut_expressible (V : T → Atom → Bool) (b : BExp T) (p q : A) :
+    autLang V (loop2Aut b p q) Q2c.h = den V (loop2Sol b p q Q2c.h) :=
+  sem_solves_autLang (loop2Aut_wf V b p q) (loop2Aut_semsolves V b p q) Q2c.h (by simp [loop2Aut])
+
 -- ── Worked end-to-end synthesis: the `while` automaton (non-vacuity of the pipeline) ─
 
 /-- The genuine `while` automaton has halt guard `¬b` (a loop exits exactly off its guard),
@@ -944,6 +1018,8 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms loopExitAut_expressible
 #print axioms wnSol_solves
 #print axioms wn_expressible
+#print axioms loop2Aut_semsolves
+#print axioms loop2Aut_expressible
 #print axioms WF_loopAut
 #print axioms loopAut_expressible
 

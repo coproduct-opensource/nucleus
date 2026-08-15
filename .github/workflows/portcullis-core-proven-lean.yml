@@ -306,6 +306,8 @@ jobs:
           #print axioms GkatKleene.loopExitAut_expressible
           #print axioms GkatKleene.wnSol_solves
           #print axioms GkatKleene.wn_expressible
+          #print axioms GkatKleene.loop2Aut_semsolves
+          #print axioms GkatKleene.loop2Aut_expressible
           #print axioms GkatKleene.loopAut_expressible
           #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
           #print axioms CapabilityResiduatedQuantaleProofs.residuation_adjunction
