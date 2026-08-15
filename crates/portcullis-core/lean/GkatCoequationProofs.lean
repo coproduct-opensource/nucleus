@@ -23,7 +23,28 @@ straight from the hypothesis — no separate "`W` closed under derivatives" lemm
 composition-derivative union / determinism question never arises.
 
 `den_mem_W : ∀ e, W (den e)` assembles the five bricks — the **soundness direction of
-Prop 6.2, complete**. Remaining for `W = {⟦e⟧}`: the synthesis half `W ⊆ {⟦e⟧}`.
+Prop 6.2, complete**.
+
+## The completeness direction `W ⊆ {⟦e⟧}` and why it needs the automata covariety
+
+Over *arbitrary* guarded-string languages the converse is **false** — two obstructions,
+both machine-checked here:
+
+* `W_not_subset_den`: the derivative-closure rule admits **non-deterministic** behaviors
+  (halt-and-step at one atom), which no expression denotes.
+* `halt_not_bexp_not_den`: expressibility forces a **`BExp`-definable halt-set** (`= E e`),
+  which `W` never constrains.
+
+These are exactly the structure a **GKAT automaton** carries and a raw language lacks. The
+paper (Schmid–Kappé–Kozen–Silva, ICALP 2021) works over coalgebras for `G X = (2 + Σ×X)^At`
+— a *function* from the **test-algebra atoms** `At` into accept/reject/transition, hence
+deterministic by construction and `BExp`-guarded by construction. So `W = {⟦e⟧}` is a
+statement about the **covariety of automata**; over arbitrary `Atom`+`V` the honest
+characterization is `W ∩ (deterministic, `BExp`-atom) = {⟦e⟧}`, and the `⊆` half is then the
+Kleene-theorem synthesis (a separate, larger formalization over the `G`-coalgebra carrier).
+
+The determinism framework toward that (`LocalDet`, `IsResid`, `Deterministic`,
+`deterministic_den`) is in place: `den` provably lands in `W ∩ Deterministic`.
 
 Axioms `[propext, Quot.sound]`, `sorryAx`-free.
 -/
@@ -305,5 +326,19 @@ theorem deterministic_den (e : Exp A T) : Deterministic (den V e) := by
   intro R hR
   obtain ⟨e', rfl⟩ := resid_den V hR
   exact localDet_den V e'
+
+/-- **The second obstruction: expressibility forces a `BExp`-definable halt-set.** The
+    atoms on which `⟦e⟧` halts are exactly `{a | bval V (E e) a}` — a test. So a behavior
+    whose halt-set matches *no* `BExp` is denoted by no expression. But `W`'s
+    derivative-closure rule constrains only the derivatives, never the halt-set (a
+    `deriv`-introduced behavior may halt on any atom-set at all). Hence even
+    `W ∩ Deterministic ⊋ {⟦e⟧}` whenever the atom set carries a non-`BExp`-definable
+    subset — a *faithful* completeness needs the atoms to be the test-algebra's own atoms
+    (the paper's setting), where every relevant set is `BExp`-definable. -/
+theorem halt_not_bexp_not_den {L : GS A Atom → Prop}
+    (hnb : ∀ b : BExp T, ¬ ∀ a, Lhalt L a ↔ bval V b a = true) :
+    ¬ ∃ e : Exp A T, den V e = L := by
+  rintro ⟨e, rfl⟩
+  exact hnb (E e) (fun a => Lhalt_den V e a)
 
 end GkatCoequation
