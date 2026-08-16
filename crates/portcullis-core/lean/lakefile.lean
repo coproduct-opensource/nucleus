@@ -705,6 +705,10 @@ lean_lib «GkatDupCoverProofs» where
 lean_lib «GkatRefinesProofs» where
   roots := #[`GkatRefinesProofs]
 
+-- Normal form: non-vacuity, and which constructor destroys which half.
+lean_lib «GkatNormalProofs» where
+  roots := #[`GkatNormalProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
