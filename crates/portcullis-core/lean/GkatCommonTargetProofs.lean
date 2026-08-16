@@ -244,8 +244,26 @@ theorem crossEquiv_step {S₁ S₂ : Type} {a : InitializedGAut S₁ A T} {b : I
     have : u = s' := congrArg Prod.snd (Option.some.inj hu.symm)
     exact (pushA s').mp (this ▸ hru)
 
+/-- **The only thing the span construction ever needed.**  Language-equivalent states step
+    along the same action into language-equivalent states.  Isolated as a property in its own
+    right because there is more than one way to establish it: `Productive` supplies it, and so
+    does `Total` together with a canonical dead part — and the second is achievable where the
+    first is not. -/
+def StepAgree {S₁ S₂ : Type} (a : InitializedGAut S₁ A T) (b : InitializedGAut S₂ A T) : Prop :=
+  ∀ {s : Option S₁} {t : Option S₂}, CrossEquiv a b s t →
+    ∀ {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁},
+      autStep W a.toGAut s x = some (q, s') →
+      ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t'
+
+/-- Productivity supplies it. -/
+theorem stepAgree_of_productive {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (hprod : Productive a) : StepAgree a b := by
+  intro s t h X W x q s' hs
+  exact crossEquiv_step hprod h W x hs
+
 #print axioms crossEquiv_hlt
 #print axioms crossEquiv_step
+#print axioms stepAgree_of_productive
 
 /-- Reachability of a state from the pseudostate, along any interpretation.  Unreachable
     states are the *other* thing a Thompson automaton can carry that no behavioural target

@@ -66,7 +66,7 @@ theorem step_target_some {S X : Type} (aut : InitializedGAut S A T)
 /-- **The matching lemma.**  Induction on reachability, with `crossEquiv_step` doing the
     work at each step.  The second conjunct is what keeps core states matched to core
     states: `step_target_some` applies on both sides at once. -/
-theorem match_reaches (hprod : Productive a) (hlist : GAutTargetsListed b.toGAut)
+theorem match_reaches (hsa : StepAgree a b) (hlist : GAutTargetsListed b.toGAut)
     (h0 : CrossEquiv a b none none) {u : Option S₁} (hu : Reaches a u) :
     ∃ v : Option S₂, CrossEquiv a b u v ∧ v ∈ b.toGAut.states ∧
       (∀ s, u = some s → ∃ t, v = some t) := by
@@ -75,15 +75,15 @@ theorem match_reaches (hprod : Productive a) (hlist : GAutTargetsListed b.toGAut
       exact ⟨none, h0, List.Mem.head _, fun s hs => absurd hs (by simp)⟩
   | @step u u' X W x q _ hstep ih =>
       obtain ⟨v, hv, hvmem, _⟩ := ih
-      obtain ⟨v', hstep', hv'⟩ := crossEquiv_step hprod hv W x hstep
+      obtain ⟨v', hstep', hv'⟩ := hsa hv W x hstep
       exact ⟨v', hv', autStep_target_listed hlist W x hvmem hstep',
         fun _ _ => step_target_some b W v x hstep'⟩
 
 /-- Every core state of a reachable, productive system has a same-language core partner. -/
-theorem match_core (hprod : Productive a) (hreach : Reachable a)
+theorem match_core (hsa : StepAgree a b) (hreach : Reachable a)
     (hlist : GAutTargetsListed b.toGAut) (h0 : CrossEquiv a b none none) (s : S₁) :
     ∃ t : S₂, CrossEquiv a b (some s) (some t) ∧ t ∈ b.core.states := by
-  obtain ⟨v, hv, hvmem, hsome⟩ := match_reaches hprod hlist h0 (hreach s)
+  obtain ⟨v, hv, hvmem, hsome⟩ := match_reaches hsa hlist h0 (hreach s)
   obtain ⟨t, rfl⟩ := hsome s rfl
   refine ⟨t, hv, ?_⟩
   rcases List.mem_cons.mp hvmem with hc | hc
@@ -158,7 +158,7 @@ theorem autStep_init (aut : InitializedGAut S₁ A T) {X : Type}
     to targets with the same representative — `crossEquiv_step` gives the action and the
     language equality, `rep_eq_of_equiv` turns the latter into an identity.  This is what
     makes the target deterministic. -/
-theorem rep_step (hprod : Productive b) (t : S₂) {X : Type} (W : T → X → Bool) (x : X) :
+theorem rep_step (hsb : StepAgree b b) (t : S₂) {X : Type} (W : T → X → Bool) (x : X) :
     (firstMatch W x (b.core.trans t)).map (fun o => (o.1, rep b o.2))
       = (firstMatch W x (b.core.trans (rep b t))).map (fun o => (o.1, rep b o.2)) := by
   have he := rep_equiv b t
@@ -169,13 +169,13 @@ theorem rep_step (hprod : Productive b) (t : S₂) {X : Type} (W : T → X → B
       | some o₂ =>
           have hs : autStep W b.toGAut (some (rep b t)) x = some (o₂.1, some o₂.2) := by
             rw [autStep_core, h2]; rfl
-          obtain ⟨v, hv, _⟩ := crossEquiv_step hprod he.symm W x hs
+          obtain ⟨v, hv, _⟩ := hsb he.symm W x hs
           rw [autStep_core, h1] at hv
           exact absurd hv (by simp)
   | some o₁ =>
       have hs : autStep W b.toGAut (some t) x = some (o₁.1, some o₁.2) := by
         rw [autStep_core, h1]; rfl
-      obtain ⟨v, hv, hveq⟩ := crossEquiv_step hprod he W x hs
+      obtain ⟨v, hv, hveq⟩ := hsb he W x hs
       rw [autStep_core] at hv
       cases h2 : firstMatch W x (b.core.trans (rep b t)) with
       | none => rw [h2] at hv; exact absurd hv (by simp)
@@ -203,7 +203,7 @@ noncomputable def target (b : InitializedGAut S₂ A T) : InitializedGAut S₂ A
   initTrans := b.initTrans.map (fun t => (t.1, t.2.1, rep b t.2.2))
 
 /-- **The near side of the span.**  `b` covers its own behavioural target, by `rep`. -/
-noncomputable def targetCover (hprod : Productive b) : InitCover b (target b) where
+noncomputable def targetCover (hsb : StepAgree b b) : InitCover b (target b) where
   map := rep b
   initHlt_eq := fun _ _ _ => rfl
   coreHlt_eq := fun t X W x => by
@@ -219,7 +219,7 @@ noncomputable def targetCover (hprod : Productive b) : InitCover b (target b) wh
       = firstMatch W x
           ((b.core.trans (rep b (rep b t))).map (fun tr => (tr.1, tr.2.1, rep b tr.2.2)))
     rw [rep_idem, firstMatch_map_target_to]
-    exact rep_step hprod t W x
+    exact rep_step hsb t W x
   maps := fun t ht => List.mem_map_of_mem ht
   onto := by
     intro q hq
@@ -237,8 +237,9 @@ noncomputable def targetCover (hprod : Productive b) : InitCover b (target b) wh
     listed step targets, and pseudostates of the same language — the last being exactly
     `UniformLanguageEquivalent` for the two programs. -/
 structure Matched (a : InitializedGAut S₁ A T) (b : InitializedGAut S₂ A T) where
-  proda : Productive a
-  prodb : Productive b
+  stepab : StepAgree a b
+  stepba : StepAgree b a
+  stepbb : StepAgree b b
   reacha : Reachable a
   reachb : Reachable b
   lista : GAutTargetsListed a.toGAut
@@ -247,14 +248,14 @@ structure Matched (a : InitializedGAut S₁ A T) (b : InitializedGAut S₂ A T) 
 
 /-- A chosen same-language partner in `b` for each state of `a`. -/
 noncomputable def matchTo (M : Matched a b) (s : S₁) : S₂ :=
-  Classical.choose (match_core M.proda M.reacha M.listb M.init s)
+  Classical.choose (match_core M.stepab M.reacha M.listb M.init s)
 
 theorem matchTo_equiv (M : Matched a b) (s : S₁) :
     CrossEquiv a b (some s) (some (matchTo M s)) :=
-  (Classical.choose_spec (match_core M.proda M.reacha M.listb M.init s)).1
+  (Classical.choose_spec (match_core M.stepab M.reacha M.listb M.init s)).1
 
 theorem matchTo_mem (M : Matched a b) (s : S₁) : matchTo M s ∈ b.core.states :=
-  (Classical.choose_spec (match_core M.proda M.reacha M.listb M.init s)).2
+  (Classical.choose_spec (match_core M.stepab M.reacha M.listb M.init s)).2
 
 /-- Partners are canonical after `rep`: any two same-language states of `b` get the same
     representative, so it does not matter which partner was chosen. -/
@@ -272,10 +273,10 @@ private theorem cross_step_rep (M : Matched a b) {u : Option S₁} {v : Option S
       cases h2 : autStep W b.toGAut v x with
       | none => rfl
       | some o₂ =>
-          obtain ⟨w, hw, _⟩ := crossEquiv_step M.prodb h.symm W x h2
+          obtain ⟨w, hw, _⟩ := M.stepba h.symm W x h2
           rw [h1] at hw; exact absurd hw (by simp)
   | some o₁ =>
-      obtain ⟨w, hw, hweq⟩ := crossEquiv_step M.proda h W x h1
+      obtain ⟨w, hw, hweq⟩ := M.stepab h W x h1
       rw [hw]
       obtain ⟨s, hs⟩ := step_target_some a W u x h1
       obtain ⟨t, ht⟩ := step_target_some b W v x hw
@@ -321,7 +322,7 @@ noncomputable def matchCover (M : Matched a b) : InitCover a (target b) where
       = firstMatch W x
           ((b.core.trans (rep b (rep b (matchTo M s)))).map
             (fun t => (t.1, t.2.1, rep b t.2.2)))
-    rw [rep_idem, firstMatch_map_target_to, ← rep_step M.prodb (matchTo M s) W x]
+    rw [rep_idem, firstMatch_map_target_to, ← rep_step M.stepbb (matchTo M s) W x]
     refine strip_some (f := fun u : S₁ => rep b (matchTo M u)) (g := rep b) ?_
     have := cross_step_rep M (matchTo_equiv M s) W x
     rwa [autStep_core, autStep_core, Option.map_map, Option.map_map] at this
@@ -329,7 +330,7 @@ noncomputable def matchCover (M : Matched a b) : InitCover a (target b) where
   onto := by
     intro q hq
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hq
-    obtain ⟨s, hs, hsmem⟩ := match_core M.prodb M.reachb M.lista M.init.symm t
+    obtain ⟨s, hs, hsmem⟩ := match_core M.stepba M.reachb M.lista M.init.symm t
     exact ⟨s, hsmem, rep_matchTo M hs.symm⟩
 
 /-! ## The span -/
@@ -340,7 +341,7 @@ noncomputable def matchCover (M : Matched a b) : InitCover a (target b) where
     point of choosing representatives rather than partners. -/
 theorem span_of_matched (M : Matched a b) :
     Nonempty (InitCover a (target b)) ∧ Nonempty (InitCover b (target b)) :=
-  ⟨⟨matchCover M⟩, ⟨targetCover M.prodb⟩⟩
+  ⟨⟨matchCover M⟩, ⟨targetCover M.stepbb⟩⟩
 
 #print axioms step_target_some
 #print axioms match_reaches

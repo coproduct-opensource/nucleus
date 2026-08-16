@@ -979,6 +979,63 @@ theorem not_totalCommonTarget : ¬ TotalCommonTarget Bool Unit := by
 #print axioms no_common_cover
 #print axioms not_totalCommonTarget
 
+/-! ## The span, without productivity
+
+    `StepAgree` is the property the span construction actually consumes; `GkatQuotient` now
+    takes it directly rather than `Productive`.  Two things supply it — `stepAgree_of_productive`
+    and, here, totality with a canonical dead part — and only the second is achievable.
+
+    What is left in `Matched` after the swap is `Reachable` and target-listing.  Listing is
+    free for Thompson automata; reachability is not, and it is the other half of *trimming*:
+    an automaton is trim when every state is both **accessible** (reachable from the start) and
+    **co-accessible** (some accepting run leaves it).  `Reachable` is the accessible half.
+    `DeadCanonical` is what stands in for the co-accessible half — GKAT cannot delete its dead
+    states, since it must stay total, so it makes them all the same sink instead. -/
+
+theorem stepAgree_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (a₀ : A)
+    (hd : HaltStepDisjoint a) (htb : Total b)
+    (hca : DeadCanonical a₀ a) (hcb : DeadCanonical a₀ b) : StepAgree a b := by
+  intro s t h X W x q s' hs
+  exact crossEquiv_step_of_canonical a₀ hd htb hca hcb h W x hs
+
+/-- Everything `Matched` needs, with productivity replaced throughout. -/
+def matched_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (a₀ : A)
+    (hda : HaltStepDisjoint a) (hdb : HaltStepDisjoint b)
+    (hta : Total a) (htb : Total b)
+    (hca : DeadCanonical a₀ a) (hcb : DeadCanonical a₀ b)
+    (ra : Reachable a) (rb : Reachable b)
+    (la : GAutTargetsListed a.toGAut) (lb : GAutTargetsListed b.toGAut)
+    (hinit : CrossEquiv a b none none) : GkatQuotient.Matched a b where
+  stepab := stepAgree_of_canonical a₀ hda htb hca hcb
+  stepba := stepAgree_of_canonical a₀ hdb hta hcb hca
+  stepbb := stepAgree_of_canonical a₀ hdb htb hcb hcb
+  reacha := ra
+  reachb := rb
+  lista := la
+  listb := lb
+  init := hinit
+
+/-- **The behavioural target exists for total, dead-canonical, reachable automata.**  This is
+    `NormalCommonTarget`'s construction with `Productive` — which is unachievable — replaced by
+    two conditions, one of which is now proved achievable. -/
+theorem span_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (a₀ : A)
+    (hda : HaltStepDisjoint a) (hdb : HaltStepDisjoint b)
+    (hta : Total a) (htb : Total b)
+    (hca : DeadCanonical a₀ a) (hcb : DeadCanonical a₀ b)
+    (ra : Reachable a) (rb : Reachable b)
+    (la : GAutTargetsListed a.toGAut) (lb : GAutTargetsListed b.toGAut)
+    (hinit : CrossEquiv a b none none) :
+    Nonempty (InitCover a (GkatQuotient.target b)) ∧
+      Nonempty (InitCover b (GkatQuotient.target b)) :=
+  GkatQuotient.span_of_matched
+    (matched_of_canonical a₀ hda hdb hta htb hca hcb ra rb la lb hinit)
+
+#print axioms stepAgree_of_canonical
+#print axioms span_of_canonical
+
 /-! ## The repaired chain
 
     `DeadCanonical` blocks the counterexample exactly: with `a₀ = false`, `deadP` is canonical
