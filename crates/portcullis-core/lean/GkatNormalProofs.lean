@@ -131,6 +131,105 @@ theorem ite_taut_not_reachable :
         match o with | some (Sum.inr _) => true | _ => false) hc
     exact absurd hd (by simp)
 
+/-! ## What `ite` *does* preserve
+
+    The obstruction lemmas say normality is not an invariant of the recursion.  But the two
+    halves fail for different and locatable reasons, and pinning down what survives is what a
+    normalization procedure gets to rely on.
+
+    For `ite`, productivity fails only at the **pseudostate** — the core states inherit their
+    halt guards and transitions unchanged, so a dead state in the composite was already dead
+    in its branch.  And pseudostate productivity is exactly non-nullity, which `Normalizable`
+    assumes anyway.  So `ite` preserves productivity *given* the hypothesis already in hand. -/
+
+/-- A run inside the left branch lifts to a run of the conditional. -/
+private theorem run_inl {S₁ S₂ X : Type} (g : BExp T) (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (W : T → X → Bool) :
+    ∀ (u : S₁) (x : X) (w : List (A × X)),
+      autRun W P.toGAut (some u) x w →
+      autRun W (iteInitialized g P Q).toGAut (some (Sum.inl u)) x w := by
+  intro u x w
+  induction w generalizing u x with
+  | nil => exact fun h => h
+  | cons hd tl ih =>
+      obtain ⟨q, x'⟩ := hd
+      rintro ⟨s', hstep, hrun⟩
+      obtain ⟨v, rfl⟩ := GkatQuotient.step_target_some P W (some u) x hstep
+      refine ⟨some (Sum.inl v), ?_, ih v x' hrun⟩
+      rw [GkatQuotient.autStep_core] at hstep ⊢
+      show (firstMatch W x ((iteInitialized g P Q).core.trans (Sum.inl u))).map
+        (fun o => (o.1, some o.2)) = some (q, some (Sum.inl v))
+      show (firstMatch W x ((P.core.trans u).map
+          (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂))))).map
+        (fun o => (o.1, some o.2)) = some (q, some (Sum.inl v))
+      rw [firstMatch_map_target_to (F := fun v : S₁ => (Sum.inl v : Sum S₁ S₂))]
+      cases hf : firstMatch W x (P.core.trans u) with
+      | none => rw [hf] at hstep; exact absurd hstep (by simp)
+      | some o =>
+          rw [hf] at hstep
+          have := Option.some.inj hstep
+          simp only [Option.map_some]
+          have h1 : o.1 = q := congrArg (fun z : A × Option S₁ => z.1) this
+          have h2 : (some o.2 : Option S₁) = some v :=
+            congrArg (fun z : A × Option S₁ => z.2) this
+          rw [h1, Option.some.inj h2]
+
+/-- A run inside the right branch lifts likewise. -/
+private theorem run_inr {S₁ S₂ X : Type} (g : BExp T) (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (W : T → X → Bool) :
+    ∀ (u : S₂) (x : X) (w : List (A × X)),
+      autRun W Q.toGAut (some u) x w →
+      autRun W (iteInitialized g P Q).toGAut (some (Sum.inr u)) x w := by
+  intro u x w
+  induction w generalizing u x with
+  | nil => exact fun h => h
+  | cons hd tl ih =>
+      obtain ⟨q, x'⟩ := hd
+      rintro ⟨s', hstep, hrun⟩
+      obtain ⟨v, rfl⟩ := GkatQuotient.step_target_some Q W (some u) x hstep
+      refine ⟨some (Sum.inr v), ?_, ih v x' hrun⟩
+      rw [GkatQuotient.autStep_core] at hstep ⊢
+      show (firstMatch W x ((Q.core.trans u).map
+          (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂))))).map
+        (fun o => (o.1, some o.2)) = some (q, some (Sum.inr v))
+      rw [firstMatch_map_target_to (F := fun v : S₂ => (Sum.inr v : Sum S₁ S₂))]
+      cases hf : firstMatch W x (Q.core.trans u) with
+      | none => rw [hf] at hstep; exact absurd hstep (by simp)
+      | some o =>
+          rw [hf] at hstep
+          have := Option.some.inj hstep
+          simp only [Option.map_some]
+          have h1 : o.1 = q := congrArg (fun z : A × Option S₂ => z.1) this
+          have h2 : (some o.2 : Option S₂) = some v :=
+            congrArg (fun z : A × Option S₂ => z.2) this
+          rw [h1, Option.some.inj h2]
+
+/-- **`ite` preserves productivity, given non-nullity.**  Every dead state of `if g then P
+    else Q` is a dead state of `P` or of `Q`; the pseudostate is the only new one, and its
+    productivity is precisely the non-nullity hypothesis `Normalizable` already carries.
+
+    Contrast `ite_taut_not_reachable`: the *other* half genuinely fails, and no hypothesis of
+    this kind repairs it — the branch is unreachable however live it is. -/
+theorem productive_ite {S₁ S₂ : Type} (g : BExp T)
+    (P : InitializedGAut S₁ A T) (Q : InitializedGAut S₂ A T)
+    (hp : Productive P) (hq : Productive Q)
+    (hinit : ∀ (X : Type) (W : T → X → Bool) (_ : X),
+      ∃ (x' : X) (w : List (A × X)),
+        autRun W (iteInitialized g P Q).toGAut none x' w) :
+    Productive (iteInitialized g P Q) := by
+  intro X W x s
+  cases s with
+  | none => exact hinit X W x
+  | some v =>
+      cases v with
+      | inl u =>
+          obtain ⟨x', w, hw⟩ := hp X W x (some u)
+          exact ⟨x', w, run_inl g P Q W u x' w hw⟩
+      | inr u =>
+          obtain ⟨x', w, hw⟩ := hq X W x (some u)
+          exact ⟨x', w, run_inr g P Q W u x' w hw⟩
+
+#print axioms productive_ite
 #print axioms act_normal
 #print axioms seq_dead_not_productive
 #print axioms ite_taut_not_reachable
