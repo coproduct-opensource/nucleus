@@ -1363,6 +1363,132 @@ fn reducible<const NA: usize>(a: &Aut<NA>) -> bool {
     done == live
 }
 
+/// **The back-edge/halt disjointness test — REFUTED as a necessary condition.**
+///
+/// The idea, read off `loopInitialized`: `wh g B` fires its back edges on `g` and halts on
+/// `¬g`, so within a loop the re-entering atoms and the terminating atoms are disjoint, and
+/// embedding in a `seq` or `ite` only conjoins further.  If that survived to the automaton
+/// level it would be a sound necessary condition for coverability, since covers preserve
+/// halt masks and steps.
+///
+/// **It does not.**  1062 of the 156601 Thompson automata at K=4 fail it, so it is neither a
+/// necessary condition nor a sound filter.  The reason is the approximation, not the idea:
+/// "back edge" here is the dominator-based notion and "the loop body" is approximated by the
+/// strongly connected component, and neither matches the syntactic loop that
+/// `loop_halt_below_entry` quantifies over.  Nested and composed loops merge components, so
+/// an edge that is a dominator-back-edge need not be a `wh` back edge guarded by `g`.
+///
+/// Kept because the measurement is the point: the Lean exit law
+/// (`GkatLoopExit.halt_below_entry_of_cover`) is stated against a *known* loop target and is
+/// true; this shows it does not lift to a criterion on a bare automaton by this route.
+fn backedge_halt_disjoint<const NA: usize>(a: &Aut<NA>) -> bool {
+    let k = a.k as usize;
+    let n = k + 1;
+    let mut succ = [0u32; MAXK + 1];
+    for x in 0..NA {
+        if a.it[x] != 0 { succ[0] |= 1 << a.it[x]; }
+    }
+    for i in 0..k {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { succ[i + 1] |= 1 << a.st[i][x]; }
+        }
+    }
+    // reverse postorder + dominators, same as `reducible`
+    let mut rpo = [u8::MAX; MAXK + 1];
+    let mut order = [0usize; MAXK + 1];
+    let mut nord = 0usize;
+    {
+        let mut stack = [(0usize, 0usize); MAXK + 2];
+        let mut sp = 1usize;
+        let mut entered = [false; MAXK + 1];
+        stack[0] = (0, 0);
+        entered[0] = true;
+        while sp > 0 {
+            let (u, mut i) = stack[sp - 1];
+            let mut pushed = false;
+            while i < n {
+                if succ[u] >> i & 1 == 1 && !entered[i] {
+                    entered[i] = true;
+                    stack[sp - 1].1 = i + 1;
+                    stack[sp] = (i, 0);
+                    sp += 1;
+                    pushed = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !pushed { stack[sp - 1].1 = n; order[nord] = u; nord += 1; sp -= 1; }
+        }
+    }
+    for i in 0..nord { rpo[order[nord - 1 - i]] = i as u8; }
+    let mut pred = [0u32; MAXK + 1];
+    for u in 0..n {
+        for v in 0..n {
+            if succ[u] >> v & 1 == 1 { pred[v] |= 1 << u; }
+        }
+    }
+    let mut idom = [u8::MAX; MAXK + 1];
+    idom[0] = 0;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for t in 0..nord {
+            let u = order[nord - 1 - t];
+            if u == 0 || rpo[u] == u8::MAX { continue; }
+            let mut new = u8::MAX;
+            for p in 0..n {
+                if pred[u] >> p & 1 != 1 || rpo[p] == u8::MAX || idom[p] == u8::MAX { continue; }
+                new = if new == u8::MAX { p as u8 } else {
+                    let (mut x, mut y) = (new as usize, p);
+                    while x != y {
+                        while rpo[x] > rpo[y] { x = idom[x] as usize; }
+                        while rpo[y] > rpo[x] { y = idom[y] as usize; }
+                    }
+                    x as u8
+                };
+            }
+            if new != u8::MAX && idom[u] != new { idom[u] = new; changed = true; }
+        }
+    }
+    // mutual reachability on core states, for "same component as u"
+    let mut r = [0u16; MAXK];
+    for i in 0..k {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { r[i] |= 1 << (a.st[i][x] - 1); }
+        }
+    }
+    for m in 0..k {
+        let rm = r[m];
+        for i in 0..k {
+            if r[i] >> m & 1 == 1 { r[i] |= rm; }
+        }
+    }
+    for u in 0..k {
+        for x in 0..NA {
+            let tgt = a.st[u][x];
+            if tgt == 0 { continue; }
+            let v = tgt as usize; // node index in the dominator graph
+            // back edge?  v dominates u+1
+            let mut y = u + 1;
+            let mut dom = false;
+            loop {
+                if y == v { dom = true; break; }
+                if y == 0 { break; }
+                let ny = idom[y];
+                if ny == u8::MAX || ny as usize == y { break; }
+                y = ny as usize;
+            }
+            if !dom { continue; }
+            // does any state of u's component halt at atom x?
+            for w in 0..k {
+                let same = w == u || (r[u] >> w & 1 == 1 && r[w] >> u & 1 == 1);
+                if same && a.hl[w] >> x & 1 == 1 { return false; }
+            }
+        }
+    }
+    true
+}
+
 /// A compact structural fingerprint, for separating the automata a Thompson automaton can
 /// cover from the ones it cannot. Guessing the invariant has failed twice; this measures it.
 fn features<const NA: usize>(a: &Aut<NA>) -> [u32; 10] {
@@ -1661,6 +1787,12 @@ on the {} in the hypothesis class ({} outside it, not searched)",
             .filter(|(_, ok)| **ok).filter(|((p, _), _)| reducible(p)).count();
         println!("\n  REDUCIBLE: {redbad} / {} uncovered, {redgood} / {} rescued",
             bad.len(), good.len());
+        let bhbad = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| !**ok).filter(|((p, _), _)| backedge_halt_disjoint(p)).count();
+        let bhgood = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| **ok).filter(|((p, _), _)| backedge_halt_disjoint(p)).count();
+        println!("  BACKEDGE/HALT DISJOINT: {bhbad} / {} uncovered, {bhgood} / {} rescued",
+            bad.len(), good.len());
         println!("\n  FEATURE SEPARATION (hypothesis class only)");
         // The proper control is every DIRECTLY covered member of the hypothesis class, not
         // just the ones that happened to need refinement — conditioning on "needed
@@ -1819,6 +1951,8 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         // If any syntax-generated automaton is irreducible, the test is wrong, not the theory.
         let bad = list.par_iter().filter(|a| !reducible(a)).count();
         println!("  irreducible Thompson automata (must be 0): {bad}");
+        let bh = list.par_iter().filter(|a| !backedge_halt_disjoint(a)).count();
+        println!("  Thompson automata failing backedge/halt disjointness (must be 0): {bh}");
     }
     phase("reducibility sweep", &mut mark);
     if std::env::var("DUMP").is_ok() {
