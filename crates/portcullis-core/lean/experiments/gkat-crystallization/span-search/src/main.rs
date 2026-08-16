@@ -2140,6 +2140,19 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                 }
             }
         }
+        // Kosaraju: a program is reducible to a structured program *without adding
+        // variables* iff it has no loop with two distinct exits.  GKAT has neither extra
+        // variables nor `break`, so the residue should be exactly the two-exit loops.
+        for r in pb.iter() {
+            if !r.3 || r.4 { continue; }
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|q| canon(&q)) {
+                if !reducible(&p) { continue; }
+                let f = features(&p);
+                println!("    RESIDUE |P|={} ih={} it={:?} hl={:?} st={:?}  haltcyc={} \
+periods={:?}", p.k, p.ih, &p.it[..], &p.hl[..p.k as usize], &p.st[..p.k as usize],
+                    f[6], scc_periods(&p));
+            }
+        }
         println!("\n  is-Thompson x reducible:");
         println!("    Thompson     & reducible {tr:>4}    Thompson     & irreducible {tn:>4}");
         println!("    NOT Thompson & reducible {nr:>4}    NOT Thompson & irreducible {nn:>4}");
