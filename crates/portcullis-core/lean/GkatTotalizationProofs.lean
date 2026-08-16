@@ -1546,6 +1546,276 @@ theorem completeness_of_canonicallySettled (a₀ : A) (hcs : CanonicallySettled 
       (EquivBA.trans hmid.symm
         (EquivBA.trans (padZero_equiv e' f' a₀).symm hff'.symm)))
 
+
+/-! ## Dead-code elimination, with the continuation as a parameter
+
+    `DeadCanonical` is the last piece, and the obstacle is that **liveness is a backward
+    property**: whether a state is dead depends on what its continuation does, not on the
+    subterm it sits in.  `(a +_d (b ; ¬c?)) ; c?` is live, has no null subterm, and yet the
+    state after `b` is dead — so "replace every null subterm by the sink" cannot work, and two
+    turns of this development were spent discovering that.
+
+    The fix is to stop looking for a backward analysis and carry the future along instead.
+    `nrm a₀ e K` normalises `e` knowing that its continuation is `K`, and every recursive call
+    knows its own continuation exactly:
+
+        seq e f    →  `e`'s continuation is `f ; K`
+        ite g e f  →  both branches keep `K`          (this is `U5`, done semantically)
+        wh g e     →  the body's continuation is `(while g do e) ; K`
+
+    So the only test needed is at an action: if `p ; K` accepts nothing, the occurrence of `p`
+    is dead in this context and is replaced by the sink.  No rewriting to a distributed normal
+    form is required — passing the continuation *is* the distribution.
+
+    The recursion is structural in the program, with the continuation varying freely, so it
+    terminates for the same reason the syntax is well-founded. -/
+
+open Classical in
+/-- Exact dead-code elimination: an action whose continuation accepts nothing becomes the
+    sink. -/
+noncomputable def nrm (a₀ : A) : Exp A T → Exp A T → Exp A T
+  | .act p, K => if UniformExpLempty (.seq (.act p) K) then div a₀ else .act p
+  | .test b, _ => .test b
+  | .seq e f, K => .seq (nrm a₀ e (.seq f K)) (nrm a₀ f K)
+  | .ite g e f, K => .ite g (nrm a₀ e K) (nrm a₀ f K)
+  | .wh g e, K => .wh g (nrm a₀ e (.seq (.wh g e) K))
+
+/-- **Normalisation preserves the immediate-halt guard.**  The sink and an action both have
+    `E = 0`, and every other case is a congruence — so `W3`'s side condition survives, which
+    is what the loop case of the equivalence needs. -/
+theorem E_nrm (a₀ : A) : ∀ (e K : Exp A T) (X : Type) (W : T → X → Bool) (x : X),
+    bval W (E (nrm a₀ e K)) x = bval W (E e) x := by
+  intro e
+  induction e with
+  | act p =>
+      intro K X W x
+      by_cases h : UniformExpLempty (.seq (.act p) K : Exp A T) <;>
+        simp only [nrm, h, if_true, if_false] <;> rfl
+  | test b => intro K X W x; rfl
+  | seq e f ihe ihf =>
+      intro K X W x
+      show (bval W (E (nrm a₀ e (.seq f K))) x && bval W (E (nrm a₀ f K)) x)
+        = (bval W (E e) x && bval W (E f) x)
+      rw [ihe (.seq f K) X W x, ihf K X W x]
+  | ite g e f ihe ihf =>
+      intro K X W x
+      show (bval W g x && bval W (E (nrm a₀ e K)) x ||
+          (!bval W g x) && bval W (E (nrm a₀ f K)) x)
+        = (bval W g x && bval W (E e) x || (!bval W g x) && bval W (E f) x)
+      rw [ihe K X W x, ihf K X W x]
+  | wh g e _ => intro K X W x; rfl
+
+/-- Every loop body has `E ≡ 0` — `W3`'s side condition, as a property of the program.  The
+    settled forms satisfy it: `settledBody` never halts immediately, by construction. -/
+inductive LoopProductive : Exp A T → Prop where
+  | act (p : A) : LoopProductive (.act p)
+  | test (b : BExp T) : LoopProductive (.test b)
+  | seq {e f : Exp A T} : LoopProductive e → LoopProductive f → LoopProductive (.seq e f)
+  | ite (g : BExp T) {e f : Exp A T} :
+      LoopProductive e → LoopProductive f → LoopProductive (.ite g e f)
+  | wh (g : BExp T) {e : Exp A T} : LoopProductive e →
+      (∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e) x = false) →
+      LoopProductive (.wh g e)
+
+/-- The sink is a loop, and its body is a single action — so it is loop-productive. -/
+theorem loopProductive_div (a₀ : A) : LoopProductive (div a₀ : Exp A T) :=
+  LoopProductive.wh BExp.one (LoopProductive.act a₀) (fun _ _ _ => rfl)
+
+/-- **Normalisation is provable, in context.**  The replacement is not equivalent to what it
+    replaces — an action is not the sink — but `e ; K` and `(nrm a₀ e K) ; K` are, which is
+    exactly the statement dead-code elimination should have.
+
+    Four of the five cases are congruence and associativity.  The loop case is `W3`: the
+    original `(while g do e) ; K` already solves the equation for the *new* body, because the
+    induction hypothesis at continuation `(while g do e) ; K` says precisely that the two
+    bodies agree when followed by it. -/
+theorem nrm_equiv (a₀ : A) : ∀ (e : Exp A T), LoopProductive e → ∀ (K : Exp A T),
+    EquivBA (.seq e K) (.seq (nrm a₀ e K) K) := by
+  intro e
+  induction e with
+  | act p =>
+      intro _ K
+      by_cases h : UniformExpLempty (.seq (.act p) K : Exp A T)
+      · simp only [nrm, h, if_true]
+        refine EquivBA.trans (GkatNullLanguage.nullLanguage_complete _ h) (EquivBA.symm ?_)
+        exact EquivBA.trans
+          (EquivBA.seq_c (GkatNormal.wh_one_provably_zero (.act a₀))
+            (EquivBA.base (Equiv.refl K)))
+          (EquivBA.base (Equiv.s2 K))
+      · simp only [nrm, h, if_false]
+        exact EquivBA.base (Equiv.refl _)
+  | test b => intro _ K; exact EquivBA.base (Equiv.refl _)
+  | seq e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | seq hle hlf =>
+          show EquivBA (.seq (.seq e f) K)
+            (.seq (.seq (nrm a₀ e (.seq f K)) (nrm a₀ f K)) K)
+          refine EquivBA.trans (EquivBA.base (Equiv.s1 e f K)) ?_
+          refine EquivBA.trans (ihe hle (.seq f K)) ?_
+          refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (ihf hlf K)) ?_
+          exact EquivBA.symm (EquivBA.base (Equiv.s1 _ _ K))
+  | ite g e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | ite _ hle hlf =>
+          show EquivBA (.seq (.ite g e f) K)
+            (.seq (.ite g (nrm a₀ e K) (nrm a₀ f K)) K)
+          refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u5 g e f K))) ?_
+          refine EquivBA.trans (EquivBA.ite_c (ihe hle K) (ihf hlf K)) ?_
+          exact EquivBA.base (Equiv.u5 g _ _ K)
+  | wh g e ihe =>
+      intro hlp K
+      cases hlp with
+      | wh _ hle hE =>
+          show EquivBA (.seq (.wh g e) K) (.seq (.wh g (nrm a₀ e (.seq (.wh g e) K))) K)
+          refine EquivBA.w3_ba ?_ ?_
+          · exact EquivBA.baTest (fun X W x => (E_nrm a₀ e (.seq (.wh g e) K) X W x).trans
+              (hE X W x))
+          · refine EquivBA.trans (EquivBA.base (salomaa_solution_exists g e K)) ?_
+            exact EquivBA.ite_c (ihe hle (.seq (.wh g e) K)) (EquivBA.base (Equiv.refl K))
+
+/-- **Dead code elimination for a whole program.**  `1` is the trivial continuation. -/
+theorem nrm_top_equiv (a₀ : A) (e : Exp A T) (hlp : LoopProductive e) :
+    EquivBA e (nrm a₀ e (.test BExp.one)) :=
+  EquivBA.trans (EquivBA.symm (GkatGuardedAlgebra.seq_one e))
+    (EquivBA.trans (nrm_equiv a₀ e hlp (.test BExp.one))
+      (GkatGuardedAlgebra.seq_one _))
+
+/-! ## The two normalisations compose -/
+
+/-- A settled body with `E ≡ 0` steps under every guard — the general form of
+    `bodySteps_settledBody`. -/
+theorem bodySteps_of_E_zero {e : Exp A T} (hs : Settled e)
+    (hE : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e) x = false) (g : BExp T) :
+    BodySteps (certifiedThompson A T e).aut g := by
+  intro X W x _
+  rcases (totalParts_of_settled hs).init X W x with hh | hstep
+  · rw [initHlt_eq_E, hE X W x] at hh
+    exact Bool.noConfusion hh
+  · exact hstep
+
+theorem loopProductive_nrm (a₀ : A) : ∀ (e : Exp A T), LoopProductive e → ∀ K : Exp A T,
+    LoopProductive (nrm a₀ e K) := by
+  intro e
+  induction e with
+  | act p =>
+      intro _ K
+      by_cases h : UniformExpLempty (.seq (.act p) K : Exp A T)
+      · simp only [nrm, h, if_true]; exact loopProductive_div a₀
+      · simp only [nrm, h, if_false]; exact LoopProductive.act p
+  | test b => intro _ K; exact LoopProductive.test b
+  | seq e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | seq hle hlf => exact LoopProductive.seq (ihe hle _) (ihf hlf K)
+  | ite g e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | ite _ hle hlf => exact LoopProductive.ite g (ihe hle K) (ihf hlf K)
+  | wh g e ihe =>
+      intro hlp K
+      cases hlp with
+      | wh _ hle hE =>
+          exact LoopProductive.wh g (ihe hle _)
+            (fun X W x => (E_nrm a₀ e _ X W x).trans (hE X W x))
+
+theorem settled_nrm (a₀ : A) : ∀ (e : Exp A T), Settled e → LoopProductive e →
+    ∀ K : Exp A T, Settled (nrm a₀ e K) := by
+  intro e
+  induction e with
+  | act p =>
+      intro _ _ K
+      by_cases h : UniformExpLempty (.seq (.act p) K : Exp A T)
+      · simp only [nrm, h, if_true]; exact settled_div a₀
+      · simp only [nrm, h, if_false]; exact Settled.act p
+  | test b =>
+      intro hs _ K
+      cases hs with
+      | one => exact Settled.one
+  | seq e f ihe ihf =>
+      intro hs hlp K
+      cases hs with
+      | seq hse hsf =>
+          cases hlp with
+          | seq hle hlf => exact Settled.seq (ihe hse hle _) (ihf hsf hlf K)
+  | ite g e f ihe ihf =>
+      intro hs hlp K
+      cases hs with
+      | ite _ hse hsf =>
+          cases hlp with
+          | ite _ hle hlf => exact Settled.ite g (ihe hse hle K) (ihf hsf hlf K)
+  | wh g e ihe =>
+      intro hs hlp K
+      cases hs with
+      | wh _ hse _ =>
+          cases hlp with
+          | wh _ hle hE =>
+              refine Settled.wh g (ihe hse hle _) ?_
+              exact bodySteps_of_E_zero (ihe hse hle _)
+                (fun X W x => (E_nrm a₀ e _ X W x).trans (hE X W x)) g
+
+/-- The settled loop bodies never halt immediately, so the settling normalisation already
+    delivers `W3`'s side condition. -/
+theorem loopProductive_settledBody (a : A) (e : Exp A T) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E (settledBody e a)) x = false := by
+  intro X W x
+  rw [← initHlt_eq_E]
+  exact settledBody_never_halts e a W x
+
+/-- **Settling delivers loop-productivity too.**  Same induction as `settledReachable`, with
+    the extra conjunct carried through. -/
+theorem settledReachable_loopProductive (a : A) (e : Exp A T) :
+    ∃ h : Exp A T, EquivBA e h ∧ Settled h ∧ LoopProductive h := by
+  induction e with
+  | act p => exact ⟨.act p, EquivBA.base (Equiv.refl _), Settled.act p, LoopProductive.act p⟩
+  | test b =>
+      exact ⟨totalTest a b, totalTest_equiv a b, settled_totalTest a b,
+        LoopProductive.ite b (LoopProductive.test _) (loopProductive_div a)⟩
+  | seq f h ihf ihh =>
+      obtain ⟨f', hf, sf, lf⟩ := ihf
+      obtain ⟨h', hh, sh, lh⟩ := ihh
+      exact ⟨.seq f' h', EquivBA.seq_c hf hh, Settled.seq sf sh, LoopProductive.seq lf lh⟩
+  | ite c f h ihf ihh =>
+      obtain ⟨f', hf, sf, lf⟩ := ihf
+      obtain ⟨h', hh, sh, lh⟩ := ihh
+      exact ⟨.ite c f' h', EquivBA.ite_c hf hh, Settled.ite c sf sh,
+        LoopProductive.ite c lf lh⟩
+  | wh c f ihf =>
+      obtain ⟨f', hf, sf, lf⟩ := ihf
+      exact ⟨.wh c (settledBody f' a),
+        EquivBA.trans (EquivBA.wh_c hf) (loop_settles c f' a),
+        Settled.wh c (settled_settledBody a sf) (bodySteps_settledBody c a sf),
+        LoopProductive.wh c (LoopProductive.ite _ lf (loopProductive_div a))
+          (loopProductive_settledBody a f')⟩
+
+/-- **Both normalisations, composed.**  Every program is provably equal to one that is
+    settled — hence total — and has had its dead code eliminated exactly.
+
+    What is left for `CanonicallySettled` is the soundness of the elimination: that the
+    normalised program's automaton really has no dead state but the sink's, so it is
+    `DeadCanonical`.  That is a statement about states rather than about syntax, and it is
+    the only thing between this and the completeness theorem. -/
+theorem settled_and_dce (a₀ : A) (e : Exp A T) :
+    ∃ h : Exp A T, EquivBA e h ∧ Settled h ∧ LoopProductive h ∧
+      h = nrm a₀ (Classical.choose (settledReachable_loopProductive a₀ e)) (.test BExp.one) := by
+  obtain ⟨h, hh, hs, hl⟩ := settledReachable_loopProductive a₀ e
+  refine ⟨nrm a₀ (Classical.choose (settledReachable_loopProductive a₀ e)) (.test BExp.one),
+    ?_, ?_, ?_, rfl⟩
+  · obtain ⟨hh', hs', hl'⟩ := Classical.choose_spec (settledReachable_loopProductive a₀ e)
+    exact EquivBA.trans hh' (nrm_top_equiv a₀ _ hl')
+  · obtain ⟨_, hs', hl'⟩ := Classical.choose_spec (settledReachable_loopProductive a₀ e)
+    exact settled_nrm a₀ _ hs' hl' _
+  · obtain ⟨_, _, hl'⟩ := Classical.choose_spec (settledReachable_loopProductive a₀ e)
+    exact loopProductive_nrm a₀ _ hl' _
+
+#print axioms settled_nrm
+#print axioms settledReachable_loopProductive
+#print axioms settled_and_dce
+#print axioms E_nrm
+#print axioms nrm_equiv
+#print axioms nrm_top_equiv
+
 #print axioms completeness_of_canonicallySettled
 
 end GkatTotalization
