@@ -2202,6 +2202,54 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             if !ok { println!("    MISMATCH e={pe} f={pf} P={pp}  x{c}"); }
         }
     }
+    // ---- GATE 2, the decisive one for `RefinementSuffices`.
+    // Every measurement so far has drawn the covering automaton from the whole behaviour
+    // class — *any* program with the right behaviour.  But the synthesis, and the Lean
+    // statement `GkatRefines.RefinementSuffices`, need the cover to be a refinement of `e`
+    // (or `f`) ITSELF.  That is strictly stronger and has never been tested.
+    {
+        let rounds: u32 = std::env::var("G2_ROUNDS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(3);
+        let cap: usize = std::env::var("G2_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(20000);
+        let res: Vec<bool> = solv.par_iter().map(|r| {
+            let p = match pullback(&list[r.0], &list[r.1]).and_then(|q| canon(&q)) {
+                Some(q) => q, None => return false,
+            };
+            for &n in [r.0, r.1].iter() {
+                let mut pool = Pool::<NA>::new();
+                let root = pool.of_prov(&list, &prov, n as u32);
+                if let Some(a) = pool.aut(root) {
+                    if let Some(c) = canon(&a) { if covers(&c, &p) { return true; } }
+                }
+                let mut frontier = vec![root];
+                let mut seen: FxSet<u32> = FxSet::default();
+                seen.insert(root);
+                for _ in 0..rounds {
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+                    }
+                    let mut keep: Vec<u32> = Vec::new();
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        if let Some(a) = pool.aut(t) {
+                            if let Some(c) = canon(&a) {
+                                if c.k >= p.k && covers(&c, &p) { return true; }
+                            }
+                        }
+                        keep.push(t);
+                    }
+                    frontier = keep;
+                    if frontier.len() > cap { frontier.truncate(cap); }
+                }
+            }
+            false
+        }).collect();
+        let ok = res.iter().filter(|b| **b).count();
+        println!("\n  GATE 2 (RefinementSuffices): a refinement of e or f covers the \
+pullback: {ok} / {}", res.len());
+    }
     println!("\nintermediate (pullback) solvable by the syntax: {s_hit}");
     println!("  of {} crux pairs, {s_dec} have |P| <= K so the answer is decided", crux.len());
     println!("  decided-but-unsolvable: {}",

@@ -76,12 +76,26 @@ theorem equivBA_of_refines {h e : Exp A T} (r : Refines h e) : EquivBA e h := by
   exact equivBA_of_common_refinement (InitCover.id (certifiedThompson A T h).aut) φ
     (InitCover.id _)
 
-/-- **The residual obligation, over the defined relation.**  For uniformly equivalent `e`
-    and `f`, some refinement of `e` covers a system covering both.
+/-- **REFUTED BY SEARCH — recorded, not to be built on.**  For uniformly equivalent `e` and
+    `f`, some refinement of `e` covers a system covering both.
 
-    This is `PullbackCovered` with "refinement" no longer informal: the search's claim that
-    three moves suffice is a claim about `Refines`, and this is the statement it would
-    settle. -/
+    This was the shape of the synthesis plan: recurse on `e`, emitting refinements of `e`.
+    It is too strong.  Restricting the search to start from `e` and `f` themselves — rather
+    than from any program in the behaviour class, which is what every earlier measurement
+    allowed — covers only **227 of 273** crux pullbacks, stable at 3, 4 and 5 rounds with a
+    200000-term frontier.  Depth-saturated, so it is not a search artefact.
+
+    Note that any `mid` covering both `e` and `f` factors through the pullback, so `h` covering
+    `mid` forces `h` to cover the pullback; the measurement therefore tests exactly this
+    statement and not something weaker.
+
+    What survives is `GkatCommonTarget.PullbackCovered`: *some* Thompson automaton covers the
+    pullback — 267 of 273 directly at K=6, the rest after one unrolling.  The covering program
+    is simply not always reachable from either input by refinement, which is why the search
+    always drew its candidates from the whole behaviour class.
+
+    Kept because the negative result is the content: the induction cannot be "recurse on `e`
+    emitting refinements of `e`". -/
 def RefinementSuffices (A T : Type) : Prop :=
   ∀ e f : Exp A T, UniformLanguageEquivalent e f →
     ∃ (S : Type) (mid : InitializedGAut S A T) (h : Exp A T),
@@ -90,7 +104,7 @@ def RefinementSuffices (A T : Type) : Prop :=
       Nonempty (InitCover mid (certifiedThompson A T f).aut) ∧
       Nonempty (InitCover (certifiedThompson A T h).aut mid)
 
-/-- Refinement sufficing gives finite-axiom completeness outright. -/
+/-- The implication is still true — it is the hypothesis that fails. -/
 theorem completeness_of_refinementSuffices (hr : RefinementSuffices A T) :
     FiniteAxiomsCompleteBA A T := by
   intro e f heq
