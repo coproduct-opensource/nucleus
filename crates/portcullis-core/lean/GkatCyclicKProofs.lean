@@ -13,27 +13,41 @@ The observed periods are 1, 2, 3 and 6, so **degree 3 occurs**, and degree 3 is 
 composition cannot reach: `cyclicCover` composed with itself gives 2, 4, 8, … (see
 `GkatCofinality.cyclicCover4`).  Hence this file.
 
-## Where the naive induction fails
+## Where the naive induction fails, and what it actually needs
 
-The obvious route is to induct on the degree, with the step
+The obvious route is to induct on the degree with the step
 
     InitCover (loop g X) (loop g B)  →  InitCover (loop g (X ; (g ? B : 1))) (loop g B)
 
-and it does not work, for a reason worth recording so it is not rediscovered.
+Working degree 3 out by hand shows the *construction* is fine — the concern that the extra
+`(g ? B : 1).initHlt` conjunct breaks the guards is unfounded, because the outer exit block
+is always subsumed by an earlier inner one and is unreachable by list ordering, exactly as in
+the degree-2 proof.  What fails is the **induction hypothesis**, and for a sharper reason.
 
-A cover *of the loops* carries strictly less information than the step needs.  `loop g X`
-sets `hlt u = X.hlt u ∧ ¬g`, so `φ.coreHlt_eq` says only that `X.hlt u` and `B.hlt (map u)`
-agree **at ¬g atoms** — at `g` atoms both sides are false and the equation is vacuous.  But
-the appended `seq` routes its exits by `X.hlt u` at *every* atom, `g` atoms included, so the
-step needs agreement the hypothesis does not provide.
+`InitCover (loop g X) (loop g B)` constrains `firstMatch` over the *combined* list
+
+    X.core.trans s  ++  X.initTrans.map (and (X.core.hlt s) (and g ·))
+
+— body transitions and back edges together.  The step needs the two blocks *separately*: in
+`bodyK (n+1)`, the block that advances from copy `i` to copy `i+1` plays the role of `B`'s
+back edge, while the enclosing loop supplies the back edge only for the last copy.  From
+`firstMatch (L₁ ++ L₂) = firstMatch (L₁' ++ L₂')` one cannot recover
+`firstMatch L₁ = firstMatch L₁'`, so the hypothesis is genuinely too weak.
 
 Strengthening to a cover of the *bodies* does not help either: `X ; (g ? B : 1)` does not
-cover `B`.  Its `hlt (inl u)` is `B.hlt u ∧ (g ? B : 1).initHlt`, which is not equivalent to
-`B.hlt u`.  That is why `cyclicCover` is stated about the loops in the first place.
+cover `B`, since `hlt (inl u) = B.hlt u ∧ (g ? B : 1).initHlt`.  That is precisely why
+`cyclicCover` is stated about the loops.
 
-So the induction needs an invariant that is neither "the loops cover" nor "the bodies cover",
-and finding it is the open part.  The definitions and the target are stated here so the
-obligation is named rather than implicit.
+So the invariant is neither "the loops cover" nor "the bodies cover".  It is the
+**parameterized** one: `bodyK g B n` behaves like `B` *relative to an arbitrary continuation*,
+with the continuation supplying whatever the enclosing context contributes — the next copy's
+entry for the inner copies, the loop's back edge for the last.  That is the same shape as
+`ParamSolvesBA` / `eqRHSParam` / `ParametricCanonicalBA` in
+`GkatThompsonUniquenessProofs`, which exist because the Thompson certificate needed exactly
+this move: a statement about a component that survives being embedded in a context.
+
+Proving the parameterized form settles every degree at once, rather than degree 3 by a
+second three-hundred-line replay of the degree-2 argument.
 -/
 
 namespace GkatCyclicK
