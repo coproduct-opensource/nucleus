@@ -67,6 +67,29 @@ no divergent program to route stuck configurations into, and the partiality is i
 Note what changed.  Pruning had to remove states — dead regions, unreachable branches — and
 was defeated three times because the constructors destroy the induction hypothesis.
 Totalising *adds* transitions, and the induction hypothesis survives every constructor.
+
+## What the file now proves end to end
+
+`completeness_of_canonicallySettled` derives `FiniteAxiomsCompleteBA` from **two** hypotheses:
+`CanonicallySettled` and `PullbackCovered`.  Everything between them is discharged:
+
+  * **normalisation to a total form** — `settledReachable`, proved;
+  * **the behavioural target** — `commonTarget_of_pad`, proved, with no reachability, no
+    productivity and no non-nullity hypothesis, and with the basepoint supplied
+    unconditionally by the sink the padding attaches;
+  * **the structural side conditions** — `haltStepDisjoint_thompson` and
+    `thompson_states_complete`, proved rather than assumed;
+  * **dead-canonicity is inherited by the padding** — `deadCanonical_ite`,
+    `deadCanonical_div`, proved.
+
+`CanonicallySettled` is itself two thirds proved: `settledReachable` gives its first two
+conjuncts, and only `DeadCanonical` is open.
+
+The identification that makes the sink legitimate is the one the literature calls the
+**early-termination property** — programs that fail immediately are equated with programs
+that fail eventually.  `wh_one_provably_zero` is exactly that, derived here rather than
+postulated, and it is what lets a stuck configuration be replaced by a divergent one without
+leaving the equational theory.
 -/
 
 namespace GkatTotalization
@@ -1032,6 +1055,251 @@ theorem span_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
 #print axioms stepAgree_of_canonical
 #print axioms span_of_canonical
 
+/-! ## Structural facts the chain needs
+
+    Two things that were being carried as hypotheses and are simply true. -/
+
+/-- Every state of a Thompson automaton is listed. -/
+theorem thompson_states_complete (p : Exp A T) :
+    ∀ s : (certifiedThompson A T p).State, s ∈ (certifiedThompson A T p).aut.core.states := by
+  induction p with
+  | test b => intro s; exact nomatch s
+  | act q => intro s; cases s; exact List.Mem.head _
+  | seq e f ihe ihf =>
+      intro s
+      show s ∈ (certifiedThompson A T e).aut.core.states.map Sum.inl ++
+        (certifiedThompson A T f).aut.core.states.map Sum.inr
+      cases s with
+      | inl u => exact List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨u, ihe u, rfl⟩))
+      | inr v => exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨v, ihf v, rfl⟩))
+  | ite g e f ihe ihf =>
+      intro s
+      show s ∈ (certifiedThompson A T e).aut.core.states.map Sum.inl ++
+        (certifiedThompson A T f).aut.core.states.map Sum.inr
+      cases s with
+      | inl u => exact List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨u, ihe u, rfl⟩))
+      | inr v => exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨v, ihf v, rfl⟩))
+  | wh g e ihe => intro s; exact ihe s
+
+/-- **Halting excludes stepping, at every state.**  `UniformWF` gives it at listed states, and
+    every state is listed. -/
+theorem haltStepDisjoint_thompson (p : Exp A T) :
+    HaltStepDisjoint (certifiedThompson A T p).aut := by
+  intro X W x s hh
+  refine (certifiedThompson_uniformWF p X W).1 s ?_ x hh
+  show s ∈ none :: (certifiedThompson A T p).aut.core.states.map some
+  cases s with
+  | none => exact List.Mem.head _
+  | some u =>
+      exact List.Mem.tail _ (List.mem_map.mpr ⟨u, thompson_states_complete p u, rfl⟩)
+
+/-! ## Dead-canonicity is inherited by guarded choice
+
+    The padding needs the padded programs to be dead-canonical, and they are as soon as their
+    branches are.  `ite` only relabels: core states keep their own dynamics under `inl`/`inr`,
+    and the entry transitions keep their branch's actions.  So a dead state of the composite is
+    a dead state of a branch, entered along the branch's own action. -/
+
+private theorem fmSomeF {S R X : Type} (W : T → X → Bool) (x : X) (F : S → R)
+    (Lst : List (BExp T × A × S)) :
+    firstMatch W x ((Lst.map (fun t => (t.1, t.2.1, F t.2.2))).map
+        (fun t => (t.1, t.2.1, some t.2.2)))
+      = (firstMatch W x Lst).map (fun o => (o.1, some (F o.2))) := by
+  induction Lst with
+  | nil => rfl
+  | cons hd tl ih =>
+      obtain ⟨q, act, v⟩ := hd
+      simp only [List.map_cons, firstMatch]
+      cases hq : bval W q x
+      · simpa [hq] using ih
+      · simp [hq]
+
+private theorem fmIte {S R X : Type} (W : T → X → Bool) (x : X) (P : BExp T) (F : S → R)
+    (Lst : List (BExp T × A × S)) :
+    firstMatch W x ((Lst.map (fun t => (BExp.and P t.1, t.2.1, F t.2.2))).map
+        (fun t => (t.1, t.2.1, some t.2.2)))
+      = if bval W P x then (firstMatch W x Lst).map (fun o => (o.1, some (F o.2))) else none := by
+  induction Lst with
+  | nil => cases hP : bval W P x <;> simp [firstMatch]
+  | cons hd tl ih =>
+      obtain ⟨q, act, v⟩ := hd
+      simp only [List.map_cons, firstMatch]
+      have hand : bval W (BExp.and P q) x = (bval W P x && bval W q x) := rfl
+      rw [hand, ih]
+      cases hP : bval W P x <;> cases hq : bval W q x <;> simp
+
+private theorem map_some_inv {R Q : Type} {o : Option (A × R)} {F : R → Q} {q : A} {t : Q}
+    (h : o.map (fun z => (z.1, F z.2)) = some (q, t)) : ∃ w, o = some (q, w) ∧ t = F w := by
+  cases o with
+  | none => exact absurd h (by simp)
+  | some z =>
+      obtain ⟨q', w⟩ := z
+      simp only [Option.map_some] at h
+      have hp : ((q', F w) : A × Q) = (q, t) := Option.some.inj h
+      exact ⟨w, congrArg (fun c : A => some (c, w)) (congrArg (fun z : A × Q => z.1) hp),
+        (congrArg (fun z : A × Q => z.2) hp).symm⟩
+
+variable {S₁ S₂ : Type}
+
+private theorem step_ite_inl (g : BExp T) (L : InitializedGAut S₁ A T)
+    (R : InitializedGAut S₂ A T) (u : S₁) {X : Type} (W : T → X → Bool) (x : X) :
+    autStep W (iteInitialized g L R).toGAut (some (Sum.inl u)) x
+      = (firstMatch W x (L.core.trans u)).map (fun o => (o.1, some (Sum.inl o.2))) :=
+  fmSomeF W x (fun v : S₁ => (Sum.inl v : Sum S₁ S₂)) (L.core.trans u)
+
+private theorem step_ite_inr (g : BExp T) (L : InitializedGAut S₁ A T)
+    (R : InitializedGAut S₂ A T) (v : S₂) {X : Type} (W : T → X → Bool) (x : X) :
+    autStep W (iteInitialized g L R).toGAut (some (Sum.inr v)) x
+      = (firstMatch W x (R.core.trans v)).map (fun o => (o.1, some (Sum.inr o.2))) :=
+  fmSomeF W x (fun w : S₂ => (Sum.inr w : Sum S₁ S₂)) (R.core.trans v)
+
+theorem autStep_ite_none (g : BExp T) (L : InitializedGAut S₁ A T)
+    (R : InitializedGAut S₂ A T) {X : Type} (W : T → X → Bool) (x : X) :
+    autStep W (iteInitialized g L R).toGAut none x
+      = if bval W g x
+        then (firstMatch W x L.initTrans).map (fun o => (o.1, some (Sum.inl o.2)))
+        else (firstMatch W x R.initTrans).map (fun o => (o.1, some (Sum.inr o.2))) := by
+  show firstMatch W x
+      ((L.initTrans.map (fun t => (BExp.and g t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂))) ++
+        R.initTrans.map (fun t =>
+          (BExp.and (BExp.not g) t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂)))).map
+        (fun t => (t.1, t.2.1, some t.2.2))) = _
+  rw [List.map_append]
+  have hl := fmIte (A := A) W x g (fun v : S₁ => (Sum.inl v : Sum S₁ S₂)) L.initTrans
+  have hr := fmIte (A := A) W x (BExp.not g) (fun w : S₂ => (Sum.inr w : Sum S₁ S₂)) R.initTrans
+  have hnot : bval W (BExp.not g) x = !bval W g x := rfl
+  cases hg : bval W g x
+  · rw [firstMatch_append_none _ _ _ _ (by rw [hl, hg]; simp), hr, hnot, hg]
+    simp
+  · cases hf : firstMatch W x L.initTrans with
+    | some o =>
+        rw [firstMatch_append_some (x := (o.1, some (Sum.inl o.2)))
+          _ _ _ _ (by rw [hl, hg, hf]; simp)]
+        simp [hg]
+    | none =>
+        rw [firstMatch_append_none _ _ _ _ (by rw [hl, hg, hf]; simp), hr, hnot, hg]
+        simp
+
+theorem autRun_ite_inl (g : BExp T) (L : InitializedGAut S₁ A T) (R : InitializedGAut S₂ A T)
+    {X : Type} (W : T → X → Bool) :
+    ∀ (w : List (A × X)) (u : S₁) (x : X),
+      autRun W (iteInitialized g L R).toGAut (some (Sum.inl u)) x w
+        ↔ autRun W L.toGAut (some u) x w := by
+  intro w
+  induction w with
+  | nil => intro u x; exact Iff.rfl
+  | cons hd tl ih =>
+      intro u x
+      constructor
+      · rintro ⟨v, hv, hrun⟩
+        rw [step_ite_inl] at hv
+        obtain ⟨o, ho, hveq⟩ :=
+          map_some_inv (F := fun w : S₁ => (some (Sum.inl w) : Option (Sum S₁ S₂))) hv
+        refine ⟨some o, by rw [GkatQuotient.autStep_core, ho]; rfl, ?_⟩
+        rw [hveq] at hrun
+        exact (ih o hd.2).mp hrun
+      · rintro ⟨v, hv, hrun⟩
+        rw [GkatQuotient.autStep_core] at hv
+        obtain ⟨o, ho, hveq⟩ := map_some_inv (F := fun w : S₁ => (some w : Option S₁)) hv
+        refine ⟨some (Sum.inl o), by rw [step_ite_inl, ho]; rfl, ?_⟩
+        rw [hveq] at hrun
+        exact (ih o hd.2).mpr hrun
+
+theorem autRun_ite_inr (g : BExp T) (L : InitializedGAut S₁ A T) (R : InitializedGAut S₂ A T)
+    {X : Type} (W : T → X → Bool) :
+    ∀ (w : List (A × X)) (v : S₂) (x : X),
+      autRun W (iteInitialized g L R).toGAut (some (Sum.inr v)) x w
+        ↔ autRun W R.toGAut (some v) x w := by
+  intro w
+  induction w with
+  | nil => intro v x; exact Iff.rfl
+  | cons hd tl ih =>
+      intro v x
+      constructor
+      · rintro ⟨u, hu, hrun⟩
+        rw [step_ite_inr] at hu
+        obtain ⟨o, ho, hueq⟩ :=
+          map_some_inv (F := fun w : S₂ => (some (Sum.inr w) : Option (Sum S₁ S₂))) hu
+        refine ⟨some o, by rw [GkatQuotient.autStep_core, ho]; rfl, ?_⟩
+        rw [hueq] at hrun
+        exact (ih o hd.2).mp hrun
+      · rintro ⟨u, hu, hrun⟩
+        rw [GkatQuotient.autStep_core] at hu
+        obtain ⟨o, ho, hueq⟩ := map_some_inv (F := fun w : S₂ => (some w : Option S₂)) hu
+        refine ⟨some (Sum.inr o), by rw [step_ite_inr, ho]; rfl, ?_⟩
+        rw [hueq] at hrun
+        exact (ih o hd.2).mpr hrun
+
+/-- **Guarded choice inherits dead-canonicity.** -/
+theorem deadCanonical_ite (a₀ : A) (g : BExp T) {L : InitializedGAut S₁ A T}
+    {R : InitializedGAut S₂ A T} (hL : DeadCanonical a₀ L) (hR : DeadCanonical a₀ R) :
+    DeadCanonical a₀ (iteInitialized g L R) := by
+  intro X W x s q s' hstep hdead
+  cases s with
+  | none =>
+      cases hg : bval W g x
+      · rw [autStep_ite_none, hg] at hstep
+        simp only [Bool.false_eq_true, if_false] at hstep
+        obtain ⟨o, ho, hs'⟩ :=
+          map_some_inv (F := fun w : S₂ => (some (Sum.inr w) : Option (Sum S₁ S₂))) hstep
+        refine hR X W x none q (some o) (by rw [GkatQuotient.autStep_init, ho]; rfl) ?_
+        intro y v hv
+        apply hdead y v
+        rw [hs']
+        exact (autRun_ite_inr g L R W v o y).mpr hv
+      · rw [autStep_ite_none, hg] at hstep
+        simp only [if_true] at hstep
+        obtain ⟨o, ho, hs'⟩ :=
+          map_some_inv (F := fun w : S₁ => (some (Sum.inl w) : Option (Sum S₁ S₂))) hstep
+        refine hL X W x none q (some o) (by rw [GkatQuotient.autStep_init, ho]; rfl) ?_
+        intro y v hv
+        apply hdead y v
+        rw [hs']
+        exact (autRun_ite_inl g L R W v o y).mpr hv
+  | some sv =>
+      cases sv with
+      | inl u =>
+          rw [step_ite_inl] at hstep
+          obtain ⟨o, ho, hs'⟩ :=
+            map_some_inv (F := fun w : S₁ => (some (Sum.inl w) : Option (Sum S₁ S₂))) hstep
+          refine hL X W x (some u) q (some o) (by rw [GkatQuotient.autStep_core, ho]; rfl) ?_
+          intro y v hv
+          apply hdead y v
+          rw [hs']
+          exact (autRun_ite_inl g L R W v o y).mpr hv
+      | inr u =>
+          rw [step_ite_inr] at hstep
+          obtain ⟨o, ho, hs'⟩ :=
+            map_some_inv (F := fun w : S₂ => (some (Sum.inr w) : Option (Sum S₁ S₂))) hstep
+          refine hR X W x (some u) q (some o) (by rw [GkatQuotient.autStep_core, ho]; rfl) ?_
+          intro y v hv
+          apply hdead y v
+          rw [hs']
+          exact (autRun_ite_inr g L R W v o y).mpr hv
+
+/-- The sink is dead-canonical for its own action, trivially: every transition it has carries
+    `a₀`. -/
+theorem deadCanonical_div (a₀ : A) :
+    DeadCanonical a₀ (certifiedThompson A T (div a₀)).aut := by
+  intro X W x s q s' hstep _
+  cases s with
+  | none =>
+      have h : autStep W (certifiedThompson A T (div a₀)).aut.toGAut none x
+        = some (a₀, some ()) := rfl
+      rw [h] at hstep
+      exact congrArg (fun z : A × Option Unit => z.1) (Option.some.inj hstep.symm)
+  | some u =>
+      cases u
+      have h : autStep W (certifiedThompson A T (div a₀)).aut.toGAut (some ()) x
+        = some (a₀, some ()) := rfl
+      rw [h] at hstep
+      exact congrArg (fun z : A × Option Unit => z.1) (Option.some.inj hstep.symm)
+
+#print axioms thompson_states_complete
+#print axioms haltStepDisjoint_thompson
+#print axioms deadCanonical_ite
+#print axioms deadCanonical_div
+
 /-! ## Padding: the behavioural target without reachability
 
     `Reachable` was never wanted for itself.  It was a way to *produce*, for every state of
@@ -1059,30 +1327,58 @@ theorem span_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     to need trimming at all: rather than deleting the states that spoil the match, add the
     ones that complete it. -/
 
-/-- `if 1 then e else f` — provably `e`, with a dead copy of `f` attached. -/
-def padOne (e f : Exp A T) : Exp A T := .ite BExp.one e f
+/-- The right-hand padding: `f` with the sink attached.  The sink is there only to guarantee
+    the padded core has at least one state, which is what the pullback's basepoint needs. -/
+def padBody (f : Exp A T) (a₀ : A) : Exp A T := .ite BExp.one f (div a₀)
 
-/-- `if 0 then e else f` — provably `f`, with the *same* core as `padOne e f`. -/
-def padZero (e f : Exp A T) : Exp A T := .ite BExp.zero e f
+/-- `if 1 then e else (f + sink)` — provably `e`. -/
+def padOne (e f : Exp A T) (a₀ : A) : Exp A T := .ite BExp.one e (padBody f a₀)
 
-theorem padOne_equiv (e f : Exp A T) : EquivBA e (padOne e f) :=
-  EquivBA.symm (ite_one e f)
+/-- `if 0 then e else (f + sink)` — provably `f`, and with the *same* core as `padOne`. -/
+def padZero (e f : Exp A T) (a₀ : A) : Exp A T := .ite BExp.zero e (padBody f a₀)
 
-theorem padZero_equiv (e f : Exp A T) : EquivBA f (padZero e f) :=
-  EquivBA.symm (EquivBA.base (ite_zero e f))
+theorem padBody_equiv (f : Exp A T) (a₀ : A) : EquivBA f (padBody f a₀) :=
+  EquivBA.symm (ite_one f (div a₀))
 
-theorem settled_padOne {e f : Exp A T} (he : Settled e) (hf : Settled f) :
-    Settled (padOne e f) := Settled.ite _ he hf
+theorem padOne_equiv (e f : Exp A T) (a₀ : A) : EquivBA e (padOne e f a₀) :=
+  EquivBA.symm (ite_one e (padBody f a₀))
 
-theorem settled_padZero {e f : Exp A T} (he : Settled e) (hf : Settled f) :
-    Settled (padZero e f) := Settled.ite _ he hf
+theorem padZero_equiv (e f : Exp A T) (a₀ : A) : EquivBA f (padZero e f a₀) :=
+  EquivBA.trans (padBody_equiv f a₀)
+    (EquivBA.symm (EquivBA.base (ite_zero e (padBody f a₀))))
+
+theorem settled_padBody {f : Exp A T} (hf : Settled f) (a₀ : A) : Settled (padBody f a₀) :=
+  Settled.ite _ hf (settled_div a₀)
+
+theorem settled_padOne {e f : Exp A T} (he : Settled e) (hf : Settled f) (a₀ : A) :
+    Settled (padOne e f a₀) := Settled.ite _ he (settled_padBody hf a₀)
+
+theorem settled_padZero {e f : Exp A T} (he : Settled e) (hf : Settled f) (a₀ : A) :
+    Settled (padZero e f a₀) := Settled.ite _ he (settled_padBody hf a₀)
+
+theorem deadCanonical_padBody (a₀ : A) {f : Exp A T}
+    (hf : DeadCanonical a₀ (certifiedThompson A T f).aut) :
+    DeadCanonical a₀ (certifiedThompson A T (padBody f a₀)).aut :=
+  deadCanonical_ite a₀ BExp.one hf (deadCanonical_div a₀)
+
+theorem deadCanonical_padOne (a₀ : A) {e f : Exp A T}
+    (he : DeadCanonical a₀ (certifiedThompson A T e).aut)
+    (hf : DeadCanonical a₀ (certifiedThompson A T f).aut) :
+    DeadCanonical a₀ (certifiedThompson A T (padOne e f a₀)).aut :=
+  deadCanonical_ite a₀ BExp.one he (deadCanonical_padBody a₀ hf)
+
+theorem deadCanonical_padZero (a₀ : A) {e f : Exp A T}
+    (he : DeadCanonical a₀ (certifiedThompson A T e).aut)
+    (hf : DeadCanonical a₀ (certifiedThompson A T f).aut) :
+    DeadCanonical a₀ (certifiedThompson A T (padZero e f a₀)).aut :=
+  deadCanonical_ite a₀ BExp.zero he (deadCanonical_padBody a₀ hf)
 
 /-- **The two padded programs have the same core.**  `iteInitialized` puts the guard on the
     entry transitions only, so the internal dynamics are identical — which is the whole
     trick. -/
-theorem pad_core_eq (e f : Exp A T) :
-    (certifiedThompson A T (padZero e f)).aut.core
-      = (certifiedThompson A T (padOne e f)).aut.core := rfl
+theorem pad_core_eq (e f : Exp A T) (a₀ : A) :
+    (certifiedThompson A T (padZero e f a₀)).aut.core
+      = (certifiedThompson A T (padOne e f a₀)).aut.core := rfl
 
 /-- **Runs from a core state never see the pseudostate.**  So two automata that agree on
     their cores have the same language at every core state, however their entries differ.
@@ -1114,82 +1410,64 @@ theorem autRun_core_congr {S : Type} {A0 A1 : InitializedGAut S A T}
         exact ⟨some v', hstep.trans hv, (ih v' hd.2).mpr hrun⟩
 
 /-- Hence every core state is its own partner. -/
-theorem pad_partner (e f : Exp A T) (s : (certifiedThompson A T (padZero e f)).State) :
-    CrossEquiv (certifiedThompson A T (padZero e f)).aut
-      (certifiedThompson A T (padOne e f)).aut (some s) (some s) := by
+theorem pad_partner (e f : Exp A T) (a₀ : A)
+    (s : (certifiedThompson A T (padZero e f a₀)).State) :
+    CrossEquiv (certifiedThompson A T (padZero e f a₀)).aut
+      (certifiedThompson A T (padOne e f a₀)).aut (some s) (some s) := by
   intro X W gs
   obtain ⟨y, v⟩ := gs
-  exact autRun_core_congr (A0 := (certifiedThompson A T (padZero e f)).aut)
-    (A1 := (certifiedThompson A T (padOne e f)).aut) (fun _ => rfl) (fun _ => rfl) W v s y
+  exact autRun_core_congr (A0 := (certifiedThompson A T (padZero e f a₀)).aut)
+    (A1 := (certifiedThompson A T (padOne e f a₀)).aut) (fun _ => rfl) (fun _ => rfl) W v s y
 
 /-- The pseudostates match exactly when the two programs do. -/
-theorem pad_init (e f : Exp A T) (h : UniformLanguageEquivalent e f) :
-    CrossEquiv (certifiedThompson A T (padZero e f)).aut
-      (certifiedThompson A T (padOne e f)).aut none none := by
+theorem pad_init (e f : Exp A T) (a₀ : A) (h : UniformLanguageEquivalent e f) :
+    CrossEquiv (certifiedThompson A T (padZero e f a₀)).aut
+      (certifiedThompson A T (padOne e f a₀)).aut none none := by
   intro X W gs
-  have h0 := congrFun (certifiedThompson_start_language (padZero e f) X W) gs
-  have h1 := congrFun (certifiedThompson_start_language (padOne e f) X W) gs
+  have h0 := congrFun (certifiedThompson_start_language (padZero e f a₀) X W) gs
+  have h1 := congrFun (certifiedThompson_start_language (padOne e f a₀) X W) gs
   rw [h0, h1]
-  exact (sound_BA (V := W) (padZero_equiv e f) gs).symm.trans
-    ((h X W gs).symm.trans (sound_BA (V := W) (padOne_equiv e f) gs))
+  exact (sound_BA (V := W) (padZero_equiv e f a₀) gs).symm.trans
+    ((h X W gs).symm.trans (sound_BA (V := W) (padOne_equiv e f a₀) gs))
 
 /-- **`Matched` with no reachability anywhere.** -/
 def matched_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
-    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
-    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
-    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
-    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
-    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
-    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut) :
-    GkatQuotient.Matched (certifiedThompson A T (padZero e f)).aut
-      (certifiedThompson A T (padOne e f)).aut where
-  stepab := stepAgree_of_canonical a₀ hd0 ht1 hc0 hc1
-  stepba := stepAgree_of_canonical a₀ hd1 ht0 hc1 hc0
-  stepbb := stepAgree_of_canonical a₀ hd1 ht1 hc1 hc1
-  init := pad_init e f hlang
+    (ht0 : Total (certifiedThompson A T (padZero e f a₀)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f a₀)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f a₀)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f a₀)).aut) :
+    GkatQuotient.Matched (certifiedThompson A T (padZero e f a₀)).aut
+      (certifiedThompson A T (padOne e f a₀)).aut where
+  stepab := stepAgree_of_canonical a₀ (haltStepDisjoint_thompson _) ht1 hc0 hc1
+  stepba := stepAgree_of_canonical a₀ (haltStepDisjoint_thompson _) ht0 hc1 hc0
+  stepbb := stepAgree_of_canonical a₀ (haltStepDisjoint_thompson _) ht1 hc1 hc1
+  init := pad_init e f a₀ hlang
   partner := id
-  partner_equiv := pad_partner e f
+  partner_equiv := pad_partner e f a₀
   partner_mem := fun _ hs => hs
-  cover := fun t ht => ⟨t, ht, pad_partner e f t⟩
-
-/-- **The behavioural target, with `Reachable` eliminated.**  Both padded programs cover the
-    same system, and one is provably `f` while the other is provably `e`. -/
-theorem span_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
-    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
-    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
-    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
-    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
-    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
-    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut) :
-    Nonempty (InitCover (certifiedThompson A T (padZero e f)).aut
-        (GkatQuotient.target (certifiedThompson A T (padOne e f)).aut)) ∧
-      Nonempty (InitCover (certifiedThompson A T (padOne e f)).aut
-        (GkatQuotient.target (certifiedThompson A T (padOne e f)).aut)) :=
-  GkatQuotient.span_of_matched (matched_of_pad a₀ e f hlang hd0 hd1 ht0 ht1 hc0 hc1)
+  cover := fun t ht => ⟨t, ht, pad_partner e f a₀ t⟩
 
 /-- **The common target, in the exact shape `CanonicalCommonTarget` asks for** — with no
-    reachability hypothesis anywhere.  The basepoint comes from any listed state of the
-    source, via `Base.ofMem`. -/
+    reachability hypothesis anywhere.  The basepoint is the sink state the padding attaches,
+    so it is available unconditionally. -/
 theorem commonTarget_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
-    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
-    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
-    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
-    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
-    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
-    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut)
-    {u : (certifiedThompson A T (padZero e f)).State}
-    (hu : u ∈ (certifiedThompson A T (padZero e f)).aut.core.states) :
+    (ht0 : Total (certifiedThompson A T (padZero e f a₀)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f a₀)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f a₀)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f a₀)).aut) :
     ∃ (Q : Type) (m : InitializedGAut Q A T)
-      (φ : InitCover (certifiedThompson A T (padZero e f)).aut m)
-      (ψ : InitCover (certifiedThompson A T (padOne e f)).aut m),
+      (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+      (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m),
       Nonempty (GkatPullback.Base φ ψ) := by
-  obtain ⟨⟨φ⟩, ⟨ψ⟩⟩ := span_of_pad a₀ e f hlang hd0 hd1 ht0 ht1 hc0 hc1
-  exact ⟨_, _, φ, ψ, GkatPullback.Base.ofMem φ ψ hu⟩
+  obtain ⟨⟨φ⟩, ⟨ψ⟩⟩ :=
+    GkatQuotient.span_of_matched (matched_of_pad a₀ e f hlang ht0 ht1 hc0 hc1)
+  exact ⟨_, _, φ, ψ,
+    GkatPullback.Base.ofMem φ ψ
+      (thompson_states_complete (padZero e f a₀) (Sum.inr (Sum.inr ())))⟩
 
 #print axioms commonTarget_of_pad
 #print axioms pad_partner
 #print axioms pad_init
-#print axioms span_of_pad
 
 /-! ## The repaired chain
 
@@ -1240,5 +1518,34 @@ theorem completeness_of_canonical (a₀ : A) (hcs : CanonicallySettled A T a₀)
       (EquivBA.symm hff'))
 
 #print axioms completeness_of_canonical
+
+/-- **Completeness from `CanonicallySettled` and `PullbackCovered`.**
+
+    Two hypotheses.  Normalisation is one of them and is two thirds proved
+    (`settledReachable` gives the first two conjuncts); the common target is no longer a
+    hypothesis at all, and neither is reachability, productivity or non-nullity. -/
+theorem completeness_of_canonicallySettled (a₀ : A) (hcs : CanonicallySettled A T a₀)
+    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨e', hee', hse, hce⟩ := hcs e
+  obtain ⟨f', hff', hsf, hcf⟩ := hcs f
+  have heq' : UniformLanguageEquivalent e' f' := by
+    intro X W gs
+    exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans
+      (sound_BA (V := W) hff' gs)
+  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := commonTarget_of_pad a₀ e' f' heq'
+    (total_of_settled (settled_padZero hse hsf a₀))
+    (total_of_settled (settled_padOne hse hsf a₀))
+    (deadCanonical_padZero a₀ hce hcf) (deadCanonical_padOne a₀ hce hcf)
+  obtain ⟨h, ⟨χ⟩⟩ := hpc (padZero e' f' a₀) (padOne e' f' a₀) Q m φ ψ base
+  have hmid : EquivBA (padZero e' f' a₀) (padOne e' f' a₀) :=
+    equivBA_of_common_refinement χ (GkatPullback.pullbackFst φ ψ base)
+      (GkatPullback.pullbackSnd φ ψ base)
+  exact EquivBA.trans hee'
+    (EquivBA.trans (padOne_equiv e' f' a₀)
+      (EquivBA.trans hmid.symm
+        (EquivBA.trans (padZero_equiv e' f' a₀).symm hff'.symm)))
+
+#print axioms completeness_of_canonicallySettled
 
 end GkatTotalization
