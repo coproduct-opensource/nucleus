@@ -1078,6 +1078,252 @@ fn refinements<const NA: usize>(
     }
 }
 
+#[inline]
+fn gcd_u32(mut x: u32, mut y: u32) -> u32 { while y != 0 { let t = x % y; x = y; y = t; } x }
+
+/// The **period** of each nontrivial strongly connected component: the gcd of *all* cycle
+/// lengths in it, not of the shortest cycle per state (which is only an over-approximation
+/// and is what the first version of `features` got wrong).  Computed the classical way —
+/// BFS levels inside the component, then the gcd of `|lev[u] + 1 - lev[v]|` over its edges.
+///
+/// This is the group-theoretic invariant: a covering map sends a cycle of length `n` to a
+/// closed walk of length `n`, so `period(p)` divides every cycle length of any cover of `p`,
+/// hence `period(p) | period(h)`.  That is a theorem, and it follows from `star_bijection`.
+/// Cycles cannot pass through the pseudostate — nothing steps into it — so only core states
+/// take part.
+fn scc_periods<const NA: usize>(a: &Aut<NA>) -> Vec<u32> {
+    let k = a.k as usize;
+    let mut r = [0u16; MAXK];
+    for i in 0..k {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { r[i] |= 1 << (a.st[i][x] - 1); }
+        }
+    }
+    let adj = r;
+    for m in 0..k {
+        let rm = r[m];
+        for i in 0..k {
+            if r[i] >> m & 1 == 1 { r[i] |= rm; }
+        }
+    }
+    let mut comp = [usize::MAX; MAXK];
+    let mut out: Vec<u32> = Vec::new();
+    for i in 0..k {
+        if comp[i] != usize::MAX || r[i] >> i & 1 != 1 { continue; }
+        let id = out.len();
+        comp[i] = id;
+        for j in (i + 1)..k {
+            if comp[j] == usize::MAX && r[i] >> j & 1 == 1 && r[j] >> i & 1 == 1 {
+                comp[j] = id;
+            }
+        }
+        let mut lev = [u32::MAX; MAXK];
+        lev[i] = 0;
+        let mut q = VecDeque::new();
+        q.push_back(i);
+        while let Some(u) = q.pop_front() {
+            for v in 0..k {
+                if comp[v] == id && adj[u] >> v & 1 == 1 && lev[v] == u32::MAX {
+                    lev[v] = lev[u] + 1;
+                    q.push_back(v);
+                }
+            }
+        }
+        let mut g = 0u32;
+        for u in 0..k {
+            if comp[u] != id || lev[u] == u32::MAX { continue; }
+            for v in 0..k {
+                if comp[v] == id && adj[u] >> v & 1 == 1 && lev[v] != u32::MAX {
+                    let d = (lev[u] as i64 + 1 - lev[v] as i64).unsigned_abs() as u32;
+                    g = gcd_u32(g, d);
+                }
+            }
+        }
+        out.push(if g == 0 { 1 } else { g });
+    }
+    out
+}
+
+/// The divisibility filter the period law licenses: every component of a cover maps into
+/// some component of the target, and its period must be a multiple of that one's.  Sound,
+/// and cheaper than the `covers` BFS it guards.
+fn period_compatible<const NA: usize>(h: &Aut<NA>, p: &Aut<NA>) -> bool {
+    let dp = scc_periods(p);
+    if dp.is_empty() { return true; }
+    scc_periods(h).iter().all(|dh| dp.iter().any(|d| dh % d == 0))
+}
+
+/// Candidate **labelling** invariants.  The period law bounds how big a cover must be but
+/// can never forbid one, since `cyclicCover` multiplies the period by any `k` — so an
+/// impossibility obstruction has to live in the halt labelling, which `π₁` does not see.
+/// Returns (distinct halt masks on cycles, halting states not sharing their component's
+/// mask, distinct BFS levels mod period carrying a halt).
+fn halt_shape<const NA: usize>(a: &Aut<NA>) -> [u32; 3] {
+    let k = a.k as usize;
+    let mut r = [0u16; MAXK];
+    for i in 0..k {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { r[i] |= 1 << (a.st[i][x] - 1); }
+        }
+    }
+    let adj = r;
+    for m in 0..k {
+        let rm = r[m];
+        for i in 0..k {
+            if r[i] >> m & 1 == 1 { r[i] |= rm; }
+        }
+    }
+    let mut masks: Vec<u8> = Vec::new();
+    for i in 0..k {
+        if r[i] >> i & 1 == 1 && a.hl[i] != 0 && !masks.contains(&a.hl[i]) { masks.push(a.hl[i]); }
+    }
+    let mut comp = [usize::MAX; MAXK];
+    let mut ncomp = 0usize;
+    let mut mismatched = 0u32;
+    let mut levels: Vec<(usize, u32)> = Vec::new();
+    for i in 0..k {
+        if comp[i] != usize::MAX || r[i] >> i & 1 != 1 { continue; }
+        let id = ncomp;
+        ncomp += 1;
+        comp[i] = id;
+        for j in (i + 1)..k {
+            if comp[j] == usize::MAX && r[i] >> j & 1 == 1 && r[j] >> i & 1 == 1 { comp[j] = id; }
+        }
+        let mut lev = [u32::MAX; MAXK];
+        lev[i] = 0;
+        let mut q = VecDeque::new();
+        q.push_back(i);
+        while let Some(u) = q.pop_front() {
+            for v in 0..k {
+                if comp[v] == id && adj[u] >> v & 1 == 1 && lev[v] == u32::MAX {
+                    lev[v] = lev[u] + 1;
+                    q.push_back(v);
+                }
+            }
+        }
+        let mut g = 0u32;
+        for u in 0..k {
+            if comp[u] != id || lev[u] == u32::MAX { continue; }
+            for v in 0..k {
+                if comp[v] == id && adj[u] >> v & 1 == 1 && lev[v] != u32::MAX {
+                    g = gcd_u32(g, (lev[u] as i64 + 1 - lev[v] as i64).unsigned_abs() as u32);
+                }
+            }
+        }
+        let d = if g == 0 { 1 } else { g };
+        let mut first: Option<u8> = None;
+        for u in 0..k {
+            if comp[u] != id || a.hl[u] == 0 { continue; }
+            match first {
+                None => first = Some(a.hl[u]),
+                Some(m) => if m != a.hl[u] { mismatched += 1; },
+            }
+            if lev[u] != u32::MAX {
+                let l = (id, lev[u] % d);
+                if !levels.contains(&l) { levels.push(l); }
+            }
+        }
+    }
+    [masks.len() as u32, mismatched, levels.len() as u32]
+}
+
+/// **Reducibility**, the classical structuredness test for flow graphs: every strongly
+/// connected subgraph has a single entry, equivalently every back edge's head dominates its
+/// tail, equivalently deleting the back edges leaves a DAG.
+///
+/// Why this and not LEE: structured `if`/`while` programs always produce reducible graphs,
+/// but the classical converse is "reducible implies structured **with multilevel break and
+/// continue**" — and GKAT has neither.  So reducibility is *necessary* for a GKAT automaton
+/// and not obviously sufficient, which is exactly the gap the counterexamples might live in.
+/// Node 0 is the pseudostate; node `i+1` is core state `i`.
+fn reducible<const NA: usize>(a: &Aut<NA>) -> bool {
+    let n = a.k as usize + 1;
+    let mut succ = vec![Vec::<usize>::new(); n];
+    for x in 0..NA {
+        if a.it[x] != 0 { succ[0].push(a.it[x] as usize); }
+    }
+    for i in 0..a.k as usize {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { succ[i + 1].push(a.st[i][x] as usize); }
+        }
+    }
+    // reverse postorder from 0
+    let mut order: Vec<usize> = Vec::new();
+    let mut seen = vec![false; n];
+    fn dfs(u: usize, succ: &[Vec<usize>], seen: &mut Vec<bool>, order: &mut Vec<usize>) {
+        seen[u] = true;
+        for &v in succ[u].iter() {
+            if !seen[v] { dfs(v, succ, seen, order); }
+        }
+        order.push(u);
+    }
+    dfs(0, &succ, &mut seen, &mut order);
+    order.reverse();
+    let mut rpo = vec![usize::MAX; n];
+    for (i, &u) in order.iter().enumerate() { rpo[u] = i; }
+    let mut pred = vec![Vec::<usize>::new(); n];
+    for u in 0..n {
+        for &v in succ[u].iter() { pred[v].push(u); }
+    }
+    // iterative dominators (Cooper-Harvey-Kennedy); idom[0] = 0
+    let mut idom = vec![usize::MAX; n];
+    idom[0] = 0;
+    let intersect = |mut x: usize, mut y: usize, idom: &Vec<usize>, rpo: &Vec<usize>| {
+        while x != y {
+            while rpo[x] > rpo[y] { x = idom[x]; }
+            while rpo[y] > rpo[x] { y = idom[y]; }
+        }
+        x
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &u in order.iter() {
+            if u == 0 || rpo[u] == usize::MAX { continue; }
+            let mut new = usize::MAX;
+            for &p in pred[u].iter() {
+                if rpo[p] == usize::MAX || idom[p] == usize::MAX { continue; }
+                new = if new == usize::MAX { p } else { intersect(new, p, &idom, &rpo) };
+            }
+            if new != usize::MAX && idom[u] != new { idom[u] = new; changed = true; }
+        }
+    }
+    let dominates = |mut d: usize, u: usize, idom: &Vec<usize>| -> bool {
+        let mut x = u;
+        loop {
+            if x == d { return true; }
+            if x == 0 { return false; }
+            let nx = idom[x];
+            if nx == usize::MAX || nx == x { return false; }
+            x = nx;
+        }
+        #[allow(unreachable_code)] { let _ = &mut d; false }
+    };
+    // delete back edges, then test acyclicity of the remainder
+    let mut fwd = vec![Vec::<usize>::new(); n];
+    for u in 0..n {
+        if rpo[u] == usize::MAX { continue; }
+        for &v in succ[u].iter() {
+            if rpo[v] != usize::MAX && dominates(v, u, &idom) { continue; }
+            fwd[u].push(v);
+        }
+    }
+    // Kahn
+    let mut indeg = vec![0usize; n];
+    for u in 0..n { for &v in fwd[u].iter() { indeg[v] += 1; } }
+    let mut q: Vec<usize> = (0..n).filter(|&u| rpo[u] != usize::MAX && indeg[u] == 0).collect();
+    let mut done = 0usize;
+    let live = (0..n).filter(|&u| rpo[u] != usize::MAX).count();
+    while let Some(u) = q.pop() {
+        done += 1;
+        for &v in fwd[u].iter() {
+            indeg[v] -= 1;
+            if indeg[v] == 0 { q.push(v); }
+        }
+    }
+    done == live
+}
+
 /// A compact structural fingerprint, for separating the automata a Thompson automaton can
 /// cover from the ones it cannot. Guessing the invariant has failed twice; this measures it.
 fn features<const NA: usize>(a: &Aut<NA>) -> [u32; 10] {
@@ -1131,17 +1377,18 @@ fn features<const NA: usize>(a: &Aut<NA>) -> [u32; 10] {
         }
         if dist[i] != u32::MAX { cyclens.push(dist[i]); }
     }
-    let gcd = |mut x: u32, mut y: u32| { while y != 0 { let t = x % y; x = y; y = t; } x };
-    let g = cyclens.iter().fold(0u32, |acc, &c| gcd(acc, c));
-    let lmax = cyclens.iter().copied().max().unwrap_or(0);
+    let periods = scc_periods(a);
+    let g = periods.iter().fold(0u32, |acc, &c| gcd_u32(acc, c));
+    let lmax = periods.iter().copied().max().unwrap_or(0);
     let lmin = cyclens.iter().copied().min().unwrap_or(0);
     let halting = (0..k).filter(|&i| a.hl[i] != 0).count();
     let halt_on_cycle = (0..k).filter(|&i| a.hl[i] != 0 && r[i] >> i & 1 == 1).count();
     let full = (1u8 << NA) - 1;
     let fullhalt_cycle = (0..k)
         .filter(|&i| a.hl[i] == full && r[i] >> i & 1 == 1).count();
-    [k as u32, ncomp as u32, maxscc as u32, cyclic as u32, g, lmin, lmax,
-     halting as u32, halt_on_cycle as u32, fullhalt_cycle as u32]
+    let hs = halt_shape(a);
+    [ncomp as u32, maxscc as u32, cyclic as u32, g, lmin, lmax,
+     halt_on_cycle as u32, hs[0], hs[1], hs[2]]
 }
 
 // ---------------------------------------------------------------- the full space
@@ -1204,6 +1451,8 @@ fn expansion_test<const NA: usize>(
         let mut direct = 0u64;   // ... and directly covered by one
         let mut overs = 0u64;    // ... and itself COVERS a Thompson automaton
         let mut overs_ok = 0u64; // ... and is covered too (the cofinality hypothesis holds)
+        let mut red_direct = 0u64; // ... and reducible
+        let mut fsum = [0u64; 10]; // feature sums for the *directly covered* control group
         let mut resist: Vec<(Aut<NA>, bool)> = Vec::new();
         // halt masks: the pseudostate's, then one per state
         let combos = (nmask as u64).pow(k as u32 + 1);
@@ -1234,7 +1483,12 @@ fn expansion_test<const NA: usize>(
             if over0 { overs += 1; }
             if cands.iter().any(|&n| covers(&list[n], &a)) {
                 direct += 1;
-                if over0 { overs_ok += 1; }
+                if over0 {
+                    overs_ok += 1;
+                    if reducible(&a) { red_direct += 1; }
+                    let f = features(&a);
+                    for i in 0..10 { fsum[i] += f[i] as u64; }
+                }
                 continue;
             }
             // Does `a` COVER a Thompson automaton?  Under Stallings' correspondence that
@@ -1245,12 +1499,14 @@ fn expansion_test<const NA: usize>(
             resist.push((a, over));
             let _ = over;
         }
-        (tot, dead, bisim, direct, overs, overs_ok, resist)
-    }).reduce(|| (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Vec::new()), |mut x, y| {
-        x.0 += y.0; x.1 += y.1; x.2 += y.2; x.3 += y.3; x.4 += y.4; x.5 += y.5; x.6.extend(y.6); x
+        (tot, dead, bisim, direct, overs, overs_ok, red_direct, fsum, resist)
+    }).reduce(|| (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, [0u64; 10], Vec::new()), |mut x, y| {
+        x.0 += y.0; x.1 += y.1; x.2 += y.2; x.3 += y.3; x.4 += y.4; x.5 += y.5; x.6 += y.6;
+        for i in 0..10 { x.7[i] += y.7[i]; }
+        x.8.extend(y.8); x
     });
 
-    let (tot, dead, bisim, direct, overs, overs_ok, resist) = acc;
+    let (tot, dead, bisim, direct, overs, overs_ok, red_direct, fsum, resist) = acc;
     println!("  canonical fully reachable automata : {tot}");
     println!("  dropped as dead / null-language    : {dead}");
     println!("  productive AND bisimilar to an exp : {bisim}");
@@ -1258,6 +1514,7 @@ fn expansion_test<const NA: usize>(
     println!("  not directly covered               : {}", resist.len());
     println!("  COVER a Thompson automaton (hyp.)  : {overs}");
     println!("    ... of those, covered directly   : {overs_ok}");
+    println!("    ... of THOSE, reducible          : {red_direct}   <- the control group");
 
     // the ones that need refinement: same three moves as the pullback test
     // deeper and wider than the pullback test: the residue here is small enough that the
@@ -1298,6 +1555,10 @@ on the {} in the hypothesis class ({} outside it, not searched)",
         }
     }
     let cand_list: Vec<(u32, Vec<usize>)> = by_cand.into_iter().collect();
+    // The period law as a filter: sound, and cheaper than the `covers` BFS it guards.
+    // Hoisted so each target's periods are computed once, and each candidate term's once —
+    // not once per (term, target) pair.
+    let pperiods: Vec<Vec<u32>> = hyp.iter().map(|(p, _)| scc_periods(p)).collect();
     println!("    {} distinct candidates over {} (automaton, candidate) pairs",
         cand_list.len(), cand_list.iter().map(|c| c.1.len()).sum::<usize>());
     cand_list.par_iter().for_each(|(n, ps)| {
@@ -1319,13 +1580,18 @@ on the {} in the hypothesis class ({} outside it, not searched)",
                 if let Some(v) = pool.aut(t) {
                     if let Some(c) = canon(&v) {
                         if tried.insert(c) {
+                            let cper = scc_periods(&c);
                             for &i in ps.iter() {
                                 if found[i].load(Ordering::Relaxed) { continue; }
                                 let p = &hyp[i].0;
                                 // a cover is onto, so fewer states than `p` cannot work
-                                if c.k >= p.k && covers(&c, p) {
-                                    found[i].store(true, Ordering::Relaxed);
+                                if c.k < p.k { continue; }
+                                let dp = &pperiods[i];
+                                if !dp.is_empty()
+                                    && !cper.iter().all(|dh| dp.iter().any(|d| dh % d == 0)) {
+                                    continue;
                                 }
+                                if covers(&c, p) { found[i].store(true, Ordering::Relaxed); }
                             }
                         }
                     }
@@ -1343,20 +1609,31 @@ on the {} in the hypothesis class ({} outside it, not searched)",
     println!("  RESIST *within the hypothesis*     : {nres}   <- refutes ThompsonCofinal if > 0");
     // ---- what separates them?
     {
-        let names = ["states", "sccs", "maxscc", "cyclic", "gcdcyc", "mincyc", "maxcyc",
-                     "halting", "haltcyc", "fullhaltcyc"];
+        let names = ["sccs", "maxscc", "cyclic", "gcdperiod", "mincyc", "maxperiod",
+                     "haltcyc", "haltmasks", "maskclash", "haltlevels"];
         let bad: Vec<[u32; 10]> = hyp.iter().zip(rescued.iter())
             .filter(|(_, ok)| !**ok).map(|((p, _), _)| features(p)).collect();
         let good: Vec<[u32; 10]> = hyp.iter().zip(rescued.iter())
             .filter(|(_, ok)| **ok).map(|((p, _), _)| features(p)).collect();
+        let redbad = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| !**ok).filter(|((p, _), _)| reducible(p)).count();
+        let redgood = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| **ok).filter(|((p, _), _)| reducible(p)).count();
+        println!("\n  REDUCIBLE: {redbad} / {} uncovered, {redgood} / {} rescued",
+            bad.len(), good.len());
         println!("\n  FEATURE SEPARATION (hypothesis class only)");
-        println!("    {:<12} {:>18} {:>18}", "feature", "uncovered(mean)", "covered(mean)");
+        // The proper control is every DIRECTLY covered member of the hypothesis class, not
+        // just the ones that happened to need refinement — conditioning on "needed
+        // refinement" makes both groups unusual and can manufacture a difference.
+        println!("    {:<12} {:>14} {:>14} {:>16}",
+            "feature", "uncovered", "rescued", "direct-covered");
         for i in 0..10 {
             let mb = if bad.is_empty() { 0.0 } else {
                 bad.iter().map(|f| f[i] as f64).sum::<f64>() / bad.len() as f64 };
             let mg = if good.is_empty() { 0.0 } else {
                 good.iter().map(|f| f[i] as f64).sum::<f64>() / good.len() as f64 };
-            println!("    {:<12} {:>18.3} {:>18.3}", names[i], mb, mg);
+            let md = if overs_ok == 0 { 0.0 } else { fsum[i] as f64 / overs_ok as f64 };
+            println!("    {:<12} {:>14.3} {:>14.3} {:>16.3}", names[i], mb, mg, md);
         }
         // exact value sets, which matter more than means for small integers
         for i in 0..10 {
@@ -1487,6 +1764,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         frontier = fresh;
     }
     println!("CLOSED: {} fully reachable Thompson automata with <= {maxk} core states", list.len());
+    {
+        // Sanity for the predicate: a structured program's flow graph must be reducible.
+        // If any syntax-generated automaton is irreducible, the test is wrong, not the theory.
+        let bad = list.par_iter().filter(|a| !reducible(a)).count();
+        println!("  irreducible Thompson automata (must be 0): {bad}");
+    }
     if std::env::var("DUMP").is_ok() {
         let mut lines: Vec<String> = list
             .iter()
@@ -1653,6 +1936,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             Some(p) => {
                 let cands = &by_beh[&behaviour(&p)];
                 let found = cands.iter().any(|&n| covers(&list[n], &p));
+                // The period law says every actual cover must pass the divisibility filter.
+                // It is a theorem (a covering sends an n-cycle to a closed n-walk), so a
+                // violation here is a bug in the implementation, not a discovery.
+                let viol = cands.iter()
+                    .any(|&n| covers(&list[n], &p) && !period_compatible(&list[n], &p));
+                if viol { println!("  PERIOD LAW VIOLATED (bug) at |P|={}", p.k); }
                 (i, j, p.k, found)
             }
         })
@@ -1703,6 +1992,23 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             if *ok { solv_n += 1; if h { solv_halt += 1; } }
             else { unsolv_n += 1; if h { unsolv_halt += 1; } }
         }
+    }
+    {
+        // Cross-tabulate reducibility against solvability, rather than reporting a rate.
+        let (mut rr, mut rn, mut ir, mut inn) = (0usize, 0usize, 0usize, 0usize);
+        for r in solv.iter() {
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|p| canon(&p)) {
+                match (reducible(&p), r.3) {
+                    (true, true) => rr += 1,
+                    (true, false) => rn += 1,
+                    (false, true) => ir += 1,
+                    (false, false) => inn += 1,
+                }
+            }
+        }
+        println!("\n  pullback reducible x covered:");
+        println!("    reducible   & covered {rr:>4}   reducible   & NOT {rn:>4}");
+        println!("    irreducible & covered {ir:>4}   irreducible & NOT {inn:>4}");
     }
     println!("  among SOLVABLE pullbacks   : {solv_halt} / {solv_n} have a two-halt 2-cycle");
     println!("  among UNSOLVABLE pullbacks : {unsolv_halt} / {unsolv_n} have a two-halt 2-cycle");
