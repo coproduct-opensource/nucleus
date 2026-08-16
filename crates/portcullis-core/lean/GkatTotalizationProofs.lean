@@ -1000,22 +1000,18 @@ theorem stepAgree_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
   exact crossEquiv_step_of_canonical a₀ hd htb hca hcb h W x hs
 
 /-- Everything `Matched` needs, with productivity replaced throughout. -/
-def matched_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+noncomputable def matched_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     {b : InitializedGAut S₂ A T} (a₀ : A)
     (hda : HaltStepDisjoint a) (hdb : HaltStepDisjoint b)
     (hta : Total a) (htb : Total b)
     (hca : DeadCanonical a₀ a) (hcb : DeadCanonical a₀ b)
     (ra : Reachable a) (rb : Reachable b)
     (la : GAutTargetsListed a.toGAut) (lb : GAutTargetsListed b.toGAut)
-    (hinit : CrossEquiv a b none none) : GkatQuotient.Matched a b where
-  stepab := stepAgree_of_canonical a₀ hda htb hca hcb
-  stepba := stepAgree_of_canonical a₀ hdb hta hcb hca
-  stepbb := stepAgree_of_canonical a₀ hdb htb hcb hcb
-  reacha := ra
-  reachb := rb
-  lista := la
-  listb := lb
-  init := hinit
+    (hinit : CrossEquiv a b none none) : GkatQuotient.Matched a b :=
+  GkatQuotient.matched_of_reachable
+    (stepAgree_of_canonical a₀ hda htb hca hcb)
+    (stepAgree_of_canonical a₀ hdb hta hcb hca)
+    (stepAgree_of_canonical a₀ hdb htb hcb hcb) ra rb la lb hinit
 
 /-- **The behavioural target exists for total, dead-canonical, reachable automata.**  This is
     `NormalCommonTarget`'s construction with `Productive` — which is unachievable — replaced by
@@ -1035,6 +1031,165 @@ theorem span_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
 
 #print axioms stepAgree_of_canonical
 #print axioms span_of_canonical
+
+/-! ## Padding: the behavioural target without reachability
+
+    `Reachable` was never wanted for itself.  It was a way to *produce*, for every state of
+    one automaton, a same-language state of the other — and to know the partners exhaust the
+    other side, which is what makes the far leg of the span onto.  `Matched` now takes that
+    matching as data, so any other way of producing it will do.
+
+    Here is one, and it costs nothing.  For programs `e` and `f`, put
+
+        padOne  e f  =  if 1 then e else f            ≡ e   (U-axioms)
+        padZero e f  =  if 0 then e else f            ≡ f   (U-axioms)
+
+    `ite` builds its core as the disjoint sum of the two branches' cores and touches only the
+    pseudostate, so **the two padded programs have literally the same core** — same state
+    type, same halt guards, same transitions.  Only the entry differs, which is exactly what
+    makes one behave as `e` and the other as `f`.
+
+    So the partner map is the identity, `partner_equiv` is `Iff.rfl`, and `cover` is
+    immediate.  The `f`-side automaton carries a dead copy of `e`'s states and vice versa —
+    unreachable, and no longer a problem, because the construction never asked for
+    reachability, only for the two state-language sets to coincide.  Padding makes them
+    coincide by construction.
+
+    This is what the *accessible* half of trimming was standing in for, and it turns out not
+    to need trimming at all: rather than deleting the states that spoil the match, add the
+    ones that complete it. -/
+
+/-- `if 1 then e else f` — provably `e`, with a dead copy of `f` attached. -/
+def padOne (e f : Exp A T) : Exp A T := .ite BExp.one e f
+
+/-- `if 0 then e else f` — provably `f`, with the *same* core as `padOne e f`. -/
+def padZero (e f : Exp A T) : Exp A T := .ite BExp.zero e f
+
+theorem padOne_equiv (e f : Exp A T) : EquivBA e (padOne e f) :=
+  EquivBA.symm (ite_one e f)
+
+theorem padZero_equiv (e f : Exp A T) : EquivBA f (padZero e f) :=
+  EquivBA.symm (EquivBA.base (ite_zero e f))
+
+theorem settled_padOne {e f : Exp A T} (he : Settled e) (hf : Settled f) :
+    Settled (padOne e f) := Settled.ite _ he hf
+
+theorem settled_padZero {e f : Exp A T} (he : Settled e) (hf : Settled f) :
+    Settled (padZero e f) := Settled.ite _ he hf
+
+/-- **The two padded programs have the same core.**  `iteInitialized` puts the guard on the
+    entry transitions only, so the internal dynamics are identical — which is the whole
+    trick. -/
+theorem pad_core_eq (e f : Exp A T) :
+    (certifiedThompson A T (padZero e f)).aut.core
+      = (certifiedThompson A T (padOne e f)).aut.core := rfl
+
+/-- **Runs from a core state never see the pseudostate.**  So two automata that agree on
+    their cores have the same language at every core state, however their entries differ.
+    This is what makes the padding work: `ite` changes only the entry. -/
+theorem autRun_core_congr {S : Type} {A0 A1 : InitializedGAut S A T}
+    (hhlt : ∀ u : S, A0.core.hlt u = A1.core.hlt u)
+    (htr : ∀ u : S, A0.core.trans u = A1.core.trans u)
+    {X : Type} (W : T → X → Bool) :
+    ∀ (w : List (A × X)) (u : S) (x : X),
+      autRun W A0.toGAut (some u) x w ↔ autRun W A1.toGAut (some u) x w := by
+  intro w
+  induction w with
+  | nil =>
+      intro u x
+      show bval W (A0.core.hlt u) x = true ↔ bval W (A1.core.hlt u) x = true
+      rw [hhlt]
+  | cons hd tl ih =>
+      intro u x
+      have hstep : autStep W A0.toGAut (some u) x = autStep W A1.toGAut (some u) x := by
+        show firstMatch W x ((A0.core.trans u).map (fun t => (t.1, t.2.1, some t.2.2)))
+          = firstMatch W x ((A1.core.trans u).map (fun t => (t.1, t.2.1, some t.2.2)))
+        rw [htr]
+      constructor
+      · rintro ⟨v, hv, hrun⟩
+        obtain ⟨v', rfl⟩ := GkatQuotient.step_target_some A0 W (some u) x hv
+        exact ⟨some v', hstep.symm.trans hv, (ih v' hd.2).mp hrun⟩
+      · rintro ⟨v, hv, hrun⟩
+        obtain ⟨v', rfl⟩ := GkatQuotient.step_target_some A1 W (some u) x hv
+        exact ⟨some v', hstep.trans hv, (ih v' hd.2).mpr hrun⟩
+
+/-- Hence every core state is its own partner. -/
+theorem pad_partner (e f : Exp A T) (s : (certifiedThompson A T (padZero e f)).State) :
+    CrossEquiv (certifiedThompson A T (padZero e f)).aut
+      (certifiedThompson A T (padOne e f)).aut (some s) (some s) := by
+  intro X W gs
+  obtain ⟨y, v⟩ := gs
+  exact autRun_core_congr (A0 := (certifiedThompson A T (padZero e f)).aut)
+    (A1 := (certifiedThompson A T (padOne e f)).aut) (fun _ => rfl) (fun _ => rfl) W v s y
+
+/-- The pseudostates match exactly when the two programs do. -/
+theorem pad_init (e f : Exp A T) (h : UniformLanguageEquivalent e f) :
+    CrossEquiv (certifiedThompson A T (padZero e f)).aut
+      (certifiedThompson A T (padOne e f)).aut none none := by
+  intro X W gs
+  have h0 := congrFun (certifiedThompson_start_language (padZero e f) X W) gs
+  have h1 := congrFun (certifiedThompson_start_language (padOne e f) X W) gs
+  rw [h0, h1]
+  exact (sound_BA (V := W) (padZero_equiv e f) gs).symm.trans
+    ((h X W gs).symm.trans (sound_BA (V := W) (padOne_equiv e f) gs))
+
+/-- **`Matched` with no reachability anywhere.** -/
+def matched_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
+    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
+    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
+    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut) :
+    GkatQuotient.Matched (certifiedThompson A T (padZero e f)).aut
+      (certifiedThompson A T (padOne e f)).aut where
+  stepab := stepAgree_of_canonical a₀ hd0 ht1 hc0 hc1
+  stepba := stepAgree_of_canonical a₀ hd1 ht0 hc1 hc0
+  stepbb := stepAgree_of_canonical a₀ hd1 ht1 hc1 hc1
+  init := pad_init e f hlang
+  partner := id
+  partner_equiv := pad_partner e f
+  partner_mem := fun _ hs => hs
+  cover := fun t ht => ⟨t, ht, pad_partner e f t⟩
+
+/-- **The behavioural target, with `Reachable` eliminated.**  Both padded programs cover the
+    same system, and one is provably `f` while the other is provably `e`. -/
+theorem span_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
+    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
+    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
+    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut) :
+    Nonempty (InitCover (certifiedThompson A T (padZero e f)).aut
+        (GkatQuotient.target (certifiedThompson A T (padOne e f)).aut)) ∧
+      Nonempty (InitCover (certifiedThompson A T (padOne e f)).aut
+        (GkatQuotient.target (certifiedThompson A T (padOne e f)).aut)) :=
+  GkatQuotient.span_of_matched (matched_of_pad a₀ e f hlang hd0 hd1 ht0 ht1 hc0 hc1)
+
+/-- **The common target, in the exact shape `CanonicalCommonTarget` asks for** — with no
+    reachability hypothesis anywhere.  The basepoint comes from any listed state of the
+    source, via `Base.ofMem`. -/
+theorem commonTarget_of_pad (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
+    (hd0 : HaltStepDisjoint (certifiedThompson A T (padZero e f)).aut)
+    (hd1 : HaltStepDisjoint (certifiedThompson A T (padOne e f)).aut)
+    (ht0 : Total (certifiedThompson A T (padZero e f)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f)).aut)
+    {u : (certifiedThompson A T (padZero e f)).State}
+    (hu : u ∈ (certifiedThompson A T (padZero e f)).aut.core.states) :
+    ∃ (Q : Type) (m : InitializedGAut Q A T)
+      (φ : InitCover (certifiedThompson A T (padZero e f)).aut m)
+      (ψ : InitCover (certifiedThompson A T (padOne e f)).aut m),
+      Nonempty (GkatPullback.Base φ ψ) := by
+  obtain ⟨⟨φ⟩, ⟨ψ⟩⟩ := span_of_pad a₀ e f hlang hd0 hd1 ht0 ht1 hc0 hc1
+  exact ⟨_, _, φ, ψ, GkatPullback.Base.ofMem φ ψ hu⟩
+
+#print axioms commonTarget_of_pad
+#print axioms pad_partner
+#print axioms pad_init
+#print axioms span_of_pad
 
 /-! ## The repaired chain
 

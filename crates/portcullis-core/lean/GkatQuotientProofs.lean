@@ -233,29 +233,51 @@ noncomputable def targetCover (hsb : StepAgree b b) : InitCover b (target b) whe
     choice of partner to a canonical one — which is what makes the two legs land on the
     *same* target rather than on two isomorphic ones. -/
 
-/-- Everything the two automata must satisfy for the span to exist: both normal, both with
-    listed step targets, and pseudostates of the same language — the last being exactly
-    `UniformLanguageEquivalent` for the two programs. -/
+/-- Everything the two automata must satisfy for the span to exist.
+
+    The matching is now **data**, not a consequence of reachability.  Reachability was only
+    ever a way to *produce* a same-language partner for each state, and it is not the only
+    way — `matched_of_reachable` recovers the old route, while a padding argument can supply
+    the partner directly and needs no reachability at all.
+
+    `partner` gives each state of `a` a same-language state of `b`; `cover` says the partners
+    exhaust `b`'s states up to language, which is what makes the far leg of the span *onto*. -/
 structure Matched (a : InitializedGAut S₁ A T) (b : InitializedGAut S₂ A T) where
   stepab : StepAgree a b
   stepba : StepAgree b a
   stepbb : StepAgree b b
-  reacha : Reachable a
-  reachb : Reachable b
-  lista : GAutTargetsListed a.toGAut
-  listb : GAutTargetsListed b.toGAut
   init : CrossEquiv a b none none
+  partner : S₁ → S₂
+  partner_equiv : ∀ s : S₁, CrossEquiv a b (some s) (some (partner s))
+  partner_mem : ∀ s ∈ a.core.states, partner s ∈ b.core.states
+  cover : ∀ t ∈ b.core.states, ∃ s ∈ a.core.states, CrossEquiv a b (some s) (some t)
 
-/-- A chosen same-language partner in `b` for each state of `a`. -/
-noncomputable def matchTo (M : Matched a b) (s : S₁) : S₂ :=
-  Classical.choose (match_core M.stepab M.reacha M.listb M.init s)
+/-- **The old route.**  Reachability plus listed targets produces the partner by lockstep
+    matching, so nothing that already satisfied `Matched` stops doing so. -/
+noncomputable def matched_of_reachable {a : InitializedGAut S₁ A T} {b : InitializedGAut S₂ A T}
+    (stepab : StepAgree a b) (stepba : StepAgree b a) (stepbb : StepAgree b b)
+    (reacha : Reachable a) (reachb : Reachable b)
+    (lista : GAutTargetsListed a.toGAut) (listb : GAutTargetsListed b.toGAut)
+    (init : CrossEquiv a b none none) : Matched a b where
+  stepab := stepab
+  stepba := stepba
+  stepbb := stepbb
+  init := init
+  partner := fun s => Classical.choose (match_core stepab reacha listb init s)
+  partner_equiv := fun s => (Classical.choose_spec (match_core stepab reacha listb init s)).1
+  partner_mem := fun s _ => (Classical.choose_spec (match_core stepab reacha listb init s)).2
+  cover := fun t _ => by
+    obtain ⟨s, hs, hsmem⟩ := match_core stepba reachb lista init.symm t
+    exact ⟨s, hsmem, hs.symm⟩
+
+/-- The chosen same-language partner in `b` for each state of `a`. -/
+def matchTo (M : Matched a b) (s : S₁) : S₂ := M.partner s
 
 theorem matchTo_equiv (M : Matched a b) (s : S₁) :
-    CrossEquiv a b (some s) (some (matchTo M s)) :=
-  (Classical.choose_spec (match_core M.stepab M.reacha M.listb M.init s)).1
+    CrossEquiv a b (some s) (some (matchTo M s)) := M.partner_equiv s
 
-theorem matchTo_mem (M : Matched a b) (s : S₁) : matchTo M s ∈ b.core.states :=
-  (Classical.choose_spec (match_core M.stepab M.reacha M.listb M.init s)).2
+theorem matchTo_mem (M : Matched a b) {s : S₁} (hs : s ∈ a.core.states) :
+    matchTo M s ∈ b.core.states := M.partner_mem s hs
 
 /-- Partners are canonical after `rep`: any two same-language states of `b` get the same
     representative, so it does not matter which partner was chosen. -/
@@ -326,12 +348,12 @@ noncomputable def matchCover (M : Matched a b) : InitCover a (target b) where
     refine strip_some (f := fun u : S₁ => rep b (matchTo M u)) (g := rep b) ?_
     have := cross_step_rep M (matchTo_equiv M s) W x
     rwa [autStep_core, autStep_core, Option.map_map, Option.map_map] at this
-  maps := fun s _ => List.mem_map_of_mem (matchTo_mem M s)
+  maps := fun s hs => List.mem_map_of_mem (matchTo_mem M hs)
   onto := by
     intro q hq
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hq
-    obtain ⟨s, hs, hsmem⟩ := match_core M.stepba M.reachb M.lista M.init.symm t
-    exact ⟨s, hsmem, rep_matchTo M hs.symm⟩
+    obtain ⟨s, hsmem, hs⟩ := M.cover t ht
+    exact ⟨s, hsmem, rep_matchTo M hs⟩
 
 /-! ## The span -/
 
