@@ -34,22 +34,39 @@ already carries: `w3_ba` requires `EquivBA (.test (E e)) (.test .zero)` — the 
 immediately — before the fixpoint rule may be applied.  So the two sources of partiality in
 GKAT's automata are exactly the two places its axiomatisation already treats specially.
 
-## `Settled`, and what is left
+## Both sources are repaired: `settledReachable`
 
 `Settled` names the syntactic class the lemmas add up to, and `total_of_settled` proves every
-`Settled` program has a total automaton.  `totalTest` then discharges the first source
-outright: `b?` is provably equal to `if b then 1? else (while 1 do a)`, which is `Settled`.
-That uses the sink, and it needs `A` inhabited — a language with no actions at all has no
-divergent program to route into, and there stuckness is irreparable.
+`Settled` program has a total automaton.  Both sources are then discharged, and
+`settledReachable` puts them together: **every program is provably equal to a settled one**,
+hence to one whose automaton is total (`total_form`).
 
-What is left is `SettledReachable`: every program is provably equal to a `Settled` one.  The
-`test` case is done here; the loop case is the remaining obligation, and it is now a single
-identified statement rather than a search for the right normal form.
+  * **The test.**  `b?` is provably equal to `if b then 1? else (while 1 do a)` — the sink,
+    used for what it was built for.
+  * **The loop.**  `while g do e ≡ while g do (if ¬E(e) then e else diverge)`
+    (`loop_settles`), whose body has `E = 0` *for every* `e`, so it steps under every guard
+    and the side condition is discharged outright rather than assumed.
+
+The loop derivation rests on one algebraic fact, `halt_restriction`: **a program restricted to
+the atoms where it can halt immediately is `skip`** — `E(e)? · e ≡ E(e)?`, proved by induction
+on `e` from the finite axioms, `[propext]` only.  Determinism is why it is true: a
+deterministic automaton that halts cannot also step, so on that region the empty word is all
+it accepts.  Through `U1` and `U4` it gives the decomposition `e ≡ e +_{¬E e} 1`, which is
+precisely the step the literature identifies as what a productive normal form needs, and then
+`W2` — "non-productive loop iterations do not contribute" — does the rest.
+
+One step there is not in the literature and is the reason this reaches totality rather than
+mere productivity.  `W2`'s own normal form `(¬E e)? · e` *is* productive — its `E` is `0` —
+but its automaton is **stuck** at immediate-halt atoms, not total.  Replacing the dead arm by
+the sink keeps `E = 0` and makes it step instead.  Productive is not the same as total, and
+the difference is exactly a `0` where a divergence belongs.
+
+The whole thing needs `A` inhabited, and that is the honest boundary: with no actions there is
+no divergent program to route stuck configurations into, and the partiality is irreparable.
 
 Note what changed.  Pruning had to remove states — dead regions, unreachable branches — and
 was defeated three times because the constructors destroy the induction hypothesis.
-Totalising *adds* transitions, and the four lemmas above show the induction hypothesis
-survives every constructor but one.
+Totalising *adds* transitions, and the induction hypothesis survives every constructor.
 -/
 
 namespace GkatTotalization
@@ -381,6 +398,208 @@ theorem wh_test_not_total :
   · have hfalse : (false : Bool) = true := hs
     exact Bool.noConfusion hfalse
 
+/-! ## The halt guard is `E`
+
+    The pseudostate's halt guard is the syntactic `E(e)` — the very Boolean expression `W3`'s
+    side condition is about.  Structural, and it is what lets `BodySteps` be checked by
+    computing on syntax rather than by inspecting an automaton. -/
+
+theorem initHlt_eq_E (e : Exp A T) : (certifiedThompson A T e).aut.initHlt = E e := by
+  induction e with
+  | act p => rfl
+  | test b => rfl
+  | seq f h ihf ihh =>
+      show BExp.and (certifiedThompson A T f).aut.initHlt
+        (certifiedThompson A T h).aut.initHlt = BExp.and (E f) (E h)
+      rw [ihf, ihh]
+  | ite c f h ihf ihh =>
+      show BExp.or (BExp.and c (certifiedThompson A T f).aut.initHlt)
+          (BExp.and (BExp.not c) (certifiedThompson A T h).aut.initHlt)
+        = BExp.or (BExp.and c (E f)) (BExp.and (BExp.not c) (E h))
+      rw [ihf, ihh]
+  | wh c f _ => rfl
+
+/-! ## Restriction to the immediate-halt region
+
+    The one algebraic fact the loop case needs: **a program restricted to the atoms where it
+    can halt immediately is `skip`**.  Determinism is why — at such an atom the program halts,
+    and a deterministic automaton that halts cannot also step, so the empty word is all it
+    accepts.
+
+    Stated with an arbitrary antecedent guard `b ≤ E(e)` rather than `E(e)` itself, because
+    that is what makes the induction go through: the `seq` case needs it at `b`, and the `ite`
+    case at `b ∧ c` and `b ∧ ¬c`. -/
+
+theorem test_restrict (e : Exp A T) : ∀ (b : BExp T), GuardImplies b (E e) →
+    EquivBA (.seq (.test b) e : Exp A T) (.test b) := by
+  induction e with
+  | act p =>
+      intro b hle
+      have hunsat : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W b x = false := by
+        intro X W x
+        cases hb : bval W b x with
+        | false => rfl
+        | true =>
+            have hc : (false : Bool) = true := hle X W x hb
+            exact Bool.noConfusion hc
+      exact EquivBA.trans (GkatGuardedAlgebra.test_unsat_seq (.act p) hunsat)
+        (EquivBA.baTest (fun X W x => (hunsat X W x).symm))
+  | test c =>
+      intro b hle
+      exact EquivBA.trans (EquivBA.s6 b c)
+        (EquivBA.baTest (GkatGuardedAlgebra.band_of_implies hle))
+  | seq f h ihf ihh =>
+      intro b hle
+      have hf : GuardImplies b (E f) := fun X W x hb =>
+        ((Bool.and_eq_true _ _).mp (hle X W x hb)).1
+      have hh : GuardImplies b (E h) := fun X W x hb =>
+        ((Bool.and_eq_true _ _).mp (hle X W x hb)).2
+      exact EquivBA.trans (EquivBA.symm (GkatGuardedAlgebra.seq_assoc (.test b) f h))
+        (EquivBA.trans
+          (EquivBA.seq_c (ihf b hf) (EquivBA.base (Equiv.refl h)))
+          (ihh b hh))
+  | ite c f h ihf ihh =>
+      intro b hle
+      have hf : GuardImplies (BExp.and b c) (E f) := by
+        intro X W x hbc
+        have hb : bval W b x = true := ((Bool.and_eq_true _ _).mp hbc).1
+        have hc : bval W c x = true := ((Bool.and_eq_true _ _).mp hbc).2
+        have hor : (bval W c x && bval W (E f) x ||
+            (!bval W c x) && bval W (E h) x) = true := hle X W x hb
+        rw [hc] at hor
+        simpa using hor
+      have hh : GuardImplies (BExp.and (BExp.not (BExp.and b c)) b) (E h) := by
+        intro X W x hbc
+        have hnbc : (!(bval W b x && bval W c x)) = true := ((Bool.and_eq_true _ _).mp hbc).1
+        have hb : bval W b x = true := ((Bool.and_eq_true _ _).mp hbc).2
+        have hor : (bval W c x && bval W (E f) x ||
+            (!bval W c x) && bval W (E h) x) = true := hle X W x hb
+        rw [hb] at hnbc
+        have hc : bval W c x = false := by
+          cases hcv : bval W c x with
+          | false => rfl
+          | true => rw [hcv] at hnbc; exact Bool.noConfusion hnbc
+        rw [hc] at hor
+        simpa using hor
+      refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite b c f h) ?_
+      refine EquivBA.trans (EquivBA.base (Equiv.u4 (.and b c) f (.seq (.test b) h))) ?_
+      refine EquivBA.trans
+        (EquivBA.ite_c (ihf (.and b c) hf) (EquivBA.base (Equiv.refl (.seq (.test b) h)))) ?_
+      refine EquivBA.trans
+        (GkatGuardedAlgebra.ite_restrict_else (.and b c) (.test (.and b c))
+          (.seq (.test b) h)) ?_
+      refine EquivBA.trans
+        (EquivBA.ite_c (EquivBA.base (Equiv.refl (.test (.and b c))))
+          (GkatGuardedAlgebra.test_seq_merge (.not (.and b c)) b h)) ?_
+      refine EquivBA.trans
+        (EquivBA.ite_c (EquivBA.base (Equiv.refl (.test (.and b c))))
+          (ihh (.and (.not (.and b c)) b) hh)) ?_
+      refine EquivBA.trans
+        (ite_tests_ba (.and b c) (.and b c) (.and (.not (.and b c)) b)) ?_
+      refine EquivBA.baTest ?_
+      intro X W x
+      show ((bval W b x && bval W c x) && (bval W b x && bval W c x) ||
+        (!(bval W b x && bval W c x)) &&
+          ((!(bval W b x && bval W c x)) && bval W b x)) = bval W b x
+      cases bval W b x <;> cases bval W c x <;> rfl
+  | wh c f _ =>
+      intro b hle
+      have hunsat : ∀ (X : Type) (W : T → X → Bool) (x : X),
+          bval W (BExp.and b c) x = bval W (BExp.zero : BExp T) x := by
+        intro X W x
+        show (bval W b x && bval W c x) = false
+        cases hb : bval W b x with
+        | false => rfl
+        | true =>
+            have hnc : (!bval W c x) = true := hle X W x hb
+            cases hc : bval W c x with
+            | false => rfl
+            | true => rw [hc] at hnc; exact Bool.noConfusion hnc
+      refine EquivBA.trans
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl (.test b))) (EquivBA.base (Equiv.w1 c f))) ?_
+      refine EquivBA.trans
+        (GkatGuardedAlgebra.test_seq_ite b c (.seq f (.wh c f)) (.test .one)) ?_
+      refine EquivBA.trans (EquivBA.ite_guard hunsat) ?_
+      refine EquivBA.trans (EquivBA.base (ite_zero (.seq f (.wh c f)) (.seq (.test b) (.test .one)))) ?_
+      exact GkatGuardedAlgebra.seq_one (.test b)
+
+/-- **A program is `skip` on the atoms where it halts immediately.** -/
+theorem halt_restriction (e : Exp A T) :
+    EquivBA (.seq (.test (E e)) e : Exp A T) (.test (E e)) :=
+  test_restrict e (E e) (fun _ _ _ h => h)
+
+/-- **The decomposition.**  `e ≡ e +_{¬E e} 1` — every program splits into its
+    immediate-halt region, where it is `skip`, and the rest, where it must act.
+
+    This is the step the literature identifies as the one a productive normal form needs, and
+    it is exactly `halt_restriction` seen through `U1` and `U4`. -/
+theorem decomposes (e : Exp A T) :
+    EquivBA (e : Exp A T) (.ite (.not (E e)) e (.test BExp.one)) := by
+  have hu1 : EquivBA (e : Exp A T) (.ite (E e) e e) :=
+    EquivBA.symm (EquivBA.base (Equiv.u1 (E e) e))
+  have hthen : EquivBA (.ite (E e) (.test BExp.one) e : Exp A T) (.ite (E e) e e) :=
+    EquivBA.trans (EquivBA.base (Equiv.u4 (E e) (.test .one) e))
+      (EquivBA.trans
+        (EquivBA.ite_c (GkatGuardedAlgebra.seq_one (.test (E e)))
+          (EquivBA.base (Equiv.refl e)))
+        (EquivBA.trans
+          (EquivBA.ite_c (EquivBA.symm (halt_restriction e))
+            (EquivBA.base (Equiv.refl e)))
+          (EquivBA.symm (EquivBA.base (Equiv.u4 (E e) e e)))))
+  exact EquivBA.trans (EquivBA.trans hu1 (EquivBA.symm hthen))
+    (EquivBA.base (Equiv.u2 (E e) (.test .one) e))
+
+/-! ## The loop case, closed -/
+
+/-- The settled loop body: `if ¬E(e) then e else diverge`.  Its own `E` is `0` *for every*
+    `e` — the immediate-halt region has been replaced by divergence rather than pruned, which
+    is why the result steps everywhere instead of merely failing to halt. -/
+def settledBody (e : Exp A T) (a : A) : Exp A T := .ite (.not (E e)) e (div a)
+
+theorem settled_settledBody (a : A) {e : Exp A T} (h : Settled e) :
+    Settled (settledBody e a) :=
+  Settled.ite _ h (settled_div a)
+
+/-- The settled body never halts immediately, whatever `e` was. -/
+theorem settledBody_never_halts (e : Exp A T) (a : A) {X : Type} (W : T → X → Bool) (x : X) :
+    bval W (certifiedThompson A T (settledBody e a)).aut.initHlt x = false := by
+  rw [initHlt_eq_E]
+  show ((!bval W (E e) x) && bval W (E e) x ||
+    (!(!bval W (E e) x)) && (!bval W (BExp.one : BExp T) x)) = false
+  cases bval W (E e) x <;> rfl
+
+/-- …so it steps under *every* guard, and the loop side condition is discharged outright. -/
+theorem bodySteps_settledBody (g : BExp T) {e : Exp A T} (a : A) (hs : Settled e) :
+    BodySteps (certifiedThompson A T (settledBody e a)).aut g := by
+  intro X W x _
+  rcases (totalParts_of_settled (settled_settledBody a hs)).init X W x with hh | hstep
+  · rw [settledBody_never_halts e a W x] at hh
+    exact Bool.noConfusion hh
+  · exact hstep
+
+/-- **The loop rewrite is provable.**  `while g do e ≡ while g do (if ¬E(e) then e else 0)`.
+
+    The derivation is four steps and uses `W2` for exactly what `W2` is for — "non-productive
+    loop iterations do not contribute":
+
+      `while g do e`
+        ≡ `while g do (e +_{¬E e} 1)`      decomposition
+        ≡ `while g do ((¬E e)? ; e)`       W2
+        ≡ `while g do (e +_{¬E e} 0)`      an assertion is a guarded choice with a dead arm
+        ≡ `while g do (e +_{¬E e} div)`    the sink is provably `0`
+
+    The last step is the one that matters.  `W2`'s own normal form `(¬E e)?·e` is *productive*
+    — its `E` is `0` — but its automaton is **stuck** at immediate-halt atoms, not total.
+    Replacing the dead arm by the sink keeps `E = 0` and makes it step instead. -/
+theorem loop_settles (g : BExp T) (e : Exp A T) (a : A) :
+    EquivBA (.wh g e : Exp A T) (.wh g (settledBody e a)) :=
+  EquivBA.trans (EquivBA.wh_c (decomposes e))
+    (EquivBA.trans (EquivBA.base (Equiv.w2 g (.not (E e)) e))
+      (EquivBA.trans
+        (EquivBA.wh_c (EquivBA.symm (GkatGuardedAlgebra.ite_zero_else (.not (E e)) e)))
+        (EquivBA.wh_c (EquivBA.ite_c (EquivBA.base (Equiv.refl e))
+          (EquivBA.symm (GkatNormal.wh_one_provably_zero (.act a)))))))
+
 /-! ## What remains -/
 
 /-- **The remaining obligation.**  Every program is provably equal to a settled one.
@@ -399,6 +618,43 @@ theorem total_form_of_settledReachable (hs : SettledReachable A T) (e : Exp A T)
   obtain ⟨h, heq, hset⟩ := hs e
   exact ⟨h, heq, total_of_settled hset⟩
 
+/-- **Every program is provably equal to a settled one** — hence to one whose automaton is
+    total.  The induction is now routine: `test` uses the sink, `seq` and `ite` impose no
+    condition at all, and `wh` uses `loop_settles`.
+
+    Needs an action, and that is the honest boundary of the result: with `A` empty there is no
+    divergent program to route stuck configurations into, and the partiality is irreparable. -/
+theorem settledReachable (a : A) : SettledReachable A T := by
+  intro e
+  induction e with
+  | act p => exact ⟨.act p, EquivBA.base (Equiv.refl _), Settled.act p⟩
+  | test b => exact ⟨totalTest a b, totalTest_equiv a b, settled_totalTest a b⟩
+  | seq f h ihf ihh =>
+      obtain ⟨f', hf, sf⟩ := ihf
+      obtain ⟨h', hh, sh⟩ := ihh
+      exact ⟨.seq f' h', EquivBA.seq_c hf hh, Settled.seq sf sh⟩
+  | ite c f h ihf ihh =>
+      obtain ⟨f', hf, sf⟩ := ihf
+      obtain ⟨h', hh, sh⟩ := ihh
+      exact ⟨.ite c f' h', EquivBA.ite_c hf hh, Settled.ite c sf sh⟩
+  | wh c f ihf =>
+      obtain ⟨f', hf, sf⟩ := ihf
+      exact ⟨.wh c (settledBody f' a),
+        EquivBA.trans (EquivBA.wh_c hf) (loop_settles c f' a),
+        Settled.wh c (settled_settledBody a sf) (bodySteps_settledBody c a sf)⟩
+
+/-- **Totalisation, done.**  Every program is provably equal to one whose automaton is total
+    — the hypothesis `step_agree_of_total` needs, now discharged rather than assumed. -/
+theorem total_form (a : A) (e : Exp A T) :
+    ∃ h : Exp A T, EquivBA e h ∧ Total (certifiedThompson A T h).aut :=
+  total_form_of_settledReachable (settledReachable a) e
+
+#print axioms initHlt_eq_E
+#print axioms halt_restriction
+#print axioms decomposes
+#print axioms loop_settles
+#print axioms settledReachable
+#print axioms total_form
 #print axioms total_of_parts
 #print axioms parts_of_total
 #print axioms totalParts_ite
