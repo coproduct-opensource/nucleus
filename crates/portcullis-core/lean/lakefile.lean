@@ -689,6 +689,10 @@ lean_lib «GkatQuotientProofs» where
 lean_lib «GkatPeriodProofs» where
   roots := #[`GkatPeriodProofs]
 
+-- The exit law: a GKAT while-loop has exactly one exit condition, tested at the entry.
+lean_lib «GkatLoopExitProofs» where
+  roots := #[`GkatLoopExitProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where

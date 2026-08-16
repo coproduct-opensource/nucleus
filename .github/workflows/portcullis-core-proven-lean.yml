@@ -122,6 +122,7 @@ jobs:
             GkatCommonTargetProofs \
             GkatQuotientProofs \
             GkatPeriodProofs \
+            GkatLoopExitProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \
