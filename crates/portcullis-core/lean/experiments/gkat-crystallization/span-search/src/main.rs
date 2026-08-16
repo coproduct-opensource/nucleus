@@ -1141,8 +1141,15 @@ fn expansion_test<const NA: usize>(
         .and_then(|v| v.parse().ok()).unwrap_or(4);
     let cap: usize = std::env::var("EXPAND_CAP").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(200_000);
-    println!("  refinement search: {rounds} rounds, frontier cap {cap}");
-    let rescued: Vec<bool> = resist.par_iter().map(|(p, _)| {
+    // Only the hypothesis class is searched.  An automaton that covers no Thompson automaton
+    // is outside `ThompsonCofinal` and cannot refute it however the search turns out, so
+    // spending the refinement budget there buys nothing — at kmax=4 it is the difference
+    // between 166 searches and 8404.  The skipped count is reported, not silently dropped.
+    let hyp: Vec<&(Aut<NA>, bool)> = resist.iter().filter(|(_, o)| *o).collect();
+    println!("  refinement search: {rounds} rounds, frontier cap {cap}, \
+on the {} in the hypothesis class ({} outside it, not searched)",
+        hyp.len(), resist.len() - hyp.len());
+    let rescued: Vec<bool> = hyp.par_iter().map(|(p, _)| {
         let cands = &by_beh[&behaviour(p)];
         for &n in cands.iter() {
             let mut frontier = vec![to_tree(list, prov, n as u32)];
@@ -1165,10 +1172,10 @@ fn expansion_test<const NA: usize>(
         false
     }).collect();
     let nres = rescued.iter().filter(|b| !**b).count();
-    println!("  rescued by refinement              : {}", rescued.len() - nres);
-    println!("  RESIST (bisimilar but uncovered)   : {nres}");
+    println!("  of those, rescued by refinement    : {}", rescued.len() - nres);
+    println!("  RESIST *within the hypothesis*     : {nres}   <- refutes ThompsonCofinal if > 0");
     let (mut isp, mut iso) = (0usize, 0usize);
-    for ((p, over), ok) in resist.iter().zip(rescued.iter()) {
+    for ((p, over), ok) in hyp.iter().zip(rescued.iter()) {
         if !*ok {
             let ispull = pulls.contains(p);
             if ispull { isp += 1; }

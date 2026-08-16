@@ -671,6 +671,11 @@ lean_lib «GkatCyclicCoverProofs» where
 lean_lib «GkatCofinalityProofs» where
   roots := #[`GkatCofinalityProofs]
 
+-- Discharges the constructive half: the fibre product of two covers of a common system,
+-- with both projections proved to be covers.
+lean_lib «GkatPullbackProofs» where
+  roots := #[`GkatPullbackProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
