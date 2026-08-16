@@ -117,6 +117,7 @@ jobs:
             GkatPositiveForkProofs \
             GkatUnrollCoverProofs \
             GkatCyclicCoverProofs \
+            GkatCofinalityProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \

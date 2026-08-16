@@ -409,3 +409,43 @@ most lookups hit. What the profile-driven pass changed, all outputs held identic
   K=5  31.4s  -> 4.84s        CPU 185% -> 393%
   K=6  full run incl. expansion test: 1m52s
 ```
+
+### The corrected target, and what it factors into
+
+Stallings' Lemma supplies the dictionary. Covers of a graph `m` correspond to subgroups of
+the free group `π₁ m`; a Thompson automaton picks out a "Thompson subgroup"; and the fibre
+product of two covers has
+
+    π₁ (a ⊗_m b)  =  π₁ a ∩ π₁ b.
+
+So the pullback of two equivalent Thompson automata *is* the subgroup `H_e ∩ H_f`, and the
+corrected target says some Thompson subgroup lies below it.
+
+That suggests a statement stronger than the target but weaker than the refuted one, and it
+is exactly the property the counterexamples lack:
+
+    ThompsonCofinal:  a system that COVERS a Thompson automaton is COVERED by one.
+
+A pullback always satisfies the hypothesis — it projects onto both sides. Group-theoretically
+this says Thompson subgroups are **cofinal below every Thompson subgroup**, which handles the
+intersection case and explains the counterexamples at once: they lie below no Thompson
+subgroup at all, so nothing is required of them.
+
+Measured at `kmax = 3` against the K=6 closure:
+
+```
+  productive AND bisimilar to an expression : 9191
+  COVER a Thompson automaton (hypothesis)   : 2542
+    ... of those, COVERED by one            : 2542      <- no exceptions, none needing refinement
+  RESIST (bisimilar but uncovered)          :    6
+    ... of those, COVER a Thompson automaton:    0      <- every counterexample fails the hypothesis
+```
+
+`GkatCofinalityProofs.lean` names the split and proves the reduction:
+`commonCoveredIntermediate_of_halves` derives the residual obligation from `SpanExists`
+(a construction — the pullback) plus `ThompsonCofinal` (the substantive half), and
+`completeness_of_halves` chains it to `FiniteAxiomsCompleteBA`. Both are `sorry`-free.
+
+It also records why no degree-3 cyclic cover was ever needed: `cyclicCover4` is
+`cyclicCover` composed with itself, so every power of two comes for free from
+`InitCover.comp`, and the data shows degree 3 rescues nothing those do not.

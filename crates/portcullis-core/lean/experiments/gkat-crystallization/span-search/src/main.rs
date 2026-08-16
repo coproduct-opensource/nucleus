@@ -1077,7 +1077,9 @@ fn expansion_test<const NA: usize>(
         let mut dead = 0u64;     // ... but with an empty-language region (Phase A prunes)
         let mut bisim = 0u64;    // ... productive AND bisimilar to an expression
         let mut direct = 0u64;   // ... and directly covered by one
-        let mut resist: Vec<Aut<NA>> = Vec::new();
+        let mut overs = 0u64;    // ... and itself COVERS a Thompson automaton
+        let mut overs_ok = 0u64; // ... and is covered too (the cofinality hypothesis holds)
+        let mut resist: Vec<(Aut<NA>, bool)> = Vec::new();
         // halt masks: the pseudostate's, then one per state
         let combos = (nmask as u64).pow(k as u32 + 1);
         for code in 0..combos {
@@ -1103,20 +1105,34 @@ fn expansion_test<const NA: usize>(
             }
             let cands = match by_beh.get(&behaviour(&a)) { Some(v) => v, None => continue };
             bisim += 1;
-            if cands.iter().any(|&n| covers(&list[n], &a)) { direct += 1; continue; }
-            resist.push(a);
+            let over0 = cands.iter().any(|&n| covers(&a, &list[n]));
+            if over0 { overs += 1; }
+            if cands.iter().any(|&n| covers(&list[n], &a)) {
+                direct += 1;
+                if over0 { overs_ok += 1; }
+                continue;
+            }
+            // Does `a` COVER a Thompson automaton?  Under Stallings' correspondence that
+            // means pi_1(a) sits inside a Thompson subgroup — the situation a pullback is
+            // always in, since P -> e is a cover.  Splitting the residue on this separates
+            // "arbitrary automaton" from "the shape the programme has to handle".
+            let over = cands.iter().any(|&n| covers(&a, &list[n]));
+            resist.push((a, over));
+            let _ = over;
         }
-        (tot, dead, bisim, direct, resist)
-    }).reduce(|| (0u64, 0u64, 0u64, 0u64, Vec::new()), |mut x, y| {
-        x.0 += y.0; x.1 += y.1; x.2 += y.2; x.3 += y.3; x.4.extend(y.4); x
+        (tot, dead, bisim, direct, overs, overs_ok, resist)
+    }).reduce(|| (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, Vec::new()), |mut x, y| {
+        x.0 += y.0; x.1 += y.1; x.2 += y.2; x.3 += y.3; x.4 += y.4; x.5 += y.5; x.6.extend(y.6); x
     });
 
-    let (tot, dead, bisim, direct, resist) = acc;
+    let (tot, dead, bisim, direct, overs, overs_ok, resist) = acc;
     println!("  canonical fully reachable automata : {tot}");
     println!("  dropped as dead / null-language    : {dead}");
     println!("  productive AND bisimilar to an exp : {bisim}");
     println!("  DIRECTLY covered by an expression  : {direct}");
     println!("  not directly covered               : {}", resist.len());
+    println!("  COVER a Thompson automaton (hyp.)  : {overs}");
+    println!("    ... of those, covered directly   : {overs_ok}");
 
     // the ones that need refinement: same three moves as the pullback test
     // deeper and wider than the pullback test: the residue here is small enough that the
@@ -1126,7 +1142,7 @@ fn expansion_test<const NA: usize>(
     let cap: usize = std::env::var("EXPAND_CAP").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(200_000);
     println!("  refinement search: {rounds} rounds, frontier cap {cap}");
-    let rescued: Vec<bool> = resist.par_iter().map(|p| {
+    let rescued: Vec<bool> = resist.par_iter().map(|(p, _)| {
         let cands = &by_beh[&behaviour(p)];
         for &n in cands.iter() {
             let mut frontier = vec![to_tree(list, prov, n as u32)];
@@ -1151,17 +1167,19 @@ fn expansion_test<const NA: usize>(
     let nres = rescued.iter().filter(|b| !**b).count();
     println!("  rescued by refinement              : {}", rescued.len() - nres);
     println!("  RESIST (bisimilar but uncovered)   : {nres}");
-    let mut isp = 0usize;
-    for (p, ok) in resist.iter().zip(rescued.iter()) {
+    let (mut isp, mut iso) = (0usize, 0usize);
+    for ((p, over), ok) in resist.iter().zip(rescued.iter()) {
         if !*ok {
             let ispull = pulls.contains(p);
             if ispull { isp += 1; }
-            println!("    UNCOVERED pullback={ispull} k={} ih={} it={:?} hl={:?} st={:?}",
+            if *over { iso += 1; }
+            println!("    UNCOVERED pullback={ispull} coversThompson={over} \
+k={} ih={} it={:?} hl={:?} st={:?}",
                 p.k, p.ih, &p.it[..], &p.hl[..p.k as usize], &p.st[..p.k as usize]);
         }
     }
-    println!("  of the uncovered, ARE a crux pullback : {isp}  (the rest are outside the \
-              class `CommonCoveredIntermediate` needs)");
+    println!("  of the uncovered, ARE a crux pullback     : {isp}");
+    println!("  of the uncovered, COVER a Thompson autom. : {iso}");
 }
 
 // ---------------------------------------------------------------- driver

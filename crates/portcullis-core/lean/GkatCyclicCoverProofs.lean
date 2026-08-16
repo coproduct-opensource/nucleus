@@ -98,52 +98,55 @@ private def cycMap {S : Type} : Sum S (Sum S Empty) → S
   | Sum.inr (Sum.inr z) => nomatch z
 
 /-- `B ; if g then B else 1` — the body run once, then run again exactly when the loop
-    would have re-entered it. -/
-private def doubled {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
+    would have re-entered it.
+
+    Public because the *statement* of `cyclicCover` mentions it, and because composing
+    `cyclicCover` with itself at `doubledBody g B` gives degree 4 for free. -/
+def doubledBody {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
     InitializedGAut (Sum S (Sum S Empty)) A T :=
   seqInitialized B (iteInitialized g B (thompsonTest (A := A) BExp.one))
 
-private theorem doubled_initTrans {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
-    (doubled g B).initTrans =
+private theorem doubledBody_initTrans {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
+    (doubledBody g B).initTrans =
       B.initTrans.map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S (Sum S Empty)))) ++
       B.initTrans.map (fun t =>
         (BExp.and B.initHlt (BExp.and g t.1), t.2.1,
           (Sum.inr (Sum.inl t.2.2) : Sum S (Sum S Empty)))) := by
-  simp [doubled, seqInitialized, iteInitialized, thompsonTest, List.map_map, Function.comp]
+  simp [doubledBody, seqInitialized, iteInitialized, thompsonTest, List.map_map, Function.comp]
 
-private theorem doubled_coreHlt_inl {S : Type} (g : BExp T) (B : InitializedGAut S A T)
+private theorem doubledBody_coreHlt_inl {S : Type} (g : BExp T) (B : InitializedGAut S A T)
     (u : S) :
-    (doubled g B).core.hlt (Sum.inl u) =
+    (doubledBody g B).core.hlt (Sum.inl u) =
       BExp.and (B.core.hlt u)
         (BExp.or (BExp.and g B.initHlt) (BExp.and (BExp.not g) BExp.one)) := rfl
 
-private theorem doubled_coreHlt_inr {S : Type} (g : BExp T) (B : InitializedGAut S A T)
+private theorem doubledBody_coreHlt_inr {S : Type} (g : BExp T) (B : InitializedGAut S A T)
     (u : S) :
-    (doubled g B).core.hlt (Sum.inr (Sum.inl u)) = B.core.hlt u := rfl
+    (doubledBody g B).core.hlt (Sum.inr (Sum.inl u)) = B.core.hlt u := rfl
 
-private theorem doubled_coreTrans_inl {S : Type} (g : BExp T) (B : InitializedGAut S A T)
+private theorem doubledBody_coreTrans_inl {S : Type} (g : BExp T) (B : InitializedGAut S A T)
     (u : S) :
-    (doubled g B).core.trans (Sum.inl u) =
+    (doubledBody g B).core.trans (Sum.inl u) =
       (B.core.trans u).map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S (Sum S Empty)))) ++
       B.initTrans.map (fun t =>
         (BExp.and (B.core.hlt u) (BExp.and g t.1), t.2.1,
           (Sum.inr (Sum.inl t.2.2) : Sum S (Sum S Empty)))) := by
-  simp [doubled, seqInitialized, seqGSystem, iteInitialized, thompsonTest,
+  simp [doubledBody, seqInitialized, seqGSystem, iteInitialized, thompsonTest,
     List.map_map, Function.comp]
 
-private theorem doubled_coreTrans_inr {S : Type} (g : BExp T) (B : InitializedGAut S A T)
+private theorem doubledBody_coreTrans_inr {S : Type} (g : BExp T) (B : InitializedGAut S A T)
     (u : S) :
-    (doubled g B).core.trans (Sum.inr (Sum.inl u)) =
+    (doubledBody g B).core.trans (Sum.inr (Sum.inl u)) =
       (B.core.trans u).map (fun t =>
         (t.1, t.2.1, (Sum.inr (Sum.inl t.2.2) : Sum S (Sum S Empty)))) := by
-  simp [doubled, seqInitialized, seqGSystem, iteInitialized, thompsonTest, sumGSystem,
+  simp [doubledBody, seqInitialized, seqGSystem, iteInitialized, thompsonTest, sumGSystem,
     List.map_map, Function.comp]
 
-private theorem doubled_states {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
-    (doubled g B).core.states =
+private theorem doubledBody_states {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
+    (doubledBody g B).core.states =
       B.core.states.map (Sum.inl : S → Sum S (Sum S Empty)) ++
       B.core.states.map (fun u => (Sum.inr (Sum.inl u) : Sum S (Sum S Empty))) := by
-  simp [doubled, seqInitialized, seqGSystem, iteInitialized, thompsonTest, sumGSystem,
+  simp [doubledBody, seqInitialized, seqGSystem, iteInitialized, thompsonTest, sumGSystem,
     List.map_map, Function.comp]
 
 /-! ## The pseudostate steps agree
@@ -152,11 +155,11 @@ private theorem doubled_states {S : Type} (g : BExp T) (B : InitializedGAut S A 
     move the body's does.  The prefix copy fires first, and when it does not fire nothing in
     the second copy can, because every guard there refines a guard of `B.initTrans`. -/
 
-private theorem doubled_initStep {S X : Type} (g : BExp T) (B : InitializedGAut S A T)
+private theorem doubledBody_initStep {S X : Type} (g : BExp T) (B : InitializedGAut S A T)
     (W : T → X → Bool) (x : X) :
-    (firstMatch W x (doubled g B).initTrans).map (fun o => (o.1, cycMap o.2))
+    (firstMatch W x (doubledBody g B).initTrans).map (fun o => (o.1, cycMap o.2))
       = firstMatch W x B.initTrans := by
-  rw [doubled_initTrans]
+  rw [doubledBody_initTrans]
   cases hb : firstMatch W x B.initTrans with
   | some o =>
       have hP : firstMatch W x
@@ -177,13 +180,13 @@ private theorem doubled_initStep {S X : Type} (g : BExp T) (B : InitializedGAut 
         cases bval W B.initHlt x <;> cases bval W g x <;> rfl
       rw [firstMatch_append_none _ _ _ _ hP, hQ]; rfl
 
-/-- The `none` half of `doubled_initStep`, in the form the core-step proof needs. -/
-private theorem doubled_initStep_none {S X : Type} (g : BExp T) (B : InitializedGAut S A T)
+/-- The `none` half of `doubledBody_initStep`, in the form the core-step proof needs. -/
+private theorem doubledBody_initStep_none {S X : Type} (g : BExp T) (B : InitializedGAut S A T)
     (W : T → X → Bool) (x : X) (h : firstMatch W x B.initTrans = none) :
-    firstMatch W x (doubled g B).initTrans = none := by
-  have hA := doubled_initStep g B W x
+    firstMatch W x (doubledBody g B).initTrans = none := by
+  have hA := doubledBody_initStep g B W x
   rw [h] at hA
-  cases hC : firstMatch W x (doubled g B).initTrans with
+  cases hC : firstMatch W x (doubledBody g B).initTrans with
   | none => rfl
   | some o => rw [hC] at hA; exact absurd hA (by simp)
 
@@ -198,15 +201,15 @@ private theorem doubled_initStep_none {S X : Type} (g : BExp T) (B : Initialized
     `star_bijection` is the degree of the covering.  It is the refinement the search found
     to be missing, and it is proved here for an arbitrary body. -/
 def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
-    InitCover (loopInitialized g (doubled g B)) (loopInitialized g B) where
+    InitCover (loopInitialized g (doubledBody g B)) (loopInitialized g B) where
   map := cycMap
   initHlt_eq := fun _ _ _ => rfl
   coreHlt_eq := fun s _ W x => by
     cases s with
     | inl u =>
-        show bval W (BExp.and ((doubled g B).core.hlt (Sum.inl u)) (BExp.not g)) x
+        show bval W (BExp.and ((doubledBody g B).core.hlt (Sum.inl u)) (BExp.not g)) x
           = bval W (BExp.and (B.core.hlt u) (BExp.not g)) x
-        rw [doubled_coreHlt_inl]
+        rw [doubledBody_coreHlt_inl]
         cases hg : bval W g x <;> simp [bval, hg]
     | inr v =>
         cases v with
@@ -214,25 +217,25 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
         | inr z => exact nomatch z
   initStep_eq := fun X W x => by
     show (firstMatch W x
-        ((doubled g B).initTrans.map (fun t => (BExp.and g t.1, t.2)))).map
+        ((doubledBody g B).initTrans.map (fun t => (BExp.and g t.1, t.2)))).map
         (fun o => (o.1, cycMap o.2))
       = firstMatch W x (B.initTrans.map (fun t => (BExp.and g t.1, t.2)))
     rw [firstMatch_map_guard, firstMatch_map_guard]
     cases hg : bval W g x
     · simp
-    · simpa using doubled_initStep g B W x
+    · simpa using doubledBody_initStep g B W x
   coreStep_eq := fun s X W x => by
     cases s with
     | inl u =>
         show (firstMatch W x
-            ((doubled g B).core.trans (Sum.inl u) ++
-              (doubled g B).initTrans.map (fun t =>
-                (BExp.and ((doubled g B).core.hlt (Sum.inl u)) (BExp.and g t.1), t.2)))).map
+            ((doubledBody g B).core.trans (Sum.inl u) ++
+              (doubledBody g B).initTrans.map (fun t =>
+                (BExp.and ((doubledBody g B).core.hlt (Sum.inl u)) (BExp.and g t.1), t.2)))).map
             (fun o => (o.1, cycMap o.2))
           = firstMatch W x (B.core.trans u ++
               B.initTrans.map (fun t =>
                 (BExp.and (B.core.hlt u) (BExp.and g t.1), t.2)))
-        rw [doubled_coreTrans_inl, doubled_coreHlt_inl, List.append_assoc]
+        rw [doubledBody_coreTrans_inl, doubledBody_coreHlt_inl, List.append_assoc]
         cases hc : firstMatch W x (B.core.trans u) with
         | some o =>
             have hP : firstMatch W x
@@ -256,7 +259,7 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
             have hP3 := fmGuard2 (A := A) W x
               (BExp.and (B.core.hlt u)
                 (BExp.or (BExp.and g B.initHlt) (BExp.and (BExp.not g) BExp.one)))
-              g (doubled g B).initTrans
+              g (doubledBody g B).initTrans
             have hQ2 := fmGuard2 (A := A) W x (B.core.hlt u) g B.initTrans
             -- the second body copy fires exactly when the loop's own re-entry would
             have hP2some : ∀ o, firstMatch W x B.initTrans = some o →
@@ -276,10 +279,10 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
               rw [hP2]
               rcases h with h | h | h <;> simp [h]
             -- the loop's own re-entry block never fires when the copy has not: its guard
-            -- refines the copy's by the extra conjunct `(doubled g B).initHlt`
+            -- refines the copy's by the extra conjunct `(doubledBody g B).initHlt`
             have hP3none : bval W (B.core.hlt u) x = false ∨ bval W g x = false ∨
                 firstMatch W x B.initTrans = none →
-                firstMatch W x ((doubled g B).initTrans.map (fun t =>
+                firstMatch W x ((doubledBody g B).initTrans.map (fun t =>
                   (BExp.and (BExp.and (B.core.hlt u)
                     (BExp.or (BExp.and g B.initHlt) (BExp.and (BExp.not g) BExp.one)))
                     (BExp.and g t.1), t.2))) = none := by
@@ -288,7 +291,7 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
               rcases h with h | h | h
               · simp [hand, h]
               · simp [h]
-              · rw [doubled_initStep_none g B W x h]; simp
+              · rw [doubledBody_initStep_none g B W x h]; simp
             cases hh : bval W (B.core.hlt u) x
             · rw [firstMatch_append_none _ _ _ _ (hP2none (Or.inl hh)),
                 hP3none (Or.inl hh)]
@@ -309,15 +312,15 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
         cases v with
         | inl u =>
             show (firstMatch W x
-                ((doubled g B).core.trans (Sum.inr (Sum.inl u)) ++
-                  (doubled g B).initTrans.map (fun t =>
-                    (BExp.and ((doubled g B).core.hlt (Sum.inr (Sum.inl u)))
+                ((doubledBody g B).core.trans (Sum.inr (Sum.inl u)) ++
+                  (doubledBody g B).initTrans.map (fun t =>
+                    (BExp.and ((doubledBody g B).core.hlt (Sum.inr (Sum.inl u)))
                       (BExp.and g t.1), t.2)))).map
                 (fun o => (o.1, cycMap o.2))
               = firstMatch W x (B.core.trans u ++
                   B.initTrans.map (fun t =>
                     (BExp.and (B.core.hlt u) (BExp.and g t.1), t.2)))
-            rw [doubled_coreTrans_inr, doubled_coreHlt_inr]
+            rw [doubledBody_coreTrans_inr, doubledBody_coreHlt_inr]
             cases hc : firstMatch W x (B.core.trans u) with
             | some o =>
                 have hP : firstMatch W x
@@ -343,13 +346,13 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
                 · simp
                 · cases hg : bval W g x
                   · simp
-                  · simpa using doubled_initStep g B W x
+                  · simpa using doubledBody_initStep g B W x
         | inr z => exact nomatch z
   maps := by
     intro s hs
     show cycMap s ∈ B.core.states
-    have hs : s ∈ (doubled g B).core.states := hs
-    rw [doubled_states] at hs
+    have hs : s ∈ (doubledBody g B).core.states := hs
+    rw [doubledBody_states] at hs
     cases s with
     | inl u =>
         rcases List.mem_append.mp hs with h | h
@@ -367,14 +370,14 @@ def cyclicCover {S : Type} (g : BExp T) (B : InitializedGAut S A T) :
   onto := by
     intro q hq
     refine ⟨Sum.inl q, ?_, rfl⟩
-    show (Sum.inl q : Sum S (Sum S Empty)) ∈ (doubled g B).core.states
-    rw [doubled_states]
+    show (Sum.inl q : Sum S (Sum S Empty)) ∈ (doubledBody g B).core.states
+    rw [doubledBody_states]
     exact List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨q, hq, rfl⟩))
 
 /-! ## The fork, closed for the doubling class -/
 
-/-- **`CommonCoveredIntermediate`, discharged for every loop/doubled-loop pair.**  The
-    doubled program's own automaton covers the loop's by `cyclicCover`, and is solvable
+/-- **`CommonCoveredIntermediate`, discharged for every loop/doubledBody-loop pair.**  The
+    doubledBody program's own automaton covers the loop's by `cyclicCover`, and is solvable
     because it is syntax-generated.  Like `fork_closed_for_unrolling` this is not
     hypothesis-bound: it holds for every guard and body. -/
 theorem fork_closed_for_doubling (g : BExp T) (e : Exp A T) :
@@ -397,7 +400,7 @@ theorem fork_closed_for_doubling (g : BExp T) (e : Exp A T) :
 
     This settles the question the search raised.  Attempting the identity by hand from W1
     stalls: unrolling both sides reduces it to identifying two solutions of one guarded
-    system, which is what UA does.  The cover route avoids that step entirely — the doubled
+    system, which is what UA does.  The cover route avoids that step entirely — the doubledBody
     automaton *covers* the loop's, so the loop's canonical labelling lifts to a solution of
     the doubled system, and Thompson uniqueness (a theorem about syntax-generated automata,
     not an axiom) makes that lifted solution provably canonical pointwise.

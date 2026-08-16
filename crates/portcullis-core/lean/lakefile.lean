@@ -666,6 +666,11 @@ lean_lib «GkatUnrollCoverProofs» where
 lean_lib «GkatCyclicCoverProofs» where
   roots := #[`GkatCyclicCoverProofs]
 
+-- Factors the single residual obligation into two independent halves: the span exists, and
+-- Thompson automata are cofinal below Thompson automata.
+lean_lib «GkatCofinalityProofs» where
+  roots := #[`GkatCofinalityProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
