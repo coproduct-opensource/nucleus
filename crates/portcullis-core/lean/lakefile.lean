@@ -685,6 +685,10 @@ lean_lib «GkatCommonTargetProofs» where
 lean_lib «GkatQuotientProofs» where
   roots := #[`GkatQuotientProofs]
 
+-- The period law: a covering map cannot shorten the cycle it sits over.
+lean_lib «GkatPeriodProofs» where
+  roots := #[`GkatPeriodProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
