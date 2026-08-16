@@ -676,6 +676,11 @@ lean_lib «GkatCofinalityProofs» where
 lean_lib «GkatPullbackProofs» where
   roots := #[`GkatPullbackProofs]
 
+-- Refutes CommonTarget (a cover cannot turn a stepping pseudostate into a non-stepping one)
+-- and repairs it with the productivity precondition the search always applied.
+lean_lib «GkatCommonTargetProofs» where
+  roots := #[`GkatCommonTargetProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
