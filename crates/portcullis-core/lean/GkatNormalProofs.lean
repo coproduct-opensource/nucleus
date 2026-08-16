@@ -523,6 +523,54 @@ theorem step_agree_of_total {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     exact absurd hnone (by simp)
   · exact hstep
 
+/-! ## The sink exists
+
+    Totalising a partial automaton means adding a sink and routing every undefined transition
+    into it; the construction preserves the language, which is why it is the standard repair.
+    In GKAT the sink cannot be a state one merely adds — it has to be *expressible*, and it
+    has to be provably `0`, or routing into it would not preserve provable equality.
+
+    `while 1 do e` is that sink, for **any** body.  `InLoop` is an inductive whose only base
+    case is `exit`, which demands the guard be false; with guard `1` that case is unavailable,
+    so no derivation exists at all and the language is empty.  `nullLanguage_complete` then
+    makes it provably `0`.
+
+    And its automaton is total: nothing ever halts (every halt guard carries `¬1`), and every
+    state steps (the back edge is guarded by `1`).  So a stuck configuration can be replaced
+    by a divergent one, provably, and the result is total exactly where the original was
+    stuck. -/
+
+/-- A loop with a tautologous guard has no derivations: the only base case demands the guard
+    be false. -/
+theorem inLoop_one_empty {X : Type} {W : T → X → Bool} {P : GS A X → Prop} {gs : GS A X}
+    (h : InLoop W BExp.one P gs) : False := by
+  induction h with
+  | exit a hb => exact absurd hb (by simp [bval])
+  | step a l1 rest hb hbody hrec ih => exact ih
+
+/-- **`while 1 do e` is null, for every body.** -/
+theorem wh_one_empty (e : Exp A T) : UniformExpLempty (.wh BExp.one e) :=
+  fun _ _ _ h => inLoop_one_empty h
+
+/-- **…and provably `0`.**  So routing a stuck configuration into it preserves provable
+    equality, which is what makes it usable as a sink rather than merely a semantic one. -/
+theorem wh_one_provably_zero (e : Exp A T) :
+    EquivBA (.wh BExp.one e : Exp A T) (.test .zero) :=
+  GkatNullLanguage.nullLanguage_complete _ (wh_one_empty e)
+
+/-- **…and total.**  Nothing halts, since every halt guard carries `¬1`; and everything
+    steps, since the back edge is guarded by `1`. -/
+theorem wh_one_total (a : A) :
+    Total (certifiedThompson A T (.wh BExp.one (.act a))).aut := by
+  intro X W x s
+  right
+  cases s with
+  | none => rfl
+  | some u => cases u; rfl
+
+#print axioms wh_one_empty
+#print axioms wh_one_provably_zero
+#print axioms wh_one_total
 #print axioms step_agree_of_total
 #print axioms wh_simple_not_productive
 #print axioms step_ite_inl
