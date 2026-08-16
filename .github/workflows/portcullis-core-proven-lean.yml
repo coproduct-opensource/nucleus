@@ -127,6 +127,7 @@ jobs:
             GkatDupCoverProofs \
             GkatRefinesProofs \
             GkatNormalProofs \
+            GkatTotalizationProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \

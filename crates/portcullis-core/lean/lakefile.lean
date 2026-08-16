@@ -709,6 +709,9 @@ lean_lib «GkatRefinesProofs» where
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
 
+lean_lib «GkatTotalizationProofs» where
+  roots := #[`GkatTotalizationProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
