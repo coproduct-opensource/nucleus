@@ -268,6 +268,15 @@ lean_lib «GkatDerivativeProofs» where
 lean_lib «GkatWellNestedProofs» where
   roots := #[`GkatWellNestedProofs]
 
+lean_lib «GkatHardFrontierProofs» where
+  roots := #[`GkatHardFrontierProofs]
+
+lean_lib «GkatOrderedBAProofs» where
+  roots := #[`GkatOrderedBAProofs]
+
+lean_lib «GkatCyclicOrderedBridgeProofs» where
+  roots := #[`GkatCyclicOrderedBridgeProofs]
+
 lean_lib «GkatBisimulationProofs» where
   roots := #[`GkatBisimulationProofs]
 
@@ -299,6 +308,78 @@ lean_lib «GkatFaithfulnessProofs» where
 -- the completeness half `W ⊆ {⟦e⟧}` (rel UA).
 lean_lib «GkatKleeneProofs» where
   roots := #[`GkatKleeneProofs]
+
+lean_lib «GkatThompsonUniquenessProofs» where
+  roots := #[`GkatThompsonUniquenessProofs]
+
+-- Derived guarded-algebra laws (U/S axioms only, no model, no uniqueness principle)
+-- used by the null-language elimination: assertion/guarded-choice interchange, the
+-- case-split insertion law, and the kill law that turns a right-hand Boolean fact into
+-- a rewrite of the preceding program.
+lean_lib «GkatGuardedAlgebraProofs» where
+  roots := #[`GkatGuardedAlgebraProofs]
+
+-- Atom transfer (`den` only reads the primitive tests of the expression) plus the
+-- finite dead-cell test `deadTestOver`: the device that turns "no guarded string starts
+-- here" into a Boolean guard the finite axioms can rewrite with.
+lean_lib «GkatAtomTransferProofs» where
+  roots := #[`GkatAtomTransferProofs]
+
+-- Semantic side conditions of the null-language induction: fresh sum carriers for the
+-- action case, the intermediate dead region for sequencing, and the loop invariant.
+lean_lib «GkatNullSemanticsProofs» where
+  roots := #[`GkatNullSemanticsProofs]
+
+-- NULL-LANGUAGE COMPLETENESS: a GKAT program with no guarded strings is provably 0,
+-- from the finite axioms alone (W3 only; no UA, no completeness hypothesis). Discharges
+-- the dead-branch obligation that previously assumed FiniteAxiomsCompleteBA.
+lean_lib «GkatNullLanguageProofs» where
+  roots := #[`GkatNullLanguageProofs]
+
+-- Where UA is actually still needed: the guard-pullback witness is DERIVABLE (as the
+-- constant 1 or 0) exactly on the decided regions, and the leftover residue provably
+-- branches both ways. Sharpens GkatUAIndependenceProofs / GkatPullbackWitnessProofs.
+lean_lib «GkatDecidedPullbackProofs» where
+  roots := #[`GkatDecidedPullbackProofs]
+
+-- Composition check: the dead-branch rewrite the completeness endgame needs, now with
+-- NO completeness hypothesis (it previously assumed FiniteAxiomsCompleteBA).
+lean_lib «GkatDeadBranchProofs» where
+  roots := #[`GkatDeadBranchProofs]
+
+-- UA ELIMINATED at every decided crossing: post_all PRODUCES the guard-pullback witness
+-- that GkatUAIndependenceProofs could only assume, so UA2 becomes a theorem of the
+-- finite axioms there (W3 = UA1 is the only fixpoint principle used).
+lean_lib «GkatDecidedUAProofs» where
+  roots := #[`GkatDecidedUAProofs]
+
+-- The sharp reduction: full finite-axiom completeness is EQUIVALENT to the statement
+-- that behaviourally identical positions inside ONE program's own Thompson automaton
+-- carry provably equal labels. Nothing about arbitrary equation systems survives.
+lean_lib «GkatCompletenessReductionProofs» where
+  roots := #[`GkatCompletenessReductionProofs]
+
+-- Completeness ENTAILS UA at every arity: "completeness with UA eliminated" is not a
+-- softer target than "UA is derivable", and the contrapositive gives the exact shape a
+-- negative resolution must take.
+lean_lib «GkatCompletenessImpliesUAProofs» where
+  roots := #[`GkatCompletenessImpliesUAProofs]
+
+-- The counter-model interface: one field per finite axiom, soundness of EquivBA, and the
+-- composed refutation lemma. Makes a negative resolution fill-in-the-blank.
+lean_lib «GkatModelProofs» where
+  roots := #[`GkatModelProofs]
+
+-- The positive route reduced to ONE statement, following Grabmayer-Fokkink
+-- crystallization: if any two language-equivalent programs are covered by the Thompson
+-- automaton of a third program, completeness follows with no uniqueness axiom.
+lean_lib «GkatCrystallizationProofs» where
+  roots := #[`GkatCrystallizationProofs]
+
+-- Brick 1 of the crystallization construction: the syntactic layering (loop-nesting rank)
+-- and the component-closure facts that make "loops are never mutually nested" formal.
+lean_lib «GkatLayeringProofs» where
+  roots := #[`GkatLayeringProofs]
 
 -- The n-ary decomposition of the Uniqueness Axiom: chain-elimination reduces an
 -- n-state guarded cycle to a single W3 loop given a pullback witness per crossing
@@ -553,3 +634,39 @@ lean_lib «RepairAlgebraProofs» where
 -- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
 lean_lib «GovernanceCompletenessSpike» where
   roots := #[`GovernanceCompletenessSpike]
+
+-- The collapse target refuted: an explicit uniformly-equivalent pair whose forced
+-- quotient is not syntax-generated, so `CommonSyntacticCollapse` is false. Completeness
+-- is untouched (the pair is provably equal); the live target is the span,
+-- `CommonSyntacticRefinement`.
+lean_lib «GkatCollapseRefutationProofs» where
+  roots := #[`GkatCollapseRefutationProofs]
+
+-- The repair survives the counterexample: `h = if b then e else f` covers both sides of
+-- the pair that refutes `CommonSyntacticCollapse`, so `CommonSyntacticRefinement` holds
+-- there. Both cover legs are constructed and checked.
+lean_lib «GkatSpanWitnessProofs» where
+  roots := #[`GkatSpanWitnessProofs]
+
+-- Phase C engine: covers compose along the Thompson constructors, so synthesis is a
+-- structural recursion. `InitCover` is the pseudostate-preserving cover the induction needs.
+lean_lib «GkatSynthesisProofs» where
+  roots := #[`GkatSynthesisProofs]
+
+-- The positive fork discharged on the pair that refutes the cospan: `if b then e else f`
+-- is a common intermediate covering both sides and solvable by the syntax.
+lean_lib «GkatPositiveForkProofs» where
+  roots := #[`GkatPositiveForkProofs]
+
+lean_lib «GkatUnrollCoverProofs» where
+  roots := #[`GkatUnrollCoverProofs]
+
+-- The complementary refinement: repeating the loop body is a degree-2 cyclic cover of the
+-- loop. Unrolling lengthens the tail; this changes the cycle, which is the covering degree.
+lean_lib «GkatCyclicCoverProofs» where
+  roots := #[`GkatCyclicCoverProofs]
+
+-- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
+-- are not genuinely two-exit, so existence holds there without LeftDistrib.
+lean_lib «GkatExistenceNarrowProofs» where
+  roots := #[`GkatExistenceNarrowProofs]

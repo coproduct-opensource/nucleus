@@ -90,11 +90,33 @@ jobs:
             GkatInexpressibleProofs \
             GkatUniquenessFrontierProofs \
             GkatExistenceFrontierProofs \
+            GkatExistenceNarrowProofs \
             GkatUAIndependenceProofs \
             GkatObservationProofs \
             GkatPullbackWitnessProofs \
             GkatDerivativeProofs \
             GkatWellNestedProofs \
+            GkatHardFrontierProofs \
+            GkatOrderedBAProofs \
+            GkatCyclicOrderedBridgeProofs \
+            GkatGuardedAlgebraProofs \
+            GkatAtomTransferProofs \
+            GkatNullSemanticsProofs \
+            GkatNullLanguageProofs \
+            GkatDecidedPullbackProofs \
+            GkatDeadBranchProofs \
+            GkatDecidedUAProofs \
+            GkatCompletenessReductionProofs \
+            GkatCompletenessImpliesUAProofs \
+            GkatModelProofs \
+            GkatCrystallizationProofs \
+            GkatLayeringProofs \
+            GkatCollapseRefutationProofs \
+            GkatSpanWitnessProofs \
+            GkatSynthesisProofs \
+            GkatPositiveForkProofs \
+            GkatUnrollCoverProofs \
+            GkatCyclicCoverProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \
