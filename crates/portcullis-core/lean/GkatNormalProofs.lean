@@ -477,6 +477,53 @@ theorem wh_simple_not_productive :
         (congrArg (fun z : Unit × Option Unit => z.2) hpair).symm
       exact ih hd.2 (hs ▸ hrun)
 
+/-! ## What productivity was standing in for
+
+    Classically, bisimilarity coincides with language equivalence for deterministic automata
+    **with a complete transition function**.  GKAT automata are deterministic but *partial* —
+    a state may neither halt nor step at an atom — and that partiality is precisely where the
+    `0` versus `a ; 0` counterexample lives.  So the condition the development wants is
+    totality, not productivity.
+
+    The lemma below is that classical fact in the form the step argument needs, and it makes
+    the roles explicit: `a`'s halts and steps are disjoint (automatic for a Thompson
+    automaton, `CoreStructural.disjoint`), `b` is total, and the two agree on halting — then
+    they agree on stepping, with no productivity anywhere.
+
+    This does not by itself rescue `Normalizable`.  `b?` is not total either: at a `¬b` atom
+    its pseudostate neither halts nor steps.  What it does is separate two things that
+    `Productive` had conflated — the *structural* requirement (disjointness, free) from the
+    *semantic* one (totality) — and show the semantic half is the classical condition rather
+    than an invention of mine. -/
+
+/-- No state both halts and steps at the same atom.  Automatic for Thompson automata. -/
+def HaltStepDisjoint {S : Type} (aut : InitializedGAut S A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S),
+    bval W (aut.toGAut.hlt s) x = true → autStep W aut.toGAut s x = none
+
+/-- Every state, at every atom, either halts or steps — the transition function is complete. -/
+def Total {S : Type} (aut : InitializedGAut S A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S),
+    bval W (aut.toGAut.hlt s) x = true ∨ (autStep W aut.toGAut s x).isSome = true
+
+/-- **Totality replaces productivity.**  If `b` is total and the two agree on halting, then
+    `a` stepping forces `b` to step — which is all `crossEquiv_step` ever wanted.  The proof
+    is the classical one: `b` must halt or step; if it halts then so does `a`, and `a`'s
+    halts are disjoint from its steps, contradicting the step we started from. -/
+theorem step_agree_of_total {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (hd : HaltStepDisjoint a) (htb : Total b)
+    {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s')) :
+    (autStep W b.toGAut t x).isSome = true := by
+  rcases htb X W x t with hh | hstep
+  · have ha : bval W (a.toGAut.hlt s) x = true := (crossEquiv_hlt h X W x).trans hh
+    have hnone := hd X W x s ha
+    rw [hs] at hnone
+    exact absurd hnone (by simp)
+  · exact hstep
+
+#print axioms step_agree_of_total
 #print axioms wh_simple_not_productive
 #print axioms step_ite_inl
 #print axioms step_wh_body
