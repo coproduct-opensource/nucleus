@@ -229,6 +229,83 @@ theorem productive_ite {S₁ S₂ : Type} (g : BExp T)
           obtain ⟨x', w, hw⟩ := hq X W x (some u)
           exact ⟨x', w, run_inr g P Q W u x' w hw⟩
 
+/-! ## `seq` and `wh`
+
+    Completing the classification.  `seq` is half as good as `ite`: its *right* component
+    inherits everything, but its left component's halt guard is conjoined with `Q.initHlt`
+    and it gains exit edges, so left states can newly die.  `wh` is worse than both — no
+    state inherits, because every body state's halt is weakened by `¬g`, and unlike `ite` the
+    damage is *not* repaired by non-nullity. -/
+
+/-- The right component of a sequence inherits its runs unchanged. -/
+private theorem run_seq_inr {S₁ S₂ X : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (W : T → X → Bool) :
+    ∀ (u : S₂) (x : X) (w : List (A × X)),
+      autRun W Q.toGAut (some u) x w →
+      autRun W (seqInitialized P Q).toGAut (some (Sum.inr u)) x w := by
+  intro u x w
+  induction w generalizing u x with
+  | nil => exact fun h => h
+  | cons hd tl ih =>
+      obtain ⟨q, x'⟩ := hd
+      rintro ⟨s', hstep, hrun⟩
+      obtain ⟨v, rfl⟩ := GkatQuotient.step_target_some Q W (some u) x hstep
+      refine ⟨some (Sum.inr v), ?_, ih v x' hrun⟩
+      rw [GkatQuotient.autStep_core] at hstep ⊢
+      show (firstMatch W x ((Q.core.trans u).map
+          (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂))))).map
+        (fun o => (o.1, some o.2)) = some (q, some (Sum.inr v))
+      rw [firstMatch_map_target_to (F := fun v : S₂ => (Sum.inr v : Sum S₁ S₂))]
+      cases hf : firstMatch W x (Q.core.trans u) with
+      | none => rw [hf] at hstep; exact absurd hstep (by simp)
+      | some o =>
+          rw [hf] at hstep
+          have := Option.some.inj hstep
+          simp only [Option.map_some]
+          have h1 : o.1 = q := congrArg (fun z : A × Option S₂ => z.1) this
+          have h2 : (some o.2 : Option S₂) = some v :=
+            congrArg (fun z : A × Option S₂ => z.2) this
+          rw [h1, Option.some.inj h2]
+
+/-- **A sequence's right component keeps its productivity.**  Only the left component and the
+    pseudostate can newly die, which is what `seq_dead_not_productive` exhibits. -/
+theorem productive_seq_right {S₁ S₂ : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (hq : Productive Q) {X : Type} (W : T → X → Bool)
+    (x : X) (u : S₂) :
+    ∃ (x' : X) (w : List (A × X)),
+      autRun W (seqInitialized P Q).toGAut (some (Sum.inr u)) x' w := by
+  obtain ⟨x', w, hw⟩ := hq X W x (some u)
+  exact ⟨x', w, run_seq_inr P Q W u x' w hw⟩
+
+/-- **`wh` is strictly worse than `ite`: non-nullity does not repair it.**
+
+    `while b do (a ; 0)` is non-null — it halts at every `¬b` atom straight from the
+    pseudostate — yet its body state is dead.  Its halt guard is `(1 ∧ 0) ∧ ¬b`, which is
+    never satisfied, and its only transition is the back edge, guarded by the same `1 ∧ 0`.
+
+    So for `ite`, productivity was repairable by a hypothesis already in hand
+    (`productive_ite`); for `wh` there is no such hypothesis.  The dead region has to be
+    pruned before the loop is built, not after. -/
+theorem wh_dead_body_not_productive :
+    ¬ Productive (certifiedThompson Unit Unit
+        (.wh (.prim ()) (.seq (.act ()) (.test .zero)))).aut := by
+  intro h
+  obtain ⟨x, w, hw⟩ := h Unit (fun _ _ => true) () (some (Sum.inl ()))
+  cases w with
+  | nil =>
+      have hb : bval (fun _ (_ : Unit) => true)
+          (BExp.and (BExp.and BExp.one BExp.zero) (BExp.not (BExp.prim ()))) x = true := hw
+      exact absurd hb (by simp [bval])
+  | cons hd tl =>
+      obtain ⟨s', hstep, _⟩ := hw
+      have hn : autStep (fun _ (_ : Unit) => true)
+          (certifiedThompson Unit Unit
+            (.wh (.prim ()) (.seq (.act ()) (.test .zero)))).aut.toGAut
+          (some (Sum.inl ())) x = none := rfl
+      exact absurd (hn.symm.trans hstep) (by simp)
+
+#print axioms productive_seq_right
+#print axioms wh_dead_body_not_productive
 #print axioms productive_ite
 #print axioms act_normal
 #print axioms seq_dead_not_productive
