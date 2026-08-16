@@ -304,6 +304,86 @@ theorem wh_dead_body_not_productive :
           (some (Sum.inl ())) x = none := rfl
       exact absurd (hn.symm.trans hstep) (by simp)
 
+/-! ## The duality
+
+    `Reachable` is a **forward** analysis and `Productive` a **backward** one — reachability
+    asks what the pseudostate can get to, productivity what can still get to a halt.  The
+    classification above should therefore mirror itself across `seq`, and it does:
+
+      productivity (backward) — the **right** component inherits, the left can die;
+      reachability  (forward) — the **left** component inherits, the right can become
+                                unreachable when `P` never halts.
+
+    That is why the two prunings sit at different points in the recursion, which was an
+    empirical observation two steps ago and is now the expected consequence of the direction
+    each analysis runs in. -/
+
+private theorem seq_initTrans {S₁ S₂ : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) :
+    (seqInitialized P Q).initTrans =
+      P.initTrans.map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂))) ++
+      Q.initTrans.map (fun t =>
+        (BExp.and P.initHlt t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂))) := rfl
+
+private theorem seq_coreTrans_inl {S₁ S₂ : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (s : S₁) :
+    (seqInitialized P Q).core.trans (Sum.inl s) =
+      (P.core.trans s).map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂))) ++
+      Q.initTrans.map (fun t =>
+        (BExp.and (P.core.hlt s) t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂))) := rfl
+
+/-- A step of the left component lifts to a step of the sequence.  The left block of the
+    transition list comes first, so whenever `P` fires the sequence follows it. -/
+private theorem step_seq_inl {S₁ S₂ X : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (W : T → X → Bool) (x : X) {p q : Option S₁} {c : A}
+    (h : autStep W P.toGAut p x = some (c, q)) :
+    autStep W (seqInitialized P Q).toGAut (p.map Sum.inl) x = some (c, q.map Sum.inl) := by
+  cases p with
+  | none =>
+      rw [GkatQuotient.autStep_init] at h
+      cases hf : firstMatch W x P.initTrans with
+      | none => rw [hf] at h; exact absurd h (by simp)
+      | some o =>
+          rw [hf] at h
+          simp only [Option.map_some] at h
+          have hpair := Option.some.inj h
+          have hc : o.1 = c := congrArg (fun z : A × Option S₁ => z.1) hpair
+          have hq : (some o.2 : Option S₁) = q := congrArg (fun z : A × Option S₁ => z.2) hpair
+          show autStep W (seqInitialized P Q).toGAut none x = some (c, q.map Sum.inl)
+          rw [GkatQuotient.autStep_init, seq_initTrans]
+          rw [firstMatch_append_some (x := (o.1, (Sum.inl o.2 : Sum S₁ S₂))) _ _ _ _
+            (by rw [firstMatch_map_target_to
+              (F := fun v : S₁ => (Sum.inl v : Sum S₁ S₂)), hf]; rfl)]
+          rw [← hq, ← hc]; rfl
+  | some s =>
+      rw [GkatQuotient.autStep_core] at h
+      cases hf : firstMatch W x (P.core.trans s) with
+      | none => rw [hf] at h; exact absurd h (by simp)
+      | some o =>
+          rw [hf] at h
+          simp only [Option.map_some] at h
+          have hpair := Option.some.inj h
+          have hc : o.1 = c := congrArg (fun z : A × Option S₁ => z.1) hpair
+          have hq : (some o.2 : Option S₁) = q := congrArg (fun z : A × Option S₁ => z.2) hpair
+          show autStep W (seqInitialized P Q).toGAut (some (Sum.inl s)) x
+            = some (c, q.map Sum.inl)
+          rw [GkatQuotient.autStep_core, seq_coreTrans_inl]
+          rw [firstMatch_append_some (x := (o.1, (Sum.inl o.2 : Sum S₁ S₂))) _ _ _ _
+            (by rw [firstMatch_map_target_to
+              (F := fun v : S₁ => (Sum.inl v : Sum S₁ S₂)), hf]; rfl)]
+          rw [← hq, ← hc]; rfl
+
+/-- **A sequence's left component keeps its reachability** — the dual of
+    `productive_seq_right`.  Forward analysis flows left to right, so the leftmost component
+    is the one nothing upstream can disturb. -/
+theorem reaches_seq_inl {S₁ S₂ : Type} (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) {u : Option S₁} (h : Reaches P u) :
+    Reaches (seqInitialized P Q) (u.map Sum.inl) := by
+  induction h with
+  | start => exact Reaches.start
+  | @step p q X W x c _ hstep ih => exact Reaches.step ih (step_seq_inl P Q W x hstep)
+
+#print axioms reaches_seq_inl
 #print axioms productive_seq_right
 #print axioms wh_dead_body_not_productive
 #print axioms productive_ite
