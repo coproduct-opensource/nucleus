@@ -72,7 +72,7 @@ Totalising *adds* transitions, and the induction hypothesis survives every const
 namespace GkatTotalization
 
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatCrystallization
-open GkatSynthesis GkatCommonTarget GkatNormal
+open GkatSynthesis GkatCommonTarget GkatNormal GkatAtomTransfer
 
 variable {A T : Type}
 variable {S S₁ S₂ : Type}
@@ -649,6 +649,159 @@ theorem total_form (a : A) (e : Exp A T) :
     ∃ h : Exp A T, EquivBA e h ∧ Total (certifiedThompson A T h).aut :=
   total_form_of_settledReachable (settledReachable a) e
 
+/-! ## Where productivity is actually consumed
+
+    With `settledReachable` proved, the natural move is to swap `Total` for `Productive`
+    everywhere and delete `Normalizable` from the chain.  That works for one of the two uses
+    and not the other, and the difference is worth pinning down rather than glossing.
+
+    `crossEquiv_step` — language-equivalent states take the *same action* to
+    language-equivalent targets — consumes productivity in exactly one line: it needs a word
+    accepted from the state just stepped into, so that it can push that word through the
+    language equivalence and read off the other side's action.  The lemma below is that proof
+    with the hypothesis narrowed to what it uses: liveness at the single stepped-to state,
+    under the single interpretation in play.  `crossEquiv_step` is now a corollary.
+
+    Totality cannot supply that.  `step_agree_of_total` proves the other side *steps*, which
+    is strictly weaker than stepping with the same action: if both targets are dead, both
+    languages are empty, the two states are language-equivalent, and nothing constrains the
+    two actions to agree.  And dead states cannot be normalised away, because the sink is one
+    — `div a`'s core state accepts nothing, and the sink is what totalisation runs on.
+
+    So the residue is sharp, and it is not "totality is too weak".  It is that dead states
+    must be made *canonical* — every one of them the same sink, stepping with the same
+    action — rather than merely present.  `DeadCanonical` names that. -/
+
+/-- **`crossEquiv_step`, with the hypothesis narrowed to what the proof uses.**  Only the
+    state just stepped into must accept something, and only under the interpretation at
+    hand — not every state under every interpretation. -/
+theorem crossEquiv_step_at {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s'))
+    (hlive : ∃ (x' : X) (w : List (A × X)), autRun W a.toGAut s' x' w) :
+    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
+  obtain ⟨x', w, hw⟩ := hlive
+  obtain ⟨t', ht, _⟩ := (h X W (x, (q, x') :: w)).mp ⟨s', hs, hw⟩
+  refine ⟨t', ht, ?_⟩
+  intro Y V gs
+  obtain ⟨y, v⟩ := gs
+  let W'' : T → Sum X Y → Bool := fun c => Sum.elim (W c) (V c)
+  have hl : ∀ (c : T) (z : X), W'' c (Sum.inl z) = W c z := fun _ _ => rfl
+  have hr : ∀ (c : T) (z : Y), W'' c (Sum.inr z) = V c z := fun _ _ => rfl
+  have pushA : ∀ u : Option S₁,
+      autRun W'' a.toGAut u (Sum.inr y) (mapAtoms Sum.inr v) ↔ autRun V a.toGAut u y v :=
+    fun u => autRun_transfer hr a.toGAut u y v
+  have pushB : ∀ u : Option S₂,
+      autRun W'' b.toGAut u (Sum.inr y) (mapAtoms Sum.inr v) ↔ autRun V b.toGAut u y v :=
+    fun u => autRun_transfer hr b.toGAut u y v
+  have step_l : autStep W'' a.toGAut s (Sum.inl x) = some (q, s') := by
+    rw [show autStep W'' a.toGAut s (Sum.inl x) = autStep W a.toGAut s x from
+      firstMatch_transfer hl (a.toGAut.trans s) x]
+    exact hs
+  have step_r : autStep W'' b.toGAut t (Sum.inl x) = some (q, t') := by
+    rw [show autStep W'' b.toGAut t (Sum.inl x) = autStep W b.toGAut t x from
+      firstMatch_transfer hl (b.toGAut.trans t) x]
+    exact ht
+  have bridge := h (Sum X Y) W'' (Sum.inl x, (q, Sum.inr y) :: mapAtoms Sum.inr v)
+  change (∃ u, autStep W'' a.toGAut s (Sum.inl x) = some (q, u) ∧
+      autRun W'' a.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) ↔
+    (∃ u, autStep W'' b.toGAut t (Sum.inl x) = some (q, u) ∧
+      autRun W'' b.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) at bridge
+  constructor
+  · intro hrun
+    obtain ⟨u, hu, hru⟩ := bridge.mp ⟨s', step_l, (pushA s').mpr hrun⟩
+    rw [step_r] at hu
+    have huv : u = t' := congrArg Prod.snd (Option.some.inj hu.symm)
+    exact (pushB t').mp (huv ▸ hru)
+  · intro hrun
+    obtain ⟨u, hu, hru⟩ := bridge.mpr ⟨t', step_r, (pushB t').mpr hrun⟩
+    rw [step_l] at hu
+    have huv : u = s' := congrArg Prod.snd (Option.some.inj hu.symm)
+    exact (pushA s').mp (huv ▸ hru)
+
+/-- The original is the corollary: global productivity is pointwise liveness, everywhere. -/
+theorem crossEquiv_step_of_productive {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (hprod : Productive a) {s : Option S₁} {t : Option S₂}
+    (h : CrossEquiv a b s t) {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s')) :
+    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' :=
+  crossEquiv_step_at h W x hs (hprod X W x s')
+
+/-- **The residue, named.**  Every step into a state that accepts nothing carries the same
+    fixed action.  This is what totality cannot supply and what the counterexample needs:
+    two dead targets are language-equivalent whatever actions reach them, so agreement has to
+    be imposed by making the dead part canonical.
+
+    It is satisfiable in principle — the sink `div a₀` steps with `a₀` into itself — so the
+    remaining normalisation is "route every dead region into *the* sink", not "remove dead
+    regions", which is the move `Normalizable` tried and `wh_simple_not_productive` refuted. -/
+def DeadCanonical {S : Type} (a₀ : A) (aut : InitializedGAut S A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S) (q : A) (s' : Option S),
+    autStep W aut.toGAut s x = some (q, s') →
+    (∀ (x' : X) (w : List (A × X)), ¬ autRun W aut.toGAut s' x' w) → q = a₀
+
+/-- The sink's own core state accepts nothing — so dead states are not an artefact to be
+    eliminated, they are what totalisation *introduces*.  Non-vacuity for `DeadCanonical`
+    being about canonicity rather than absence. -/
+theorem sink_state_dead (a₀ : A) {X : Type} (W : T → X → Bool) (x' : X)
+    (w : List (A × X)) :
+    ¬ autRun W (certifiedThompson A T (div a₀)).aut.toGAut (some ()) x' w := by
+  induction w generalizing x' with
+  | nil => intro h; exact Bool.noConfusion (show (false : Bool) = true from h)
+  | cons hd tl ih =>
+      rintro ⟨u, hu, hru⟩
+      have hu' : ((a₀, some ()) : A × Option Unit) = (hd.1, u) := by
+        have hstep : autStep W (certifiedThompson A T (div a₀)).aut.toGAut (some ()) x'
+            = some (a₀, some ()) := rfl
+        rw [hstep] at hu
+        exact Option.some.inj hu
+      have htgt : u = some () := (congrArg (fun z : A × Option Unit => z.2) hu').symm
+      exact ih hd.2 (htgt ▸ hru)
+
+/-! ## Completeness, with normalisation discharged -/
+
+/-- The behavioural-target hypothesis, restated for *total* automata — the class
+    `settledReachable` actually delivers. -/
+def TotalCommonTarget (A T : Type) : Prop :=
+  ∀ e f : Exp A T, UniformLanguageEquivalent e f →
+    Total (certifiedThompson A T e).aut → Total (certifiedThompson A T f).aut →
+    ∃ (Q : Type) (m : InitializedGAut Q A T)
+      (φ : InitCover (certifiedThompson A T e).aut m)
+      (ψ : InitCover (certifiedThompson A T f).aut m),
+      Nonempty (GkatPullback.Base φ ψ)
+
+/-- **Completeness from two statements instead of three.**
+
+    `completeness_of_normalized` needed `Normalizable`, `NormalCommonTarget` and
+    `PullbackCovered`.  `Normalizable` is false — `wh_simple_not_productive` — and it is now
+    gone: `settledReachable` replaces it and is *proved*, so the normalisation step is
+    discharged rather than assumed.
+
+    The null case-split disappears too.  `Normalizable` had to exclude null programs, since
+    `0` is not productive; totalisation has no such exclusion — `0` settles to the sink, which
+    is total — so the argument runs uniformly over every pair. -/
+theorem completeness_of_total (a : A)
+    (hct : TotalCommonTarget A T) (hpc : PullbackCovered A T) :
+    FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨e', hee', hse⟩ := settledReachable a e
+  obtain ⟨f', hff', hsf⟩ := settledReachable a f
+  have heq' : UniformLanguageEquivalent e' f' := by
+    intro X W gs
+    exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans
+      (sound_BA (V := W) hff' gs)
+  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq' (total_of_settled hse) (total_of_settled hsf)
+  obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
+  exact EquivBA.trans hee'
+    (EquivBA.trans
+      (equivBA_of_common_refinement χ (GkatPullback.pullbackFst φ ψ base)
+        (GkatPullback.pullbackSnd φ ψ base))
+      (EquivBA.symm hff'))
+
+#print axioms crossEquiv_step_at
+#print axioms sink_state_dead
+#print axioms completeness_of_total
 #print axioms initHlt_eq_E
 #print axioms halt_restriction
 #print axioms decomposes
