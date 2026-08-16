@@ -1,5 +1,6 @@
 import GkatPullbackProofs
 import GkatAtomTransferProofs
+import GkatNullLanguageProofs
 
 /-!
 # `CommonTarget` is false, and what replaces it
@@ -31,7 +32,7 @@ and the dead-branch results are there to discharge.
 namespace GkatCommonTarget
 
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatCrystallization
-open GkatSynthesis GkatCofinality GkatPullback GkatAtomTransfer
+open GkatSynthesis GkatCofinality GkatPullback GkatAtomTransfer GkatNullLanguage
 
 variable {A T : Type}
 
@@ -94,12 +95,19 @@ theorem not_commonTarget : ¬ CommonTarget Act Tst := by
     before asking any of these questions, and `nullLanguage_complete` together with the
     dead-branch results is what discharges the excluded region. -/
 
-/-- A system is **productive** when no configuration is dead: from every state — the
-    pseudostate included — and every atom, some guarded string is accepted.  Stated
-    semantically, so it does not depend on how the automaton was built. -/
+/-- A system is **productive** when no state is dead: from every state — the pseudostate
+    included — *some* guarded string is accepted, at *some* atom.
+
+    The atom is existential, and that is not a detail.  Demanding acceptance at *every* atom
+    would be satisfied by almost nothing: `a ; b?` has a core state that cannot halt at a
+    `¬b` atom and has no transition there, so it would fail, and with it every program
+    carrying a nontrivial guard.  `crossEquiv_step` only ever needs a word starting at the
+    atom *after* the step, and it is free to choose that atom — so the weaker form is both
+    what the proof uses and what matches the search's `all_productive` ("can still reach a
+    halt").  The `X` argument is kept only to witness that the atom type is inhabited. -/
 def Productive {S : Type} (aut : InitializedGAut S A T) : Prop :=
-  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S),
-    ∃ w : List (A × X), autRun W aut.toGAut s x w
+  ∀ (X : Type) (W : T → X → Bool) (_ : X) (s : Option S),
+    ∃ (x' : X) (w : List (A × X)), autRun W aut.toGAut s x' w
 
 /-- Two states of two (possibly different) systems with the same language, uniformly in the
     test interpretation.  Stated across a pair because that is what the matching argument
@@ -197,8 +205,8 @@ theorem crossEquiv_step {S₁ S₂ : Type} {a : InitializedGAut S₁ A T} {b : I
     {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
     (hs : autStep W a.toGAut s x = some (q, s')) :
     ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
-  obtain ⟨w, hw⟩ := hprod X W x s'
-  obtain ⟨t', ht, _⟩ := (h X W (x, (q, x) :: w)).mp ⟨s', hs, hw⟩
+  obtain ⟨x', w, hw⟩ := hprod X W x s'
+  obtain ⟨t', ht, _⟩ := (h X W (x, (q, x') :: w)).mp ⟨s', hs, hw⟩
   refine ⟨t', ht, ?_⟩
   intro Y V gs
   obtain ⟨y, v⟩ := gs
@@ -257,13 +265,21 @@ def Reachable {S : Type} (aut : InitializedGAut S A T) : Prop :=
 def Normal {S : Type} (aut : InitializedGAut S A T) : Prop :=
   Productive aut ∧ Reachable aut
 
-/-- **Phase A, named.**  Every program is provably equal to one in normal form.  Dead
-    regions are `0` (`nullLanguage_complete`, `every_dead_state_eq_zero`) and unreachable
-    branches sit under unsatisfiable guards (`ite_of_taut`, `ite_of_unsat`); since GKAT
-    actions are uninterpreted, every atom is possible after a step, so unreachability can
-    only ever come from guard structure at a branch. -/
+/-- **Phase A, named — for non-null programs only.**  Every program with a nonempty language
+    is provably equal to one in normal form.
+
+    The restriction is forced, not cosmetic.  `0` is not productive: its pseudostate accepts
+    nothing at any atom, so no null program is normal, and `Normalizable` without the
+    hypothesis would be false.  Nothing is lost — the null case is discharged outright by
+    `nullLanguage_complete`, which needs none of this machinery.
+
+    Dead regions inside a non-null program are `0` (`every_dead_state_eq_zero`) and
+    unreachable branches sit under unsatisfiable guards (`ite_of_taut`, `ite_of_unsat`);
+    since GKAT actions are uninterpreted, every atom is possible after a step, so
+    unreachability can only come from guard structure at a branch. -/
 def Normalizable (A T : Type) : Prop :=
-  ∀ e : Exp A T, ∃ e' : Exp A T, EquivBA e e' ∧ Normal (certifiedThompson A T e').aut
+  ∀ e : Exp A T, ¬ UniformExpLempty e →
+    ∃ e' : Exp A T, EquivBA e e' ∧ Normal (certifiedThompson A T e').aut
 
 /-- **The repaired constructive half.**  Restricted to normal automata, which is precisely
     the class the counterexamples leave. -/
@@ -303,17 +319,32 @@ theorem completeness_of_normalized
     (hpc : PullbackCovered A T) :
     FiniteAxiomsCompleteBA A T := by
   intro e f heq
-  obtain ⟨e', hee', hne⟩ := hnorm e
-  obtain ⟨f', hff', hnf⟩ := hnorm f
-  have heq' : UniformLanguageEquivalent e' f' := by
-    intro X W gs
-    exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans (sound_BA (V := W) hff' gs)
-  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq' hne hnf
-  obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
-  exact EquivBA.trans hee'
-    (EquivBA.trans
-      (equivBA_of_common_refinement χ (pullbackFst φ ψ base) (pullbackSnd φ ψ base))
-      (EquivBA.symm hff'))
+  by_cases hnull : UniformExpLempty e
+  · -- both are null, and `nullLanguage_complete` settles it with nothing else
+    have hf : UniformExpLempty f := by
+      refine (uniformExpLempty_iff_zero f).mpr ?_
+      intro X W gs
+      exact ((heq X W gs).symm.trans ((uniformExpLempty_iff_zero e).mp hnull X W gs))
+    exact EquivBA.trans (nullLanguage_complete e hnull)
+      (EquivBA.symm (nullLanguage_complete f hf))
+  · have hfn : ¬ UniformExpLempty f := by
+      intro hf
+      refine hnull ?_
+      refine (uniformExpLempty_iff_zero e).mpr ?_
+      intro X W gs
+      exact (heq X W gs).trans ((uniformExpLempty_iff_zero f).mp hf X W gs)
+    obtain ⟨e', hee', hne⟩ := hnorm e hnull
+    obtain ⟨f', hff', hnf⟩ := hnorm f hfn
+    have heq' : UniformLanguageEquivalent e' f' := by
+      intro X W gs
+      exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans
+        (sound_BA (V := W) hff' gs)
+    obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq' hne hnf
+    obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
+    exact EquivBA.trans hee'
+      (EquivBA.trans
+        (equivBA_of_common_refinement χ (pullbackFst φ ψ base) (pullbackSnd φ ψ base))
+        (EquivBA.symm hff'))
 
 #print axioms not_commonTarget
 #print axioms no_common_target
