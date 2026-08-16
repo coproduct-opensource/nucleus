@@ -1237,88 +1237,127 @@ fn halt_shape<const NA: usize>(a: &Aut<NA>) -> [u32; 3] {
 /// and not obviously sufficient, which is exactly the gap the counterexamples might live in.
 /// Node 0 is the pseudostate; node `i+1` is core state `i`.
 fn reducible<const NA: usize>(a: &Aut<NA>) -> bool {
+    // Allocation-free: at most MAXK + 1 = 17 nodes, so successors and predecessors are u32
+    // bitmasks and every working array is fixed.  The first version allocated about
+    // 3(n+1)+6 Vecs per call, which is ruinous when the caller sweeps 56M automata.
     let n = a.k as usize + 1;
-    let mut succ = vec![Vec::<usize>::new(); n];
+    let mut succ = [0u32; MAXK + 1];
     for x in 0..NA {
-        if a.it[x] != 0 { succ[0].push(a.it[x] as usize); }
+        if a.it[x] != 0 { succ[0] |= 1 << a.it[x]; }
     }
     for i in 0..a.k as usize {
         for x in 0..NA {
-            if a.st[i][x] != 0 { succ[i + 1].push(a.st[i][x] as usize); }
+            if a.st[i][x] != 0 { succ[i + 1] |= 1 << a.st[i][x]; }
         }
     }
-    // reverse postorder from 0
-    let mut order: Vec<usize> = Vec::new();
-    let mut seen = vec![false; n];
-    fn dfs(u: usize, succ: &[Vec<usize>], seen: &mut Vec<bool>, order: &mut Vec<usize>) {
-        seen[u] = true;
-        for &v in succ[u].iter() {
-            if !seen[v] { dfs(v, succ, seen, order); }
+    // reverse postorder from 0, with an explicit stack
+    let mut rpo = [u8::MAX; MAXK + 1];
+    let mut order = [0usize; MAXK + 1];
+    let mut nord = 0usize;
+    {
+        let mut stack = [(0usize, 0usize); MAXK + 2];
+        let mut sp = 0usize;
+        let mut entered = [false; MAXK + 1];
+        stack[0] = (0, 0);
+        sp = 1;
+        entered[0] = true;
+        while sp > 0 {
+            let (u, mut i) = stack[sp - 1];
+            let mut pushed = false;
+            while i < n {
+                if succ[u] >> i & 1 == 1 && !entered[i] {
+                    entered[i] = true;
+                    stack[sp - 1].1 = i + 1;
+                    stack[sp] = (i, 0);
+                    sp += 1;
+                    pushed = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !pushed {
+                stack[sp - 1].1 = n;
+                order[nord] = u;
+                nord += 1;
+                sp -= 1;
+            }
         }
-        order.push(u);
     }
-    dfs(0, &succ, &mut seen, &mut order);
-    order.reverse();
-    let mut rpo = vec![usize::MAX; n];
-    for (i, &u) in order.iter().enumerate() { rpo[u] = i; }
-    let mut pred = vec![Vec::<usize>::new(); n];
+    for i in 0..nord {
+        rpo[order[nord - 1 - i]] = i as u8;
+    }
+    let mut pred = [0u32; MAXK + 1];
     for u in 0..n {
-        for &v in succ[u].iter() { pred[v].push(u); }
-    }
-    // iterative dominators (Cooper-Harvey-Kennedy); idom[0] = 0
-    let mut idom = vec![usize::MAX; n];
-    idom[0] = 0;
-    let intersect = |mut x: usize, mut y: usize, idom: &Vec<usize>, rpo: &Vec<usize>| {
-        while x != y {
-            while rpo[x] > rpo[y] { x = idom[x]; }
-            while rpo[y] > rpo[x] { y = idom[y]; }
+        for v in 0..n {
+            if succ[u] >> v & 1 == 1 { pred[v] |= 1 << u; }
         }
-        x
-    };
+    }
+    // iterative dominators (Cooper-Harvey-Kennedy)
+    let mut idom = [u8::MAX; MAXK + 1];
+    idom[0] = 0;
     let mut changed = true;
     while changed {
         changed = false;
-        for &u in order.iter() {
-            if u == 0 || rpo[u] == usize::MAX { continue; }
-            let mut new = usize::MAX;
-            for &p in pred[u].iter() {
-                if rpo[p] == usize::MAX || idom[p] == usize::MAX { continue; }
-                new = if new == usize::MAX { p } else { intersect(new, p, &idom, &rpo) };
+        for k in 0..nord {
+            let u = order[nord - 1 - k];
+            if u == 0 || rpo[u] == u8::MAX { continue; }
+            let mut new = u8::MAX;
+            for p in 0..n {
+                if pred[u] >> p & 1 != 1 || rpo[p] == u8::MAX || idom[p] == u8::MAX { continue; }
+                new = if new == u8::MAX { p as u8 } else {
+                    let (mut x, mut y) = (new as usize, p);
+                    while x != y {
+                        while rpo[x] > rpo[y] { x = idom[x] as usize; }
+                        while rpo[y] > rpo[x] { y = idom[y] as usize; }
+                    }
+                    x as u8
+                };
             }
-            if new != usize::MAX && idom[u] != new { idom[u] = new; changed = true; }
+            if new != u8::MAX && idom[u] != new { idom[u] = new; changed = true; }
         }
     }
-    let dominates = |mut d: usize, u: usize, idom: &Vec<usize>| -> bool {
-        let mut x = u;
-        loop {
-            if x == d { return true; }
-            if x == 0 { return false; }
-            let nx = idom[x];
-            if nx == usize::MAX || nx == x { return false; }
-            x = nx;
-        }
-        #[allow(unreachable_code)] { let _ = &mut d; false }
-    };
-    // delete back edges, then test acyclicity of the remainder
-    let mut fwd = vec![Vec::<usize>::new(); n];
+    // delete back edges (head dominates tail), then test the remainder for acyclicity
+    let mut fwd = [0u32; MAXK + 1];
     for u in 0..n {
-        if rpo[u] == usize::MAX { continue; }
-        for &v in succ[u].iter() {
-            if rpo[v] != usize::MAX && dominates(v, u, &idom) { continue; }
-            fwd[u].push(v);
+        if rpo[u] == u8::MAX { continue; }
+        for v in 0..n {
+            if succ[u] >> v & 1 != 1 || rpo[v] == u8::MAX { continue; }
+            let mut x = u;
+            let mut dom = false;
+            loop {
+                if x == v { dom = true; break; }
+                if x == 0 { break; }
+                let nx = idom[x];
+                if nx == u8::MAX || nx as usize == x { break; }
+                x = nx as usize;
+            }
+            if !dom { fwd[u] |= 1 << v; }
         }
     }
-    // Kahn
-    let mut indeg = vec![0usize; n];
-    for u in 0..n { for &v in fwd[u].iter() { indeg[v] += 1; } }
-    let mut q: Vec<usize> = (0..n).filter(|&u| rpo[u] != usize::MAX && indeg[u] == 0).collect();
+    let mut indeg = [0u8; MAXK + 1];
+    for u in 0..n {
+        for v in 0..n {
+            if fwd[u] >> v & 1 == 1 { indeg[v] += 1; }
+        }
+    }
+    let mut queue = [0usize; MAXK + 1];
+    let (mut qh, mut qt) = (0usize, 0usize);
+    let mut live = 0usize;
+    for u in 0..n {
+        if rpo[u] == u8::MAX { continue; }
+        live += 1;
+        if indeg[u] == 0 { queue[qt] = u; qt += 1; }
+    }
     let mut done = 0usize;
-    let live = (0..n).filter(|&u| rpo[u] != usize::MAX).count();
-    while let Some(u) = q.pop() {
+    while qh < qt {
+        let u = queue[qh];
+        qh += 1;
         done += 1;
-        for &v in fwd[u].iter() {
-            indeg[v] -= 1;
-            if indeg[v] == 0 { q.push(v); }
+        for v in 0..n {
+            if fwd[u] >> v & 1 == 1 {
+                indeg[v] -= 1;
+                if indeg[v] == 0 { queue[qt] = v; qt += 1; }
+            }
         }
     }
     done == live
@@ -1508,6 +1547,7 @@ fn expansion_test<const NA: usize>(
 
     let (tot, dead, bisim, direct, overs, overs_ok, red_direct, fsum, resist) = acc;
     println!("  canonical fully reachable automata : {tot}");
+    println!("  [t] expansion scan done");
     println!("  dropped as dead / null-language    : {dead}");
     println!("  productive AND bisimilar to an exp : {bisim}");
     println!("  DIRECTLY covered by an expression  : {direct}");
@@ -1669,6 +1709,15 @@ k={} ih={} it={:?} hl={:?} st={:?}",
 
 fn run<const NA: usize>(maxk: usize, pairk: usize) {
     let nguards = 1u8 << NA;
+    // Phase timing. The last two optimisation passes both found their biggest win in a
+    // measurement rather than a guess, so measure first.
+    let t0 = std::time::Instant::now();
+    let mut mark = t0;
+    let mut phase = |name: &str, mark: &mut std::time::Instant| {
+        let now = std::time::Instant::now();
+        println!("  [t] {name}: {:.1}s", now.duration_since(*mark).as_secs_f64());
+        *mark = now;
+    };
     println!("atoms = {NA}, semantic guards = {nguards}, closure bound K = {maxk}, pairs from k <= {pairk}");
 
     // ---- closure
@@ -1764,12 +1813,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         frontier = fresh;
     }
     println!("CLOSED: {} fully reachable Thompson automata with <= {maxk} core states", list.len());
+    phase("closure", &mut mark);
     {
         // Sanity for the predicate: a structured program's flow graph must be reducible.
         // If any syntax-generated automaton is irreducible, the test is wrong, not the theory.
         let bad = list.par_iter().filter(|a| !reducible(a)).count();
         println!("  irreducible Thompson automata (must be 0): {bad}");
     }
+    phase("reducibility sweep", &mut mark);
     if std::env::var("DUMP").is_ok() {
         let mut lines: Vec<String> = list
             .iter()
@@ -1842,11 +1893,30 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
 
     // ---- index by behaviour
-    let mut by_beh: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
-    for (n, a) in list.iter().enumerate() {
-        by_beh.entry(behaviour(a)).or_default().push(n);
+    //
+    // This was a sequential loop over all 56M closure members, each computing a partition
+    // refinement — 106s of a 188s run, on one core, while everything around it used eight.
+    // The map itself has to be built serially, but the expensive half does not: compute the
+    // keys in parallel a chunk at a time, then insert.  Chunking keeps the transient key
+    // buffer bounded instead of materialising 56M of them at once.
+    // Preallocated: a map growing from empty to 36.6M keys rehashes about twenty-five times,
+    // and rehashing dominates — parallelising the key computation alone only bought 10%.
+    let mut by_beh: FxMap<Vec<u8>, Vec<usize>> =
+        FxMap::with_capacity_and_hasher(list.len(), FxBuild);
+    {
+        const CHUNK: usize = 1 << 22;
+        let mut base = 0usize;
+        while base < list.len() {
+            let hi = (base + CHUNK).min(list.len());
+            let keys: Vec<Vec<u8>> = list[base..hi].par_iter().map(behaviour).collect();
+            for (i, k) in keys.into_iter().enumerate() {
+                by_beh.entry(k).or_default().push(base + i);
+            }
+            base = hi;
+        }
     }
     println!("  behaviour classes: {}", by_beh.len());
+    phase("by_beh", &mut mark);
 
     // ---- crux pairs drawn from the small end, span searched over the whole closure
     let mut pairs = 0usize;
@@ -1948,6 +2018,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         .collect();
     let s_dec = solv.iter().filter(|r| r.2 > 0 && (r.2 as usize) <= maxk).count();
     let s_hit = solv.iter().filter(|r| r.3).count();
+    phase("pairs + pullbacks", &mut mark);
     println!("\nintermediate (pullback) solvable by the syntax: {s_hit}");
     println!("  of {} crux pairs, {s_dec} have |P| <= K so the answer is decided", crux.len());
     println!("  decided-but-unsolvable: {}",
@@ -2042,6 +2113,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                 (c, b)
             })
             .reduce(|| (0, 0), |x, y| (x.0 + y.0, x.1 + y.1));
+        phase("pullback refinement table", &mut mark);
         println!("\ncyclic-cover soundness: {checked} variants over {cap} programs, \
                   behaviour mismatches: {bad}");
     }
