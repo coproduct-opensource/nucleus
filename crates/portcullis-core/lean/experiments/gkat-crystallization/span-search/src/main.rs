@@ -885,41 +885,91 @@ fn unroll_variants<const NA: usize>(
     }
 }
 
-/// A candidate program as a tree, so refinements can be *iterated* — the automaton alone
-/// cannot be re-refined, since the constructors are not invertible.
-#[derive(Clone)]
-enum Tree<const NA: usize> {
+/// A candidate program as a **hashconsed** term.  Refinements have to be *iterated* — the
+/// automaton alone cannot be re-refined, since the constructors are not invertible — but
+/// boxed trees made that quadratic: variants overlap almost entirely, so the same subterm
+/// was rebuilt, re-hashed and re-evaluated once per variant containing it.
+///
+/// The idea is the useful half of an e-graph, without the semantic quotient.  (The quotient
+/// itself would be worse than useless here: an e-class groups programs that are *equal*,
+/// and the whole search is over the different automata equal programs produce, so e-classes
+/// merge exactly the distinction being searched.)  Nodes are interned to `u32` ids, so
+/// structural sharing is automatic and dedup is pointer equality.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Node<const NA: usize> {
     Leaf(Aut<NA>),
-    Seq(Box<Tree<NA>>, Box<Tree<NA>>),
-    Ite(u8, Box<Tree<NA>>, Box<Tree<NA>>),
-    Wh(u8, Box<Tree<NA>>),
+    Seq(u32, u32),
+    Ite(u8, u32, u32),
+    Wh(u8, u32),
 }
 
-fn to_tree<const NA: usize>(list: &[Aut<NA>], prov: &[Prov], idx: u32) -> Tree<NA> {
-    match prov[idx as usize] {
-        Prov::Leaf => Tree::Leaf(list[idx as usize]),
-        Prov::Seq(l, r) => Tree::Seq(Box::new(to_tree(list, prov, l)),
-                                     Box::new(to_tree(list, prov, r))),
-        Prov::Ite(g, l, r) => Tree::Ite(g, Box::new(to_tree(list, prov, l)),
-                                            Box::new(to_tree(list, prov, r))),
-        Prov::Wh(g, b) => Tree::Wh(g, Box::new(to_tree(list, prov, b))),
+/// Interned terms, each carrying its automaton.  The automaton is computed **at intern
+/// time**, so every distinct subterm is evaluated exactly once no matter how many variants
+/// contain it — the analysis is bottom-up over the shared structure.
+struct Pool<const NA: usize> {
+    nodes: Vec<Node<NA>>,
+    index: FxMap<Node<NA>, u32>,
+    val: Vec<Option<Aut<NA>>>,
+}
+
+impl<const NA: usize> Pool<NA> {
+    fn new() -> Self {
+        Pool { nodes: Vec::new(), index: FxMap::default(), val: Vec::new() }
+    }
+
+    fn intern(&mut self, n: Node<NA>) -> u32 {
+        if let Some(&i) = self.index.get(&n) {
+            return i;
+        }
+        let v = match n {
+            Node::Leaf(a) => Some(a),
+            Node::Seq(x, y) => match (self.val[x as usize], self.val[y as usize]) {
+                (Some(a), Some(b)) => a_seq(&a, &b),
+                _ => None,
+            },
+            Node::Ite(g, x, y) => match (self.val[x as usize], self.val[y as usize]) {
+                (Some(a), Some(b)) => a_ite(g, &a, &b),
+                _ => None,
+            },
+            Node::Wh(g, x) => self.val[x as usize].map(|a| a_wh(g, &a)),
+        };
+        let i = self.nodes.len() as u32;
+        self.nodes.push(n);
+        self.val.push(v);
+        self.index.insert(n, i);
+        i
+    }
+
+    #[inline]
+    fn aut(&self, i: u32) -> Option<Aut<NA>> {
+        self.val[i as usize]
+    }
+
+    fn leaf(&mut self, a: Aut<NA>) -> u32 { self.intern(Node::Leaf(a)) }
+
+    /// Rebuild a closure member as a term, following its provenance.
+    fn of_prov(&mut self, list: &[Aut<NA>], prov: &[Prov], idx: u32) -> u32 {
+        let n = match prov[idx as usize] {
+            Prov::Leaf => Node::Leaf(list[idx as usize]),
+            Prov::Seq(l, r) => {
+                let a = self.of_prov(list, prov, l);
+                let b = self.of_prov(list, prov, r);
+                Node::Seq(a, b)
+            }
+            Prov::Ite(g, l, r) => {
+                let a = self.of_prov(list, prov, l);
+                let b = self.of_prov(list, prov, r);
+                Node::Ite(g, a, b)
+            }
+            Prov::Wh(g, b) => {
+                let x = self.of_prov(list, prov, b);
+                Node::Wh(g, x)
+            }
+        };
+        self.intern(n)
     }
 }
 
-fn eval<const NA: usize>(t: &Tree<NA>) -> Option<Aut<NA>> {
-    match t {
-        Tree::Leaf(a) => Some(*a),
-        Tree::Seq(l, r) => a_seq(&eval(l)?, &eval(r)?),
-        Tree::Ite(g, l, r) => a_ite(*g, &eval(l)?, &eval(r)?),
-        Tree::Wh(g, b) => Some(a_wh(*g, &eval(b)?)),
-    }
-}
-
-/// One-step refinements of a tree.
-///   * **W1-unrolling**: `while g do B  ⟶  if g then (B ; while g do B) else 1`
-///   * **guard-split duplication** (`dup`): `e ⟶ if g then e else e`, which doubles a
-///     subterm's states and enters the copies under complementary guards.  This is the move
-///     that produced the span witness for the refuting pair, and it is not an unrolling.
 /// The degree-k cyclic cover of a loop, as syntax:
 ///
 ///     while g do b   ==>   while g do (b ; (g ? b : 1) ; ... ; (g ? b : 1))     [k-1 copies]
@@ -931,50 +981,56 @@ fn eval<const NA: usize>(t: &Tree<NA>) -> Option<Aut<NA>> {
 /// circle.  Semantically it is an identity: the inner `g ? b : 1` performs the same
 /// test-and-body the next outer iteration would, and when the inner test fails nothing runs
 /// before the outer test, which therefore also fails.
-fn cyclic_cover<const NA: usize>(g: u8, b: &Tree<NA>, k: u32) -> Tree<NA> {
+fn cyclic_cover<const NA: usize>(pool: &mut Pool<NA>, g: u8, b: u32, k: u32) -> u32 {
     let full = (1u8 << NA) - 1;
-    let mut body = b.clone();
+    let one = pool.leaf(a_test::<NA>(full));
+    let mut body = b;
     for _ in 1..k {
-        body = Tree::Seq(Box::new(body), Box::new(Tree::Ite(g,
-            Box::new(b.clone()),
-            Box::new(Tree::Leaf(a_test::<NA>(full))))));
+        let branch = pool.intern(Node::Ite(g, b, one));
+        body = pool.intern(Node::Seq(body, branch));
     }
-    Tree::Wh(g, Box::new(body))
+    pool.intern(Node::Wh(g, body))
 }
 
-/// Every cyclic cover of degree 2..=kmax, at every loop position in the tree. Used only to
-/// check the move is a semantic identity.
-fn cyclic_variants<const NA: usize>(t: &Tree<NA>, kmax: u32, out: &mut Vec<Tree<NA>>) {
-    match t {
-        Tree::Leaf(_) => {}
-        Tree::Wh(g, b) => {
-            for k in 2..=kmax { out.push(cyclic_cover(*g, b, k)); }
+/// Every cyclic cover of degree 2..=kmax, at every loop position.  Used only to check the
+/// move is a semantic identity.
+fn cyclic_variants<const NA: usize>(pool: &mut Pool<NA>, t: u32, kmax: u32, out: &mut Vec<u32>) {
+    match pool.nodes[t as usize] {
+        Node::Leaf(_) => {}
+        Node::Wh(g, b) => {
+            for k in 2..=kmax {
+                let v = cyclic_cover(pool, g, b, k);
+                out.push(v);
+            }
             let mut sub = Vec::new();
-            cyclic_variants(b, kmax, &mut sub);
-            for v in sub { out.push(Tree::Wh(*g, Box::new(v))); }
+            cyclic_variants(pool, b, kmax, &mut sub);
+            for v in sub {
+                let w = pool.intern(Node::Wh(g, v));
+                out.push(w);
+            }
         }
-        Tree::Seq(l, r) => {
-            let mut s = Vec::new();
-            cyclic_variants(l, kmax, &mut s);
-            for v in s { out.push(Tree::Seq(Box::new(v), r.clone())); }
-            let mut s = Vec::new();
-            cyclic_variants(r, kmax, &mut s);
-            for v in s { out.push(Tree::Seq(l.clone(), Box::new(v))); }
+        Node::Seq(l, r) => {
+            let mut sub = Vec::new();
+            cyclic_variants(pool, l, kmax, &mut sub);
+            for v in sub { let w = pool.intern(Node::Seq(v, r)); out.push(w); }
+            let mut sub = Vec::new();
+            cyclic_variants(pool, r, kmax, &mut sub);
+            for v in sub { let w = pool.intern(Node::Seq(l, v)); out.push(w); }
         }
-        Tree::Ite(g, l, r) => {
-            let mut s = Vec::new();
-            cyclic_variants(l, kmax, &mut s);
-            for v in s { out.push(Tree::Ite(*g, Box::new(v), r.clone())); }
-            let mut s = Vec::new();
-            cyclic_variants(r, kmax, &mut s);
-            for v in s { out.push(Tree::Ite(*g, l.clone(), Box::new(v))); }
+        Node::Ite(g, l, r) => {
+            let mut sub = Vec::new();
+            cyclic_variants(pool, l, kmax, &mut sub);
+            for v in sub { let w = pool.intern(Node::Ite(g, v, r)); out.push(w); }
+            let mut sub = Vec::new();
+            cyclic_variants(pool, r, kmax, &mut sub);
+            for v in sub { let w = pool.intern(Node::Ite(g, l, v)); out.push(w); }
         }
     }
 }
 
 fn refinements<const NA: usize>(
-    t: &Tree<NA>, nguards: u8, unr: bool, dup: bool, cyc: u32, depth: u32,
-    out: &mut Vec<Tree<NA>>,
+    pool: &mut Pool<NA>, t: u32, nguards: u8, unr: bool, dup: bool, cyc: u32, depth: u32,
+    out: &mut Vec<u32>,
 ) {
     if depth == 0 || out.len() > 60000 {
         return;
@@ -982,41 +1038,110 @@ fn refinements<const NA: usize>(
     let full = (1u8 << NA) - 1;
     if dup {
         for g in 0..nguards {
-            out.push(Tree::Ite(g, Box::new(t.clone()), Box::new(t.clone())));
+            let w = pool.intern(Node::Ite(g, t, t));
+            out.push(w);
         }
     }
-    match t {
-        Tree::Leaf(_) => {}
-        Tree::Wh(g, b) => {
+    match pool.nodes[t as usize] {
+        Node::Leaf(_) => {}
+        Node::Wh(g, b) => {
             if unr {
-                out.push(Tree::Ite(*g,
-                    Box::new(Tree::Seq(b.clone(), Box::new(t.clone()))),
-                    Box::new(Tree::Leaf(a_test::<NA>(full)))));
+                let one = pool.leaf(a_test::<NA>(full));
+                let body = pool.intern(Node::Seq(b, t));
+                let w = pool.intern(Node::Ite(g, body, one));
+                out.push(w);
             }
             for k in 2..=cyc {
-                out.push(cyclic_cover(*g, b, k));
+                let v = cyclic_cover(pool, g, b, k);
+                out.push(v);
             }
             let mut sub = Vec::new();
-            refinements(b, nguards, unr, dup, cyc, depth - 1, &mut sub);
-            for v in sub { out.push(Tree::Wh(*g, Box::new(v))); }
+            refinements(pool, b, nguards, unr, dup, cyc, depth - 1, &mut sub);
+            for v in sub { let w = pool.intern(Node::Wh(g, v)); out.push(w); }
         }
-        Tree::Seq(l, r) => {
-            let mut sl = Vec::new();
-            refinements(l, nguards, unr, dup, cyc, depth - 1, &mut sl);
-            for v in sl { out.push(Tree::Seq(Box::new(v), r.clone())); }
-            let mut sr = Vec::new();
-            refinements(r, nguards, unr, dup, cyc, depth - 1, &mut sr);
-            for v in sr { out.push(Tree::Seq(l.clone(), Box::new(v))); }
+        Node::Seq(l, r) => {
+            let mut sub = Vec::new();
+            refinements(pool, l, nguards, unr, dup, cyc, depth - 1, &mut sub);
+            for v in sub { let w = pool.intern(Node::Seq(v, r)); out.push(w); }
+            let mut sub = Vec::new();
+            refinements(pool, r, nguards, unr, dup, cyc, depth - 1, &mut sub);
+            for v in sub { let w = pool.intern(Node::Seq(l, v)); out.push(w); }
         }
-        Tree::Ite(g, l, r) => {
-            let mut sl = Vec::new();
-            refinements(l, nguards, unr, dup, cyc, depth - 1, &mut sl);
-            for v in sl { out.push(Tree::Ite(*g, Box::new(v), r.clone())); }
-            let mut sr = Vec::new();
-            refinements(r, nguards, unr, dup, cyc, depth - 1, &mut sr);
-            for v in sr { out.push(Tree::Ite(*g, l.clone(), Box::new(v))); }
+        Node::Ite(g, l, r) => {
+            let mut sub = Vec::new();
+            refinements(pool, l, nguards, unr, dup, cyc, depth - 1, &mut sub);
+            for v in sub { let w = pool.intern(Node::Ite(g, v, r)); out.push(w); }
+            let mut sub = Vec::new();
+            refinements(pool, r, nguards, unr, dup, cyc, depth - 1, &mut sub);
+            for v in sub { let w = pool.intern(Node::Ite(g, l, v)); out.push(w); }
         }
     }
+}
+
+/// A compact structural fingerprint, for separating the automata a Thompson automaton can
+/// cover from the ones it cannot. Guessing the invariant has failed twice; this measures it.
+fn features<const NA: usize>(a: &Aut<NA>) -> [u32; 10] {
+    let k = a.k as usize;
+    let mut r = [0u16; MAXK];
+    for i in 0..k {
+        for x in 0..NA {
+            if a.st[i][x] != 0 { r[i] |= 1 << (a.st[i][x] - 1); }
+        }
+    }
+    let adj = r;
+    for m in 0..k {
+        let rm = r[m];
+        for i in 0..k {
+            if r[i] >> m & 1 == 1 { r[i] |= rm; }
+        }
+    }
+    let mut comp = [usize::MAX; MAXK];
+    let mut ncomp = 0usize;
+    let mut maxscc = 0usize;
+    for i in 0..k {
+        if comp[i] != usize::MAX { continue; }
+        comp[i] = ncomp;
+        let mut sz = 1;
+        for j in (i + 1)..k {
+            if comp[j] == usize::MAX && r[i] >> j & 1 == 1 && r[j] >> i & 1 == 1 {
+                comp[j] = ncomp;
+                sz += 1;
+            }
+        }
+        if sz > maxscc { maxscc = sz; }
+        ncomp += 1;
+    }
+    let cyclic = (0..k).filter(|&i| r[i] >> i & 1 == 1).count();
+    let mut cyclens: Vec<u32> = Vec::new();
+    for i in 0..k {
+        if r[i] >> i & 1 != 1 { continue; }
+        let mut dist = [u32::MAX; MAXK];
+        let mut q = VecDeque::new();
+        for j in 0..k {
+            if adj[i] >> j & 1 == 1 && dist[j] == u32::MAX { dist[j] = 1; q.push_back(j); }
+        }
+        while let Some(u) = q.pop_front() {
+            if u == i { break; }
+            for j in 0..k {
+                if adj[u] >> j & 1 == 1 && dist[j] == u32::MAX {
+                    dist[j] = dist[u] + 1;
+                    q.push_back(j);
+                }
+            }
+        }
+        if dist[i] != u32::MAX { cyclens.push(dist[i]); }
+    }
+    let gcd = |mut x: u32, mut y: u32| { while y != 0 { let t = x % y; x = y; y = t; } x };
+    let g = cyclens.iter().fold(0u32, |acc, &c| gcd(acc, c));
+    let lmax = cyclens.iter().copied().max().unwrap_or(0);
+    let lmin = cyclens.iter().copied().min().unwrap_or(0);
+    let halting = (0..k).filter(|&i| a.hl[i] != 0).count();
+    let halt_on_cycle = (0..k).filter(|&i| a.hl[i] != 0 && r[i] >> i & 1 == 1).count();
+    let full = (1u8 << NA) - 1;
+    let fullhalt_cycle = (0..k)
+        .filter(|&i| a.hl[i] == full && r[i] >> i & 1 == 1).count();
+    [k as u32, ncomp as u32, maxscc as u32, cyclic as u32, g, lmin, lmax,
+     halting as u32, halt_on_cycle as u32, fullhalt_cycle as u32]
 }
 
 // ---------------------------------------------------------------- the full space
@@ -1149,31 +1274,105 @@ fn expansion_test<const NA: usize>(
     println!("  refinement search: {rounds} rounds, frontier cap {cap}, \
 on the {} in the hypothesis class ({} outside it, not searched)",
         hyp.len(), resist.len() - hyp.len());
-    let rescued: Vec<bool> = hyp.par_iter().map(|(p, _)| {
-        let cands = &by_beh[&behaviour(p)];
-        for &n in cands.iter() {
-            let mut frontier = vec![to_tree(list, prov, n as u32)];
-            for _ in 0..rounds {
-                let mut next: Vec<Tree<NA>> = Vec::new();
-                for t in frontier.iter() {
-                    refinements(t, nguards, true, true, 3, 3, &mut next);
-                }
-                for t in next.iter() {
-                    if let Some(v) = eval(t) {
-                        if let Some(c) = canon(&v) {
-                            if covers(&c, p) { return true; }
+
+    // The search used to be `for p { for candidate { rounds } }`, parallel over `p` alone.
+    // Four things were wrong with that, in increasing order of cost.
+    //
+    //   * **Load imbalance.**  Work stealing cannot rescue 166 items whose costs differ by
+    //     orders of magnitude — one thread grinds while the rest sit idle.
+    //   * **No early exit across candidates.**  Once one candidate covered `p`, every other
+    //     candidate for that `p` was wasted; nothing told them to stop.
+    //   * **No sharing.**  Refinement variants overlap almost entirely, so boxed trees
+    //     rebuilt, re-hashed and re-evaluated the same subterm once per variant containing
+    //     it.  `Pool` interns terms and computes each one's automaton at intern time.
+    //   * **The closure was recomputed per pair.**  A candidate's refinement closure does
+    //     not depend on which `p` it is being tested against — yet it was regrown 21028
+    //     times instead of once per distinct candidate.  Grouping by candidate also means
+    //     `canon` runs once per distinct term rather than once per (term, p).
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let found: Vec<AtomicBool> = (0..hyp.len()).map(|_| AtomicBool::new(false)).collect();
+    let mut by_cand: FxMap<u32, Vec<usize>> = FxMap::default();
+    for (i, (p, _)) in hyp.iter().enumerate() {
+        for &n in by_beh[&behaviour(p)].iter() {
+            by_cand.entry(n as u32).or_default().push(i);
+        }
+    }
+    let cand_list: Vec<(u32, Vec<usize>)> = by_cand.into_iter().collect();
+    println!("    {} distinct candidates over {} (automaton, candidate) pairs",
+        cand_list.len(), cand_list.iter().map(|c| c.1.len()).sum::<usize>());
+    cand_list.par_iter().for_each(|(n, ps)| {
+        if ps.iter().all(|&i| found[i].load(Ordering::Relaxed)) { return; }
+        let mut pool = Pool::<NA>::new();
+        let root = pool.of_prov(list, prov, *n);
+        let mut frontier = vec![root];
+        let mut seen: FxSet<u32> = FxSet::default();
+        seen.insert(root);
+        let mut tried: FxSet<Aut<NA>> = FxSet::default();
+        for _ in 0..rounds {
+            let mut next: Vec<u32> = Vec::new();
+            for &t in frontier.iter() {
+                refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+            }
+            let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+            for t in next {
+                if !seen.insert(t) { continue; }
+                if let Some(v) = pool.aut(t) {
+                    if let Some(c) = canon(&v) {
+                        if tried.insert(c) {
+                            for &i in ps.iter() {
+                                if found[i].load(Ordering::Relaxed) { continue; }
+                                let p = &hyp[i].0;
+                                // a cover is onto, so fewer states than `p` cannot work
+                                if c.k >= p.k && covers(&c, p) {
+                                    found[i].store(true, Ordering::Relaxed);
+                                }
+                            }
                         }
                     }
                 }
-                frontier = next;
-                if frontier.len() > cap { frontier.truncate(cap); }
+                keep.push(t);
             }
+            frontier = keep;
+            if frontier.len() > cap { frontier.truncate(cap); }
+            if ps.iter().all(|&i| found[i].load(Ordering::Relaxed)) { return; }
         }
-        false
-    }).collect();
+    });
+    let rescued: Vec<bool> = found.iter().map(|b| b.load(Ordering::Relaxed)).collect();
     let nres = rescued.iter().filter(|b| !**b).count();
     println!("  of those, rescued by refinement    : {}", rescued.len() - nres);
     println!("  RESIST *within the hypothesis*     : {nres}   <- refutes ThompsonCofinal if > 0");
+    // ---- what separates them?
+    {
+        let names = ["states", "sccs", "maxscc", "cyclic", "gcdcyc", "mincyc", "maxcyc",
+                     "halting", "haltcyc", "fullhaltcyc"];
+        let bad: Vec<[u32; 10]> = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| !**ok).map(|((p, _), _)| features(p)).collect();
+        let good: Vec<[u32; 10]> = hyp.iter().zip(rescued.iter())
+            .filter(|(_, ok)| **ok).map(|((p, _), _)| features(p)).collect();
+        println!("\n  FEATURE SEPARATION (hypothesis class only)");
+        println!("    {:<12} {:>18} {:>18}", "feature", "uncovered(mean)", "covered(mean)");
+        for i in 0..10 {
+            let mb = if bad.is_empty() { 0.0 } else {
+                bad.iter().map(|f| f[i] as f64).sum::<f64>() / bad.len() as f64 };
+            let mg = if good.is_empty() { 0.0 } else {
+                good.iter().map(|f| f[i] as f64).sum::<f64>() / good.len() as f64 };
+            println!("    {:<12} {:>18.3} {:>18.3}", names[i], mb, mg);
+        }
+        // exact value sets, which matter more than means for small integers
+        for i in 0..10 {
+            let mut vb: Vec<u32> = bad.iter().map(|f| f[i]).collect();
+            vb.sort_unstable(); vb.dedup();
+            let mut vg: Vec<u32> = good.iter().map(|f| f[i]).collect();
+            vg.sort_unstable(); vg.dedup();
+            let only_bad: Vec<u32> = vb.iter().copied().filter(|v| !vg.contains(v)).collect();
+            let only_good: Vec<u32> = vg.iter().copied().filter(|v| !vb.contains(v)).collect();
+            if !only_bad.is_empty() || !only_good.is_empty() {
+                println!("    {:<12} uncovered-only {:?}   covered-only {:?}",
+                    names[i], only_bad, only_good);
+            }
+        }
+    }
+
     let (mut isp, mut iso) = (0usize, 0usize);
     for ((p, over), ok) in hyp.iter().zip(rescued.iter()) {
         if !*ok {
@@ -1521,14 +1720,15 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let cap = list.len().min(400_000);
         let (checked, bad): (usize, usize) = (0..cap).into_par_iter()
             .map(|n| {
-                let t = to_tree(&list, &prov, n as u32);
-                let base = match eval(&t) { Some(a) => a, None => return (0, 0) };
+                let mut pool = Pool::<NA>::new();
+                let t = pool.of_prov(&list, &prov, n as u32);
+                let base = match pool.aut(t) { Some(a) => a, None => return (0, 0) };
                 let bb = behaviour(&base);
                 let mut v = Vec::new();
-                cyclic_variants(&t, 3, &mut v);
+                cyclic_variants(&mut pool, t, 3, &mut v);
                 let (mut c, mut b) = (0, 0);
                 for r in v.iter() {
-                    if let Some(a) = eval(r) {
+                    if let Some(a) = pool.aut(*r) {
                         c += 1;
                         if behaviour(&a) != bb { b += 1; }
                     }
@@ -1559,22 +1759,30 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             let cands = &by_beh[&behaviour(&p)];
             let mut found = false;
             'cand: for &n in cands.iter() {
-                let mut frontier = vec![to_tree(&list, &prov, n as u32)];
+                let mut pool = Pool::<NA>::new();
+                let root = pool.of_prov(&list, &prov, n as u32);
+                let mut frontier = vec![root];
+                let mut seen: FxSet<u32> = FxSet::default();
+                seen.insert(root);
                 for _ in 0..rounds {
-                    let mut next: Vec<Tree<NA>> = Vec::new();
-                    for t in frontier.iter() {
-                        refinements(t, nguards, mode_unr, mode_dup, mode_cyc, 3, &mut next);
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, mode_unr, mode_dup, mode_cyc, 3,
+                            &mut next);
                     }
-                    for t in next.iter() {
-                        if let Some(a) = eval(t) {
+                    let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        if let Some(a) = pool.aut(t) {
                             if a.k as usize > biggest { biggest = a.k as usize; }
                             if let Some(c) = canon(&a) {
                                 if covers(&c, &p) { found = true; break; }
                             }
                         }
+                        keep.push(t);
                     }
                     if found { break 'cand; }
-                    frontier = next;
+                    frontier = keep;
                     if frontier.len() > 12000 { frontier.truncate(12000); }
                 }
             }
