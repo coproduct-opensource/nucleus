@@ -2123,6 +2123,27 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     println!("\npullback representable (<= {MAXK} states): {sized} / {}", crux.len());
     println!("  of which decidable at K={maxk} (|P| <= K): {decid}");
     println!("  pullback IS a Thompson automaton        : {thomp}");
+    // Controlled Node Splitting is the classical route from an irreducible flow graph to a
+    // reducible one, and it works by *duplicating nodes* — which is precisely the
+    // guard-split duplication move.  If that is what is going on here, "the pullback is not
+    // itself syntax-generated" should coincide with "the pullback is irreducible".
+    {
+        let (mut tr, mut tn, mut nr, mut nn) = (0usize, 0usize, 0usize, 0usize);
+        for r in pb.iter() {
+            if !r.3 { continue; }
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|q| canon(&q)) {
+                match (r.4, reducible(&p)) {
+                    (true, true) => tr += 1,
+                    (true, false) => tn += 1,
+                    (false, true) => nr += 1,
+                    (false, false) => nn += 1,
+                }
+            }
+        }
+        println!("\n  is-Thompson x reducible:");
+        println!("    Thompson     & reducible {tr:>4}    Thompson     & irreducible {tn:>4}");
+        println!("    NOT Thompson & reducible {nr:>4}    NOT Thompson & irreducible {nn:>4}");
+    }
     let bad: Vec<&(usize, usize, u8, bool, bool)> =
         pb.iter().filter(|r| r.3 && (r.2 as usize) <= maxk && !r.4).collect();
     println!("  pullback decidable but NOT Thompson     : {}", bad.len());
