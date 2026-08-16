@@ -672,18 +672,16 @@ theorem total_form (a : A) (e : Exp A T) :
     must be made *canonical* — every one of them the same sink, stepping with the same
     action — rather than merely present.  `DeadCanonical` names that. -/
 
-/-- **`crossEquiv_step`, with the hypothesis narrowed to what the proof uses.**  Only the
-    state just stepped into must accept something, and only under the interpretation at
-    hand — not every state under every interpretation. -/
-theorem crossEquiv_step_at {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+/-- **The bridge, isolated.**  If the two sides step along the *same* action, their targets
+    are language-equivalent — with no liveness hypothesis anywhere.  Everything productivity
+    was ever needed for is the *action*; once that agrees, the rest is the sum-interpretation
+    transfer and nothing else. -/
+theorem crossEquiv_targets {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     {b : InitializedGAut S₂ A T} {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
-    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁} {t' : Option S₂}
     (hs : autStep W a.toGAut s x = some (q, s'))
-    (hlive : ∃ (x' : X) (w : List (A × X)), autRun W a.toGAut s' x' w) :
-    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
-  obtain ⟨x', w, hw⟩ := hlive
-  obtain ⟨t', ht, _⟩ := (h X W (x, (q, x') :: w)).mp ⟨s', hs, hw⟩
-  refine ⟨t', ht, ?_⟩
+    (ht : autStep W b.toGAut t x = some (q, t')) :
+    CrossEquiv a b s' t' := by
   intro Y V gs
   obtain ⟨y, v⟩ := gs
   let W'' : T → Sum X Y → Bool := fun c => Sum.elim (W c) (V c)
@@ -720,6 +718,19 @@ theorem crossEquiv_step_at {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     have huv : u = s' := congrArg Prod.snd (Option.some.inj hu.symm)
     exact (pushA s').mp (huv ▸ hru)
 
+/-- **`crossEquiv_step`, with the hypothesis narrowed to what the proof uses.**  Only the
+    state just stepped into must accept something, and only under the interpretation at
+    hand — not every state under every interpretation. -/
+theorem crossEquiv_step_at {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s'))
+    (hlive : ∃ (x' : X) (w : List (A × X)), autRun W a.toGAut s' x' w) :
+    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
+  obtain ⟨x', w, hw⟩ := hlive
+  obtain ⟨t', ht, _⟩ := (h X W (x, (q, x') :: w)).mp ⟨s', hs, hw⟩
+  exact ⟨t', ht, crossEquiv_targets h W x hs ht⟩
+
 /-- The original is the corollary: global productivity is pointwise liveness, everywhere. -/
 theorem crossEquiv_step_of_productive {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
     {b : InitializedGAut S₂ A T} (hprod : Productive a) {s : Option S₁} {t : Option S₂}
@@ -740,6 +751,64 @@ def DeadCanonical {S : Type} (a₀ : A) (aut : InitializedGAut S A T) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S) (q : A) (s' : Option S),
     autStep W aut.toGAut s x = some (q, s') →
     (∀ (x' : X) (w : List (A × X)), ¬ autRun W aut.toGAut s' x' w) → q = a₀
+
+/-- **The payoff: `Total` + `DeadCanonical` restores the bisimulation step.**
+
+    This is what productivity was standing in for, and it now holds without it.  The proof
+    splits on whether the state just stepped into accepts anything under the interpretation
+    at hand:
+
+      * **live** — `crossEquiv_step_at` applies verbatim;
+      * **dead** — `step_agree_of_total` says the other side steps, and its target must be
+        dead too (a word accepted there would transfer back and revive `s'`), so
+        `DeadCanonical` forces *both* actions to be `a₀` and the two agree.
+
+    Note where each hypothesis is spent.  Totality gives the other side a *step*;
+    dead-canonicity gives that step the right *action*; and `crossEquiv_targets` — which needs
+    neither — carries the language equivalence to the targets.  Together they replace
+    `Productive` in the one place it was ever used. -/
+theorem crossEquiv_step_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} (a₀ : A)
+    (hd : HaltStepDisjoint a) (htb : Total b)
+    (hca : DeadCanonical a₀ a) (hcb : DeadCanonical a₀ b)
+    {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s')) :
+    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
+  by_cases hlive : ∃ (x' : X) (w : List (A × X)), autRun W a.toGAut s' x' w
+  · exact crossEquiv_step_at h W x hs hlive
+  · -- `s'` is dead under `W`
+    have hdead : ∀ (x' : X) (w : List (A × X)), ¬ autRun W a.toGAut s' x' w := by
+      intro x' w hw
+      exact hlive ⟨x', w, hw⟩
+    have hqa : q = a₀ := hca X W x s q s' hs hdead
+    have hsome := step_agree_of_total hd htb h W x hs
+    cases hb : autStep W b.toGAut t x with
+    | none => rw [hb] at hsome; exact Bool.noConfusion hsome
+    | some p =>
+        obtain ⟨q₂, t'⟩ := p
+        -- the other side's target is dead too, or a word there would revive `s'`
+        have hdead' : ∀ (y : X) (v : List (A × X)), ¬ autRun W b.toGAut t' y v := by
+          intro y v hv
+          have hbrun : autRun W b.toGAut t x ((q₂, y) :: v) := ⟨t', hb, hv⟩
+          obtain ⟨s'', hs2, hrun2⟩ := (h X W (x, (q₂, y) :: v)).mpr hbrun
+          have hpair : (q, s') = (q₂, s'') := Option.some.inj (hs.symm.trans hs2)
+          have htgt : s'' = s' := (congrArg (fun z : A × Option S₁ => z.2) hpair).symm
+          exact hdead y v (htgt ▸ hrun2)
+        have hqb : q₂ = a₀ := hcb X W x t q₂ t' hb hdead'
+        have hqq : q₂ = q := hqb.trans hqa.symm
+        have hbq : autStep W b.toGAut t x = some (q, t') := by rw [hb, hqq]
+        exact ⟨t', by rw [hqq], crossEquiv_targets h W x hs hbq⟩
+
+/-- **`DeadCanonical` is a strict weakening of productivity.**  A productive automaton has no
+    dead states at all, so it satisfies the condition vacuously — for every `a₀` at once.  So
+    `crossEquiv_step_of_canonical` genuinely subsumes `crossEquiv_step_of_productive` rather
+    than trading one hypothesis for an incomparable one. -/
+theorem deadCanonical_of_productive (a₀ : A) {aut : InitializedGAut S A T}
+    (h : Productive aut) : DeadCanonical a₀ aut := by
+  intro X W x s _ s' _ hdead
+  obtain ⟨x', w, hw⟩ := h X W x s'
+  exact absurd hw (hdead x' w)
 
 /-- The sink's own core state accepts nothing — so dead states are not an artefact to be
     eliminated, they are what totalisation *introduces*.  Non-vacuity for `DeadCanonical`
@@ -806,7 +875,10 @@ theorem completeness_of_total (a : A)
         (GkatPullback.pullbackSnd φ ψ base))
       (EquivBA.symm hff'))
 
+#print axioms crossEquiv_targets
 #print axioms crossEquiv_step_at
+#print axioms crossEquiv_step_of_canonical
+#print axioms deadCanonical_of_productive
 #print axioms sink_state_dead
 #print axioms completeness_of_total
 #print axioms initHlt_eq_E
