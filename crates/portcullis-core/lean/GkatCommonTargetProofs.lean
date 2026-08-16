@@ -101,17 +101,35 @@ def Productive {S : Type} (aut : InitializedGAut S A T) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S),
     ∃ w : List (A × X), autRun W aut.toGAut s x w
 
-/-- Two states with the same language, uniformly in the test interpretation. -/
-def LangEquiv {S : Type} (aut : InitializedGAut S A T) (s t : Option S) : Prop :=
+/-- Two states of two (possibly different) systems with the same language, uniformly in the
+    test interpretation.  Stated across a pair because that is what the matching argument
+    needs; taking `b := a` recovers the single-system notion. -/
+def CrossEquiv {S₁ S₂ : Type} (a : InitializedGAut S₁ A T) (b : InitializedGAut S₂ A T)
+    (s : Option S₁) (t : Option S₂) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (gs : GS A X),
-    autLang W aut.toGAut s gs ↔ autLang W aut.toGAut t gs
+    autLang W a.toGAut s gs ↔ autLang W b.toGAut t gs
+
+/-- Language equivalence inside one system. -/
+abbrev LangEquiv {S : Type} (aut : InitializedGAut S A T) (s t : Option S) : Prop :=
+  CrossEquiv aut aut s t
+
+theorem CrossEquiv.symm {S₁ S₂ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {s : Option S₁} {t : Option S₂}
+    (h : CrossEquiv a b s t) : CrossEquiv b a t s :=
+  fun X W gs => (h X W gs).symm
+
+theorem CrossEquiv.trans {S₁ S₂ S₃ : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {c : InitializedGAut S₃ A T}
+    {s : Option S₁} {t : Option S₂} {u : Option S₃}
+    (h₁ : CrossEquiv a b s t) (h₂ : CrossEquiv b c t u) : CrossEquiv a c s u :=
+  fun X W gs => (h₁ X W gs).trans (h₂ X W gs)
 
 /-! ### Atom transfer for runs
 
     Comparing two states' languages at *different* interpretations needs both replayed in
     one carrier.  `bval_relabel` moves a guard; these move a whole run. -/
 
-private theorem firstMatch_transfer {S X Z : Type} {W : T → X → Bool} {W' : T → Z → Bool}
+theorem firstMatch_transfer {S X Z : Type} {W : T → X → Bool} {W' : T → Z → Bool}
     {f : X → Z} (hf : ∀ t x, W' t (f x) = W t x) (L : List (BExp T × A × S)) (x : X) :
     firstMatch W' (f x) L = firstMatch W x L := by
   induction L with
@@ -121,7 +139,7 @@ private theorem firstMatch_transfer {S X Z : Type} {W : T → X → Bool} {W' : 
       simp only [firstMatch]
       rw [bval_relabel g (fun t _ y => hf t y) x, ih]
 
-private theorem autRun_transfer {S X Z : Type} {W : T → X → Bool} {W' : T → Z → Bool}
+theorem autRun_transfer {S X Z : Type} {W : T → X → Bool} {W' : T → Z → Bool}
     {f : X → Z} (hf : ∀ t x, W' t (f x) = W t x) (aut : GAut S A T) (s : S) (x : X)
     (w : List (A × X)) :
     autRun W' aut s (f x) (mapAtoms f w) ↔ autRun W aut s x w := by
@@ -152,12 +170,13 @@ private theorem autRun_transfer {S X Z : Type} {W : T → X → Bool} {W' : T �
     must lead somewhere that accepts *something*, so it cannot be invisible. -/
 
 /-- Halting agrees, read off the empty word.  No productivity needed. -/
-theorem langEquiv_hlt {S : Type} {aut : InitializedGAut S A T} {s t : Option S}
-    (h : LangEquiv aut s t) (X : Type) (W : T → X → Bool) (x : X) :
-    bval W (aut.toGAut.hlt s) x = bval W (aut.toGAut.hlt t) x := by
+theorem crossEquiv_hlt {S₁ S₂ : Type} {a : InitializedGAut S₁ A T} {b : InitializedGAut S₂ A T}
+    {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    (X : Type) (W : T → X → Bool) (x : X) :
+    bval W (a.toGAut.hlt s) x = bval W (b.toGAut.hlt t) x := by
   have hiff := h X W (x, [])
-  change (bval W (aut.toGAut.hlt s) x = true) ↔ (bval W (aut.toGAut.hlt t) x = true) at hiff
-  cases hs : bval W (aut.toGAut.hlt s) x <;> cases ht : bval W (aut.toGAut.hlt t) x
+  change (bval W (a.toGAut.hlt s) x = true) ↔ (bval W (b.toGAut.hlt t) x = true) at hiff
+  cases hs : bval W (a.toGAut.hlt s) x <;> cases ht : bval W (b.toGAut.hlt t) x
   · rfl
   · rw [hs, ht] at hiff; exact absurd (hiff.mpr rfl) (by simp)
   · rw [hs, ht] at hiff; exact absurd (hiff.mp rfl) (by simp)
@@ -169,98 +188,135 @@ theorem langEquiv_hlt {S : Type} {aut : InitializedGAut S A T} {s t : Option S}
 
     The targets are compared in a *combined* carrier `X ⊕ Y`: the step was witnessed under
     one interpretation and the languages must agree under every other, so both are replayed
-    side by side with `autRun_transfer`. -/
-theorem langEquiv_step {S : Type} {aut : InitializedGAut S A T}
-    (hprod : Productive aut) {s t : Option S} (h : LangEquiv aut s t)
-    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S}
-    (hs : autStep W aut.toGAut s x = some (q, s')) :
-    ∃ t', autStep W aut.toGAut t x = some (q, t') ∧ LangEquiv aut s' t' := by
+    side by side with `autRun_transfer`.
+
+    Productivity of the *stepping* side is what is used, and it is exactly what the
+    counterexample denies: `0` and `a ; 0` have the same language and do not step alike. -/
+theorem crossEquiv_step {S₁ S₂ : Type} {a : InitializedGAut S₁ A T} {b : InitializedGAut S₂ A T}
+    (hprod : Productive a) {s : Option S₁} {t : Option S₂} (h : CrossEquiv a b s t)
+    {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
+    (hs : autStep W a.toGAut s x = some (q, s')) :
+    ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
   obtain ⟨w, hw⟩ := hprod X W x s'
   obtain ⟨t', ht, _⟩ := (h X W (x, (q, x) :: w)).mp ⟨s', hs, hw⟩
   refine ⟨t', ht, ?_⟩
   intro Y V gs
   obtain ⟨y, v⟩ := gs
-  -- replay both sides in `X ⊕ Y`
   let W'' : T → Sum X Y → Bool := fun c => Sum.elim (W c) (V c)
   have hl : ∀ (c : T) (z : X), W'' c (Sum.inl z) = W c z := fun _ _ => rfl
   have hr : ∀ (c : T) (z : Y), W'' c (Sum.inr z) = V c z := fun _ _ => rfl
-  have push : ∀ u : Option S,
-      autRun W'' aut.toGAut u (Sum.inr y) (mapAtoms Sum.inr v) ↔ autRun V aut.toGAut u y v :=
-    fun u => autRun_transfer hr aut.toGAut u y v
-  have step_l : autStep W'' aut.toGAut s (Sum.inl x) = some (q, s') := by
-    rw [show autStep W'' aut.toGAut s (Sum.inl x) = autStep W aut.toGAut s x from
-      firstMatch_transfer hl (aut.toGAut.trans s) x]
+  have pushA : ∀ u : Option S₁,
+      autRun W'' a.toGAut u (Sum.inr y) (mapAtoms Sum.inr v) ↔ autRun V a.toGAut u y v :=
+    fun u => autRun_transfer hr a.toGAut u y v
+  have pushB : ∀ u : Option S₂,
+      autRun W'' b.toGAut u (Sum.inr y) (mapAtoms Sum.inr v) ↔ autRun V b.toGAut u y v :=
+    fun u => autRun_transfer hr b.toGAut u y v
+  have step_l : autStep W'' a.toGAut s (Sum.inl x) = some (q, s') := by
+    rw [show autStep W'' a.toGAut s (Sum.inl x) = autStep W a.toGAut s x from
+      firstMatch_transfer hl (a.toGAut.trans s) x]
     exact hs
-  have step_r : autStep W'' aut.toGAut t (Sum.inl x) = some (q, t') := by
-    rw [show autStep W'' aut.toGAut t (Sum.inl x) = autStep W aut.toGAut t x from
-      firstMatch_transfer hl (aut.toGAut.trans t) x]
+  have step_r : autStep W'' b.toGAut t (Sum.inl x) = some (q, t') := by
+    rw [show autStep W'' b.toGAut t (Sum.inl x) = autStep W b.toGAut t x from
+      firstMatch_transfer hl (b.toGAut.trans t) x]
     exact ht
   have bridge := h (Sum X Y) W'' (Sum.inl x, (q, Sum.inr y) :: mapAtoms Sum.inr v)
-  change (∃ u, autStep W'' aut.toGAut s (Sum.inl x) = some (q, u) ∧
-      autRun W'' aut.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) ↔
-    (∃ u, autStep W'' aut.toGAut t (Sum.inl x) = some (q, u) ∧
-      autRun W'' aut.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) at bridge
+  change (∃ u, autStep W'' a.toGAut s (Sum.inl x) = some (q, u) ∧
+      autRun W'' a.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) ↔
+    (∃ u, autStep W'' b.toGAut t (Sum.inl x) = some (q, u) ∧
+      autRun W'' b.toGAut u (Sum.inr y) (mapAtoms Sum.inr v)) at bridge
   constructor
   · intro hrun
-    obtain ⟨u, hu, hru⟩ := bridge.mp ⟨s', step_l, (push s').mpr hrun⟩
+    obtain ⟨u, hu, hru⟩ := bridge.mp ⟨s', step_l, (pushA s').mpr hrun⟩
     rw [step_r] at hu
     have : u = t' := congrArg Prod.snd (Option.some.inj hu.symm)
-    exact (push t').mp (this ▸ hru)
+    exact (pushB t').mp (this ▸ hru)
   · intro hrun
-    obtain ⟨u, hu, hru⟩ := bridge.mpr ⟨t', step_r, (push t').mpr hrun⟩
+    obtain ⟨u, hu, hru⟩ := bridge.mpr ⟨t', step_r, (pushB t').mpr hrun⟩
     rw [step_l] at hu
     have : u = s' := congrArg Prod.snd (Option.some.inj hu.symm)
-    exact (push s').mp (this ▸ hru)
+    exact (pushA s').mp (this ▸ hru)
 
-#print axioms langEquiv_hlt
-#print axioms langEquiv_step
+#print axioms crossEquiv_hlt
+#print axioms crossEquiv_step
 
-/-- **The repaired constructive half.**  Restricted to programs whose automata are
-    productive, which is precisely the class the counterexamples leave. -/
-def ProductiveCommonTarget (A T : Type) : Prop :=
+/-- Reachability of a state from the pseudostate, along any interpretation.  Unreachable
+    states are the *other* thing a Thompson automaton can carry that no behavioural target
+    can account for: `if 1 then a else (b ; b)` is productive, but its else-branch realises
+    languages the equivalent program `a` never does, so no common target can be onto both. -/
+inductive Reaches {S : Type} (aut : InitializedGAut S A T) : Option S → Prop where
+  | start : Reaches aut none
+  | step {u v : Option S} {X : Type} {W : T → X → Bool} {x : X} {q : A} :
+      Reaches aut u → autStep W aut.toGAut u x = some (q, v) → Reaches aut v
+
+/-- Every state is reachable. -/
+def Reachable {S : Type} (aut : InitializedGAut S A T) : Prop :=
+  ∀ s : S, Reaches aut (some s)
+
+/-- **Normal form.**  Productive *and* fully reachable — the two conditions the search has
+    always imposed on the automata it considers, and the two a behavioural target needs. -/
+def Normal {S : Type} (aut : InitializedGAut S A T) : Prop :=
+  Productive aut ∧ Reachable aut
+
+/-- **Phase A, named.**  Every program is provably equal to one in normal form.  Dead
+    regions are `0` (`nullLanguage_complete`, `every_dead_state_eq_zero`) and unreachable
+    branches sit under unsatisfiable guards (`ite_of_taut`, `ite_of_unsat`); since GKAT
+    actions are uninterpreted, every atom is possible after a step, so unreachability can
+    only ever come from guard structure at a branch. -/
+def Normalizable (A T : Type) : Prop :=
+  ∀ e : Exp A T, ∃ e' : Exp A T, EquivBA e e' ∧ Normal (certifiedThompson A T e').aut
+
+/-- **The repaired constructive half.**  Restricted to normal automata, which is precisely
+    the class the counterexamples leave. -/
+def NormalCommonTarget (A T : Type) : Prop :=
   ∀ e f : Exp A T, UniformLanguageEquivalent e f →
-    Productive (certifiedThompson A T e).aut → Productive (certifiedThompson A T f).aut →
+    Normal (certifiedThompson A T e).aut → Normal (certifiedThompson A T f).aut →
     ∃ (Q : Type) (m : InitializedGAut Q A T)
       (φ : InitCover (certifiedThompson A T e).aut m)
       (ψ : InitCover (certifiedThompson A T f).aut m),
       Nonempty (Base φ ψ)
 
-/-- **Phase A, named.**  Every program is provably equal to one whose automaton is
-    productive — dead regions are `0` and can be pruned.  This is the bridge that makes the
-    productive restriction lossless, and it is a statement about the finite axioms rather
-    than about covers. -/
-def DeadBranchPruning (A T : Type) : Prop :=
-  ∀ e : Exp A T, ∃ e' : Exp A T, EquivBA e e' ∧ Productive (certifiedThompson A T e').aut
+/-- **The residual target, stated about pullbacks and nothing else.**
 
-/-- **Completeness, from the repaired statements.**  Pruning moves an arbitrary pair into the
-    productive fragment, the repaired target spans it, the fibre product covers both sides,
-    and cofinality supplies the Thompson cover.
+    Two earlier attempts to state this more generally are refuted.  `Nested ⟹
+    HasThompsonCover` fails on six automata at three states; `ThompsonCofinal` — anything
+    covering a Thompson automaton is covered by one — fails on eighty-four at four states.
+    In both searches *not one* counterexample was a pullback, while every crux pullback was
+    covered.  So the hypothesis has to be the one a pullback actually satisfies: it is the
+    fibre product of two **syntax-generated** automata, not merely something that covers
+    one. -/
+def PullbackCovered (A T : Type) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T e).aut m)
+    (ψ : InitCover (certifiedThompson A T f).aut m)
+    (base : Base φ ψ),
+    HasThompsonCover (pullback φ ψ base)
 
-    Note what pruning has to preserve: `EquivBA` on both sides, so the conclusion transports
-    back.  Nothing here assumes a uniqueness axiom. -/
-theorem completeness_of_repaired
-    (hprune : DeadBranchPruning A T)
-    (hct : ProductiveCommonTarget A T)
-    (hcof : ThompsonCofinal A T) :
+/-- **Completeness, from the three remaining statements.**  Normalization moves an arbitrary
+    pair into the fragment where a behavioural target exists, that target spans them, the
+    fibre product covers both sides, and `PullbackCovered` supplies the Thompson cover.
+
+    Two of the three are constructions; only `PullbackCovered` is open.  No uniqueness
+    axiom appears anywhere in the chain. -/
+theorem completeness_of_normalized
+    (hnorm : Normalizable A T)
+    (hct : NormalCommonTarget A T)
+    (hpc : PullbackCovered A T) :
     FiniteAxiomsCompleteBA A T := by
   intro e f heq
-  obtain ⟨e', hee', hpe⟩ := hprune e
-  obtain ⟨f', hff', hpf⟩ := hprune f
+  obtain ⟨e', hee', hne⟩ := hnorm e
+  obtain ⟨f', hff', hnf⟩ := hnorm f
   have heq' : UniformLanguageEquivalent e' f' := by
     intro X W gs
     exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans (sound_BA (V := W) hff' gs)
-  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq' hpe hpf
-  have hspan : ∃ (S : Type) (mid : InitializedGAut S A T),
-      Nonempty (InitCover mid (certifiedThompson A T e').aut) ∧
-      Nonempty (InitCover mid (certifiedThompson A T f').aut) :=
-    ⟨Fib φ ψ, pullback φ ψ base, ⟨pullbackFst φ ψ base⟩, ⟨pullbackSnd φ ψ base⟩⟩
-  obtain ⟨S, mid, ⟨π₁⟩, ⟨π₂⟩⟩ := hspan
-  obtain ⟨h, ⟨χ⟩⟩ := hcof mid e' ⟨π₁⟩
+  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq' hne hnf
+  obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
   exact EquivBA.trans hee'
-    (EquivBA.trans (equivBA_of_common_refinement χ π₁ π₂) (EquivBA.symm hff'))
+    (EquivBA.trans
+      (equivBA_of_common_refinement χ (pullbackFst φ ψ base) (pullbackSnd φ ψ base))
+      (EquivBA.symm hff'))
 
 #print axioms not_commonTarget
 #print axioms no_common_target
-#print axioms completeness_of_repaired
+#print axioms completeness_of_normalized
 
 end GkatCommonTarget

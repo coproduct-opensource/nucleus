@@ -120,6 +120,7 @@ jobs:
             GkatCofinalityProofs \
             GkatPullbackProofs \
             GkatCommonTargetProofs \
+            GkatQuotientProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \

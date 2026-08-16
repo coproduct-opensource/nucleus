@@ -681,6 +681,10 @@ lean_lib «GkatPullbackProofs» where
 lean_lib «GkatCommonTargetProofs» where
   roots := #[`GkatCommonTargetProofs]
 
+-- The behavioural target: lockstep matching of two normal automata with equal language.
+lean_lib «GkatQuotientProofs» where
+  roots := #[`GkatQuotientProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
