@@ -2153,6 +2153,55 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     let s_dec = solv.iter().filter(|r| r.2 > 0 && (r.2 as usize) <= maxk).count();
     let s_hit = solv.iter().filter(|r| r.3).count();
     phase("pairs + pullbacks", &mut mark);
+    // ---- GATE for the synthesis plan.
+    // If the cover is built by inducting on one side with the other side's position as a
+    // parameter, the loop case emits a degree-d cyclic cover, and the period law says which
+    // d.  So: for each covered pullback, how much longer is the covering automaton's cycle
+    // than the pullback's?  Those ratios are exactly the degrees `cyclicCover` must reach.
+    {
+        let mut pairs: FxMap<(u32, u32), usize> = FxMap::default();
+        for r in solv.iter().filter(|r| r.3) {
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|p| canon(&p)) {
+                let pp = scc_periods(&p).into_iter().max().unwrap_or(0);
+                let cands = &by_beh[&behaviour(&p)];
+                if let Some(b) = cands.iter().filter(|&&n| covers(&list[n], &p))
+                    .map(|&n| scc_periods(&list[n]).into_iter().max().unwrap_or(0))
+                    .min() {
+                    *pairs.entry((pp, b)).or_default() += 1;
+                }
+            }
+        }
+        let mut ks: Vec<((u32, u32), usize)> = pairs.into_iter().collect();
+        ks.sort();
+        println!("\n  (pullback period, min covering period) -> count:");
+        for ((pp, b), c) in ks.iter() {
+            println!("    ({pp}, {b})  x{c}");
+        }
+        // The real gate.  The synthesis inducts on ONE side, so the degree its loop case must
+        // emit is measured against *that side's* period, not against the pullback's.  The
+        // prediction from the fibre-product-of-covers law is period(P) = lcm(period e,
+        // period f) — i.e. the required degree is lcm/period(e), computable from the two
+        // programs alone, with no search.
+        let mut lcmstat: FxMap<(u32, u32, u32, bool), usize> = FxMap::default();
+        for r in solv.iter() {
+            if let Some(p) = pullback(&list[r.0], &list[r.1]).and_then(|p| canon(&p)) {
+                let pe = scc_periods(&list[r.0]).into_iter().max().unwrap_or(0);
+                let pf = scc_periods(&list[r.1]).into_iter().max().unwrap_or(0);
+                let pp = scc_periods(&p).into_iter().max().unwrap_or(0);
+                let g = gcd_u32(pe, pf);
+                let l = if g == 0 { 0 } else { pe / g * pf };
+                lcmstat.entry((pe, pf, pp, pp == l)).and_modify(|c| *c += 1).or_insert(1);
+            }
+        }
+        let mut ls: Vec<((u32, u32, u32, bool), usize)> = lcmstat.into_iter().collect();
+        ls.sort();
+        let agree: usize = ls.iter().filter(|((_, _, _, ok), _)| *ok).map(|(_, c)| c).sum();
+        let total: usize = ls.iter().map(|(_, c)| c).sum();
+        println!("\n  GATE: period(P) = lcm(period e, period f)?  {agree} / {total}");
+        for ((pe, pf, pp, ok), c) in ls.iter() {
+            if !ok { println!("    MISMATCH e={pe} f={pf} P={pp}  x{c}"); }
+        }
+    }
     println!("\nintermediate (pullback) solvable by the syntax: {s_hit}");
     println!("  of {} crux pairs, {s_dec} have |P| <= K so the answer is decided", crux.len());
     println!("  decided-but-unsolvable: {}",

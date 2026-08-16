@@ -123,6 +123,7 @@ jobs:
             GkatQuotientProofs \
             GkatPeriodProofs \
             GkatLoopExitProofs \
+            GkatCyclicKProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \

@@ -693,6 +693,10 @@ lean_lib «GkatPeriodProofs» where
 lean_lib «GkatLoopExitProofs» where
   roots := #[`GkatLoopExitProofs]
 
+-- The degree-k cyclic cover: repeating the loop body k times.
+lean_lib «GkatCyclicKProofs» where
+  roots := #[`GkatCyclicKProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
