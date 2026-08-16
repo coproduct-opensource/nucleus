@@ -24,15 +24,85 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 const MAXK: usize = 16;
 
+// ---------------------------------------------------------------- hashing
+//
+// The closure reaches 56M automata at K=6, so hashing is the dominant cost of the whole
+// program: every produced candidate is looked up, and most lookups hit. SipHash (the std
+// default) is built for HashDoS resistance we do not need here. FxHash — the rustc hasher —
+// is several times faster on short keys, and `Aut`'s own `Hash` below writes only the *used*
+// prefix (`k` states), turning ~20 hasher calls per automaton into ~4 + k.
+
+#[derive(Default, Clone, Copy)]
+struct FxHasher {
+    hash: u64,
+}
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        let mut h = self.hash;
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let v = u64::from_le_bytes(c.try_into().unwrap());
+            h = (h.rotate_left(5) ^ v).wrapping_mul(SEED);
+        }
+        let mut tail = 0u64;
+        for &b in chunks.remainder() {
+            tail = (tail << 8) | b as u64;
+        }
+        self.hash = (h.rotate_left(5) ^ tail).wrapping_mul(SEED);
+    }
+    #[inline]
+    fn write_u8(&mut self, b: u8) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.hash = (self.hash.rotate_left(5) ^ b as u64).wrapping_mul(SEED);
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct FxBuild;
+
+impl std::hash::BuildHasher for FxBuild {
+    type Hasher = FxHasher;
+    #[inline]
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher { hash: 0 }
+    }
+}
+
+type FxMap<K, V> = HashMap<K, V, FxBuild>;
+type FxSet<K> = HashSet<K, FxBuild>;
+
 /// A Thompson automaton, semantically. Atom masks are bitmaps over `NA` atoms; a step is
 /// `0` for "no step" and `1 + target` otherwise.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Aut<const NA: usize> {
     k: u8,
     ih: u8,
     it: [u8; NA],
     hl: [u8; MAXK],
     st: [[u8; NA]; MAXK],
+}
+
+/// Hash only the live prefix. Unused slots are zeroed by construction, so this agrees with
+/// the derived `PartialEq` while touching a fraction of the bytes.
+impl<const NA: usize> std::hash::Hash for Aut<NA> {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_u8(self.k);
+        h.write_u8(self.ih);
+        h.write(&self.it);
+        let k = self.k as usize;
+        h.write(&self.hl[..k]);
+        for s in 0..k {
+            h.write(&self.st[s]);
+        }
+    }
 }
 
 impl<const NA: usize> Aut<NA> {
@@ -177,7 +247,10 @@ enum Prov {
 fn canon<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
     let k = a.k as usize;
     let mut order = [u8::MAX; MAXK];
-    let mut queue: VecDeque<usize> = VecDeque::new();
+    // BFS frontier as a fixed ring: every state is enqueued at most once, so MAXK suffices
+    // and the per-call heap allocation a VecDeque would make disappears.
+    let mut queue = [0usize; MAXK];
+    let (mut qh, mut qt) = (0usize, 0usize);
     let mut n = 0u8;
     for i in 0..NA {
         if a.it[i] != 0 {
@@ -185,18 +258,22 @@ fn canon<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
             if order[t] == u8::MAX {
                 order[t] = n;
                 n += 1;
-                queue.push_back(t);
+                queue[qt] = t;
+                qt += 1;
             }
         }
     }
-    while let Some(s) = queue.pop_front() {
+    while qh < qt {
+        let s = queue[qh];
+        qh += 1;
         for i in 0..NA {
             if a.st[s][i] != 0 {
                 let t = (a.st[s][i] - 1) as usize;
                 if order[t] == u8::MAX {
                     order[t] = n;
                     n += 1;
-                    queue.push_back(t);
+                    queue[qt] = t;
+                    qt += 1;
                 }
             }
         }
@@ -229,63 +306,109 @@ fn canon<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
 
 /// Minimised reachable behaviour of the pseudostate — the key under which two automata can
 /// possibly be language-equivalent.
+///
+/// Allocation-free apart from the returned key. At most `MAXK` states means every working
+/// structure is a fixed-size array, and the partition-refinement fixpoint runs in place;
+/// the previous version built a `HashMap` and two `HashSet`s *per refinement round*, which
+/// dominated the closure build since this is called once for all 56M members.
 fn behaviour<const NA: usize>(a: &Aut<NA>) -> Vec<u8> {
     let k = a.k as usize;
-    let mut cls = vec![0u32; k];
-    for s in 0..k {
-        cls[s] = a.hl[s] as u32;
-    }
-    loop {
-        let mut sigs: Vec<(u32, [u32; NA])> = Vec::with_capacity(k);
+
+    // initial partition: by halt mask, densely renumbered so class ids index arrays directly
+    let mut cls = [0u8; MAXK];
+    {
+        let mut seen = [255u8; 256];
+        let mut n = 0u8;
         for s in 0..k {
-            let mut row = [0u32; NA];
-            for i in 0..NA {
-                row[i] = if a.st[s][i] == 0 { u32::MAX } else { cls[(a.st[s][i] - 1) as usize] };
+            let h = a.hl[s] as usize;
+            if seen[h] == 255 {
+                seen[h] = n;
+                n += 1;
             }
-            sigs.push((cls[s], row));
+            cls[s] = seen[h];
         }
-        let mut uniq: Vec<(u32, [u32; NA])> = sigs.clone();
-        uniq.sort();
-        uniq.dedup();
-        let idx: HashMap<(u32, [u32; NA]), u32> =
-            uniq.iter().cloned().enumerate().map(|(n, b)| (b, n as u32)).collect();
-        let next: Vec<u32> = sigs.iter().map(|b| idx[b]).collect();
-        let before: HashSet<u32> = cls.iter().cloned().collect();
-        let after: HashSet<u32> = next.iter().cloned().collect();
+    }
+
+    // refine until the class count stops growing
+    let mut nclasses = {
+        let mut m = [false; MAXK];
+        let mut c = 0usize;
+        for s in 0..k {
+            if !m[cls[s] as usize] {
+                m[cls[s] as usize] = true;
+                c += 1;
+            }
+        }
+        c
+    };
+    loop {
+        let mut sigs: [(u8, [u8; NA]); MAXK] = [(0, [0u8; NA]); MAXK];
+        let mut next = [0u8; MAXK];
+        let mut n = 0usize;
+        for s in 0..k {
+            let mut row = [255u8; NA];
+            for i in 0..NA {
+                if a.st[s][i] != 0 {
+                    row[i] = cls[(a.st[s][i] - 1) as usize];
+                }
+            }
+            let sig = (cls[s], row);
+            let mut hit = None;
+            for j in 0..n {
+                if sigs[j] == sig {
+                    hit = Some(j as u8);
+                    break;
+                }
+            }
+            next[s] = match hit {
+                Some(j) => j,
+                None => {
+                    sigs[n] = sig;
+                    n += 1;
+                    (n - 1) as u8
+                }
+            };
+        }
         cls = next;
-        if before.len() == after.len() {
+        if n == nclasses {
             break;
         }
+        nclasses = n;
     }
-    // canonical BFS over classes
-    let mut order: HashMap<u32, u32> = HashMap::new();
-    let mut rep: HashMap<u32, usize> = HashMap::new();
-    let mut queue: VecDeque<usize> = VecDeque::new();
-    let mut out: Vec<u8> = vec![a.ih];
+
+    // canonical BFS over classes, taking the first state reached as each class's witness
+    let mut order = [255u8; MAXK];
+    let mut norder = 0u8;
+    let mut queue = [0usize; MAXK];
+    let (mut qh, mut qt) = (0usize, 0usize);
+    let mut out: Vec<u8> = Vec::with_capacity(1 + NA + nclasses * (1 + NA));
+    out.push(a.ih);
     for i in 0..NA {
         if a.it[i] != 0 {
-            let t = (a.it[i] - 1) as usize;
-            if !order.contains_key(&cls[t]) {
-                let n = order.len() as u32;
-                order.insert(cls[t], n);
-                rep.insert(cls[t], t);
-                queue.push_back(t);
+            let c = cls[(a.it[i] - 1) as usize] as usize;
+            if order[c] == 255 {
+                order[c] = norder;
+                norder += 1;
+                queue[qt] = (a.it[i] - 1) as usize;
+                qt += 1;
             }
         }
     }
     for i in 0..NA {
-        out.push(if a.it[i] == 0 { 255 } else { order[&cls[(a.it[i] - 1) as usize]] as u8 });
+        out.push(if a.it[i] == 0 { 255 } else { order[cls[(a.it[i] - 1) as usize] as usize] });
     }
-    while let Some(s) = queue.pop_front() {
+    while qh < qt {
+        let s = queue[qh];
+        qh += 1;
         out.push(a.hl[s]);
         for i in 0..NA {
             if a.st[s][i] != 0 {
-                let t = (a.st[s][i] - 1) as usize;
-                if !order.contains_key(&cls[t]) {
-                    let n = order.len() as u32;
-                    order.insert(cls[t], n);
-                    rep.insert(cls[t], t);
-                    queue.push_back(t);
+                let c = cls[(a.st[s][i] - 1) as usize] as usize;
+                if order[c] == 255 {
+                    order[c] = norder;
+                    norder += 1;
+                    queue[qt] = (a.st[s][i] - 1) as usize;
+                    qt += 1;
                 }
             }
         }
@@ -293,7 +416,7 @@ fn behaviour<const NA: usize>(a: &Aut<NA>) -> Vec<u8> {
             out.push(if a.st[s][i] == 0 {
                 255
             } else {
-                order[&cls[(a.st[s][i] - 1) as usize]] as u8
+                order[cls[(a.st[s][i] - 1) as usize] as usize]
             });
         }
     }
@@ -308,7 +431,8 @@ fn covers<const NA: usize>(h: &Aut<NA>, e: &Aut<NA>) -> bool {
         return false;
     }
     let mut m = [u8::MAX; MAXK];
-    let mut queue: VecDeque<usize> = VecDeque::new();
+    let mut queue = [0usize; MAXK];
+    let (mut qh, mut qt) = (0usize, 0usize);
     let mut mapped = 0usize;
     for i in 0..NA {
         if (h.it[i] == 0) != (e.it[i] == 0) {
@@ -321,12 +445,15 @@ fn covers<const NA: usize>(h: &Aut<NA>, e: &Aut<NA>) -> bool {
         if m[s] == u8::MAX {
             m[s] = t;
             mapped += 1;
-            queue.push_back(s);
+            queue[qt] = s;
+            qt += 1;
         } else if m[s] != t {
             return false;
         }
     }
-    while let Some(s) = queue.pop_front() {
+    while qh < qt {
+        let s = queue[qh];
+        qh += 1;
         let t = m[s] as usize;
         if h.hl[s] != e.hl[t] {
             return false;
@@ -342,7 +469,8 @@ fn covers<const NA: usize>(h: &Aut<NA>, e: &Aut<NA>) -> bool {
             if m[s2] == u8::MAX {
                 m[s2] = t2;
                 mapped += 1;
-                queue.push_back(s2);
+                queue[qt] = s2;
+                qt += 1;
             } else if m[s2] != t2 {
                 return false;
             }
@@ -596,27 +724,28 @@ fn pullback<const NA: usize>(e: &Aut<NA>, f: &Aut<NA>) -> Option<Aut<NA>> {
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
-    let mut r = vec![vec![false; k]; k];
+    // one u16 row per state (MAXK = 16), so transitive closure is 16 OR-ops, not k^3
+    // bool writes through two levels of heap indirection
+    let mut r = [0u16; MAXK];
     for i in 0..k {
         for x in 0..NA {
             if a.st[i][x] != 0 {
-                r[i][(a.st[i][x] - 1) as usize] = true;
+                r[i] |= 1 << (a.st[i][x] - 1);
             }
         }
     }
     for m in 0..k {
+        let rm = r[m];
         for i in 0..k {
-            for j in 0..k {
-                if r[i][m] && r[m][j] {
-                    r[i][j] = true;
-                }
+            if r[i] >> m & 1 == 1 {
+                r[i] |= rm;
             }
         }
     }
     let full = (1u8 << NA) - 1;
     for i in 0..k {
         for j in 0..k {
-            if r[i][j] && r[j][i] && (a.hl[i] ^ a.hl[j]) == full {
+            if r[i] >> j & 1 == 1 && r[j] >> i & 1 == 1 && (a.hl[i] ^ a.hl[j]) == full {
                 return false; // complementary halt guards on a mutual cycle
             }
         }
@@ -630,20 +759,21 @@ fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
 /// automata never contain it, the open case never arises where completeness needs it.
 fn two_exit_cycle<const NA: usize>(a: &Aut<NA>) -> Option<(usize, usize)> {
     let k = a.k as usize;
-    let mut r = vec![vec![false; k]; k];
+    // one u16 row per state (MAXK = 16), so transitive closure is 16 OR-ops, not k^3
+    // bool writes through two levels of heap indirection
+    let mut r = [0u16; MAXK];
     for i in 0..k {
         for x in 0..NA {
             if a.st[i][x] != 0 {
-                r[i][(a.st[i][x] - 1) as usize] = true;
+                r[i] |= 1 << (a.st[i][x] - 1);
             }
         }
     }
     for m in 0..k {
+        let rm = r[m];
         for i in 0..k {
-            for j in 0..k {
-                if r[i][m] && r[m][j] {
-                    r[i][j] = true;
-                }
+            if r[i] >> m & 1 == 1 {
+                r[i] |= rm;
             }
         }
     }
@@ -661,7 +791,8 @@ fn two_exit_cycle<const NA: usize>(a: &Aut<NA>) -> Option<(usize, usize)> {
     };
     for u in 0..k {
         for v in 0..k {
-            if u != v && r[u][v] && r[v][u] && leaves(u, v) && leaves(v, u) {
+            if u != v && r[u] >> v & 1 == 1 && r[v] >> u & 1 == 1
+                && leaves(u, v) && leaves(v, u) {
                 return Some((u, v));
             }
         }
@@ -672,26 +803,28 @@ fn two_exit_cycle<const NA: usize>(a: &Aut<NA>) -> Option<(usize, usize)> {
 /// The narrower question: two mutually reachable distinct states that BOTH halt.
 fn two_halt_cycle<const NA: usize>(a: &Aut<NA>) -> Option<(usize, usize)> {
     let k = a.k as usize;
-    let mut r = vec![vec![false; k]; k];
+    // one u16 row per state (MAXK = 16), so transitive closure is 16 OR-ops, not k^3
+    // bool writes through two levels of heap indirection
+    let mut r = [0u16; MAXK];
     for i in 0..k {
         for x in 0..NA {
             if a.st[i][x] != 0 {
-                r[i][(a.st[i][x] - 1) as usize] = true;
+                r[i] |= 1 << (a.st[i][x] - 1);
             }
         }
     }
     for m in 0..k {
+        let rm = r[m];
         for i in 0..k {
-            for j in 0..k {
-                if r[i][m] && r[m][j] {
-                    r[i][j] = true;
-                }
+            if r[i] >> m & 1 == 1 {
+                r[i] |= rm;
             }
         }
     }
     for u in 0..k {
         for v in 0..k {
-            if u != v && r[u][v] && r[v][u] && a.hl[u] != 0 && a.hl[v] != 0 {
+            if u != v && r[u] >> v & 1 == 1 && r[v] >> u & 1 == 1
+                && a.hl[u] != 0 && a.hl[v] != 0 {
                 return Some((u, v));
             }
         }
@@ -886,6 +1019,151 @@ fn refinements<const NA: usize>(
     }
 }
 
+// ---------------------------------------------------------------- the full space
+
+/// Every transition skeleton on at most `kmax` fully reachable states, in BFS-canonical
+/// form.  Slots are filled in the order `init.it[..]`, `st[0][..]`, `st[1][..]`, ..., and a
+/// slot may target only an already-discovered state or the next undiscovered index — which
+/// is exactly the image of `canon`, so nothing is produced twice and nothing is missed.
+///
+/// This is the space the closure is a *sample* of.  The closure holds only syntax-generated
+/// automata; the question this generator exists to answer is whether anything else in here
+/// is bisimilar to an expression without being covered by one.
+fn gen_skeletons<const NA: usize>(kmax: usize, out: &mut Vec<Aut<NA>>) {
+    fn rec<const NA: usize>(
+        a: &mut Aut<NA>, slot: usize, seen: usize, kmax: usize, out: &mut Vec<Aut<NA>>,
+    ) {
+        if slot >= NA + seen * NA {
+            a.k = seen as u8;
+            out.push(*a);
+            return;
+        }
+        let limit = if seen < kmax { seen + 1 } else { seen };
+        let from_init = slot < NA;
+        let (st, i) = if from_init { (0usize, slot) } else {
+            ((slot - NA) / NA, (slot - NA) % NA)
+        };
+        for t in 0..=limit {
+            if from_init { a.it[i] = t as u8; } else { a.st[st][i] = t as u8; }
+            let seen2 = if t == seen + 1 { seen + 1 } else { seen };
+            rec(a, slot + 1, seen2, kmax, out);
+        }
+        if from_init { a.it[i] = 0; } else { a.st[st][i] = 0; }
+    }
+    let mut a = Aut::<NA>::blank();
+    rec(&mut a, 0, 0, kmax, out);
+}
+
+/// **The bisimilarity-to-cover test, run on the whole space rather than on pullbacks.**
+///
+/// For every fully reachable automaton `p` with at most `kmax` states: if some expression in
+/// the closure has `p`'s behaviour — i.e. `p` *is* bisimilar to a GKAT expression — does some
+/// expression also **cover** `p`?  A `p` that answers yes to the first and no to the second,
+/// after refinement, refutes `Nested ⟹ HasThompsonCover` and with it the induction the whole
+/// programme now rests on.
+fn expansion_test<const NA: usize>(
+    kmax: usize, list: &[Aut<NA>], prov: &[Prov], by_beh: &FxMap<Vec<u8>, Vec<usize>>,
+    nguards: u8, pulls: &FxSet<Aut<NA>>,
+) {
+    let mut skel: Vec<Aut<NA>> = Vec::new();
+    gen_skeletons::<NA>(kmax, &mut skel);
+    println!("\nEXPANSION TEST (the whole space, not just pullbacks), kmax = {kmax}");
+    println!("  transition skeletons: {}", skel.len());
+    let nmask = 1u32 << NA;
+
+    let acc = skel.par_iter().map(|sk| {
+        let k = sk.k as usize;
+        let mut tot = 0u64;      // canonical, fully reachable
+        let mut dead = 0u64;     // ... but with an empty-language region (Phase A prunes)
+        let mut bisim = 0u64;    // ... productive AND bisimilar to an expression
+        let mut direct = 0u64;   // ... and directly covered by one
+        let mut resist: Vec<Aut<NA>> = Vec::new();
+        // halt masks: the pseudostate's, then one per state
+        let combos = (nmask as u64).pow(k as u32 + 1);
+        for code in 0..combos {
+            let mut a = *sk;
+            let mut c = code;
+            a.ih = (c % nmask as u64) as u8;
+            c /= nmask as u64;
+            for s in 0..k {
+                a.hl[s] = (c % nmask as u64) as u8;
+                c /= nmask as u64;
+            }
+            match canon(&a) {
+                Some(cc) if cc == a => {}
+                _ => continue,
+            }
+            tot += 1;
+            // Same Phase A precondition the pair search uses: a dead region has empty
+            // language and is discharged outright by `nullLanguage_complete`, so an
+            // uncovered dead automaton is not a counterexample to anything.
+            if !live(&a) || !all_productive(&a) {
+                dead += 1;
+                continue;
+            }
+            let cands = match by_beh.get(&behaviour(&a)) { Some(v) => v, None => continue };
+            bisim += 1;
+            if cands.iter().any(|&n| covers(&list[n], &a)) { direct += 1; continue; }
+            resist.push(a);
+        }
+        (tot, dead, bisim, direct, resist)
+    }).reduce(|| (0u64, 0u64, 0u64, 0u64, Vec::new()), |mut x, y| {
+        x.0 += y.0; x.1 += y.1; x.2 += y.2; x.3 += y.3; x.4.extend(y.4); x
+    });
+
+    let (tot, dead, bisim, direct, resist) = acc;
+    println!("  canonical fully reachable automata : {tot}");
+    println!("  dropped as dead / null-language    : {dead}");
+    println!("  productive AND bisimilar to an exp : {bisim}");
+    println!("  DIRECTLY covered by an expression  : {direct}");
+    println!("  not directly covered               : {}", resist.len());
+
+    // the ones that need refinement: same three moves as the pullback test
+    // deeper and wider than the pullback test: the residue here is small enough that the
+    // search can afford it, and depth is the only lever left once K is out of reach
+    let rounds: u32 = std::env::var("EXPAND_ROUNDS").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4);
+    let cap: usize = std::env::var("EXPAND_CAP").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(200_000);
+    println!("  refinement search: {rounds} rounds, frontier cap {cap}");
+    let rescued: Vec<bool> = resist.par_iter().map(|p| {
+        let cands = &by_beh[&behaviour(p)];
+        for &n in cands.iter() {
+            let mut frontier = vec![to_tree(list, prov, n as u32)];
+            for _ in 0..rounds {
+                let mut next: Vec<Tree<NA>> = Vec::new();
+                for t in frontier.iter() {
+                    refinements(t, nguards, true, true, 3, 3, &mut next);
+                }
+                for t in next.iter() {
+                    if let Some(v) = eval(t) {
+                        if let Some(c) = canon(&v) {
+                            if covers(&c, p) { return true; }
+                        }
+                    }
+                }
+                frontier = next;
+                if frontier.len() > cap { frontier.truncate(cap); }
+            }
+        }
+        false
+    }).collect();
+    let nres = rescued.iter().filter(|b| !**b).count();
+    println!("  rescued by refinement              : {}", rescued.len() - nres);
+    println!("  RESIST (bisimilar but uncovered)   : {nres}");
+    let mut isp = 0usize;
+    for (p, ok) in resist.iter().zip(rescued.iter()) {
+        if !*ok {
+            let ispull = pulls.contains(p);
+            if ispull { isp += 1; }
+            println!("    UNCOVERED pullback={ispull} k={} ih={} it={:?} hl={:?} st={:?}",
+                p.k, p.ih, &p.it[..], &p.hl[..p.k as usize], &p.st[..p.k as usize]);
+        }
+    }
+    println!("  of the uncovered, ARE a crux pullback : {isp}  (the rest are outside the \
+              class `CommonCoveredIntermediate` needs)");
+}
+
 // ---------------------------------------------------------------- driver
 
 fn run<const NA: usize>(maxk: usize, pairk: usize) {
@@ -893,49 +1171,63 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     println!("atoms = {NA}, semantic guards = {nguards}, closure bound K = {maxk}, pairs from k <= {pairk}");
 
     // ---- closure
-    let mut seen: HashMap<Aut<NA>, u32> = HashMap::new();
+    //
+    // Three things keep this from being hopeless at K = 6 (56M automata):
+    //   * bucketing by core-state count, since `seq`/`ite` add and only k_x + k_y <= maxk
+    //     can produce anything in range;
+    //   * carrying the closure index *alongside* each automaton, so the innermost loop does
+    //     no hashing at all — it used to pay a hash lookup per (x, y) pair;
+    //   * filtering against `seen` inside the parallel section, so the round's output holds
+    //     only genuinely new automata instead of every product.
+    let mut seen: FxMap<Aut<NA>, u32> = FxMap::default();
     let mut list: Vec<Aut<NA>> = Vec::new();
     let mut prov: Vec<Prov> = Vec::new();
-    let mut frontier: Vec<Aut<NA>> = Vec::new();
-    for g in 0..nguards {
-        if let Some(c) = canon(&a_test::<NA>(g)) {
-            if !seen.contains_key(&c) {
-                seen.insert(c, list.len() as u32);
-                list.push(c);
-                prov.push(Prov::Leaf);
-                frontier.push(c);
+    let mut frontier: Vec<u32> = Vec::new();
+    {
+        let mut seed = |a: Aut<NA>| {
+            if let Some(c) = canon(&a) {
+                if !seen.contains_key(&c) {
+                    seen.insert(c, list.len() as u32);
+                    frontier.push(list.len() as u32);
+                    list.push(c);
+                    prov.push(Prov::Leaf);
+                }
             }
+        };
+        for g in 0..nguards {
+            seed(a_test::<NA>(g));
         }
+        seed(a_act::<NA>());
     }
-    if let Some(c) = canon(&a_act::<NA>()) {
-        if !seen.contains_key(&c) {
-            seen.insert(c, list.len() as u32);
-            list.push(c);
-            prov.push(Prov::Leaf);
-            frontier.push(c);
-        }
-    }
+
+    // bucket by core-state count, extended in place each round rather than rebuilt
+    let mut bucket: Vec<Vec<(Aut<NA>, u32)>> = vec![Vec::new(); maxk + 1];
+    let mut bucketed = 0usize;
 
     let mut round = 0;
     while !frontier.is_empty() {
         round += 1;
-        // bucket by core-state count: `seq`/`ite` add, so only k_x + k_y <= maxk can help
-        let mut bucket: Vec<Vec<Aut<NA>>> = vec![Vec::new(); maxk + 1];
-        for a in list.iter() {
-            bucket[a.k as usize].push(*a);
+        while bucketed < list.len() {
+            let a = list[bucketed];
+            bucket[a.k as usize].push((a, bucketed as u32));
+            bucketed += 1;
         }
-        let idx_of: HashMap<Aut<NA>, u32> = seen.clone();
+        let seen_ref = &seen;
+        let bucket_ref = &bucket;
+        let list_ref = &list;
         let produced: Vec<(Aut<NA>, Prov)> = frontier
             .par_iter()
-            .flat_map_iter(|x| {
-                let xi = idx_of[x];
+            .flat_map_iter(|&xi| {
+                let x = &list_ref[xi as usize];
                 let mut out: Vec<(Aut<NA>, Prov)> = Vec::new();
                 {
                     let mut push = |a: Option<Aut<NA>>, pv: Prov| {
                         if let Some(a) = a {
                             if a.k as usize <= maxk {
                                 if let Some(c) = canon(&a) {
-                                    out.push((c, pv));
+                                    if !seen_ref.contains_key(&c) {
+                                        out.push((c, pv));
+                                    }
                                 }
                             }
                         }
@@ -945,8 +1237,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                     }
                     let room = maxk - x.k as usize;
                     for ky in 0..=room {
-                        for y in bucket[ky].iter() {
-                            let yi = idx_of[y];
+                        for &(ref y, yi) in bucket_ref[ky].iter() {
                             push(a_seq(x, y), Prov::Seq(xi, yi));
                             push(a_seq(y, x), Prov::Seq(yi, xi));
                             for g in 0..nguards {
@@ -959,13 +1250,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                 out
             })
             .collect();
-        let mut fresh: Vec<Aut<NA>> = Vec::new();
+        let mut fresh: Vec<u32> = Vec::new();
         for (a, pv) in produced {
             if !seen.contains_key(&a) {
                 seen.insert(a, list.len() as u32);
+                fresh.push(list.len() as u32);
                 list.push(a);
                 prov.push(pv);
-                fresh.push(a);
             }
         }
         println!("  round {round}: {} automata (+{})", list.len(), fresh.len());
@@ -1044,7 +1335,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
 
     // ---- index by behaviour
-    let mut by_beh: HashMap<Vec<u8>, Vec<usize>> = HashMap::new();
+    let mut by_beh: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
     for (n, a) in list.iter().enumerate() {
         by_beh.entry(behaviour(a)).or_default().push(n);
     }
@@ -1269,6 +1560,20 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         }
         println!("  {label:<14}: rescued {rescued} / {}  (largest variant {biggest} states)",
             unsolved.len());
+    }
+
+    if let Ok(ek) = std::env::var("EXPAND_K") {
+        // Which automata does the programme actually need covered?  Only the pullbacks of
+        // equivalent pairs — `CommonCoveredIntermediate` asks for *some* common covered
+        // intermediate, and the pullback is the canonical one.  An uncovered automaton that
+        // is not a pullback refutes the general statement without touching the programme.
+        let mut pulls: FxSet<Aut<NA>> = FxSet::default();
+        for &(i, j) in crux.iter() {
+            if let Some(p) = pullback(&list[i], &list[j]).and_then(|p| canon(&p)) {
+                pulls.insert(p);
+            }
+        }
+        expansion_test(ek.parse().unwrap(), &list, &prov, &by_beh, nguards, &pulls);
     }
 
     let hit = results.iter().filter(|r| r.2).count();

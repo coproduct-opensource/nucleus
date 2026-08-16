@@ -346,3 +346,66 @@ about syntax-generated automata, not an axiom — makes the lifted solution prov
 pointwise. The lesson generalises: a stalled hand derivation is not evidence that UA is
 needed, because the cover architecture discharges fixpoint identifications that direct
 equational reasoning cannot reach.
+
+### The whole space, not just pullbacks — and why the general statement is the wrong target
+
+The natural next theorem looked like **`Nested ⟹ HasThompsonCover`**: every automaton
+satisfying the nesting coequation is *covered* by a Thompson automaton, not merely bisimilar
+to one. Schmid–Kappé–Kozen–Silva prove the bisimilarity version and that the class is a
+covariety; the cover version would finish the programme, because covarieties are closed
+under subobjects and products, so pullbacks satisfy the coequation for free.
+
+`expansion_test` checks it directly. It generates **every** fully reachable automaton with at
+most `kmax` states in BFS-canonical form — the space the closure is only a sample of — and
+for each one that is productive and bisimilar to an expression, asks whether an expression
+also covers it.
+
+Against the K=6 closure at `kmax = 3` (1,357,508 automata, 179,225 dropped as dead
+null-language regions that `nullLanguage_complete` discharges):
+
+```
+  productive AND bisimilar to an expression : 9191
+  DIRECTLY covered by an expression         : 9171
+  rescued by refinement (4 rounds, cap 200k):   14
+  RESIST                                    :    6
+  of the uncovered, ARE a crux pullback     :    0
+```
+
+The residue is 6 and it is stable: identical at 2 and at 4 refinement rounds, so depth is
+saturated, and it fell 56 → 6 only when the pool went K=5 → K=6. All six share `k=3`,
+`ih=0`, `it=[1,2]` — the pseudostate never halts and splits on the atom straight into two
+distinct states.
+
+**The last line is the point.** Not one of the six is a pullback. Meanwhile every crux
+pullback *is* covered — 267 of 273 directly, the other 6 by a single W1-unrolling. So the
+general statement and the statement the programme needs come apart, and only the second is
+supported. `CommonCoveredIntermediate` asks for *some* common covered intermediate and the
+pullback is the canonical one; arbitrary coequation-satisfying automata never have to be
+covered at all.
+
+Attacking `Nested ⟹ HasThompsonCover` would have been months spent on a theorem that looks
+false. The target is the narrower one: **the pullback of two equivalent Thompson automata is
+covered by a Thompson automaton.**
+
+### Performance
+
+The search is hash-bound: at K=6 every one of 56M automata is looked up on production, and
+most lookups hit. What the profile-driven pass changed, all outputs held identical:
+
+* the round loop cloned `seen` (~3 GB at K=6) and rebuilt the state-count buckets from
+  scratch, both serially, both every round — the parallel section was starved;
+* buckets held bare automata, so the innermost loop paid a hash lookup per `(x, y)` pair to
+  recover an index already known — buckets now carry `(Aut, index)` and the hot loop hashes
+  nothing;
+* products were all materialised and only then tested against `seen`; the test moved inside
+  the parallel section, so a round's output holds only genuinely new automata;
+* `behaviour()` built a `HashMap` and two `HashSet`s *per refinement round* and is called
+  once per closure member — rewritten allocation-free (`k <= MAXK = 16`, so fixed arrays);
+* FxHash throughout, `Aut::hash` over the live `k`-state prefix only, `VecDeque` → fixed ring
+  buffers in `canon`/`covers`, and `vec![vec![false;k];k]` → `[u16; MAXK]` bitmask rows.
+
+```
+  K=4   2.80s -> 0.79s
+  K=5  31.4s  -> 4.84s        CPU 185% -> 393%
+  K=6  full run incl. expansion test: 1m52s
+```
