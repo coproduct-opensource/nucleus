@@ -383,6 +383,64 @@ theorem reaches_seq_inl {S₁ S₂ : Type} (P : InitializedGAut S₁ A T)
   | start => exact Reaches.start
   | @step p q X W x c _ hstep ih => exact Reaches.step ih (step_seq_inl P Q W x hstep)
 
+/-! ## Guards live only at entries
+
+    The Thompson construction here is the guarded form of a Glushkov position automaton: one
+    core state per action occurrence, a single pseudostate playing Glushkov's `q₀`, and the
+    guards attached to the *entry* edges — `initTrans` is the guarded `First` set.
+
+    That pins down where reachability can be obstructed, and it is only three places:
+
+      `ite` guards the **entry** to each branch (`g`, `¬g`);
+      `seq` guards the **junction** into the right component (by the left's halt);
+      `wh`  guards the **back edge** (by `g`).
+
+    Nowhere else does a constructor add a guard — a component's own core transitions are
+    carried across untouched.  The two lemmas below are that fact for `ite` and `wh`; the
+    `seq` case is the first block of `step_seq_inl` above. -/
+
+/-- A core step of a branch lifts to the conditional unchanged — `ite` guards only the
+    entry. -/
+theorem step_ite_inl {S₁ S₂ X : Type} (g : BExp T) (P : InitializedGAut S₁ A T)
+    (Q : InitializedGAut S₂ A T) (W : T → X → Bool) (x : X) {s : S₁} {c : A} {q : Option S₁}
+    (h : autStep W P.toGAut (some s) x = some (c, q)) :
+    autStep W (iteInitialized g P Q).toGAut (some (Sum.inl s)) x = some (c, q.map Sum.inl) := by
+  rw [GkatQuotient.autStep_core] at h
+  cases hf : firstMatch W x (P.core.trans s) with
+  | none => rw [hf] at h; exact absurd h (by simp)
+  | some o =>
+      rw [hf] at h
+      simp only [Option.map_some] at h
+      have hpair := Option.some.inj h
+      have hc : o.1 = c := congrArg (fun z : A × Option S₁ => z.1) hpair
+      have hq : (some o.2 : Option S₁) = q := congrArg (fun z : A × Option S₁ => z.2) hpair
+      show autStep W (iteInitialized g P Q).toGAut (some (Sum.inl s)) x
+        = some (c, q.map Sum.inl)
+      rw [GkatQuotient.autStep_core]
+      show (firstMatch W x ((P.core.trans s).map
+          (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂))))).map
+        (fun o => (o.1, some o.2)) = some (c, q.map Sum.inl)
+      rw [firstMatch_map_target_to (F := fun v : S₁ => (Sum.inl v : Sum S₁ S₂)), hf,
+        ← hq, ← hc]
+      rfl
+
+/-- A core step of the body lifts to the loop unchanged — `wh` guards only the back edge.
+    Here the state type is preserved, so the step is literally the same one. -/
+theorem step_wh_body {S : Type} {X : Type} (g : BExp T) (B : InitializedGAut S A T)
+    (W : T → X → Bool) (x : X) {s : S} {c : A} {q : Option S}
+    (h : autStep W B.toGAut (some s) x = some (c, q)) :
+    autStep W (loopInitialized g B).toGAut (some s) x = some (c, q) := by
+  rw [GkatQuotient.autStep_core] at h ⊢
+  show (firstMatch W x (B.core.trans s ++
+      B.initTrans.map (fun t =>
+        (BExp.and (B.core.hlt s) (BExp.and g t.1), t.2)))).map
+    (fun o => (o.1, some o.2)) = some (c, q)
+  cases hf : firstMatch W x (B.core.trans s) with
+  | none => rw [hf] at h; exact absurd h (by simp)
+  | some o => rw [firstMatch_append_some _ _ _ _ hf, ← hf]; exact h
+
+#print axioms step_ite_inl
+#print axioms step_wh_body
 #print axioms reaches_seq_inl
 #print axioms productive_seq_right
 #print axioms wh_dead_body_not_productive
