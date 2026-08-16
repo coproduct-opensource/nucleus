@@ -697,6 +697,10 @@ lean_lib «GkatLoopExitProofs» where
 lean_lib «GkatCyclicKProofs» where
   roots := #[`GkatCyclicKProofs]
 
+-- Guard-split duplication: the third refinement move, as a cover.
+lean_lib «GkatDupCoverProofs» where
+  roots := #[`GkatDupCoverProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
