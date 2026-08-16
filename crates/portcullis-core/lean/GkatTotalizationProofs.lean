@@ -761,8 +761,11 @@ theorem sink_state_dead (a₀ : A) {X : Type} (W : T → X → Bool) (x' : X)
 
 /-! ## Completeness, with normalisation discharged -/
 
-/-- The behavioural-target hypothesis, restated for *total* automata — the class
-    `settledReachable` actually delivers. -/
+/-- **REFUTED — see `not_totalCommonTarget`.**  The behavioural-target hypothesis, restated
+    for *total* automata.  Totality is not enough: two total, language-equivalent programs can
+    step into dead states along *different* actions, and a cover preserves actions pointwise,
+    so no common target exists.  Kept because the refutation is what pins `DeadCanonical` down
+    as necessary rather than convenient. -/
 def TotalCommonTarget (A T : Type) : Prop :=
   ∀ e f : Exp A T, UniformLanguageEquivalent e f →
     Total (certifiedThompson A T e).aut → Total (certifiedThompson A T f).aut →
@@ -771,7 +774,11 @@ def TotalCommonTarget (A T : Type) : Prop :=
       (ψ : InitCover (certifiedThompson A T f).aut m),
       Nonempty (GkatPullback.Base φ ψ)
 
-/-- **Completeness from two statements instead of three.**
+/-- **VACUOUS — `not_totalCommonTarget` refutes the hypothesis.**  Kept for the record: the
+    implication is valid, and the shape is right; it is `TotalCommonTarget` that is false.
+    `completeness_of_canonical` is the repaired version.
+
+    **Completeness from two statements instead of three.**
 
     `completeness_of_normalized` needed `Normalizable`, `NormalCommonTarget` and
     `PullbackCovered`.  `Normalizable` is false — `wh_simple_not_productive` — and it is now
@@ -818,5 +825,136 @@ theorem completeness_of_total (a : A)
 #print axioms totalTest_total
 #print axioms test_zero_not_total
 #print axioms wh_test_not_total
+
+/-! ## Totality is not enough — and the reason is the actions, not the steps
+
+    The previous section argued that `Total` cannot replace `Productive` in
+    `crossEquiv_step`, because two dead targets are language-equivalent whatever actions reach
+    them.  That was an argument about a proof.  This is the statement itself, refuted.
+
+        p  =  if c then (a ; diverge) else 1?
+        q  =  if c then (b ; diverge) else 1?
+
+    Both are settled, hence total.  Both are provably `if c then 0 else 1?`, since `e · 0 ≡ 0`
+    is `S3` and the sink is provably `0` — so they are uniformly language-equivalent.  And at
+    a `c` atom `p` steps along `a` while `q` steps along `b`.
+
+    A cover preserves the action pointwise (`initStep_eq` carries `o.1` through untouched), so
+    a common target would have to step along `a` and along `b` at the same atom.  There is
+    none.
+
+    This is the acceptance condition doing the damage.  For a deterministic Mealy machine
+    bisimulation *does* coincide with language equivalence — but a Mealy machine has no
+    accepting states and therefore no dead ones.  GKAT's automata halt, so a state can accept
+    nothing at all, and every route into such a state is behaviourally invisible while
+    remaining structurally visible to a cover.
+
+    So `DeadCanonical` is not a convenience.  Some condition making the dead part canonical is
+    *necessary*, and productivity was standing in for it all along. -/
+
+private abbrev cG : BExp Unit := .prim ()
+
+/-- `if c then (a ; diverge) else 1?`, with `a = false`. -/
+private abbrev deadP : Exp Bool Unit := .ite cG (.seq (.act false) (div false)) (.test .one)
+
+/-- The same program with a different action into the dead region. -/
+private abbrev deadQ : Exp Bool Unit := .ite cG (.seq (.act true) (div false)) (.test .one)
+
+private abbrev wAll : Unit → Unit → Bool := fun _ _ => true
+
+/-- Anything followed by the sink is provably `0` — `S3`, once the sink is `0`. -/
+private theorem seq_div_zero (p : Bool) :
+    EquivBA (.seq (.act p) (div false) : Exp Bool Unit) (.test .zero) :=
+  EquivBA.trans
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (GkatNormal.wh_one_provably_zero (.act false)))
+    (EquivBA.base (Equiv.s3 (.act p)))
+
+theorem deadP_equiv_deadQ : EquivBA (deadP) (deadQ) :=
+  EquivBA.trans (EquivBA.ite_c (seq_div_zero false) (EquivBA.base (Equiv.refl _)))
+    (EquivBA.symm (EquivBA.ite_c (seq_div_zero true) (EquivBA.base (Equiv.refl _))))
+
+theorem deadP_lang_deadQ : UniformLanguageEquivalent deadP deadQ :=
+  fun _ W gs => sound_BA (V := W) deadP_equiv_deadQ gs
+
+theorem deadP_settled : Settled deadP :=
+  Settled.ite _ (Settled.seq (Settled.act false) (settled_div false)) Settled.one
+
+theorem deadQ_settled : Settled deadQ :=
+  Settled.ite _ (Settled.seq (Settled.act true) (settled_div false)) Settled.one
+
+/-- **No system covers both.**  At a `c` atom the two pseudostates step along different
+    actions, and `initStep_eq` carries the action through unchanged. -/
+theorem no_common_cover {Q : Type} {m : InitializedGAut Q Bool Unit}
+    (φ : InitCover (certifiedThompson Bool Unit deadP).aut m)
+    (ψ : InitCover (certifiedThompson Bool Unit deadQ).aut m) : False := by
+  have hp := φ.initStep_eq Unit wAll ()
+  have hq := ψ.initStep_eq Unit wAll ()
+  rw [← hq] at hp
+  have hbool : (false : Bool) = true :=
+    congrArg (fun o : Option (Bool × Q) => (o.map (fun z : Bool × Q => z.1)).getD true) hp
+  exact Bool.noConfusion hbool
+
+/-- **`TotalCommonTarget` is false.**  Totality does not recover the behavioural target;
+    something must make the dead part canonical. -/
+theorem not_totalCommonTarget : ¬ TotalCommonTarget Bool Unit := by
+  intro h
+  obtain ⟨_, _, φ, ψ, _⟩ := h deadP deadQ deadP_lang_deadQ
+    (total_of_settled deadP_settled) (total_of_settled deadQ_settled)
+  exact no_common_cover φ ψ
+
+#print axioms deadP_equiv_deadQ
+#print axioms no_common_cover
+#print axioms not_totalCommonTarget
+
+/-! ## The repaired chain
+
+    `DeadCanonical` blocks the counterexample exactly: with `a₀ = false`, `deadP` is canonical
+    and `deadQ` is not, so the pair can never both satisfy it.  What it costs is a second
+    normalisation obligation — every program provably equal to one that is settled *and* has a
+    canonical dead part — which replaces `Normalizable`'s "remove dead regions" by "route them
+    all into the one sink". -/
+
+/-- The common-target hypothesis, for automata that are total **and** dead-canonical. -/
+def CanonicalCommonTarget (A T : Type) (a₀ : A) : Prop :=
+  ∀ e f : Exp A T, UniformLanguageEquivalent e f →
+    Total (certifiedThompson A T e).aut → Total (certifiedThompson A T f).aut →
+    DeadCanonical a₀ (certifiedThompson A T e).aut →
+    DeadCanonical a₀ (certifiedThompson A T f).aut →
+    ∃ (Q : Type) (m : InitializedGAut Q A T)
+      (φ : InitCover (certifiedThompson A T e).aut m)
+      (ψ : InitCover (certifiedThompson A T f).aut m),
+      Nonempty (GkatPullback.Base φ ψ)
+
+/-- The normalisation it needs.  `settledReachable` gives the first two conjuncts already; the
+    third is the open half, and it is the one `sinkify`-style "every null subterm becomes the
+    sink" construction is for. -/
+def CanonicallySettled (A T : Type) (a₀ : A) : Prop :=
+  ∀ e : Exp A T, ∃ e' : Exp A T,
+    EquivBA e e' ∧ Settled e' ∧ DeadCanonical a₀ (certifiedThompson A T e').aut
+
+/-- **Completeness, repaired.**  Same shape as `completeness_of_total`, with the dead part
+    made canonical on both sides — which is the least that can be added, since the pair
+    `deadP`/`deadQ` shows the hypothesis is false without it. -/
+theorem completeness_of_canonical (a₀ : A) (hcs : CanonicallySettled A T a₀)
+    (hct : CanonicalCommonTarget A T a₀) (hpc : PullbackCovered A T) :
+    FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨e', hee', hse, hce⟩ := hcs e
+  obtain ⟨f', hff', hsf, hcf⟩ := hcs f
+  have heq' : UniformLanguageEquivalent e' f' := by
+    intro X W gs
+    exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans
+      (sound_BA (V := W) hff' gs)
+  obtain ⟨Q, m, φ, ψ, ⟨base⟩⟩ := hct e' f' heq'
+    (total_of_settled hse) (total_of_settled hsf) hce hcf
+  obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
+  exact EquivBA.trans hee'
+    (EquivBA.trans
+      (equivBA_of_common_refinement χ (GkatPullback.pullbackFst φ ψ base)
+        (GkatPullback.pullbackSnd φ ψ base))
+      (EquivBA.symm hff'))
+
+#print axioms completeness_of_canonical
 
 end GkatTotalization
