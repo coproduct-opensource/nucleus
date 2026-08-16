@@ -701,6 +701,10 @@ lean_lib «GkatCyclicKProofs» where
 lean_lib «GkatDupCoverProofs» where
   roots := #[`GkatDupCoverProofs]
 
+-- The refinement closure the search explores, as one relation, with every member a cover.
+lean_lib «GkatRefinesProofs» where
+  roots := #[`GkatRefinesProofs]
+
 -- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where

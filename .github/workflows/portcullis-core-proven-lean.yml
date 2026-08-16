@@ -125,6 +125,7 @@ jobs:
             GkatLoopExitProofs \
             GkatCyclicKProofs \
             GkatDupCoverProofs \
+            GkatRefinesProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \
