@@ -439,6 +439,45 @@ theorem step_wh_body {S : Type} {X : Type} (g : BExp T) (B : InitializedGAut S A
   | none => rw [hf] at h; exact absurd h (by simp)
   | some o => rw [firstMatch_append_some _ _ _ _ hf, ← hf]; exact h
 
+/-! ## `Normalizable` is false a third time, and structurally
+
+    `while p do a` is an ordinary program — non-null, no dead subterm, nothing to prune — and
+    it is **not productive**.  Under the all-true interpretation the guard never fails, so the
+    loop never exits, its body state loops forever and accepts nothing.
+
+    That is not a definitional slip like the previous two.  `Productive` quantifies over
+    *every* interpretation, and no amount of rewriting the program can make a loop terminate
+    under an interpretation that keeps its guard true.  So `Normalizable` cannot hold, and the
+    fault is in requiring productivity uniformly.
+
+    What `crossEquiv_step` actually needs is productivity at the *one* interpretation where
+    the step occurs.  Relativising it there is the repair, and it is a restructuring of
+    `Matched` and `NormalCommonTarget` rather than a lemma — `Reaches` uses a different
+    interpretation at every step, so the hypothesis has to be threaded rather than assumed
+    once. -/
+
+/-- **The witness.**  No pruning repairs this: the program is already in any reasonable normal
+    form, and the deadness is created by the interpretation, not by the syntax. -/
+theorem wh_simple_not_productive :
+    ¬ Productive (certifiedThompson Unit Unit (.wh (.prim ()) (.act ()))).aut := by
+  intro h
+  obtain ⟨x, w, hw⟩ := h Unit (fun _ _ => true) () (some ())
+  induction w generalizing x with
+  | nil =>
+      have hb : bval (fun _ (_ : Unit) => true)
+          (BExp.and BExp.one (BExp.not (BExp.prim ()))) x = true := hw
+      exact absurd hb (by simp [bval])
+  | cons hd tl ih =>
+      obtain ⟨s', hstep, hrun⟩ := hw
+      have hfix : autStep (fun _ (_ : Unit) => true)
+          (certifiedThompson Unit Unit (.wh (.prim ()) (.act ()))).aut.toGAut (some ()) x
+          = some ((), some ()) := rfl
+      have hpair := Option.some.inj (hfix.symm.trans hstep)
+      have hs : s' = some () :=
+        (congrArg (fun z : Unit × Option Unit => z.2) hpair).symm
+      exact ih hd.2 (hs ▸ hrun)
+
+#print axioms wh_simple_not_productive
 #print axioms step_ite_inl
 #print axioms step_wh_body
 #print axioms reaches_seq_inl
