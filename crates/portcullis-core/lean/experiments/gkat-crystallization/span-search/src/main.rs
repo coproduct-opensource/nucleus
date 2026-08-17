@@ -1257,6 +1257,54 @@ fn acyclic_on<const NA: usize>(st: &[[u8; NA]; MAXK], k: usize, mask: u16) -> bo
     (0..k).all(|i| mask & (1 << i) == 0 || reach[i] & (1 << i) == 0)
 }
 
+/// **Peelable — is the automaton's equation system solvable by Gaussian elimination?**
+///
+/// This is the object the problem actually turns on.  Pham's thesis section 4.3.3 shows the
+/// peeling argument is not restricted to Thompson automata: it solves a non-Thompson system
+/// by substituting, reducing to a SINGLE-VARIABLE fixpoint `s(b) ≡ q·s(b) +_β α`, and
+/// applying W0 — which this development now has as a derived law (`GkatW0Proofs`).  And the
+/// standing obstruction in the literature is exactly the absence of such a procedure: "some
+/// systems of equations do not have any solution, and the lack of a procedure to construct
+/// solutions encumbers a proof of uniqueness".
+///
+/// A state can be peeled when every atom sends it to ITSELF or to an already-solved state.
+/// Its equation is then `s(x) ≡ e·s(x) +_b f` with `b` the atoms that return to `x` and `f`
+/// built from solved states — precisely W0's shape, so W0 solves it outright.  Determinism is
+/// what makes this work: each atom has exactly one successor, so substitution never needs the
+/// `+` that GKAT does not have.
+///
+/// Failure is mutual recursion — two states each waiting on the other — which is the same
+/// condition as "loops mutually nested", the LLEE failure.  Unlike every oracle tried so far,
+/// this is SOUND for the purpose at hand rather than merely necessary: a peeling order is a
+/// CONSTRUCTION of a solution, not evidence that one might exist.
+fn peelable<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    let mut solved = 0u16;
+    for _ in 0..=k {
+        let mut found = false;
+        for x in 0..k {
+            if solved & (1 << x) != 0 { continue; }
+            // Substitution keeps the shape only when the eliminated variable's solution
+            // puts the remaining variable in TAIL position.  GKAT has no left distribution —
+            // `left_distrib_fails` is proved in GkatGuardedStringProofs — so `p·(u +_c v)`
+            // cannot be rearranged to isolate a variable inside a branch.  A state with at
+            // most one unsolved non-self successor substitutes as a prefix `p` (or `q·p`,
+            // by associativity S1) and leaves the successor at the tail, which is exactly
+            // W0's shape.  Two distinct unsolved successors would put a branch under a
+            // prefix, and nothing in GKAT can pull the variable back out.
+            let mut outs = 0u16;
+            for y in 0..NA {
+                if h.st[x][y] == 0 { continue; }
+                let t = (h.st[x][y] - 1) as usize;
+                if t != x && solved & (1 << t) == 0 { outs |= 1 << t; }
+            }
+            if outs.count_ones() <= 1 { solved |= 1 << x; found = true; }
+        }
+        if !found { break; }
+    }
+    solved.count_ones() as usize == k
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3323,6 +3371,7 @@ pullback: {ok} / {}", res.len());
             // negatives: pullbacks with <= maxk states that are absent from the pool
             let mut neg = 0usize;
             let mut lneg = 0usize;
+            let mut pneg = 0usize;
             let mut negn = 0usize;
             for p in uncovered.iter() {
                 if p.k as usize > maxk { continue; }
@@ -3334,6 +3383,7 @@ pullback: {ok} / {}", res.len());
                 if negn > 300 { break; }
                 if !is_thompson(&c, &guards, depth, &mut memo) { neg += 1; }
                 if !llee(&c) { lneg += 1; }
+                if !peelable(&c) { pneg += 1; }
             }
             // self-test on hand-built automata whose provenance is known
             {
@@ -3424,6 +3474,26 @@ pullback: {ok} / {}", res.len());
                 }
                 let (mut lr, mut lrn) = (0usize, 0usize);
                 for p in uncovered.iter() { lrn += 1; if llee(p) { lr += 1; } }
+                let mut pk = 0usize; let mut pn = 0usize;
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    pn += 1;
+                    if peelable(a) { pk += 1; }
+                }
+                let (mut pr, mut prn) = (0usize, 0usize);
+                for p in uncovered.iter() { prn += 1; if peelable(p) { pr += 1; } }
+                println!("  PEELABLE (Gaussian elimination solves the system, via W0):");
+                println!("    pool automata satisfying it : {pk} / {pn}   (must be all)");
+                println!("    uncovered pullbacks         : {pr} / {prn}   (THE TARGET)");
+                for a in list.iter() {
+                    if !peelable(a) {
+                        println!("    PEEL COUNTEREXAMPLE k={} it={:?}", a.k, &a.it[..NA]);
+                        for i in 0..a.k as usize {
+                            println!("      s{i}: st={:?} hl={:b}", &a.st[i][..NA], a.hl[i]);
+                        }
+                        break;
+                    }
+                }
                 println!("  LLEE (proved necessary: GkatLayeringProofs):");
                 println!("    pool automata satisfying it : {lp} / {ln}   (must be all)");
                 println!("    uncovered pullbacks         : {lr} / {lrn}");
@@ -3496,6 +3566,7 @@ pullback: {ok} / {}", res.len());
             // THE CONTROL for LLEE.  A necessary condition that accepts everything is
             // vacuous, so measure it on automata known NOT to be in the pool.
             println!("    LLEE non-pool rejected   : {lneg} / {negn}   (discrimination)");
+            println!("    PEEL non-pool rejected   : {pneg} / {negn}   (discrimination)");
         }
         // THE TRUE RATE.  The two routes are independent and both incomplete, so neither
         // number alone is `ReachListCovered`.  Compute both per pullback and take the union.
