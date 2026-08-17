@@ -87,7 +87,10 @@ normalisations are proved — `settledReachable_loopProductive` for settling, `n
 `nrm_equiv` / `settled_nrm` for exact dead-code elimination — leaving one statement,
 `LiveImpliesCanonical`, that syntactic liveness implies automaton-level dead-canonicity.
 `completeness_of_bridge` therefore derives completeness from `LiveImpliesCanonical` and
-`PullbackCovered`, and nothing else.
+`PullbackCovered`, and nothing else — and homogeneity
+(`actionLabelled_thompson`, `deadCanonical_of_deadStates`) rewrites the first with the
+transitions removed, as `DeadStatesAreSinks`: every uniformly dead state is an occurrence of
+`a₀`.
 
 The identification that makes the sink legitimate is the one the literature calls the
 **early-termination property** — programs that fail immediately are equated with programs
@@ -1918,6 +1921,136 @@ theorem live_nrm (a₀ : A) : ∀ (e : Exp A T), LoopProductive e → ∀ K : Ex
           exact live_congr a₀ (ihe hle (.seq (.wh g e) K))
             (nrm_equiv a₀ (.wh g e) (LoopProductive.wh g hle hE) K)
 
+/-! ## Homogeneity: every transition into a state carries that state's own action
+
+    The remaining obligation is about *steps*, and it does not need to be.  GKAT's Thompson
+    construction is a position automaton — its states are the action occurrences of the
+    program — and position automata are **homogeneous**: any two transitions entering the same
+    state carry the same label, namely the letter at that position.  Glushkov's construction
+    has this property classically; the GKAT variant inherits it, because every constructor
+    relabels targets without ever touching the action component.
+
+    Once that is proved, `DeadCanonical` stops being a statement about steps.  A transition
+    into a state carries that state's action, so
+
+        every transition into a dead state carries `a₀`
+          ⟺  every dead state is an occurrence of `a₀`
+
+    and the last obligation becomes a question about *which states are dead*, with the
+    transitions eliminated entirely. -/
+
+/-- The action at each position — the occurrence a state stands for. -/
+def actionOf : (p : Exp A T) → (certifiedThompson A T p).State → A
+  | .act q, _ => q
+  | .test _, s => nomatch s
+  | .seq e f, s => Sum.elim (actionOf e) (actionOf f) s
+  | .ite _ e f, s => Sum.elim (actionOf e) (actionOf f) s
+  | .wh _ e, s => actionOf e s
+
+/-- Homogeneity: every listed transition's action is the label of its target. -/
+def ActionLabelled {S : Type} (aut : InitializedGAut S A T) (lbl : S → A) : Prop :=
+  (∀ t ∈ aut.initTrans, t.2.1 = lbl t.2.2) ∧
+  (∀ (u : S), ∀ t ∈ aut.core.trans u, t.2.1 = lbl t.2.2)
+
+/-- **The Thompson construction is homogeneous.**  Every constructor relabels targets and
+    conjoins guards; none of them rewrites an action. -/
+theorem actionLabelled_thompson (p : Exp A T) :
+    ActionLabelled (certifiedThompson A T p).aut (actionOf p) := by
+  induction p with
+  | act q =>
+      constructor
+      · intro t ht
+        rcases List.mem_singleton.mp ht with rfl
+        rfl
+      · intro _ t ht
+        have hnil : t ∈ ([] : List (BExp T × A × Unit)) := ht
+        exact nomatch hnil
+  | test b =>
+      constructor
+      · intro t ht
+        have hnil : t ∈ ([] : List (BExp T × A × Empty)) := ht
+        exact nomatch hnil
+      · intro u
+        exact nomatch u
+  | seq e f ihe ihf =>
+      constructor
+      · intro t ht
+        rcases List.mem_append.mp ht with h | h
+        · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihe.1 t' ht'
+        · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihf.1 t' ht'
+      · intro u t ht
+        cases u with
+        | inl v =>
+            rcases List.mem_append.mp ht with h | h
+            · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihe.2 v t' ht'
+            · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihf.1 t' ht'
+        | inr v =>
+            obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht; exact ihf.2 v t' ht'
+  | ite g e f ihe ihf =>
+      constructor
+      · intro t ht
+        rcases List.mem_append.mp ht with h | h
+        · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihe.1 t' ht'
+        · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihf.1 t' ht'
+      · intro u t ht
+        cases u with
+        | inl v => obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht; exact ihe.2 v t' ht'
+        | inr v => obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht; exact ihf.2 v t' ht'
+  | wh g e ihe =>
+      constructor
+      · intro t ht
+        obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht; exact ihe.1 t' ht'
+      · intro u t ht
+        rcases List.mem_append.mp ht with h | h
+        · exact ihe.2 u t h
+        · obtain ⟨t', ht', rfl⟩ := List.mem_map.mp h; exact ihe.1 t' ht'
+
+private theorem mem_of_firstMatch {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) {o : A × S} (h : firstMatch W x L = some o) :
+    ∃ t ∈ L, t.2 = o := by
+  induction L with
+  | nil => exact absurd h (by simp [firstMatch])
+  | cons hd tl ih =>
+      obtain ⟨g, q, v⟩ := hd
+      simp only [firstMatch] at h
+      by_cases hg : bval W g x
+      · rw [if_pos hg] at h
+        exact ⟨(g, q, v), List.mem_cons_self, Option.some.inj h⟩
+      · rw [if_neg hg] at h
+        obtain ⟨t, ht, he⟩ := ih h
+        exact ⟨t, List.mem_cons_of_mem _ ht, he⟩
+
+/-- **`DeadCanonical` reduces to a statement about states.**  With homogeneity, requiring
+    every transition into a dead state to carry `a₀` is the same as requiring every dead state
+    to be an occurrence of `a₀`. -/
+theorem deadCanonical_of_deadStates (p : Exp A T) (a₀ : A)
+    (h : ∀ u : (certifiedThompson A T p).State,
+      (∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+        ¬ autRun V (certifiedThompson A T p).aut.toGAut (some u) y w) →
+      actionOf p u = a₀) :
+    DeadCanonical a₀ (certifiedThompson A T p).aut := by
+  intro X W x s q s' hstep hdead
+  obtain ⟨u, rfl⟩ := GkatQuotient.step_target_some (certifiedThompson A T p).aut W s x hstep
+  have hlbl := actionLabelled_thompson p
+  have hmem : ∃ t ∈ (certifiedThompson A T p).aut.toGAut.trans s, t.2 = (q, some u) :=
+    mem_of_firstMatch W x _ hstep
+  obtain ⟨t, ht, hteq⟩ := hmem
+  refine Eq.trans ?_ (h u hdead)
+  cases s with
+  | none =>
+      obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht
+      have h1 : t'.2.1 = q := congrArg (fun z : A × Option _ => z.1) hteq
+      have h2 : some t'.2.2 = some u := congrArg (fun z : A × Option _ => z.2) hteq
+      rw [← h1, hlbl.1 t' ht', Option.some.inj h2]
+  | some v =>
+      obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht
+      have h1 : t'.2.1 = q := congrArg (fun z : A × Option _ => z.1) hteq
+      have h2 : some t'.2.2 = some u := congrArg (fun z : A × Option _ => z.2) hteq
+      rw [← h1, hlbl.2 v t' ht', Option.some.inj h2]
+
+#print axioms actionLabelled_thompson
+#print axioms deadCanonical_of_deadStates
+
 /-- **The last bridge.**  Syntactic liveness gives automaton-level dead-canonicity: if every
     action occurrence in `h` has a live continuation, then the only dead states of `h ; K`'s
     automaton belong to sinks, and every transition into a sink carries `a₀` because that is
@@ -1967,6 +2100,36 @@ theorem bridge_holds_at_sink (a₀ : A) (K : Exp A T) :
   ⟨Live.sink _, deadCanonical_div a₀⟩
 
 #print axioms bridge_holds_at_sink
+/-! ## The obligation, restated with the transitions removed -/
+
+/-- Every state of the sink is an `a₀` occurrence — the sink is dead, and canonically so. -/
+theorem actionOf_div (a₀ : A) (u : (certifiedThompson A T (div a₀)).State) :
+    actionOf (div a₀ : Exp A T) u = a₀ := by
+  cases u; rfl
+
+/-- **The last obligation, with steps eliminated.**  Homogeneity turns "every transition into
+    a dead state carries `a₀`" into "every dead state is an occurrence of `a₀`" — no
+    quantification over transitions, atoms or interpretations of the *step* remains, only over
+    the state's own language. -/
+def DeadStatesAreSinks (A T : Type) (a₀ : A) : Prop :=
+  ∀ h K : Exp A T, Live a₀ h K →
+    ∀ u : (certifiedThompson A T (.seq h K)).State,
+      (∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+        ¬ autRun V (certifiedThompson A T (.seq h K)).aut.toGAut (some u) y w) →
+      actionOf (.seq h K) u = a₀
+
+theorem liveImpliesCanonical_of_deadStatesAreSinks (a₀ : A)
+    (hd : DeadStatesAreSinks A T a₀) : LiveImpliesCanonical A T a₀ :=
+  fun h K hl => deadCanonical_of_deadStates _ a₀ (hd h K hl)
+
+/-- **Completeness, from one statement about dead states and `PullbackCovered`.** -/
+theorem completeness_of_deadStatesAreSinks (a₀ : A) (hd : DeadStatesAreSinks A T a₀)
+    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T :=
+  completeness_of_bridge a₀ (liveImpliesCanonical_of_deadStatesAreSinks a₀ hd) hpc
+
+#print axioms actionOf_div
+#print axioms completeness_of_deadStatesAreSinks
+
 #print axioms live_nrm
 #print axioms canonicallySettled_of_bridge
 #print axioms completeness_of_bridge
