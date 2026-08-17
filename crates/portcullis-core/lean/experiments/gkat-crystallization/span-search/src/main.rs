@@ -4402,6 +4402,25 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
+                    // THE COMBINED TEST.  Elimination is sound but incomplete; being in the
+                    // pool is a DIFFERENT sound witness — a pool member is Thompson-generated,
+                    // so it carries the standard solution outright.  Their disjunction is still
+                    // sound and strictly stronger than either.
+                    let (mut comb, mut combn) = (0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            combn += 1;
+                            if symbolic_eliminable(&su) { comb += 1; continue; }
+                            let (blk, nb0) = bisim_blocks(&su);
+                            if let Some(q) = quotient_by(&su, &blk, nb0) {
+                                if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) {
+                                    comb += 1;
+                                }
+                            }
+                        }
+                    }
+                    println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
+                    println!("    solvable : {comb} / {combn}");
                     println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
                     println!("    unsolved quotients in pool : {fpool} / {fpn}  ({:.1}%)", pc3(fpool, fpn));
                     println!("    CONTROL, solved ones       : {spool} / {spn}  ({:.1}%)", pc3(spool, spn));
