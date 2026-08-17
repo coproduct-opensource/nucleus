@@ -1513,7 +1513,31 @@ fn elim2<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK], hh: &mut [[[bool; NA
 /// Disjoint sum of two automata's core systems.  This is the object the completeness route
 /// actually needs: `Me + Mf`, whose bisimulation quotient must have a solution.  The
 /// pseudostates play no part in whether the core system is solvable, so only cores are summed.
+/// `InitializedGAut.toGAut`: adjoin the pseudostate as a real state, with the initial
+/// transitions and the initial halt guard.  The Lean statement `SumQuotientSolvable` sums the
+/// TO-GAUT versions, so summing cores alone measures a different object — the initial dynamics
+/// are exactly where `e` and `f` differ, and dropping them drops the states the completeness
+/// argument identifies.
+fn to_gaut<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
+    let k = a.k as usize;
+    if k + 1 > MAXK { return None; }
+    let mut st = [[0u8; NA]; MAXK];
+    let mut hl = [0u8; MAXK];
+    // state 0 is the pseudostate; old state i becomes i+1
+    hl[0] = a.ih;
+    for y in 0..NA { st[0][y] = if a.it[y] == 0 { 0 } else { a.it[y] + 1 }; }
+    for x in 0..k {
+        hl[x + 1] = a.hl[x];
+        for y in 0..NA { st[x + 1][y] = if a.st[x][y] == 0 { 0 } else { a.st[x][y] + 1 }; }
+    }
+    let mut it = [0u8; NA];
+    for y in 0..NA { it[y] = 1; }
+    Some(Aut { k: (k + 1) as u8, it, ih: 0, st, hl })
+}
+
 fn sum_core<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> Option<Aut<NA>> {
+    let a = &to_gaut(a)?;
+    let b = &to_gaut(b)?;
     let (ka, kb) = (a.k as usize, b.k as usize);
     if ka + kb > MAXK { return None; }
     let mut st = [[0u8; NA]; MAXK];
