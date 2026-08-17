@@ -923,6 +923,128 @@ fn unshare_rec<const NA: usize>(p: &Aut<NA>, list: &[Aut<NA>],
 }
 
 /// Is the state set `mask` closed under transitions?
+/// Orbits, in Caron and Ziadi's sense: the non-trivial strongly connected components.  For a
+/// GKAT Thompson automaton every orbit is a loop body, because `wh` is the only constructor
+/// that creates a cycle.
+fn orbits<const NA: usize>(h: &Aut<NA>) -> Vec<u16> {
+    let k = h.k as usize;
+    let mut reach = [0u16; MAXK];
+    for i in 0..k {
+        for y in 0..NA {
+            if h.st[i][y] != 0 { reach[i] |= 1 << (h.st[i][y] - 1); }
+        }
+    }
+    for m in 0..k {
+        for i in 0..k {
+            if reach[i] & (1 << m) != 0 { reach[i] |= reach[m]; }
+        }
+    }
+    let mut seen = 0u16;
+    let mut out: Vec<u16> = Vec::new();
+    for i in 0..k {
+        if seen & (1 << i) != 0 { continue; }
+        let mut comp = 1u16 << i;
+        for j in 0..k {
+            if i != j && reach[i] & (1 << j) != 0 && reach[j] & (1 << i) != 0 {
+                comp |= 1 << j;
+            }
+        }
+        // non-trivial: more than one state, or a self-loop
+        let nontrivial = comp.count_ones() > 1 || reach[i] & (1 << i) != 0;
+        if nontrivial { out.push(comp); }
+        seen |= comp;
+    }
+    out
+}
+
+/// **REFUTED — unsound, kept as the record of why.**  Validation: 19055 / 20020 pool automata,
+/// and every pool automaton is Thompson by construction, so this is not necessary.
+///
+/// Smallest counterexample found: `k=2`, entry `[1,2]`, `s0 -> s1` at both atoms and
+/// `s1 -> s0` at atom 0.  The two states form one orbit and both are entry targets, so at
+/// atom 0 two orbit states point into the entry set at different targets — which this test
+/// calls a violation.  It is not one: `s0 -> s1` is a *body-internal* edge, not a back edge.
+/// The graph does not distinguish the two, and no local test can.  That is precisely the
+/// "partly determined" trap that sank hand-inversion, reappearing at the graph level, and it
+/// is why Caron and Ziadi need reduction rules rather than a flat local predicate.
+///
+/// Original (wrong) rationale follows.  `loopInitialized` appends, to every body state, the whole
+/// of the body's entry transition list guarded by that state's halt guard.  So inside an orbit
+/// every state that can leave the body re-enters it at the *same* target per atom — the back
+/// edges all come from one fixed list.  That is Caron and Ziadi's `Out(O) x In(O) ⊆ E`
+/// condition in the guarded setting, and it is NECESSARY for a Thompson automaton.
+///
+/// Concretely: for each orbit, and each atom, the set of edges from orbit states into the
+/// orbit's entry set must be single-valued.
+fn orbit_stable<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    for o in orbits(h).iter() {
+        // entry set: orbit states entered from outside the orbit, or from the pseudostate
+        let mut ins = 0u16;
+        for y in 0..NA {
+            if h.it[y] != 0 {
+                let t = (h.it[y] - 1) as usize;
+                if o & (1 << t) != 0 { ins |= 1 << t; }
+            }
+        }
+        for u in 0..k {
+            if o & (1 << u) != 0 { continue; }
+            for y in 0..NA {
+                if h.st[u][y] != 0 {
+                    let t = (h.st[u][y] - 1) as usize;
+                    if o & (1 << t) != 0 { ins |= 1 << t; }
+                }
+            }
+        }
+        if ins == 0 { continue; }
+        // every edge from inside the orbit into the entry set must agree, per atom
+        let mut tgt = [usize::MAX; NA];
+        for u in 0..k {
+            if o & (1 << u) == 0 { continue; }
+            for y in 0..NA {
+                if h.st[u][y] == 0 { continue; }
+                let t = (h.st[u][y] - 1) as usize;
+                if ins & (1 << t) == 0 { continue; }
+                if tgt[y] == usize::MAX { tgt[y] = t; }
+                else if tgt[y] != t { return false; }
+            }
+        }
+    }
+    true
+}
+
+/// **Orbit entry/halt disjointness — a NECESSARY condition, from the guard law.**
+///
+/// `loopInitialized` is the only constructor that creates a cycle, so every orbit is a loop
+/// body `B` of some `wh g B`.  It is also the only way into `B`: every edge from outside `B`
+/// into `B` is one of the loop's entry transitions, and those are conjoined with `g`.  And
+/// every state of `B` gets halt guard `body.hlt u ∧ ¬g`, possibly restricted further by an
+/// enclosing context.  So an atom that enters the orbit satisfies `g`, and no state of the
+/// orbit may halt there.
+///
+/// Unlike stability this needs no back-edge identification — which is what sank the flat
+/// stability test, since a body-internal edge into the entry set is indistinguishable from a
+/// back edge by looking at the graph.  Entry edges come from *outside* the orbit, so they are
+/// unambiguous.
+fn orbit_entry_halt_disjoint<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    for o in orbits(h).iter() {
+        for y in 0..NA {
+            // is the orbit entered at atom y, from the pseudostate or from any state outside it?
+            let mut entered = h.it[y] != 0 && o & (1 << (h.it[y] - 1)) != 0;
+            for u in 0..k {
+                if o & (1 << u) != 0 || h.st[u][y] == 0 { continue; }
+                if o & (1 << (h.st[u][y] - 1)) != 0 { entered = true; }
+            }
+            if !entered { continue; }
+            for u in 0..k {
+                if o & (1 << u) != 0 && h.hl[u] & (1 << y) != 0 { return false; }
+            }
+        }
+    }
+    true
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3059,6 +3181,44 @@ pullback: {ok} / {}", res.len());
                     let g = (!a.ih) & 3;
                     println!("      wh: forced g={g}, it ok on non-g = {}",
                         (0..NA).all(|y| bit_set(g, y) || a.it[y] == 0));
+                }
+            }
+            // Validate the NECESSARY condition: every pool automaton is Thompson, so every
+            // one of them must satisfy it.  A necessary condition can only reject, which is
+            // the useful direction — a candidate cover it rejects is definitely not Thompson.
+            {
+                let mut ok = 0usize; let mut n = 0usize;
+                let step2 = (list.len() / 20000).max(1);
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    n += 1;
+                    if orbit_stable(a) { ok += 1; }
+                }
+                let mut eok = 0usize; let mut en = 0usize;
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    en += 1;
+                    if orbit_entry_halt_disjoint(a) { eok += 1; }
+                }
+                let mut ero = 0usize; let mut ern = 0usize;
+                for p in uncovered.iter() { ern += 1; if orbit_entry_halt_disjoint(p) { ero += 1; } }
+                println!("  ORBIT ENTRY/HALT DISJOINTNESS as a necessary condition:");
+                println!("    pool automata satisfying it : {eok} / {en}   (must be all)");
+                println!("    uncovered pullbacks         : {ero} / {ern}");
+                println!("  ORBIT-STABILITY as a necessary condition:");
+                println!("    pool automata satisfying it : {ok} / {n}   (must be all)");
+                let mut ro = 0usize; let mut rn = 0usize;
+                for p in uncovered.iter() { rn += 1; if orbit_stable(p) { ro += 1; } }
+                println!("    uncovered pullbacks         : {ro} / {rn}");
+                for a in list.iter() {
+                    if !orbit_stable(a) {
+                        println!("    COUNTEREXAMPLE k={} it={:?}", a.k, &a.it[..NA]);
+                        for i in 0..a.k as usize {
+                            println!("      s{i}: st={:?} hl={:b}", &a.st[i][..NA], a.hl[i]);
+                        }
+                        println!("      orbits={:?}", orbits(a));
+                        break;
+                    }
                 }
             }
             println!("  ORACLE VALIDATION (depth {depth}):");
