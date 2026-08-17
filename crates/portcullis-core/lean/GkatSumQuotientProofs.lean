@@ -373,6 +373,60 @@ theorem sumQuotientSolvable_of_common_thompson (e f h : Exp A T)
   show φ₁.mapState none = φ₂.mapState none
   rw [hs₁, hs₂]
 
+/-! ## Cycles push forward along a quotient — and only forward
+
+    A caution worth recording, because the literature's phrasing invites the opposite reading.
+    The NESTING COEQUATION cuts out a covariety, and covarieties are closed under homomorphic
+    images, subcoalgebras and coproducts.  `Nested` here is NOT that coequation: it is its
+    finite kernel — mutually reachable states may not carry complementary halt guards — which
+    is the condition excluding the Figure 3 automaton.
+
+    That kernel pushes FORWARD along a behavioural quotient, proved below.  It does not
+    obviously pull back: lifting a cycle of the quotient yields a source path returning to some
+    state with the SAME IMAGE as the one it started from, not to that state itself, so
+    recovering a genuine source cycle needs finiteness and a pigeonhole argument.  So
+    "covarieties are closed under homomorphic images" must not be cited for `Nested`. -/
+
+variable {S Q Atom : Type}
+
+/-- A step pushes forward along a behavioural quotient. -/
+theorem autStep1_quotient {src : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient src quot) (V : T → Atom → Bool) {s s' : S}
+    (h : AutStep1 V src s s') : AutStep1 V quot (π.mapState s) (π.mapState s') := by
+  obtain ⟨a, q, hstep⟩ := h
+  obtain ⟨-, hfwd, -⟩ := π.bisim_graph Atom V s (π.mapState s) rfl
+  obtain ⟨t, hq, ht⟩ := hfwd a q s' hstep
+  exact ⟨a, q, by rw [hq, ht]⟩
+
+/-- Reachability pushes forward. -/
+theorem autReaches_quotient {src : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient src quot) (V : T → Atom → Bool) {s s' : S}
+    (h : AutReaches V src s s') : AutReaches V quot (π.mapState s) (π.mapState s') := by
+  induction h with
+  | refl => exact AutReaches.refl _
+  | tail _ hstep ih => exact AutReaches.tail ih (autStep1_quotient π V hstep)
+
+/-- And so does a genuine cycle. -/
+theorem autReaches1_quotient {src : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient src quot) (V : T → Atom → Bool) {s s' : S}
+    (h : AutReaches1 V src s s') : AutReaches1 V quot (π.mapState s) (π.mapState s') := by
+  obtain ⟨x, hstep, hreach⟩ := h
+  exact ⟨π.mapState x, autStep1_quotient π V hstep, autReaches_quotient π V hreach⟩
+
+/-- **`Nested` is REFLECTED by a quotient, not preserved by one.**  If the quotient satisfies
+    the kernel then so does the source; the converse is the direction that would need the
+    pigeonhole argument, and is not proved here. -/
+theorem nested_of_quotient_nested {src : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient src quot) (V : T → Atom → Bool)
+    (hq : Nested V quot) : Nested V src := by
+  intro s1 s2 hmem h12 h21 hcomp
+  refine hq (π.mapState s1) (π.mapState s2) (π.maps_states s1 hmem)
+    (autReaches1_quotient π V h12) (autReaches1_quotient π V h21) (fun a => ?_)
+  obtain ⟨h1, -, -⟩ := π.bisim_graph Atom V s1 (π.mapState s1) rfl
+  obtain ⟨h2, -, -⟩ := π.bisim_graph Atom V s2 (π.mapState s2) rfl
+  rw [← h1 a, ← h2 a]
+  exact hcomp a
+
 /-! ## Solvable but not syntax-generated — the gap, exhibited
 
     The literature states the crux plainly: "a proper characterization of solvable automata
@@ -479,6 +533,7 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms sumQuotientSolvable_of_common_thompson
 #print axioms else_guard_test
 #print axioms gapAut_solvable
+#print axioms nested_of_quotient_nested
 #print axioms completeness_of_sumQuotientSolvable
 
 end GkatSumQuotient
