@@ -922,6 +922,244 @@ fn unshare_rec<const NA: usize>(p: &Aut<NA>, list: &[Aut<NA>],
     match (da, db) { (Some(x), Some(y)) => Some(x.max(y)), _ => None }
 }
 
+/// Is the state set `mask` closed under transitions?
+fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
+    for u in 0..h.k as usize {
+        if mask & (1 << u) == 0 { continue; }
+        for y in 0..NA {
+            let t = h.st[u][y];
+            if t != 0 && mask & (1 << (t - 1)) == 0 { return false; }
+        }
+    }
+    true
+}
+
+/// The sub-automaton on `mask`, renumbered, with a supplied entry.  `keep` decides, per
+/// state and atom, whether a transition leaving `mask` is dropped (`None` if it must not).
+fn sub_aut<const NA: usize>(h: &Aut<NA>, mask: u16, ih: u8, it: [u8; NA],
+    drop_out: bool) -> Option<Aut<NA>> {
+    let mut idx = [usize::MAX; MAXK];
+    let mut n = 0usize;
+    for u in 0..h.k as usize {
+        if mask & (1 << u) != 0 { idx[u] = n; n += 1; }
+    }
+    let mut a = Aut::<NA>::blank();
+    a.k = n as u8;
+    a.ih = ih;
+    for y in 0..NA {
+        a.it[y] = if it[y] == 0 { 0 } else {
+            let t = (it[y] - 1) as usize;
+            if idx[t] == usize::MAX { return None; }
+            (idx[t] + 1) as u8
+        };
+    }
+    for u in 0..h.k as usize {
+        if mask & (1 << u) == 0 { continue; }
+        let i = idx[u];
+        a.hl[i] = h.hl[u];
+        for y in 0..NA {
+            let t = h.st[u][y];
+            if t == 0 { a.st[i][y] = 0; continue; }
+            let t = (t - 1) as usize;
+            if idx[t] == usize::MAX {
+                if !drop_out { return None; }
+                a.st[i][y] = 0;
+            } else {
+                a.st[i][y] = (idx[t] + 1) as u8;
+            }
+        }
+    }
+    Some(a)
+}
+
+/// **Is `h` the Thompson automaton of some GKAT program?**  Decides by inverting the
+/// construction rather than by enumerating every program: try each constructor, rebuild with
+/// `a_ite` / `a_seq` / `a_wh`, and compare canonically.  This is what lets a 6-12 state
+/// candidate be classified without a pool that reaches that far — the enumeration blows past
+/// 55M automata at six states, while this touches one automaton at a time.
+fn is_thompson<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
+    memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    let c = match canon(h) { Some(c) => c, None => return false };
+    if let Some(&b) = memo.get(&c) { return b; }
+    if depth == 0 { return false; }
+    let r = is_thompson_raw(&c, guards, depth, memo);
+    memo.insert(c, r);
+    r
+}
+
+/// A sub-automaton's entry is only partly determined by the composite: `a_ite` guards `L`'s
+/// entry by `g`, so `L`'s behaviour on the other atoms is invisible in the result and must be
+/// existentially completed.  Getting this wrong made the oracle reject `ite(a,a)` and `wh(a)`.
+fn is_thompson_free<const NA: usize>(a: &Aut<NA>, free: u8, guards: &[u8], depth: usize,
+    memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    let mut fs: Vec<usize> = Vec::new();
+    for y in 0..NA { if bit_set(free, y) { fs.push(y); } }
+    if fs.is_empty() { return is_thompson(a, guards, depth, memo); }
+    let opts = a.k as usize + 1;
+    let total = opts.pow(fs.len() as u32) * (1usize << fs.len());
+    for code in 0..total {
+        let mut b = a.clone();
+        let mut c = code;
+        let mut okc = true;
+        for &y in fs.iter() {
+            let t = c % opts; c /= opts;
+            b.it[y] = t as u8;
+        }
+        for &y in fs.iter() {
+            let h = c % 2; c /= 2;
+            if h == 1 { b.ih |= 1 << y; } else { b.ih &= !(1u8 << y); }
+        }
+        // a state that neither halts nor steps at an atom is not reachable as a Thompson entry
+        for &y in fs.iter() {
+            if b.it[y] == 0 && !bit_set(b.ih, y) { okc = false; }
+        }
+        if !okc { continue; }
+        if is_thompson(&b, guards, depth, memo) { return true; }
+    }
+    false
+}
+
+fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
+    memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    let k = h.k as usize;
+    // leaves
+    if k == 0 {
+        return guards.iter().any(|&g| canon(&a_test::<NA>(g)) == canon(h));
+    }
+    if k == 1 && canon(&a_act::<NA>()) == canon(h) { return true; }
+    let full: u16 = if k == 16 { u16::MAX } else { (1u16 << k) - 1 };
+    // wh: the loop's initHlt is ¬g, so the guard is forced
+    {
+        let g = (!h.ih) & (((1u16 << NA) - 1) as u8);
+        let mut bit = [0u8; NA];
+        let mut ok = true;
+        for y in 0..NA {
+            if bit_set(g, y) { bit[y] = h.it[y]; }
+            else if h.it[y] != 0 { ok = false; }
+        }
+        if ok {
+            // positions that could be back edges
+            let mut amb: Vec<(usize, usize)> = Vec::new();
+            for u in 0..k {
+                for y in 0..NA {
+                    if bit_set(g, y) && h.st[u][y] != 0 && h.st[u][y] == bit[y] {
+                        amb.push((u, y));
+                    }
+                }
+            }
+            if amb.len() <= 14 {
+                for choice in 0..(1u32 << amb.len()) {
+                    let mut b = Aut::<NA>::blank();
+                    b.k = h.k;
+                    b.ih = 0;
+                    b.it = bit;
+                    for u in 0..k { b.hl[u] = h.hl[u]; b.st[u] = h.st[u]; }
+                    for (j, &(u, y)) in amb.iter().enumerate() {
+                        if choice & (1 << j) != 0 {
+                            b.st[u][y] = 0;
+                            b.hl[u] |= 1 << y;
+                        }
+                    }
+                    let freeb = (!g) & (((1u16 << NA) - 1) as u8);
+                    if canon(&a_wh(g, &b)) == canon(h)
+                        && is_thompson_free(&b, freeb, guards, depth - 1, memo) { return true; }
+                end_of_choice(); }
+            }
+        }
+    }
+    // ite and seq: split the state set
+    if k >= 1 {
+        let nmasks: u32 = 1u32 << k;
+        for m in 1..nmasks {
+            let mask = m as u16;
+            let comp = full & !mask;
+            if comp == 0 { continue; }
+            // ite: both sides closed
+            if sub_closed(h, mask) && sub_closed(h, comp) {
+                for &g in guards.iter() {
+                    let mut itl = [0u8; NA];
+                    let mut itr = [0u8; NA];
+                    let mut ok = true;
+                    for y in 0..NA {
+                        if bit_set(g, y) {
+                            itl[y] = h.it[y];
+                            if h.it[y] != 0 && mask & (1 << (h.it[y] - 1)) == 0 { ok = false; }
+                        } else {
+                            itr[y] = h.it[y];
+                            if h.it[y] != 0 && comp & (1 << (h.it[y] - 1)) == 0 { ok = false; }
+                        }
+                    }
+                    if !ok { continue; }
+                    let l = match sub_aut(h, mask, h.ih & g, itl, false) { Some(a) => a, None => continue };
+                    let r = match sub_aut(h, comp, h.ih & !g, itr, false) { Some(a) => a, None => continue };
+                    if let Some(built) = a_ite(g, &l, &r) {
+                        let nm2 = ((1u16 << NA) - 1) as u8;
+                        if canon(&built) == canon(h)
+                            && is_thompson_free(&l, (!g) & nm2, guards, depth - 1, memo)
+                            && is_thompson_free(&r, g & nm2, guards, depth - 1, memo) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            // seq: the right part must be closed
+            if sub_closed(h, comp) {
+                let nm = ((1u16 << NA) - 1) as u8;
+                for rih in 0..=nm {
+                    for lih in 0..=nm {
+                        let mut itr = [0u8; NA];
+                        let mut itl = [0u8; NA];
+                        let mut ok = true;
+                        for y in 0..NA {
+                            let t = h.it[y];
+                            if t == 0 { continue; }
+                            if mask & (1 << (t - 1)) != 0 { itl[y] = t; }
+                            else { itr[y] = t; if !bit_set(lih, y) { ok = false; } }
+                        }
+                        if !ok { continue; }
+                        let mut lhl = [0u8; MAXK];
+                        for u in 0..k {
+                            if mask & (1 << u) == 0 { continue; }
+                            let mut m2 = h.hl[u];
+                            for y in 0..NA {
+                                let t = h.st[u][y];
+                                if t != 0 && comp & (1 << (t - 1)) != 0 {
+                                    m2 |= 1 << y;
+                                    if itr[y] == 0 { itr[y] = t; }
+                                    else if itr[y] != t { ok = false; }
+                                }
+                            }
+                            lhl[u] = m2;
+                        }
+                        if !ok { continue; }
+                        let mut l = match sub_aut(h, mask, lih, itl, true) { Some(a) => a, None => continue };
+                        {
+                            let mut n = 0usize;
+                            for u in 0..k {
+                                if mask & (1 << u) == 0 { continue; }
+                                l.hl[n] = lhl[u]; n += 1;
+                            }
+                        }
+                        let r = match sub_aut(h, comp, rih, itr, false) { Some(a) => a, None => continue };
+                        if let Some(built) = a_seq(&l, &r) {
+                            if canon(&built) == canon(h)
+                                && is_thompson(&l, guards, depth - 1, memo)
+                                && is_thompson(&r, guards, depth - 1, memo) { return true; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+#[inline]
+fn end_of_choice() {}
+
+#[inline]
+fn bit_set(mask: u8, i: usize) -> bool { mask & (1 << i) != 0 }
+
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
@@ -2690,6 +2928,67 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        // VALIDATE THE ORACLE against ground truth before using it for anything.  Every
+        // automaton in the pool is Thompson by construction, so the oracle must accept it;
+        // and a <=K-state automaton absent from the pool is not Thompson, so it must reject.
+        if std::env::var("PAD_ORACLE").is_ok() {
+            let guards: Vec<u8> = (0..(1u8 << NA)).collect();
+            let depth = std::env::var("PAD_ORACLE_DEPTH").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(8);
+            let nsample = std::env::var("PAD_ORACLE_N").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(400);
+            let mut memo: FxMap<Aut<NA>, bool> = FxMap::default();
+            let mut pos = 0usize;
+            let mut posn = 0usize;
+            let mut byk = [(0usize, 0usize); MAXK + 1];
+            let step = (list.len() / nsample.max(1)).max(1);
+            for (i, a) in list.iter().enumerate() {
+                if i % step != 0 { continue; }
+                if a.k as usize > 6 { continue; }
+                posn += 1;
+                let ok = is_thompson(a, &guards, depth, &mut memo);
+                if ok { pos += 1; }
+                byk[a.k as usize].1 += 1;
+                if ok { byk[a.k as usize].0 += 1; }
+            }
+            // negatives: pullbacks with <= maxk states that are absent from the pool
+            let mut neg = 0usize;
+            let mut negn = 0usize;
+            for p in uncovered.iter() {
+                if p.k as usize > maxk { continue; }
+                let c = match canon(p) { Some(c) => c, None => continue };
+                let inpool = by_beh.get(&behaviour(&c))
+                    .map(|v| v.iter().any(|&n| list[n] == c)).unwrap_or(false);
+                if inpool { continue; }
+                negn += 1;
+                if negn > 300 { break; }
+                if !is_thompson(&c, &guards, depth, &mut memo) { neg += 1; }
+            }
+            // self-test on hand-built automata whose provenance is known
+            {
+                let act = a_act::<NA>();
+                let t1 = a_test::<NA>(((1u16 << NA) - 1) as u8);
+                let s2 = a_seq(&act, &act);
+                let i2 = a_ite(1, &act, &act);
+                let w1 = a_wh(1, &act);
+                println!("    self-test: act={} test={} seq(a,a)={} ite(a,a)={} wh(a)={}",
+                    is_thompson(&act, &guards, depth, &mut memo),
+                    is_thompson(&t1, &guards, depth, &mut memo),
+                    s2.as_ref().map(|x| is_thompson(x, &guards, depth, &mut memo))
+                        .unwrap_or(false),
+                    i2.as_ref().map(|x| is_thompson(x, &guards, depth, &mut memo))
+                        .unwrap_or(false),
+                    is_thompson(&w1, &guards, depth, &mut memo));
+                if let Some(x) = s2.as_ref() { println!("    seq(a,a): k={} ih={} it={:?} hl0={} st0={:?} hl1={} st1={:?}",
+                    x.k, x.ih, &x.it[..], x.hl[0], &x.st[0][..], x.hl[1], &x.st[1][..]); }
+            }
+            println!("  ORACLE VALIDATION (depth {depth}):");
+            println!("    pool automata accepted   : {pos} / {posn}   (must be all)");
+            for j in 0..=6 {
+                if byk[j].1 > 0 { println!("      k={j}: {} / {}", byk[j].0, byk[j].1); }
+            }
+            println!("    non-pool <=K rejected    : {neg} / {negn}   (must be all)");
+        }
         // THE TRUE RATE.  The two routes are independent and both incomplete, so neither
         // number alone is `ReachListCovered`.  Compute both per pullback and take the union.
         if std::env::var("PAD_UNION").is_ok() {
