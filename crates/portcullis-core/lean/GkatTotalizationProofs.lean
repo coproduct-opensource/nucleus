@@ -2726,6 +2726,128 @@ noncomputable def graphCover {S₁ S₂ Q : Type} {a : InitializedGAut S₁ A T}
     obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hq
     exact ⟨u, hu, rfl⟩
 
+/-- **Graph and diagonal at once.**  `graphCover` alone lists only `σ`'s graph, and then the
+    *right* projection's `onto` would need `σ` surjective.  Duplicating the source fixes it:
+    `ite 1 a a` is still a Thompson automaton, the left copy carries the graph of `σ`, and the
+    right copy carries the diagonal.
+
+    The diagonal copy commutes for free because the padded pair **shares its core** — the
+    identity is a partner function on core states.  And the guard `1` makes the right copy
+    unreachable from the entry, so nothing forces its map to agree with `σ`. -/
+noncomputable def graphDiagCover {S Q : Type} {a b : InitializedGAut S A T}
+    {m : InitializedGAut Q A T} (φ : InitCover a m) (ψ : InitCover b m)
+    (base : GkatPullback.Base φ ψ) (σ : S → S)
+    (hshare : ∀ u, b.core.trans u = a.core.trans u)
+    (hdiag : ∀ u, φ.map u = ψ.map u)
+    (hmatch : ∀ u, φ.map u = ψ.map (σ u))
+    (hinit : ∀ (X : Type) (W : T → X → Bool) (x : X) (o : A × S),
+      firstMatch W x a.initTrans = some o →
+      firstMatch W x b.initTrans = some (o.1, σ o.2))
+    (hcore : ∀ (X : Type) (W : T → X → Bool) (x : X) (u : S) (o : A × S),
+      firstMatch W x (a.core.trans u) = some o →
+      firstMatch W x (b.core.trans (σ u)) = some (o.1, σ o.2)) :
+    InitCover (iteInitialized BExp.one a a)
+      (pullbackOn φ ψ base (graphList φ ψ base σ ++ diagList φ ψ base)) where
+  map := Sum.elim (fun u => GkatPullback.pairUp base u (σ u))
+    (fun u => GkatPullback.pairUp base u u)
+  initHlt_eq := fun _ W x => by
+    show bval W (BExp.or (BExp.and BExp.one a.initHlt)
+      (BExp.and (BExp.not BExp.one) a.initHlt)) x = bval W a.initHlt x
+    simp [bval]
+  coreHlt_eq := fun s _ W x => by
+    cases s with
+    | inl u =>
+        show bval W (a.core.hlt u) x
+          = bval W (a.core.hlt (GkatPullback.pairUp base u (σ u)).val.1) x
+        rw [GkatPullback.pairUp_fst base (hmatch u)]
+    | inr u =>
+        show bval W (a.core.hlt u) x
+          = bval W (a.core.hlt (GkatPullback.pairUp base u u).val.1) x
+        rw [GkatPullback.pairUp_fst base (hdiag u)]
+  initStep_eq := fun X W x => by
+    show (firstMatch W x
+        (a.initTrans.map (fun t => (BExp.and BExp.one t.1, t.2.1, (Sum.inl t.2.2 : Sum S S))) ++
+         a.initTrans.map (fun t =>
+           (BExp.and (BExp.not BExp.one) t.1, t.2.1, (Sum.inr t.2.2 : Sum S S))))).map
+        (fun o => (o.1, Sum.elim (fun u => GkatPullback.pairUp base u (σ u))
+          (fun u => GkatPullback.pairUp base u u) o.2))
+      = firstMatch W x
+          ((GkatSynthesis.crossTrans a.initTrans b.initTrans).map
+            (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+    rw [firstMatch_map_target_to
+        (F := fun q : S × S => GkatPullback.pairUp base q.1 q.2),
+      GkatSynthesis.firstMatch_crossTrans]
+    have hl := fmGuardFold (A := A) W x BExp.one (fun s : S => (Sum.inl s : Sum S S))
+      a.initTrans
+    have hr := fmGuardFold (A := A) W x (BExp.not BExp.one)
+      (fun s : S => (Sum.inr s : Sum S S)) a.initTrans
+    cases h₁ : firstMatch W x a.initTrans with
+    | none =>
+        rw [firstMatch_append_none _ _ _ _ (by rw [hl, h₁]; simp [bval]), hr]
+        simp [bval]
+    | some o =>
+        rw [firstMatch_append_some (x := (o.1, (Sum.inl o.2 : Sum S S)))
+          _ _ _ _ (by rw [hl, h₁]; simp [bval])]
+        rw [hinit X W x o h₁]
+        rfl
+  coreStep_eq := fun s X W x => by
+    cases s with
+    | inl u =>
+        show (firstMatch W x
+            ((a.core.trans u).map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S S))))).map
+            (fun o => (o.1, Sum.elim (fun v => GkatPullback.pairUp base v (σ v))
+              (fun v => GkatPullback.pairUp base v v) o.2))
+          = firstMatch W x
+              ((GkatSynthesis.crossTrans
+                (a.core.trans (GkatPullback.pairUp base u (σ u)).val.1)
+                (b.core.trans (GkatPullback.pairUp base u (σ u)).val.2)).map
+                (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+        rw [GkatPullback.pairUp_fst base (hmatch u), GkatPullback.pairUp_snd base (hmatch u),
+          firstMatch_map_target_to (F := fun v : S => (Sum.inl v : Sum S S)),
+          firstMatch_map_target_to
+            (F := fun q : S × S => GkatPullback.pairUp base q.1 q.2),
+          GkatSynthesis.firstMatch_crossTrans]
+        cases h₁ : firstMatch W x (a.core.trans u) with
+        | none => rfl
+        | some o => rw [hcore X W x u o h₁]; rfl
+    | inr u =>
+        show (firstMatch W x
+            ((a.core.trans u).map (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S S))))).map
+            (fun o => (o.1, Sum.elim (fun v => GkatPullback.pairUp base v (σ v))
+              (fun v => GkatPullback.pairUp base v v) o.2))
+          = firstMatch W x
+              ((GkatSynthesis.crossTrans
+                (a.core.trans (GkatPullback.pairUp base u u).val.1)
+                (b.core.trans (GkatPullback.pairUp base u u).val.2)).map
+                (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+        rw [GkatPullback.pairUp_fst base (hdiag u), GkatPullback.pairUp_snd base (hdiag u),
+          hshare u,
+          firstMatch_map_target_to (F := fun v : S => (Sum.inr v : Sum S S)),
+          firstMatch_map_target_to
+            (F := fun q : S × S => GkatPullback.pairUp base q.1 q.2),
+          GkatSynthesis.firstMatch_crossTrans]
+        cases h₁ : firstMatch W x (a.core.trans u) with
+        | none => rfl
+        | some o => rfl
+  maps := by
+    intro s hs
+    have hs' : s ∈ a.core.states.map (Sum.inl : S → Sum S S) ++
+        a.core.states.map (Sum.inr : S → Sum S S) := hs
+    rcases List.mem_append.mp hs' with h | h
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨u, hu, rfl⟩))
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩))
+  onto := by
+    intro q hq
+    rcases List.mem_append.mp hq with h | h
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact ⟨Sum.inl u,
+        List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨u, hu, rfl⟩)), rfl⟩
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact ⟨Sum.inr u,
+        List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩)), rfl⟩
+
 /-- **The pullback is Thompson-covered as soon as a partner function exists**, because the
     left component of the padded span is itself a Thompson automaton. -/
 theorem hasThompsonCover_of_partner {S₂ Q : Type} (a₀ : A) (e f : Exp A T)
@@ -2747,6 +2869,7 @@ theorem hasThompsonCover_of_partner {S₂ Q : Type} (a₀ : A) (e f : Exp A T)
   ⟨padZero e f a₀, ⟨graphCover φ ψ base σ hmatch hinit hcore⟩⟩
 
 #print axioms graphCover
+#print axioms graphDiagCover
 #print axioms hasThompsonCover_of_partner
 
 #print axioms pullbackOnFst
@@ -2833,7 +2956,59 @@ theorem completeness_of_diagPullbackCovered (a₀ : A)
   completeness_of_diagPullback a₀ (canonicallySettled_holds a₀) hpc
 
 #print axioms completeness_of_diagPullback
+/-- **The whole programme, as one question about a function.**  Does the padded span admit a
+    partner function: a map from the left component's states to the right's, matched under the
+    quotient, commuting with the entry and with every step? -/
+def PartnerExists (A T : Type) (a₀ : A) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m),
+    φ.map = ψ.map →
+    ∃ σ : (certifiedThompson A T (padZero e f a₀)).State →
+          (certifiedThompson A T (padOne e f a₀)).State,
+      (∀ u ∈ (certifiedThompson A T (padZero e f a₀)).aut.core.states,
+        σ u ∈ (certifiedThompson A T (padOne e f a₀)).aut.core.states) ∧
+      (∀ u, φ.map u = ψ.map (σ u)) ∧
+      (∀ (X : Type) (W : T → X → Bool) (x : X)
+        (o : A × (certifiedThompson A T (padZero e f a₀)).State),
+        firstMatch W x (certifiedThompson A T (padZero e f a₀)).aut.initTrans = some o →
+        firstMatch W x (certifiedThompson A T (padOne e f a₀)).aut.initTrans
+          = some (o.1, σ o.2)) ∧
+      (∀ (X : Type) (W : T → X → Bool) (x : X)
+        (u : (certifiedThompson A T (padZero e f a₀)).State)
+        (o : A × (certifiedThompson A T (padZero e f a₀)).State),
+        firstMatch W x ((certifiedThompson A T (padZero e f a₀)).aut.core.trans u) = some o →
+        firstMatch W x ((certifiedThompson A T (padOne e f a₀)).aut.core.trans (σ u))
+          = some (o.1, σ o.2))
+
+/-- **A partner function discharges the last statement.**  The covering program is
+    `if 1 then padZero else padZero` — the padded left component, duplicated once so the
+    second copy can carry the diagonal. -/
+theorem paddedDiagPullbackCovered_of_partner (a₀ : A) (hp : PartnerExists A T a₀) :
+    PaddedDiagPullbackCovered A T a₀ := by
+  intro e f Q m φ ψ base hmaps
+  obtain ⟨σ, hσ, hmatch, hinit, hcore⟩ := hp e f Q m φ ψ hmaps
+  refine ⟨List.append (graphList φ ψ base σ) (diagList φ ψ base), ?_, ?_, ?_⟩
+  · intro s hs
+    rcases List.mem_append.mp hs with h | h
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_flatMap.mpr ⟨u, hu, List.mem_map.mpr ⟨σ u, hσ u hu, rfl⟩⟩
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_flatMap.mpr ⟨u, hu, List.mem_map.mpr ⟨u, hu, rfl⟩⟩
+  · intro u hu
+    exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩))
+  · exact ⟨.ite BExp.one (padZero e f a₀) (padZero e f a₀),
+      ⟨graphDiagCover φ ψ base σ (fun _ => rfl) (fun u => congrFun hmaps u)
+        hmatch hinit hcore⟩⟩
+
+/-- **Completeness from the existence of a partner function.** -/
+theorem completeness_of_partner (a₀ : A) (hp : PartnerExists A T a₀) :
+    FiniteAxiomsCompleteBA A T :=
+  completeness_of_diagPullbackCovered a₀ (paddedDiagPullbackCovered_of_partner a₀ hp)
+
 #print axioms completeness_of_diagPullbackCovered
+#print axioms paddedDiagPullbackCovered_of_partner
+#print axioms completeness_of_partner
 
 #print axioms completeness_of_pullbackCovered
 
