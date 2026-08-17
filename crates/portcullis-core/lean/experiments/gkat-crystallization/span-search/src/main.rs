@@ -1802,6 +1802,36 @@ fn close_congruence<const NA: usize>(h: &Aut<NA>, seeds: &[(usize, usize)]) -> O
     Some((blk, seen.len()))
 }
 
+/// Is SOME congruence in the lattice a Thompson automaton?  The conjunct asks for any
+/// behavioural quotient with a solution, and a Thompson quotient carries the standard solution
+/// outright.  Checking only the full collapse tests one point of the lattice; the residue is
+/// made of collapses that left the Thompson class, so a FINER quotient may still be inside it.
+fn thompson_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>,
+    seen: &FxMap<Aut<NA>, u32>) -> bool {
+    let k = su.k as usize;
+    let (blk, nb) = bisim_blocks(su);
+    if let Some(q) = quotient_by(su, &blk, nb) {
+        if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+    }
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for a in 0..k {
+        for b in (a + 1)..k {
+            if blk[a] == blk[b] { pairs.push((a, b)); }
+        }
+    }
+    if pairs.is_empty() || pairs.len() > 12 { return false; }
+    for mask in 1u32..(1u32 << pairs.len()) {
+        let seeds: Vec<(usize, usize)> = pairs.iter().enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0).map(|(_, &p)| p).collect();
+        if let Some((b2, nb2)) = close_congruence(su, &seeds) {
+            if let Some(q) = quotient_by(su, &b2, nb2) {
+                if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+            }
+        }
+    }
+    false
+}
+
 /// **Search the LATTICE of bisimulations, not just its endpoints.**  `SumQuotientSolvable`
 /// asks for SOME behavioural quotient with a solution; the full collapse is only the top of
 /// the lattice and the start-identifying congruence only near the bottom.  This enumerates
@@ -4587,6 +4617,19 @@ pullback: {ok} / {}", res.len());
                     }
                     println!("  THE UNKNOWN QUOTIENTS, BY SIZE (maxk = {maxk}):");
                     for kk in 0..12 { if szhist[kk] > 0 { println!("    {kk} states : {}", szhist[kk]); } }
+                    let (mut lat2, mut lat2n) = (0usize, 0usize);
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            lat2n += 1;
+                            // `solvable_somewhere_in_lattice` was already measured at 9221
+                            // with no gain, so re-running it here only duplicates the expensive
+                            // 2^12 elimination sweep.  The new question is whether a FINER
+                            // quotient is Thompson.
+                            if facts[ci].0 || thompson_somewhere_in_lattice(&su, &seen) { lat2 += 1; }
+                        }
+                    }
+                    println!("  FULL SOUND TEST (any congruence: eliminable OR Thompson):");
+                    println!("    solvable : {lat2} / {lat2n}");
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
                     println!("    solvable : {comb} / {combn}");
                     println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
