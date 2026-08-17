@@ -1365,15 +1365,16 @@ fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
     let k = h.k as usize;
     if nb > 16 { return false; }
     let mut l = [[0u16; NA]; MAXK];
-    // `free[x][y]` records that the branch has a VARIABLE-FREE leaf — a halt or a reject.
-    // Without this the procedure is unsound: it accepted the Figure 3 automaton, whose
-    // behaviour no expression denotes.  U5 pulls a common tail out of a branch only when
-    // BOTH sides end in the variable, so `(A·s(x)) +_b 1` cannot be turned into `C·s(x)`.
+    // `free[x][y]` records that the branch has a leaf which BLOCKS U5 factoring.  Only a
+    // HALT does.  A REJECT does not: by S2, `0 ≡ 0·s(x)`, so a dead branch can always be
+    // given the common tail and factored out with everything else.  Conflating the two was
+    // what rejected Thompson automata that plainly have solutions — the k=2 witness
+    // `s0: st=[0,2] hl=0`, whose atom-0 branch is a reject, not a halt.
     let mut free = [[false; NA]; MAXK];
     for x in 0..k {
         for y in 0..NA {
             if h.st[x][y] != 0 { l[blk[x]][y] |= 1 << blk[(h.st[x][y] - 1) as usize]; }
-            else { free[blk[x]][y] = true; }
+            else if h.hl[x] & (1 << y) != 0 { free[blk[x]][y] = true; }
         }
     }
     let mut budget = 2000000usize;
