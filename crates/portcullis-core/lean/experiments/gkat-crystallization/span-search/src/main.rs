@@ -897,6 +897,31 @@ fn partner_functional_perbranch<const NA: usize>(a0: &Aut<NA>, a1: &Aut<NA>) -> 
     true
 }
 
+/// Recursive un-sharing.  A branch piece has strictly fewer states than its parent, so if
+/// every piece is either already a program automaton or splits further, the recursion is
+/// well-founded and IS the induction that would discharge `RestrictedBranchesCovered`.
+/// Returns Some(depth) if it resolves, None if it stalls (a piece that is not in the pool and
+/// does not shrink under un-sharing).
+fn unshare_rec<const NA: usize>(p: &Aut<NA>, list: &[Aut<NA>],
+    by_beh: &FxMap<Vec<u8>, Vec<usize>>, depth: usize, budget: usize) -> Option<usize> {
+    let c = canon(p)?;
+    if let Some(cands) = by_beh.get(&behaviour(&c)) {
+        if cands.iter().any(|&n| list[n] == c) { return Some(depth); }
+    }
+    if depth >= budget { return None; }
+    let (g, a, b) = unshare_parts(p)?;
+    // progress check: a piece must be strictly smaller, or the recursion cannot terminate
+    if a.k as usize >= p.k as usize || b.k as usize >= p.k as usize { return None; }
+    let h = a_ite(g, &a, &b)?;
+    let hc = canon(&h)?;
+    if !covers(&hc, p) { return None; }
+    let da = if a.k == 0 { Some(depth) } else {
+        unshare_rec(&a, list, by_beh, depth + 1, budget) };
+    let db = if b.k == 0 { Some(depth) } else {
+        unshare_rec(&b, list, by_beh, depth + 1, budget) };
+    match (da, db) { (Some(x), Some(y)) => Some(x.max(y)), _ => None }
+}
+
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
@@ -2705,6 +2730,48 @@ pullback: {ok} / {}", res.len());
             println!("    too big (> MAXK)    : {us_big}");
             println!("    fully exhibited     : {us_exhibited}");
             println!("    one level FAILS     : {}", us_fail.len());
+            // Does the recursion close?  Each branch piece is strictly smaller, so if every
+            // piece eventually lands in the pool the induction is well-founded.
+            let budget = std::env::var("PAD_REC_DEPTH").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(6);
+            let mut rec_ok = 0usize;
+            let mut rec_fail = 0usize;
+            let mut depth_hist = [0usize; 12];
+            for p in uncovered.iter() {
+                match unshare_rec(p, &list, &by_beh, 0, budget) {
+                    Some(d) => { rec_ok += 1; if d < 12 { depth_hist[d] += 1; } }
+                    None => { rec_fail += 1; }
+                }
+            }
+            // Are the stalling parts simply BIGGER than the pool cap?  A part with more
+            // states than maxk cannot be in `list` no matter how expressible it is, and that
+            // confound has been mistaken for a real failure before.
+            let mut fail_parts_big = 0usize;
+            let mut fail_parts_small = 0usize;
+            let mut fail_maxpart = 0u8;
+            for p in uncovered.iter() {
+                if unshare_rec(p, &list, &by_beh, 0, budget).is_some() { continue; }
+                if let Some((_, a, b)) = unshare_parts(p) {
+                    for q in [&a, &b] {
+                        if q.k == 0 { continue; }
+                        let inpool = canon(q).map(|c| by_beh.get(&behaviour(&c))
+                            .map(|v| v.iter().any(|&n| list[n] == c)).unwrap_or(false))
+                            .unwrap_or(false);
+                        if inpool { continue; }
+                        if q.k as usize > maxk { fail_parts_big += 1; }
+                        else { fail_parts_small += 1; }
+                        if q.k > fail_maxpart { fail_maxpart = q.k; }
+                    }
+                }
+            }
+            println!("  STALLING PARTS: bigger than pool cap {fail_parts_big}, \
+within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
+            println!("  RECURSIVE un-sharing (budget {budget}):");
+            println!("    resolves : {rec_ok} / {}", uncovered.len());
+            println!("    stalls   : {rec_fail} / {}", uncovered.len());
+            print!("    depth    :");
+            for d in 0..8 { print!(" {}:{}", d, depth_hist[d]); }
+            println!();
             for p in us_fail.iter().take(6) {
                 print!("    USFAIL k={} nested={} red={} ih={} it={:?}",
                     p.k, nested(p), reducible(p), p.ih, &p.it[..]);
