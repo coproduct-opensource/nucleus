@@ -1305,6 +1305,102 @@ fn peelable<const NA: usize>(h: &Aut<NA>) -> bool {
     solved.count_ones() as usize == k
 }
 
+/// Largest bisimulation by partition refinement — the standard GKAT minimization.  Returns
+/// the block index of each state and the block count.
+fn bisim_blocks<const NA: usize>(h: &Aut<NA>) -> ([usize; MAXK], usize) {
+    let k = h.k as usize;
+    let mut blk = [0usize; MAXK];
+    // initial partition: by halt mask, and by which atoms have a transition at all
+    let mut sig0: Vec<(u8, u32)> = Vec::new();
+    for x in 0..k {
+        let mut def = 0u32;
+        for y in 0..NA { if h.st[x][y] != 0 { def |= 1 << y; } }
+        let s = (h.hl[x], def);
+        blk[x] = match sig0.iter().position(|&t| t == s) {
+            Some(i) => i,
+            None => { sig0.push(s); sig0.len() - 1 }
+        };
+    }
+    let mut nb = sig0.len();
+    loop {
+        let mut sig: Vec<(usize, [usize; NA])> = Vec::new();
+        let mut nblk = [0usize; MAXK];
+        for x in 0..k {
+            let mut succ = [usize::MAX; NA];
+            for y in 0..NA {
+                if h.st[x][y] != 0 { succ[y] = blk[(h.st[x][y] - 1) as usize]; }
+            }
+            let s = (blk[x], succ);
+            nblk[x] = match sig.iter().position(|t| *t == s) {
+                Some(i) => i,
+                None => { sig.push(s); sig.len() - 1 }
+            };
+        }
+        if sig.len() == nb { return (blk, nb); }
+        blk = nblk; nb = sig.len();
+    }
+}
+
+/// **Symbolic elimination — does Gaussian elimination actually solve the system?**
+///
+/// This decides by the ALGEBRA rather than by a graph proxy, which is the one direction five
+/// graph predicates did not refute.  The tracked state is, for each variable and atom, the
+/// set of variables appearing at the leaves of that branch.
+///
+/// A variable `x` can be isolated exactly when, at every atom whose branch mentions `x`, `x`
+/// is the ONLY variable there.  That is U5 read backwards: `(A·s(x)) +_b (B·s(x))` collapses
+/// to `(A +_b B)·s(x)`, so a common tail can be pulled out of a branch — but a branch with
+/// two DIFFERENT variables at its leaves cannot be, since GKAT has no left distribution
+/// (`left_distrib_fails`, proved).  Once isolated the equation is `e·s(x) +_b f`, which is
+/// W0's shape, and W0 is now a derived law here.
+///
+/// It runs on the BISIMULATION QUOTIENT, and that is not an optimisation.
+/// `wh 1 ((p +_b q);(r +_b t))` is Thompson yet defeats elimination state-by-state, because
+/// the two branch states are bisimilar and their solutions coincide; on the quotient the
+/// same system eliminates in two steps.
+fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
+    let (blk, nb) = bisim_blocks(h);
+    let k = h.k as usize;
+    if nb > 16 { return false; }
+    let mut l = [[0u16; NA]; MAXK];
+    for x in 0..k {
+        for y in 0..NA {
+            if h.st[x][y] != 0 { l[blk[x]][y] |= 1 << blk[(h.st[x][y] - 1) as usize]; }
+        }
+    }
+    let mut budget = 2000000usize;
+    elim_search::<NA>(&mut l, (1u16 << nb) - 1, nb, &mut budget)
+}
+
+fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], live: u16, nb: usize,
+    budget: &mut usize) -> bool {
+    if live == 0 { return true; }
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    for x in 0..nb {
+        if live & (1 << x) == 0 { continue; }
+        // isolable: every branch mentioning x mentions ONLY x
+        let mut ok = true;
+        for y in 0..NA {
+            if l[x][y] & (1 << x) != 0 && l[x][y] != (1 << x) { ok = false; break; }
+        }
+        if !ok { continue; }
+        // x's solution reaches these variables
+        let mut sx = 0u16;
+        for y in 0..NA { sx |= l[x][y] & !(1 << x); }
+        let saved = *l;
+        for z in 0..nb {
+            if live & (1 << z) == 0 || z == x { continue; }
+            for y in 0..NA {
+                if l[z][y] & (1 << x) != 0 { l[z][y] = (l[z][y] & !(1 << x)) | sx; }
+            }
+        }
+        if elim_search::<NA>(l, live & !(1 << x), nb, budget) { return true; }
+        *l = saved;
+    }
+    false
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3372,6 +3468,7 @@ pullback: {ok} / {}", res.len());
             let mut neg = 0usize;
             let mut lneg = 0usize;
             let mut pneg = 0usize;
+            let mut sneg = 0usize;
             let mut negn = 0usize;
             for p in uncovered.iter() {
                 if p.k as usize > maxk { continue; }
@@ -3384,6 +3481,7 @@ pullback: {ok} / {}", res.len());
                 if !is_thompson(&c, &guards, depth, &mut memo) { neg += 1; }
                 if !llee(&c) { lneg += 1; }
                 if !peelable(&c) { pneg += 1; }
+                if !symbolic_eliminable(&c) { sneg += 1; }
             }
             // self-test on hand-built automata whose provenance is known
             {
@@ -3482,6 +3580,26 @@ pullback: {ok} / {}", res.len());
                 }
                 let (mut pr, mut prn) = (0usize, 0usize);
                 for p in uncovered.iter() { prn += 1; if peelable(p) { pr += 1; } }
+                let mut sk = 0usize; let mut sn = 0usize;
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    sn += 1;
+                    if symbolic_eliminable(a) { sk += 1; }
+                }
+                let (mut sr, mut srn) = (0usize, 0usize);
+                for p in uncovered.iter() { srn += 1; if symbolic_eliminable(p) { sr += 1; } }
+                println!("  SYMBOLIC ELIMINATION on the bisimulation quotient (W0 + U5):");
+                println!("    pool automata satisfying it : {sk} / {sn}   (must be all)");
+                println!("    uncovered pullbacks         : {sr} / {srn}   (THE TARGET)");
+                for a in list.iter() {
+                    if !symbolic_eliminable(a) {
+                        println!("    SYMB COUNTEREXAMPLE k={} it={:?}", a.k, &a.it[..NA]);
+                        for i in 0..a.k as usize {
+                            println!("      s{i}: st={:?} hl={:b}", &a.st[i][..NA], a.hl[i]);
+                        }
+                        break;
+                    }
+                }
                 println!("  PEELABLE (Gaussian elimination solves the system, via W0):");
                 println!("    pool automata satisfying it : {pk} / {pn}   (must be all)");
                 println!("    uncovered pullbacks         : {pr} / {prn}   (THE TARGET)");
@@ -3567,6 +3685,7 @@ pullback: {ok} / {}", res.len());
             // vacuous, so measure it on automata known NOT to be in the pool.
             println!("    LLEE non-pool rejected   : {lneg} / {negn}   (discrimination)");
             println!("    PEEL non-pool rejected   : {pneg} / {negn}   (discrimination)");
+            println!("    SYMB non-pool rejected   : {sneg} / {negn}   (discrimination)");
         }
         // THE TRUE RATE.  The two routes are independent and both incomplete, so neither
         // number alone is `ReachListCovered`.  Compute both per pullback and take the union.
