@@ -2854,6 +2854,65 @@ cands={}", q.k, nested(q), reducible(q), two_exit_cycle(q), two_halt_cycle(q),
                         println!();
                     }
                 }
+                // SHARED CLOSURE.  Fourteen separate searches over the same behaviour class
+                // rebuild the same automata fourteen times; the 8-round attempt cleared only
+                // 2 of 34 for that reason.  Build the closure ONCE from the union of the
+                // seeds and test every generated automaton against every open target.
+                if std::env::var("PAD_SHARED").is_ok() {
+                    let rounds = std::env::var("PAD_SHARED_ROUNDS").ok()
+                        .and_then(|v| v.parse::<usize>().ok()).unwrap_or(6);
+                    let fr = std::env::var("PAD_SHARED_FRONTIER").ok()
+                        .and_then(|v| v.parse::<usize>().ok()).unwrap_or(400000);
+                    let open: Vec<Aut<NA>> = targets.iter().cloned().collect();
+                    let mut hit = vec![false; open.len()];
+                    let mut seeds: FxSet<usize> = FxSet::default();
+                    for q in open.iter() {
+                        if let Some(v) = by_beh.get(&behaviour(q)) {
+                            for &n in v.iter() { seeds.insert(n); }
+                        }
+                    }
+                    let mut pool = Pool::<NA>::new();
+                    let mut frontier: Vec<u32> = Vec::new();
+                    let mut seen: FxSet<u32> = FxSet::default();
+                    for &n in seeds.iter() {
+                        let r = pool.of_prov(&list, &prov, n as u32);
+                        if seen.insert(r) { frontier.push(r); }
+                    }
+                    let mut explored = 0usize;
+                    let mut biggest = 0u8;
+                    for rd in 0..rounds {
+                        let mut next: Vec<u32> = Vec::new();
+                        for &t in frontier.iter() {
+                            refinements(&mut pool, t, nguards, true, true, 3, 4, &mut next);
+                        }
+                        let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                        for t in next {
+                            if !seen.insert(t) { continue; }
+                            explored += 1;
+                            if let Some(a) = pool.aut(t) {
+                                if a.k > biggest { biggest = a.k; }
+                                if let Some(c) = canon(&a) {
+                                    for (i, q) in open.iter().enumerate() {
+                                        if !hit[i] && covers(&c, q) { hit[i] = true; }
+                                    }
+                                }
+                            }
+                            keep.push(t);
+                        }
+                        frontier = keep;
+                        if frontier.len() > fr { frontier.truncate(fr); }
+                        let done = hit.iter().filter(|&&b| b).count();
+                        println!("    shared round {rd}: explored {explored}, biggest {biggest}, \
+covered {done}/{}", open.len());
+                        if done == open.len() { break; }
+                    }
+                    let done = hit.iter().filter(|&&b| b).count();
+                    println!("  SHARED CLOSURE ({} seeds, {rounds} rounds, frontier {fr}):",
+                        seeds.len());
+                    println!("    explored {explored}, biggest {biggest} states");
+                    println!("    covered {done} / {}, RESISTING {}", open.len(),
+                        open.len() - done);
+                }
                 println!("  WITHIN-CAP STALLING PARTS (distinct): {}", targets.len());
                 println!("    covered by refinement : {covered_now}");
                 println!("    still resisting       : {resist}");
