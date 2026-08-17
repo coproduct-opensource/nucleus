@@ -2588,6 +2588,74 @@ theorem diag_onto {S Q : Type} {a b : InitializedGAut S A T} {m : InitializedGAu
   refine ⟨GkatPullback.pairUp base q q, List.mem_map.mpr ⟨q, hq, rfl⟩, ?_⟩
   exact GkatPullback.pairUp_fst base (by rw [hmaps])
 
+/-! ### The diagonal-listed pullback
+
+    Listing only the diagonal keeps both projections onto, so the object the chain has to
+    cover shrinks from the whole matched product to the size of one side.  Nothing else about
+    the pullback changes — `relist` rewrites the state list and leaves the dynamics alone — so
+    every cover condition except `maps` and `onto` is reused verbatim from `pullbackFst` and
+    `pullbackSnd`. -/
+
+/-- The diagonal of the pullback, as a state list.  It is what makes the projections onto;
+    it is *not* enough on its own to be listed, because the pullback's entry target is
+    off-diagonal — the two padded entries land in different summands — and `maps` would then
+    force a covering automaton's entry state outside the list.  So the listing has to contain
+    the diagonal, not equal it. -/
+noncomputable def diagList {S Q : Type} {a b : InitializedGAut S A T} {m : InitializedGAut Q A T}
+    (φ : InitCover a m) (ψ : InitCover b m) (base : GkatPullback.Base φ ψ) :
+    List (GkatPullback.Fib φ ψ) :=
+  a.core.states.map (fun u => GkatPullback.pairUp base u u)
+
+/-- The pullback listed on `l` instead of the whole matched product. -/
+noncomputable def pullbackOn {S Q : Type} {a b : InitializedGAut S A T}
+    {m : InitializedGAut Q A T} (φ : InitCover a m) (ψ : InitCover b m)
+    (base : GkatPullback.Base φ ψ) (l : List (GkatPullback.Fib φ ψ)) :
+    InitializedGAut (GkatPullback.Fib φ ψ) A T :=
+  relist (GkatPullback.pullback φ ψ base) l
+
+/-- **The left projection survives any listing that contains the diagonal and stays inside
+    the full one.** -/
+noncomputable def pullbackOnFst {S Q : Type} {a b : InitializedGAut S A T}
+    {m : InitializedGAut Q A T} (φ : InitCover a m) (ψ : InitCover b m)
+    (base : GkatPullback.Base φ ψ) (l : List (GkatPullback.Fib φ ψ))
+    (hmaps : φ.map = ψ.map)
+    (hsub : ∀ s ∈ l, s ∈ (GkatPullback.pullback φ ψ base).core.states)
+    (hdiag : ∀ u ∈ a.core.states, GkatPullback.pairUp base u u ∈ l) :
+    InitCover (pullbackOn φ ψ base l) a where
+  map := fun p => p.val.1
+  initHlt_eq := (GkatPullback.pullbackFst φ ψ base).initHlt_eq
+  coreHlt_eq := (GkatPullback.pullbackFst φ ψ base).coreHlt_eq
+  initStep_eq := (GkatPullback.pullbackFst φ ψ base).initStep_eq
+  coreStep_eq := (GkatPullback.pullbackFst φ ψ base).coreStep_eq
+  maps := fun s hs => (GkatPullback.pullbackFst φ ψ base).maps s (hsub s hs)
+  onto := by
+    intro q hq
+    exact ⟨GkatPullback.pairUp base q q, hdiag q hq,
+      GkatPullback.pairUp_fst base (by rw [hmaps])⟩
+
+/-- **And so does the right projection**, given the two sides list the same states — which
+    padding guarantees, since the padded pair shares a core. -/
+noncomputable def pullbackOnSnd {S Q : Type} {a b : InitializedGAut S A T}
+    {m : InitializedGAut Q A T} (φ : InitCover a m) (ψ : InitCover b m)
+    (base : GkatPullback.Base φ ψ) (l : List (GkatPullback.Fib φ ψ))
+    (hmaps : φ.map = ψ.map) (hstates : a.core.states = b.core.states)
+    (hsub : ∀ s ∈ l, s ∈ (GkatPullback.pullback φ ψ base).core.states)
+    (hdiag : ∀ u ∈ a.core.states, GkatPullback.pairUp base u u ∈ l) :
+    InitCover (pullbackOn φ ψ base l) b where
+  map := fun p => p.val.2
+  initHlt_eq := (GkatPullback.pullbackSnd φ ψ base).initHlt_eq
+  coreHlt_eq := (GkatPullback.pullbackSnd φ ψ base).coreHlt_eq
+  initStep_eq := (GkatPullback.pullbackSnd φ ψ base).initStep_eq
+  coreStep_eq := (GkatPullback.pullbackSnd φ ψ base).coreStep_eq
+  maps := fun s hs => (GkatPullback.pullbackSnd φ ψ base).maps s (hsub s hs)
+  onto := by
+    intro q hq
+    exact ⟨GkatPullback.pairUp base q q, hdiag q (hstates ▸ hq),
+      GkatPullback.pairUp_snd base (by rw [hmaps])⟩
+
+#print axioms pullbackOnFst
+#print axioms pullbackOnSnd
+
 #print axioms pad_diag_matched
 #print axioms diag_onto
 
@@ -2616,6 +2684,61 @@ theorem completeness_of_pullbackCovered (a₀ : A) (hpc : PaddedPullbackCovered 
 #print axioms canonicallySettled_holds
 #print axioms rep_eq_iff_langEquiv
 #print axioms pad_span_maps_agree
+/-- **The last statement, about the diagonal-listed pullback.**  Same shape as
+    `PaddedPullbackCovered`, but the object to cover is the size of one side rather than of the
+    whole matched product — and it is the object the search harness actually measures, since
+    that builds its pullback by exploring from the entry. -/
+def PaddedDiagPullbackCovered (A T : Type) (a₀ : A) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ), φ.map = ψ.map →
+    ∃ l : List (GkatPullback.Fib φ ψ),
+      (∀ s ∈ l, s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
+      (∀ u ∈ (certifiedThompson A T (padZero e f a₀)).aut.core.states,
+        GkatPullback.pairUp base u u ∈ l) ∧
+      HasThompsonCover (pullbackOn φ ψ base l)
+
+/-- **Completeness from the diagonal-listed pullback.**  The padded span satisfies the
+    map-equality hypothesis by `pad_span_maps_agree`, and shares a core, so both projections
+    are covers by `pullbackDiagFst` / `pullbackDiagSnd`. -/
+theorem completeness_of_diagPullback (a₀ : A) (hcs : CanonicallySettled A T a₀)
+    (hpc : PaddedDiagPullbackCovered A T a₀) : FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨e', hee', hse, hce⟩ := hcs e
+  obtain ⟨f', hff', hsf, hcf⟩ := hcs f
+  have heq' : UniformLanguageEquivalent e' f' := by
+    intro X W gs
+    exact ((sound_BA (V := W) hee' gs).symm.trans (heq X W gs)).trans
+      (sound_BA (V := W) hff' gs)
+  have ht0 := total_of_settled (settled_padZero hse hsf a₀)
+  have ht1 := total_of_settled (settled_padOne hse hsf a₀)
+  have hc0 := deadCanonical_padZero a₀ hce hcf
+  have hc1 := deadCanonical_padOne a₀ hce hcf
+  have hmaps := pad_span_maps_agree a₀ e' f' heq' ht0 ht1 hc0 hc1
+  obtain ⟨base⟩ :=
+    GkatPullback.Base.ofMem
+      (GkatQuotient.matchCover (matched_of_pad a₀ e' f' heq' ht0 ht1 hc0 hc1))
+      (GkatQuotient.targetCover (matched_of_pad a₀ e' f' heq' ht0 ht1 hc0 hc1).stepbb)
+      (thompson_states_complete (padZero e' f' a₀) (Sum.inr (Sum.inr ())))
+  obtain ⟨l, hsub, hdiag, ⟨h, ⟨χ⟩⟩⟩ := hpc e' f' _ _ _ _ base hmaps
+  have hmid : EquivBA (padZero e' f' a₀) (padOne e' f' a₀) :=
+    equivBA_of_common_refinement χ
+      (pullbackOnFst _ _ base l hmaps hsub hdiag)
+      (pullbackOnSnd _ _ base l hmaps rfl hsub hdiag)
+  exact EquivBA.trans hee'
+    (EquivBA.trans (padOne_equiv e' f' a₀)
+      (EquivBA.trans hmid.symm
+        (EquivBA.trans (padZero_equiv e' f' a₀).symm hff'.symm)))
+
+/-- **Completeness from one statement about the diagonal-listed pullback alone.** -/
+theorem completeness_of_diagPullbackCovered (a₀ : A)
+    (hpc : PaddedDiagPullbackCovered A T a₀) : FiniteAxiomsCompleteBA A T :=
+  completeness_of_diagPullback a₀ (canonicallySettled_holds a₀) hpc
+
+#print axioms completeness_of_diagPullback
+#print axioms completeness_of_diagPullbackCovered
+
 #print axioms completeness_of_pullbackCovered
 
 #print axioms live_nrm
