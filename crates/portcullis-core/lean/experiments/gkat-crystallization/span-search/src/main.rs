@@ -4036,6 +4036,22 @@ pullback: {ok} / {}", res.len());
                     }
                     println!("  ADJOIN A BOOLEAN FLAG (Böhm-Jacopini's auxiliary variable):");
                     println!("    stalled automata closed by one flag : {flagged} / {ftot}");
+                    // WHICH SHAPE STALLS?  With a base rate from the SAME population — pool
+                    // automata that eliminate fine — so the feature is not read off the
+                    // failures alone.  CF-GKAT (POPL 2025) extends GKAT with indicator
+                    // variables precisely to handle EARLY TERMINATION IN A LOOP BODY, which is
+                    // the pattern elimination stalls on here.
+                    let (mut sh, mut sn, mut oh, mut on) = (0usize, 0usize, 0usize, 0usize);
+                    for (i, a) in list.iter().enumerate() {
+                        if i % step2 != 0 { continue; }
+                        let th = two_halt_cycle(a).is_some();
+                        if symbolic_eliminable(a) { on += 1; if th { oh += 1; } }
+                        else { sn += 1; if th { sh += 1; } }
+                    }
+                    let pc = |x: usize, n: usize| if n == 0 { 0.0 } else { 100.0 * x as f64 / n as f64 };
+                    println!("  WHICH SHAPE STALLS ELIMINATION?  (two-halt cycle, with base rate)");
+                    println!("    stalled  with two-halt cycle : {sh} / {sn}  ({:.1}%)", pc(sh, sn));
+                    println!("    eliminating, same feature    : {oh} / {on}  ({:.1}%)", pc(oh, on));
                     println!("  DEGREE OF THE ADJUNCTION (pool automata elimination stalls on):");
                     println!("    unshare even applicable : {appl} / {tot}");
                     println!("    stalled            : {tot}");
