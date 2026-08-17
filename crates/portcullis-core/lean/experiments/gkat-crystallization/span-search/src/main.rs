@@ -3321,9 +3321,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                         for &(ref y, yi) in bucket_ref[ky].iter() {
                             push(a_seq(x, y), Prov::Seq(xi, yi));
                             push(a_seq(y, x), Prov::Seq(yi, xi));
+                            // `ite g y x` is the same automaton as `ite (!g) x y`: the guards
+                            // are complementary and `Aut` resolves transitions per atom, so
+                            // branch order carries no information.  Since `g` ranges over ALL
+                            // masks, the swapped form is already generated at `!g` — computing
+                            // it again doubled the `ite` work in the closure's inner loop, and
+                            // the closure is what dominates the run.
                             for g in 0..nguards {
                                 push(a_ite(g, x, y), Prov::Ite(g, xi, yi));
-                                push(a_ite(g, y, x), Prov::Ite(g, yi, xi));
                             }
                         }
                     }
@@ -4481,6 +4486,26 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                         println!("    distinct unknown quotients: {}", distinct.len());
+                        // IS EACH UNKNOWN THE BISIMULATION COLLAPSE OF A POOL AUTOMATON?
+                        // The pool is Thompson-generated, and `canon` only trims — it does not
+                        // merge bisimilar states — so a collapse of a pool member need not be
+                        // in the pool.  If an unknown IS such a collapse, its behaviour is
+                        // expressible even though the automaton is not Thompson.
+                        let mut hit = 0usize;
+                        for u in distinct.iter() {
+                            let mut found = false;
+                            for a in list.iter() {
+                                if a.k < u.k { continue; }
+                                let (blk, nb1) = bisim_blocks(a);
+                                if nb1 != u.k as usize { continue; }
+                                if let Some(q) = quotient_by(a, &blk, nb1) {
+                                    if let Some(c) = canon(&q) { if c == *u { found = true; break; } }
+                                }
+                            }
+                            if found { hit += 1; }
+                        }
+                        println!("    …of which are a COLLAPSE of a pool automaton: {hit} / {}",
+                            distinct.len());
                     }
                     {
                         // PERIOD SIGNATURE, controlled for SIZE.  The residue is 3-state and
