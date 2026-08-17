@@ -140,6 +140,42 @@ theorem sol_none_equiv (program : Exp A T)
     (fun s => sol (some s)) hcore
   exact EquivBA.trans (EquivBA.trans h₁ h₂) (EquivBA.base (Equiv.s5 program))
 
+/-! ## Existence: the extended system always has a solution
+
+    `sol_none_equiv` is the identification half — any solution pins `none` to the program.
+    This is the existence half, and together they make the file self-contained: the object the
+    swapped conjunct asks a quotient to have is one the unquotiented automaton always has. -/
+
+/-- The standard solution, extended to the pseudostate by the program itself. -/
+def extendedSolution (program : Exp A T) :
+    Option (certifiedThompson A T program).State → Exp A T
+  | none => program
+  | some state => (certifiedThompson A T program).standard state
+
+/-- **Every Thompson automaton's pseudostate-extended system is solvable.**  On core states
+    this is the certificate's own standard solution; at the pseudostate it is the program,
+    which `certifiedThompson_initial_canonical` shows satisfies the initial equation. -/
+theorem toGAut_solvable (program : Exp A T) :
+    SolvesBA (certifiedThompson A T program).aut.toGAut (extendedSolution program) := by
+  intro state hstate
+  have hstd : ThompsonSolvesBA (certifiedThompson A T program).aut.core
+      (certifiedThompson A T program).standard :=
+    (certifiedThompson A T program).certificate.standardSolves
+  cases state with
+  | none =>
+      have h₂ := certifiedThompson_initial_canonical program (.test .one)
+        (certifiedThompson A T program).standard hstd
+      exact EquivBA.symm (EquivBA.trans (eqRHS_none _ (extendedSolution program))
+        (EquivBA.trans h₂ (EquivBA.base (Equiv.s5 program))))
+  | some state =>
+      have hmem : state ∈ (certifiedThompson A T program).aut.core.states := by
+        rcases List.mem_cons.mp hstate with h | h
+        · exact absurd h (by simp)
+        · obtain ⟨s, hs, hse⟩ := List.mem_map.mp h
+          cases hse; exact hs
+      exact EquivBA.trans (hstd state hmem)
+        (EquivBA.symm (eqRHS_some _ (extendedSolution program) state))
+
 /-! ## The swap -/
 
 /-- **The open conjunct, weakened.**  For uniformly equivalent `e` and `f`, some behavioural
@@ -184,6 +220,7 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms guardedFold_transitionBranches
 #print axioms thompsonSolves_of_solvesBA
 #print axioms sol_none_equiv
+#print axioms toGAut_solvable
 #print axioms completeness_of_sumQuotientSolvable
 
 end GkatSumQuotient
