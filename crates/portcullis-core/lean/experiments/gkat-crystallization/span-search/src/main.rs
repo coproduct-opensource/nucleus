@@ -4334,6 +4334,27 @@ pullback: {ok} / {}", res.len());
                         }
                     }
                     let pc3 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    {
+                        // One quotient that IS Thompson yet defeats elimination: a reproducible
+                        // witness of the missing move, since such a system provably has the
+                        // standard solution and the failure is therefore procedural.
+                        let mut shown = 0;
+                        for &(i, j) in crux.iter() {
+                            if shown >= 2 { break; }
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                if symbolic_eliminable(&su) { continue; }
+                                let (blk, nb0) = bisim_blocks(&su);
+                                let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
+                                let c = match canon(&q) { Some(c) => c, None => continue };
+                                if !seen.contains_key(&c) { continue; }
+                                shown += 1;
+                                println!("    IN-POOL YET UNSOLVED  k={} it={:?} ih={}", c.k, &c.it[..NA], c.ih);
+                                for t in 0..c.k as usize {
+                                    println!("      s{t}: st={:?} hl={:b}", &c.st[t][..NA], c.hl[t]);
+                                }
+                            }
+                        }
+                    }
                     println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
                     println!("    unsolved quotients in pool : {fpool} / {fpn}  ({:.1}%)", pc3(fpool, fpn));
                     println!("    CONTROL, solved ones       : {spool} / {spn}  ({:.1}%)", pc3(spool, spn));
