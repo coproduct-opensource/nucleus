@@ -4026,6 +4026,37 @@ pullback: {ok} / {}", res.len());
                     println!("    minimal congruence  : {mn} / {mtot}   (not a congruence: {mfail})");
                     println!("    full collapse       : {fn_} / {ftot2}");
                 }
+                {
+                    // THE UNSOLVED QUOTIENTS, characterised against a same-population base rate.
+                    let (mut fh, mut fn_, mut oh2, mut on2) = (0usize, 0usize, 0usize, 0usize);
+                    let (mut fsz, mut osz) = (0usize, 0usize);
+                    let mut shown = 0;
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            let (blk, nb) = bisim_blocks(&su);
+                            let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
+                            let th = two_halt_cycle(&q).is_some();
+                            if symbolic_eliminable(&su) {
+                                on2 += 1; osz += nb; if th { oh2 += 1; }
+                            } else {
+                                fn_ += 1; fsz += nb; if th { fh += 1; }
+                                if shown < 2 {
+                                    shown += 1;
+                                    println!("    FAIL quotient k={} it={:?}", q.k, &q.it[..NA]);
+                                    for t in 0..q.k as usize {
+                                        println!("      s{t}: st={:?} hl={:b}", &q.st[t][..NA], q.hl[t]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let pc2 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    println!("  THE UNSOLVED QUOTIENTS, vs the solved ones:");
+                    println!("    failed  : {fn_}  two-halt {:.1}%  mean states {:.2}",
+                        pc2(fh, fn_), if fn_ == 0 { 0.0 } else { fsz as f64 / fn_ as f64 });
+                    println!("    solved  : {on2}  two-halt {:.1}%  mean states {:.2}",
+                        pc2(oh2, on2), if on2 == 0 { 0.0 } else { osz as f64 / on2 as f64 });
+                }
                 println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
                     println!("    Me+Mf quotients solved      : {good} / {tot}   (too big: {toobig})");
                     // THE BASE RATE.  The sums are 10-state automata but the test was
