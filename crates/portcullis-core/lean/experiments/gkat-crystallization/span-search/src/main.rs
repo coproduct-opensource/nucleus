@@ -1017,6 +1017,32 @@ fn is_thompson_free<const NA: usize>(a: &Aut<NA>, free: u8, guards: &[u8], depth
     false
 }
 
+/// Existentially complete BOTH invisible parts of a `seq` left factor: its entry outside the
+/// composite's reach, and its halt bits at atoms where the right factor neither halts nor
+/// steps.  Neither affects the rebuild, so both are free and must be enumerated rather than
+/// guessed — taking them maximally was the last heuristic in the oracle.
+fn is_thompson_free2<const NA: usize>(a: &Aut<NA>, free_entry: u8, free_hl: u8,
+    guards: &[u8], depth: usize, memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    let k = a.k as usize;
+    let mut hs: Vec<usize> = Vec::new();
+    for y in 0..NA { if bit_set(free_hl, y) { hs.push(y); } }
+    if hs.is_empty() { return is_thompson_free(a, free_entry, guards, depth, memo); }
+    let combos = 1usize << (k * hs.len());
+    if combos > 8192 { return is_thompson_free(a, free_entry, guards, depth, memo); }
+    for code in 0..combos {
+        let mut b = a.clone();
+        let mut c = code;
+        for u in 0..k {
+            for &y in hs.iter() {
+                if c & 1 == 1 { b.hl[u] |= 1 << y; } else { b.hl[u] &= !(1u8 << y); }
+                c >>= 1;
+            }
+        }
+        if is_thompson_free(&b, free_entry, guards, depth, memo) { return true; }
+    }
+    false
+}
+
 fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
     memo: &mut FxMap<Aut<NA>, bool>) -> bool {
     let k = h.k as usize;
@@ -1129,14 +1155,16 @@ fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
                             lhl[u] = m2;
                         }
                         if !ok { continue; }
-                        // `L`'s halt guard is masked by `R.ih` in the composite, so bits where
-                        // `R` neither halts nor steps are invisible and must be completed.
-                        // Take them all: that is what `seq(act, 0?)` needs.
+                        // `L`'s halt guard is masked by `R.ih`, so bits where `R` neither
+                        // halts nor steps are invisible to the rebuild.  Keep them minimal
+                        // here and complete them existentially in the recursion.
                         let mut freeh = 0u8;
                         for y in 0..NA {
                             if !bit_set(rih, y) && itr[y] == 0 { freeh |= 1 << y; }
                         }
-                        for u in 0..k { if mask & (1 << u) != 0 { lhl[u] |= freeh; } }
+                        // `R`'s entry is invisible at atoms no `L` state exits on
+                        let mut freer = 0u8;
+                        for y in 0..NA { if itr[y] == 0 { freer |= 1 << y; } }
                         let mut l = match sub_aut(h, mask, lih, itl, true) { Some(a) => a, None => continue };
                         {
                             let mut n = 0usize;
@@ -1148,8 +1176,10 @@ fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
                         let r = match sub_aut(h, comp, rih, itr, false) { Some(a) => a, None => continue };
                         if let Some(built) = a_seq(&l, &r) {
                             if canon(&built) == canon(h)
-                                && is_thompson(&l, guards, depth - 1, memo)
-                                && is_thompson(&r, guards, depth - 1, memo) { return true; }
+                                && is_thompson_free2(&l, 0, freeh, guards, depth - 1, memo)
+                                && is_thompson_free(&r, freer, guards, depth - 1, memo) {
+                                return true;
+                            }
                         }
                     }
                 }
