@@ -3133,19 +3133,128 @@ theorem completeness_of_partner (a₀ : A) (hp : PartnerExists A T a₀) :
     FiniteAxiomsCompleteBA A T :=
   completeness_of_diagPullbackCovered a₀ (paddedDiagPullbackCovered_of_partner a₀ hp)
 
+/-- Eliminate the empty summand — the state type of `0? ; h` is `Empty ⊕ h.State`. -/
+private def emptyElim {S R : Type} (g : S → R) : Sum Empty S → R
+  | Sum.inl z => nomatch z
+  | Sum.inr u => g u
+
+/-- A guard that never fires kills every transition it guards. -/
+private theorem fmDeadGuard {S R X : Type} (W : T → X → Bool) (x : X) (G : BExp T)
+    (hG : bval W G x = false) (L : List (BExp T × A × S)) (F : S → R) :
+    firstMatch W x (L.map (fun t => (BExp.and G t.1, t.2.1, F t.2.2))) = none := by
+  induction L with
+  | nil => rfl
+  | cons hd tl ih =>
+      obtain ⟨q, act, v⟩ := hd
+      simp only [List.map_cons, firstMatch]
+      have hq : bval W (BExp.and G q) x = false := by
+        show (bval W G x && bval W q x) = false
+        rw [hG]
+        rfl
+      rw [if_neg (by rw [hq]; simp)]
+      exact ih
+
+/-- **The diagonal piece is a theorem, not a hypothesis.**  Its guard is `¬1`, so its entry
+    never fires, and `0? ; padOne` covers it: the leading `0?` kills the entry and contributes
+    no states, while `padOne`'s states map onto the diagonal by `u ↦ (u, u)` — which typechecks
+    only because the padded pair shares its core. -/
+noncomputable def diagPieceCover (a₀ : A) (e f : Exp A T) {Q : Type}
+    {m : InitializedGAut Q A T}
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ) (hmaps : φ.map = ψ.map) :
+    InitCover (certifiedThompson A T (.seq (.test BExp.zero) (padOne e f a₀))).aut
+      (restrict (GkatPullback.pullback φ ψ base) (diagList φ ψ base) (.not BExp.one)) where
+  map := emptyElim (fun u => GkatPullback.pairUp base u u)
+  initHlt_eq := fun _ _ _ => rfl
+  coreHlt_eq := fun s _ W x => by
+    cases s with
+    | inl z => exact nomatch z
+    | inr u =>
+        show bval W ((certifiedThompson A T (padOne e f a₀)).aut.core.hlt u) x
+          = bval W ((certifiedThompson A T (padOne e f a₀)).aut.core.hlt
+              (GkatPullback.pairUp base u u).val.1) x
+        rw [GkatPullback.pairUp_fst base (congrFun hmaps u)]
+  initStep_eq := fun X W x => by
+    have hz : bval W (BExp.zero : BExp T) x = false := rfl
+    have hn : bval W (BExp.not BExp.one : BExp T) x = false := rfl
+    show (firstMatch W x
+        (([] : List (BExp T × A × Sum Empty (certifiedThompson A T (padOne e f a₀)).State)) ++
+         (certifiedThompson A T (padOne e f a₀)).aut.initTrans.map
+           (fun t => (BExp.and BExp.zero t.1, t.2.1,
+             (Sum.inr t.2.2 : Sum Empty (certifiedThompson A T (padOne e f a₀)).State))))).map
+        (fun o => (o.1, emptyElim (fun u => GkatPullback.pairUp base u u) o.2))
+      = firstMatch W x
+          ((GkatPullback.pullback φ ψ base).initTrans.map
+            (fun t => (BExp.and (BExp.not BExp.one) t.1, t.2.1, t.2.2)))
+    rw [List.nil_append,
+      fmDeadGuard W x BExp.zero hz (certifiedThompson A T (padOne e f a₀)).aut.initTrans
+        (fun v => (Sum.inr v : Sum Empty (certifiedThompson A T (padOne e f a₀)).State)),
+      fmDeadGuard W x (BExp.not BExp.one) hn (GkatPullback.pullback φ ψ base).initTrans
+        (fun v : GkatPullback.Fib φ ψ => v)]
+    rfl
+  coreStep_eq := fun s X W x => by
+    cases s with
+    | inl z => exact nomatch z
+    | inr u =>
+        show (firstMatch W x
+            (((certifiedThompson A T (padOne e f a₀)).aut.core.trans u).map
+              (fun t => (t.1, t.2.1,
+                (Sum.inr t.2.2 : Sum Empty
+                  (certifiedThompson A T (padOne e f a₀)).State))))).map
+            (fun o => (o.1, emptyElim (fun v => GkatPullback.pairUp base v v) o.2))
+          = firstMatch W x
+              ((GkatSynthesis.crossTrans
+                ((certifiedThompson A T (padOne e f a₀)).aut.core.trans
+                  (GkatPullback.pairUp base u u).val.1)
+                ((certifiedThompson A T (padOne e f a₀)).aut.core.trans
+                  (GkatPullback.pairUp base u u).val.2)).map
+                (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+        rw [GkatPullback.pairUp_fst base (congrFun hmaps u),
+          GkatPullback.pairUp_snd base (congrFun hmaps u),
+          firstMatch_map_target_to
+            (F := fun v : (certifiedThompson A T (padOne e f a₀)).State =>
+              (Sum.inr v : Sum Empty (certifiedThompson A T (padOne e f a₀)).State)),
+          firstMatch_map_target_to
+            (F := fun q : (certifiedThompson A T (padOne e f a₀)).State ×
+              (certifiedThompson A T (padOne e f a₀)).State =>
+              GkatPullback.pairUp base q.1 q.2),
+          GkatSynthesis.firstMatch_crossTrans]
+        cases firstMatch W x ((certifiedThompson A T (padOne e f a₀)).aut.core.trans u) <;> rfl
+  maps := by
+    intro s hs
+    rcases List.mem_append.mp hs with h | h
+    · obtain ⟨z, _, _⟩ := List.mem_map.mp h
+      exact nomatch z
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_map.mpr ⟨u, hu, rfl⟩
+  onto := by
+    intro q hq
+    obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hq
+    exact ⟨Sum.inr u,
+      List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩)), rfl⟩
+
+theorem hasThompsonCover_diagPiece (a₀ : A) (e f : Exp A T) {Q : Type}
+    {m : InitializedGAut Q A T}
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ) (hmaps : φ.map = ψ.map) :
+    HasThompsonCover
+      (restrict (GkatPullback.pullback φ ψ base) (diagList φ ψ base) (.not BExp.one)) :=
+  ⟨.seq (.test BExp.zero) (padOne e f a₀), ⟨diagPieceCover a₀ e f φ ψ base hmaps⟩⟩
+
+#print axioms diagPieceCover
+#print axioms hasThompsonCover_diagPiece
+
 /-! ### The measured construction, as a hypothesis it can actually satisfy
 
-    Three pieces, because the measurement supplies two and the projections demand a third.
+    Two pieces, and they are exactly the two the search builds.
 
       * `l₁`, `l₂` — the two entry branches, each with its entry restricted to its own guard.
         This is exactly what the search builds, and what it covered 2181 times out of 2181.
-      * the diagonal, which `pullbackOnSnd`'s `onto` needs and the search never built.  Its
-        guard is `¬1`, so its entry never fires, and a piece with a dead entry should be
-        covered by `0? ; padOne` — the leading `0?` kills the entry and contributes no states,
-        while `padOne`'s states map onto the diagonal by `u ↦ (u, u)`, which type-checks
-        because the padded pair shares its core.  That is a construction rather than a
-        conjecture, but it is left as the third conjunct here until it is actually built:
-        claiming it without the proof is how three earlier reductions turned out vacuous.
+    The diagonal the projections also need is **not** a hypothesis: `hasThompsonCover_diagPiece`
+    proves it.  So what is left to assume is exactly what the search measured, and nothing
+    more.
 
     The two branch pieces are combined first, under the guard `1`, and the diagonal is attached
     on the outside — so the diagonal's copy is entered on no atom at all, which is what makes
@@ -3163,14 +3272,13 @@ def RestrictedBranchesCovered (A T : Type) (a₀ : A) : Prop :=
           l₁ g) ∧
       HasThompsonCover
         (restrict (restrict (GkatPullback.pullback φ ψ base) (List.append l₁ l₂) BExp.one)
-          l₂ (.not g)) ∧
-      HasThompsonCover
-        (restrict (GkatPullback.pullback φ ψ base) (diagList φ ψ base) (.not BExp.one))
+          l₂ (.not g))
 
 theorem paddedDiagPullbackCovered_of_restrictedBranches (a₀ : A)
     (hr : RestrictedBranchesCovered A T a₀) : PaddedDiagPullbackCovered A T a₀ := by
   intro e f Q m φ ψ base hmaps
-  obtain ⟨g, l₁, l₂, hsub, h₁, h₂, h₃⟩ := hr e f Q m φ ψ base hmaps
+  obtain ⟨g, l₁, l₂, hsub, h₁, h₂⟩ := hr e f Q m φ ψ base hmaps
+  have h₃ := hasThompsonCover_diagPiece a₀ e f φ ψ base hmaps
   refine ⟨List.append (List.append l₁ l₂) (diagList φ ψ base), hsub, ?_, ?_⟩
   · intro u hu
     exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩))
