@@ -3695,11 +3695,22 @@ pullback: {ok} / {}", res.len());
                         let kk = 4 + (rnd() % 5) as usize;
                         let mut st = [[0u8; NA]; MAXK];
                         let mut hl = [0u8; MAXK];
+                        // WELL-FORMEDNESS.  A GKAT automaton state either halts at an atom
+                        // or steps at it, never both — `haltStepDisjoint`.  The first version
+                        // of this control generated states doing both, which are not GKAT
+                        // automata at all, so "must be rejected" was meaningless for them and
+                        // the soundness figure was measured against a contaminated population.
                         for x in 0..kk {
-                            hl[x] = (rnd() % 4) as u8;
+                            hl[x] = 0;
                             for y in 0..NA {
-                                let r = rnd() % ((kk + 1) as u64);
-                                st[x][y] = if r == 0 { 0 } else { r as u8 };
+                                match rnd() % 3 {
+                                    0 => { hl[x] |= 1 << y; st[x][y] = 0; }
+                                    1 => { st[x][y] = 0; }
+                                    _ => {
+                                        let r = 1 + rnd() % (kk as u64);
+                                        st[x][y] = r as u8;
+                                    }
+                                }
                             }
                         }
                         let mut it0 = [0u8; NA];
@@ -3711,6 +3722,42 @@ pullback: {ok} / {}", res.len());
                         if !symbolic_eliminable(&ra) { rs += 1; }
                         if !peelable(&ra) { rp += 1; }
                         if !llee(&ra) { rl += 1; }
+                    }
+                    // print one unsound acceptance: non-nested (hence no solution) yet llee-accepted
+                    {
+                        let mut rng3: u64 = 0xD1B54A32D192ED03;
+                        let mut rnd3 = move || { rng3 ^= rng3 << 13; rng3 ^= rng3 >> 7; rng3 ^= rng3 << 17; rng3 };
+                        let mut shown = 0;
+                        let mut t2 = 0usize;
+                        while shown < 2 && t2 < 4000000 {
+                            t2 += 1;
+                            let kk = 4 + (rnd3() % 5) as usize;
+                            let mut st = [[0u8; NA]; MAXK];
+                            let mut hl = [0u8; MAXK];
+                            for x in 0..kk {
+                                hl[x] = 0;
+                                for y in 0..NA {
+                                    match rnd3() % 3 {
+                                        0 => { hl[x] |= 1 << y; st[x][y] = 0; }
+                                        1 => { st[x][y] = 0; }
+                                        _ => {
+                                            let r = 1 + rnd3() % (kk as u64);
+                                            st[x][y] = r as u8;
+                                        }
+                                    }
+                                }
+                            }
+                            let mut it0 = [0u8; NA];
+                            for y in 0..NA { it0[y] = (rnd3() % ((kk + 1) as u64)) as u8; }
+                            let ra = Aut::<NA> { k: kk as u8, it: it0, ih: (rnd3() % 4) as u8, st, hl };
+                            let ra = match canon(&ra) { Some(c) => c, None => continue };
+                            if nested(&ra) || !llee(&ra) { continue; }
+                            shown += 1;
+                            println!("    UNSOUND ACCEPT k={} it={:?} ih={}", ra.k, &ra.it[..NA], ra.ih);
+                            for i in 0..ra.k as usize {
+                                println!("      s{i}: st={:?} hl={:b}", &ra.st[i][..NA], ra.hl[i]);
+                            }
+                        }
                     }
                     println!("  SOUNDNESS CONTROL — non-nested automata (NO solution exists):");
                     println!("    symbolic elimination rejects : {rs} / {n}   (must be all)");
@@ -3765,11 +3812,22 @@ pullback: {ok} / {}", res.len());
                         let kk = 10usize;
                         let mut st = [[0u8; NA]; MAXK];
                         let mut hl = [0u8; MAXK];
+                        // WELL-FORMEDNESS.  A GKAT automaton state either halts at an atom
+                        // or steps at it, never both — `haltStepDisjoint`.  The first version
+                        // of this control generated states doing both, which are not GKAT
+                        // automata at all, so "must be rejected" was meaningless for them and
+                        // the soundness figure was measured against a contaminated population.
                         for x in 0..kk {
-                            hl[x] = (rnd() % 4) as u8;
+                            hl[x] = 0;
                             for y in 0..NA {
-                                let r = rnd() % ((kk + 1) as u64);
-                                st[x][y] = if r == 0 { 0 } else { r as u8 };
+                                match rnd() % 3 {
+                                    0 => { hl[x] |= 1 << y; st[x][y] = 0; }
+                                    1 => { st[x][y] = 0; }
+                                    _ => {
+                                        let r = 1 + rnd() % (kk as u64);
+                                        st[x][y] = r as u8;
+                                    }
+                                }
                             }
                         }
                         let ra = Aut::<NA> { k: kk as u8, it: [1; NA], ih: 0, st, hl };
