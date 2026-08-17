@@ -4484,6 +4484,31 @@ pullback: {ok} / {}", res.len());
                                 else { fn3 += 1; if m < 8 { fper[m] += 1; } }
                             }
                         }
+                        // Does the quotient's period come from an LCM the sources force?
+                        // A cover must respect periods, and `cyc` is a degree-k cyclic cover,
+                        // so a common target's period is lcm(period e, period f).  If the
+                        // residue is where that lcm exceeds what the moves reach, the period
+                        // signal has a mechanism rather than being a correlation.
+                        let (mut flcm, mut fpn2, mut slcm, mut spn2) = (0usize, 0usize, 0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                let elim = symbolic_eliminable(&su);
+                                let (blk, nb0) = bisim_blocks(&su);
+                                let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
+                                let c = match canon(&q) { Some(c) => c, None => continue };
+                                if c.k != 3 { continue; }
+                                let pe = scc_periods(&list[i]).iter().copied().max().unwrap_or(1).max(1);
+                                let pf = scc_periods(&list[j]).iter().copied().max().unwrap_or(1).max(1);
+                                fn gcd(a: u32, b: u32) -> u32 { if b == 0 { a } else { gcd(b, a % b) } }
+                                let coprime = gcd(pe, pf) == 1 && pe > 1 && pf > 1;
+                                if elim { spn2 += 1; if coprime { slcm += 1; } }
+                                else { fpn2 += 1; if coprime { flcm += 1; } }
+                            }
+                        }
+                        let pc4 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                        println!("  DO THE SOURCES HAVE COPRIME PERIODS?  (3-state, size-controlled)");
+                        println!("    unsolved : {flcm} / {fpn2}  ({:.1}%)", pc4(flcm, fpn2));
+                        println!("    solved   : {slcm} / {spn2}  ({:.1}%)", pc4(slcm, spn2));
                         println!("  PERIOD SIGNATURE, 3-STATE QUOTIENTS ONLY (size-controlled):");
                         println!("    unsolved (n={fn3}) by max period : {:?}", &fper[..6]);
                         println!("    solved   (n={sn3}) by max period : {:?}", &sper[..6]);
