@@ -4319,6 +4319,23 @@ pullback: {ok} / {}", res.len());
                             dist[found] += 1;
                         }
                     }
+                    // IS THE QUOTIENT ITSELF A THOMPSON AUTOMATON?  If it is, it provably has
+                    // a solution (the standard one), so the KA step is the PROCEDURE's need,
+                    // not the system's — and "distance 1" is incompleteness, not obstruction.
+                    let (mut fpool, mut fpn, mut spool, mut spn) = (0usize, 0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            let (blk, nb0) = bisim_blocks(&su);
+                            let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
+                            let inpool = canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false);
+                            if symbolic_eliminable(&su) { spn += 1; if inpool { spool += 1; } }
+                            else { fpn += 1; if inpool { fpool += 1; } }
+                        }
+                    }
+                    let pc3 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
+                    println!("    unsolved quotients in pool : {fpool} / {fpn}  ({:.1}%)", pc3(fpool, fpn));
+                    println!("    CONTROL, solved ones       : {spool} / {spn}  ({:.1}%)", pc3(spool, spn));
                     println!("  DISTANCE FROM GKAT (fewest KA-only elimination steps):");
                     for d in 1..5 { println!("    needs {d} KA step(s) : {}", dist[d]); }
                     println!("    still unsolved (>4) : {}", dist[5]);
