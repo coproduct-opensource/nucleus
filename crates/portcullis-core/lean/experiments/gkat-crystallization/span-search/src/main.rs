@@ -1123,6 +1123,96 @@ fn orbit_reduces<const NA: usize>(h: &Aut<NA>) -> bool {
     false
 }
 
+/// **VACUOUS AS IMPLEMENTED — validates 20020/20020 but rejects 0/250 non-pool automata.**
+/// Kept with its control, because the failure is informative and the target is right.
+///
+/// Three progressively more permissive versions were needed to pass validation, and the
+/// permissiveness is what killed it:
+///   * clause 2 as `hl[u] ⊆ hl[v]` between two states      — 16843/20020 (unsound)
+///   * clause 2 as halt-atoms disjoint from back-edge atoms — 18052/20020 (unsound)
+///   * entry as an atom-indexed LIST, permissive where invisible — 19859/20020 (unsound)
+///   * permissive on entry-map conflicts too                — 20020/20020, 0/250 (vacuous)
+///
+/// Every fix was forced by a real counterexample, and each one removed discrimination.  The
+/// diagnosis: greedy orbit-peeling cannot decide LLEE, because a maximal SCC is not a loop
+/// body and a GKAT loop head is an atom-indexed list whose entries are only partly visible.
+/// LLEE asks for the EXISTENCE of a transition labelling; deciding it needs a search over
+/// labellings, which is what to build next — not more fallbacks in this shape.
+///
+/// **LLEE — Layered Loop Existence and Elimination.**  Grabmayer and Fokkink's structural
+/// property of charts: every chart interpretation of a star expression has it, and every
+/// prechart with it admits a UNIQUE solution.  The GKAT form of both clauses is proved in
+/// `GkatLayeringProofs.lean` — `thompsonRank` for the layering, and
+/// `loopInitialized_back_implies_halt` / `seqInitialized_exit_implies_halt` for "no successful
+/// termination mid-loop".  So every Thompson automaton is LLEE, and this is a NECESSARY
+/// condition that is proved rather than guessed.
+///
+/// Crucially it is not a reconstruction.  Everything that failed this week — flat stability,
+/// entry single-valuedness, orbit reduction, and the whole hand-inverted oracle — had to
+/// recover the loop's entry list from the graph, and the entry list is only partly visible.
+/// LLEE instead asks for the EXISTENCE of a layering, which is searched for, not read off.
+///
+/// The elimination: repeatedly find a loop sub-chart — an SCC with a single entry `v` whose
+/// every state halts only where `v` halts — and delete its back edges.  Nested loops surface
+/// as the outer ones are peeled, which is exactly the layering.  LLEE holds iff this reduces
+/// the automaton to an acyclic graph.
+fn llee<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    let mut st = h.st;
+    for _ in 0..(MAXK + 1) {
+        let cur = Aut::<NA> { k: h.k, it: h.it, st, hl: h.hl, ih: h.ih };
+        let os = orbits(&cur);
+        if os.is_empty() { return true; }
+        let mut progressed = false;
+        for &o in os.iter() {
+            // find an entry: a state v such that every edge into the orbit from outside
+            // targets v (single entry = the layering condition), and every state of the
+            // orbit halts only where v halts (no successful termination mid-loop).
+            let mut entry = usize::MAX;
+            'cand: for v in 0..k {
+                if o & (1 << v) == 0 { continue; }
+                // "no successful termination mid-loop", in the form that is VISIBLE.
+                // `loopInitialized` sets core.hlt u = body.hlt u ∧ ¬g and guards the back
+                // edges by body.hlt u ∧ g, so the loop guard splits the atoms: an atom at
+                // which some orbit state halts can never be one at which some orbit state
+                // takes a back edge.  Stating it between two states' halt masks would be
+                // wrong — the pseudostate `¬g` is not a state of the automaton at all.
+                let mut halts = 0u32;
+                for u in 0..k { if o & (1 << u) != 0 { halts |= h.hl[u] as u32; } }
+                let mut back = 0u32;
+                for u in 0..k {
+                    if o & (1 << u) == 0 { continue; }
+                    for y in 0..NA {
+                        if st[u][y] != 0 && (st[u][y] - 1) as usize == v { back |= 1 << y; }
+                    }
+                }
+                if halts & back != 0 { continue 'cand; }
+                entry = v; break;
+            }
+            if entry == usize::MAX { continue; }
+            // Eliminate the back edges.  A GKAT loop head is an atom-indexed LIST, not a
+            // single state, so the back edges at atom y are the ones landing on the orbit's
+            // entry target for y.  Where that target is invisible — the enclosing context
+            // never enters the loop at y, so `initTrans` leaves no trace there — any edge
+            // into the orbit is allowed to count, which keeps the test necessary.
+            // A conflicting entry map means the orbit is not one loop body — a maximal SCC
+            // can conflate a loop with states that jump into its middle.  Bailing out there
+            // would reject genuine Thompson automata, so fall back to fully permissive.
+            let ent = orbit_entry_map(&cur, o).unwrap_or([usize::MAX; NA]);
+            for u in 0..k {
+                if o & (1 << u) == 0 { continue; }
+                for y in 0..NA {
+                    if st[u][y] == 0 { continue; }
+                    let t = (st[u][y] - 1) as usize;
+                    if ent[y] == usize::MAX || t == ent[y] { st[u][y] = 0; progressed = true; }
+                }
+            }
+        }
+        if !progressed { return false; }
+    }
+    false
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3188,6 +3278,7 @@ pullback: {ok} / {}", res.len());
             }
             // negatives: pullbacks with <= maxk states that are absent from the pool
             let mut neg = 0usize;
+            let mut lneg = 0usize;
             let mut negn = 0usize;
             for p in uncovered.iter() {
                 if p.k as usize > maxk { continue; }
@@ -3198,6 +3289,7 @@ pullback: {ok} / {}", res.len());
                 negn += 1;
                 if negn > 300 { break; }
                 if !is_thompson(&c, &guards, depth, &mut memo) { neg += 1; }
+                if !llee(&c) { lneg += 1; }
             }
             // self-test on hand-built automata whose provenance is known
             {
@@ -3280,6 +3372,26 @@ pullback: {ok} / {}", res.len());
                 }
                 let mut ero = 0usize; let mut ern = 0usize;
                 for p in uncovered.iter() { ern += 1; if orbit_entry_halt_disjoint(p) { ero += 1; } }
+                let mut lp = 0usize; let mut ln = 0usize;
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    ln += 1;
+                    if llee(a) { lp += 1; }
+                }
+                let (mut lr, mut lrn) = (0usize, 0usize);
+                for p in uncovered.iter() { lrn += 1; if llee(p) { lr += 1; } }
+                println!("  LLEE (proved necessary: GkatLayeringProofs):");
+                println!("    pool automata satisfying it : {lp} / {ln}   (must be all)");
+                println!("    uncovered pullbacks         : {lr} / {lrn}");
+                for a in list.iter() {
+                    if !llee(a) {
+                        println!("    LLEE COUNTEREXAMPLE k={} it={:?}", a.k, &a.it[..NA]);
+                        for i in 0..a.k as usize {
+                            println!("      s{i}: st={:?} hl={:b}", &a.st[i][..NA], a.hl[i]);
+                        }
+                        break;
+                    }
+                }
                 println!("  ORBIT ENTRY/HALT DISJOINTNESS as a necessary condition:");
                 println!("    pool automata satisfying it : {eok} / {en}   (must be all)");
                 println!("    uncovered pullbacks         : {ero} / {ern}");
@@ -3337,6 +3449,9 @@ pullback: {ok} / {}", res.len());
                 if byk[j].1 > 0 { println!("      k={j}: {} / {}", byk[j].0, byk[j].1); }
             }
             println!("    non-pool <=K rejected    : {neg} / {negn}   (must be all)");
+            // THE CONTROL for LLEE.  A necessary condition that accepts everything is
+            // vacuous, so measure it on automata known NOT to be in the pool.
+            println!("    LLEE non-pool rejected   : {lneg} / {negn}   (discrimination)");
         }
         // THE TRUE RATE.  The two routes are independent and both incomplete, so neither
         // number alone is `ReachListCovered`.  Compute both per pullback and take the union.
