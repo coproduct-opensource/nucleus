@@ -738,6 +738,97 @@ fn total_aut<const NA: usize>(a: &Aut<NA>) -> bool {
     true
 }
 
+/// Un-sharing: a cover may duplicate states, so a survivor whose two initial branches
+/// SHARE reachable states can still be covered — give each branch its own private copy and
+/// map both copies back.  This is the cover that a forward refinement search from a capped
+/// pool will never stumble into, because the un-shared automaton is larger than anything the
+/// pool contains.
+fn unshare<const NA: usize>(p: &Aut<NA>) -> Option<Aut<NA>> {
+    let k = p.k as usize;
+    // reach set of each initial branch
+    let mut reach = [[false; MAXK]; NA];
+    for x in 0..NA {
+        if p.it[x] == 0 { continue; }
+        let mut stack = vec![(p.it[x] - 1) as usize];
+        while let Some(u) = stack.pop() {
+            if reach[x][u] { continue; }
+            reach[x][u] = true;
+            for y in 0..NA {
+                if p.st[u][y] != 0 { stack.push((p.st[u][y] - 1) as usize); }
+            }
+        }
+    }
+    // one private copy per branch, only for the states that branch can reach
+    let mut idx = [[usize::MAX; MAXK]; NA];
+    let mut n = 0usize;
+    for x in 0..NA {
+        for u in 0..k {
+            if reach[x][u] { idx[x][u] = n; n += 1; }
+        }
+    }
+    if n > MAXK { return None; }
+    let mut h = Aut::<NA>::blank();
+    h.k = n as u8;
+    h.ih = p.ih;
+    for x in 0..NA {
+        h.it[x] = if p.it[x] == 0 { 0 } else { (idx[x][(p.it[x] - 1) as usize] + 1) as u8 };
+        for u in 0..k {
+            if !reach[x][u] { continue; }
+            let i = idx[x][u];
+            h.hl[i] = p.hl[u];
+            for y in 0..NA {
+                h.st[i][y] = if p.st[u][y] == 0 { 0 }
+                    else { (idx[x][(p.st[u][y] - 1) as usize] + 1) as u8 };
+            }
+        }
+    }
+    Some(h)
+}
+
+/// The un-shared automaton is an `ite` of the two private branches by construction.  Build
+/// those parts explicitly so the cover can be *exhibited* as a program rather than merely
+/// asserted: if each part is in the generated pool it is the automaton of a program, and the
+/// whole is the automaton of `if g then <part0> else <part1>`.
+fn unshare_parts<const NA: usize>(p: &Aut<NA>) -> Option<(u8, Aut<NA>, Aut<NA>)> {
+    if NA != 2 { return None; }
+    let k = p.k as usize;
+    let mut parts: Vec<Aut<NA>> = Vec::new();
+    for x in 0..NA {
+        let mut reach = [false; MAXK];
+        if p.it[x] != 0 {
+            let mut stack = vec![(p.it[x] - 1) as usize];
+            while let Some(u) = stack.pop() {
+                if reach[u] { continue; }
+                reach[u] = true;
+                for y in 0..NA {
+                    if p.st[u][y] != 0 { stack.push((p.st[u][y] - 1) as usize); }
+                }
+            }
+        }
+        let mut idx = [usize::MAX; MAXK];
+        let mut n = 0usize;
+        for u in 0..k { if reach[u] { idx[u] = n; n += 1; } }
+        let mut a = Aut::<NA>::blank();
+        a.k = n as u8;
+        // this part is entered only on the atoms this branch owns
+        a.ih = if bit(p.ih, x) { 1u8 << x } else { 0 };
+        a.it[x] = if p.it[x] == 0 { 0 } else { (idx[(p.it[x] - 1) as usize] + 1) as u8 };
+        for u in 0..k {
+            if !reach[u] { continue; }
+            let i = idx[u];
+            a.hl[i] = p.hl[u];
+            for y in 0..NA {
+                a.st[i][y] = if p.st[u][y] == 0 { 0 }
+                    else { (idx[(p.st[u][y] - 1) as usize] + 1) as u8 };
+            }
+        }
+        parts.push(a);
+    }
+    let b = parts.pop().unwrap();
+    let a = parts.pop().unwrap();
+    Some((1u8, a, b))
+}
+
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
@@ -2639,6 +2730,50 @@ pullback: {ok} / {}", res.len());
                 }
             }
             println!("  size-adequate survivors: {adequate}, still uncovered: {still}");
+        }
+        {
+            let mut unshared_covers = 0usize;
+            let mut unshared_expressible = 0usize;
+            for p in survivors.iter() {
+                match unshare(p) {
+                    None => println!("  UNSHARE k={} : too big", p.k),
+                    Some(h) => {
+                        let c = canon(&h);
+                        let cov = c.as_ref().map(|c| covers(c, p)).unwrap_or(false);
+                        if cov { unshared_covers += 1; }
+                        let inlist = c.as_ref()
+                            .map(|c| by_beh.get(&behaviour(c))
+                                .map(|v| v.iter().any(|&n| list[n] == *c)).unwrap_or(false))
+                            .unwrap_or(false);
+                        if inlist { unshared_expressible += 1; }
+                        println!("  UNSHARE k={} -> {} states, covers={} in_pool={} nested={}",
+                            p.k, h.k, cov, inlist,
+                            c.as_ref().map(|c| nested(c)).unwrap_or(false));
+                    }
+                }
+            }
+            let mut exhibited = 0usize;
+            for p in survivors.iter() {
+                if let Some((g, a, b)) = unshare_parts(p) {
+                    let ca = canon(&a);
+                    let cb = canon(&b);
+                    let ina = ca.as_ref().map(|c| by_beh.get(&behaviour(c))
+                        .map(|v| v.iter().any(|&n| list[n] == *c)).unwrap_or(false))
+                        .unwrap_or(false);
+                    let inb = cb.as_ref().map(|c| by_beh.get(&behaviour(c))
+                        .map(|v| v.iter().any(|&n| list[n] == *c)).unwrap_or(false))
+                        .unwrap_or(false);
+                    let built = a_ite(g, &a, &b).and_then(|h| canon(&h));
+                    let cov = built.as_ref().map(|h| covers(h, p)).unwrap_or(false);
+                    if cov && ina && inb { exhibited += 1; }
+                    println!("  EXHIBIT k={} parts {}+{} in_pool={}/{} ite_covers={}",
+                        p.k, a.k, b.k, ina, inb, cov);
+                }
+            }
+            println!("  covers EXHIBITED as `if g then P0 else P1` : {exhibited} / {}",
+                survivors.len());
+            println!("  un-shared covers  : {unshared_covers} / {}", survivors.len());
+            println!("  ..and in the pool : {unshared_expressible} / {}", survivors.len());
         }
         println!("  survivors with two-exit cycle : {with_two_exit} / {}", survivors.len());
         println!("  survivors with two-halt cycle : {with_two_halt} / {}", survivors.len());
