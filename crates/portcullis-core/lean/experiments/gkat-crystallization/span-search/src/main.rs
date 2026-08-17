@@ -4144,6 +4144,60 @@ pullback: {ok} / {}", res.len());
                     }
                     println!("  SOLVABLE ANYWHERE IN THE LATTICE:");
                     println!("    some congruence : {latq} / {latn}");
+                    // VACUOUS AS IMPLEMENTED — 0/24 on the failures AND 0/9221 on the solved
+                    // ones.  The rooted-quotient canonical forms simply never key into the
+                    // pool, so this measures pool indexing rather than expressibility.  Kept
+                    // with its base rate, because without the control the 0/24 would have read
+                    // as evidence of inexpressibility and hence of a refutation.
+                    //
+                    // Original intent: a solution makes every state expressible; so if
+                    // some state of a failing quotient has a behaviour no pool automaton has,
+                    // that quotient is UNSOLVABLE and the live conjunct is refuted.  A negative
+                    // is inconclusive — the pool is bounded — but a positive is not.
+                    let (mut allexp, mut expn, mut nst) = (0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            if symbolic_eliminable(&su) { continue; }
+                            let (blk, nb) = bisim_blocks(&su);
+                            let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
+                            expn += 1;
+                            if nested(&q) { nst += 1; }
+                            let mut ok = true;
+                            for st0 in 0..q.k as usize {
+                                let mut rooted = q;
+                                for y in 0..NA { rooted.it[y] = (st0 + 1) as u8; }
+                                rooted.ih = 0;
+                                let c = match canon(&rooted) { Some(c) => c, None => { ok = false; break } };
+                                if !seen.contains_key(&c) { ok = false; break; }
+                            }
+                            if ok { allexp += 1; }
+                        }
+                    }
+                    // THE BASE RATE.  Without it, "0/24 in the pool" measures pool coverage
+                    // rather than expressibility.  Same check on quotients the procedure SOLVES,
+                    // which therefore provably have all states expressible.
+                    let (mut sexp, mut sexpn) = (0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            if !symbolic_eliminable(&su) { continue; }
+                            let (blk, nb) = bisim_blocks(&su);
+                            let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
+                            sexpn += 1;
+                            let mut ok = true;
+                            for st0 in 0..q.k as usize {
+                                let mut rooted = q;
+                                for y in 0..NA { rooted.it[y] = (st0 + 1) as u8; }
+                                rooted.ih = 0;
+                                let c = match canon(&rooted) { Some(c) => c, None => { ok = false; break } };
+                                if !seen.contains_key(&c) { ok = false; break; }
+                            }
+                            if ok { sexp += 1; }
+                        }
+                    }
+                    println!("  ARE THE UNSOLVED QUOTIENTS EVEN SOLVABLE?  (necessary conditions)");
+                    println!("    nested (finite kernel)      : {nst} / {expn}");
+                    println!("    every state in the pool     : {allexp} / {expn}");
+                    println!("    CONTROL, solved quotients   : {sexp} / {sexpn}   (base rate)");
                     println!("  THE UNSOLVED QUOTIENTS, vs the solved ones:");
                     println!("    failed  : {fn_}  two-halt {:.1}%  mean states {:.2}",
                         pc2(fh, fn_), if fn_ == 0 { 0.0 } else { fsz as f64 / fn_ as f64 });
