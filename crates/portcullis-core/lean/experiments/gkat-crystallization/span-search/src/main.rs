@@ -4118,6 +4118,7 @@ pullback: {ok} / {}", res.len());
                     let mut rng: u64 = 0xD1B54A32D192ED03;
                     let mut rnd = move || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
                     let (mut n, mut rs, mut rp, mut rl) = (0usize, 0usize, 0usize, 0usize);
+                    let mut sample: Vec<Aut<NA>> = Vec::new();
                     let mut tried = 0usize;
                     while n < 5000 && tried < 4000000 {
                         tried += 1;
@@ -4148,10 +4149,18 @@ pullback: {ok} / {}", res.len());
                         let ra = match canon(&ra) { Some(c) => c, None => continue };
                         if nested(&ra) { continue; }          // keep only the must-reject ones
                         n += 1;
-                        if !symbolic_eliminable(&ra) { rs += 1; }
-                        if !peelable(&ra) { rp += 1; }
-                        if !llee(&ra) { rl += 1; }
+                        sample.push(ra);
                     }
+                    // The three procedures are the cost here — generation is cheap, and the
+                    // profile put this whole block at 181s of a ~216s measured run.  They are
+                    // independent per sample, so run them in parallel.
+                    let tallies: (usize, usize, usize) = sample
+                        .par_iter()
+                        .map(|ra| (!symbolic_eliminable(ra) as usize,
+                                   !peelable(ra) as usize,
+                                   !llee(ra) as usize))
+                        .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
+                    rs += tallies.0; rp += tallies.1; rl += tallies.2;
                     // print one unsound acceptance: non-nested (hence no solution) yet llee-accepted
                     {
                         let mut rng3: u64 = 0xD1B54A32D192ED03;
@@ -4253,6 +4262,7 @@ pullback: {ok} / {}", res.len());
                     println!("    full collapse       : {fn_} / {ftot2}");
                 }
                 {
+                    phase("oracle: pre", &mut mark);
                     // PRECOMPUTED PER-PAIR FACTS.  The measurement section iterated `crux`
                     // twenty times and recomputed `symbolic_eliminable` on fourteen of those
                     // passes — a backtracking search with a 2M-node budget, redone per block.
@@ -4311,6 +4321,7 @@ pullback: {ok} / {}", res.len());
                             if top || bot { anyq += 1; }
                         }
                     }
+                    phase("facts precompute", &mut mark);
                     println!("  SOLVABLE AT EITHER END OF THE LATTICE (what the definition allows):");
                     println!("    top or bottom : {anyq} / {anyn}");
                     let (mut latq, mut latn) = (0usize, 0usize);
@@ -4320,6 +4331,7 @@ pullback: {ok} / {}", res.len());
                             if solvable_somewhere_in_lattice(&su, facts[ci].0) { latq += 1; }
                         }
                     }
+                    phase("lattice endpoints", &mut mark);
                     println!("  SOLVABLE ANYWHERE IN THE LATTICE:");
                     println!("    some congruence : {latq} / {latn}");
                     // VACUOUS AS IMPLEMENTED — 0/24 on the failures AND 0/9221 on the solved
@@ -4372,6 +4384,7 @@ pullback: {ok} / {}", res.len());
                             if ok { sexp += 1; }
                         }
                     }
+                    phase("lattice eliminable sweep", &mut mark);
                     // DISTANCE FROM GKAT: fewest KA-only steps that make it solvable.
                     let mut dist = [0usize; 6];
                     for (ci, &(i, j)) in crux.iter().enumerate() {
@@ -4399,6 +4412,7 @@ pullback: {ok} / {}", res.len());
                             dist[found] += 1;
                         }
                     }
+                    phase("distance from GKAT", &mut mark);
                     // IS THE QUOTIENT ITSELF A THOMPSON AUTOMATON?  If it is, it provably has
                     // a solution (the standard one), so the KA step is the PROCEDURE's need,
                     // not the system's — and "distance 1" is incompleteness, not obstruction.
@@ -4636,6 +4650,7 @@ pullback: {ok} / {}", res.len());
                             if facts[ci].0 || thompson_somewhere_in_lattice(&su, &seen) { lat2 += 1; }
                         }
                     }
+                    phase("thompson-in-lattice sweep", &mut mark);
                     println!("  FULL SOUND TEST (any congruence: eliminable OR Thompson):");
                     println!("    solvable : {lat2} / {lat2n}");
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
