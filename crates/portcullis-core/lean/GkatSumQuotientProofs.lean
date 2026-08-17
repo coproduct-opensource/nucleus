@@ -176,6 +176,98 @@ theorem toGAut_solvable (program : Exp A T) :
       exact EquivBA.trans (hstd state hmem)
         (EquivBA.symm (eqRHS_some _ (extendedSolution program) state))
 
+/-! ## Non-vacuity
+
+    `PartnerExists` held for 0 of 4679 instances, which made its completeness theorem true and
+    useless.  A new existential should not be trusted until its shape is inhabited, so this
+    exhibits the data `SumQuotientSolvable` demands, on the diagonal. -/
+
+/-- A strict homomorphism induces a functional bisimulation.  Halting transfers by `hlt_eq`;
+    stepping transfers because `firstMatch` commutes with retargeting the transition list,
+    which is `firstMatch_map_target_to`. -/
+theorem gAutHom_bisim {S₁ S₂ X : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    (φ : GAutHom aut₁ aut₂) (W : T → X → Bool) :
+    GAutBisim W aut₁ aut₂ (fun s q => φ.mapState s = q) := by
+  intro s1 s2 hR
+  subst hR
+  have hstep : ∀ a, autStep W aut₂ (φ.mapState s1) a =
+      (autStep W aut₁ s1 a).map (fun o => (o.1, φ.mapState o.2)) := by
+    intro a
+    show firstMatch W a (aut₂.trans (φ.mapState s1)) = _
+    rw [φ.trans_eq s1, firstMatch_map_target_to]
+    rfl
+  refine ⟨?_, ?_, ?_⟩
+  · intro a; rw [φ.hlt_eq s1]
+  · intro a q s1' h
+    exact ⟨φ.mapState s1', by rw [hstep a, h]; rfl, rfl⟩
+  · intro a q s2' h
+    rw [hstep a] at h
+    cases hs : autStep W aut₁ s1 a with
+    | none => rw [hs] at h; exact absurd h (by simp)
+    | some o =>
+        obtain ⟨q0, s0⟩ := o
+        rw [hs] at h
+        have h' : (q0, φ.mapState s0) = (q, s2') := Option.some.inj h
+        have hq : q0 = q := congrArg Prod.fst h'
+        have hsn : φ.mapState s0 = s2' := congrArg Prod.snd h'
+        exact ⟨s0, by rw [hq], hsn⟩
+
+/-- Retagging with `inl` and folding back is the identity on a transition list. -/
+private theorem map_inj_elim_left {S : Type} (l : List (BExp T × A × S)) :
+    ((l.map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S S)))).map
+      (fun t => (t.1, t.2.1, Sum.elim id id t.2.2))) = l := by
+  induction l with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.map_cons, ih]; rfl
+
+/-- Same, for the right injection. -/
+private theorem map_inj_elim_right {S : Type} (l : List (BExp T × A × S)) :
+    ((l.map (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S S)))).map
+      (fun t => (t.1, t.2.1, Sum.elim id id t.2.2))) = l := by
+  induction l with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.map_cons, ih]; rfl
+
+/-- The codiagonal `A + A → A`.  Strict, because `sumGAut` retags targets and the fold undoes
+    exactly that retagging. -/
+def codiagonal (aut : GAut S A T) : GAutHom (sumGAut aut aut) aut where
+  mapState := Sum.elim id id
+  maps_states := by
+    intro s hs
+    simp only [sumGAut, List.mem_append, List.mem_map] at hs
+    rcases hs with ⟨t, ht, rfl⟩ | ⟨t, ht, rfl⟩ <;> exact ht
+  hlt_eq := by intro s; cases s <;> rfl
+  trans_eq := by
+    intro s
+    cases s with
+    | inl s => exact (map_inj_elim_left (aut.trans s)).symm
+    | inr s => exact (map_inj_elim_right (aut.trans s)).symm
+
+/-- The codiagonal as a behavioural quotient: onto because the left injection is a section. -/
+def codiagonalQuotient (aut : GAut S A T) :
+    UniformBehavioralGAutQuotient (sumGAut aut aut) aut where
+  mapState := Sum.elim id id
+  maps_states := (codiagonal aut).maps_states
+  onto_states := by
+    intro q hq
+    exact ⟨Sum.inl q, List.mem_append.mpr (Or.inl (List.mem_map_of_mem hq)), rfl⟩
+  bisim_graph := fun X W => gAutHom_bisim (codiagonal aut) W
+
+/-- **Non-vacuity on the diagonal.**  For every program the data `SumQuotientSolvable` asks
+    for exists: fold the two copies of `Me` together, and take the extended standard solution.
+    So the hypothesis is not vacuously satisfiable-free — what it genuinely demands is that the
+    same data survive when the two halves are DIFFERENT programs with the same behaviour. -/
+theorem sumQuotientSolvable_diagonal (e : Exp A T) :
+    ∃ (Q : Type) (quot : GAut Q A T)
+      (π : UniformBehavioralGAutQuotient
+            (sumGAut (certifiedThompson A T e).aut.toGAut
+                     (certifiedThompson A T e).aut.toGAut) quot)
+      (qsol : Q → Exp A T),
+      SolvesBA quot qsol ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) :=
+  ⟨Option (certifiedThompson A T e).State, (certifiedThompson A T e).aut.toGAut,
+    codiagonalQuotient _, extendedSolution e, toGAut_solvable e, rfl⟩
+
 /-! ## The swap -/
 
 /-- **The open conjunct, weakened.**  For uniformly equivalent `e` and `f`, some behavioural
@@ -221,6 +313,8 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms thompsonSolves_of_solvesBA
 #print axioms sol_none_equiv
 #print axioms toGAut_solvable
+#print axioms gAutHom_bisim
+#print axioms sumQuotientSolvable_diagonal
 #print axioms completeness_of_sumQuotientSolvable
 
 end GkatSumQuotient
