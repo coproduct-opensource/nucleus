@@ -777,7 +777,8 @@ theorem crossEquiv_step_of_productive {S₁ S₂ : Type} {a : InitializedGAut S�
 def DeadCanonical {S : Type} (a₀ : A) (aut : InitializedGAut S A T) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (s : Option S) (q : A) (s' : Option S),
     autStep W aut.toGAut s x = some (q, s') →
-    (∀ (x' : X) (w : List (A × X)), ¬ autRun W aut.toGAut s' x' w) → q = a₀
+    (∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+      ¬ autRun V aut.toGAut s' y w) → q = a₀
 
 /-- **The payoff: `Total` + `DeadCanonical` restores the bisimulation step.**
 
@@ -802,26 +803,54 @@ theorem crossEquiv_step_of_canonical {S₁ S₂ : Type} {a : InitializedGAut S�
     {X : Type} (W : T → X → Bool) (x : X) {q : A} {s' : Option S₁}
     (hs : autStep W a.toGAut s x = some (q, s')) :
     ∃ t', autStep W b.toGAut t x = some (q, t') ∧ CrossEquiv a b s' t' := by
-  by_cases hlive : ∃ (x' : X) (w : List (A × X)), autRun W a.toGAut s' x' w
-  · exact crossEquiv_step_at h W x hs hlive
-  · -- `s'` is dead under `W`
-    have hdead : ∀ (x' : X) (w : List (A × X)), ¬ autRun W a.toGAut s' x' w := by
-      intro x' w hw
-      exact hlive ⟨x', w, hw⟩
+  by_cases hlive : ∃ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+      autRun V a.toGAut s' y w
+  · obtain ⟨Y, V, y, w, hw⟩ := hlive
+    let W'' : T → Sum X Y → Bool := fun c => Sum.elim (W c) (V c)
+    have hl : ∀ (c : T) (z : X), W'' c (Sum.inl z) = W c z := fun _ _ => rfl
+    have hr : ∀ (c : T) (z : Y), W'' c (Sum.inr z) = V c z := fun _ _ => rfl
+    have hsL : autStep W'' a.toGAut s (Sum.inl x) = some (q, s') := by
+      rw [show autStep W'' a.toGAut s (Sum.inl x) = autStep W a.toGAut s x from
+        firstMatch_transfer hl (a.toGAut.trans s) x]
+      exact hs
+    obtain ⟨t', ht, hce⟩ := crossEquiv_step_at h W'' (Sum.inl x) hsL
+      ⟨Sum.inr y, mapAtoms Sum.inr w, (autRun_transfer hr a.toGAut s' y w).mpr hw⟩
+    refine ⟨t', ?_, hce⟩
+    rw [← show autStep W'' b.toGAut t (Sum.inl x) = autStep W b.toGAut t x from
+      firstMatch_transfer hl (b.toGAut.trans t) x]
+    exact ht
+  · have hdead : ∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+        ¬ autRun V a.toGAut s' y w := by
+      intro Y V y w hw
+      exact hlive ⟨Y, V, y, w, hw⟩
     have hqa : q = a₀ := hca X W x s q s' hs hdead
     have hsome := step_agree_of_total hd htb h W x hs
     cases hb : autStep W b.toGAut t x with
     | none => rw [hb] at hsome; exact Bool.noConfusion hsome
     | some p =>
         obtain ⟨q₂, t'⟩ := p
-        -- the other side's target is dead too, or a word there would revive `s'`
-        have hdead' : ∀ (y : X) (v : List (A × X)), ¬ autRun W b.toGAut t' y v := by
-          intro y v hv
-          have hbrun : autRun W b.toGAut t x ((q₂, y) :: v) := ⟨t', hb, hv⟩
-          obtain ⟨s'', hs2, hrun2⟩ := (h X W (x, (q₂, y) :: v)).mpr hbrun
-          have hpair : (q, s') = (q₂, s'') := Option.some.inj (hs.symm.trans hs2)
+        have hdead' : ∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+            ¬ autRun V b.toGAut t' y w := by
+          intro Y V y w hw
+          let W'' : T → Sum X Y → Bool := fun c => Sum.elim (W c) (V c)
+          have hl : ∀ (c : T) (z : X), W'' c (Sum.inl z) = W c z := fun _ _ => rfl
+          have hr : ∀ (c : T) (z : Y), W'' c (Sum.inr z) = V c z := fun _ _ => rfl
+          have hbL : autStep W'' b.toGAut t (Sum.inl x) = some (q₂, t') := by
+            rw [show autStep W'' b.toGAut t (Sum.inl x) = autStep W b.toGAut t x from
+              firstMatch_transfer hl (b.toGAut.trans t) x]
+            exact hb
+          have hbrun : autRun W'' b.toGAut t (Sum.inl x)
+              ((q₂, Sum.inr y) :: mapAtoms Sum.inr w) :=
+            ⟨t', hbL, (autRun_transfer hr b.toGAut t' y w).mpr hw⟩
+          obtain ⟨s'', hs2, hrun2⟩ :=
+            (h (Sum X Y) W'' (Sum.inl x, (q₂, Sum.inr y) :: mapAtoms Sum.inr w)).mpr hbrun
+          have haL : autStep W'' a.toGAut s (Sum.inl x) = some (q, s') := by
+            rw [show autStep W'' a.toGAut s (Sum.inl x) = autStep W a.toGAut s x from
+              firstMatch_transfer hl (a.toGAut.trans s) x]
+            exact hs
+          have hpair : (q, s') = (q₂, s'') := Option.some.inj (haL.symm.trans hs2)
           have htgt : s'' = s' := (congrArg (fun z : A × Option S₁ => z.2) hpair).symm
-          exact hdead y v (htgt ▸ hrun2)
+          exact hdead (Sum X Y) W'' (Sum.inr y) (mapAtoms Sum.inr w) (htgt ▸ hrun2)
         have hqb : q₂ = a₀ := hcb X W x t q₂ t' hb hdead'
         have hqq : q₂ = q := hqb.trans hqa.symm
         have hbq : autStep W b.toGAut t x = some (q, t') := by rw [hb, hqq]
@@ -835,7 +864,7 @@ theorem deadCanonical_of_productive (a₀ : A) {aut : InitializedGAut S A T}
     (h : Productive aut) : DeadCanonical a₀ aut := by
   intro X W x s _ s' _ hdead
   obtain ⟨x', w, hw⟩ := h X W x s'
-  exact absurd hw (hdead x' w)
+  exact absurd hw (hdead X W x' w)
 
 /-- The sink's own core state accepts nothing — so dead states are not an artefact to be
     eliminated, they are what totalisation *introduces*.  Non-vacuity for `DeadCanonical`
@@ -1247,19 +1276,19 @@ theorem deadCanonical_ite (a₀ : A) (g : BExp T) {L : InitializedGAut S₁ A T}
         obtain ⟨o, ho, hs'⟩ :=
           map_some_inv (F := fun w : S₂ => (some (Sum.inr w) : Option (Sum S₁ S₂))) hstep
         refine hR X W x none q (some o) (by rw [GkatQuotient.autStep_init, ho]; rfl) ?_
-        intro y v hv
-        apply hdead y v
+        intro Y V y v hv
+        apply hdead Y V y v
         rw [hs']
-        exact (autRun_ite_inr g L R W v o y).mpr hv
+        exact (autRun_ite_inr g L R V v o y).mpr hv
       · rw [autStep_ite_none, hg] at hstep
         simp only [if_true] at hstep
         obtain ⟨o, ho, hs'⟩ :=
           map_some_inv (F := fun w : S₁ => (some (Sum.inl w) : Option (Sum S₁ S₂))) hstep
         refine hL X W x none q (some o) (by rw [GkatQuotient.autStep_init, ho]; rfl) ?_
-        intro y v hv
-        apply hdead y v
+        intro Y V y v hv
+        apply hdead Y V y v
         rw [hs']
-        exact (autRun_ite_inl g L R W v o y).mpr hv
+        exact (autRun_ite_inl g L R V v o y).mpr hv
   | some sv =>
       cases sv with
       | inl u =>
@@ -1267,19 +1296,19 @@ theorem deadCanonical_ite (a₀ : A) (g : BExp T) {L : InitializedGAut S₁ A T}
           obtain ⟨o, ho, hs'⟩ :=
             map_some_inv (F := fun w : S₁ => (some (Sum.inl w) : Option (Sum S₁ S₂))) hstep
           refine hL X W x (some u) q (some o) (by rw [GkatQuotient.autStep_core, ho]; rfl) ?_
-          intro y v hv
-          apply hdead y v
+          intro Y V y v hv
+          apply hdead Y V y v
           rw [hs']
-          exact (autRun_ite_inl g L R W v o y).mpr hv
+          exact (autRun_ite_inl g L R V v o y).mpr hv
       | inr u =>
           rw [step_ite_inr] at hstep
           obtain ⟨o, ho, hs'⟩ :=
             map_some_inv (F := fun w : S₂ => (some (Sum.inr w) : Option (Sum S₁ S₂))) hstep
           refine hR X W x (some u) q (some o) (by rw [GkatQuotient.autStep_core, ho]; rfl) ?_
-          intro y v hv
-          apply hdead y v
+          intro Y V y v hv
+          apply hdead Y V y v
           rw [hs']
-          exact (autRun_ite_inr g L R W v o y).mpr hv
+          exact (autRun_ite_inr g L R V v o y).mpr hv
 
 /-- The sink is dead-canonical for its own action, trivially: every transition it has carries
     `a₀`. -/
@@ -1895,10 +1924,21 @@ theorem live_nrm (a₀ : A) : ∀ (e : Exp A T), LoopProductive e → ∀ K : Ex
     the sink's only entry action.
 
     This is the one statement between `live_nrm` and `CanonicallySettled`, and it is the only
-    remaining step that has to reason about states rather than syntax. -/
+    remaining step that has to reason about states rather than syntax.
+
+    Note the shape: it is about `h ; K`, not `h`, because that is what the induction will need
+    — the automaton of `h ; K` is `seqInitialized` of the two, so an occurrence inside `h`
+    sees exactly the continuation `Live` was tracking.
+
+    Note also *which* deadness it uses.  `DeadCanonical` asks the target to accept nothing
+    under **every** interpretation, and that is forced: `nrm` tests `UniformExpLempty`, which
+    is uniform, so a pointwise-dead-here-but-live-elsewhere state would be beyond its reach.
+    `crossEquiv_step_of_canonical` was rebuilt to work with the uniform version, using the
+    sum-interpretation transfer to move a witness found under one interpretation into the one
+    at hand. -/
 def LiveImpliesCanonical (A T : Type) (a₀ : A) : Prop :=
-  ∀ h : Exp A T, Live a₀ h (.test BExp.one) →
-    DeadCanonical a₀ (certifiedThompson A T h).aut
+  ∀ h K : Exp A T, Live a₀ h K →
+    DeadCanonical a₀ (certifiedThompson A T (.seq h K)).aut
 
 /-- **`CanonicallySettled` reduces to that bridge.**  Both normalisations are proved; only the
     soundness of the elimination is left. -/
@@ -1906,9 +1946,12 @@ theorem canonicallySettled_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a
     CanonicallySettled A T a₀ := by
   intro e
   obtain ⟨h, hh, hs, hl⟩ := settledReachable_loopProductive a₀ e
-  refine ⟨nrm a₀ h (.test BExp.one), EquivBA.trans hh (nrm_top_equiv a₀ h hl),
-    settled_nrm a₀ h hs hl _, ?_⟩
-  exact hb _ (live_nrm a₀ h hl (.test BExp.one))
+  refine ⟨.seq (nrm a₀ h (.test BExp.one)) (.test BExp.one), ?_,
+    Settled.seq (settled_nrm a₀ h hs hl _) Settled.one, ?_⟩
+  · exact EquivBA.trans hh
+      (EquivBA.trans (nrm_top_equiv a₀ h hl)
+        (EquivBA.symm (GkatGuardedAlgebra.seq_one _)))
+  · exact hb _ (.test BExp.one) (live_nrm a₀ h hl (.test BExp.one))
 
 /-- **Completeness from the bridge and `PullbackCovered`.** -/
 theorem completeness_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀)
@@ -1918,8 +1961,8 @@ theorem completeness_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀)
 /-- Non-vacuity for the bridge: it holds at the sink, which is the one program that is
     deliberately dead.  `deadCanonical_div` is the automaton half, `Live.sink` the syntactic
     one, so the two sides of the statement do meet somewhere. -/
-theorem bridge_holds_at_sink (a₀ : A) :
-    Live a₀ (div a₀ : Exp A T) (.test BExp.one) ∧
+theorem bridge_holds_at_sink (a₀ : A) (K : Exp A T) :
+    Live a₀ (div a₀ : Exp A T) K ∧
       DeadCanonical a₀ (certifiedThompson A T (div a₀)).aut :=
   ⟨Live.sink _, deadCanonical_div a₀⟩
 
