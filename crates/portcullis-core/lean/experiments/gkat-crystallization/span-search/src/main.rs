@@ -1361,7 +1361,24 @@ fn bisim_blocks<const NA: usize>(h: &Aut<NA>) -> ([usize; MAXK], usize) {
 /// the two branch states are bisimilar and their solutions coincide; on the quotient the
 /// same system eliminates in two steps.
 fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
-    let (blk, nb) = bisim_blocks(h);
+    symbolic_eliminable_gen(h, true)
+}
+
+/// As above but optionally SKIPPING the bisimulation pre-quotient.  Needed to compare
+/// intermediate quotients at all: with the pre-quotient in place every input is collapsed to
+/// the top of the lattice before being tested, so the comparison is destroyed before it runs.
+fn symbolic_eliminable_raw<const NA: usize>(h: &Aut<NA>) -> bool {
+    symbolic_eliminable_gen(h, false)
+}
+
+fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool {
+    let (blk, nb) = if collapse {
+        bisim_blocks(h)
+    } else {
+        let mut b = [0usize; MAXK];
+        for x in 0..h.k as usize { b[x] = x; }
+        (b, h.k as usize)
+    };
     let k = h.k as usize;
     if nb > 16 { return false; }
     let mut l = [[0u16; NA]; MAXK];
@@ -1518,6 +1535,58 @@ fn flag_product<const NA: usize>(a: &Aut<NA>, choice: u64) -> Option<Aut<NA>> {
         it[y] = if a.it[y] == 0 { 0 } else { ((a.it[y] - 1) as usize * 2 + 1) as u8 };
     }
     Some(Aut { k: (2 * k) as u8, it, ih: a.ih, st, hl })
+}
+
+/// **The minimal intermediate quotient.**  Grabmayer's crystallization: LLEE is not closed
+/// under bisimulation collapse, so do not fully collapse — perform a layering-preserving NEAR
+/// collapse and land back inside the well-behaved class.  Read as a Galois picture, the
+/// bisimulations of an automaton form a lattice between the identity and the largest one, and
+/// full collapse is the top of it.  The completeness argument does not need the top: it needs
+/// only enough to identify the two start states.
+///
+/// So this computes the SMALLEST congruence identifying them — merge the two initial targets
+/// at each atom, then close under "if x ~ y then succ(x,·) ~ succ(y,·)" — which is the
+/// intermediate quotient nearest the bottom of the lattice, adjoining only what is required.
+fn min_congruence<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> Option<Aut<NA>> {
+    let su = sum_core(a, b)?;
+    let ka = a.k as usize;
+    let n = su.k as usize;
+    let mut par: Vec<usize> = (0..n).collect();
+    fn find(par: &mut Vec<usize>, x: usize) -> usize {
+        let mut r = x;
+        while par[r] != r { r = par[r]; }
+        let mut c = x;
+        while par[c] != c { let nx = par[c]; par[c] = r; c = nx; }
+        r
+    }
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    for y in 0..NA {
+        if a.it[y] != 0 && b.it[y] != 0 {
+            work.push(((a.it[y] - 1) as usize, (b.it[y] - 1) as usize + ka));
+        }
+    }
+    while let Some((x, y)) = work.pop() {
+        let (rx, ry) = (find(&mut par, x), find(&mut par, y));
+        if rx == ry { continue; }
+        if su.hl[x] != su.hl[y] { return None; }
+        par[rx] = ry;
+        for t in 0..NA {
+            let (sx, sy) = (su.st[x][t], su.st[y][t]);
+            if sx == 0 && sy == 0 { continue; }
+            if sx == 0 || sy == 0 { return None; }
+            work.push(((sx - 1) as usize, (sy - 1) as usize));
+        }
+    }
+    let mut blk = [0usize; MAXK];
+    let mut seen: Vec<usize> = Vec::new();
+    for x in 0..n {
+        let r = find(&mut par, x);
+        blk[x] = match seen.iter().position(|&t| t == r) {
+            Some(i) => i,
+            None => { seen.push(r); seen.len() - 1 }
+        };
+    }
+    quotient_by(&su, &blk, seen.len())
 }
 
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
@@ -3857,6 +3926,29 @@ pullback: {ok} / {}", res.len());
                     println!("  IS THE SUM-QUOTIENT LLEE?  (the route lives on this)");
                     println!("    equivalent pairs : {good} / {tot}");
                     println!("    CONTROL arbitrary: {arb} / {arbn}");
+                }
+                {
+                    // FULL COLLAPSE vs MINIMAL INTERMEDIATE QUOTIENT, on the same pairs.
+                    let (mut mn, mut mtot, mut mfail) = (0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        match min_congruence(&list[i], &list[j]) {
+                            None => { mfail += 1; }
+                            Some(q) => { mtot += 1; if symbolic_eliminable_raw(&q) { mn += 1; } }
+                        }
+                    }
+                    let (mut fn_, mut ftot2) = (0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            let (blk, nb) = bisim_blocks(&su);
+                            if let Some(q) = quotient_by(&su, &blk, nb) {
+                                ftot2 += 1;
+                                if symbolic_eliminable_raw(&q) { fn_ += 1; }
+                            }
+                        }
+                    }
+                    println!("  INTERMEDIATE vs TOP OF THE LATTICE (no pre-collapse in either):");
+                    println!("    minimal congruence  : {mn} / {mtot}   (not a congruence: {mfail})");
+                    println!("    full collapse       : {fn_} / {ftot2}");
                 }
                 println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
                     println!("    Me+Mf quotients solved      : {good} / {tot}   (too big: {toobig})");
