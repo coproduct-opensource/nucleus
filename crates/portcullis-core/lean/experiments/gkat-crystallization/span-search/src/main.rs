@@ -2438,6 +2438,84 @@ pullback: {ok} / {}", res.len());
             unsolved.len());
     }
 
+    if std::env::var("PADDED").is_ok() {
+        // The completeness chain forms exactly ONE pullback, and not a general one: the
+        // kernel pair of the behavioural quotient of two PADDED programs
+        //     padOne  e f = if 1 then e else f      padZero e f = if 0 then e else f
+        // which share a core.  Both legs of the span are the same map `rep`, so the object is
+        // the language-equivalence relation presented as an automaton.  This sweep measures
+        // that class, which no earlier run did — every previous number was for arbitrary
+        // pullbacks of arbitrary equivalent pairs.
+        let full: u8 = ((1u16 << NA) - 1) as u8;
+        let mut total = 0usize;
+        let mut covered = 0usize;
+        let mut nested_ok = 0usize;
+        let mut uncovered: Vec<Aut<NA>> = Vec::new();
+        for &(i, j) in crux.iter() {
+            let a1 = match a_ite(full, &list[i], &list[j]) { Some(a) => a, None => continue };
+            let a0 = match a_ite(0, &list[i], &list[j]) { Some(a) => a, None => continue };
+            let p = match pullback(&a0, &a1).and_then(|q| canon(&q)) {
+                Some(q) => q, None => continue,
+            };
+            total += 1;
+            if nested(&p) { nested_ok += 1; }
+            let mut found = false;
+            if let Some(cands) = by_beh.get(&behaviour(&p)) {
+                for &n in cands.iter() {
+                    if covers(&list[n], &p) { found = true; break; }
+                }
+            }
+            if found { covered += 1; } else { uncovered.push(p); }
+        }
+        println!("\nPADDED KERNEL PAIRS: {total}");
+        println!("  covered directly : {covered}");
+        println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
+        println!("  uncovered directly: {}", uncovered.len());
+        // Direct coverage alone is not informative: a cover is onto, so a candidate needs at
+        // least as many states as the target, and the candidate pool is capped at `maxk`
+        // while padded kernel pairs are systematically larger.  Rescue with the refinement
+        // closure, which is what the statement actually allows.
+        let sample = std::env::var("PAD_SAMPLE").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(200).min(uncovered.len());
+        let mut rescued = 0usize;
+        let mut too_big = 0usize;
+        for p in uncovered.iter().take(sample) {
+            let cands = match by_beh.get(&behaviour(p)) { Some(v) => v, None => continue };
+            if cands.iter().all(|&n| (list[n].k as usize) < p.k as usize) { too_big += 1; }
+            let mut found = false;
+            'c: for &n in cands.iter() {
+                let mut pool = Pool::<NA>::new();
+                let root = pool.of_prov(&list, &prov, n as u32);
+                let mut frontier = vec![root];
+                let mut seen: FxSet<u32> = FxSet::default();
+                seen.insert(root);
+                for _ in 0..2 {
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, true, true, 2, 3, &mut next);
+                    }
+                    let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        if let Some(a) = pool.aut(t) {
+                            if let Some(c) = canon(&a) {
+                                if covers(&c, p) { found = true; break; }
+                            }
+                        }
+                        keep.push(t);
+                    }
+                    if found { break 'c; }
+                    frontier = keep;
+                    if frontier.len() > 8000 { frontier.truncate(8000); }
+                }
+            }
+            if found { rescued += 1; }
+        }
+        println!("  sample           : {sample} of {}", uncovered.len());
+        println!("  ..all candidates smaller than target: {too_big} / {sample}");
+        println!("  ..rescued by refinement (2 rounds)  : {rescued} / {sample}");
+    }
+
     if let Ok(ek) = std::env::var("EXPAND_K") {
         // Which automata does the programme actually need covered?  Only the pullbacks of
         // equivalent pairs — `CommonCoveredIntermediate` asks for *some* common covered
