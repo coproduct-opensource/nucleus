@@ -716,3 +716,6 @@ lean_lib «GkatTotalizationProofs» where
 -- are not genuinely two-exit, so existence holds there without LeftDistrib.
 lean_lib «GkatExistenceNarrowProofs» where
   roots := #[`GkatExistenceNarrowProofs]
+
+lean_lib «GkatW0Proofs» where
+  roots := #[`GkatW0Proofs]
