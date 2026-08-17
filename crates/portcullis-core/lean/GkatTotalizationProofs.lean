@@ -1,4 +1,5 @@
 import GkatNormalProofs
+import GkatLoopExitProofs
 
 /-!
 # Totality is compositional, and stuckness has exactly two sources
@@ -119,7 +120,7 @@ leaving the equational theory.
 namespace GkatTotalization
 
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatCrystallization
-open GkatSynthesis GkatCommonTarget GkatNormal GkatAtomTransfer
+open GkatSynthesis GkatCommonTarget GkatNormal GkatAtomTransfer GkatPeriod GkatLoopExit
 
 variable {A T : Type}
 variable {S S₁ S₂ : Type}
@@ -2251,6 +2252,86 @@ theorem liveImpliesCanonical_holds (a₀ : A) : LiveImpliesCanonical A T a₀ :=
   intro u hdead
   refine deadStates_of_live a₀ hl u (null_congr ?_ (standard_null_of_dead h u hdead))
   exact EquivBA.symm (GkatGuardedAlgebra.seq_one _)
+
+/-! ## Can the known obstruction refute what is left?
+
+    Exactly one statement remains, so the next question is not "how do we prove it" but
+    "can it be broken".  GKAT has one known inexpressibility obstruction — the nesting
+    coequation `Nested`, which excludes the Figure 3 automaton — and it has never been pointed
+    at the pullback.
+
+    It cannot break it, and the reason is structural.  `Nested` is **reflected along covers**:
+    a cover preserves halt guards pointwise and carries steps to steps, so a mutually-reachable
+    pair with complementary halt guards in the source would produce one in the target.  The
+    pullback *covers* the padded Thompson automaton (`pullbackFst`), so if that automaton is
+    nested then so is the pullback — and no Figure-3 configuration can appear there to refute
+    `PaddedPullbackCovered`.
+
+    This is a negative result about refutations, and it is worth having: it says the one
+    weapon available for showing something is not GKAT-expressible does not apply here, so
+    effort belongs on proving the statement rather than breaking it. -/
+
+theorem autStep1_cover {S S' : Type} {src : InitializedGAut S A T} {tgt : InitializedGAut S' A T}
+    {X : Type} (W : T → X → Bool) (φ : InitCover src tgt)
+    {u v : Option S} (h : AutStep1 W src.toGAut u v) :
+    AutStep1 W tgt.toGAut (u.map φ.map) (v.map φ.map) := by
+  obtain ⟨x, q, hs⟩ := h
+  refine ⟨x, q, ?_⟩
+  rw [← cover_step φ W x u, hs]
+  rfl
+
+theorem autReaches_cover {S S' : Type} {src : InitializedGAut S A T} {tgt : InitializedGAut S' A T}
+    {X : Type} (W : T → X → Bool) (φ : InitCover src tgt)
+    {u v : Option S} (h : AutReaches W src.toGAut u v) :
+    AutReaches W tgt.toGAut (u.map φ.map) (v.map φ.map) := by
+  induction h with
+  | refl => exact AutReaches.refl _
+  | tail _ hstep ih => exact AutReaches.tail ih (autStep1_cover W φ hstep)
+
+theorem autReaches1_cover {S S' : Type} {src : InitializedGAut S A T} {tgt : InitializedGAut S' A T}
+    {X : Type} (W : T → X → Bool) (φ : InitCover src tgt)
+    {u v : Option S} (h : AutReaches1 W src.toGAut u v) :
+    AutReaches1 W tgt.toGAut (u.map φ.map) (v.map φ.map) := by
+  obtain ⟨x, h1, h2⟩ := h
+  exact ⟨x.map φ.map, autStep1_cover W φ h1, autReaches_cover W φ h2⟩
+
+/-- **The nesting coequation is reflected along covers.**  If what a system covers is nested,
+    so is the system. -/
+theorem nested_of_cover {S S' : Type} {src : InitializedGAut S A T} {tgt : InitializedGAut S' A T}
+    {X : Type} (W : T → X → Bool) (φ : InitCover src tgt)
+    (h : Nested W tgt.toGAut) : Nested W src.toGAut := by
+  intro s1 s2 hs1 h12 h21 hcomp
+  refine h (s1.map φ.map) (s2.map φ.map) ?_
+    (autReaches1_cover W φ h12) (autReaches1_cover W φ h21) ?_
+  · cases s1 with
+    | none => exact List.Mem.head _
+    | some u =>
+        have hu : u ∈ src.core.states := by
+          rcases List.mem_cons.mp hs1 with hc | hc
+          · exact absurd hc (by simp)
+          · obtain ⟨y, hy, hye⟩ := List.mem_map.mp hc
+            exact (Option.some.inj hye) ▸ hy
+        exact List.Mem.tail _ (List.mem_map.mpr ⟨φ.map u, φ.maps u hu, rfl⟩)
+  · intro a
+    rw [← cover_halt φ s1 W a, ← cover_halt φ s2 W a]
+    exact hcomp a
+
+/-- **The Figure-3 obstruction cannot refute what is left.**  Every pullback the completeness
+    chain forms covers a Thompson automaton, so it inherits the nesting coequation from it.
+
+    The hypothesis is the automaton analogue of `GkatKleene.Nested_derivAut`, which is already
+    proved for the derivative automaton; it is a transport, not a new conjecture. -/
+theorem pullback_nested {X : Type} (W : T → X → Bool) (a₀ : A) (e f : Exp A T)
+    (hN : ∀ p : Exp A T, Nested W (certifiedThompson A T p).aut.toGAut)
+    {Q : Type} {m : InitializedGAut Q A T}
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ) :
+    Nested W (GkatPullback.pullback φ ψ base).toGAut :=
+  nested_of_cover W (GkatPullback.pullbackFst φ ψ base) (hN (padZero e f a₀))
+
+#print axioms nested_of_cover
+#print axioms pullback_nested
 
 /-! ## Completeness from one statement -/
 
