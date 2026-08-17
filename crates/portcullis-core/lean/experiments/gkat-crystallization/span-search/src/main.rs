@@ -1404,10 +1404,21 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
         }
     }
     let mut budget = 2000000usize;
-    if elim2::<NA>(&mut vv.clone(), &mut hh.clone(), (1u16 << nb) - 1, nb, &mut budget) {
+    try_entries::<NA>(&mut vv, &mut hh, nb, &mut budget, 2)
+}
+
+/// Introduce loop-entry variables, up to `depth` of them.
+///
+/// One `Z` suffices for a single loop, but a NESTED loop needs one per level: the inner body
+/// must be solved as a unit before the outer entry can be, and each is a pseudostate with no
+/// variable of its own.  Since the stalls are overwhelmingly multi-exit loops, allowing more
+/// than one is the natural place to look for the procedure's missing completeness.
+fn try_entries<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK],
+    hh: &mut [[[bool; NA]; NA]; MAXK], nb: usize, budget: &mut usize, depth: usize) -> bool {
+    if elim2::<NA>(&mut vv.clone(), &mut hh.clone(), (1u16 << nb) - 1, nb, budget) {
         return true;
     }
-    if nb + 1 > MAXK { return false; }
+    if depth == 0 || nb + 1 > MAXK { return false; }
     let mut ent = [usize::MAX; NA];
     loop {
         let mut carry = 0usize;
@@ -1419,8 +1430,8 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
         if carry >= NA { return false; }
         if (0..NA).all(|y| ent[y] == usize::MAX) { continue; }
         let z = nb;
-        let mut v2 = vv;
-        let mut h2 = hh;
+        let mut v2 = *vv;
+        let mut h2 = *hh;
         for y in 0..NA {
             for beta in 0..NA {
                 v2[z][y][beta] = if ent[y] == usize::MAX { 0 } else { 1 << ent[y] };
@@ -1437,21 +1448,11 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
                 }
             }
         }
-        if budget == 0 { return false; }
-        if elim2::<NA>(&mut v2, &mut h2, (1u16 << (z + 1)) - 1, z + 1, &mut budget) {
-            return true;
-        }
+        if *budget == 0 { return false; }
+        if try_entries::<NA>(&mut v2, &mut h2, z + 1, budget, depth - 1) { return true; }
     }
 }
 
-/// **How far is the system from GKAT?**  Over KLEENE ALGEBRA, Gaussian elimination always
-/// solves a left-affine system — Kleene's theorem — because `+` lets a branch with two
-/// different variables be split.  GKAT has no `+`, and `left_distrib_fails` is why the same
-/// step is unavailable here.
-///
-/// So the natural measure of the obstruction is the number of steps that need the KA rule: how
-/// many times elimination must split a mixed branch, which GKAT cannot do.  `budget_ka` bounds
-/// those; at 0 this is exactly the GKAT-sound procedure.
 fn elim_ka<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK], hh: &mut [[[bool; NA]; NA]; MAXK],
     live: u16, nb: usize, budget: &mut usize, ka_left: usize) -> bool {
     if live == 0 { return true; }
