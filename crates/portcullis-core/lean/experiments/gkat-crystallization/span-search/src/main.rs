@@ -1415,7 +1415,52 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
     // reference to Z consumes NO action and stays at the same atom.  That needs the
     // abstraction to distinguish same-atom references from after-action ones, which it does
     // not currently do.
-    elim_search::<NA>(&mut l, &mut free, (1u16 << nb) - 1, nb, &mut budget)
+    if elim_search::<NA>(&mut l.clone(), &mut free.clone(), (1u16 << nb) - 1, nb, &mut budget) {
+        return true;
+    }
+    // THE LOOP ENTRY AS A VARIABLE, corrected.  A Thompson loop's entry is a pseudostate — an
+    // atom-indexed list — so it has no variable in the system, and solving `wh g (ite b A B)`
+    // needs one: the body must be solved as a UNIT.
+    //
+    // The earlier attempt set Z's row to the entry's CONTINUATION, `l[ent[y]][y]`, and was
+    // unsound (5000/5000 -> 162/5000, Figure 3 accepted): a leaf's variable is evaluated at the
+    // atom AFTER its action fires, so that equated things indexed by different atoms.
+    //
+    // Corrected, Z STEPS TO the entry target: `l[Z][y] = {ent[y]}`.  Then Z is exactly the
+    // body's start, a back edge firing at atom y has the same branch as Z at y, and replacing
+    // it by a reference to Z consumes no action and stays at the same atom — which is what the
+    // off-by-one got wrong.
+    if nb + 1 > MAXK { return false; }
+    let mut ent = [usize::MAX; NA];
+    loop {
+        let mut carry = 0usize;
+        while carry < NA {
+            ent[carry] = if ent[carry] == usize::MAX { 0 } else { ent[carry] + 1 };
+            if ent[carry] < nb { break; }
+            ent[carry] = usize::MAX; carry += 1;
+        }
+        if carry >= NA { return false; }
+        if (0..NA).all(|y| ent[y] == usize::MAX) { continue; }
+        let z = nb;
+        let mut l2 = l;
+        let mut f2 = free;
+        for y in 0..NA {
+            if ent[y] == usize::MAX { l2[z][y] = 0; } else { l2[z][y] = 1 << ent[y]; }
+            f2[z][y] = false;
+        }
+        // a branch whose whole leaf set is the entry target for that atom IS the entry's own
+        // branch there, so it may be replaced by a same-atom reference to Z
+        for x in 0..z {
+            for y in 0..NA {
+                if ent[y] == usize::MAX { continue; }
+                if l2[x][y] == (1 << ent[y]) && !f2[x][y] { l2[x][y] = 1 << z; }
+            }
+        }
+        if budget == 0 { return false; }
+        if elim_search::<NA>(&mut l2, &mut f2, (1u16 << (z + 1)) - 1, z + 1, &mut budget) {
+            return true;
+        }
+    }
 }
 
 fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], free: &mut [[bool; NA]; MAXK],
