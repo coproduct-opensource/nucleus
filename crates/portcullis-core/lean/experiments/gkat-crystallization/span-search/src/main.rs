@@ -4419,6 +4419,24 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
+                    // If a Thompson automaton has at most `maxk` states then it IS in the
+                    // pool: `seq`/`ite` components are strictly smaller than the result and
+                    // `wh` preserves size, so the closure reaches it by induction.  So for the
+                    // unknown quotients, size decides whether "not in the pool" is informative.
+                    let mut szhist = [0usize; 12];
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            if symbolic_eliminable(&su) { continue; }
+                            let (blk, nb0) = bisim_blocks(&su);
+                            if let Some(q) = quotient_by(&su, &blk, nb0) {
+                                if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { continue; }
+                                let kk = canon(&q).map(|c| c.k as usize).unwrap_or(0);
+                                if kk < 12 { szhist[kk] += 1; }
+                            }
+                        }
+                    }
+                    println!("  THE UNKNOWN QUOTIENTS, BY SIZE (maxk = {maxk}):");
+                    for kk in 0..12 { if szhist[kk] > 0 { println!("    {kk} states : {}", szhist[kk]); } }
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
                     println!("    solvable : {comb} / {combn}");
                     println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
