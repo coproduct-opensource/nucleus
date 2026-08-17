@@ -1123,94 +1123,138 @@ fn orbit_reduces<const NA: usize>(h: &Aut<NA>) -> bool {
     false
 }
 
-/// **VACUOUS AS IMPLEMENTED — validates 20020/20020 but rejects 0/250 non-pool automata.**
-/// Kept with its control, because the failure is informative and the target is right.
+/// **LLEE, done properly — per-vertex loop-subchart elimination.**
 ///
-/// Three progressively more permissive versions were needed to pass validation, and the
-/// permissiveness is what killed it:
-///   * clause 2 as `hl[u] ⊆ hl[v]` between two states      — 16843/20020 (unsound)
-///   * clause 2 as halt-atoms disjoint from back-edge atoms — 18052/20020 (unsound)
-///   * entry as an atom-indexed LIST, permissive where invisible — 19859/20020 (unsound)
-///   * permissive on entry-map conflicts too                — 20020/20020, 0/250 (vacuous)
+/// Grabmayer and Fokkink: a chart has LEE if repeatedly eliminating LOOP SUBCHARTS leaves a
+/// chart with no infinite path, and every prechart with (layered) LEE admits a UNIQUE
+/// solution.  A loop chart has a single start vertex `v` such that every infinite path from
+/// `v` returns to `v`; the transitions out of `v` are the loop-entry transitions.
 ///
-/// Every fix was forced by a real counterexample, and each one removed discrimination.  The
-/// diagnosis: greedy orbit-peeling cannot decide LLEE, because a maximal SCC is not a loop
-/// body and a GKAT loop head is an atom-indexed list whose entries are only partly visible.
-/// LLEE asks for the EXISTENCE of a transition labelling; deciding it needs a search over
-/// labellings, which is what to build next — not more fallbacks in this shape.
+/// The earlier vacuous version forced ONE entry to serve a whole SCC, which is wrong: an SCC
+/// can need several nested eliminations.  `wh 1 (p +_b q)` is the smallest witness — two
+/// mutually-reachable states, each self-looping, so no single vertex carries every cycle, yet
+/// it is plainly Thompson.  Peeling per VERTEX, innermost first, handles it.
 ///
-/// **LLEE — Layered Loop Existence and Elimination.**  Grabmayer and Fokkink's structural
-/// property of charts: every chart interpretation of a star expression has it, and every
-/// prechart with it admits a UNIQUE solution.  The GKAT form of both clauses is proved in
-/// `GkatLayeringProofs.lean` — `thompsonRank` for the layering, and
-/// `loopInitialized_back_implies_halt` / `seqInitialized_exit_implies_halt` for "no successful
-/// termination mid-loop".  So every Thompson automaton is LLEE, and this is a NECESSARY
-/// condition that is proved rather than guessed.
-///
-/// Crucially it is not a reconstruction.  Everything that failed this week — flat stability,
-/// entry single-valuedness, orbit reduction, and the whole hand-inverted oracle — had to
-/// recover the loop's entry list from the graph, and the entry list is only partly visible.
-/// LLEE instead asks for the EXISTENCE of a layering, which is searched for, not read off.
-///
-/// The elimination: repeatedly find a loop sub-chart — an SCC with a single entry `v` whose
-/// every state halts only where `v` halts — and delete its back edges.  Nested loops surface
-/// as the outer ones are peeled, which is exactly the layering.  LLEE holds iff this reduces
-/// the automaton to an acyclic graph.
+/// The GKAT termination clause is the visible form of `loopInitialized`: halting inside the
+/// body is `body.hlt ∧ ¬g` and the back edge is `body.hlt ∧ g`, so the atoms at which body
+/// states halt must be disjoint from the atoms at which they take back edges.
 fn llee<const NA: usize>(h: &Aut<NA>) -> bool {
     let k = h.k as usize;
     let mut st = h.st;
-    for _ in 0..(MAXK + 1) {
+    for _ in 0..(MAXK * 2 + 2) {
         let cur = Aut::<NA> { k: h.k, it: h.it, st, hl: h.hl, ih: h.ih };
-        let os = orbits(&cur);
-        if os.is_empty() { return true; }
+        if orbits(&cur).is_empty() { return true; }
         let mut progressed = false;
-        for &o in os.iter() {
-            // find an entry: a state v such that every edge into the orbit from outside
-            // targets v (single entry = the layering condition), and every state of the
-            // orbit halts only where v halts (no successful termination mid-loop).
-            let mut entry = usize::MAX;
-            'cand: for v in 0..k {
-                if o & (1 << v) == 0 { continue; }
-                // "no successful termination mid-loop", in the form that is VISIBLE.
-                // `loopInitialized` sets core.hlt u = body.hlt u ∧ ¬g and guards the back
-                // edges by body.hlt u ∧ g, so the loop guard splits the atoms: an atom at
-                // which some orbit state halts can never be one at which some orbit state
-                // takes a back edge.  Stating it between two states' halt masks would be
-                // wrong — the pseudostate `¬g` is not a state of the automaton at all.
-                let mut halts = 0u32;
-                for u in 0..k { if o & (1 << u) != 0 { halts |= h.hl[u] as u32; } }
-                let mut back = 0u32;
-                for u in 0..k {
-                    if o & (1 << u) == 0 { continue; }
+        // Enumerate the loop's ENTRY LIST existentially — atom -> state, or absent.  This is
+        // the one change that matters.  Every earlier attempt tried to RECONSTRUCT the entry
+        // from the graph, and the entry is only partly visible; LLEE only asks that a
+        // labelling EXIST, so the procedure searches for one instead of deriving it.
+        let mut ent = [usize::MAX; NA];
+        'outer: loop {
+            // advance the odometer over entry lists
+            let mut carry = 0usize;
+            while carry < NA {
+                ent[carry] = if ent[carry] == usize::MAX { 0 } else { ent[carry] + 1 };
+                if ent[carry] < k { break; }
+                ent[carry] = usize::MAX; carry += 1;
+            }
+            if carry >= NA { break 'outer; }
+            if (0..NA).all(|y| ent[y] == usize::MAX) { continue; }
+
+            // The loop-entry transitions are the ones OUT of the entry, and the body is
+            // generated by paths that start with them and run UNTIL THE ENTRY IS REACHED
+            // AGAIN.  Enumerating that subset is what separates a nested loop from the one
+            // enclosing it — without it an inner self-loop's back edge gets attributed to the
+            // outer body, and the outer body's legitimate halting then reads as termination
+            // mid-loop.
+            let mut isent = 0u16;
+            for y in 0..NA { if ent[y] != usize::MAX { isent |= 1 << ent[y]; } }
+            let mut ok = false;
+            for sub in 1u32..(1u32 << NA) {
+                let mut inl = isent;
+                let mut stack: Vec<usize> = Vec::new();
+                for v in 0..k {
+                    if isent & (1 << v) == 0 { continue; }
                     for y in 0..NA {
-                        if st[u][y] != 0 && (st[u][y] - 1) as usize == v { back |= 1 << y; }
+                        if sub & (1 << y) == 0 || st[v][y] == 0 { continue; }
+                        let t = (st[v][y] - 1) as usize;
+                        if inl & (1 << t) == 0 { inl |= 1 << t; stack.push(t); }
                     }
                 }
-                if halts & back != 0 { continue 'cand; }
-                entry = v; break;
-            }
-            if entry == usize::MAX { continue; }
-            // Eliminate the back edges.  A GKAT loop head is an atom-indexed LIST, not a
-            // single state, so the back edges at atom y are the ones landing on the orbit's
-            // entry target for y.  Where that target is invisible — the enclosing context
-            // never enters the loop at y, so `initTrans` leaves no trace there — any edge
-            // into the orbit is allowed to count, which keeps the test necessary.
-            // A conflicting entry map means the orbit is not one loop body — a maximal SCC
-            // can conflate a loop with states that jump into its middle.  Bailing out there
-            // would reject genuine Thompson automata, so fall back to fully permissive.
-            let ent = orbit_entry_map(&cur, o).unwrap_or([usize::MAX; NA]);
-            for u in 0..k {
-                if o & (1 << u) == 0 { continue; }
-                for y in 0..NA {
-                    if st[u][y] == 0 { continue; }
-                    let t = (st[u][y] - 1) as usize;
-                    if ent[y] == usize::MAX || t == ent[y] { st[u][y] = 0; progressed = true; }
+                // expand, but never past an entry target — that is where the body ends
+                while let Some(u) = stack.pop() {
+                    for y in 0..NA {
+                        if st[u][y] == 0 { continue; }
+                        let t = (st[u][y] - 1) as usize;
+                        if isent & (1 << t) != 0 { continue; }
+                        if inl & (1 << t) == 0 { inl |= 1 << t; stack.push(t); }
+                    }
                 }
+                // "until the entry is reached again" has two halves, and both are needed:
+                // stop expanding AT an entry target, and keep only states that can actually
+                // get back to one.  Dropping the second lets the loop's CONTINUATION into the
+                // body, and the continuation's halting then reads as termination mid-loop.
+                {
+                    let mut canret = isent;
+                    let mut changed = true;
+                    while changed {
+                        changed = false;
+                        for u in 0..k {
+                            if inl & (1 << u) == 0 || canret & (1 << u) != 0 { continue; }
+                            for y in 0..NA {
+                                if st[u][y] == 0 { continue; }
+                                let t = (st[u][y] - 1) as usize;
+                                if canret & (1 << t) != 0 { canret |= 1 << u; changed = true; break; }
+                            }
+                        }
+                    }
+                    inl &= canret;
+                }
+                if inl & !isent == 0 && isent & inl == 0 { continue; }
+                let mut back = 0u32;
+                let mut nback = 0usize;
+                let mut cut = st;
+                for u in 0..k {
+                    if inl & (1 << u) == 0 { continue; }
+                    for y in 0..NA {
+                        if ent[y] == usize::MAX || st[u][y] == 0 { continue; }
+                        if (st[u][y] - 1) as usize == ent[y] {
+                            back |= 1 << y; nback += 1; cut[u][y] = 0;
+                        }
+                    }
+                }
+                if nback == 0 { continue; }
+                if !acyclic_on(&cut, k, inl) { continue; }
+                let mut halts = 0u32;
+                for u in 0..k { if inl & (1 << u) != 0 { halts |= h.hl[u] as u32; } }
+                if halts & back != 0 { continue; }
+                st = cut; ok = true; break;
             }
+            if ok { progressed = true; break 'outer; }
         }
         if !progressed { return false; }
     }
     false
+}
+
+/// Is the subgraph induced on `mask` acyclic?  Used for "every infinite path returns to v":
+/// the loop body with the entry vertex removed must have no cycle of its own.
+fn acyclic_on<const NA: usize>(st: &[[u8; NA]; MAXK], k: usize, mask: u16) -> bool {
+    let mut reach = [0u16; MAXK];
+    for i in 0..k {
+        if mask & (1 << i) == 0 { continue; }
+        for y in 0..NA {
+            if st[i][y] == 0 { continue; }
+            let t = (st[i][y] - 1) as usize;
+            if mask & (1 << t) != 0 { reach[i] |= 1 << t; }
+        }
+    }
+    for m in 0..k {
+        for i in 0..k {
+            if reach[i] & (1 << m) != 0 { reach[i] |= reach[m]; }
+        }
+    }
+    (0..k).all(|i| mask & (1 << i) == 0 || reach[i] & (1 << i) == 0)
 }
 
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
