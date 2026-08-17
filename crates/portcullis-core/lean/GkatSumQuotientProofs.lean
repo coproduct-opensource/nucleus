@@ -483,6 +483,27 @@ theorem gapAut_solvable (b : BExp T) (p : A) : SolvesBA (gapAut b p) (gapSol b p
   | true =>
       exact EquivBA.trans (EquivBA.base (Equiv.w1 b (.act p))) (else_guard_test b _)
 
+/-! ## When the standard solution DESCENDS — already proved, elsewhere
+
+    The residue of this programme is eight quotients that are bisimulation collapses of
+    Thompson automata but are not Thompson.  Such a quotient always has a SEMANTIC solution:
+    the source carries the standard solution, `sem_solves_autLang` makes each expression denote
+    its state's language, and bisimilar states have equal languages, so the assignment is
+    constant on fibres up to language equality.  What is missing is that fibre-mates be
+    PROVABLY equal, so it descends in the equational theory.
+
+    I proved that sufficient here — and then found it already in the corpus, stronger:
+    `GkatThompson.UniformBehavioralGAutQuotient.solves_of_descends`, which takes a BEHAVIOURAL
+    quotient rather than a strict homomorphism, with `eqRHS_solution_congr` as its congruence
+    lemma.  Its own docstring says it "isolates the non-semantic descent obligation left by
+    Thompson uniqueness", which is exactly the synthesis reached independently from the
+    measurements.  My versions were strictly weaker and are removed rather than kept.
+
+    That is the THIRD duplication in this development — after `toGAut_solvable` against
+    `certifiedThompson_toGAut_solves`, and `sumQuotientSolvable_of_common_thompson` against
+    `completeness_of_common_syntactic_collapse`.  The corpus should be searched before a
+    statement is proved, not after. -/
+
 /-! ## The swap -/
 
 /-- **The open conjunct, weakened.**  For uniformly equivalent `e` and `f`, some behavioural
