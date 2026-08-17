@@ -2585,6 +2585,48 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        // Does ONE LEVEL of un-sharing suffice in general?  Tree unfolding always covers,
+        // but is infinite on cyclic automata; one level is finite.  Measure it on EVERY
+        // uncovered pullback, not just the ones a forward search failed to rescue.
+        {
+            let mut us_cov = 0usize;
+            let mut us_big = 0usize;
+            let mut us_exhibited = 0usize;
+            let mut us_fail: Vec<Aut<NA>> = Vec::new();
+            for p in uncovered.iter() {
+                match unshare(p) {
+                    None => { us_big += 1; }
+                    Some(h) => {
+                        let ok = canon(&h).map(|c| covers(&c, p)).unwrap_or(false);
+                        if ok { us_cov += 1; } else { us_fail.push(p.clone()); }
+                        if let Some((g, a, b)) = unshare_parts(p) {
+                            let ina = canon(&a).map(|c| by_beh.get(&behaviour(&c))
+                                .map(|v| v.iter().any(|&n| list[n] == c)).unwrap_or(false))
+                                .unwrap_or(false);
+                            let inb = canon(&b).map(|c| by_beh.get(&behaviour(&c))
+                                .map(|v| v.iter().any(|&n| list[n] == c)).unwrap_or(false))
+                                .unwrap_or(false);
+                            let cov = a_ite(g, &a, &b).and_then(|x| canon(&x))
+                                .map(|x| covers(&x, p)).unwrap_or(false);
+                            if ina && inb && cov { us_exhibited += 1; }
+                        }
+                    }
+                }
+            }
+            println!("  UNSHARE on ALL uncovered ({}):", uncovered.len());
+            println!("    covers by one level : {us_cov}");
+            println!("    too big (> MAXK)    : {us_big}");
+            println!("    fully exhibited     : {us_exhibited}");
+            println!("    one level FAILS     : {}", us_fail.len());
+            for p in us_fail.iter().take(6) {
+                print!("    USFAIL k={} nested={} red={} ih={} it={:?}",
+                    p.k, nested(p), reducible(p), p.ih, &p.it[..]);
+                for x in 0..p.k as usize {
+                    print!(" | hl{}={} st{}={:?}", x, p.hl[x], x, &p.st[x][..]);
+                }
+                println!();
+            }
+        }
         // Direct coverage alone is not informative: a cover is onto, so a candidate needs at
         // least as many states as the target, and the candidate pool is capped at `maxk`
         // while padded kernel pairs are systematically larger.  Rescue with the refinement
