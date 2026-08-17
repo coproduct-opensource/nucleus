@@ -2477,8 +2477,18 @@ pullback: {ok} / {}", res.len());
         // closure, which is what the statement actually allows.
         let sample = std::env::var("PAD_SAMPLE").ok()
             .and_then(|v| v.parse::<usize>().ok()).unwrap_or(200).min(uncovered.len());
+        let rounds_p = std::env::var("PAD_ROUNDS").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(2);
+        let frontier_cap = std::env::var("PAD_FRONTIER").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(8000);
+        // Degree matters: the period law says period(P) = lcm(period e, period f), and
+        // period 3 occurs, so composing degree-2 covers (reaching only 2, 4, 8) cannot be
+        // enough.  Default to 3.
+        let cycmax = std::env::var("PAD_CYC").ok()
+            .and_then(|v| v.parse::<u32>().ok()).unwrap_or(3);
         let mut rescued = 0usize;
         let mut too_big = 0usize;
+        let mut survivors: Vec<Aut<NA>> = Vec::new();
         for p in uncovered.iter().take(sample) {
             let cands = match by_beh.get(&behaviour(p)) { Some(v) => v, None => continue };
             if cands.iter().all(|&n| (list[n].k as usize) < p.k as usize) { too_big += 1; }
@@ -2489,10 +2499,10 @@ pullback: {ok} / {}", res.len());
                 let mut frontier = vec![root];
                 let mut seen: FxSet<u32> = FxSet::default();
                 seen.insert(root);
-                for _ in 0..2 {
+                for _ in 0..rounds_p {
                     let mut next: Vec<u32> = Vec::new();
                     for &t in frontier.iter() {
-                        refinements(&mut pool, t, nguards, true, true, 2, 3, &mut next);
+                        refinements(&mut pool, t, nguards, true, true, cycmax, 3, &mut next);
                     }
                     let mut keep: Vec<u32> = Vec::with_capacity(next.len());
                     for t in next {
@@ -2506,14 +2516,23 @@ pullback: {ok} / {}", res.len());
                     }
                     if found { break 'c; }
                     frontier = keep;
-                    if frontier.len() > 8000 { frontier.truncate(8000); }
+                    if frontier.len() > frontier_cap { frontier.truncate(frontier_cap); }
                 }
             }
-            if found { rescued += 1; }
+            if found { rescued += 1; } else { survivors.push(p.clone()); }
         }
         println!("  sample           : {sample} of {}", uncovered.len());
         println!("  ..all candidates smaller than target: {too_big} / {sample}");
-        println!("  ..rescued by refinement (2 rounds)  : {rescued} / {sample}");
+        println!("  ..rescued by refinement ({rounds_p} rounds, frontier {frontier_cap}, cyc {cycmax}): \
+{rescued} / {sample}");
+        println!("  ..survivors      : {}", survivors.len());
+        for p in survivors.iter() {
+            let cands = by_beh.get(&behaviour(p)).map(|v| v.len()).unwrap_or(0);
+            let maxc = by_beh.get(&behaviour(p))
+                .map(|v| v.iter().map(|&n| list[n].k).max().unwrap_or(0)).unwrap_or(0);
+            println!("  PADSURVIVOR k={} cands={} maxcand_k={} nested={} it={:?}",
+                p.k, cands, maxc, nested(p), &p.it[..]);
+        }
     }
 
     if let Ok(ek) = std::env::var("EXPAND_K") {
