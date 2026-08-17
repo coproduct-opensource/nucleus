@@ -109,4 +109,249 @@ theorem f_none_step_ff (h : W () x = false) :
 theorem f_none_hlt : bval W (fAut.hlt none) x = false := by
   cases h : W () x <;> · show (_ && _) = false; simp [bval, bT_val, ite_initHlt, loopP_initHlt, h]
 
+theorem e_mid_step_ff (h : W () x = false) :
+    autStep W eAut (some (Sum.inl ())) x = none := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, pA_hlt, bT_val, h]
+  rfl
+
+theorem e_loop_step_ff (h : W () x = false) :
+    autStep W eAut (some (Sum.inr ())) x = none := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, pA_hlt, bT_val, h]
+  rfl
+
+theorem f_mid_step_ff (h : W () x = false) :
+    autStep W fAut (some (Sum.inl (Sum.inr ()))) x = none := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, pA_hlt, bT_val, h]
+  rfl
+
+theorem f_loop_step_ff (h : W () x = false) :
+    autStep W fAut (some (Sum.inr ())) x = none := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, pA_hlt, bT_val, h]
+  rfl
+
+/-! ## The quotient onto `gapAut`
+
+    `gAutHom_bisim` is unavailable: the guards here are BA-equivalent, not syntactically equal,
+    so there is no strict `GAutHom` and `bisim_graph` is discharged from the computations. -/
+
+abbrev SUM := sumGAut eAut fAut
+abbrev GAP := gapAut bT ()
+
+theorem sum_step_inl (s : Option (certifiedThompson Act Tst eProg).State) :
+    autStep W SUM (Sum.inl s) x = (autStep W eAut s x).map (fun o => (o.1, Sum.inl o.2)) := by
+  show firstMatch W x ((eAut.trans s).map _) = _
+  rw [firstMatch_map_target_to]; rfl
+
+theorem sum_step_inr (s : Option (certifiedThompson Act Tst fProg).State) :
+    autStep W SUM (Sum.inr s) x = (autStep W fAut s x).map (fun o => (o.1, Sum.inr o.2)) := by
+  show firstMatch W x ((fAut.trans s).map _) = _
+  rw [firstMatch_map_target_to]; rfl
+
+theorem gap_hlt_false : bval W (GAP.hlt false) x = false := rfl
+theorem gap_hlt_true : bval W (GAP.hlt true) x = !(W () x) := rfl
+theorem gap_step_false : autStep W GAP false x = some ((), true) := rfl
+
+theorem gap_step_true (h : W () x = true) : autStep W GAP true x = some ((), true) := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, bT_val, h]
+
+theorem gap_step_true_ff (h : W () x = false) : autStep W GAP true x = none := by
+  show (if bval W _ x then _ else _) = _
+  simp [bval, bT_val, h]
+  rfl
+
+/-- The pinned collapse: both starts to `q₀`, every action state to `q₁`. -/
+def qmap : Sum (Option (certifiedThompson Act Tst eProg).State)
+               (Option (certifiedThompson Act Tst fProg).State) → Bool
+  | .inl none => false
+  | .inr none => false
+  | _ => true
+
+private theorem inl_tgt {S₁ S₂ : Type} {o : Act × S₁} {q : Act} {s' : Sum S₁ S₂}
+    (h : (Option.map (fun z => (z.1, Sum.inl z.2)) (some o) : Option (Act × Sum S₁ S₂))
+        = some (q, s')) : Sum.inl o.2 = s' :=
+  congrArg Prod.snd (Option.some.inj h)
+
+private theorem inr_tgt {S₁ S₂ : Type} {o : Act × S₂} {q : Act} {s' : Sum S₁ S₂}
+    (h : (Option.map (fun z => (z.1, Sum.inr z.2)) (some o) : Option (Act × Sum S₁ S₂))
+        = some (q, s')) : Sum.inr o.2 = s' :=
+  congrArg Prod.snd (Option.some.inj h)
+
+private theorem gap_tgt {q : Act} {s2' : Bool} (h : some ((), true) = some (q, s2')) :
+    (true : Bool) = s2' := congrArg Prod.snd (Option.some.inj h)
+
+/-- **The pinned collapse is a bisimulation.**  Discharged case by case from the computations
+    above.  `Act = Unit`, so the action component of every step is forced by eta. -/
+theorem qmap_bisim : GAutBisim W SUM GAP (fun s q => qmap s = q) := by
+  rintro s1 s2 rfl
+  match s1 with
+  | .inl none =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (eAut.hlt none) a = bval W (GAP.hlt false) a
+        rw [e_none_hlt, gap_hlt_false]
+      · rw [sum_step_inl, e_none_step] at hst
+        have hs := inl_tgt hst
+        subst hs
+        exact ⟨true, gap_step_false W a, rfl⟩
+      · rw [gap_step_false] at hst
+        have hs := gap_tgt hst
+        subst hs
+        refine ⟨Sum.inl (some (Sum.inl ())), ?_, rfl⟩
+        rw [sum_step_inl, e_none_step]; rfl
+  | .inl (some (Sum.inl ())) =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (eAut.hlt (some (Sum.inl ()))) a = bval W (GAP.hlt true) a
+        rw [e_mid_hlt, gap_hlt_true]
+      · rw [sum_step_inl] at hst
+        cases hb : W () a with
+        | false => rw [e_mid_step_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [e_mid_step W a hb] at hst
+            have hs := inl_tgt hst
+            subst hs
+            exact ⟨true, gap_step_true W a hb, rfl⟩
+      · cases hb : W () a with
+        | false => rw [gap_step_true_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [gap_step_true W a hb] at hst
+            have hs := gap_tgt hst
+            subst hs
+            refine ⟨Sum.inl (some (Sum.inr ())), ?_, rfl⟩
+            rw [sum_step_inl, e_mid_step W a hb]; rfl
+  | .inl (some (Sum.inr ())) =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (eAut.hlt (some (Sum.inr ()))) a = bval W (GAP.hlt true) a
+        rw [e_loop_hlt, gap_hlt_true]
+      · rw [sum_step_inl] at hst
+        cases hb : W () a with
+        | false => rw [e_loop_step_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [e_loop_step W a hb] at hst
+            have hs := inl_tgt hst
+            subst hs
+            exact ⟨true, gap_step_true W a hb, rfl⟩
+      · cases hb : W () a with
+        | false => rw [gap_step_true_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [gap_step_true W a hb] at hst
+            have hs := gap_tgt hst
+            subst hs
+            refine ⟨Sum.inl (some (Sum.inr ())), ?_, rfl⟩
+            rw [sum_step_inl, e_loop_step W a hb]; rfl
+  | .inr none =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (fAut.hlt none) a = bval W (GAP.hlt false) a
+        rw [f_none_hlt, gap_hlt_false]
+      · rw [sum_step_inr] at hst
+        cases hb : W () a with
+        | false =>
+            rw [f_none_step_ff W a hb] at hst
+            have hs := inr_tgt hst
+            subst hs
+            exact ⟨true, gap_step_false W a, rfl⟩
+        | true =>
+            rw [f_none_step W a hb] at hst
+            have hs := inr_tgt hst
+            subst hs
+            exact ⟨true, gap_step_false W a, rfl⟩
+      · rw [gap_step_false] at hst
+        have hs := gap_tgt hst
+        subst hs
+        cases hb : W () a with
+        | false =>
+            refine ⟨Sum.inr (some (Sum.inl (Sum.inr ()))), ?_, rfl⟩
+            rw [sum_step_inr, f_none_step_ff W a hb]; rfl
+        | true =>
+            refine ⟨Sum.inr (some (Sum.inr ())), ?_, rfl⟩
+            rw [sum_step_inr, f_none_step W a hb]; rfl
+  | .inr (some (Sum.inl (Sum.inr ()))) =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (fAut.hlt (some (Sum.inl (Sum.inr ())))) a = bval W (GAP.hlt true) a
+        rw [f_mid_hlt, gap_hlt_true]
+      · rw [sum_step_inr] at hst
+        cases hb : W () a with
+        | false => rw [f_mid_step_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [f_mid_step W a hb] at hst
+            have hs := inr_tgt hst
+            subst hs
+            exact ⟨true, gap_step_true W a hb, rfl⟩
+      · cases hb : W () a with
+        | false => rw [gap_step_true_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [gap_step_true W a hb] at hst
+            have hs := gap_tgt hst
+            subst hs
+            refine ⟨Sum.inr (some (Sum.inr ())), ?_, rfl⟩
+            rw [sum_step_inr, f_mid_step W a hb]; rfl
+  | .inr (some (Sum.inr ())) =>
+      first | simp only [qmap] | skip
+      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩
+      · show bval W (fAut.hlt (some (Sum.inr ()))) a = bval W (GAP.hlt true) a
+        rw [f_loop_hlt, gap_hlt_true]
+      · rw [sum_step_inr] at hst
+        cases hb : W () a with
+        | false => rw [f_loop_step_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [f_loop_step W a hb] at hst
+            have hs := inr_tgt hst
+            subst hs
+            exact ⟨true, gap_step_true W a hb, rfl⟩
+      · cases hb : W () a with
+        | false => rw [gap_step_true_ff W a hb] at hst; exact absurd hst (by simp)
+        | true =>
+            rw [gap_step_true W a hb] at hst
+            have hs := gap_tgt hst
+            subst hs
+            refine ⟨Sum.inr (some (Sum.inr ())), ?_, rfl⟩
+            rw [sum_step_inr, f_loop_step W a hb]; rfl
+
+/-- The collapse, as a behavioural quotient. -/
+def qquot : UniformBehavioralGAutQuotient SUM GAP where
+  mapState := qmap
+  maps_states := by
+    intro s _
+    cases h : qmap s <;> simp [gapAut]
+  onto_states := by
+    intro q _
+    cases q with
+    | false =>
+        exact ⟨Sum.inl none,
+          List.mem_append.mpr (Or.inl (List.mem_map_of_mem List.mem_cons_self)), rfl⟩
+    | true =>
+        refine ⟨Sum.inl (some (Sum.inl ())), ?_, rfl⟩
+        refine List.mem_append.mpr (Or.inl (List.mem_map_of_mem ?_))
+        refine List.mem_cons_of_mem _ (List.mem_map_of_mem ?_)
+        exact List.mem_append.mpr (Or.inl (List.mem_map_of_mem List.mem_cons_self))
+  bisim_graph := fun _ W => qmap_bisim W
+
+/-- **`SumQuotientSolvable` holds on the pair that refutes `CommonSyntacticCollapse`.**
+
+    `not_commonSyntacticCollapse` shows this pair admits no SYNTAX-GENERATED common target.
+    Here the quotient exists and is solved outright by `gapAut_solvable`.  So the swapped
+    conjunct is strictly weaker than the cospan, and weaker exactly where it must be: the
+    cospan dies on the demand that the target be Thompson-generated, which this never makes. -/
+theorem sumQuotientSolvable_at_refuting_pair :
+    ∃ (Q : Type) (quot : GAut Q Act Tst)
+      (π : UniformBehavioralGAutQuotient
+            (sumGAut (certifiedThompson Act Tst eProg).aut.toGAut
+                     (certifiedThompson Act Tst fProg).aut.toGAut) quot)
+      (qsol : Q → Exp Act Tst),
+      SolvesBA quot qsol ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) :=
+  ⟨Bool, GAP, qquot, gapSol bT (), gapAut_solvable bT (), rfl⟩
+
+#print axioms qmap_bisim
+#print axioms sumQuotientSolvable_at_refuting_pair
+
 end GkatGapWitness
+
