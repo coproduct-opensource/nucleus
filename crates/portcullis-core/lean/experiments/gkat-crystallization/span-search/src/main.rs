@@ -1401,6 +1401,27 @@ fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], live: u16, nb: usize,
     false
 }
 
+/// Disjoint sum of two automata's core systems.  This is the object the completeness route
+/// actually needs: `Me + Mf`, whose bisimulation quotient must have a solution.  The
+/// pseudostates play no part in whether the core system is solvable, so only cores are summed.
+fn sum_core<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> Option<Aut<NA>> {
+    let (ka, kb) = (a.k as usize, b.k as usize);
+    if ka + kb > MAXK { return None; }
+    let mut st = [[0u8; NA]; MAXK];
+    let mut hl = [0u8; MAXK];
+    for x in 0..ka {
+        hl[x] = a.hl[x];
+        for y in 0..NA { st[x][y] = a.st[x][y]; }
+    }
+    for x in 0..kb {
+        hl[ka + x] = b.hl[x];
+        for y in 0..NA {
+            st[ka + x][y] = if b.st[x][y] == 0 { 0 } else { b.st[x][y] + ka as u8 };
+        }
+    }
+    Some(Aut { k: (ka + kb) as u8, it: a.it, ih: a.ih, st, hl })
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3588,6 +3609,58 @@ pullback: {ok} / {}", res.len());
                 }
                 let (mut sr, mut srn) = (0usize, 0usize);
                 for p in uncovered.iter() { srn += 1; if symbolic_eliminable(p) { sr += 1; } }
+                {
+                    // THE THESIS ROUTE'S OBLIGATION, measured directly: does the bisimulation
+                    // quotient of the SUM `Me + Mf` have a solution?  That is what
+                    // `uniform_sum_quotient_solution_reductionBA` consumes, and it is a
+                    // different object from the pullback this programme has been covering.
+                    let mut good = 0usize; let mut tot = 0usize; let mut toobig = 0usize;
+                    for &(i, j) in crux.iter() {
+                        match sum_core(&list[i], &list[j]) {
+                            None => { toobig += 1; }
+                            Some(su) => {
+                                tot += 1;
+                                if symbolic_eliminable(&su) { good += 1; }
+                            }
+                        }
+                    }
+                    println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
+                    println!("    Me+Mf quotients solved      : {good} / {tot}   (too big: {toobig})");
+                    // THE BASE RATE.  The sums are 10-state automata but the test was
+                    // validated on automata of at most 5 states.  If random automata of the
+                    // same size also solve, 9245/9245 is not evidence of anything.
+                    let mut rng: u64 = 0x9E3779B97F4A7C15;
+                    let mut rnd = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+                    let mut rgood = 0usize; let rtot = 20000usize;
+                    for _ in 0..rtot {
+                        let kk = 10usize;
+                        let mut st = [[0u8; NA]; MAXK];
+                        let mut hl = [0u8; MAXK];
+                        for x in 0..kk {
+                            hl[x] = (rnd() % 4) as u8;
+                            for y in 0..NA {
+                                let r = rnd() % ((kk + 1) as u64);
+                                st[x][y] = if r == 0 { 0 } else { r as u8 };
+                            }
+                        }
+                        let ra = Aut::<NA> { k: kk as u8, it: [1; NA], ih: 0, st, hl };
+                        if symbolic_eliminable(&ra) { rgood += 1; }
+                    }
+                    println!("    CONTROL random 10-state    : {rgood} / {rtot}   (base rate)");
+                    // THE SHARPER CONTROL, from the same population: sums of ARBITRARY pool
+                    // pairs, which are Thompson but generally NOT equivalent.  This separates
+                    // "the pair is equivalent" from "both halves are Thompson".
+                    let mut pgood = 0usize; let mut ptot = 0usize;
+                    while ptot < 9245 {
+                        let i = (rnd() as usize) % list.len();
+                        let j = (rnd() as usize) % list.len();
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            ptot += 1;
+                            if symbolic_eliminable(&su) { pgood += 1; }
+                        }
+                    }
+                    println!("    CONTROL arbitrary pool sums: {pgood} / {ptot}   (Thompson, not equivalent)");
+                }
                 println!("  SYMBOLIC ELIMINATION on the bisimulation quotient (W0 + U5):");
                 println!("    pool automata satisfying it : {sk} / {sn}   (must be all)");
                 println!("    uncovered pullbacks         : {sr} / {srn}   (THE TARGET)");
