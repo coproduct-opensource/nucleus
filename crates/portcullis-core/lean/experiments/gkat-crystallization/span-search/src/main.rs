@@ -2690,6 +2690,136 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        // THE TRUE RATE.  The two routes are independent and both incomplete, so neither
+        // number alone is `ReachListCovered`.  Compute both per pullback and take the union.
+        if std::env::var("PAD_UNION").is_ok() {
+            let rounds = std::env::var("PAD_U_ROUNDS").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(3);
+            let frcap = std::env::var("PAD_U_FRONTIER").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(60000);
+            let mut direct = vec![false; uncovered.len()];
+            let mut branch = vec![false; uncovered.len()];
+            let mut explored_tot = 0usize;
+            // --- route A: cover the pullback itself
+            let mut groups: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
+            for (i, p) in uncovered.iter().enumerate() {
+                groups.entry(behaviour(p)).or_default().push(i);
+            }
+            for (beh, idxs) in groups.iter() {
+                let seeds = match by_beh.get(beh) { Some(v) => v, None => continue };
+                let mut pool = Pool::<NA>::new();
+                let mut frontier: Vec<u32> = Vec::new();
+                let mut seen: FxSet<u32> = FxSet::default();
+                for &n in seeds.iter() {
+                    let r = pool.of_prov(&list, &prov, n as u32);
+                    if seen.insert(r) { frontier.push(r); }
+                }
+                for _ in 0..rounds {
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+                    }
+                    let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        explored_tot += 1;
+                        if let Some(a) = pool.aut(t) {
+                            if let Some(c) = canon(&a) {
+                                for &i in idxs.iter() {
+                                    if !direct[i] && covers(&c, &uncovered[i]) { direct[i] = true; }
+                                }
+                            }
+                        }
+                        keep.push(t);
+                    }
+                    frontier = keep;
+                    if frontier.len() > frcap { frontier.truncate(frcap); }
+                    if idxs.iter().all(|&i| direct[i]) { break; }
+                }
+            }
+            // --- route B: cover both branch parts
+            let mut parts: Vec<Aut<NA>> = Vec::new();
+            let mut index: FxMap<Aut<NA>, usize> = FxMap::default();
+            let mut per: Vec<(usize, usize)> = Vec::new();
+            for p in uncovered.iter() {
+                match unshare_parts(p) {
+                    None => per.push((usize::MAX, usize::MAX)),
+                    Some((_, a, b)) => {
+                        let mut ids = [usize::MAX; 2];
+                        for (k, q) in [&a, &b].iter().enumerate() {
+                            if q.k == 0 { continue; }
+                            if let Some(c) = canon(q) {
+                                let id = *index.entry(c.clone()).or_insert_with(|| {
+                                    parts.push(c.clone()); parts.len() - 1 });
+                                ids[k] = id;
+                            }
+                        }
+                        per.push((ids[0], ids[1]));
+                    }
+                }
+            }
+            let mut pdone = vec![false; parts.len()];
+            let mut pgroups: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
+            for (i, q) in parts.iter().enumerate() {
+                pgroups.entry(behaviour(q)).or_default().push(i);
+            }
+            for (beh, idxs) in pgroups.iter() {
+                let seeds = match by_beh.get(beh) { Some(v) => v, None => continue };
+                for &i in idxs.iter() {
+                    if let Some(c) = canon(&parts[i]) {
+                        if seeds.iter().any(|&n| list[n] == c) { pdone[i] = true; }
+                    }
+                }
+                if idxs.iter().all(|&i| pdone[i]) { continue; }
+                let mut pool = Pool::<NA>::new();
+                let mut frontier: Vec<u32> = Vec::new();
+                let mut seen: FxSet<u32> = FxSet::default();
+                for &n in seeds.iter() {
+                    let r = pool.of_prov(&list, &prov, n as u32);
+                    if seen.insert(r) { frontier.push(r); }
+                }
+                for _ in 0..rounds {
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+                    }
+                    let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        explored_tot += 1;
+                        if let Some(a) = pool.aut(t) {
+                            if let Some(c) = canon(&a) {
+                                for &i in idxs.iter() {
+                                    if !pdone[i] && covers(&c, &parts[i]) { pdone[i] = true; }
+                                }
+                            }
+                        }
+                        keep.push(t);
+                    }
+                    frontier = keep;
+                    if frontier.len() > frcap { frontier.truncate(frcap); }
+                    if idxs.iter().all(|&i| pdone[i]) { break; }
+                }
+            }
+            for (i, &(x, y)) in per.iter().enumerate() {
+                let ok = |j: usize| j == usize::MAX || pdone[j];
+                if (x != usize::MAX || y != usize::MAX) && ok(x) && ok(y) { branch[i] = true; }
+            }
+            let da = direct.iter().filter(|&&b| b).count();
+            let db = branch.iter().filter(|&&b| b).count();
+            let un = (0..uncovered.len()).filter(|&i| direct[i] || branch[i]).count();
+            let bo = (0..uncovered.len()).filter(|&i| direct[i] && branch[i]).count();
+            println!("  UNION OF THE TWO ROUTES (rounds {rounds}, frontier {frcap}):");
+            println!("    direct only  : {}", da - bo);
+            println!("    branch only  : {}", db - bo);
+            println!("    both         : {bo}");
+            println!("    UNION        : {un} / {}", uncovered.len());
+            println!("    NEITHER      : {} / {}", uncovered.len() - un, uncovered.len());
+            println!("    explored     : {explored_tot}");
+            println!("    => ReachListCovered holds for {} / {} = {:.1}%",
+                total - (uncovered.len() - un), total,
+                100.0 * ((total - (uncovered.len() - un)) as f64) / (total as f64));
+        }
         // `ReachListCovered` is now the WHOLE obligation, and it is exactly this: is the
         // pullback (which the harness builds by BFS from the entry, so it IS the reachable
         // listing) covered by some Thompson automaton?  Measure it on every uncovered case,
