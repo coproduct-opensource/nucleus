@@ -721,6 +721,23 @@ fn pullback<const NA: usize>(e: &Aut<NA>, f: &Aut<NA>) -> Option<Aut<NA>> {
 /// in GkatKleeneProofs): no two MUTUALLY reachable states carry complementary halt guards.
 /// Every expression's automaton satisfies it, so a system that violates it is the
 /// behaviour of no GKAT expression at any size.
+/// `Total` in the Lean development's sense: every state, at every atom, either HALTS or
+/// STEPS.  This is stronger than the textbook GKAT transition function `2 + Sigma x X`,
+/// which also allows the reject outcome; the completeness chain needs accept-or-step because
+/// bisimilarity coincides with language equivalence only for a complete transition function.
+/// `PaddedPullbackCovered` is only ever applied to total automata, so a pullback built from
+/// non-total inputs is not an instance of it.
+fn total_aut<const NA: usize>(a: &Aut<NA>) -> bool {
+    let k = a.k as usize;
+    for x in 0..NA {
+        if !bit(a.ih, x) && a.it[x] == 0 { return false; }
+        for i in 0..k {
+            if !bit(a.hl[i], x) && a.st[i][x] == 0 { return false; }
+        }
+    }
+    true
+}
+
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
@@ -2451,9 +2468,15 @@ pullback: {ok} / {}", res.len());
         let mut covered = 0usize;
         let mut nested_ok = 0usize;
         let mut uncovered: Vec<Aut<NA>> = Vec::new();
+        let require_total = std::env::var("PAD_TOTAL").is_ok();
+        let mut skipped_nontotal = 0usize;
         for &(i, j) in crux.iter() {
             let a1 = match a_ite(full, &list[i], &list[j]) { Some(a) => a, None => continue };
             let a0 = match a_ite(0, &list[i], &list[j]) { Some(a) => a, None => continue };
+            if require_total && !(total_aut(&a0) && total_aut(&a1)) {
+                skipped_nontotal += 1;
+                continue;
+            }
             let p = match pullback(&a0, &a1).and_then(|q| canon(&q)) {
                 Some(q) => q, None => continue,
             };
@@ -2467,7 +2490,7 @@ pullback: {ok} / {}", res.len());
             }
             if found { covered += 1; } else { uncovered.push(p); }
         }
-        println!("\nPADDED KERNEL PAIRS: {total}");
+        println!("\nPADDED KERNEL PAIRS: {total}   (skipped non-total: {skipped_nontotal})");
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
