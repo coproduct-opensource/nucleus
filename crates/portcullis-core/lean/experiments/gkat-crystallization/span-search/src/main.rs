@@ -1009,11 +1009,9 @@ fn is_thompson_free<const NA: usize>(a: &Aut<NA>, free: u8, guards: &[u8], depth
             let h = c % 2; c /= 2;
             if h == 1 { b.ih |= 1 << y; } else { b.ih &= !(1u8 << y); }
         }
-        // a state that neither halts nor steps at an atom is not reachable as a Thompson entry
-        for &y in fs.iter() {
-            if b.it[y] == 0 && !bit_set(b.ih, y) { okc = false; }
-        }
-        if !okc { continue; }
+        // NB: a Thompson pseudostate MAY be stuck at an atom — `0?` is stuck everywhere — so
+        // no halt-or-step constraint is imposed on the completion.
+        let _ = &mut okc;
         if is_thompson(&b, guards, depth, memo) { return true; }
     }
     false
@@ -1070,10 +1068,9 @@ fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
     // ite and seq: split the state set
     if k >= 1 {
         let nmasks: u32 = 1u32 << k;
-        for m in 1..nmasks {
+        for m in 0..nmasks {
             let mask = m as u16;
             let comp = full & !mask;
-            if comp == 0 { continue; }
             // ite: both sides closed
             if sub_closed(h, mask) && sub_closed(h, comp) {
                 for &g in guards.iter() {
@@ -1132,6 +1129,14 @@ fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
                             lhl[u] = m2;
                         }
                         if !ok { continue; }
+                        // `L`'s halt guard is masked by `R.ih` in the composite, so bits where
+                        // `R` neither halts nor steps are invisible and must be completed.
+                        // Take them all: that is what `seq(act, 0?)` needs.
+                        let mut freeh = 0u8;
+                        for y in 0..NA {
+                            if !bit_set(rih, y) && itr[y] == 0 { freeh |= 1 << y; }
+                        }
+                        for u in 0..k { if mask & (1 << u) != 0 { lhl[u] |= freeh; } }
                         let mut l = match sub_aut(h, mask, lih, itl, true) { Some(a) => a, None => continue };
                         {
                             let mut n = 0usize;
@@ -2981,6 +2986,50 @@ pullback: {ok} / {}", res.len());
                     is_thompson(&w1, &guards, depth, &mut memo));
                 if let Some(x) = s2.as_ref() { println!("    seq(a,a): k={} ih={} it={:?} hl0={} st0={:?} hl1={} st1={:?}",
                     x.k, x.ih, &x.it[..], x.hl[0], &x.st[0][..], x.hl[1], &x.st[1][..]); }
+            }
+            {
+                // the chain from the traced failure: a;0 , a;a;0 , a;a;a;0
+                let mut x1 = Aut::<NA>::blank();
+                x1.k = 1; x1.ih = 0; for y in 0..NA { x1.it[y] = 1; }
+                x1.hl[0] = 0; for y in 0..NA { x1.st[0][y] = 0; }
+                let mut x2 = Aut::<NA>::blank();
+                x2.k = 2; x2.ih = 0; for y in 0..NA { x2.it[y] = 1; }
+                x2.hl[0] = 0; for y in 0..NA { x2.st[0][y] = 2; }
+                x2.hl[1] = 0; for y in 0..NA { x2.st[1][y] = 0; }
+                let t0 = a_test::<NA>(0);
+                let act = a_act::<NA>();
+                println!("    chain: test0={} act={} a;0={} a;a;0={}",
+                    is_thompson(&t0, &guards, depth, &mut memo),
+                    is_thompson(&act, &guards, depth, &mut memo),
+                    is_thompson(&x1, &guards, depth, &mut memo),
+                    is_thompson(&x2, &guards, depth, &mut memo));
+                if let Some(z) = a_seq(&act, &t0) {
+                    print!("    a_seq(act,test0): k={} ih={} it={:?}", z.k, z.ih, &z.it[..]);
+                    for i in 0..z.k as usize { print!(" | hl{}={} st{}={:?}", i, z.hl[i], i, &z.st[i][..]); }
+                    println!("  canon_eq_x1={}", canon(&z) == canon(&x1));
+                }
+            }
+            // show one small failure in full, with what each constructor branch found
+            {
+                let mut shown = 0;
+                for a in list.iter() {
+                    if a.k != 3 || shown >= 1 { continue; }
+                    if is_thompson(a, &guards, depth, &mut memo) { continue; }
+                    shown += 1;
+                    print!("    FAIL k=3 ih={} it={:?}", a.ih, &a.it[..]);
+                    for x in 0..3 { print!(" | hl{}={} st{}={:?}", x, a.hl[x], x, &a.st[x][..]); }
+                    println!();
+                    let full: u16 = 7;
+                    for m in 1u16..8 {
+                        let comp = full & !m;
+                        if comp == 0 { continue; }
+                        println!("      mask={m:03b} Lclosed={} Rclosed={}",
+                            sub_closed(a, m), sub_closed(a, comp));
+                    }
+                    let g = (!a.ih) & 3;
+                    println!("      wh: forced g={g}, it ok on non-g = {}",
+                        (0..NA).all(|y| bit_set(g, y) || a.it[y] == 0));
+                }
             }
             println!("  ORACLE VALIDATION (depth {depth}):");
             println!("    pool automata accepted   : {pos} / {posn}   (must be all)");
