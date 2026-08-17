@@ -2459,6 +2459,54 @@ theorem hasThompsonCover_of_split (g : BExp T) {S : Type} (P : InitializedGAut S
   exact ⟨.ite g h1 h2,
     ⟨(InitCover.ite g χ1 χ2).comp (splitCover g P l₁ l₂ h₁ h₂ hcov)⟩⟩
 
+/-- **Un-sharing at arbitrary arity.**  A pseudostate's guarded transition list can have any
+    number of branches, so the split has to be `n`-ary, not binary.  Any finite family of state
+    lists that between them cover the system will do, and the guard is irrelevant — both copies
+    of a `splitCover` carry the *same* dynamics, so nothing depends on which atoms the guard
+    selects.  That is what makes the induction go through with a single fixed guard. -/
+theorem hasThompsonCover_of_splitN {S : Type} (g : BExp T) :
+    ∀ (ls : List (List S)) (P : InitializedGAut S A T), ls ≠ [] →
+      (∀ l ∈ ls, ∀ s ∈ l, s ∈ P.core.states) →
+      (∀ q ∈ P.core.states, ∃ l ∈ ls, q ∈ l) →
+      (∀ l ∈ ls, HasThompsonCover (relist P l)) →
+      HasThompsonCover P := by
+  intro ls
+  induction ls with
+  | nil => intro _ hne; exact absurd rfl hne
+  | cons l rest ih =>
+      intro P _ hsub hcov hall
+      cases rest with
+      | nil =>
+          refine hasThompsonCover_of_split g P l l
+            (hsub l (List.Mem.head _)) (hsub l (List.Mem.head _)) ?_
+            (hall l (List.Mem.head _)) (hall l (List.Mem.head _))
+          intro q hq
+          obtain ⟨l', hl', hq'⟩ := hcov q hq
+          rcases List.mem_cons.mp hl' with rfl | hc
+          · exact Or.inl hq'
+          · exact absurd hc (by simp)
+      | cons l' rest' =>
+          have hflat : ∀ s ∈ (l' :: rest').flatten, s ∈ P.core.states := by
+            intro s hs
+            obtain ⟨t, ht, hst⟩ := List.mem_flatten.mp hs
+            exact hsub t (List.Mem.tail _ ht) s hst
+          have hrest : HasThompsonCover (relist P ((l' :: rest').flatten)) := by
+            refine ih (relist P ((l' :: rest').flatten)) (by simp) ?_ ?_ ?_
+            · intro t ht s hs
+              exact List.mem_flatten.mpr ⟨t, ht, hs⟩
+            · intro q hq
+              obtain ⟨t, ht, hqt⟩ := List.mem_flatten.mp hq
+              exact ⟨t, ht, hqt⟩
+            · intro t ht
+              exact hall t (List.Mem.tail _ ht)
+          refine hasThompsonCover_of_split g P l ((l' :: rest').flatten)
+            (hsub l (List.Mem.head _)) hflat ?_ (hall l (List.Mem.head _)) hrest
+          intro q hq
+          obtain ⟨t, ht, hqt⟩ := hcov q hq
+          rcases List.mem_cons.mp ht with rfl | hc
+          · exact Or.inl hqt
+          · exact Or.inr (List.mem_flatten.mpr ⟨t, hc, hqt⟩)
+
 /-- `dupCover` is the degenerate case: both copies list everything. -/
 theorem relist_self {S : Type} (P : InitializedGAut S A T) : relist P P.core.states = P := rfl
 
@@ -2475,21 +2523,20 @@ def BranchesCovered (A T : Type) (a₀ : A) : Prop :=
     (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
     (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
     (base : GkatPullback.Base φ ψ),
-    ∃ (g : BExp T) (l₁ l₂ : List (GkatPullback.Fib φ ψ)),
-      (∀ s ∈ l₁, s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
-      (∀ s ∈ l₂, s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
-      (∀ q ∈ (GkatPullback.pullback φ ψ base).core.states, q ∈ l₁ ∨ q ∈ l₂) ∧
-      HasThompsonCover (relist (GkatPullback.pullback φ ψ base) l₁) ∧
-      HasThompsonCover (relist (GkatPullback.pullback φ ψ base) l₂)
+    ∃ ls : List (List (GkatPullback.Fib φ ψ)), ls ≠ [] ∧
+      (∀ l ∈ ls, ∀ s ∈ l, s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
+      (∀ q ∈ (GkatPullback.pullback φ ψ base).core.states, ∃ l ∈ ls, q ∈ l) ∧
+      (∀ l ∈ ls, HasThompsonCover (relist (GkatPullback.pullback φ ψ base) l))
 
 theorem paddedPullbackCovered_of_branchesCovered (a₀ : A) (hb : BranchesCovered A T a₀) :
     PaddedPullbackCovered A T a₀ := by
   intro e f Q m φ ψ base
-  obtain ⟨g, l₁, l₂, h₁, h₂, hcov, hc₁, hc₂⟩ := hb e f Q m φ ψ base
-  exact hasThompsonCover_of_split g _ l₁ l₂ h₁ h₂ hcov hc₁ hc₂
+  obtain ⟨ls, hne, hsub, hcov, hall⟩ := hb e f Q m φ ψ base
+  exact hasThompsonCover_of_splitN BExp.one ls _ hne hsub hcov hall
 
 #print axioms relist_self
 #print axioms paddedPullbackCovered_of_branchesCovered
+#print axioms hasThompsonCover_of_splitN
 #print axioms splitCover
 #print axioms hasThompsonCover_of_split
 
