@@ -1363,40 +1363,58 @@ fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
     let k = h.k as usize;
     if nb > 16 { return false; }
     let mut l = [[0u16; NA]; MAXK];
+    // `free[x][y]` records that the branch has a VARIABLE-FREE leaf — a halt or a reject.
+    // Without this the procedure is unsound: it accepted the Figure 3 automaton, whose
+    // behaviour no expression denotes.  U5 pulls a common tail out of a branch only when
+    // BOTH sides end in the variable, so `(A·s(x)) +_b 1` cannot be turned into `C·s(x)`.
+    let mut free = [[false; NA]; MAXK];
     for x in 0..k {
         for y in 0..NA {
             if h.st[x][y] != 0 { l[blk[x]][y] |= 1 << blk[(h.st[x][y] - 1) as usize]; }
+            else { free[blk[x]][y] = true; }
         }
     }
     let mut budget = 2000000usize;
-    elim_search::<NA>(&mut l, (1u16 << nb) - 1, nb, &mut budget)
+    elim_search::<NA>(&mut l, &mut free, (1u16 << nb) - 1, nb, &mut budget)
 }
 
-fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], live: u16, nb: usize,
-    budget: &mut usize) -> bool {
+fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], free: &mut [[bool; NA]; MAXK],
+    live: u16, nb: usize, budget: &mut usize) -> bool {
     if live == 0 { return true; }
     if *budget == 0 { return false; }
     *budget -= 1;
     for x in 0..nb {
         if live & (1 << x) == 0 { continue; }
-        // isolable: every branch mentioning x mentions ONLY x
+        // Isolable: every branch mentioning x must mention ONLY x AND have no variable-free
+        // leaf, since U5 requires the tail to be common to both sides of the branch.
         let mut ok = true;
         for y in 0..NA {
-            if l[x][y] & (1 << x) != 0 && l[x][y] != (1 << x) { ok = false; break; }
+            if l[x][y] & (1 << x) != 0 && (l[x][y] != (1 << x) || free[x][y]) {
+                ok = false; break;
+            }
         }
         if !ok { continue; }
-        // x's solution reaches these variables
+        // the leaves of x's solution are those of its non-self branches
         let mut sx = 0u16;
-        for y in 0..NA { sx |= l[x][y] & !(1 << x); }
+        let mut sfree = false;
+        for y in 0..NA {
+            if l[x][y] & (1 << x) != 0 { continue; }
+            sx |= l[x][y];
+            if free[x][y] { sfree = true; }
+        }
         let saved = *l;
+        let savedf = *free;
         for z in 0..nb {
             if live & (1 << z) == 0 || z == x { continue; }
             for y in 0..NA {
-                if l[z][y] & (1 << x) != 0 { l[z][y] = (l[z][y] & !(1 << x)) | sx; }
+                if l[z][y] & (1 << x) != 0 {
+                    l[z][y] = (l[z][y] & !(1 << x)) | sx;
+                    if sfree { free[z][y] = true; }
+                }
             }
         }
-        if elim_search::<NA>(l, live & !(1 << x), nb, budget) { return true; }
-        *l = saved;
+        if elim_search::<NA>(l, free, live & !(1 << x), nb, budget) { return true; }
+        *l = saved; *free = savedf;
     }
     false
 }
@@ -3624,7 +3642,27 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
-                    println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
+                {
+                    // THE DECISIVE SOUNDNESS TEST.  The Figure 3 automaton of Smolka et al.
+                    // has a behaviour NO GKAT expression denotes (`fig3_inexpressible`, proved
+                    // in GkatInexpressibilityProofs).  By `sem_solves_autLang` a solution
+                    // would yield an expression denoting exactly that behaviour, so Figure 3's
+                    // system HAS NO SOLUTION and any sound procedure must reject it.
+                    // v0 halts on ¬b and steps to v1 on b-atoms; v1 halts on b and steps to v0
+                    // on ¬b-atoms.  Atom 0 = b, atom 1 = ¬b.
+                    let mut st = [[0u8; NA]; MAXK];
+                    st[0][0] = 2; st[1][1] = 1;
+                    let mut hl = [0u8; MAXK];
+                    hl[0] = 2; hl[1] = 1;
+                    let mut it3 = [0u8; NA];
+                    it3[0] = 1;
+                    let f3 = Aut::<NA> { k: 2, it: it3, ih: 0, st, hl };
+                    println!("  FIGURE 3 (inexpressible — every sound test MUST reject):");
+                    println!("    symbolic elimination : {}", symbolic_eliminable(&f3));
+                    println!("    peelable             : {}", peelable(&f3));
+                    println!("    llee                 : {}", llee(&f3));
+                }
+                println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
                     println!("    Me+Mf quotients solved      : {good} / {tot}   (too big: {toobig})");
                     // THE BASE RATE.  The sums are 10-state automata but the test was
                     // validated on automata of at most 5 states.  If random automata of the
