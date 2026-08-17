@@ -1404,7 +1404,10 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
         }
     }
     let mut budget = 2000000usize;
-    try_entries::<NA>(&mut vv, &mut hh, nb, &mut budget, 2)
+    // Depth 2 was measured to rescue NOTHING — pool completeness 19718/20020 and
+    // sum-quotients 9221/9245 both unchanged — while nesting the entry-list enumeration,
+    // which is ~nb^NA per level and dominates on the 10-state sums.  Keep depth 1.
+    try_entries::<NA>(&mut vv, &mut hh, nb, &mut budget, 1)
 }
 
 /// Introduce loop-entry variables, up to `depth` of them.
@@ -4084,15 +4087,16 @@ pullback: {ok} / {}", res.len());
                     // `uniform_sum_quotient_solution_reductionBA` consumes, and it is a
                     // different object from the pullback this programme has been covering.
                     let mut good = 0usize; let mut tot = 0usize; let mut toobig = 0usize;
-                    for &(i, j) in crux.iter() {
-                        match sum_core(&list[i], &list[j]) {
-                            None => { toobig += 1; }
-                            Some(su) => {
-                                tot += 1;
-                                if symbolic_eliminable(&su) { good += 1; }
-                            }
-                        }
-                    }
+                    // This block runs BEFORE the per-pair precompute, so it cannot reuse it;
+                    // parallelise instead.  The sums are independent.
+                    let sums: Vec<Option<Aut<NA>>> = crux.iter()
+                        .map(|&(i, j)| sum_core(&list[i], &list[j])).collect();
+                    toobig += sums.iter().filter(|s| s.is_none()).count();
+                    tot += sums.iter().filter(|s| s.is_some()).count();
+                    good += sums.par_iter().filter(|s| match s {
+                        Some(su) => symbolic_eliminable(su),
+                        None => false,
+                    }).count();
                 {
                     // THE DECISIVE SOUNDNESS TEST.  The Figure 3 automaton of Smolka et al.
                     // has a behaviour NO GKAT expression denotes (`fig3_inexpressible`, proved
@@ -4671,6 +4675,7 @@ pullback: {ok} / {}", res.len());
                     println!("    solved  : {on2}  two-halt {:.1}%  mean states {:.2}",
                         pc2(oh2, on2), if on2 == 0 { 0.0 } else { osz as f64 / on2 as f64 });
                 }
+                phase("residue characterisation", &mut mark);
                 println!("  SUM-QUOTIENT SOLVABILITY (the thesis route's obligation):");
                     println!("    Me+Mf quotients solved      : {good} / {tot}   (too big: {toobig})");
                     // THE BASE RATE.  The sums are 10-state automata but the test was
@@ -4679,6 +4684,7 @@ pullback: {ok} / {}", res.len());
                     let mut rng: u64 = 0x9E3779B97F4A7C15;
                     let mut rnd = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
                     let mut rgood = 0usize; let rtot = 20000usize;
+                    let mut rsample: Vec<Aut<NA>> = Vec::new();
                     for _ in 0..rtot {
                         let kk = 10usize;
                         let mut st = [[0u8; NA]; MAXK];
@@ -4701,22 +4707,26 @@ pullback: {ok} / {}", res.len());
                                 }
                             }
                         }
-                        let ra = Aut::<NA> { k: kk as u8, it: [1; NA], ih: 0, st, hl };
-                        if symbolic_eliminable(&ra) { rgood += 1; }
+                        rsample.push(Aut::<NA> { k: kk as u8, it: [1; NA], ih: 0, st, hl });
                     }
+                    // Generation is sequential (an xorshift chain) but the checks are
+                    // independent, so collect first and run the elimination in parallel.
+                    rgood += rsample.par_iter().filter(|a| symbolic_eliminable(a)).count();
                     println!("    CONTROL random 10-state    : {rgood} / {rtot}   (base rate)");
                     // THE SHARPER CONTROL, from the same population: sums of ARBITRARY pool
                     // pairs, which are Thompson but generally NOT equivalent.  This separates
                     // "the pair is equivalent" from "both halves are Thompson".
                     let mut pgood = 0usize; let mut ptot = 0usize;
+                    let mut psample: Vec<Aut<NA>> = Vec::new();
                     while ptot < 9245 {
                         let i = (rnd() as usize) % list.len();
                         let j = (rnd() as usize) % list.len();
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             ptot += 1;
-                            if symbolic_eliminable(&su) { pgood += 1; }
+                            psample.push(su);
                         }
                     }
+                    pgood += psample.par_iter().filter(|a| symbolic_eliminable(a)).count();
                     println!("    CONTROL arbitrary pool sums: {pgood} / {ptot}   (Thompson, not equivalent)");
                 }
                 {
@@ -4743,18 +4753,26 @@ pullback: {ok} / {}", res.len());
                     // extension has degree 2 and that is a structure theorem.
                     let mut rngf: u64 = 0x853C49E6748FEA9B;
                     let mut rndf = move || { rngf ^= rngf << 13; rngf ^= rngf >> 7; rngf ^= rngf << 17; rngf };
-                    let mut flagged = 0usize; let mut ftot = 0usize;
-                    for (i, a) in list.iter().enumerate() {
-                        if i % step2 != 0 || symbolic_eliminable(a) { continue; }
-                        ftot += 1;
-                        let mut done = false;
-                        for _ in 0..3000 {
-                            if let Some(hp) = flag_product(a, rndf()) {
-                                if symbolic_eliminable(&hp) { done = true; break; }
-                            } else { break; }
-                        }
-                        if done { flagged += 1; }
-                    }
+                    // 302 stalled automata x 3000 flag products was ~900k elimination calls,
+                    // and the profile put the run's remaining time here.  The choices are
+                    // independent per automaton, so draw them up front and check in parallel.
+                    // The FILTER also runs elimination — over ~20000 sampled pool automata —
+                    // so it has to be parallel too, not just the flag products inside it.
+                    let sampled: Vec<Aut<NA>> = list.iter().enumerate()
+                        .filter(|(i, _)| i % step2 == 0).map(|(_, a)| *a).collect();
+                    let stalledv: Vec<Aut<NA>> = sampled.par_iter()
+                        .filter(|a| !symbolic_eliminable(a)).copied().collect();
+                    let stalled: Vec<(Aut<NA>, Vec<u64>)> = stalledv.into_iter()
+                        .map(|a| (a, (0..3000).map(|_| rndf()).collect()))
+                        .collect();
+                    let ftot = stalled.len();
+                    let flagged = stalled.par_iter().filter(|(a, choices)| {
+                        choices.iter().any(|&c| match flag_product(a, c) {
+                            Some(hp) => symbolic_eliminable(&hp),
+                            None => false,
+                        })
+                    }).count();
+                phase("sum-quotient + controls", &mut mark);
                     println!("  ADJOIN A BOOLEAN FLAG (Böhm-Jacopini's auxiliary variable):");
                     println!("    stalled automata closed by one flag : {flagged} / {ftot}");
                     // WHICH SHAPE STALLS?  With a base rate from the SAME population — pool
@@ -4777,6 +4795,7 @@ pullback: {ok} / {}", res.len());
                         let hc = halt_in_cycle(a);
                         if symbolic_eliminable(a) { if hc { oc += 1; } } else if hc { sc += 1; }
                     }
+                phase("flag adjunction", &mut mark);
                     println!("  IS THE FRONTIER 'NOT SKIP-FREE'?  (halts inside a cycle)");
                     println!("    stalled  halting mid-cycle   : {sc} / {sn}  ({:.1}%)", pc(sc, sn));
                     println!("    eliminating, same feature    : {oc} / {on}  ({:.1}%)", pc(oc, on));
@@ -4789,6 +4808,7 @@ pullback: {ok} / {}", res.len());
                     for d in 1..5 { println!("    solvable after {d}   : {}", deg[d]); }
                     println!("    still unsolved (>4): {unb}");
                 }
+                phase("frontier + stall shape + degree", &mut mark);
                 println!("  SYMBOLIC ELIMINATION on the bisimulation quotient (W0 + U5):");
                 println!("    pool automata satisfying it : {sk} / {sn}   (must be all)");
                 println!("    uncovered pullbacks         : {sr} / {srn}   (THE TARGET)");
@@ -4801,6 +4821,7 @@ pullback: {ok} / {}", res.len());
                         break;
                     }
                 }
+                phase("pool validation: elimination", &mut mark);
                 println!("  PEELABLE (Gaussian elimination solves the system, via W0):");
                 println!("    pool automata satisfying it : {pk} / {pn}   (must be all)");
                 println!("    uncovered pullbacks         : {pr} / {prn}   (THE TARGET)");
@@ -4813,6 +4834,7 @@ pullback: {ok} / {}", res.len());
                         break;
                     }
                 }
+                phase("pool validation: peelable", &mut mark);
                 println!("  LLEE (proved necessary: GkatLayeringProofs):");
                 println!("    pool automata satisfying it : {lp} / {ln}   (must be all)");
                 println!("    uncovered pullbacks         : {lr} / {lrn}");
@@ -4825,6 +4847,7 @@ pullback: {ok} / {}", res.len());
                         break;
                     }
                 }
+                phase("pool validation: llee", &mut mark);
                 println!("  ORBIT ENTRY/HALT DISJOINTNESS as a necessary condition:");
                 println!("    pool automata satisfying it : {eok} / {en}   (must be all)");
                 println!("    uncovered pullbacks         : {ero} / {ern}");
