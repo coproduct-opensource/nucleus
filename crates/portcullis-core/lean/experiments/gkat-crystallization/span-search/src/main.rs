@@ -4464,6 +4464,30 @@ pullback: {ok} / {}", res.len());
                         }
                         println!("    distinct unknown quotients: {}", distinct.len());
                     }
+                    {
+                        // PERIOD SIGNATURE, controlled for SIZE.  The residue is 3-state and
+                        // the solved population averages 2.32, so an uncontrolled comparison
+                        // would just be measuring size again.  Compare only 3-state quotients.
+                        let mut fper = [0usize; 8];
+                        let mut sper = [0usize; 8];
+                        let (mut fn3, mut sn3) = (0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                let elim = symbolic_eliminable(&su);
+                                let (blk, nb0) = bisim_blocks(&su);
+                                let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
+                                let c = match canon(&q) { Some(c) => c, None => continue };
+                                if c.k != 3 { continue; }
+                                let ps = scc_periods(&c);
+                                let m = ps.iter().copied().max().unwrap_or(0) as usize;
+                                if elim { sn3 += 1; if m < 8 { sper[m] += 1; } }
+                                else { fn3 += 1; if m < 8 { fper[m] += 1; } }
+                            }
+                        }
+                        println!("  PERIOD SIGNATURE, 3-STATE QUOTIENTS ONLY (size-controlled):");
+                        println!("    unsolved (n={fn3}) by max period : {:?}", &fper[..6]);
+                        println!("    solved   (n={sn3}) by max period : {:?}", &sper[..6]);
+                    }
                     println!("  THE UNKNOWN QUOTIENTS, BY SIZE (maxk = {maxk}):");
                     for kk in 0..12 { if szhist[kk] > 0 { println!("    {kk} states : {}", szhist[kk]); } }
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
