@@ -2588,10 +2588,17 @@ pullback: {ok} / {}", res.len());
             for p in survivors.iter() {
                 let cands = match by_beh.get(&behaviour(p)) { Some(v) => v, None => continue };
                 let maxc = cands.iter().map(|&n| list[n].k).max().unwrap_or(0);
-                if (maxc as usize) < p.k as usize { continue; }
+                // Size-adequacy gates DIRECT coverage only.  Refinement grows automata —
+                // duplication doubles — so a 5-state candidate can reach a 6-state cover in
+                // one round.  PAD_FOCUS_ALL runs the big budget on every survivor.
+                if std::env::var("PAD_FOCUS_ALL").is_err() && (maxc as usize) < p.k as usize {
+                    continue;
+                }
                 adequate += 1;
                 let mut found = false;
                 let mut explored = 0usize;
+                let mut biggest_seen = 0u8;
+                let mut atleast_target = 0usize;
                 'f: for &n in cands.iter() {
                     let mut pool = Pool::<NA>::new();
                     let root = pool.of_prov(&list, &prov, n as u32);
@@ -2609,6 +2616,8 @@ pullback: {ok} / {}", res.len());
                             if !seen.insert(t) { continue; }
                             explored += 1;
                             if let Some(a) = pool.aut(t) {
+                                if a.k > biggest_seen { biggest_seen = a.k; }
+                                if a.k >= p.k { atleast_target += 1; }
                                 if let Some(c) = canon(&a) {
                                     if covers(&c, p) { found = true; break; }
                                 }
@@ -2625,7 +2634,8 @@ pullback: {ok} / {}", res.len());
                 } else {
                     still += 1;
                     println!("  FOCUS k={} STILL UNCOVERED after {fr} rounds \
-(explored {explored} refinements)", p.k);
+(explored {explored}, biggest {biggest_seen} states, {atleast_target} of size >= target)",
+                        p.k);
                 }
             }
             println!("  size-adequate survivors: {adequate}, still uncovered: {still}");
