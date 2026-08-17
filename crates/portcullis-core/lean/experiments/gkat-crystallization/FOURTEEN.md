@@ -39,11 +39,16 @@ say nothing about whether another listing works.
 Two facts make the distinction concrete.  One level of un-sharing covers **2181 of 2181**
 pullbacks, so the pullbacks themselves are covered — what is unverified for these cases is
 only whether the covering un-shared automaton is *Thompson*, which needs both its parts to be.
-And on the sampled population, refinement covers the pullback directly in **196 of 200** cases,
-independently of any split.
+Refinement covers the pullback directly in **1535 of 2181** cases — measured on all of them,
+not sampled.  (An earlier "196 of 200" figure came from `take(200)`, which is the first two
+hundred rather than a random draw, and overstated the rate.)
 
 So the honest status is: candidate counterexamples to the branch-split route, inside an open
 statement that still has no counterexample.
+
+That said, the branch route is the *strongest* known route, not a sideshow: un-sharing covers
+2181 of 2181 while refinement covers 1535 of 2181.  These fourteen are therefore obstacles on
+the best available path, and clearing them matters more, not less.
 
 ## What is NOT established
 

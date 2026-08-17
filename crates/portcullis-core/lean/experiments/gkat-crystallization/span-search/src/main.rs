@@ -2690,6 +2690,66 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        // `ReachListCovered` is now the WHOLE obligation, and it is exactly this: is the
+        // pullback (which the harness builds by BFS from the entry, so it IS the reachable
+        // listing) covered by some Thompson automaton?  Measure it on every uncovered case,
+        // grouping targets by behaviour so one closure serves a whole class.
+        if std::env::var("PAD_FULLRESCUE").is_ok() {
+            let rounds = std::env::var("PAD_FR_ROUNDS").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(3);
+            let frcap = std::env::var("PAD_FR_FRONTIER").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(60000);
+            let mut groups: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
+            for (i, p) in uncovered.iter().enumerate() {
+                groups.entry(behaviour(p)).or_default().push(i);
+            }
+            let mut cov = 0usize;
+            let mut res = 0usize;
+            let mut explored_tot = 0usize;
+            let ngroups = groups.len();
+            for (beh, idxs) in groups.iter() {
+                let seeds = match by_beh.get(beh) { Some(v) => v, None => {
+                    res += idxs.len(); continue; } };
+                let mut hit = vec![false; idxs.len()];
+                let mut pool = Pool::<NA>::new();
+                let mut frontier: Vec<u32> = Vec::new();
+                let mut seen: FxSet<u32> = FxSet::default();
+                for &n in seeds.iter() {
+                    let r = pool.of_prov(&list, &prov, n as u32);
+                    if seen.insert(r) { frontier.push(r); }
+                }
+                for _ in 0..rounds {
+                    let mut next: Vec<u32> = Vec::new();
+                    for &t in frontier.iter() {
+                        refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+                    }
+                    let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                    for t in next {
+                        if !seen.insert(t) { continue; }
+                        explored_tot += 1;
+                        if let Some(a) = pool.aut(t) {
+                            if let Some(c) = canon(&a) {
+                                for (j, &i) in idxs.iter().enumerate() {
+                                    if !hit[j] && covers(&c, &uncovered[i]) { hit[j] = true; }
+                                }
+                            }
+                        }
+                        keep.push(t);
+                    }
+                    frontier = keep;
+                    if frontier.len() > frcap { frontier.truncate(frcap); }
+                    if hit.iter().all(|&b| b) { break; }
+                }
+                for b in hit { if b { cov += 1; } else { res += 1; } }
+            }
+            println!("  REACHLISTCOVERED, measured on every uncovered pullback:");
+            println!("    behaviour groups : {ngroups}");
+            println!("    covered          : {cov} / {}", uncovered.len());
+            println!("    RESISTING        : {res} / {}", uncovered.len());
+            println!("    explored         : {explored_tot}  (rounds {rounds}, frontier {frcap})");
+            println!("    => ReachListCovered holds for {} / {} total-instance pairs",
+                total - res, total);
+        }
         // CONTROL.  "All the resisters have a two-exit cycle" means nothing without the base
         // rate among Thompson automata themselves.  Comparing a suspicious set against no
         // control group is the mistake that overturned the `sccs` signal early in this
