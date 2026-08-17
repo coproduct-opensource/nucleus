@@ -2690,6 +2690,24 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        // CONTROL.  "All the resisters have a two-exit cycle" means nothing without the base
+        // rate among Thompson automata themselves.  Comparing a suspicious set against no
+        // control group is the mistake that overturned the `sccs` signal early in this
+        // programme; do not repeat it.
+        {
+            let (mut te, mut th, mut n5) = (0usize, 0usize, 0usize);
+            for a in list.iter() {
+                if a.k as usize != 5 { continue; }
+                n5 += 1;
+                if two_exit_cycle(a).is_some() { te += 1; }
+                if two_halt_cycle(a).is_some() { th += 1; }
+            }
+            println!("  CONTROL — Thompson automata (k=5) in the pool: {n5}");
+            println!("    with a two-exit cycle : {te}  ({:.1}%)",
+                100.0 * (te as f64) / (n5.max(1) as f64));
+            println!("    with a two-halt cycle : {th}  ({:.1}%)",
+                100.0 * (th as f64) / (n5.max(1) as f64));
+        }
         println!("  PARTNER FUNCTION (is the forced pairing single-valued?):");
         println!("    functional in 1st component : {pf_first} / {pf_total}");
         println!("    functional in 2nd component : {pf_second} / {pf_total}");
@@ -2785,8 +2803,13 @@ within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
                         }
                     }
                 }
+                let prr = std::env::var("PAD_PARTS_ROUNDS").ok()
+                    .and_then(|v| v.parse::<usize>().ok()).unwrap_or(4);
+                let prf = std::env::var("PAD_PARTS_FRONTIER").ok()
+                    .and_then(|v| v.parse::<usize>().ok()).unwrap_or(40000);
                 let mut covered_now = 0usize;
                 let mut resist = 0usize;
+                let mut explored_tot = 0usize;
                 for q in targets.iter() {
                     let cands = match by_beh.get(&behaviour(q)) { Some(v) => v, None => {
                         resist += 1; continue; } };
@@ -2797,15 +2820,16 @@ within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
                         let mut frontier = vec![root];
                         let mut seen: FxSet<u32> = FxSet::default();
                         seen.insert(root);
-                        for _ in 0..4 {
+                        for _ in 0..prr {
                             let mut next: Vec<u32> = Vec::new();
                             for &t in frontier.iter() {
-                                refinements(&mut pool, t, nguards, true, true, 3, 3,
+                                refinements(&mut pool, t, nguards, true, true, 3, 4,
                                     &mut next);
                             }
                             let mut keep: Vec<u32> = Vec::with_capacity(next.len());
                             for t in next {
                                 if !seen.insert(t) { continue; }
+                                explored_tot += 1;
                                 if let Some(a) = pool.aut(t) {
                                     if let Some(c) = canon(&a) {
                                         if covers(&c, q) { found = true; break; }
@@ -2815,13 +2839,13 @@ within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
                             }
                             if found { break 'q; }
                             frontier = keep;
-                            if frontier.len() > 40000 { frontier.truncate(40000); }
+                            if frontier.len() > prf { frontier.truncate(prf); }
                         }
                     }
                     if found { covered_now += 1; } else {
                         resist += 1;
-                        print!("    PARTRESIST k={} nested={} red={} 2exit={:?} cands={}",
-                            q.k, nested(q), reducible(q), two_exit_cycle(q),
+                        print!("    PARTRESIST k={} nested={} red={} 2exit={:?} 2halt={:?} \
+cands={}", q.k, nested(q), reducible(q), two_exit_cycle(q), two_halt_cycle(q),
                             by_beh.get(&behaviour(q)).map(|v| v.len()).unwrap_or(0));
                         print!(" | ih={} it={:?}", q.ih, &q.it[..]);
                         for x in 0..q.k as usize {
@@ -2833,6 +2857,7 @@ within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
                 println!("  WITHIN-CAP STALLING PARTS (distinct): {}", targets.len());
                 println!("    covered by refinement : {covered_now}");
                 println!("    still resisting       : {resist}");
+                println!("    (rounds {prr}, frontier {prf}, explored {explored_tot})");
             }
             println!("  RECURSIVE un-sharing (budget {budget}):");
             println!("    resolves : {rec_ok} / {}", uncovered.len());
