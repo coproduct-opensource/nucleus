@@ -2607,8 +2607,9 @@ noncomputable def diagList {S Q : Type} {a b : InitializedGAut S A T} {m : Initi
   a.core.states.map (fun u => GkatPullback.pairUp base u u)
 
 /-- The pullback listed on `l` instead of the whole matched product. -/
-noncomputable def pullbackOn {S Q : Type} {a b : InitializedGAut S A T}
-    {m : InitializedGAut Q A T} (φ : InitCover a m) (ψ : InitCover b m)
+noncomputable def pullbackOn {S₁ S₂ Q : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {m : InitializedGAut Q A T}
+    (φ : InitCover a m) (ψ : InitCover b m)
     (base : GkatPullback.Base φ ψ) (l : List (GkatPullback.Fib φ ψ)) :
     InitializedGAut (GkatPullback.Fib φ ψ) A T :=
   relist (GkatPullback.pullback φ ψ base) l
@@ -2652,6 +2653,101 @@ noncomputable def pullbackOnSnd {S Q : Type} {a b : InitializedGAut S A T}
     intro q hq
     exact ⟨GkatPullback.pairUp base q q, hdiag q (hstates ▸ hq),
       GkatPullback.pairUp_snd base (by rw [hmaps])⟩
+
+/-! ### The partner function
+
+    The direct route.  A cover of the pullback by one side is exactly a **partner function**:
+    a map `σ` sending each state of the left component to a state of the right that it is
+    matched with, and that commutes with the dynamics.  Then `u ↦ (u, σ u)` is a cover, the
+    listing is the graph of `σ`, and — since the left component *is* a Thompson automaton —
+    the pullback is Thompson-covered outright.
+
+    This is where the sharing problem lives, and it is now visible as one hypothesis rather
+    than spread through a search.  `σ` is forced along every run: the entry pins `σ` at the
+    first target, and `hcore` propagates it.  It is well defined exactly when no state is
+    reached carrying two different partners — and un-sharing is what repairs that by
+    duplicating the state so each copy can carry its own partner. -/
+
+/-- The graph of a partner function, as a state list. -/
+noncomputable def graphList {S₁ S₂ Q : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {m : InitializedGAut Q A T}
+    (φ : InitCover a m) (ψ : InitCover b m) (base : GkatPullback.Base φ ψ) (σ : S₁ → S₂) :
+    List (GkatPullback.Fib φ ψ) :=
+  a.core.states.map (fun u => GkatPullback.pairUp base u (σ u))
+
+/-- **A partner function is a cover.**  The left component covers the pullback listed on the
+    graph of `σ`. -/
+noncomputable def graphCover {S₁ S₂ Q : Type} {a : InitializedGAut S₁ A T}
+    {b : InitializedGAut S₂ A T} {m : InitializedGAut Q A T}
+    (φ : InitCover a m) (ψ : InitCover b m) (base : GkatPullback.Base φ ψ) (σ : S₁ → S₂)
+    (hmatch : ∀ u, φ.map u = ψ.map (σ u))
+    (hinit : ∀ (X : Type) (W : T → X → Bool) (x : X) (o : A × S₁),
+      firstMatch W x a.initTrans = some o →
+      firstMatch W x b.initTrans = some (o.1, σ o.2))
+    (hcore : ∀ (X : Type) (W : T → X → Bool) (x : X) (u : S₁) (o : A × S₁),
+      firstMatch W x (a.core.trans u) = some o →
+      firstMatch W x (b.core.trans (σ u)) = some (o.1, σ o.2)) :
+    InitCover a (pullbackOn φ ψ base (graphList φ ψ base σ)) where
+  map := fun u => GkatPullback.pairUp base u (σ u)
+  initHlt_eq := fun _ _ _ => rfl
+  coreHlt_eq := fun u _ W x => by
+    show bval W (a.core.hlt u) x
+      = bval W (a.core.hlt (GkatPullback.pairUp base u (σ u)).val.1) x
+    rw [GkatPullback.pairUp_fst base (hmatch u)]
+  initStep_eq := fun X W x => by
+    show (firstMatch W x a.initTrans).map
+        (fun o => (o.1, GkatPullback.pairUp base o.2 (σ o.2)))
+      = firstMatch W x
+          ((GkatSynthesis.crossTrans a.initTrans b.initTrans).map
+            (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+    rw [firstMatch_map_target_to
+        (F := fun q : S₁ × S₂ => GkatPullback.pairUp base q.1 q.2),
+      GkatSynthesis.firstMatch_crossTrans]
+    cases h₁ : firstMatch W x a.initTrans with
+    | none => rfl
+    | some o₁ => rw [hinit X W x o₁ h₁]; rfl
+  coreStep_eq := fun u X W x => by
+    show (firstMatch W x (a.core.trans u)).map
+        (fun o => (o.1, GkatPullback.pairUp base o.2 (σ o.2)))
+      = firstMatch W x
+          ((GkatSynthesis.crossTrans (a.core.trans (GkatPullback.pairUp base u (σ u)).val.1)
+            (b.core.trans (GkatPullback.pairUp base u (σ u)).val.2)).map
+            (fun t => (t.1, t.2.1, GkatPullback.pairUp base t.2.2.1 t.2.2.2)))
+    rw [GkatPullback.pairUp_fst base (hmatch u), GkatPullback.pairUp_snd base (hmatch u),
+      firstMatch_map_target_to
+        (F := fun q : S₁ × S₂ => GkatPullback.pairUp base q.1 q.2),
+      GkatSynthesis.firstMatch_crossTrans]
+    cases h₁ : firstMatch W x (a.core.trans u) with
+    | none => rfl
+    | some o₁ => rw [hcore X W x u o₁ h₁]; rfl
+  maps := fun u hu => List.mem_map.mpr ⟨u, hu, rfl⟩
+  onto := by
+    intro q hq
+    obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hq
+    exact ⟨u, hu, rfl⟩
+
+/-- **The pullback is Thompson-covered as soon as a partner function exists**, because the
+    left component of the padded span is itself a Thompson automaton. -/
+theorem hasThompsonCover_of_partner {S₂ Q : Type} (a₀ : A) (e f : Exp A T)
+    {b : InitializedGAut S₂ A T} {m : InitializedGAut Q A T}
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m) (ψ : InitCover b m)
+    (base : GkatPullback.Base φ ψ)
+    (σ : (certifiedThompson A T (padZero e f a₀)).State → S₂)
+    (hmatch : ∀ u, φ.map u = ψ.map (σ u))
+    (hinit : ∀ (X : Type) (W : T → X → Bool) (x : X)
+      (o : A × (certifiedThompson A T (padZero e f a₀)).State),
+      firstMatch W x (certifiedThompson A T (padZero e f a₀)).aut.initTrans = some o →
+      firstMatch W x b.initTrans = some (o.1, σ o.2))
+    (hcore : ∀ (X : Type) (W : T → X → Bool) (x : X)
+      (u : (certifiedThompson A T (padZero e f a₀)).State)
+      (o : A × (certifiedThompson A T (padZero e f a₀)).State),
+      firstMatch W x ((certifiedThompson A T (padZero e f a₀)).aut.core.trans u) = some o →
+      firstMatch W x (b.core.trans (σ u)) = some (o.1, σ o.2)) :
+    HasThompsonCover (pullbackOn φ ψ base (graphList φ ψ base σ)) :=
+  ⟨padZero e f a₀, ⟨graphCover φ ψ base σ hmatch hinit hcore⟩⟩
+
+#print axioms graphCover
+#print axioms hasThompsonCover_of_partner
 
 #print axioms pullbackOnFst
 #print axioms pullbackOnSnd
