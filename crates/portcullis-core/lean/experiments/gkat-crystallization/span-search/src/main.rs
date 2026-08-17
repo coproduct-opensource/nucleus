@@ -829,6 +829,74 @@ fn unshare_parts<const NA: usize>(p: &Aut<NA>) -> Option<(u8, Aut<NA>, Aut<NA>)>
     Some((1u8, a, b))
 }
 
+/// Does a PARTNER FUNCTION exist?  `σ` is forced along every run of the synchronised
+/// product: the entry pins it, and each step propagates it.  So a partner function exists
+/// only if the reachable pair relation is SINGLE-VALUED in the first component — no state
+/// reached carrying two different partners.  This is exactly the sharing that un-sharing
+/// repairs, and it is the last open question in the Lean chain
+/// (`PartnerExists` / `completeness_of_partner`).
+///
+/// Returns (functional-in-first, functional-in-second, |reachable pairs|).
+fn partner_functional<const NA: usize>(a0: &Aut<NA>, a1: &Aut<NA>) -> (bool, bool, usize) {
+    let mut seen: std::collections::HashSet<(u8, u8)> = std::collections::HashSet::new();
+    let mut queue: VecDeque<(u8, u8)> = VecDeque::new();
+    for x in 0..NA {
+        if a0.it[x] != 0 && a1.it[x] != 0 {
+            let p = (a0.it[x] - 1, a1.it[x] - 1);
+            if seen.insert(p) { queue.push_back(p); }
+        }
+    }
+    while let Some((u, v)) = queue.pop_front() {
+        for y in 0..NA {
+            let (su, sv) = (a0.st[u as usize][y], a1.st[v as usize][y]);
+            if su != 0 && sv != 0 {
+                let p = (su - 1, sv - 1);
+                if seen.insert(p) { queue.push_back(p); }
+            }
+        }
+    }
+    let mut first: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
+    let _ = &queue;
+    let mut second: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
+    let mut f1 = true;
+    let mut f2 = true;
+    for &(u, v) in seen.iter() {
+        if let Some(&w) = first.get(&u) { if w != v { f1 = false; } } else { first.insert(u, v); }
+        if let Some(&w) = second.get(&v) { if w != u { f2 = false; } } else { second.insert(v, u); }
+    }
+    (f1, f2, seen.len())
+}
+
+/// The same question, asked ONE ENTRY BRANCH AT A TIME.  If `σ` fails globally only because
+/// different atoms enter the product at different pairs, then a per-branch partner function
+/// exists — and that is precisely un-sharing: give each branch its own private copy, each
+/// carrying its own `σ`.
+fn partner_functional_perbranch<const NA: usize>(a0: &Aut<NA>, a1: &Aut<NA>) -> bool {
+    for x in 0..NA {
+        if a0.it[x] == 0 || a1.it[x] == 0 { continue; }
+        let mut seen: std::collections::HashSet<(u8, u8)> = std::collections::HashSet::new();
+        let mut queue: VecDeque<(u8, u8)> = VecDeque::new();
+        let p0 = (a0.it[x] - 1, a1.it[x] - 1);
+        seen.insert(p0);
+        queue.push_back(p0);
+        while let Some((u, v)) = queue.pop_front() {
+            for y in 0..NA {
+                let (su, sv) = (a0.st[u as usize][y], a1.st[v as usize][y]);
+                if su != 0 && sv != 0 {
+                    let p = (su - 1, sv - 1);
+                    if seen.insert(p) { queue.push_back(p); }
+                }
+            }
+        }
+        let mut first: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
+        for &(u, v) in seen.iter() {
+            if let Some(&w) = first.get(&u) { if w != v { return false; } }
+            else { first.insert(u, v); }
+        }
+    }
+    true
+}
+
 fn nested<const NA: usize>(a: &Aut<NA>) -> bool {
     let k = a.k as usize;
     // reach1[i][j] : j reachable from i in one or more steps
@@ -2559,6 +2627,9 @@ pullback: {ok} / {}", res.len());
         let mut covered = 0usize;
         let mut nested_ok = 0usize;
         let mut uncovered: Vec<Aut<NA>> = Vec::new();
+        let (mut pf_total, mut pf_first, mut pf_second, mut pf_either, mut pf_pairs) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut pf_branch = 0usize;
         let require_total = std::env::var("PAD_TOTAL").is_ok();
         let mut skipped_nontotal = 0usize;
         for &(i, j) in crux.iter() {
@@ -2572,6 +2643,15 @@ pullback: {ok} / {}", res.len());
                 Some(q) => q, None => continue,
             };
             total += 1;
+            {
+                let (f1, f2, n) = partner_functional(&a0, &a1);
+                pf_total += 1;
+                if f1 { pf_first += 1; }
+                if f2 { pf_second += 1; }
+                if f1 || f2 { pf_either += 1; }
+                if partner_functional_perbranch(&a0, &a1) { pf_branch += 1; }
+                pf_pairs += n;
+            }
             if nested(&p) { nested_ok += 1; }
             let mut found = false;
             if let Some(cands) = by_beh.get(&behaviour(&p)) {
@@ -2585,6 +2665,13 @@ pullback: {ok} / {}", res.len());
         println!("  covered directly : {covered}");
         println!("  nested           : {nested_ok} / {total}   (Lean says this must be total)");
         println!("  uncovered directly: {}", uncovered.len());
+        println!("  PARTNER FUNCTION (is the forced pairing single-valued?):");
+        println!("    functional in 1st component : {pf_first} / {pf_total}");
+        println!("    functional in 2nd component : {pf_second} / {pf_total}");
+        println!("    functional in either        : {pf_either} / {pf_total}");
+        println!("    functional PER ENTRY BRANCH : {pf_branch} / {pf_total}");
+        println!("    mean reachable pairs        : {:.2}",
+            (pf_pairs as f64) / (pf_total.max(1) as f64));
         // Does ONE LEVEL of un-sharing suffice in general?  Tree unfolding always covers,
         // but is infinite on cyclic automata; one level is finite.  Measure it on EVERY
         // uncovered pullback, not just the ones a forward search failed to rescue.

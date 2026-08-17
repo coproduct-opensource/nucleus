@@ -2956,9 +2956,20 @@ theorem completeness_of_diagPullbackCovered (a₀ : A)
   completeness_of_diagPullback a₀ (canonicallySettled_holds a₀) hpc
 
 #print axioms completeness_of_diagPullback
-/-- **The whole programme, as one question about a function.**  Does the padded span admit a
-    partner function: a map from the left component's states to the right's, matched under the
-    quotient, commuting with the entry and with every step? -/
+/-- **REFUTED BY MEASUREMENT — kept for the record, not to be built on.**  A partner function
+    for the padded span essentially never exists: measured over all 4679 total-instance padded
+    kernel pairs at two atoms, the forced pairing is single-valued in **0** of them, in either
+    component.  Restricting to one entry branch at a time — which is what un-sharing does —
+    lifts it only to 623 of 4679.
+
+    The reason is visible in the statement.  `hinit` quantifies over *every* interpretation and
+    atom, so two atoms whose entry lands on the same state of the left component but different
+    states of the right already make `σ` multi-valued, before any run begins.
+
+    So `completeness_of_partner` below is a true implication with an unsatisfiable hypothesis.
+    It is kept because the shape is the informative part: a cover of the pullback *by one side*
+    is exactly a partner function, so the measurement says no such cover exists, and the
+    covering automaton has to be built from the pullback rather than from either component. -/
 def PartnerExists (A T : Type) (a₀ : A) : Prop :=
   ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
     (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
@@ -3001,7 +3012,7 @@ theorem paddedDiagPullbackCovered_of_partner (a₀ : A) (hp : PartnerExists A T 
       ⟨graphDiagCover φ ψ base σ (fun _ => rfl) (fun u => congrFun hmaps u)
         hmatch hinit hcore⟩⟩
 
-/-- **Completeness from the existence of a partner function.** -/
+/-- **Completeness from the existence of a partner function** — vacuous, see above. -/
 theorem completeness_of_partner (a₀ : A) (hp : PartnerExists A T a₀) :
     FiniteAxiomsCompleteBA A T :=
   completeness_of_diagPullbackCovered a₀ (paddedDiagPullbackCovered_of_partner a₀ hp)
