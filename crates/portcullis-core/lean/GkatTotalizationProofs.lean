@@ -2459,6 +2459,122 @@ theorem hasThompsonCover_of_split (g : BExp T) {S : Type} (P : InitializedGAut S
   exact ⟨.ite g h1 h2,
     ⟨(InitCover.ite g χ1 χ2).comp (splitCover g P l₁ l₂ h₁ h₂ hcov)⟩⟩
 
+/-! ### `restrict` — the operation the measurement actually uses
+
+    `relist` was the wrong primitive.  The un-shared parts the search builds carry a
+    **restricted entry**: the copy for a guard region has no entry transition outside it.
+    `relist` keeps the whole pseudostate, so a cover of `relist P l₁` still has to answer for
+    `P`'s entry at the *other* atoms, and `maps` then drags that entry target into `l₁` — which
+    a branch list does not contain.  That is why the branch lists could never instantiate
+    `hasThompsonCover_of_split`, and why the 2181/2181 result was not evidence for it.
+
+    `restrict P l g` fixes it: same core, state list `l`, entry conjoined with `g`.  Then
+    `ite g (restrict P l₁ g) (restrict P l₂ ¬g)` reproduces `P`'s entry — the double guard
+    `g ∧ (g ∧ t)` collapses — and *is* the automaton the search builds. -/
+
+/-- The same automaton with a restricted state list **and** a restricted entry. -/
+def restrict {S : Type} (P : InitializedGAut S A T) (l : List S) (g : BExp T) :
+    InitializedGAut S A T where
+  core := { states := l, hlt := P.core.hlt, trans := P.core.trans }
+  initHlt := .and g P.initHlt
+  initTrans := P.initTrans.map (fun t => (BExp.and g t.1, t.2))
+
+private theorem fmTwice {S X : Type} (W : T → X → Bool) (x : X) (P : BExp T)
+    (F : S → Sum S S) (L : List (BExp T × A × S)) :
+    firstMatch W x ((L.map (fun t => (BExp.and P t.1, t.2))).map
+        (fun t => (BExp.and P t.1, t.2.1, F t.2.2)))
+      = if bval W P x then (firstMatch W x L).map (fun o => (o.1, F o.2)) else none := by
+  induction L with
+  | nil => cases hP : bval W P x <;> simp [firstMatch]
+  | cons hd tl ih =>
+      obtain ⟨q, act, v⟩ := hd
+      simp only [List.map_cons, firstMatch]
+      have hand : bval W (BExp.and P (BExp.and P q)) x
+        = (bval W P x && (bval W P x && bval W q x)) := rfl
+      rw [hand, ih]
+      cases hP : bval W P x <;> cases hq : bval W q x <;> simp
+
+/-- **The restricted split is a cover.**  No side conditions on the lists at all: the two
+    restricted copies list `l₁` and `l₂`, and together they are exactly `l₁ ++ l₂`. -/
+def restrictSplitCover (g : BExp T) {S : Type} (P : InitializedGAut S A T) (l₁ l₂ : List S) :
+    InitCover (iteInitialized g (restrict P l₁ g) (restrict P l₂ (.not g)))
+      (relist P (l₁ ++ l₂)) where
+  map := foldSum
+  initHlt_eq := fun _ W x => by
+    show bval W (BExp.or (BExp.and g (BExp.and g P.initHlt))
+      (BExp.and (BExp.not g) (BExp.and (BExp.not g) P.initHlt))) x = bval W P.initHlt x
+    cases hg : bval W g x <;> simp [bval, hg]
+  coreHlt_eq := fun s _ _ _ => by
+    cases s with
+    | inl _ => rfl
+    | inr _ => rfl
+  initStep_eq := fun X W x => by
+    show (firstMatch W x
+        ((P.initTrans.map (fun t => (BExp.and g t.1, t.2))).map
+            (fun t => (BExp.and g t.1, t.2.1, (Sum.inl t.2.2 : Sum S S))) ++
+         (P.initTrans.map (fun t => (BExp.and (BExp.not g) t.1, t.2))).map
+            (fun t => (BExp.and (BExp.not g) t.1, t.2.1, (Sum.inr t.2.2 : Sum S S))))).map
+        (fun o => (o.1, foldSum o.2))
+      = firstMatch W x P.initTrans
+    have hl := fmTwice (A := A) W x g (fun s : S => (Sum.inl s : Sum S S)) P.initTrans
+    have hr := fmTwice (A := A) W x (BExp.not g)
+      (fun s : S => (Sum.inr s : Sum S S)) P.initTrans
+    have hnot : bval W (BExp.not g) x = !bval W g x := rfl
+    cases hg : bval W g x
+    · rw [firstMatch_append_none _ _ _ _ (by rw [hl, hg]; simp), hr, hnot, hg]
+      cases firstMatch W x P.initTrans <;> simp [foldSum]
+    · cases he : firstMatch W x P.initTrans with
+      | some o =>
+          rw [firstMatch_append_some (x := (o.1, (Sum.inl o.2 : Sum S S)))
+            _ _ _ _ (by rw [hl, hg, he]; simp)]
+          simp [foldSum]
+      | none =>
+          rw [firstMatch_append_none _ _ _ _ (by rw [hl, hg, he]; simp), hr, hnot, hg]
+          simp
+  coreStep_eq := fun s X W x => by
+    cases s with
+    | inl u =>
+        show (firstMatch W x
+            ((P.core.trans u).map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S S))))).map
+            (fun o => (o.1, foldSum o.2))
+          = firstMatch W x (P.core.trans u)
+        rw [firstMatch_map_target_to (F := fun s : S => (Sum.inl s : Sum S S))]
+        cases firstMatch W x (P.core.trans u) <;> simp [foldSum]
+    | inr u =>
+        show (firstMatch W x
+            ((P.core.trans u).map (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S S))))).map
+            (fun o => (o.1, foldSum o.2))
+          = firstMatch W x (P.core.trans u)
+        rw [firstMatch_map_target_to (F := fun s : S => (Sum.inr s : Sum S S))]
+        cases firstMatch W x (P.core.trans u) <;> simp [foldSum]
+  maps := by
+    intro s hs
+    have hs' : s ∈ l₁.map (Sum.inl : S → Sum S S) ++ l₂.map (Sum.inr : S → Sum S S) := hs
+    rcases List.mem_append.mp hs' with h | h
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_append.mpr (Or.inl hu)
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_append.mpr (Or.inr hu)
+  onto := by
+    intro q hq
+    rcases List.mem_append.mp hq with h | h
+    · exact ⟨Sum.inl q, List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨q, h, rfl⟩)), rfl⟩
+    · exact ⟨Sum.inr q, List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨q, h, rfl⟩)), rfl⟩
+
+/-- **Un-sharing, correctly modelled.**  If each restricted branch is coverable, so is the
+    relisting on their union — by `if g then <first> else <second>`. -/
+theorem hasThompsonCover_of_restrictSplit (g : BExp T) {S : Type} (P : InitializedGAut S A T)
+    (l₁ l₂ : List S)
+    (h₁ : HasThompsonCover (restrict P l₁ g))
+    (h₂ : HasThompsonCover (restrict P l₂ (.not g))) :
+    HasThompsonCover (relist P (l₁ ++ l₂)) := by
+  obtain ⟨e₁, ⟨χ₁⟩⟩ := h₁
+  obtain ⟨e₂, ⟨χ₂⟩⟩ := h₂
+  exact ⟨.ite g e₁ e₂, ⟨(InitCover.ite g χ₁ χ₂).comp (restrictSplitCover g P l₁ l₂)⟩⟩
+
+#print axioms restrictSplitCover
+#print axioms hasThompsonCover_of_restrictSplit
+
 /-- **Un-sharing at arbitrary arity.**  A pseudostate's guarded transition list can have any
     number of branches, so the split has to be `n`-ary, not binary.  Any finite family of state
     lists that between them cover the system will do, and the guard is irrelevant — both copies
@@ -3016,6 +3132,61 @@ theorem paddedDiagPullbackCovered_of_partner (a₀ : A) (hp : PartnerExists A T 
 theorem completeness_of_partner (a₀ : A) (hp : PartnerExists A T a₀) :
     FiniteAxiomsCompleteBA A T :=
   completeness_of_diagPullbackCovered a₀ (paddedDiagPullbackCovered_of_partner a₀ hp)
+
+/-! ### The measured construction, as a hypothesis it can actually satisfy
+
+    Three pieces, because the measurement supplies two and the projections demand a third.
+
+      * `l₁`, `l₂` — the two entry branches, each with its entry restricted to its own guard.
+        This is exactly what the search builds, and what it covered 2181 times out of 2181.
+      * the diagonal, which `pullbackOnSnd`'s `onto` needs and the search never built.  Its
+        guard is `¬1`, so its entry never fires, and a piece with a dead entry should be
+        covered by `0? ; padOne` — the leading `0?` kills the entry and contributes no states,
+        while `padOne`'s states map onto the diagonal by `u ↦ (u, u)`, which type-checks
+        because the padded pair shares its core.  That is a construction rather than a
+        conjecture, but it is left as the third conjunct here until it is actually built:
+        claiming it without the proof is how three earlier reductions turned out vacuous.
+
+    The two branch pieces are combined first, under the guard `1`, and the diagonal is attached
+    on the outside — so the diagonal's copy is entered on no atom at all, which is what makes
+    its dead entry harmless. -/
+def RestrictedBranchesCovered (A T : Type) (a₀ : A) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ), φ.map = ψ.map →
+    ∃ (g : BExp T) (l₁ l₂ : List (GkatPullback.Fib φ ψ)),
+      (∀ s ∈ List.append (List.append l₁ l₂) (diagList φ ψ base),
+        s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
+      HasThompsonCover
+        (restrict (restrict (GkatPullback.pullback φ ψ base) (List.append l₁ l₂) BExp.one)
+          l₁ g) ∧
+      HasThompsonCover
+        (restrict (restrict (GkatPullback.pullback φ ψ base) (List.append l₁ l₂) BExp.one)
+          l₂ (.not g)) ∧
+      HasThompsonCover
+        (restrict (GkatPullback.pullback φ ψ base) (diagList φ ψ base) (.not BExp.one))
+
+theorem paddedDiagPullbackCovered_of_restrictedBranches (a₀ : A)
+    (hr : RestrictedBranchesCovered A T a₀) : PaddedDiagPullbackCovered A T a₀ := by
+  intro e f Q m φ ψ base hmaps
+  obtain ⟨g, l₁, l₂, hsub, h₁, h₂, h₃⟩ := hr e f Q m φ ψ base hmaps
+  refine ⟨List.append (List.append l₁ l₂) (diagList φ ψ base), hsub, ?_, ?_⟩
+  · intro u hu
+    exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩))
+  · have hmid := hasThompsonCover_of_restrictSplit g
+      (restrict (GkatPullback.pullback φ ψ base) (List.append l₁ l₂) BExp.one) l₁ l₂ h₁ h₂
+    exact hasThompsonCover_of_restrictSplit BExp.one (GkatPullback.pullback φ ψ base)
+      (List.append l₁ l₂) (diagList φ ψ base) hmid h₃
+
+/-- **Completeness from the measured construction.** -/
+theorem completeness_of_restrictedBranches (a₀ : A)
+    (hr : RestrictedBranchesCovered A T a₀) : FiniteAxiomsCompleteBA A T :=
+  completeness_of_diagPullbackCovered a₀
+    (paddedDiagPullbackCovered_of_restrictedBranches a₀ hr)
+
+#print axioms paddedDiagPullbackCovered_of_restrictedBranches
+#print axioms completeness_of_restrictedBranches
 
 #print axioms completeness_of_diagPullbackCovered
 #print axioms paddedDiagPullbackCovered_of_partner
