@@ -268,6 +268,94 @@ theorem sumQuotientSolvable_diagonal (e : Exp A T) :
   ⟨Option (certifiedThompson A T e).State, (certifiedThompson A T e).aut.toGAut,
     codiagonalQuotient _, extendedSolution e, toGAut_solvable e, rfl⟩
 
+/-! ## A common Thompson target discharges the conjunct
+
+    This is the crystallization transposition recorded in `GkatCrystallizationProofs`: rather
+    than collapse `Me + Mf` behaviourally and then ask whether the collapse is solvable, ask
+    for the common target to be SYNTAX-GENERATED — the Thompson automaton of a third program.
+    For such a target solvability is free, because `toGAut_solvable` supplies the solution.
+
+    It also connects the swapped conjunct back to the object the search harness actually looks
+    for, so the measurements and the Lean statement are about the same thing. -/
+
+/-- Map fusion through a sum-elimination, left injection. -/
+private theorem map_elim_left {S₁ S₂ R : Type} (F : S₁ → R) (G : S₂ → R)
+    (l : List (BExp T × A × S₁)) :
+    ((l.map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂)))).map
+        (fun t => (t.1, t.2.1, Sum.elim F G t.2.2))) =
+      l.map (fun t => (t.1, t.2.1, F t.2.2)) := by
+  induction l with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.map_cons, ih]; rfl
+
+/-- Map fusion through a sum-elimination, right injection. -/
+private theorem map_elim_right {S₁ S₂ R : Type} (F : S₁ → R) (G : S₂ → R)
+    (l : List (BExp T × A × S₂)) :
+    ((l.map (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂)))).map
+        (fun t => (t.1, t.2.1, Sum.elim F G t.2.2))) =
+      l.map (fun t => (t.1, t.2.1, G t.2.2)) := by
+  induction l with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.map_cons, ih]; rfl
+
+/-- Co-pairing of two homomorphisms into a common target. -/
+def elimSum {S₁ S₂ R : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T} {tgt : GAut R A T}
+    (φ₁ : GAutHom aut₁ tgt) (φ₂ : GAutHom aut₂ tgt) : GAutHom (sumGAut aut₁ aut₂) tgt where
+  mapState := Sum.elim φ₁.mapState φ₂.mapState
+  maps_states := by
+    intro s hs
+    simp only [sumGAut, List.mem_append, List.mem_map] at hs
+    rcases hs with ⟨t, ht, rfl⟩ | ⟨t, ht, rfl⟩
+    · exact φ₁.maps_states t ht
+    · exact φ₂.maps_states t ht
+  hlt_eq := by intro s; cases s with
+    | inl s => exact φ₁.hlt_eq s
+    | inr s => exact φ₂.hlt_eq s
+  trans_eq := by
+    intro s
+    cases s with
+    | inl s =>
+        show tgt.trans (φ₁.mapState s) =
+          ((aut₁.trans s).map (fun t => (t.1, t.2.1, (Sum.inl t.2.2 : Sum S₁ S₂)))).map
+            (fun t => (t.1, t.2.1, Sum.elim φ₁.mapState φ₂.mapState t.2.2))
+        rw [map_elim_left]; exact φ₁.trans_eq s
+    | inr s =>
+        show tgt.trans (φ₂.mapState s) =
+          ((aut₂.trans s).map (fun t => (t.1, t.2.1, (Sum.inr t.2.2 : Sum S₁ S₂)))).map
+            (fun t => (t.1, t.2.1, Sum.elim φ₁.mapState φ₂.mapState t.2.2))
+        rw [map_elim_right]; exact φ₂.trans_eq s
+
+/-- **A common syntax-generated target discharges the swapped conjunct.**  If both Thompson
+    automata map homomorphically onto the Thompson automaton of a third program, sending
+    pseudostate to pseudostate, then the quotient data `SumQuotientSolvable` demands exists —
+    and the solution is free, being the third program's own extended standard solution.
+
+    So the open conjunct is implied by the existence of a common Thompson target, which is
+    exactly what the search harness enumerates. -/
+theorem sumQuotientSolvable_of_common_thompson (e f h : Exp A T)
+    (φ₁ : GAutHom (certifiedThompson A T e).aut.toGAut (certifiedThompson A T h).aut.toGAut)
+    (φ₂ : GAutHom (certifiedThompson A T f).aut.toGAut (certifiedThompson A T h).aut.toGAut)
+    (honto : ∀ q ∈ (certifiedThompson A T h).aut.toGAut.states,
+      ∃ s, s ∈ (sumGAut (certifiedThompson A T e).aut.toGAut
+                        (certifiedThompson A T f).aut.toGAut).states ∧
+        Sum.elim φ₁.mapState φ₂.mapState s = q)
+    (hs₁ : φ₁.mapState none = none) (hs₂ : φ₂.mapState none = none) :
+    ∃ (Q : Type) (quot : GAut Q A T)
+      (π : UniformBehavioralGAutQuotient
+            (sumGAut (certifiedThompson A T e).aut.toGAut
+                     (certifiedThompson A T f).aut.toGAut) quot)
+      (qsol : Q → Exp A T),
+      SolvesBA quot qsol ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) := by
+  refine ⟨Option (certifiedThompson A T h).State, (certifiedThompson A T h).aut.toGAut,
+    { mapState := Sum.elim φ₁.mapState φ₂.mapState
+      maps_states := (elimSum φ₁ φ₂).maps_states
+      onto_states := honto
+      bisim_graph := fun X W => gAutHom_bisim (elimSum φ₁ φ₂) W },
+    extendedSolution h, toGAut_solvable h, ?_⟩
+  show φ₁.mapState none = φ₂.mapState none
+  rw [hs₁, hs₂]
+
 /-! ## The swap -/
 
 /-- **The open conjunct, weakened.**  For uniformly equivalent `e` and `f`, some behavioural
@@ -315,6 +403,7 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms toGAut_solvable
 #print axioms gAutHom_bisim
 #print axioms sumQuotientSolvable_diagonal
+#print axioms sumQuotientSolvable_of_common_thompson
 #print axioms completeness_of_sumQuotientSolvable
 
 end GkatSumQuotient
