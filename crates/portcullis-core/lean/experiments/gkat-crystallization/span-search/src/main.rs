@@ -3657,7 +3657,45 @@ pullback: {ok} / {}", res.len());
                     let mut it3 = [0u8; NA];
                     it3[0] = 1;
                     let f3 = Aut::<NA> { k: 2, it: it3, ih: 0, st, hl };
-                    println!("  FIGURE 3 (inexpressible — every sound test MUST reject):");
+                    {
+                    // THE SOUNDNESS CONTROL, as a POPULATION rather than one instance.
+                    // The nesting coequation is an IFF: a GKAT automaton's states behave like
+                    // GKAT programs exactly when it lies in the covariety.  A solution makes
+                    // every state's behaviour expressible (`sem_solves_autLang`), so a
+                    // NON-NESTED automaton provably has NO SOLUTION.  Every sound procedure
+                    // must reject all of them; the rejection rate IS the soundness measure.
+                    let mut rng: u64 = 0xD1B54A32D192ED03;
+                    let mut rnd = move || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+                    let (mut n, mut rs, mut rp, mut rl) = (0usize, 0usize, 0usize, 0usize);
+                    let mut tried = 0usize;
+                    while n < 5000 && tried < 4000000 {
+                        tried += 1;
+                        let kk = 4 + (rnd() % 5) as usize;
+                        let mut st = [[0u8; NA]; MAXK];
+                        let mut hl = [0u8; MAXK];
+                        for x in 0..kk {
+                            hl[x] = (rnd() % 4) as u8;
+                            for y in 0..NA {
+                                let r = rnd() % ((kk + 1) as u64);
+                                st[x][y] = if r == 0 { 0 } else { r as u8 };
+                            }
+                        }
+                        let mut it0 = [0u8; NA];
+                        for y in 0..NA { it0[y] = (rnd() % ((kk + 1) as u64)) as u8; }
+                        let ra = Aut::<NA> { k: kk as u8, it: it0, ih: (rnd() % 4) as u8, st, hl };
+                        let ra = match canon(&ra) { Some(c) => c, None => continue };
+                        if nested(&ra) { continue; }          // keep only the must-reject ones
+                        n += 1;
+                        if !symbolic_eliminable(&ra) { rs += 1; }
+                        if !peelable(&ra) { rp += 1; }
+                        if !llee(&ra) { rl += 1; }
+                    }
+                    println!("  SOUNDNESS CONTROL — non-nested automata (NO solution exists):");
+                    println!("    symbolic elimination rejects : {rs} / {n}   (must be all)");
+                    println!("    peelable rejects             : {rp} / {n}   (must be all)");
+                    println!("    llee rejects                 : {rl} / {n}   (must be all)");
+                }
+                println!("  FIGURE 3 (inexpressible — every sound test MUST reject):");
                     println!("    symbolic elimination : {}", symbolic_eliminable(&f3));
                     println!("    peelable             : {}", peelable(&f3));
                     println!("    llee                 : {}", llee(&f3));
