@@ -4210,16 +4210,34 @@ pullback: {ok} / {}", res.len());
                     println!("    full collapse       : {fn_} / {ftot2}");
                 }
                 {
+                    // PRECOMPUTED PER-PAIR FACTS.  The measurement section iterated `crux`
+                    // twenty times and recomputed `symbolic_eliminable` on fourteen of those
+                    // passes — a backtracking search with a 2M-node budget, redone per block.
+                    // Computing it once in parallel makes the whole section one pass over the
+                    // pairs instead of fourteen.
+                    let facts: Vec<(bool, Option<Aut<NA>>)> = crux
+                        .par_iter()
+                        .map(|&(i, j)| match sum_core(&list[i], &list[j]) {
+                            None => (false, None),
+                            Some(su) => {
+                                let e = symbolic_eliminable(&su);
+                                let (blk, nb0) = bisim_blocks(&su);
+                                let q = quotient_by(&su, &blk, nb0).and_then(|q| canon(&q));
+                                (e, q)
+                            }
+                        })
+                        .collect();
+
                     // THE UNSOLVED QUOTIENTS, characterised against a same-population base rate.
                     let (mut fh, mut fn_, mut oh2, mut on2) = (0usize, 0usize, 0usize, 0usize);
                     let (mut fsz, mut osz) = (0usize, 0usize);
                     let mut shown = 0;
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             let (blk, nb) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
                             let th = two_halt_cycle(&q).is_some();
-                            if symbolic_eliminable(&su) {
+                            if facts[ci].0 {
                                 on2 += 1; osz += nb; if th { oh2 += 1; }
                             } else {
                                 fn_ += 1; fsz += nb; if th { fh += 1; }
@@ -4239,10 +4257,10 @@ pullback: {ok} / {}", res.len());
                     // testing only its top understates what the hypothesis allows.  Take the
                     // union over the two endpoints already computed.
                     let (mut anyq, mut anyn) = (0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             anyn += 1;
-                            let top = symbolic_eliminable(&su);
+                            let top = facts[ci].0;
                             let bot = match min_congruence(&list[i], &list[j]) {
                                 Some(q) => symbolic_eliminable_raw(&q),
                                 None => false,
@@ -4253,7 +4271,7 @@ pullback: {ok} / {}", res.len());
                     println!("  SOLVABLE AT EITHER END OF THE LATTICE (what the definition allows):");
                     println!("    top or bottom : {anyq} / {anyn}");
                     let (mut latq, mut latn) = (0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             latn += 1;
                             if solvable_somewhere_in_lattice(&su) { latq += 1; }
@@ -4272,9 +4290,9 @@ pullback: {ok} / {}", res.len());
                     // that quotient is UNSOLVABLE and the live conjunct is refuted.  A negative
                     // is inconclusive — the pool is bounded — but a positive is not.
                     let (mut allexp, mut expn, mut nst) = (0usize, 0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
-                            if symbolic_eliminable(&su) { continue; }
+                            if facts[ci].0 { continue; }
                             let (blk, nb) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
                             expn += 1;
@@ -4294,9 +4312,9 @@ pullback: {ok} / {}", res.len());
                     // rather than expressibility.  Same check on quotients the procedure SOLVES,
                     // which therefore provably have all states expressible.
                     let (mut sexp, mut sexpn) = (0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
-                            if !symbolic_eliminable(&su) { continue; }
+                            if !facts[ci].0 { continue; }
                             let (blk, nb) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb) { Some(q) => q, None => continue };
                             sexpn += 1;
@@ -4313,9 +4331,9 @@ pullback: {ok} / {}", res.len());
                     }
                     // DISTANCE FROM GKAT: fewest KA-only steps that make it solvable.
                     let mut dist = [0usize; 6];
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
-                            if symbolic_eliminable(&su) { continue; }
+                            if facts[ci].0 { continue; }
                             let (blk, nb0) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                             let kq = q.k as usize;
@@ -4342,12 +4360,12 @@ pullback: {ok} / {}", res.len());
                     // a solution (the standard one), so the KA step is the PROCEDURE's need,
                     // not the system's — and "distance 1" is incompleteness, not obstruction.
                     let (mut fpool, mut fpn, mut spool, mut spn) = (0usize, 0usize, 0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             let (blk, nb0) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                             let inpool = canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false);
-                            if symbolic_eliminable(&su) { spn += 1; if inpool { spool += 1; } }
+                            if facts[ci].0 { spn += 1; if inpool { spool += 1; } }
                             else { fpn += 1; if inpool { fpool += 1; } }
                         }
                     }
@@ -4384,10 +4402,10 @@ pullback: {ok} / {}", res.len());
                         // witness of the missing move, since such a system provably has the
                         // standard solution and the failure is therefore procedural.
                         let mut shown = 0;
-                        for &(i, j) in crux.iter() {
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
                             if shown >= 2 { break; }
                             if let Some(su) = sum_core(&list[i], &list[j]) {
-                                if symbolic_eliminable(&su) { continue; }
+                                if facts[ci].0 { continue; }
                                 let (blk, nb0) = bisim_blocks(&su);
                                 let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                                 let c = match canon(&q) { Some(c) => c, None => continue };
@@ -4407,10 +4425,10 @@ pullback: {ok} / {}", res.len());
                     // so it carries the standard solution outright.  Their disjunction is still
                     // sound and strictly stronger than either.
                     let (mut comb, mut combn) = (0usize, 0usize);
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             combn += 1;
-                            if symbolic_eliminable(&su) { comb += 1; continue; }
+                            if facts[ci].0 { comb += 1; continue; }
                             let (blk, nb0) = bisim_blocks(&su);
                             if let Some(q) = quotient_by(&su, &blk, nb0) {
                                 if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) {
@@ -4424,9 +4442,9 @@ pullback: {ok} / {}", res.len());
                     // `wh` preserves size, so the closure reaches it by induction.  So for the
                     // unknown quotients, size decides whether "not in the pool" is informative.
                     let mut szhist = [0usize; 12];
-                    for &(i, j) in crux.iter() {
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
-                            if symbolic_eliminable(&su) { continue; }
+                            if facts[ci].0 { continue; }
                             let (blk, nb0) = bisim_blocks(&su);
                             if let Some(q) = quotient_by(&su, &blk, nb0) {
                                 if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { continue; }
@@ -4440,9 +4458,9 @@ pullback: {ok} / {}", res.len());
                         // reduces to: 3 states, nested, not eliminable, not Thompson-generated.
                         let mut shown = 0;
                         let mut distinct: Vec<Aut<NA>> = Vec::new();
-                        for &(i, j) in crux.iter() {
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
                             if let Some(su) = sum_core(&list[i], &list[j]) {
-                                if symbolic_eliminable(&su) { continue; }
+                                if facts[ci].0 { continue; }
                                 let (blk, nb0) = bisim_blocks(&su);
                                 if let Some(q) = quotient_by(&su, &blk, nb0) {
                                     if let Some(c) = canon(&q) {
@@ -4471,9 +4489,9 @@ pullback: {ok} / {}", res.len());
                         let mut fper = [0usize; 8];
                         let mut sper = [0usize; 8];
                         let (mut fn3, mut sn3) = (0usize, 0usize);
-                        for &(i, j) in crux.iter() {
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
                             if let Some(su) = sum_core(&list[i], &list[j]) {
-                                let elim = symbolic_eliminable(&su);
+                                let elim = facts[ci].0;
                                 let (blk, nb0) = bisim_blocks(&su);
                                 let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                                 let c = match canon(&q) { Some(c) => c, None => continue };
@@ -4490,9 +4508,9 @@ pullback: {ok} / {}", res.len());
                         // residue is where that lcm exceeds what the moves reach, the period
                         // signal has a mechanism rather than being a correlation.
                         let (mut flcm, mut fpn2, mut slcm, mut spn2) = (0usize, 0usize, 0usize, 0usize);
-                        for &(i, j) in crux.iter() {
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
                             if let Some(su) = sum_core(&list[i], &list[j]) {
-                                let elim = symbolic_eliminable(&su);
+                                let elim = facts[ci].0;
                                 let (blk, nb0) = bisim_blocks(&su);
                                 let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                                 let c = match canon(&q) { Some(c) => c, None => continue };
@@ -4506,6 +4524,35 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                         let pc4 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                        {
+                            // DIRECT CHECK of the closure argument.  Unknown #1 can be written
+                            // by hand as `wh ¬a (p ; ite a 1 (p;p))`.  If that is right it is
+                            // Thompson with 3 states, so the closure MUST contain it — and if
+                            // it does not, the "not in pool ⟹ not Thompson" inference is wrong.
+                            let pp = a_seq(&a_act::<NA>(), &a_act::<NA>());
+                            if let Some(pp) = pp {
+                                for g in 0..(1u8 << NA) {
+                                    for g2 in 0..(1u8 << NA) {
+                                        let inner = a_ite(g2, &a_test::<NA>(3), &pp);
+                                        if let Some(inner) = inner {
+                                            if let Some(body) = a_seq(&a_act::<NA>(), &inner) {
+                                                let w = a_wh(g, &body);
+                                                if let Some(c) = canon(&w) {
+                                                    if c.k == 3 {
+                                                        let inp = seen.contains_key(&c);
+                                                        println!("    HAND EXPR g={g} g2={g2} -> k=3 it={:?} ih={} inpool={}",
+                                                            &c.it[..NA], c.ih, inp);
+                                                        for t in 0..3 {
+                                                            println!("        s{t}: st={:?} hl={:b}", &c.st[t][..NA], c.hl[t]);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         println!("  DO THE SOURCES HAVE COPRIME PERIODS?  (3-state, size-controlled)");
                         println!("    unsolved : {flcm} / {fpn2}  ({:.1}%)", pc4(flcm, fpn2));
                         println!("    solved   : {slcm} / {spn2}  ({:.1}%)", pc4(slcm, spn2));
