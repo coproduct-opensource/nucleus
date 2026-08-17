@@ -4335,6 +4335,33 @@ pullback: {ok} / {}", res.len());
                     }
                     let pc3 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
                     {
+                        // WORKED BY HAND — why elimination cannot reach these, in principle.
+                        //
+                        // A witness this prints, with b = atom 0:
+                        //     s0: b -> s1, ¬b -> reject      s1: b -> s1, ¬b -> s2
+                        //     s2: b -> s3, ¬b -> HALT        s3: b -> s1, ¬b -> HALT
+                        // as an equation system:
+                        //     s(s0) ≡ p0·s(s1) +_b 0
+                        //     s(s1) ≡ p1·s(s1) +_b q1·s(s2)
+                        //     s(s2) ≡ p2·s(s3) +_b 1
+                        //     s(s3) ≡ p3·s(s1) +_b 1
+                        //
+                        // Eliminating s3 then s2 then s1 gives
+                        //     s(s1) ≡ p1·s(s1) +_b q1·(p2·(p3·s(s1) +_b 1) +_b 1)
+                        // and eliminating s1 first gives
+                        //     s(s2) ≡ p2·(p3·p1^(b)·q1·s(s2) +_b 1) +_b 1
+                        // Both end at `X ≡ p2·(A·X +_b 1) +_b 1`: X nested under a prefix with
+                        // the other branch a bare `1`.  Isolating X needs p2 distributed over
+                        // +_b, and the guard is evaluated AFTER p2 runs — `left_distrib_fails`.
+                        //
+                        // This automaton is IN THE POOL, so it carries the standard solution.
+                        // The system is solvable and elimination cannot solve it: the standard
+                        // solution is read off the SYNTAX, assigning each state "the rest of the
+                        // program", which the equation system does not carry.  So elimination
+                        // cannot replace structure recovery on the instances that matter, and
+                        // every purely-elimination fix here has been null for that reason —
+                        // copies 0/462, flags 0/462, nested entries 0, atom-indexed leaves 0.
+                        //
                         // One quotient that IS Thompson yet defeats elimination: a reproducible
                         // witness of the missing move, since such a system provably has the
                         // standard solution and the failure is therefore procedural.
