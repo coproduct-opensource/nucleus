@@ -1830,6 +1830,24 @@ fn solvable_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>) -> bool {
     false
 }
 
+/// Render a closure member as the expression it was built from.  The pool is closed under
+/// `a_wh`/`a_seq`/`a_ite` starting from tests and actions, so every member IS the Thompson
+/// automaton of an expression, and its provenance is that expression.
+fn expr_of<const NA: usize>(list: &[Aut<NA>], prov: &[Prov], idx: u32, d: usize) -> String {
+    if d == 0 { return "…".to_string(); }
+    match prov[idx as usize] {
+        Prov::Leaf => {
+            let a = &list[idx as usize];
+            if a.k == 0 { format!("[t{}]", a.ih) } else { "p".to_string() }
+        }
+        Prov::Seq(l, r) => format!("({};{})", expr_of(list, prov, l, d - 1),
+                                              expr_of(list, prov, r, d - 1)),
+        Prov::Ite(g, l, r) => format!("({} +{} {})", expr_of(list, prov, l, d - 1), g,
+                                                     expr_of(list, prov, r, d - 1)),
+        Prov::Wh(g, b) => format!("({})^{}", expr_of(list, prov, b, d - 1), g),
+    }
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -4375,7 +4393,9 @@ pullback: {ok} / {}", res.len());
                                 let c = match canon(&q) { Some(c) => c, None => continue };
                                 if !seen.contains_key(&c) { continue; }
                                 shown += 1;
+                                let widx = seen[&c];
                                 println!("    IN-POOL YET UNSOLVED  k={} it={:?} ih={}", c.k, &c.it[..NA], c.ih);
+                                println!("      EXPRESSION: {}", expr_of(&list, &prov, widx, 14));
                                 for t in 0..c.k as usize {
                                     println!("      s{t}: st={:?} hl={:b}", &c.st[t][..NA], c.hl[t]);
                                 }
