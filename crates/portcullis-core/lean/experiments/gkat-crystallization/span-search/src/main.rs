@@ -2808,6 +2808,95 @@ pullback: {ok} / {}", res.len());
             println!("    too big (> MAXK)    : {us_big}");
             println!("    fully exhibited     : {us_exhibited}");
             println!("    one level FAILS     : {}", us_fail.len());
+            // THE BRANCH ROUTE, MEASURED PROPERLY.  "fully exhibited" only asked whether each
+            // part is ITSELF in the pool.  The route needs each part to be COVERED, which is
+            // weaker — well-nested automata are not closed under homomorphic images, so a
+            // part can be covered without being one.  Parts bigger than the cap were never
+            // testable by lookup at all.
+            if std::env::var("PAD_PARTSFULL").is_ok() {
+                let rounds = std::env::var("PAD_PF_ROUNDS").ok()
+                    .and_then(|v| v.parse::<usize>().ok()).unwrap_or(3);
+                let frcap = std::env::var("PAD_PF_FRONTIER").ok()
+                    .and_then(|v| v.parse::<usize>().ok()).unwrap_or(60000);
+                // collect distinct parts
+                let mut parts: Vec<Aut<NA>> = Vec::new();
+                let mut index: FxMap<Aut<NA>, usize> = FxMap::default();
+                let mut per: Vec<(usize, usize)> = Vec::new();
+                for p in uncovered.iter() {
+                    match unshare_parts(p) {
+                        None => per.push((usize::MAX, usize::MAX)),
+                        Some((_, a, b)) => {
+                            let mut ids = [usize::MAX; 2];
+                            for (k, q) in [&a, &b].iter().enumerate() {
+                                if q.k == 0 { continue; }
+                                if let Some(c) = canon(q) {
+                                    let id = *index.entry(c.clone()).or_insert_with(|| {
+                                        parts.push(c.clone()); parts.len() - 1 });
+                                    ids[k] = id;
+                                }
+                            }
+                            per.push((ids[0], ids[1]));
+                        }
+                    }
+                }
+                let mut done = vec![false; parts.len()];
+                let mut groups: FxMap<Vec<u8>, Vec<usize>> = FxMap::default();
+                for (i, q) in parts.iter().enumerate() {
+                    groups.entry(behaviour(q)).or_default().push(i);
+                }
+                let mut explored_tot = 0usize;
+                for (beh, idxs) in groups.iter() {
+                    let seeds = match by_beh.get(beh) { Some(v) => v, None => continue };
+                    for &i in idxs.iter() {
+                        if let Some(c) = canon(&parts[i]) {
+                            if seeds.iter().any(|&n| list[n] == c) { done[i] = true; }
+                        }
+                    }
+                    if idxs.iter().all(|&i| done[i]) { continue; }
+                    let mut pool = Pool::<NA>::new();
+                    let mut frontier: Vec<u32> = Vec::new();
+                    let mut seen: FxSet<u32> = FxSet::default();
+                    for &n in seeds.iter() {
+                        let r = pool.of_prov(&list, &prov, n as u32);
+                        if seen.insert(r) { frontier.push(r); }
+                    }
+                    for _ in 0..rounds {
+                        let mut next: Vec<u32> = Vec::new();
+                        for &t in frontier.iter() {
+                            refinements(&mut pool, t, nguards, true, true, 3, 3, &mut next);
+                        }
+                        let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                        for t in next {
+                            if !seen.insert(t) { continue; }
+                            explored_tot += 1;
+                            if let Some(a) = pool.aut(t) {
+                                if let Some(c) = canon(&a) {
+                                    for &i in idxs.iter() {
+                                        if !done[i] && covers(&c, &parts[i]) { done[i] = true; }
+                                    }
+                                }
+                            }
+                            keep.push(t);
+                        }
+                        frontier = keep;
+                        if frontier.len() > frcap { frontier.truncate(frcap); }
+                        if idxs.iter().all(|&i| done[i]) { break; }
+                    }
+                }
+                let pdone = done.iter().filter(|&&b| b).count();
+                let mut both = 0usize;
+                for &(x, y) in per.iter() {
+                    let ok = |i: usize| i == usize::MAX || done[i];
+                    if x != usize::MAX || y != usize::MAX {
+                        if ok(x) && ok(y) { both += 1; }
+                    }
+                }
+                println!("  BRANCH ROUTE, parts COVERED (not just in pool):");
+                println!("    distinct parts        : {}", parts.len());
+                println!("    parts covered         : {pdone} / {}", parts.len());
+                println!("    pullbacks with BOTH   : {both} / {}", uncovered.len());
+                println!("    explored              : {explored_tot}");
+            }
             // Does the recursion close?  Each branch piece is strictly smaller, so if every
             // piece eventually lands in the pool the induction is well-founded.
             let budget = std::env::var("PAD_REC_DEPTH").ok()
