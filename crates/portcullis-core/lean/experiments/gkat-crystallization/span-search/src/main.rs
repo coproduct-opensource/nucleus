@@ -1395,6 +1395,26 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
         }
     }
     let mut budget = 2000000usize;
+    // REFUTED — TUPLE VARIABLES.  The loop entry is a pseudostate, an atom-indexed list, so
+    // the natural repair is to add it as a VARIABLE of the system rather than as a state:
+    // `s(Z) ≡ Σ_y α_y? s(ent[y])` is an ordinary guarded union, and once the tuple is one
+    // variable every back edge of the loop targets Z, which is what W0 needs.
+    //
+    // Implemented as "replace the bit for ent[y] by Z in every branch at atom y", it is
+    // UNSOUND: soundness fell 5000/5000 -> 162/5000 and Figure 3 was accepted.
+    //
+    // The reason is an off-by-one in the atom, and it is worth stating because it recurs.  A
+    // leaf `p·s(t)` in the branch at atom y has its variable evaluated at the atom AFTER the
+    // action fires, not at y.  Z agrees with `ent[y]` only AT y, so substituting it for the
+    // leaf equates two things indexed by different atoms.  On Figure 3 that collapses the
+    // 2-cycle to a pure halt and the automaton is wrongly accepted.
+    //
+    // The corrected form is a different rewrite, not a patch of this one.  Back edges fire at
+    // atom y and perform the ENTRY's action, so a body state u whose branches on a set b of
+    // atoms coincide with the entry's own branches satisfies `s(u) ≡ b?·s(Z) +_b f` — the
+    // reference to Z consumes NO action and stays at the same atom.  That needs the
+    // abstraction to distinguish same-atom references from after-action ones, which it does
+    // not currently do.
     elim_search::<NA>(&mut l, &mut free, (1u16 << nb) - 1, nb, &mut budget)
 }
 
@@ -1587,6 +1607,17 @@ fn min_congruence<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> Option<Aut<NA>> 
         };
     }
     quotient_by(&su, &blk, seen.len())
+}
+
+/// Does some state INSIDE a cycle halt?  This is the automaton-level reading of "not
+/// skip-free": the skip-free fragment restricts Boolean statements to control positions, so no
+/// `assert` sits in a loop body, and halting inside a cycle is exactly what that excludes.
+/// Skip-free GKAT is known to be COMPLETE WITHOUT UA, so if the systems elimination stalls on
+/// are the ones halting mid-cycle, this file's frontier and the literature's coincide.
+fn halt_in_cycle<const NA: usize>(a: &Aut<NA>) -> bool {
+    orbits(a).iter().any(|&o| {
+        (0..a.k as usize).any(|u| o & (1 << u) != 0 && a.hl[u] != 0)
+    })
 }
 
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
@@ -4049,6 +4080,16 @@ pullback: {ok} / {}", res.len());
                         else { sn += 1; if th { sh += 1; } }
                     }
                     let pc = |x: usize, n: usize| if n == 0 { 0.0 } else { 100.0 * x as f64 / n as f64 };
+                    let pc = |x: usize, n: usize| if n == 0 { 0.0 } else { 100.0 * x as f64 / n as f64 };
+                    let (mut sc, mut oc) = (0usize, 0usize);
+                    for (i, a) in list.iter().enumerate() {
+                        if i % step2 != 0 { continue; }
+                        let hc = halt_in_cycle(a);
+                        if symbolic_eliminable(a) { if hc { oc += 1; } } else if hc { sc += 1; }
+                    }
+                    println!("  IS THE FRONTIER 'NOT SKIP-FREE'?  (halts inside a cycle)");
+                    println!("    stalled  halting mid-cycle   : {sc} / {sn}  ({:.1}%)", pc(sc, sn));
+                    println!("    eliminating, same feature    : {oc} / {on}  ({:.1}%)", pc(oc, on));
                     println!("  WHICH SHAPE STALLS ELIMINATION?  (two-halt cycle, with base rate)");
                     println!("    stalled  with two-halt cycle : {sh} / {sn}  ({:.1}%)", pc(sh, sn));
                     println!("    eliminating, same feature    : {oh} / {on}  ({:.1}%)", pc(oh, on));
