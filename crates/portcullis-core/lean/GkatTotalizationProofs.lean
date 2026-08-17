@@ -82,15 +82,23 @@ Totalising *adds* transitions, and the induction hypothesis survives every const
   * **dead-canonicity is inherited by the padding** — `deadCanonical_ite`,
     `deadCanonical_div`, proved.
 
-`CanonicallySettled` is itself reduced further by `canonicallySettled_of_bridge`: both
-normalisations are proved — `settledReachable_loopProductive` for settling, `nrm` /
-`nrm_equiv` / `settled_nrm` for exact dead-code elimination — leaving one statement,
-`LiveImpliesCanonical`, that syntactic liveness implies automaton-level dead-canonicity.
-`completeness_of_bridge` therefore derives completeness from `LiveImpliesCanonical` and
-`PullbackCovered`, and nothing else — and homogeneity
-(`actionLabelled_thompson`, `deadCanonical_of_deadStates`) rewrites the first with the
-transitions removed, as `DeadStatesAreSinks`: every uniformly dead state is an occurrence of
-`a₀`.
+`CanonicallySettled` is discharged too, by `canonicallySettled_holds`.  Both normalisations
+are proved — `settledReachable_loopProductive` for settling, `nrm` / `nrm_equiv` /
+`settled_nrm` / `live_nrm` for exact dead-code elimination — and so is the bridge between
+them, in three steps:
+
+  * **homogeneity** (`actionLabelled_thompson`) — the construction is a position automaton, so
+    every transition into a state carries that state's own action.  `DeadCanonical` therefore
+    stops being about transitions: it says every dead state is an occurrence of `a₀`.
+  * **residuality** (`standard_null_of_dead`) — each state's language is the denotation of its
+    state expression, so "dead" becomes "this residual accepts nothing", in syntax.
+  * **the match** (`deadStates_of_live`) — at every position, the residual is exactly the
+    continuation `Live` was checking.  So a dead occurrence contradicts liveness, except at
+    the sink, which is exempt and labelled `a₀`.
+
+So `completeness_of_pullbackCovered` derives `FiniteAxiomsCompleteBA` from `PullbackCovered`
+**alone**.  Uniqueness, productivity, reachability, non-nullity, the common target and
+dead-canonicity are all theorems now.
 
 The identification that makes the sink legitimate is the one the literature calls the
 **early-termination property** — programs that fail immediately are equated with programs
@@ -2070,8 +2078,8 @@ theorem deadCanonical_of_deadStates (p : Exp A T) (a₀ : A)
     sum-interpretation transfer to move a witness found under one interpretation into the one
     at hand. -/
 def LiveImpliesCanonical (A T : Type) (a₀ : A) : Prop :=
-  ∀ h K : Exp A T, Live a₀ h K →
-    DeadCanonical a₀ (certifiedThompson A T (.seq h K)).aut
+  ∀ h : Exp A T, Live a₀ h (.test BExp.one) →
+    DeadCanonical a₀ (certifiedThompson A T h).aut
 
 /-- **`CanonicallySettled` reduces to that bridge.**  Both normalisations are proved; only the
     soundness of the elimination is left. -/
@@ -2079,12 +2087,9 @@ theorem canonicallySettled_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a
     CanonicallySettled A T a₀ := by
   intro e
   obtain ⟨h, hh, hs, hl⟩ := settledReachable_loopProductive a₀ e
-  refine ⟨.seq (nrm a₀ h (.test BExp.one)) (.test BExp.one), ?_,
-    Settled.seq (settled_nrm a₀ h hs hl _) Settled.one, ?_⟩
-  · exact EquivBA.trans hh
-      (EquivBA.trans (nrm_top_equiv a₀ h hl)
-        (EquivBA.symm (GkatGuardedAlgebra.seq_one _)))
-  · exact hb _ (.test BExp.one) (live_nrm a₀ h hl (.test BExp.one))
+  refine ⟨nrm a₀ h (.test BExp.one), EquivBA.trans hh (nrm_top_equiv a₀ h hl),
+    settled_nrm a₀ h hs hl _, ?_⟩
+  exact hb _ (live_nrm a₀ h hl (.test BExp.one))
 
 /-- **Completeness from the bridge and `PullbackCovered`.** -/
 theorem completeness_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀)
@@ -2100,35 +2105,121 @@ theorem bridge_holds_at_sink (a₀ : A) (K : Exp A T) :
   ⟨Live.sink _, deadCanonical_div a₀⟩
 
 #print axioms bridge_holds_at_sink
-/-! ## The obligation, restated with the transitions removed -/
+/-! ## The residual, and the obligation discharged
 
-/-- Every state of the sink is an `a₀` occurrence — the sink is dead, and canonically so. -/
+    The Thompson automaton is **residual**: each state's language is the denotation of its
+    state expression, which `certifiedThompson_state_language` already proves.  So "state `u`
+    is dead" is "`standard u` accepts nothing", and the question moves from automata to syntax
+    for good.
+
+    The residuals have exactly the shapes the construction suggests —
+
+        act    standard _        = 1
+        seq    standard (inl v)  = (left standard v) ; rightProgram
+               standard (inr w)  = right standard w
+        ite    standard (inl v)  = left standard v          (and symmetrically)
+        wh     standard v        = (body standard v) ; (while g do body)
+
+    — and each one is precisely the continuation `Live` was tracking at that position.  That
+    correspondence is what closes the argument: an occurrence is dead exactly when the
+    continuation `Live` checked was null, and `Live` guarantees it was not, unless the
+    occurrence is a sink. -/
+
+theorem null_congr {e f : Exp A T} (h : EquivBA e f) (hn : UniformExpLempty e) :
+    UniformExpLempty f := by
+  intro X W gs hden
+  exact hn X W gs ((sound_BA (V := W) h gs).mpr hden)
+
+/-- A dead state has a null state expression — the automaton side, used once and then never
+    again. -/
+theorem standard_null_of_dead (p : Exp A T) (u : (certifiedThompson A T p).State)
+    (hdead : ∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
+      ¬ autRun V (certifiedThompson A T p).aut.toGAut (some u) y w) :
+    UniformExpLempty ((certifiedThompson A T p).standard u) := by
+  intro Y V gs hden
+  have hmem : (some u) ∈ (certifiedThompson A T p).aut.toGAut.states := by
+    show (some u) ∈ none :: (certifiedThompson A T p).aut.core.states.map some
+    exact List.Mem.tail _ (List.mem_map.mpr ⟨u, thompson_states_complete p u, rfl⟩)
+  have hfun := congrFun (certifiedThompson_state_language p (some u) hmem Y V) gs
+  exact hdead Y V gs.1 gs.2 (Eq.mpr hfun hden)
+
+/-- If the continuation accepts nothing, neither does an action followed by it. -/
+private theorem null_act_seq (p : A) {K : Exp A T}
+    (h : UniformExpLempty (.seq (.test BExp.one) K : Exp A T)) :
+    UniformExpLempty (.seq (.act p) K : Exp A T) := by
+  have hK : UniformExpLempty K := null_congr (GkatGuardedAlgebra.one_seq K) h
+  refine null_congr ?_ h
+  refine EquivBA.trans (GkatGuardedAlgebra.one_seq K) ?_
+  refine EquivBA.trans (GkatNullLanguage.nullLanguage_complete K hK) ?_
+  exact EquivBA.symm
+    (EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl (.act p)))
+        (GkatNullLanguage.nullLanguage_complete K hK))
+      (EquivBA.base (Equiv.s3 (.act p))))
+
+/-- **Every dead occurrence is a sink.**  Induction on the `Live` derivation: at each
+    position the residual is the continuation `Live` was checking, so a dead occurrence
+    contradicts liveness — except at the sink, which is exempt and labelled `a₀`. -/
+theorem deadStates_of_live (a₀ : A) {h K : Exp A T} (hl : Live a₀ h K) :
+    ∀ u : (certifiedThompson A T h).State,
+      UniformExpLempty (.seq ((certifiedThompson A T h).standard u) K) →
+      actionOf h u = a₀ := by
+  induction hl with
+  | act p K hn =>
+      intro u hnull
+      exact absurd (null_act_seq p hnull) hn
+  | sink K => intro u _; cases u; rfl
+  | test b K => intro u _; exact nomatch u
+  | @seq e f K _ _ ihe ihf =>
+      intro u hnull
+      cases u with
+      | inl v =>
+          refine ihe v (null_congr ?_ hnull)
+          exact EquivBA.base (Equiv.s1 ((certifiedThompson A T e).standard v) f K)
+      | inr w => exact ihf w hnull
+  | ite g _ _ ihe ihf =>
+      intro u hnull
+      cases u with
+      | inl v => exact ihe v hnull
+      | inr w => exact ihf w hnull
+  | @wh g e K _ ihe =>
+      intro u hnull
+      refine ihe u (null_congr ?_ hnull)
+      exact EquivBA.base
+        (Equiv.s1 ((certifiedThompson A T e).standard u) (.wh g e) K)
+
+/-- **`LiveImpliesCanonical`, discharged.** -/
+theorem liveImpliesCanonical_holds (a₀ : A) : LiveImpliesCanonical A T a₀ := by
+  intro h hl
+  refine deadCanonical_of_deadStates _ a₀ ?_
+  intro u hdead
+  refine deadStates_of_live a₀ hl u (null_congr ?_ (standard_null_of_dead h u hdead))
+  exact EquivBA.symm (GkatGuardedAlgebra.seq_one _)
+
+/-! ## Completeness from one statement -/
+
+/-- Every state of the sink is an `a₀` occurrence. -/
 theorem actionOf_div (a₀ : A) (u : (certifiedThompson A T (div a₀)).State) :
     actionOf (div a₀ : Exp A T) u = a₀ := by
   cases u; rfl
 
-/-- **The last obligation, with steps eliminated.**  Homogeneity turns "every transition into
-    a dead state carries `a₀`" into "every dead state is an occurrence of `a₀`" — no
-    quantification over transitions, atoms or interpretations of the *step* remains, only over
-    the state's own language. -/
-def DeadStatesAreSinks (A T : Type) (a₀ : A) : Prop :=
-  ∀ h K : Exp A T, Live a₀ h K →
-    ∀ u : (certifiedThompson A T (.seq h K)).State,
-      (∀ (Y : Type) (V : T → Y → Bool) (y : Y) (w : List (A × Y)),
-        ¬ autRun V (certifiedThompson A T (.seq h K)).aut.toGAut (some u) y w) →
-      actionOf (.seq h K) u = a₀
+/-- **`CanonicallySettled`, discharged.** -/
+theorem canonicallySettled_holds (a₀ : A) : CanonicallySettled A T a₀ :=
+  canonicallySettled_of_bridge a₀ (liveImpliesCanonical_holds a₀)
 
-theorem liveImpliesCanonical_of_deadStatesAreSinks (a₀ : A)
-    (hd : DeadStatesAreSinks A T a₀) : LiveImpliesCanonical A T a₀ :=
-  fun h K hl => deadCanonical_of_deadStates _ a₀ (hd h K hl)
+/-- **Completeness follows from `PullbackCovered` alone.**
 
-/-- **Completeness, from one statement about dead states and `PullbackCovered`.** -/
-theorem completeness_of_deadStatesAreSinks (a₀ : A) (hd : DeadStatesAreSinks A T a₀)
-    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T :=
-  completeness_of_bridge a₀ (liveImpliesCanonical_of_deadStatesAreSinks a₀ hd) hpc
+    Every other hypothesis the chain ever carried — uniqueness, productivity, reachability,
+    non-nullity, a common target, dead-canonicity — is now a theorem. -/
+theorem completeness_of_pullbackCovered (a₀ : A) (hpc : PullbackCovered A T) :
+    FiniteAxiomsCompleteBA A T :=
+  completeness_of_canonicallySettled a₀ (canonicallySettled_holds a₀) hpc
 
 #print axioms actionOf_div
-#print axioms completeness_of_deadStatesAreSinks
+#print axioms deadStates_of_live
+#print axioms liveImpliesCanonical_holds
+#print axioms canonicallySettled_holds
+#print axioms completeness_of_pullbackCovered
 
 #print axioms live_nrm
 #print axioms canonicallySettled_of_bridge
