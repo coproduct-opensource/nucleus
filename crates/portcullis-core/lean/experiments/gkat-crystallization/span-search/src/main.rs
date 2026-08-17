@@ -1463,6 +1463,32 @@ fn quotient_by<const NA: usize>(h: &Aut<NA>, blk: &[usize; MAXK], nb: usize) -> 
     Some(Aut { k: nb as u8, it, ih: h.ih, st, hl })
 }
 
+/// **The degree of the adjunction.**  Elimination over a FIELD needs only division; over a
+/// RING it stalls, and the classical repair is to adjoin — to look for zeros "in an overfield,
+/// or even in an arbitrary algebra" — rather than to divide.  GKAT is the ring-like case: it
+/// has no left distribution, so `(A·s(x)) +_b 1` cannot be factored, and elimination stalls
+/// exactly there.
+///
+/// The GKAT analogue of adjoining an element is introducing an AUXILIARY STATE — splitting a
+/// shared state so the two uses can be solved separately.  That is precisely Ashcroft and
+/// Manna's result that auxiliary variables are unavoidable for restructuring, and Kozen and
+/// Tseng's that they cannot be dispensed with propositionally.
+///
+/// So the invariant to measure is the DEGREE: how many adjunctions before the system becomes
+/// solvable by elimination.  Degree 0 is "already solvable"; a small uniform bound would be a
+/// structure theorem; unbounded degree is the obstruction itself.
+fn elim_degree<const NA: usize>(h: &Aut<NA>, maxd: usize) -> Option<usize> {
+    let mut cur = *h;
+    for d in 0..=maxd {
+        if symbolic_eliminable(&cur) { return Some(d); }
+        match unshare(&cur) {
+            Some(next) => { cur = next; }
+            None => return None,
+        }
+    }
+    None
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3848,6 +3874,32 @@ pullback: {ok} / {}", res.len());
                         }
                     }
                     println!("    CONTROL arbitrary pool sums: {pgood} / {ptot}   (Thompson, not equivalent)");
+                }
+                {
+                    // THE DEGREE DISTRIBUTION, on the pool automata elimination cannot solve
+                    // directly.  Every one of them HAS a solution (Theorem 4.5), so any
+                    // failure here is elimination stalling, and the degree says how far.
+                    let mut deg = [0usize; 5];
+                    let mut unb = 0usize; let mut tot = 0usize;
+                    for (i, a) in list.iter().enumerate() {
+                        if i % step2 != 0 { continue; }
+                        if symbolic_eliminable(a) { continue; }
+                        tot += 1;
+                        match elim_degree(a, 4) {
+                            Some(d) if d < 5 => deg[d] += 1,
+                            _ => unb += 1,
+                        }
+                    }
+                    let mut appl = 0usize;
+                    for (i, a) in list.iter().enumerate() {
+                        if i % step2 != 0 || symbolic_eliminable(a) { continue; }
+                        if unshare(a).is_some() { appl += 1; }
+                    }
+                    println!("  DEGREE OF THE ADJUNCTION (pool automata elimination stalls on):");
+                    println!("    unshare even applicable : {appl} / {tot}");
+                    println!("    stalled            : {tot}");
+                    for d in 1..5 { println!("    solvable after {d}   : {}", deg[d]); }
+                    println!("    still unsolved (>4): {unb}");
                 }
                 println!("  SYMBOLIC ELIMINATION on the bisimulation quotient (W0 + U5):");
                 println!("    pool automata satisfying it : {sk} / {sn}   (must be all)");
