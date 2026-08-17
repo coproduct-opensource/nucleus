@@ -4168,7 +4168,7 @@ pullback: {ok} / {}", res.len());
                                 for y in 0..NA { rooted.it[y] = (st0 + 1) as u8; }
                                 rooted.ih = 0;
                                 let c = match canon(&rooted) { Some(c) => c, None => { ok = false; break } };
-                                if !seen.contains_key(&c) { ok = false; break; }
+                                if !by_beh.contains_key(&behaviour(&c)) { ok = false; break; }
                             }
                             if ok { allexp += 1; }
                         }
@@ -4189,7 +4189,7 @@ pullback: {ok} / {}", res.len());
                                 for y in 0..NA { rooted.it[y] = (st0 + 1) as u8; }
                                 rooted.ih = 0;
                                 let c = match canon(&rooted) { Some(c) => c, None => { ok = false; break } };
-                                if !seen.contains_key(&c) { ok = false; break; }
+                                if !by_beh.contains_key(&behaviour(&c)) { ok = false; break; }
                             }
                             if ok { sexp += 1; }
                         }
