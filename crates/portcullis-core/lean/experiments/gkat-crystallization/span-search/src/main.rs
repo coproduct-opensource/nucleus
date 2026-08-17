@@ -1489,6 +1489,37 @@ fn elim_degree<const NA: usize>(h: &Aut<NA>, maxd: usize) -> Option<usize> {
     None
 }
 
+/// Adjoin a BOOLEAN FLAG: the two-fold product `A × {0,1}` in which the program may set the
+/// flag freely on every transition, while halting is inherited from `A`.  Projection is a
+/// cover, so anything provable about the product transfers.  This is Böhm and Jacopini's
+/// auxiliary variable at the automaton level — a genuinely NEW element, as opposed to
+/// `unshare`, which only adjoins a copy and was measured to help on 0 of 462.
+fn flag_product<const NA: usize>(a: &Aut<NA>, choice: u64) -> Option<Aut<NA>> {
+    let k = a.k as usize;
+    if 2 * k > MAXK { return None; }
+    let mut st = [[0u8; NA]; MAXK];
+    let mut hl = [0u8; MAXK];
+    let mut bit = 0usize;
+    for x in 0..k {
+        for f in 0..2usize {
+            let idx = x * 2 + f;
+            hl[idx] = a.hl[x];
+            for y in 0..NA {
+                if a.st[x][y] == 0 { st[idx][y] = 0; continue; }
+                let nx = (a.st[x][y] - 1) as usize;
+                let nf = ((choice >> (bit % 64)) & 1) as usize;
+                bit += 1;
+                st[idx][y] = (nx * 2 + nf + 1) as u8;
+            }
+        }
+    }
+    let mut it = [0u8; NA];
+    for y in 0..NA {
+        it[y] = if a.it[y] == 0 { 0 } else { ((a.it[y] - 1) as usize * 2 + 1) as u8 };
+    }
+    Some(Aut { k: (2 * k) as u8, it, ih: a.ih, st, hl })
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3895,6 +3926,24 @@ pullback: {ok} / {}", res.len());
                         if i % step2 != 0 || symbolic_eliminable(a) { continue; }
                         if unshare(a).is_some() { appl += 1; }
                     }
+                    // ADJOIN A FLAG instead of a copy.  If one boolean closes them all, the
+                    // extension has degree 2 and that is a structure theorem.
+                    let mut rngf: u64 = 0x853C49E6748FEA9B;
+                    let mut rndf = move || { rngf ^= rngf << 13; rngf ^= rngf >> 7; rngf ^= rngf << 17; rngf };
+                    let mut flagged = 0usize; let mut ftot = 0usize;
+                    for (i, a) in list.iter().enumerate() {
+                        if i % step2 != 0 || symbolic_eliminable(a) { continue; }
+                        ftot += 1;
+                        let mut done = false;
+                        for _ in 0..3000 {
+                            if let Some(hp) = flag_product(a, rndf()) {
+                                if symbolic_eliminable(&hp) { done = true; break; }
+                            } else { break; }
+                        }
+                        if done { flagged += 1; }
+                    }
+                    println!("  ADJOIN A BOOLEAN FLAG (Böhm-Jacopini's auxiliary variable):");
+                    println!("    stalled automata closed by one flag : {flagged} / {ftot}");
                     println!("  DEGREE OF THE ADJUNCTION (pool automata elimination stalls on):");
                     println!("    unshare even applicable : {appl} / {tot}");
                     println!("    stalled            : {tot}");
