@@ -2913,6 +2913,63 @@ covered {done}/{}", open.len());
                     println!("    covered {done} / {}, RESISTING {}", open.len(),
                         open.len() - done);
                 }
+                // `RestrictedBranchesCovered` is SUFFICIENT, not necessary.  If a pullback's
+                // branch parts resist but the pullback ITSELF is covered, then the branch
+                // route is simply the wrong route and the open statement is untouched.
+                if std::env::var("PAD_PARENTS").is_ok() {
+                    let mut parents: Vec<Aut<NA>> = Vec::new();
+                    for p in uncovered.iter() {
+                        if unshare_rec(p, &list, &by_beh, 0, budget).is_some() { continue; }
+                        if let Some((_, a, b)) = unshare_parts(p) {
+                            let mut bad = false;
+                            for q in [&a, &b] {
+                                if q.k == 0 || q.k as usize > maxk { continue; }
+                                if let Some(c) = canon(q) {
+                                    if targets.contains(&c) { bad = true; }
+                                }
+                            }
+                            if bad { parents.push(p.clone()); }
+                        }
+                    }
+                    let mut pcov = 0usize;
+                    let mut pres = 0usize;
+                    for p in parents.iter() {
+                        let cands = match by_beh.get(&behaviour(p)) { Some(v) => v,
+                            None => { pres += 1; continue; } };
+                        let mut found = false;
+                        'p2: for &n in cands.iter() {
+                            let mut pool = Pool::<NA>::new();
+                            let root = pool.of_prov(&list, &prov, n as u32);
+                            let mut frontier = vec![root];
+                            let mut seen: FxSet<u32> = FxSet::default();
+                            seen.insert(root);
+                            for _ in 0..3 {
+                                let mut next: Vec<u32> = Vec::new();
+                                for &t in frontier.iter() {
+                                    refinements(&mut pool, t, nguards, true, true, 3, 3,
+                                        &mut next);
+                                }
+                                let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                                for t in next {
+                                    if !seen.insert(t) { continue; }
+                                    if let Some(a) = pool.aut(t) {
+                                        if let Some(c) = canon(&a) {
+                                            if covers(&c, p) { found = true; break; }
+                                        }
+                                    }
+                                    keep.push(t);
+                                }
+                                if found { break 'p2; }
+                                frontier = keep;
+                                if frontier.len() > 30000 { frontier.truncate(30000); }
+                            }
+                        }
+                        if found { pcov += 1; } else { pres += 1; }
+                    }
+                    println!("  PARENTS of resisting parts: {}", parents.len());
+                    println!("    pullback ITSELF covered by refinement : {pcov}");
+                    println!("    pullback itself resists              : {pres}");
+                }
                 println!("  WITHIN-CAP STALLING PARTS (distinct): {}", targets.len());
                 println!("    covered by refinement : {covered_now}");
                 println!("    still resisting       : {resist}");

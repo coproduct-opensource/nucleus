@@ -28,6 +28,23 @@ homogeneity makes every transition into a state carry that state's own action.
   spanning their behaviour class, reaching **16 states**, saturated — no target was newly
   covered after round 0 across seven rounds.
 
+## What they are candidate counterexamples *to*
+
+Not to `PaddedDiagPullbackCovered`.  `RestrictedBranchesCovered` is a **sufficient** condition
+for it, never a necessary one: the statement asks only for *some* listing `l` with the
+diagonal inside it such that `pullbackOn φ ψ base l` is Thompson-covered, and the branch split
+is one way to produce one.  These fourteen say that *that route* stalls on some inputs; they
+say nothing about whether another listing works.
+
+Two facts make the distinction concrete.  One level of un-sharing covers **2181 of 2181**
+pullbacks, so the pullbacks themselves are covered — what is unverified for these cases is
+only whether the covering un-shared automaton is *Thompson*, which needs both its parts to be.
+And on the sampled population, refinement covers the pullback directly in **196 of 200** cases,
+independently of any split.
+
+So the honest status is: candidate counterexamples to the branch-split route, inside an open
+statement that still has no counterexample.
+
 ## What is NOT established
 
 Refinement is not complete: `RefinementSuffices` is refuted, so a cover outside the
