@@ -1364,13 +1364,20 @@ fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
     symbolic_eliminable_gen(h, true)
 }
 
-/// As above but optionally SKIPPING the bisimulation pre-quotient.  Needed to compare
-/// intermediate quotients at all: with the pre-quotient in place every input is collapsed to
-/// the top of the lattice before being tested, so the comparison is destroyed before it runs.
 fn symbolic_eliminable_raw<const NA: usize>(h: &Aut<NA>) -> bool {
     symbolic_eliminable_gen(h, false)
 }
 
+/// **Symbolic elimination, with leaves indexed by the ATOM THEY ARE REACHED AT.**
+///
+/// The previous abstraction collapsed each branch to one variable set plus a halt flag.  That
+/// loses the fact the loop case turns on: in `wh g B` a body state halts on `body.hlt ∧ ¬g` and
+/// takes its back edge on `body.hlt ∧ g`, so the halt leaves and the back-edge leaves sit at
+/// DISJOINT atoms.  Collapsed together they look like "a branch with both a variable and a
+/// halt", which blocks U5; kept apart they are exactly `e·s(Z) +_g f`, which is W0's shape.
+///
+/// So a branch is now a map from leaf-atom to leaf-kind: `vv[x][y][β]` is the set of variables
+/// at leaves reached at atom β, and `hh[x][y][β]` records a halt leaf there.
 fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool {
     let (blk, nb) = if collapse {
         bisim_blocks(h)
@@ -1381,55 +1388,25 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
     };
     let k = h.k as usize;
     if nb > 16 { return false; }
-    let mut l = [[0u16; NA]; MAXK];
-    // `free[x][y]` records that the branch has a leaf which BLOCKS U5 factoring.  Only a
-    // HALT does.  A REJECT does not: by S2, `0 ≡ 0·s(x)`, so a dead branch can always be
-    // given the common tail and factored out with everything else.  Conflating the two was
-    // what rejected Thompson automata that plainly have solutions — the k=2 witness
-    // `s0: st=[0,2] hl=0`, whose atom-0 branch is a reject, not a halt.
-    let mut free = [[false; NA]; MAXK];
+    let mut vv = [[[0u16; NA]; NA]; MAXK];
+    let mut hh = [[[false; NA]; NA]; MAXK];
     for x in 0..k {
+        let bx = blk[x];
         for y in 0..NA {
-            if h.st[x][y] != 0 { l[blk[x]][y] |= 1 << blk[(h.st[x][y] - 1) as usize]; }
-            else if h.hl[x] & (1 << y) != 0 { free[blk[x]][y] = true; }
+            if h.st[x][y] != 0 {
+                let t = blk[(h.st[x][y] - 1) as usize];
+                // the successor is entered after an action, at an unconstrained atom
+                for beta in 0..NA { vv[bx][y][beta] |= 1 << t; }
+            } else if h.hl[x] & (1 << y) != 0 {
+                // a halt leaf, reached at the atom the branch is taken at
+                hh[bx][y][y] = true;
+            }
         }
     }
     let mut budget = 2000000usize;
-    // REFUTED — TUPLE VARIABLES.  The loop entry is a pseudostate, an atom-indexed list, so
-    // the natural repair is to add it as a VARIABLE of the system rather than as a state:
-    // `s(Z) ≡ Σ_y α_y? s(ent[y])` is an ordinary guarded union, and once the tuple is one
-    // variable every back edge of the loop targets Z, which is what W0 needs.
-    //
-    // Implemented as "replace the bit for ent[y] by Z in every branch at atom y", it is
-    // UNSOUND: soundness fell 5000/5000 -> 162/5000 and Figure 3 was accepted.
-    //
-    // The reason is an off-by-one in the atom, and it is worth stating because it recurs.  A
-    // leaf `p·s(t)` in the branch at atom y has its variable evaluated at the atom AFTER the
-    // action fires, not at y.  Z agrees with `ent[y]` only AT y, so substituting it for the
-    // leaf equates two things indexed by different atoms.  On Figure 3 that collapses the
-    // 2-cycle to a pure halt and the automaton is wrongly accepted.
-    //
-    // The corrected form is a different rewrite, not a patch of this one.  Back edges fire at
-    // atom y and perform the ENTRY's action, so a body state u whose branches on a set b of
-    // atoms coincide with the entry's own branches satisfies `s(u) ≡ b?·s(Z) +_b f` — the
-    // reference to Z consumes NO action and stays at the same atom.  That needs the
-    // abstraction to distinguish same-atom references from after-action ones, which it does
-    // not currently do.
-    if elim_search::<NA>(&mut l.clone(), &mut free.clone(), (1u16 << nb) - 1, nb, &mut budget) {
+    if elim2::<NA>(&mut vv.clone(), &mut hh.clone(), (1u16 << nb) - 1, nb, &mut budget) {
         return true;
     }
-    // THE LOOP ENTRY AS A VARIABLE, corrected.  A Thompson loop's entry is a pseudostate — an
-    // atom-indexed list — so it has no variable in the system, and solving `wh g (ite b A B)`
-    // needs one: the body must be solved as a UNIT.
-    //
-    // The earlier attempt set Z's row to the entry's CONTINUATION, `l[ent[y]][y]`, and was
-    // unsound (5000/5000 -> 162/5000, Figure 3 accepted): a leaf's variable is evaluated at the
-    // atom AFTER its action fires, so that equated things indexed by different atoms.
-    //
-    // Corrected, Z STEPS TO the entry target: `l[Z][y] = {ent[y]}`.  Then Z is exactly the
-    // body's start, a back edge firing at atom y has the same branch as Z at y, and replacing
-    // it by a reference to Z consumes no action and stays at the same atom — which is what the
-    // off-by-one got wrong.
     if nb + 1 > MAXK { return false; }
     let mut ent = [usize::MAX; NA];
     loop {
@@ -1442,64 +1419,93 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
         if carry >= NA { return false; }
         if (0..NA).all(|y| ent[y] == usize::MAX) { continue; }
         let z = nb;
-        let mut l2 = l;
-        let mut f2 = free;
+        let mut v2 = vv;
+        let mut h2 = hh;
         for y in 0..NA {
-            if ent[y] == usize::MAX { l2[z][y] = 0; } else { l2[z][y] = 1 << ent[y]; }
-            f2[z][y] = false;
+            for beta in 0..NA {
+                v2[z][y][beta] = if ent[y] == usize::MAX { 0 } else { 1 << ent[y] };
+                h2[z][y][beta] = false;
+            }
         }
-        // a branch whose whole leaf set is the entry target for that atom IS the entry's own
-        // branch there, so it may be replaced by a same-atom reference to Z
         for x in 0..z {
             for y in 0..NA {
                 if ent[y] == usize::MAX { continue; }
-                if l2[x][y] == (1 << ent[y]) && !f2[x][y] { l2[x][y] = 1 << z; }
+                let all_entry = (0..NA).all(|beta|
+                    v2[x][y][beta] == (1 << ent[y]) && !h2[x][y][beta]);
+                if all_entry {
+                    for beta in 0..NA { v2[x][y][beta] = 1 << z; }
+                }
             }
         }
         if budget == 0 { return false; }
-        if elim_search::<NA>(&mut l2, &mut f2, (1u16 << (z + 1)) - 1, z + 1, &mut budget) {
+        if elim2::<NA>(&mut v2, &mut h2, (1u16 << (z + 1)) - 1, z + 1, &mut budget) {
             return true;
         }
     }
 }
 
-fn elim_search<const NA: usize>(l: &mut [[u16; NA]; MAXK], free: &mut [[bool; NA]; MAXK],
+fn elim2<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK], hh: &mut [[[bool; NA]; NA]; MAXK],
     live: u16, nb: usize, budget: &mut usize) -> bool {
     if live == 0 { return true; }
     if *budget == 0 { return false; }
     *budget -= 1;
     for x in 0..nb {
         if live & (1 << x) == 0 { continue; }
-        // Isolable: every branch mentioning x must mention ONLY x AND have no variable-free
-        // leaf, since U5 requires the tail to be common to both sides of the branch.
+        // U5 pulls a common tail out of a branch only when, AT EACH LEAF-ATOM, the tail is the
+        // only thing there: no second variable and no halt.
         let mut ok = true;
-        for y in 0..NA {
-            if l[x][y] & (1 << x) != 0 && (l[x][y] != (1 << x) || free[x][y]) {
-                ok = false; break;
+        'chk: for y in 0..NA {
+            for beta in 0..NA {
+                if vv[x][y][beta] & (1 << x) != 0
+                    && (vv[x][y][beta] != (1 << x) || hh[x][y][beta]) { ok = false; break 'chk; }
             }
         }
         if !ok { continue; }
-        // the leaves of x's solution are those of its non-self branches
-        let mut sx = 0u16;
-        let mut sfree = false;
-        for y in 0..NA {
-            if l[x][y] & (1 << x) != 0 { continue; }
-            sx |= l[x][y];
-            if free[x][y] { sfree = true; }
+        // x's solution, PER START ATOM.  Unioning across start atoms would throw away exactly
+        // the precision this representation exists for.  `solv[α][β]` is where `s(x)` started
+        // at α can leave a leaf at β; the loop closure accounts for x re-entering itself.
+        let mut solv = [[0u16; NA]; NA];
+        let mut solh = [[false; NA]; NA];
+        for al in 0..NA {
+            for beta in 0..NA {
+                solv[al][beta] = vv[x][al][beta] & !(1 << x);
+                solh[al][beta] = hh[x][al][beta];
+            }
         }
-        let saved = *l;
-        let savedf = *free;
-        for z in 0..nb {
-            if live & (1 << z) == 0 || z == x { continue; }
-            for y in 0..NA {
-                if l[z][y] & (1 << x) != 0 {
-                    l[z][y] = (l[z][y] & !(1 << x)) | sx;
-                    if sfree { free[z][y] = true; }
+        for _ in 0..(NA + 1) {
+            for al in 0..NA {
+                for gam in 0..NA {
+                    if vv[x][al][gam] & (1 << x) == 0 { continue; }
+                    for beta in 0..NA {
+                        solv[al][beta] |= solv[gam][beta];
+                        if solh[gam][beta] { solh[al][beta] = true; }
+                    }
                 }
             }
         }
-        if elim_search::<NA>(l, free, live & !(1 << x), nb, budget) { return true; }
-        *l = saved; *free = savedf;
+        let saved = *vv;
+        let savedh = *hh;
+        for z in 0..nb {
+            if live & (1 << z) == 0 || z == x { continue; }
+            for y in 0..NA {
+                let mut nv = [0u16; NA];
+                let mut nh = [false; NA];
+                for beta in 0..NA {
+                    nv[beta] = vv[z][y][beta] & !(1 << x);
+                    nh[beta] = hh[z][y][beta];
+                }
+                for al in 0..NA {
+                    if vv[z][y][al] & (1 << x) == 0 { continue; }
+                    for beta in 0..NA {
+                        nv[beta] |= solv[al][beta];
+                        if solh[al][beta] { nh[beta] = true; }
+                    }
+                }
+                for beta in 0..NA { vv[z][y][beta] = nv[beta]; hh[z][y][beta] = nh[beta]; }
+            }
+        }
+        if elim2::<NA>(vv, hh, live & !(1 << x), nb, budget) { return true; }
+        *vv = saved; *hh = savedh;
     }
     false
 }
