@@ -523,27 +523,22 @@ def SumQuotientSolvable (A T : Type) : Prop :=
       SolvesBA quot qsol ∧
         π.mapState (Sum.inl none) = π.mapState (Sum.inr none)
 
-/-- **The reduction, proved.**  Solvability of the sum-quotient gives completeness of the
-    finite axioms.  No uniqueness axiom appears: uniqueness is used only where it is already a
-    theorem here, at Thompson-generated automata, and enters through
-    `certifiedThompson_initial_canonical` via `sol_none_equiv`. -/
+/-- **The reduction.**  Solvability of the sum-quotient gives completeness of the finite
+    axioms.
+
+    The mathematics is NOT new here: this is `certifiedThompson_uniform_solved_quotient`, which
+    was already in the corpus with exactly these hypotheses and conclusion, quantified over
+    pairs.  I proved it again before checking — a fourth duplication — and it is now delegated
+    rather than reproved.  What the wrapper adds is only bookkeeping: a NAMED `Prop` that can be
+    compared against `ReachListCovered` as the programme's open conjunct.
+
+    No uniqueness axiom appears; uniqueness enters only where it is already a theorem, at
+    Thompson-generated automata. -/
 theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
     FiniteAxiomsCompleteBA A T := by
   intro e f heq
   obtain ⟨Q, quot, π, qsol, hqsol, hstart⟩ := h e f heq
-  have hsum : SolvesBA
-      (sumGAut (certifiedThompson A T e).aut.toGAut (certifiedThompson A T f).aut.toGAut)
-      (fun s => qsol (π.mapState s)) := π.lift_solvesBA hqsol
-  have hleft : SolvesBA (certifiedThompson A T e).aut.toGAut
-      (fun s => qsol (π.mapState (Sum.inl s))) :=
-    (GAutHom.inl _ _).lift_solvesBA hsum
-  have hright : SolvesBA (certifiedThompson A T f).aut.toGAut
-      (fun s => qsol (π.mapState (Sum.inr s))) :=
-    (GAutHom.inr _ _).lift_solvesBA hsum
-  have he : EquivBA (qsol (π.mapState (Sum.inl none))) e := sol_none_equiv e _ hleft
-  have hf : EquivBA (qsol (π.mapState (Sum.inr none))) f := sol_none_equiv f _ hright
-  rw [hstart] at he
-  exact EquivBA.trans (EquivBA.symm he) hf
+  exact certifiedThompson_uniform_solved_quotient π qsol hqsol hstart
 
 #print axioms guardedFold_transitionBranches
 #print axioms thompsonSolves_of_solvesBA
