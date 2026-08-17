@@ -96,9 +96,18 @@ them, in three steps:
     continuation `Live` was checking.  So a dead occurrence contradicts liveness, except at
     the sink, which is exempt and labelled `a₀`.
 
-So `completeness_of_pullbackCovered` derives `FiniteAxiomsCompleteBA` from `PullbackCovered`
-**alone**.  Uniqueness, productivity, reachability, non-nullity, the common target and
-dead-canonicity are all theorems now.
+So `completeness_of_pullbackCovered` derives `FiniteAxiomsCompleteBA` from one hypothesis
+**alone** — and not even the general one.  Uniqueness, productivity, reachability,
+non-nullity, the common target and dead-canonicity are all theorems now.
+
+What remains is `PaddedPullbackCovered`, which is `PullbackCovered` restricted to the pair the
+proof actually forms: two *padded* programs, which share a core, over the behavioural quotient
+of one of them.  There both legs of the span are the **same** map `rep`
+(`pad_span_maps_agree`), and two states have the same representative exactly when they have
+the same language (`rep_eq_iff_langEquiv`) — so the object that has to be covered is the
+**kernel pair** of the behavioural quotient: the language-equivalence relation itself,
+presented as an automaton.  That is a far more specific thing than a fibre product of two
+unrelated covers, and it is where the remaining work is.
 
 The identification that makes the sink legitimate is the one the literature calls the
 **early-termination property** — programs that fail immediately are equated with programs
@@ -1563,13 +1572,60 @@ theorem completeness_of_canonical (a₀ : A) (hcs : CanonicallySettled A T a₀)
 
 #print axioms completeness_of_canonical
 
+/-- **The pullback the chain actually forms.**  `PullbackCovered` quantifies over arbitrary
+    pairs of programs and an arbitrary common quotient.  The completeness proof never uses
+    that generality: it applies the hypothesis exactly once, to the two *padded* forms, which
+    share a core, over the behavioural quotient of one of them.
+
+    That is a much more specific object.  In the padded construction both legs of the span are
+    the **same** map, `rep` (`pad_span_maps_agree`), so the fibre product is the *kernel pair*
+    of the behavioural quotient — the language-equivalence relation itself, presented as an
+    automaton — rather than a fibre product of two unrelated covers.
+
+    `paddedPullbackCovered_of_pullbackCovered` records that this is a genuine weakening. -/
+def PaddedPullbackCovered (A T : Type) (a₀ : A) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ),
+    HasThompsonCover (GkatPullback.pullback φ ψ base)
+
+theorem paddedPullbackCovered_of_pullbackCovered (a₀ : A) (h : PullbackCovered A T) :
+    PaddedPullbackCovered A T a₀ :=
+  fun e f Q m φ ψ base => h _ _ Q m φ ψ base
+
+/-- **The fibre is exactly language-equivalence.**  Two states have the same representative
+    precisely when they have the same language, so the kernel pair of `rep` *is* the
+    language-equivalence relation presented as a set of pairs. -/
+theorem rep_eq_iff_langEquiv {S : Type} (b : InitializedGAut S A T) (u v : S) :
+    GkatQuotient.rep b u = GkatQuotient.rep b v ↔ LangEquiv b (some u) (some v) := by
+  constructor
+  · intro h
+    have h1 := GkatQuotient.rep_equiv b u
+    have h2 := (GkatQuotient.rep_equiv b v).symm
+    rw [← h] at h2
+    exact h1.trans h2
+  · intro h
+    exact GkatQuotient.rep_eq_of_equiv h
+
+/-- **Both legs of the padded span are the same map.**  `partner` is the identity, so
+    `matchCover`'s map is `rep ∘ id = rep`, which is `targetCover`'s map on the nose. -/
+theorem pad_span_maps_agree (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
+    (ht0 : Total (certifiedThompson A T (padZero e f a₀)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f a₀)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f a₀)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f a₀)).aut) :
+    (GkatQuotient.matchCover (matched_of_pad a₀ e f hlang ht0 ht1 hc0 hc1)).map
+      = (GkatQuotient.targetCover
+          (matched_of_pad a₀ e f hlang ht0 ht1 hc0 hc1).stepbb).map := rfl
+
 /-- **Completeness from `CanonicallySettled` and `PullbackCovered`.**
 
     Two hypotheses.  Normalisation is one of them and is two thirds proved
     (`settledReachable` gives the first two conjuncts); the common target is no longer a
     hypothesis at all, and neither is reachability, productivity or non-nullity. -/
 theorem completeness_of_canonicallySettled (a₀ : A) (hcs : CanonicallySettled A T a₀)
-    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T := by
+    (hpc : PaddedPullbackCovered A T a₀) : FiniteAxiomsCompleteBA A T := by
   intro e f heq
   obtain ⟨e', hee', hse, hce⟩ := hcs e
   obtain ⟨f', hff', hsf, hcf⟩ := hcs f
@@ -1581,7 +1637,7 @@ theorem completeness_of_canonicallySettled (a₀ : A) (hcs : CanonicallySettled 
     (total_of_settled (settled_padZero hse hsf a₀))
     (total_of_settled (settled_padOne hse hsf a₀))
     (deadCanonical_padZero a₀ hce hcf) (deadCanonical_padOne a₀ hce hcf)
-  obtain ⟨h, ⟨χ⟩⟩ := hpc (padZero e' f' a₀) (padOne e' f' a₀) Q m φ ψ base
+  obtain ⟨h, ⟨χ⟩⟩ := hpc e' f' Q m φ ψ base
   have hmid : EquivBA (padZero e' f' a₀) (padOne e' f' a₀) :=
     equivBA_of_common_refinement χ (GkatPullback.pullbackFst φ ψ base)
       (GkatPullback.pullbackSnd φ ψ base)
@@ -2093,7 +2149,7 @@ theorem canonicallySettled_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a
 
 /-- **Completeness from the bridge and `PullbackCovered`.** -/
 theorem completeness_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀)
-    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T :=
+    (hpc : PaddedPullbackCovered A T a₀) : FiniteAxiomsCompleteBA A T :=
   completeness_of_canonicallySettled a₀ (canonicallySettled_of_bridge a₀ hb) hpc
 
 /-- Non-vacuity for the bridge: it holds at the sink, which is the one program that is
@@ -2211,7 +2267,7 @@ theorem canonicallySettled_holds (a₀ : A) : CanonicallySettled A T a₀ :=
 
     Every other hypothesis the chain ever carried — uniqueness, productivity, reachability,
     non-nullity, a common target, dead-canonicity — is now a theorem. -/
-theorem completeness_of_pullbackCovered (a₀ : A) (hpc : PullbackCovered A T) :
+theorem completeness_of_pullbackCovered (a₀ : A) (hpc : PaddedPullbackCovered A T a₀) :
     FiniteAxiomsCompleteBA A T :=
   completeness_of_canonicallySettled a₀ (canonicallySettled_holds a₀) hpc
 
@@ -2219,6 +2275,8 @@ theorem completeness_of_pullbackCovered (a₀ : A) (hpc : PullbackCovered A T) :
 #print axioms deadStates_of_live
 #print axioms liveImpliesCanonical_holds
 #print axioms canonicallySettled_holds
+#print axioms rep_eq_iff_langEquiv
+#print axioms pad_span_maps_agree
 #print axioms completeness_of_pullbackCovered
 
 #print axioms live_nrm
