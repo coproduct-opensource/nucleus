@@ -1045,6 +1045,84 @@ fn orbit_entry_halt_disjoint<const NA: usize>(h: &Aut<NA>) -> bool {
     true
 }
 
+/// The orbit's entry map, read off the edges that come in from outside it.  Every edge into
+/// a loop body from outside is one of the loop's own entry transitions, so this is well
+/// defined; `None` at an atom means the orbit is not entered there.  Returns `Err` if two
+/// incoming edges disagree, which `orbit_entry_single_valued` reports as a violation.
+fn orbit_entry_map<const NA: usize>(h: &Aut<NA>, o: u16) -> Result<[usize; NA], ()> {
+    let k = h.k as usize;
+    let mut ent = [usize::MAX; NA];
+    for y in 0..NA {
+        let mut put = |t: usize, ent: &mut [usize; NA]| -> bool {
+            if ent[y] == usize::MAX { ent[y] = t; true } else { ent[y] == t }
+        };
+        if h.it[y] != 0 {
+            let t = (h.it[y] - 1) as usize;
+            if o & (1 << t) != 0 && !put(t, &mut ent) { return Err(()); }
+        }
+        for u in 0..k {
+            if o & (1 << u) != 0 || h.st[u][y] == 0 { continue; }
+            let t = (h.st[u][y] - 1) as usize;
+            if o & (1 << t) != 0 && !put(t, &mut ent) { return Err(()); }
+        }
+    }
+    Ok(ent)
+}
+
+/// **REFUTED — unsound.**  19820 / 20020 pool automata.  Counterexample `k=3`, entry `[1,2]`,
+/// `s0 -> s2`, `s1 -> s2`, `s2 -> s0` at atom 0: the orbit is `{s0,s2}`, entered at atom 0 both
+/// from the pseudostate (at `s0`) and from `s1` (at `s2`).  The premise is wrong — a maximal
+/// SCC is not a loop body, so an edge into it from outside need not be a loop entry edge.
+///
+/// Original (wrong) rationale follows.  **Entry single-valuedness — a NECESSARY condition.**  `loopInitialized` conjoins the loop
+/// guard onto one fixed transition list, `body.initTrans`, and that list is the only way into
+/// the body.  So however many states outside an orbit step into it, at a given atom they all
+/// land on the same state.  Like entry/halt disjointness this quantifies only over edges from
+/// OUTSIDE the orbit, so it never has to tell a back edge from a body-internal one.
+fn orbit_entry_single_valued<const NA: usize>(h: &Aut<NA>) -> bool {
+    orbits(h).iter().all(|&o| orbit_entry_map(h, o).is_ok())
+}
+
+/// **REFUTED — unsound.**  10400 / 20020 pool automata, the worst of the three.
+/// Counterexample `k=2`, entry `[1,2]`, `s0` stuck, `s1` self-looping at both atoms: the orbit
+/// `{s1}` is entered from outside only at atom 1, so the entry map is undefined at atom 0 and
+/// the atom-0 self-loop is never deleted.  The loop's `initTrans` is only PARTLY VISIBLE in
+/// the graph — the enclosing context never enters at atom 0, so that entry is unobservable.
+///
+/// Original (wrong) rationale follows.  **Orbit reduction — the Caron and Ziadi shape.**  Repeatedly: take the orbits of
+/// the surviving graph; for each, delete every edge from inside it that lands on its entry
+/// state for that atom — in a genuine `wh g B` those are exactly the back edges, since
+/// `loopInitialized` routes each body state's exit through `body.initTrans`.  Then recurse,
+/// which is what peels nested loops.  A Thompson automaton must reduce to an acyclic graph.
+///
+/// The deletion can also remove a body-internal edge that happens to land on the entry state,
+/// because the graph cannot distinguish the two.  That over-deletion only makes breaking the
+/// cycle EASIER, so the test stays necessary — it can reject, never wrongly accept.  Trading
+/// completeness for soundness this way is what the flat stability test got backwards.
+fn orbit_reduces<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    let mut st = h.st;
+    for _ in 0..(MAXK + 1) {
+        let cur = Aut::<NA> { k: h.k, it: h.it, st, hl: h.hl, ih: h.ih };
+        let os = orbits(&cur);
+        if os.is_empty() { return true; }
+        let mut cut = false;
+        for &o in os.iter() {
+            let ent = match orbit_entry_map(&cur, o) { Ok(e) => e, Err(()) => return false };
+            for u in 0..k {
+                if o & (1 << u) == 0 { continue; }
+                for y in 0..NA {
+                    if st[u][y] == 0 { continue; }
+                    if (st[u][y] - 1) as usize == ent[y] { st[u][y] = 0; cut = true; }
+                }
+            }
+        }
+        // an orbit no edge of which points at its own entry cannot be a loop body
+        if !cut { return false; }
+    }
+    false
+}
+
 fn sub_closed<const NA: usize>(h: &Aut<NA>, mask: u16) -> bool {
     for u in 0..h.k as usize {
         if mask & (1 << u) == 0 { continue; }
@@ -3205,6 +3283,38 @@ pullback: {ok} / {}", res.len());
                 println!("  ORBIT ENTRY/HALT DISJOINTNESS as a necessary condition:");
                 println!("    pool automata satisfying it : {eok} / {en}   (must be all)");
                 println!("    uncovered pullbacks         : {ero} / {ern}");
+                let mut sv = 0usize; let mut rd = 0usize; let mut nn = 0usize;
+                for (i, a) in list.iter().enumerate() {
+                    if i % step2 != 0 { continue; }
+                    nn += 1;
+                    if orbit_entry_single_valued(a) { sv += 1; }
+                    if orbit_reduces(a) { rd += 1; }
+                }
+                let (mut rsv, mut rrd, mut rnn) = (0usize, 0usize, 0usize);
+                for p in uncovered.iter() {
+                    rnn += 1;
+                    if orbit_entry_single_valued(p) { rsv += 1; }
+                    if orbit_reduces(p) { rrd += 1; }
+                }
+                println!("  ENTRY SINGLE-VALUEDNESS as a necessary condition:");
+                println!("    pool automata satisfying it : {sv} / {nn}   (must be all)");
+                println!("    uncovered pullbacks         : {rsv} / {rnn}");
+                println!("  ORBIT REDUCTION as a necessary condition:");
+                println!("    pool automata satisfying it : {rd} / {nn}   (must be all)");
+                println!("    uncovered pullbacks         : {rrd} / {rnn}");
+                for tag in ["sv", "rd"] {
+                    for a in list.iter() {
+                        let bad = if tag == "sv" { !orbit_entry_single_valued(a) } else { !orbit_reduces(a) };
+                        if bad {
+                            println!("    {tag} COUNTEREXAMPLE k={} it={:?}", a.k, &a.it[..NA]);
+                            for i in 0..a.k as usize {
+                                println!("      s{i}: st={:?} hl={:b}", &a.st[i][..NA], a.hl[i]);
+                            }
+                            println!("      orbits={:?}", orbits(a));
+                            break;
+                        }
+                    }
+                }
                 println!("  ORBIT-STABILITY as a necessary condition:");
                 println!("    pool automata satisfying it : {ok} / {n}   (must be all)");
                 let mut ro = 0usize; let mut rn = 0usize;
