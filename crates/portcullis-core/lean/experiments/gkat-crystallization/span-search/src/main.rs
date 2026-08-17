@@ -2766,6 +2766,74 @@ pullback: {ok} / {}", res.len());
             }
             println!("  STALLING PARTS: bigger than pool cap {fail_parts_big}, \
 within cap {fail_parts_small}, largest {fail_maxpart} (cap {maxk})");
+            // Pool membership asks "is this part ITSELF a program automaton".  The real
+            // question is whether it is COVERED by one, and un-sharing's whole point is that
+            // the cover is usually larger than the target.  So run the cover search on the
+            // within-cap parts that a lookup missed.
+            {
+                let mut targets: FxSet<Aut<NA>> = FxSet::default();
+                for p in uncovered.iter() {
+                    if unshare_rec(p, &list, &by_beh, 0, budget).is_some() { continue; }
+                    if let Some((_, a, b)) = unshare_parts(p) {
+                        for q in [&a, &b] {
+                            if q.k == 0 || q.k as usize > maxk { continue; }
+                            if let Some(c) = canon(q) {
+                                let inpool = by_beh.get(&behaviour(&c))
+                                    .map(|v| v.iter().any(|&n| list[n] == c)).unwrap_or(false);
+                                if !inpool { targets.insert(c); }
+                            }
+                        }
+                    }
+                }
+                let mut covered_now = 0usize;
+                let mut resist = 0usize;
+                for q in targets.iter() {
+                    let cands = match by_beh.get(&behaviour(q)) { Some(v) => v, None => {
+                        resist += 1; continue; } };
+                    let mut found = false;
+                    'q: for &n in cands.iter() {
+                        let mut pool = Pool::<NA>::new();
+                        let root = pool.of_prov(&list, &prov, n as u32);
+                        let mut frontier = vec![root];
+                        let mut seen: FxSet<u32> = FxSet::default();
+                        seen.insert(root);
+                        for _ in 0..4 {
+                            let mut next: Vec<u32> = Vec::new();
+                            for &t in frontier.iter() {
+                                refinements(&mut pool, t, nguards, true, true, 3, 3,
+                                    &mut next);
+                            }
+                            let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                            for t in next {
+                                if !seen.insert(t) { continue; }
+                                if let Some(a) = pool.aut(t) {
+                                    if let Some(c) = canon(&a) {
+                                        if covers(&c, q) { found = true; break; }
+                                    }
+                                }
+                                keep.push(t);
+                            }
+                            if found { break 'q; }
+                            frontier = keep;
+                            if frontier.len() > 40000 { frontier.truncate(40000); }
+                        }
+                    }
+                    if found { covered_now += 1; } else {
+                        resist += 1;
+                        print!("    PARTRESIST k={} nested={} red={} 2exit={:?} cands={}",
+                            q.k, nested(q), reducible(q), two_exit_cycle(q),
+                            by_beh.get(&behaviour(q)).map(|v| v.len()).unwrap_or(0));
+                        print!(" | ih={} it={:?}", q.ih, &q.it[..]);
+                        for x in 0..q.k as usize {
+                            print!(" | hl{}={} st{}={:?}", x, q.hl[x], x, &q.st[x][..]);
+                        }
+                        println!();
+                    }
+                }
+                println!("  WITHIN-CAP STALLING PARTS (distinct): {}", targets.len());
+                println!("    covered by refinement : {covered_now}");
+                println!("    still resisting       : {resist}");
+            }
             println!("  RECURSIVE un-sharing (budget {budget}):");
             println!("    resolves : {rec_ok} / {}", uncovered.len());
             println!("    stalls   : {rec_fail} / {}", uncovered.len());
