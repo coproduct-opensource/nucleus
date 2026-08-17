@@ -130,6 +130,7 @@ jobs:
             GkatTotalizationProofs \
             GkatW0Proofs \
             GkatSumQuotientProofs \
+            GkatGapWitnessProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \

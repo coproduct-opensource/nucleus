@@ -722,3 +722,6 @@ lean_lib «GkatW0Proofs» where
 
 lean_lib «GkatSumQuotientProofs» where
   roots := #[`GkatSumQuotientProofs]
+
+lean_lib «GkatGapWitnessProofs» where
+  roots := #[`GkatGapWitnessProofs]
