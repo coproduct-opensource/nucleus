@@ -373,6 +373,62 @@ theorem sumQuotientSolvable_of_common_thompson (e f h : Exp A T)
   show φ₁.mapState none = φ₂.mapState none
   rw [hs₁, hs₂]
 
+/-! ## Solvable but not syntax-generated — the gap, exhibited
+
+    The literature states the crux plainly: "a proper characterization of solvable automata
+    would be crucial for proving a completeness theorem for GKAT, but such a characterization
+    remains elusive", and there are automata that admit a solution while not being well-nested.
+
+    This exhibits the gap at the exact point where the cospan route dies.
+    `not_commonSyntacticCollapse` shows that for
+
+        e = p ; while b do p        f = (if b then 1 else p) ; while b do p
+
+    determinism pins the quotient of `Me + Mf` to two states — a common start image and a
+    common action image — and no THOMPSON automaton has that shape.  But the two-state system
+    itself is solved outright, below.  So at that pair a solvable target exists where a
+    syntax-generated one does not, which is exactly the room `SumQuotientSolvable` has and
+    `CommonSyntacticCollapse` does not. -/
+
+/-- Under `¬b`, the test `1` and the test `¬b` agree, so a `while`'s exit branch may be
+    written with either.  Both sides reduce to `ite ¬b (¬b)? X` through U2, U4 and S6. -/
+theorem else_guard_test (b : BExp T) (X : Exp A T) :
+    EquivBA (.ite b X (.test .one)) (.ite b X (.test (.not b))) := by
+  have h3 : EquivBA (.seq (.test (.not b)) (.test .one) : Exp A T) (.test (.not b)) :=
+    EquivBA.trans (EquivBA.s6 (.not b) .one)
+      (EquivBA.baTest (fun Y W x => by
+        show (bval W (BExp.not b) x && true) = bval W (BExp.not b) x
+        cases bval W (BExp.not b) x <;> rfl))
+  exact EquivBA.trans
+    (EquivBA.trans (EquivBA.base (Equiv.u2 b X (.test .one)))
+      (EquivBA.trans (EquivBA.base (Equiv.u4 (.not b) (.test .one) X))
+        (EquivBA.ite_c h3 (EquivBA.base (Equiv.refl X)))))
+    (EquivBA.symm (EquivBA.base (Equiv.u2 b X (.test (.not b)))))
+
+/-- The two-state shape the refutation pins the quotient to: a start image that always steps,
+    and an action image that loops on `b` and halts on `¬b`. -/
+def gapAut (b : BExp T) (p : A) : GAut Bool A T where
+  states := [false, true]
+  hlt := fun s => cond s (BExp.not b) BExp.zero
+  trans := fun s => cond s [(b, p, true)] [(BExp.one, p, true)]
+  start := false
+
+/-- Its solution, written down directly: the loop, and the loop after one action. -/
+def gapSol (b : BExp T) (p : A) : Bool → Exp A T :=
+  fun s => cond s (.wh b (.act p)) (.seq (.act p) (.wh b (.act p)))
+
+/-- **The pinned quotient is solvable.**  No search and no uniqueness axiom: the action image
+    is solved by W1, and the start image by `ite_one`.
+
+    Read against `not_commonSyntacticCollapse`, this is the gap: at that pair the quotient has
+    a solution while having no syntax-generated target. -/
+theorem gapAut_solvable (b : BExp T) (p : A) : SolvesBA (gapAut b p) (gapSol b p) := by
+  intro s _
+  cases s with
+  | false => exact EquivBA.symm (ite_one _ _)
+  | true =>
+      exact EquivBA.trans (EquivBA.base (Equiv.w1 b (.act p))) (else_guard_test b _)
+
 /-! ## The swap -/
 
 /-- **The open conjunct, weakened.**  For uniformly equivalent `e` and `f`, some behavioural
@@ -421,6 +477,8 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms gAutHom_bisim
 #print axioms sumQuotientSolvable_diagonal
 #print axioms sumQuotientSolvable_of_common_thompson
+#print axioms else_guard_test
+#print axioms gapAut_solvable
 #print axioms completeness_of_sumQuotientSolvable
 
 end GkatSumQuotient
