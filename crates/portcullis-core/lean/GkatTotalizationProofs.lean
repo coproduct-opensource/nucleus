@@ -3293,6 +3293,49 @@ theorem completeness_of_restrictedBranches (a₀ : A)
   completeness_of_diagPullbackCovered a₀
     (paddedDiagPullbackCovered_of_restrictedBranches a₀ hr)
 
+/-! ### One conjunct, and it is the thing the search measures
+
+    With the diagonal piece proved, the branch split is no longer needed to state the
+    obligation.  Take `l₂ := diagList` and `g := 1` in `hasThompsonCover_of_restrictSplit`:
+    the second piece is the diagonal, which is a theorem, and `restrict P l 1` is just `P`
+    listed on `l` with its entry intact — `g ∧ t` fires exactly when `t` does.
+
+    So the whole programme reduces to: **the pullback, listed on its reachable states, is
+    Thompson-covered.**  That is precisely what the harness computes, since its pullback is
+    built by exploring from the entry — and it is what un-sharing covered 2181 times out of
+    2181, and what refinement covers directly in 196 of 200 sampled cases. -/
+def ReachListCovered (A T : Type) (a₀ : A) : Prop :=
+  ∀ (e f : Exp A T) (Q : Type) (m : InitializedGAut Q A T)
+    (φ : InitCover (certifiedThompson A T (padZero e f a₀)).aut m)
+    (ψ : InitCover (certifiedThompson A T (padOne e f a₀)).aut m)
+    (base : GkatPullback.Base φ ψ), φ.map = ψ.map →
+    ∃ l : List (GkatPullback.Fib φ ψ),
+      (∀ s ∈ l, s ∈ (GkatPullback.pullback φ ψ base).core.states) ∧
+      HasThompsonCover (restrict (GkatPullback.pullback φ ψ base) l BExp.one)
+
+theorem paddedDiagPullbackCovered_of_reachList (a₀ : A) (hr : ReachListCovered A T a₀) :
+    PaddedDiagPullbackCovered A T a₀ := by
+  intro e f Q m φ ψ base hmaps
+  obtain ⟨l, hsub, hcov⟩ := hr e f Q m φ ψ base hmaps
+  refine ⟨List.append l (diagList φ ψ base), ?_, ?_, ?_⟩
+  · intro s hs
+    rcases List.mem_append.mp hs with h | h
+    · exact hsub s h
+    · obtain ⟨u, hu, rfl⟩ := List.mem_map.mp h
+      exact List.mem_flatMap.mpr ⟨u, hu, List.mem_map.mpr ⟨u, hu, rfl⟩⟩
+  · intro u hu
+    exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨u, hu, rfl⟩))
+  · exact hasThompsonCover_of_restrictSplit BExp.one (GkatPullback.pullback φ ψ base)
+      l (diagList φ ψ base) hcov (hasThompsonCover_diagPiece a₀ e f φ ψ base hmaps)
+
+/-- **Completeness from one condition on the reachable listing.** -/
+theorem completeness_of_reachList (a₀ : A) (hr : ReachListCovered A T a₀) :
+    FiniteAxiomsCompleteBA A T :=
+  completeness_of_diagPullbackCovered a₀ (paddedDiagPullbackCovered_of_reachList a₀ hr)
+
+#print axioms paddedDiagPullbackCovered_of_reachList
+#print axioms completeness_of_reachList
+
 #print axioms paddedDiagPullbackCovered_of_restrictedBranches
 #print axioms completeness_of_restrictedBranches
 
