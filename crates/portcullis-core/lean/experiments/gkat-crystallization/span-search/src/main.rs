@@ -1444,6 +1444,74 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
     }
 }
 
+/// **How far is the system from GKAT?**  Over KLEENE ALGEBRA, Gaussian elimination always
+/// solves a left-affine system — Kleene's theorem — because `+` lets a branch with two
+/// different variables be split.  GKAT has no `+`, and `left_distrib_fails` is why the same
+/// step is unavailable here.
+///
+/// So the natural measure of the obstruction is the number of steps that need the KA rule: how
+/// many times elimination must split a mixed branch, which GKAT cannot do.  `budget_ka` bounds
+/// those; at 0 this is exactly the GKAT-sound procedure.
+fn elim_ka<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK], hh: &mut [[[bool; NA]; NA]; MAXK],
+    live: u16, nb: usize, budget: &mut usize, ka_left: usize) -> bool {
+    if live == 0 { return true; }
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    for relaxed in [false, true] {
+        if relaxed && ka_left == 0 { continue; }
+        for x in 0..nb {
+            if live & (1 << x) == 0 { continue; }
+            let mut strict = true;
+            'chk: for y in 0..NA {
+                for beta in 0..NA {
+                    if vv[x][y][beta] & (1 << x) != 0
+                        && (vv[x][y][beta] != (1 << x) || hh[x][y][beta]) { strict = false; break 'chk; }
+                }
+            }
+            if relaxed == strict { continue; }
+            let mut solv = [[0u16; NA]; NA];
+            let mut solh = [[false; NA]; NA];
+            for al in 0..NA {
+                for beta in 0..NA {
+                    solv[al][beta] = vv[x][al][beta] & !(1 << x);
+                    solh[al][beta] = hh[x][al][beta];
+                }
+            }
+            for _ in 0..(NA + 1) {
+                for al in 0..NA {
+                    for gam in 0..NA {
+                        if vv[x][al][gam] & (1 << x) == 0 { continue; }
+                        for beta in 0..NA {
+                            solv[al][beta] |= solv[gam][beta];
+                            if solh[gam][beta] { solh[al][beta] = true; }
+                        }
+                    }
+                }
+            }
+            let saved = *vv; let savedh = *hh;
+            for z in 0..nb {
+                if live & (1 << z) == 0 || z == x { continue; }
+                for y in 0..NA {
+                    let mut nv = [0u16; NA]; let mut nh = [false; NA];
+                    for beta in 0..NA { nv[beta] = vv[z][y][beta] & !(1 << x); nh[beta] = hh[z][y][beta]; }
+                    for al in 0..NA {
+                        if vv[z][y][al] & (1 << x) == 0 { continue; }
+                        for beta in 0..NA {
+                            nv[beta] |= solv[al][beta];
+                            if solh[al][beta] { nh[beta] = true; }
+                        }
+                    }
+                    for beta in 0..NA { vv[z][y][beta] = nv[beta]; hh[z][y][beta] = nh[beta]; }
+                }
+            }
+            let next_ka = if relaxed { ka_left - 1 } else { ka_left };
+            if elim_ka::<NA>(vv, hh, live & !(1 << x), nb, budget, next_ka) { return true; }
+            *vv = saved; *hh = savedh;
+        }
+    }
+    false
+}
+
 fn elim2<const NA: usize>(vv: &mut [[[u16; NA]; NA]; MAXK], hh: &mut [[[bool; NA]; NA]; MAXK],
     live: u16, nb: usize, budget: &mut usize) -> bool {
     if live == 0 { return true; }
@@ -4224,6 +4292,36 @@ pullback: {ok} / {}", res.len());
                             if ok { sexp += 1; }
                         }
                     }
+                    // DISTANCE FROM GKAT: fewest KA-only steps that make it solvable.
+                    let mut dist = [0usize; 6];
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            if symbolic_eliminable(&su) { continue; }
+                            let (blk, nb0) = bisim_blocks(&su);
+                            let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
+                            let kq = q.k as usize;
+                            let mut vv = [[[0u16; NA]; NA]; MAXK];
+                            let mut hh = [[[false; NA]; NA]; MAXK];
+                            for x in 0..kq {
+                                for y in 0..NA {
+                                    if q.st[x][y] != 0 {
+                                        let t = (q.st[x][y] - 1) as usize;
+                                        for beta in 0..NA { vv[x][y][beta] |= 1 << t; }
+                                    } else if q.hl[x] & (1 << y) != 0 { hh[x][y][y] = true; }
+                                }
+                            }
+                            let mut found = 5usize;
+                            for d in 1..5 {
+                                let mut b2 = 200000usize;
+                                if elim_ka::<NA>(&mut vv.clone(), &mut hh.clone(),
+                                    (1u16 << kq) - 1, kq, &mut b2, d) { found = d; break; }
+                            }
+                            dist[found] += 1;
+                        }
+                    }
+                    println!("  DISTANCE FROM GKAT (fewest KA-only elimination steps):");
+                    for d in 1..5 { println!("    needs {d} KA step(s) : {}", dist[d]); }
+                    println!("    still unsolved (>4) : {}", dist[5]);
                     println!("  ARE THE UNSOLVED QUOTIENTS EVEN SOLVABLE?  (necessary conditions)");
                     println!("    nested (finite kernel)      : {nst} / {expn}");
                     println!("    every state in the pool     : {allexp} / {expn}");
