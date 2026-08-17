@@ -82,8 +82,12 @@ Totalising *adds* transitions, and the induction hypothesis survives every const
   * **dead-canonicity is inherited by the padding** — `deadCanonical_ite`,
     `deadCanonical_div`, proved.
 
-`CanonicallySettled` is itself two thirds proved: `settledReachable` gives its first two
-conjuncts, and only `DeadCanonical` is open.
+`CanonicallySettled` is itself reduced further by `canonicallySettled_of_bridge`: both
+normalisations are proved — `settledReachable_loopProductive` for settling, `nrm` /
+`nrm_equiv` / `settled_nrm` for exact dead-code elimination — leaving one statement,
+`LiveImpliesCanonical`, that syntactic liveness implies automaton-level dead-canonicity.
+`completeness_of_bridge` therefore derives completeness from `LiveImpliesCanonical` and
+`PullbackCovered`, and nothing else.
 
 The identification that makes the sink legitimate is the one the literature calls the
 **early-termination property** — programs that fail immediately are equated with programs
@@ -1808,6 +1812,121 @@ theorem settled_and_dce (a₀ : A) (e : Exp A T) :
     exact settled_nrm a₀ _ hs' hl' _
   · obtain ⟨_, _, hl'⟩ := Classical.choose_spec (settledReachable_loopProductive a₀ e)
     exact loopProductive_nrm a₀ _ hl' _
+
+/-! ## What the elimination guarantees, syntactically
+
+    `nrm` leaves no dead action occurrence behind.  Stating that needs the same device the
+    construction did — a continuation parameter — because "this occurrence is dead" is not a
+    property of the occurrence alone.
+
+    `Live a₀ e K` says: read `e` in continuation `K`, and every action occurrence in it has a
+    continuation that accepts something.  The one exception is the sink itself, which is dead
+    by design and canonical by construction — every transition into `div a₀` carries `a₀`,
+    since that is the only entry transition it has. -/
+
+/-- Nullity of `X ; K` depends on `K` only through its language. -/
+theorem null_seq_congr {X K K' : Exp A T} (h : EquivBA K K') :
+    UniformExpLempty (.seq X K) → UniformExpLempty (.seq X K') := by
+  intro hnull Y W gs
+  intro hden
+  exact hnull Y W gs
+    ((sound_BA (V := W) (EquivBA.seq_c (EquivBA.base (Equiv.refl X)) h) gs).mpr hden)
+
+/-- Every action occurrence has a live continuation; the sink is the only exception. -/
+inductive Live (a₀ : A) : Exp A T → Exp A T → Prop where
+  | act (p : A) (K : Exp A T) :
+      ¬ UniformExpLempty (.seq (.act p) K) → Live a₀ (.act p) K
+  | sink (K : Exp A T) : Live a₀ (div a₀) K
+  | test (b : BExp T) (K : Exp A T) : Live a₀ (.test b) K
+  | seq {e f K : Exp A T} :
+      Live a₀ e (.seq f K) → Live a₀ f K → Live a₀ (.seq e f) K
+  | ite (g : BExp T) {e f K : Exp A T} :
+      Live a₀ e K → Live a₀ f K → Live a₀ (.ite g e f) K
+  | wh (g : BExp T) {e K : Exp A T} :
+      Live a₀ e (.seq (.wh g e) K) → Live a₀ (.wh g e) K
+
+/-- Liveness only sees the continuation's language, so equivalent continuations agree. -/
+theorem live_congr (a₀ : A) {e K : Exp A T} (h : Live a₀ e K) :
+    ∀ {K' : Exp A T}, EquivBA K K' → Live a₀ e K' := by
+  induction h with
+  | act p K hn => exact fun hk => Live.act p _ (fun hnull => hn (null_seq_congr hk.symm hnull))
+  | sink K => exact fun _ => Live.sink _
+  | test b K => exact fun _ => Live.test b _
+  | seq _ _ ihe ihf =>
+      exact fun hk => Live.seq (ihe (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hk)) (ihf hk)
+  | ite g _ _ ihe ihf => exact fun hk => Live.ite g (ihe hk) (ihf hk)
+  | wh g _ ihe =>
+      exact fun hk =>
+        Live.wh g (ihe (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hk))
+
+/-- **The elimination is exhaustive.**  Every action left standing has a live continuation —
+    which is what "no dead code remains" means, stated without reference to the automaton. -/
+theorem live_nrm (a₀ : A) : ∀ (e : Exp A T), LoopProductive e → ∀ K : Exp A T,
+    Live a₀ (nrm a₀ e K) K := by
+  intro e
+  induction e with
+  | act p =>
+      intro _ K
+      by_cases h : UniformExpLempty (.seq (.act p) K : Exp A T)
+      · simp only [nrm, h, if_true]; exact Live.sink K
+      · simp only [nrm, h, if_false]; exact Live.act p K h
+  | test b => intro _ K; exact Live.test b K
+  | seq e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | seq hle hlf =>
+          refine Live.seq ?_ (ihf hlf K)
+          exact live_congr a₀ (ihe hle (.seq f K)) (nrm_equiv a₀ f hlf K)
+  | ite g e f ihe ihf =>
+      intro hlp K
+      cases hlp with
+      | ite _ hle hlf => exact Live.ite g (ihe hle K) (ihf hlf K)
+  | wh g e ihe =>
+      intro hlp K
+      cases hlp with
+      | wh _ hle hE =>
+          refine Live.wh g ?_
+          exact live_congr a₀ (ihe hle (.seq (.wh g e) K))
+            (nrm_equiv a₀ (.wh g e) (LoopProductive.wh g hle hE) K)
+
+/-- **The last bridge.**  Syntactic liveness gives automaton-level dead-canonicity: if every
+    action occurrence in `h` has a live continuation, then the only dead states of `h ; K`'s
+    automaton belong to sinks, and every transition into a sink carries `a₀` because that is
+    the sink's only entry action.
+
+    This is the one statement between `live_nrm` and `CanonicallySettled`, and it is the only
+    remaining step that has to reason about states rather than syntax. -/
+def LiveImpliesCanonical (A T : Type) (a₀ : A) : Prop :=
+  ∀ h : Exp A T, Live a₀ h (.test BExp.one) →
+    DeadCanonical a₀ (certifiedThompson A T h).aut
+
+/-- **`CanonicallySettled` reduces to that bridge.**  Both normalisations are proved; only the
+    soundness of the elimination is left. -/
+theorem canonicallySettled_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀) :
+    CanonicallySettled A T a₀ := by
+  intro e
+  obtain ⟨h, hh, hs, hl⟩ := settledReachable_loopProductive a₀ e
+  refine ⟨nrm a₀ h (.test BExp.one), EquivBA.trans hh (nrm_top_equiv a₀ h hl),
+    settled_nrm a₀ h hs hl _, ?_⟩
+  exact hb _ (live_nrm a₀ h hl (.test BExp.one))
+
+/-- **Completeness from the bridge and `PullbackCovered`.** -/
+theorem completeness_of_bridge (a₀ : A) (hb : LiveImpliesCanonical A T a₀)
+    (hpc : PullbackCovered A T) : FiniteAxiomsCompleteBA A T :=
+  completeness_of_canonicallySettled a₀ (canonicallySettled_of_bridge a₀ hb) hpc
+
+/-- Non-vacuity for the bridge: it holds at the sink, which is the one program that is
+    deliberately dead.  `deadCanonical_div` is the automaton half, `Live.sink` the syntactic
+    one, so the two sides of the statement do meet somewhere. -/
+theorem bridge_holds_at_sink (a₀ : A) :
+    Live a₀ (div a₀ : Exp A T) (.test BExp.one) ∧
+      DeadCanonical a₀ (certifiedThompson A T (div a₀)).aut :=
+  ⟨Live.sink _, deadCanonical_div a₀⟩
+
+#print axioms bridge_holds_at_sink
+#print axioms live_nrm
+#print axioms canonicallySettled_of_bridge
+#print axioms completeness_of_bridge
 
 #print axioms settled_nrm
 #print axioms settledReachable_loopProductive
