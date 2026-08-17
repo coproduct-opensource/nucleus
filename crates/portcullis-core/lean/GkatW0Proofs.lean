@@ -17,6 +17,15 @@ This file establishes the converse direction, which the thesis does not need but
 settles the relationship between the two axiom sets: **W0 is derivable from W1–W3**, so the
 two systems are interderivable and the reduction to a single axiom costs no strength.
 
+This bears on the SECOND of the two open questions the literature poses about the finite
+system.  They are stated together: "can the uniqueness axiom be eliminated?" and "can we
+eliminate the guardedness side condition?"  The side condition is `w3`'s `E(e) ≡ 0`, and it
+cannot simply be dropped — the unguarded rule is UNSOUND, as the `g := 1, e := 1, f := 1`
+witness below shows.  What W0 does is INTERNALISE it: the restriction moves from a side
+condition into the equation, and `w0` proves that internalised form is derivable from W1–W3.
+So the side condition costs no strength and can be traded for a guard inside the axiom, which
+is a positive partial answer to the second question rather than to the first.
+
 That matters here for a specific reason.  Every completeness result in this development is
 stated over W1–W3, and W0 is *prima facie* stronger: the `w3` constructor carries the side
 condition `E(e) ≡ 0` ("`e` is strictly productive"), whereas W0 carries no side condition at
