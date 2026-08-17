@@ -55,10 +55,16 @@ the best available path, and clearing them matters more, not less.
 Refinement is not complete: `RefinementSuffices` is refuted, so a cover outside the
 refinement closure remains possible, and these are **candidates**, not a refutation.
 
-The structural story is also weaker than it first looked.  All fourteen have a two-exit
-cycle, but so do **46.9%** of genuine Thompson automata at five states, so that feature is
-uninformative.  Ten of the fourteen have a two-halt cycle against a **1.5%** base rate,
-which is a strong correlation — but four do not, so it is not necessary either.
+The structural story is **withdrawn**.  All fourteen have a two-exit cycle and ten have a
+two-halt cycle, but the base rates among *pullbacks* — which is the population these are drawn
+from — are **72%** and **56%**.  Against that control both figures are unremarkable.  (The
+earlier comparison used the base rate among Thompson automata, 46.9% and 1.5%, which is the
+wrong population.)
+
+A controlled comparison of the full residue against the covered pullbacks finds **no**
+separating structural feature at all: two-exit 71.4% vs 72.7%, two-halt 55.8% vs 56.3%,
+nested 100% vs 100%, reducible 76.0% vs 76.3%.  The only difference is size — 6.63 states
+against 6.25 — which is what a search-reach limit looks like rather than an obstruction.
 
 ## The automata
 

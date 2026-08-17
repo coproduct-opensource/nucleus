@@ -2816,6 +2816,46 @@ pullback: {ok} / {}", res.len());
             println!("    UNION        : {un} / {}", uncovered.len());
             println!("    NEITHER      : {} / {}", uncovered.len() - un, uncovered.len());
             println!("    explored     : {explored_tot}");
+            // CONTROLLED COMPARISON.  Which features separate the residue from the covered
+            // population?  Both groups are pullbacks of total instances, so the covered group
+            // is a proper control — a rate here is only evidence relative to it.
+            {
+                let nei: Vec<usize> = (0..uncovered.len())
+                    .filter(|&i| !direct[i] && !branch[i]).collect();
+                let cov: Vec<usize> = (0..uncovered.len())
+                    .filter(|&i| direct[i] || branch[i]).collect();
+                let rate = |g: &Vec<usize>, f: &dyn Fn(&Aut<NA>) -> bool| -> f64 {
+                    if g.is_empty() { return 0.0; }
+                    100.0 * (g.iter().filter(|&&i| f(&uncovered[i])).count() as f64)
+                        / (g.len() as f64)
+                };
+                let mean = |g: &Vec<usize>, f: &dyn Fn(&Aut<NA>) -> f64| -> f64 {
+                    if g.is_empty() { return 0.0; }
+                    g.iter().map(|&i| f(&uncovered[i])).sum::<f64>() / (g.len() as f64)
+                };
+                println!("  FEATURE SEPARATION  (residue {} vs covered {}):",
+                    nei.len(), cov.len());
+                let bools: [(&str, &dyn Fn(&Aut<NA>) -> bool); 4] = [
+                    ("two-exit cycle", &|a: &Aut<NA>| two_exit_cycle(a).is_some()),
+                    ("two-halt cycle", &|a: &Aut<NA>| two_halt_cycle(a).is_some()),
+                    ("nested",         &|a: &Aut<NA>| nested(a)),
+                    ("reducible",      &|a: &Aut<NA>| reducible(a)),
+                ];
+                for (name, f) in bools.iter() {
+                    println!("    {:<16} residue {:>6.1}%   covered {:>6.1}%",
+                        name, rate(&nei, *f), rate(&cov, *f));
+                }
+                println!("    {:<16} residue {:>6.2}    covered {:>6.2}", "states (mean)",
+                    mean(&nei, &|a: &Aut<NA>| a.k as f64),
+                    mean(&cov, &|a: &Aut<NA>| a.k as f64));
+                for j in 0..10 {
+                    let fr = mean(&nei, &|a: &Aut<NA>| features(a)[j] as f64);
+                    let fc = mean(&cov, &|a: &Aut<NA>| features(a)[j] as f64);
+                    if (fr - fc).abs() > 0.15 * (fc.abs().max(1.0)) {
+                        println!("    feature[{j}]       residue {fr:>6.2}    covered {fc:>6.2}");
+                    }
+                }
+            }
             println!("    => ReachListCovered holds for {} / {} = {:.1}%",
                 total - (uncovered.len() - un), total,
                 100.0 * ((total - (uncovered.len() - un)) as f64) / (total as f64));
