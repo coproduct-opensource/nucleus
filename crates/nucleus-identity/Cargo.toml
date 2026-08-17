@@ -31,8 +31,8 @@ x509-parser = { workspace = true }
 ring = "0.17"
 # AES-128-CFB for TPM credential activation (Inc 3 brick 2) — feature-gated behind
 # `tpm-devid`, the one symmetric primitive not available through ring.
-aes = { version = "0.8", optional = true }
-cfb-mode = { version = "0.8", optional = true }
+aes = { version = "0.9", optional = true }
+cfb-mode = { version = "0.9", optional = true }
 
 # Async
 tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
