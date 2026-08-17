@@ -2552,6 +2552,61 @@ pullback: {ok} / {}", res.len());
             }
             println!();
         }
+        // Focus: the only survivors whose non-coverage is NOT confounded by pool size are
+        // those with a candidate at least as large as the target (a cover is onto).  Give
+        // those a much larger budget — if they still resist, they are real.
+        if std::env::var("PAD_FOCUS").is_ok() {
+            let fr = std::env::var("PAD_FOCUS_ROUNDS").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(6);
+            let ff = std::env::var("PAD_FOCUS_FRONTIER").ok()
+                .and_then(|v| v.parse::<usize>().ok()).unwrap_or(200000);
+            let mut adequate = 0usize;
+            let mut still = 0usize;
+            for p in survivors.iter() {
+                let cands = match by_beh.get(&behaviour(p)) { Some(v) => v, None => continue };
+                let maxc = cands.iter().map(|&n| list[n].k).max().unwrap_or(0);
+                if (maxc as usize) < p.k as usize { continue; }
+                adequate += 1;
+                let mut found = false;
+                let mut explored = 0usize;
+                'f: for &n in cands.iter() {
+                    let mut pool = Pool::<NA>::new();
+                    let root = pool.of_prov(&list, &prov, n as u32);
+                    let mut frontier = vec![root];
+                    let mut seen: FxSet<u32> = FxSet::default();
+                    seen.insert(root);
+                    for _ in 0..fr {
+                        let mut next: Vec<u32> = Vec::new();
+                        for &t in frontier.iter() {
+                            refinements(&mut pool, t, nguards, true, true, cycmax, 4,
+                                &mut next);
+                        }
+                        let mut keep: Vec<u32> = Vec::with_capacity(next.len());
+                        for t in next {
+                            if !seen.insert(t) { continue; }
+                            explored += 1;
+                            if let Some(a) = pool.aut(t) {
+                                if let Some(c) = canon(&a) {
+                                    if covers(&c, p) { found = true; break; }
+                                }
+                            }
+                            keep.push(t);
+                        }
+                        if found { break 'f; }
+                        frontier = keep;
+                        if frontier.len() > ff { frontier.truncate(ff); }
+                    }
+                }
+                if found {
+                    println!("  FOCUS k={} RESCUED (explored {explored})", p.k);
+                } else {
+                    still += 1;
+                    println!("  FOCUS k={} STILL UNCOVERED after {fr} rounds \
+(explored {explored} refinements)", p.k);
+                }
+            }
+            println!("  size-adequate survivors: {adequate}, still uncovered: {still}");
+        }
         println!("  survivors with two-exit cycle : {with_two_exit} / {}", survivors.len());
         println!("  survivors with two-halt cycle : {with_two_halt} / {}", survivors.len());
         println!("  survivors irreducible         : {irreducible} / {}", survivors.len());
