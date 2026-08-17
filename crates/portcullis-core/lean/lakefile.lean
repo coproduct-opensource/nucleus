@@ -719,3 +719,6 @@ lean_lib «GkatExistenceNarrowProofs» where
 
 lean_lib «GkatW0Proofs» where
   roots := #[`GkatW0Proofs]
+
+lean_lib «GkatSumQuotientProofs» where
+  roots := #[`GkatSumQuotientProofs]

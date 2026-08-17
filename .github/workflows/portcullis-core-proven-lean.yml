@@ -129,6 +129,7 @@ jobs:
             GkatNormalProofs \
             GkatTotalizationProofs \
             GkatW0Proofs \
+            GkatSumQuotientProofs \
             GkatBisimulationProofs \
             GkatCompletenessProofs \
             GkatDerivativeFiniteProofs \
