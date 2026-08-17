@@ -2540,6 +2540,57 @@ theorem paddedPullbackCovered_of_branchesCovered (a₀ : A) (hb : BranchesCovere
 #print axioms splitCover
 #print axioms hasThompsonCover_of_split
 
+/-! ## The measured object and the stated object are not the same
+
+    Worth recording before any more evidence is collected against the wrong target.
+
+    `GkatPullback.pullback` lists **every matched pair**: its `core.states` is
+    `a.core.states.flatMap (fun u => b.core.states.map (pairUp base u ·))`, so it is the whole
+    product with unmatched pairs collapsed onto the basepoint.  The search harness builds its
+    pullback by breadth-first exploration from the entry, and `canon` renumbers by a
+    breadth-first walk and drops what it never reaches — so the harness measured the
+    **reachable** pullback.
+
+    `onto` in `InitCover` is with respect to the *listed* states, so covering the stated object
+    is strictly harder than covering the measured one.  The 4679/4679 result is evidence for
+    the reachable pullback, not for `PaddedPullbackCovered` as written.
+
+    The full listing is not gratuitous: it is how both projections are onto without assuming
+    reachability, which is exactly what padding was introduced to avoid.  But with padding it
+    is far more than needed.  Both legs of the padded span are the *same* map
+    (`pad_span_maps_agree`), so every **diagonal** pair is matched — and the diagonal alone
+    already projects onto every state of both sides.  So the listing can shrink from `|S|²` to
+    `|S|` without giving up `onto`, which is the direction that would make the stated object
+    and the measured one meet. -/
+
+/-- With padding, every diagonal pair is matched — both legs of the span are `rep`. -/
+theorem pad_diag_matched (a₀ : A) (e f : Exp A T) (hlang : UniformLanguageEquivalent e f)
+    (ht0 : Total (certifiedThompson A T (padZero e f a₀)).aut)
+    (ht1 : Total (certifiedThompson A T (padOne e f a₀)).aut)
+    (hc0 : DeadCanonical a₀ (certifiedThompson A T (padZero e f a₀)).aut)
+    (hc1 : DeadCanonical a₀ (certifiedThompson A T (padOne e f a₀)).aut)
+    (u : (certifiedThompson A T (padZero e f a₀)).State) :
+    (GkatQuotient.matchCover (matched_of_pad a₀ e f hlang ht0 ht1 hc0 hc1)).map u
+      = (GkatQuotient.targetCover
+          (matched_of_pad a₀ e f hlang ht0 ht1 hc0 hc1).stepbb).map u :=
+  congrFun (pad_span_maps_agree a₀ e f hlang ht0 ht1 hc0 hc1) u
+
+/-- **The diagonal alone is onto both projections.**  So a listing containing just the
+    diagonal keeps `pullbackFst` and `pullbackSnd` surjective, and the object to cover shrinks
+    from the whole matched product to something the size of one side. -/
+theorem diag_onto {S Q : Type} {a b : InitializedGAut S A T} {m : InitializedGAut Q A T}
+    (φ : InitCover a m) (ψ : InitCover b m) (base : GkatPullback.Base φ ψ)
+    (hmaps : φ.map = ψ.map) (hstates : a.core.states = b.core.states) :
+    ∀ q ∈ a.core.states,
+      ∃ p ∈ (a.core.states.map (fun u => GkatPullback.pairUp base u u)),
+        (p : GkatPullback.Fib φ ψ).val.1 = q := by
+  intro q hq
+  refine ⟨GkatPullback.pairUp base q q, List.mem_map.mpr ⟨q, hq, rfl⟩, ?_⟩
+  exact GkatPullback.pairUp_fst base (by rw [hmaps])
+
+#print axioms pad_diag_matched
+#print axioms diag_onto
+
 /-! ## Completeness from one statement -/
 
 /-- Every state of the sink is an `a₀` occurrence. -/
