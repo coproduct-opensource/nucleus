@@ -2526,13 +2526,36 @@ pullback: {ok} / {}", res.len());
         println!("  ..rescued by refinement ({rounds_p} rounds, frontier {frontier_cap}, cyc {cycmax}): \
 {rescued} / {sample}");
         println!("  ..survivors      : {}", survivors.len());
+        // Kosaraju / Ashcroft-Manna: a loop with two distinct exits cannot be structured
+        // into a while-program without auxiliary variables, and GKAT has neither auxiliary
+        // variables nor multi-level breaks.  So a two-exit cycle in a survivor is the
+        // classical obstruction, and the earlier residue of this programme was exactly one.
+        let mut with_two_exit = 0usize;
+        let mut with_two_halt = 0usize;
+        let mut irreducible = 0usize;
+        let mut shapes: FxSet<Aut<NA>> = FxSet::default();
         for p in survivors.iter() {
             let cands = by_beh.get(&behaviour(p)).map(|v| v.len()).unwrap_or(0);
             let maxc = by_beh.get(&behaviour(p))
                 .map(|v| v.iter().map(|&n| list[n].k).max().unwrap_or(0)).unwrap_or(0);
-            println!("  PADSURVIVOR k={} cands={} maxcand_k={} nested={} it={:?}",
-                p.k, cands, maxc, nested(p), &p.it[..]);
+            let te = two_exit_cycle(p);
+            let th = two_halt_cycle(p);
+            if te.is_some() { with_two_exit += 1; }
+            if th.is_some() { with_two_halt += 1; }
+            if !reducible(p) { irreducible += 1; }
+            shapes.insert(p.clone());
+            println!("  PADSURVIVOR k={} cands={} maxcand_k={} nested={} red={} 2exit={:?} \
+2halt={:?}", p.k, cands, maxc, nested(p), reducible(p), te, th);
+            print!("    ih={} it={:?}", p.ih, &p.it[..]);
+            for x in 0..p.k as usize {
+                print!(" | hl{}={} st{}={:?}", x, p.hl[x], x, &p.st[x][..]);
+            }
+            println!();
         }
+        println!("  survivors with two-exit cycle : {with_two_exit} / {}", survivors.len());
+        println!("  survivors with two-halt cycle : {with_two_halt} / {}", survivors.len());
+        println!("  survivors irreducible         : {irreducible} / {}", survivors.len());
+        println!("  distinct survivor shapes      : {}", shapes.len());
     }
 
     if let Ok(ek) = std::env::var("EXPAND_K") {
