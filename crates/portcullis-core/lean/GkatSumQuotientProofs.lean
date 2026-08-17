@@ -325,7 +325,24 @@ def elimSum {S₁ S₂ R : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A 
             (fun t => (t.1, t.2.1, Sum.elim φ₁.mapState φ₂.mapState t.2.2))
         rw [map_elim_right]; exact φ₂.trans_eq s
 
-/-- **A common syntax-generated target discharges the swapped conjunct.**  If both Thompson
+/-- **TRUE, BUT NOT A ROUTE — its hypothesis is refuted.**  The data asked for here is exactly
+    `GkatCrystallization.CommonSyntacticCollapse`'s: two homomorphisms onto a common
+    Thompson automaton, plus surjectivity, is precisely a behavioural quotient of the sum onto
+    a syntax-generated target.  And `GkatCollapseRefutation.not_commonSyntacticCollapse` proves
+    no such data exists in general — for
+
+        e = p ; while b do p        f = (if b then 1 else p) ; while b do p
+
+    determinism pins the quotient to two states, surjectivity forces the target to have exactly
+    those two, and either choice of pseudostate contradicts the Thompson structure.
+
+    So this cannot close the problem, and `completeness_of_common_syntactic_collapse` already
+    covered the same ground.  It is kept for two reasons: `elimSum` and the co-pairing are
+    reusable, and the comparison is what shows where `SumQuotientSolvable` actually differs —
+    the cospan dies because the target must be THOMPSON-GENERATED, a demand
+    `SumQuotientSolvable` does not make.
+
+    **A common syntax-generated target discharges the swapped conjunct.**  If both Thompson
     automata map homomorphically onto the Thompson automaton of a third program, sending
     pseudostate to pseudostate, then the quotient data `SumQuotientSolvable` demands exists —
     and the solution is free, being the third program's own extended standard solution.
