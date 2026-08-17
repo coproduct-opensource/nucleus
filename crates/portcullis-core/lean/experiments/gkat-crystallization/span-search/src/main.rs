@@ -4435,6 +4435,35 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
+                    {
+                        // Exhibit the residue.  These are the objects the whole programme now
+                        // reduces to: 3 states, nested, not eliminable, not Thompson-generated.
+                        let mut shown = 0;
+                        let mut distinct: Vec<Aut<NA>> = Vec::new();
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                if symbolic_eliminable(&su) { continue; }
+                                let (blk, nb0) = bisim_blocks(&su);
+                                if let Some(q) = quotient_by(&su, &blk, nb0) {
+                                    if let Some(c) = canon(&q) {
+                                        if seen.contains_key(&c) { continue; }
+                                        if distinct.iter().any(|d| *d == c) { continue; }
+                                        distinct.push(c);
+                                        if shown < 4 {
+                                            shown += 1;
+                                            println!("    UNKNOWN #{shown}  k={} it={:?} ih={}",
+                                                c.k, &c.it[..NA], c.ih);
+                                            for t in 0..c.k as usize {
+                                                println!("      s{t}: st={:?} hl={:b}",
+                                                    &c.st[t][..NA], c.hl[t]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        println!("    distinct unknown quotients: {}", distinct.len());
+                    }
                     println!("  THE UNKNOWN QUOTIENTS, BY SIZE (maxk = {maxk}):");
                     for kk in 0..12 { if szhist[kk] > 0 { println!("    {kk} states : {}", szhist[kk]); } }
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
