@@ -502,4 +502,23 @@ theorem levels_solve (ls : List (LevelG A T × Exp A T))
 #print axioms level_solves
 #print axioms levels_solve
 
+/-- **The existence half.**  `levelSol` SATISFIES the equation whose solutions it describes —
+    W1-existence through the factored fold.  With `level_solves` (uniqueness) this completes
+    the pair: a level's closed form is THE solution, so a certificate producer may define a
+    quotient solution state-by-state as `levelSol` and discharge each `SolvesBA` obligation
+    with this lemma. -/
+theorem level_satisfies (L : LevelG A T) :
+    EquivBA (levelSol L)
+      (guardedFold (L.1.map (fun p : Branch A T => (p.1, Exp.seq p.2 (levelSol L))) ++ L.2.1)
+        L.2.2) := by
+  have hunroll : EquivBA (levelSol L)
+      (.ite (orGuards L.1) (.seq (bodyFold L.1) (levelSol L)) (guardedFold L.2.1 L.2.2)) :=
+    EquivBA.base (GkatSyntax.salomaa_solution_exists (orGuards L.1) (bodyFold L.1)
+      (guardedFold L.2.1 L.2.2))
+  rw [guardedFold_append]
+  exact EquivBA.trans hunroll
+    (EquivBA.symm (guardedFold_factor_gen L.1 (levelSol L) (guardedFold L.2.1 L.2.2)))
+
+#print axioms level_satisfies
+
 end GkatDeadExitElim
