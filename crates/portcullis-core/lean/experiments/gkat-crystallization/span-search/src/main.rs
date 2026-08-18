@@ -4655,6 +4655,27 @@ pullback: {ok} / {}", res.len());
                         }
                     }
                     phase("thompson-in-lattice sweep", &mut mark);
+                    // HOW MUCH IS ALREADY SETTLED BY THE LITERATURE?  Skip-free GKAT is
+                    // complete without UA, and "proofs of equivalence in skip-free GKAT
+                    // transfer without any loss to full GKAT" — so a pair whose BOTH sides are
+                    // skip-free needs nothing from this programme, and no sound model can
+                    // separate it.  `halt_in_cycle` is the automaton-level reading of an
+                    // assert in a loop body.
+                    let (mut sf, mut sfn, mut nonsf_ok, mut nonsf) = (0usize, 0usize, 0usize, 0usize);
+                    for (ci, &(i, j)) in crux.iter().enumerate() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            sfn += 1;
+                            let skipfree = !halt_in_cycle(&list[i]) && !halt_in_cycle(&list[j]);
+                            if skipfree { sf += 1; continue; }
+                            nonsf += 1;
+                            if facts[ci].0 || thompson_somewhere_in_lattice(&su, &seen) { nonsf_ok += 1; }
+                        }
+                    }
+                    let pc5 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    println!("  ALREADY SETTLED BY SKIP-FREE COMPLETENESS (no UA needed):");
+                    println!("    both sides skip-free : {sf} / {sfn}  ({:.1}%)", pc5(sf, sfn));
+                    println!("    NOT skip-free        : {nonsf}, of which this programme discharges {nonsf_ok}  ({:.1}%)",
+                        pc5(nonsf_ok, nonsf));
                     println!("  FULL SOUND TEST (any congruence: eliminable OR Thompson):");
                     println!("    solvable : {lat2} / {lat2n}");
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
