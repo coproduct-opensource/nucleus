@@ -1027,6 +1027,69 @@ fn orbit_stable<const NA: usize>(h: &Aut<NA>) -> bool {
 /// `rounds` bounds how often `wh`/`ite`-with-a-test wrappers may be re-applied within the
 /// layer.  Unbounded closure at n=6 is the 55M the brief flags; bounded, storage is O(frontier)
 /// and a miss simply stays unknown.
+
+/// **Trim then canonicalise.**  `canon` REJECTS an automaton whose states are not all reachable
+/// from the initial transitions, and quotients of a sum routinely are not — which silently
+/// removed every k>=6 quotient from every measurement that ran through `canon`.  Unreachable
+/// states cannot affect behaviour, and a Thompson automaton is trim by construction, so
+/// dropping them is the right normalisation rather than a relaxation.
+fn trim_canon<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
+    let k = a.k as usize;
+    let mut order = [u8::MAX; MAXK];
+    let mut queue = [0usize; MAXK];
+    let (mut qh, mut qt) = (0usize, 0usize);
+    let mut n = 0u8;
+    for i in 0..NA {
+        if a.it[i] != 0 {
+            let t = (a.it[i] - 1) as usize;
+            if order[t] == u8::MAX { order[t] = n; n += 1; queue[qt] = t; qt += 1; }
+        }
+    }
+    while qh < qt {
+        let s = queue[qh]; qh += 1;
+        for i in 0..NA {
+            if a.st[s][i] != 0 {
+                let t = (a.st[s][i] - 1) as usize;
+                if order[t] == u8::MAX { order[t] = n; n += 1; queue[qt] = t; qt += 1; }
+            }
+        }
+    }
+    if n as usize > MAXK { return None; }
+    let mut inv = [usize::MAX; MAXK];
+    for s in 0..k { if order[s] != u8::MAX { inv[order[s] as usize] = s; } }
+    let mut c = Aut::blank();
+    c.k = n;
+    c.ih = a.ih;
+    let m = |x: u8| -> u8 { if x == 0 { 0 } else { order[(x - 1) as usize] + 1 } };
+    for i in 0..NA { c.it[i] = m(a.it[i]); }
+    for d in 0..n as usize {
+        let s = inv[d];
+        c.hl[d] = a.hl[s];
+        for i in 0..NA { c.st[d][i] = m(a.st[s][i]); }
+    }
+    Some(c)
+}
+
+/// A canon-INVARIANT signature: `canon` only renumbers states, so the multiset of
+/// (halt mask, out-degree) pairs and the state count survive it.  Candidates whose signature
+/// matches no target cannot BE a target, and are dropped before paying for `canon` — which is
+/// the hot cost in the layer sweep.
+fn sig<const NA: usize>(a: &Aut<NA>) -> u64 {
+    let k = a.k as usize;
+    let mut v: [u16; MAXK] = [0; MAXK];
+    for sx in 0..k {
+        let deg = (0..NA).filter(|&i| a.st[sx][i] != 0).count() as u16;
+        v[sx] = ((a.hl[sx] as u16) << 4) | deg;
+    }
+    v[..k].sort_unstable();
+    let mut h: u64 = 0xcbf29ce484222325;
+    h ^= k as u64; h = h.wrapping_mul(0x100000001b3);
+    for x in v[..k].iter() {
+        h ^= *x as u64; h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 fn stream_layer<const NA: usize>(
     by_k: &[Vec<Aut<NA>>], n: usize, nguards: u8, rounds: usize,
     targets: &FxSet<Aut<NA>>,
@@ -1034,32 +1097,52 @@ fn stream_layer<const NA: usize>(
     let mut hits: FxSet<Aut<NA>> = FxSet::default();
     let mut layer: Vec<Aut<NA>> = Vec::new();
     let mut seenl: FxSet<Aut<NA>> = FxSet::default();
+    let tsig: FxSet<u64> = targets.iter().map(|t| sig(t)).collect();
     let mut note = |a: &Aut<NA>, hits: &mut FxSet<Aut<NA>>| {
+        if !tsig.contains(&sig(a)) { return; }
         if let Some(c) = canon(a) {
             if targets.contains(&c) { hits.insert(c); }
         }
     };
-    // seed: one combination step from strictly lower layers (tests have k = 0)
+    // seed: one combination step from strictly lower layers (tests have k = 0).
+    // Parallel over the left operand; each worker keeps its own hit set and layer chunk,
+    // merged serially.  The signature prune runs inside the worker, so `canon` is paid only
+    // by candidates that could actually be a target.
+    let tsig2 = tsig.clone();
     for i in 0..=n {
+        if hits.len() == targets.len() { break; }
         let j = n - i;
         if i >= by_k.len() || j >= by_k.len() { continue; }
-        for l in by_k[i].iter() {
-            for r in by_k[j].iter() {
-                if let Some(a) = a_seq(l, r) {
-                    note(&a, &mut hits);
-                    if a.k as usize == n && seenl.insert(a) { layer.push(a); }
-                }
-                for g in 0..nguards {
-                    if let Some(a) = a_ite(g, l, r) {
-                        note(&a, &mut hits);
-                        if a.k as usize == n && seenl.insert(a) { layer.push(a); }
+        let chunks: Vec<(FxSet<Aut<NA>>, Vec<Aut<NA>>)> = by_k[i]
+            .par_iter()
+            .map(|l| {
+                let mut h: FxSet<Aut<NA>> = FxSet::default();
+                let mut lay: Vec<Aut<NA>> = Vec::new();
+                let mut take = |a: Aut<NA>, h: &mut FxSet<Aut<NA>>, lay: &mut Vec<Aut<NA>>| {
+                    if tsig2.contains(&sig(&a)) {
+                        if let Some(c) = canon(&a) {
+                            if targets.contains(&c) { h.insert(c); }
+                        }
+                    }
+                    if a.k as usize == n { lay.push(a); }
+                };
+                for r in by_k[j].iter() {
+                    if let Some(a) = a_seq(l, r) { take(a, &mut h, &mut lay); }
+                    for g in 0..nguards {
+                        if let Some(a) = a_ite(g, l, r) { take(a, &mut h, &mut lay); }
                     }
                 }
-            }
+                (h, lay)
+            })
+            .collect();
+        for (h, lay) in chunks {
+            for c in h { hits.insert(c); }
+            for a in lay { if seenl.insert(a) { layer.push(a); } }
         }
     }
     // bounded re-wrapping inside the layer: wh, and ite against a test
     for _ in 0..rounds {
+        if hits.len() == targets.len() { break; }
         let mut next: Vec<Aut<NA>> = Vec::new();
         for b in layer.iter() {
             for g in 0..nguards {
@@ -1976,14 +2059,20 @@ fn lattice_congruences<const NA: usize>(su: &Aut<NA>) -> Vec<([usize; MAXK], usi
 /// made of collapses that left the Thompson class, so a FINER quotient may still be inside it.
 fn thompson_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>,
     seen: &FxMap<Aut<NA>, u32>) -> bool {
+    // TRIM before looking up.  `canon` rejects automata with unreachable states, and quotients
+    // of a sum routinely have them — which silently hid 44851 of 55627 quotients from this
+    // test.  Dropping unreachable states is the corpus's proved dead-code elimination, not a
+    // relaxation, so the lookup is still exact.
     let k = su.k as usize;
     let (blk, nb) = bisim_blocks(su);
     if let Some(q) = quotient_by(su, &blk, nb) {
-        if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+        if trim_canon(&q).and_then(|t| canon(&t))
+            .map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
     }
     for (b2, nb2) in lattice_congruences(su) {
         if let Some(q) = quotient_by(su, &b2, nb2) {
-            if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+            if trim_canon(&q).and_then(|t| canon(&t))
+                .map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
         }
     }
     false
@@ -5021,9 +5110,18 @@ pullback: {ok} / {}", res.len());
                             let t5: FxSet<Aut<NA>> = list.iter().filter(|a| a.k as usize == 5)
                                 .filter_map(|a| canon(a)).collect();
                             let n5 = t5.len();
-                            let h5 = stream_layer(&by_k4, 5, 1u8 << NA, 3, &t5);
-                            println!("    STREAMER VALIDATION (k=5 from k<=4): recovered {} / {n5} ({:.1}%)",
-                                h5.len(), pc6(h5.len(), n5));
+                            // DEPTH/COMPLETENESS CURVE, measured where ground truth exists.
+                            // Storing the layer is what costs memory, so use the SMALLEST depth
+                            // that is complete at k=5 and carry it up.  Positives stay sound at
+                            // every depth; only completeness varies.
+                            let mut best_depth = 3usize;
+                            for d in 0..=3 {
+                                let h = stream_layer(&by_k4, 5, 1u8 << NA, d, &t5);
+                                println!("    STREAMER VALIDATION (k=5 from k<=4, depth {d}): {} / {n5} ({:.1}%)",
+                                    h.len(), pc6(h.len(), n5));
+                                if h.len() == n5 { best_depth = d; break; }
+                            }
+                            println!("    -> smallest complete depth at k=5: {best_depth}");
                             // now the live question: the k=6 quotients nothing could decide
                             let mut t6: FxSet<Aut<NA>> = FxSet::default();
                             for &(i, j) in crux.iter() {
@@ -5037,8 +5135,44 @@ pullback: {ok} / {}", res.len());
                                     }
                                 }
                             }
+                            let mut raw6 = 0usize; let mut canon_fail = 0usize;
+                            for &(i, j) in crux.iter() {
+                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                    for cg in lattice_congruences(&su).iter() {
+                                        if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                            if q.k as usize == 6 {
+                                                raw6 += 1;
+                                                if canon(&q).is_none() { canon_fail += 1; }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            println!("    [diag] k=6 quotients seen {raw6}, canon failed {canon_fail}");
+                            {
+                                let mut after = [0usize; MAXK + 1];
+                                let mut nowT = 0usize; let mut tot = 0usize;
+                                for &(i, j) in crux.iter() {
+                                    if let Some(su) = sum_core(&list[i], &list[j]) {
+                                        for cg in lattice_congruences(&su).iter() {
+                                            if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                                if (q.k as usize) <= poolk { continue; }
+                                                tot += 1;
+                                                if let Some(t) = trim_canon(&q) {
+                                                    after[(t.k as usize).min(MAXK)] += 1;
+                                                    if (t.k as usize) <= poolk
+                                                        && canon(&t).map(|c| seen.contains_key(&c))
+                                                            .unwrap_or(false) { nowT += 1; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                println!("    [diag] AFTER TRIM, sizes of the {tot} oversized quotients: {:?}", &after[..]);
+                                println!("    [diag] of those, now decidable AND Thompson: {nowT}");
+                            }
                             let n6 = t6.len();
-                            let h6 = stream_layer(&by_k5, 6, 1u8 << NA, 3, &t6);
+                            let h6 = stream_layer(&by_k5, 6, 1u8 << NA, best_depth, &t6);
                             println!("    k=6 QUOTIENTS DECIDED THOMPSON (sound positives): {} / {n6} ({:.1}%)",
                                 h6.len(), pc6(h6.len(), n6));
                         }
