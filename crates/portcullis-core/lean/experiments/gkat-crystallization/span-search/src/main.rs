@@ -5461,6 +5461,41 @@ pullback: {ok} / {}", res.len());
                                                 }
                                             }
                                         }
+                                        // DOES `elim_scc2` ACTUALLY APPLY?  Its hypothesis is that
+                                        // one state of the pair steps ONLY into the other and never
+                                        // halts — a dead fallback with a common tail.  Measure the
+                                        // fraction of size-2 SCCs that have that shape.
+                                        {
+                                            let (mut sh, mut n2) = (0usize, 0usize);
+                                            for &(i, j) in crux.iter() {
+                                                let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                    if ka >= su.k as usize { continue; }
+                                                    if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                        if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                            let qq = trim_canon(&q).unwrap_or(q);
+                                                            for o in orbits(&qq).iter() {
+                                                                if o.count_ones() != 2 { continue; }
+                                                                n2 += 1;
+                                                                let mut mem: Vec<usize> = Vec::new();
+                                                                for t in 0..qq.k as usize {
+                                                                    if o & (1 << t) != 0 { mem.push(t); }
+                                                                }
+                                                                let (u, v) = (mem[0], mem[1]);
+                                                                let facs = |a: usize, b: usize| -> bool {
+                                                                    qq.hl[a] == 0 && (0..NA).all(|y|
+                                                                        qq.st[a][y] == 0
+                                                                        || (qq.st[a][y] - 1) as usize == b)
+                                                                };
+                                                                if facs(u, v) || facs(v, u) { sh += 1; }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            println!("  DOES elim_scc2 APPLY? (one state factors through the other, dead exit)");
+                                            println!("    shape holds : {sh} / {n2} ({:.1}%)", pc7(sh, n2));
+                                        }
                                         println!("  THE REMAINING OBJECT (multi-state SCCs):");
                                         println!("    quotients with one : {multi}");
                                         println!("    largest SCC size   : {:?}", &dist[2..8]);
