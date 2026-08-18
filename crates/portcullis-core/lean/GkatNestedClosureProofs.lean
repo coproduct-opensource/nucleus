@@ -263,4 +263,52 @@ theorem Nested_quotient {src : GAut S A T} {quot : GAut Q A T}
 #print axioms autReaches1_lift
 #print axioms Nested_quotient
 
+/-! ## Plumbing: targets-listed for sums, and the packaged chain
+
+    `certifiedThompson_targetsListed` (in `GkatDeadBranchProofs`) supplies the Thompson leaf;
+    the sum inherits it componentwise; and with `Nested_sumGAut` plus `Nested_quotient` above,
+    the whole sum route's nestedness reduces to ONE open leaf: `Nested V (Thompson e)`. -/
+
+theorem GAutTargetsListed_sumGAut {S₁ S₂ : Type}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T}
+    (h₁ : GAutTargetsListed a₁) (h₂ : GAutTargetsListed a₂) :
+    GAutTargetsListed (sumGAut a₁ a₂) := by
+  intro state hstate transition htransition
+  cases state with
+  | inl s =>
+      have hs : s ∈ a₁.states := mem_sumGAut_inl hstate
+      simp only [sumGAut, List.mem_map] at htransition
+      obtain ⟨orig, horig, rfl⟩ := htransition
+      show Sum.inl orig.2.2 ∈ (sumGAut a₁ a₂).states
+      simp only [sumGAut, List.mem_append, List.mem_map]
+      exact Or.inl ⟨orig.2.2, h₁ s hs orig horig, rfl⟩
+  | inr s =>
+      have hs : s ∈ a₂.states := mem_sumGAut_inr hstate
+      simp only [sumGAut, List.mem_map] at htransition
+      obtain ⟨orig, horig, rfl⟩ := htransition
+      show Sum.inr orig.2.2 ∈ (sumGAut a₁ a₂).states
+      simp only [sumGAut, List.mem_append, List.mem_map]
+      exact Or.inr ⟨orig.2.2, h₂ s hs orig horig, rfl⟩
+
+/-- **The sum route's nestedness, packaged.**  Every uniform behavioural quotient of the sum of
+    two Thompson automata is nested, PROVIDED the Thompson automata themselves are — the one
+    leaf still open.  Everything else is theorem: coproduct closure, quotient closure, and
+    targets-listed for the Thompson construction and the sum. -/
+theorem Nested_thompson_sum_quotient {Q : Type} {V : T → Atom → Bool}
+    {e f : Exp A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient
+      (sumGAut (GkatThompson.certifiedThompson A T e).aut.toGAut
+               (GkatThompson.certifiedThompson A T f).aut.toGAut) quot)
+    (hne : Nested V (GkatThompson.certifiedThompson A T e).aut.toGAut)
+    (hnf : Nested V (GkatThompson.certifiedThompson A T f).aut.toGAut) :
+    Nested V quot :=
+  Nested_quotient π
+    (GAutTargetsListed_sumGAut
+      (GkatDeadBranch.certifiedThompson_targetsListed e)
+      (GkatDeadBranch.certifiedThompson_targetsListed f))
+    V (Nested_sumGAut hne hnf)
+
+#print axioms GAutTargetsListed_sumGAut
+#print axioms Nested_thompson_sum_quotient
+
 end GkatNestedClosure
