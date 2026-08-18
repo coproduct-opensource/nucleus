@@ -4747,6 +4747,42 @@ pullback: {ok} / {}", res.len());
                         if d == t { ba += 1; }
                     }
                     let pc6 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    // UA-COUNTEREXAMPLE CANDIDATES.  Two solutions of one system are
+                    // language-equivalent, so every UA counterexample is a crux pair; and a
+                    // system with no cycle has trivially unique solutions.  So the candidate
+                    // set is the crux pairs whose system has a cycle.
+                    let has_cycle = |a: &Aut<NA>| -> bool {
+                        let k = a.k as usize;
+                        (0..k).any(|u| {
+                            let mut seen = 0u32;
+                            let mut stack: Vec<usize> = (0..NA)
+                                .filter(|&i| a.st[u][i] != 0)
+                                .map(|i| (a.st[u][i] - 1) as usize).collect();
+                            while let Some(v) = stack.pop() {
+                                if v == u { return true; }
+                                if seen & (1 << v) != 0 { continue; }
+                                seen |= 1 << v;
+                                for i in 0..NA {
+                                    if a.st[v][i] != 0 { stack.push((a.st[v][i] - 1) as usize); }
+                                }
+                            }
+                            false
+                        })
+                    };
+                    let (mut cyc_n, mut cyc_elim, mut tot_n) = (0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            tot_n += 1;
+                            if has_cycle(&su) {
+                                cyc_n += 1;
+                                let (_, u, t) = elimable(&su);
+                                if u == t { cyc_elim += 1; }
+                            }
+                        }
+                    }
+                    println!("  UA-COUNTEREXAMPLE CANDIDATES (crux pairs whose system has a cycle):");
+                    println!("    candidates {cyc_n} / {tot_n} ({:.1}%), of which the kernels reach {cyc_elim} ({:.1}%)",
+                        pc6(cyc_n, tot_n), pc6(cyc_elim, cyc_n));
                     println!("  IS THE UNDECIDED CROSSING REAL? (decided = guard constant across atoms)");
                     println!("    sum systems : states decided {dst}/{tst} ({:.1}%), ALL-decided systems {dall}/{nall} ({:.1}%)",
                         pc6(dst, tst), pc6(dall, nall));
