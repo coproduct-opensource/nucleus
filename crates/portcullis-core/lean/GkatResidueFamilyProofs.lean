@@ -1,0 +1,275 @@
+import GkatResidueProofs
+
+/-!
+# The residue as a family — a general loop guard, and the core at the top of a loop body
+
+`GkatResidueProofs` proves pairs #3 and #2 of the eight open instances with the loop guard
+written literally as `¬b`.  That is an accident of how the harness happened to number the two
+atoms, and it costs half the residue: printed in full, the eight are
+
+    #1  e = C ; ((p;p) ; C)^(g)                     f = ( p ; ((A ; p) +_g b?) )^(g)
+    #2  e = ( p ; (((A ; p^(g)) ; p) +_g b?) )^(g)  f = ( p ; (((A;C)^(g) ; p) +_g b?) )^(g)
+    #3  e = ( p ; ((A ; p^(g))     +_g p ) )^(g)    f = ( p ; ((A;C)^(g)     +_g p ) )^(g)
+    #4  e = ((A ; p^(g)) ; q)^(g)                   f = ((A ; C) ; (q +_c b?))^(g)
+    #5  = #3 with the two atoms exchanged
+    #6  e = ((A ; p^(g)) ; q)^(g)                   f = ((A;C)^(g) ; q)^(g)
+    #7  = #1 with the two atoms exchanged
+    #8  e = ( p ; ((p ; (p^(g) ; A)) +_g c?) )^(g)  f = ( p ; (((A;C)^(g) ; p) +_g c?) )^(g)
+
+so #5 is #3 under an exchange of atoms and #7 is #1 under the same exchange.  Nothing in the
+derivation cares which atom is which, and this file makes that structural rather than
+incidental: every lemma takes the loop guard `g` and the branch guard `c` as *independent*
+parameters, related only by the semantic hypothesis `c = ¬g`.  Both #3 and #5 are then
+instances of one theorem — #3 at `g := ¬b, c := b`, #5 at `g := b, c := ¬b` — and no
+double-negation bookkeeping appears anywhere.
+
+The second thing here is #6, which needs the core equality in a genuinely new position.  In #2
+and #3 the core sits inside a guarded choice, where `U4` makes the guard available for free.
+In #6 it sits at the *top of a loop body*, where nothing hands you the guard — you have to take
+it, which is what `wh_restrict_body` is for.  `wh_congr_under_guard` packages that: two loop
+bodies that agree once the guard is asserted give equal loops, provided both are productive.
+
+Remaining after this file: #1, #4, #7, #8.  #1 and #7 are not top-level loops at all — `e` is a
+sequence whose second factor is a loop — and #4 and #8 each need a further ingredient (the
+fact that `¬g` holds on exit from `g`'s loop).  Their shapes are recorded above so the boundary
+is visible rather than implied.
+-/
+
+namespace GkatResidueFamily
+
+open GkatSyntax GkatGS GkatFaithful GkatGuardedAlgebra GkatCyclicK GkatRefines GkatResidue
+
+variable {A T : Type}
+
+/-! ## Two Boolean shims -/
+
+/-- A choice on an unsatisfiable guard is its else arm. -/
+theorem ite_unsat {z : BExp T} (e f : Exp A T)
+    (hz : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W z x = false) :
+    EquivBA (.ite z e f) f :=
+  EquivBA.trans (EquivBA.base (Equiv.u2 z e f))
+    (ite_taut f e (fun X W x => by
+      show (!bval W z x) = true
+      rw [hz X W x]; rfl))
+
+/-- Two tests that agree under a guard may be exchanged in that guard's then arm. -/
+theorem ite_then_test_gen {z c₁ c₂ : BExp T} (X : Exp A T)
+    (hz : ∀ (Y : Type) (W : T → Y → Bool) (x : Y),
+      (bval W z x && bval W c₁ x) = (bval W z x && bval W c₂ x)) :
+    EquivBA (.ite z (.test c₁) X) (.ite z (.test c₂) X) :=
+  EquivBA.trans (EquivBA.base (Equiv.u4 z (.test c₁) X))
+    (EquivBA.trans
+      (EquivBA.ite_c
+        (EquivBA.trans (EquivBA.s6 z c₁)
+          (EquivBA.trans
+            (show EquivBA (.test (.and z c₁) : Exp A T) (.test (.and z c₂)) from
+              EquivBA.baTest hz)
+            (EquivBA.symm (EquivBA.s6 z c₂))))
+        (EquivBA.base (Equiv.refl X)))
+      (EquivBA.symm (EquivBA.base (Equiv.u4 z (.test c₂) X))))
+
+/-! ## The core, with the loop guard as a parameter
+
+    Throughout, `g` is the loop guard, `c` is the guard of `A` and `C`, and `hgc` says `c` is
+    `¬g` semantically.  Nothing requires them to be syntactically complementary. -/
+
+section Core
+
+variable {g c : BExp T} {p : Exp A T}
+
+/-- `D = p +_g 1`, the second factor of `expK g p 1`. -/
+def resDg (g : BExp T) (p : Exp A T) : Exp A T := .ite g p (.test .one)
+
+theorem expKg_one (g : BExp T) (p : Exp A T) : expK g p 1 = .seq p (resDg g p) := rfl
+
+/-- `C ≡ D`: under `c` the tests `c` and `1` agree, and `¬c` is `g`. -/
+theorem resC_eq_resDg
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x) :
+    EquivBA (resC c p) (resDg g p) :=
+  EquivBA.trans
+    (ite_then_test_gen p (fun _ W x => by
+      cases h : bval W c x <;> rfl))
+    (EquivBA.trans (EquivBA.base (Equiv.u2 c (.test .one) p))
+      (EquivBA.ite_guard (fun X W x => by
+        show (!bval W c x) = bval W g x
+        rw [hgc X W x]; cases bval W g x <;> rfl)))
+
+/-- An assertion of `g` selects the else arm of a choice on `c`. -/
+theorem test_seq_ite_else_gen
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (e f : Exp A T) :
+    EquivBA (.seq (.test g) (.ite c e f)) (.seq (.test g) f) :=
+  EquivBA.trans (test_seq_ite g c e f)
+    (ite_unsat e (.seq (.test g) f) (fun X W x => by
+      show (bval W g x && bval W c x) = false
+      rw [hgc X W x]; cases bval W g x <;> rfl))
+
+/-- `A ; C ≡ g? · (p ; D)` — the body of the coarse loop is the body of `expK g p 1`,
+    asserted under the loop guard. -/
+theorem resA_seq_resC_gen
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x) :
+    EquivBA (.seq (resA c p) (resC c p)) (.seq (.test g) (.seq p (resDg g p))) := by
+  refine EquivBA.trans
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (resC_eq_resDg hgc)) ?_
+  refine EquivBA.trans
+    (EquivBA.seq_c
+      (EquivBA.trans (EquivBA.base (Equiv.u2 c (.test .zero) p))
+        (EquivBA.ite_guard (fun X W x => by
+          show (!bval W c x) = bval W g x
+          rw [hgc X W x]; cases bval W g x <;> rfl)))
+      (EquivBA.base (Equiv.refl _))) ?_
+  refine EquivBA.trans (ite_seq_right g p (.test .zero) (resDg g p)) ?_
+  exact EquivBA.trans
+    (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.s2 _)))
+    (ite_zero_else g (.seq p (resDg g p)))
+
+/-- `(A ; C)^(g) ≡ p^(g)` — the granularity law at a general guard. -/
+theorem wh_resA_resC_gen
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+    EquivBA (.wh g (.seq (resA c p) (resC c p))) (.wh g p) :=
+  wh_cyc_body (n := 1) (resA_seq_resC_gen hgc) hEp
+
+/-- **The core.**  Under `g`, running `A` and then the fine loop is the coarse loop. -/
+theorem guarded_core_gen
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+    EquivBA (.seq (.test g) (.seq (resA c p) (.wh g p)))
+      (.seq (.test g) (.wh g (.seq (resA c p) (resC c p)))) := by
+  have hL : EquivBA (.seq (.test g) (.seq (resA c p) (.wh g p)))
+      (.seq (.test g) (.seq p (.wh g p))) :=
+    EquivBA.trans (EquivBA.symm (seq_assoc _ _ _))
+      (EquivBA.trans
+        (EquivBA.seq_c (test_seq_ite_else_gen hgc (.test .zero) p)
+          (EquivBA.base (Equiv.refl _)))
+        (seq_assoc _ _ _))
+  have hR : EquivBA (.seq (.test g) (.wh g p)) (.seq (.test g) (.seq p (.wh g p))) :=
+    EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.w1 g p)))
+      (test_seq_ite_of_implies (b := g) (z := g) _ _ (fun _ _ _ h => h))
+  exact EquivBA.trans (EquivBA.trans hL (EquivBA.symm hR))
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.symm (wh_resA_resC_gen hgc hEp)))
+
+end Core
+
+/-! ## Productivity bookkeeping -/
+
+/-- `A` is productive whenever `p` is: the then arm fails and the else arm is `p`. -/
+theorem E_resA {c : BExp T} {p : Exp A T}
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false)
+    (X : Type) (W : T → X → Bool) (x : X) : bval W (E (resA c p)) x = false := by
+  show ((bval W c x && false) || (!bval W c x && bval W (E p) x)) = false
+  rw [hEp X W x]; cases bval W c x <;> rfl
+
+/-- A sequence is productive if its first factor is. -/
+theorem E_seq_left {X' Y : Exp A T}
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E X') x = false)
+    (X : Type) (W : T → X → Bool) (x : X) : bval W (E (.seq X' Y)) x = false := by
+  show (bval W (E X') x && _) = false
+  rw [h X W x]; rfl
+
+/-- A sequence is productive if its second factor is. -/
+theorem E_seq_right {X' Y : Exp A T}
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E Y) x = false)
+    (X : Type) (W : T → X → Bool) (x : X) : bval W (E (.seq X' Y)) x = false := by
+  show (_ && bval W (E Y) x) = false
+  rw [h X W x]; cases bval W (E X') x <;> rfl
+
+/-! ## The core at the top of a loop body -/
+
+/-- **Congruence for loop bodies, under the loop's own guard.**
+
+    Inside a guarded choice `U4` hands you the guard for nothing.  At the top of a loop body
+    nothing does, and this is the lemma that takes it: `wh_restrict_body` installs the
+    assertion on both sides, the hypothesis exchanges the bodies underneath it, and it is
+    removed again.  Both bodies must be productive, which is where `w3` is used and why the
+    productivity shims above exist. -/
+theorem wh_congr_under_guard {g : BExp T} {X' Y : Exp A T}
+    (h : EquivBA (.seq (.test g) X') (.seq (.test g) Y))
+    (hX : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E X') x = false)
+    (hY : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E Y) x = false) :
+    EquivBA (.wh g X') (.wh g Y) :=
+  EquivBA.trans (wh_restrict_body (EquivBA.baTest hX))
+    (EquivBA.trans (EquivBA.wh_c h)
+      (EquivBA.symm (wh_restrict_body (EquivBA.baTest hY))))
+
+/-! ## The pairs -/
+
+section Pairs
+
+variable {g c : BExp T} {p : Exp A T}
+
+/-- **Pairs #3 and #5.**  One theorem at a general loop guard; #3 is `g := ¬b, c := b` and
+    #5 is `g := b, c := ¬b`.  The else arm `Z` is arbitrary — it never enters the derivation. -/
+theorem residue_pair_three_five
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false)
+    (Z : Exp A T) :
+    EquivBA
+      (.wh g (.seq p (.ite g (.seq (resA c p) (.wh g p)) Z)))
+      (.wh g (.seq p (.ite g (.wh g (.seq (resA c p) (resC c p))) Z))) :=
+  EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl p))
+    (ite_congr_under_guard (guarded_core_gen hgc hEp)))
+
+/-- **Pair #2, at a general loop guard** — the same core with a continuation `q`. -/
+theorem residue_pair_two_gen
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false)
+    (q Z : Exp A T) :
+    EquivBA
+      (.wh g (.seq p (.ite g (.seq (.seq (resA c p) (.wh g p)) q) Z)))
+      (.wh g (.seq p (.ite g (.seq (.wh g (.seq (resA c p) (resC c p))) q) Z))) :=
+  EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl p))
+    (ite_congr_under_guard (seq_under_guard q (guarded_core_gen hgc hEp))))
+
+/-- **Pair #6.**  The same core, now at the top of the loop body rather than inside a choice.
+    `q` must be productive — otherwise the right-hand body could halt immediately, and `w3`
+    would not apply to it. -/
+theorem residue_pair_six
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false)
+    (q : Exp A T)
+    (hEq : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E q) x = false) :
+    EquivBA
+      (.wh g (.seq (.seq (resA c p) (.wh g p)) q))
+      (.wh g (.seq (.wh g (.seq (resA c p) (resC c p))) q)) :=
+  wh_congr_under_guard (seq_under_guard q (guarded_core_gen hgc hEp))
+    (E_seq_left (E_seq_left (E_resA hEp)))
+    (E_seq_right hEq)
+
+end Pairs
+
+/-- Pair #6 exactly as the harness produced it: `p` an action and `q = A' ; C`, which is
+    productive because its first factor is. -/
+theorem residue_pair_six_act (b : BExp T) (a : A) :
+    EquivBA
+      (.wh (.not b) (.seq (.seq (resA b (.act a)) (.wh (.not b) (.act a)))
+        (.seq (resA (.not b) (.act a)) (resC b (.act a)))))
+      (.wh (.not b) (.seq (.wh (.not b) (.seq (resA b (.act a)) (resC b (.act a))))
+        (.seq (resA (.not b) (.act a)) (resC b (.act a))))) :=
+  residue_pair_six
+    (fun _ W x => by
+      show bval W b x = !(!bval W b x)
+      cases bval W b x <;> rfl)
+    (fun _ _ _ => rfl) _ (E_seq_left (E_resA (fun _ _ _ => rfl)))
+
+/-- Pair #5 — #3 with the two atoms exchanged, so the loop guard is `b` and the branch guard
+    is `¬b`.  Nothing but the instantiation changes. -/
+theorem residue_pair_five_act (b : BExp T) (a : A) :
+    EquivBA
+      (.wh b (.seq (.act a)
+        (.ite b (.seq (resA (.not b) (.act a)) (.wh b (.act a))) (.act a))))
+      (.wh b (.seq (.act a)
+        (.ite b (.wh b (.seq (resA (.not b) (.act a)) (resC (.not b) (.act a)))) (.act a)))) :=
+  residue_pair_three_five (fun _ _ _ => rfl) (fun _ _ _ => rfl) _
+
+#print axioms ite_unsat
+#print axioms ite_then_test_gen
+#print axioms guarded_core_gen
+#print axioms wh_congr_under_guard
+#print axioms residue_pair_three_five
+#print axioms residue_pair_six
+#print axioms residue_pair_six_act
+#print axioms residue_pair_five_act
+
+end GkatResidueFamily

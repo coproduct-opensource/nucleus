@@ -709,6 +709,10 @@ lean_lib «GkatRefinesProofs» where
 lean_lib «GkatResidueProofs» where
   roots := #[`GkatResidueProofs]
 
+-- The residue as a family: a general loop guard, and the core at the top of a loop body.
+lean_lib «GkatResidueFamilyProofs» where
+  roots := #[`GkatResidueFamilyProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
