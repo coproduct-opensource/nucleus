@@ -4703,6 +4703,34 @@ pullback: {ok} / {}", res.len());
                         }
                         (d, t)
                     };
+                    // dead exit: the state never halts — where it does not step, it rejects.
+                    // `chain_elim_dead_exit` eliminates such a state whatever its guard does.
+                    let elimable = |a: &Aut<NA>| -> (usize, usize, usize) {
+                        let (mut d, mut u, mut t) = (0usize, 0usize, 0usize);
+                        for sx in 0..a.k as usize {
+                            let n = (0..NA).filter(|&i| a.st[sx][i] != 0).count();
+                            let dec = n == 0 || n == NA;
+                            let dead = a.hl[sx] == 0;
+                            t += 1;
+                            if dec { d += 1; }
+                            if dec || dead { u += 1; }
+                        }
+                        (d, u, t)
+                    };
+                    let (mut ud, mut ut, mut uall, mut un) = (0usize, 0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            let (_, u, t) = elimable(&su);
+                            ud += u; ut += t; un += 1;
+                            if u == t { uall += 1; }
+                        }
+                    }
+                    let (mut bu, mut bt2, mut bua, mut bn2) = (0usize, 0usize, 0usize, 0usize);
+                    for a in list.iter().take(20000) {
+                        let (_, u, t) = elimable(a);
+                        bu += u; bt2 += t; bn2 += 1;
+                        if u == t { bua += 1; }
+                    }
                     let (mut dst, mut tst, mut dall, mut nall) = (0usize, 0usize, 0usize, 0usize);
                     for &(i, j) in crux.iter() {
                         if let Some(su) = sum_core(&list[i], &list[j]) {
@@ -4724,6 +4752,11 @@ pullback: {ok} / {}", res.len());
                         pc6(dst, tst), pc6(dall, nall));
                     println!("    pool base   : states decided {bd}/{bt} ({:.1}%), ALL-decided automata {ba}/{bn} ({:.1}%)",
                         pc6(bd, bt), pc6(ba, bn));
+                    println!("    + DEAD-EXIT kernel (decided OR never-halting):");
+                    println!("      sum systems : states {ud}/{ut} ({:.1}%), ALL-eliminable systems {uall}/{un} ({:.1}%)",
+                        pc6(ud, ut), pc6(uall, un));
+                    println!("      pool base   : states {bu}/{bt2} ({:.1}%), ALL-eliminable {bua}/{bn2} ({:.1}%)",
+                        pc6(bu, bt2), pc6(bua, bn2));
                     println!("  ALREADY SETTLED BY SKIP-FREE COMPLETENESS (no UA needed):");
                     println!("    both sides skip-free : {sf} / {sfn}  ({:.1}%)", pc5(sf, sfn));
                     println!("    NOT skip-free        : {nonsf}, of which this programme discharges {nonsf_ok}  ({:.1}%)",

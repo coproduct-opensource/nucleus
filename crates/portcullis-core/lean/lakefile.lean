@@ -713,6 +713,10 @@ lean_lib «GkatResidueProofs» where
 lean_lib «GkatResidueFamilyProofs» where
   roots := #[`GkatResidueFamilyProofs]
 
+-- Eliminating an unknown at an UNDECIDED crossing: the dead-exit kernel.
+lean_lib «GkatDeadExitElimProofs» where
+  roots := #[`GkatDeadExitElimProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]

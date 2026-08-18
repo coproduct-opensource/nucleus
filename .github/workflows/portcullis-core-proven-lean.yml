@@ -127,6 +127,7 @@ jobs:
             GkatDupCoverProofs \
             GkatRefinesProofs \
             GkatResidueProofs \
+            GkatDeadExitElimProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
