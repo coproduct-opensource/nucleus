@@ -4689,6 +4689,41 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
+                    // IS THE UNDECIDED CROSSING REAL?  `ua2_eliminated_of_decided` produces a
+                    // guard-pullback witness exactly when a crossing guard is constant across
+                    // atoms — an action may be followed by ANY atom, so a mixed guard is never
+                    // predictable in advance.  If every state of every system we must solve is
+                    // decided, chain_elim + decided witnesses + W3 already close the theorem.
+                    let decided = |a: &Aut<NA>| -> (usize, usize) {
+                        let (mut d, mut t) = (0usize, 0usize);
+                        for sx in 0..a.k as usize {
+                            let n = (0..NA).filter(|&i| a.st[sx][i] != 0).count();
+                            t += 1;
+                            if n == 0 || n == NA { d += 1; }
+                        }
+                        (d, t)
+                    };
+                    let (mut dst, mut tst, mut dall, mut nall) = (0usize, 0usize, 0usize, 0usize);
+                    for &(i, j) in crux.iter() {
+                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                            let (d, t) = decided(&su);
+                            dst += d; tst += t; nall += 1;
+                            if d == t { dall += 1; }
+                        }
+                    }
+                    // base rate on a population known to be fine: the pool itself
+                    let (mut bd, mut bt, mut ba, mut bn) = (0usize, 0usize, 0usize, 0usize);
+                    for a in list.iter().take(20000) {
+                        let (d, t) = decided(a);
+                        bd += d; bt += t; bn += 1;
+                        if d == t { ba += 1; }
+                    }
+                    let pc6 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    println!("  IS THE UNDECIDED CROSSING REAL? (decided = guard constant across atoms)");
+                    println!("    sum systems : states decided {dst}/{tst} ({:.1}%), ALL-decided systems {dall}/{nall} ({:.1}%)",
+                        pc6(dst, tst), pc6(dall, nall));
+                    println!("    pool base   : states decided {bd}/{bt} ({:.1}%), ALL-decided automata {ba}/{bn} ({:.1}%)",
+                        pc6(bd, bt), pc6(ba, bn));
                     println!("  ALREADY SETTLED BY SKIP-FREE COMPLETENESS (no UA needed):");
                     println!("    both sides skip-free : {sf} / {sfn}  ({:.1}%)", pc5(sf, sfn));
                     println!("    NOT skip-free        : {nonsf}, of which this programme discharges {nonsf_ok}  ({:.1}%)",
