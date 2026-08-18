@@ -603,4 +603,114 @@ theorem sumQuotientSolvable_of_thompson (h : SumQuotientThompson A T) :
 #print axioms completeness_of_sumQuotientThompson
 #print axioms sumQuotientSolvable_of_thompson
 
+
+/-! ## The coproduct half of the covariety
+
+    The literature's characterisation is that the automata whose behaviour is GKAT-expressible
+    are exactly those satisfying the NESTING COEQUATION, and that this class is a COVARIETY —
+    closed under homomorphic images, subcoalgebras and coproducts.  The corpus has `Nested` (the
+    finite kernel: no two mutually-reachable states with complementary halt guards) and proves
+    it for derivative automata, but no closure lemma.
+
+    The coproduct half is provable here, and it is the half the sum route needs: a step out of
+    the left summand stays in the left summand, so mutual reachability can never cross the
+    components and the condition reduces to each side.  Measured independently at 100% on the
+    start-merged quotients; this proves the coproduct step of that. -/
+
+theorem autStep1_sumGAut_inl_inv {S₁ S₂ : Type} {V : T → Atom → Bool}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {s : S₁} {t : Sum S₁ S₂}
+    (h : AutStep1 V (sumGAut a₁ a₂) (.inl s) t) :
+    ∃ u, t = .inl u ∧ AutStep1 V a₁ s u := by
+  obtain ⟨α, q, hq⟩ := h
+  rw [autStep_sumGAut_inl] at hq
+  cases hs : autStep V a₁ s α with
+  | none => rw [hs] at hq; exact absurd hq (by simp)
+  | some o =>
+      rw [hs] at hq
+      simp only [Option.map_some] at hq
+      injection hq with hq
+      injection hq with h1 h2
+      exact ⟨o.2, h2.symm, ⟨α, o.1, by rw [hs]⟩⟩
+
+theorem autStep1_sumGAut_inr_inv {S₁ S₂ : Type} {V : T → Atom → Bool}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {s : S₂} {t : Sum S₁ S₂}
+    (h : AutStep1 V (sumGAut a₁ a₂) (.inr s) t) :
+    ∃ u, t = .inr u ∧ AutStep1 V a₂ s u := by
+  obtain ⟨α, q, hq⟩ := h
+  rw [autStep_sumGAut_inr] at hq
+  cases hs : autStep V a₂ s α with
+  | none => rw [hs] at hq; exact absurd hq (by simp)
+  | some o =>
+      rw [hs] at hq
+      simp only [Option.map_some] at hq
+      injection hq with hq
+      injection hq with h1 h2
+      exact ⟨o.2, h2.symm, ⟨α, o.1, by rw [hs]⟩⟩
+
+theorem autReaches_sumGAut_inl {S₁ S₂ : Type} {V : T → Atom → Bool}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {s : S₁} {t : Sum S₁ S₂}
+    (h : AutReaches V (sumGAut a₁ a₂) (.inl s) t) :
+    ∃ u, t = .inl u ∧ AutReaches V a₁ s u := by
+  induction h with
+  | refl => exact ⟨s, rfl, AutReaches.refl s⟩
+  | tail _ hstep ih =>
+      obtain ⟨u, rfl, hru⟩ := ih
+      obtain ⟨v, rfl, hsv⟩ := autStep1_sumGAut_inl_inv hstep
+      exact ⟨v, rfl, AutReaches.tail hru hsv⟩
+
+theorem autReaches_sumGAut_inr {S₁ S₂ : Type} {V : T → Atom → Bool}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {s : S₂} {t : Sum S₁ S₂}
+    (h : AutReaches V (sumGAut a₁ a₂) (.inr s) t) :
+    ∃ u, t = .inr u ∧ AutReaches V a₂ s u := by
+  induction h with
+  | refl => exact ⟨s, rfl, AutReaches.refl s⟩
+  | tail _ hstep ih =>
+      obtain ⟨u, rfl, hru⟩ := ih
+      obtain ⟨v, rfl, hsv⟩ := autStep1_sumGAut_inr_inv hstep
+      exact ⟨v, rfl, AutReaches.tail hru hsv⟩
+
+theorem mem_sumGAut_inl {S₁ S₂ : Type} {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {x : S₁}
+    (h : (Sum.inl x : Sum S₁ S₂) ∈ (sumGAut a₁ a₂).states) : x ∈ a₁.states := by
+  simp only [sumGAut, List.mem_append, List.mem_map] at h
+  rcases h with ⟨w, hw, hwe⟩ | ⟨w, _, hwe⟩
+  · injection hwe with hwe; exact hwe ▸ hw
+  · exact absurd hwe (by simp)
+
+theorem mem_sumGAut_inr {S₁ S₂ : Type} {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T} {x : S₂}
+    (h : (Sum.inr x : Sum S₁ S₂) ∈ (sumGAut a₁ a₂).states) : x ∈ a₂.states := by
+  simp only [sumGAut, List.mem_append, List.mem_map] at h
+  rcases h with ⟨w, _, hwe⟩ | ⟨w, hw, hwe⟩
+  · exact absurd hwe (by simp)
+  · injection hwe with hwe; exact hwe ▸ hw
+
+/-- **The nesting coequation is closed under coproducts.**  Mutual reachability cannot cross
+    the two summands, so the condition is inherited componentwise. -/
+theorem Nested_sumGAut {S₁ S₂ : Type} {V : T → Atom → Bool}
+    {a₁ : GAut S₁ A T} {a₂ : GAut S₂ A T}
+    (h₁ : Nested V a₁) (h₂ : Nested V a₂) : Nested V (sumGAut a₁ a₂) := by
+  intro s1 s2 hs1 hr12 hr21
+  cases s1 with
+  | inl x =>
+      obtain ⟨m, hstep, hreach⟩ := hr12
+      obtain ⟨m', rfl, hsm⟩ := autStep1_sumGAut_inl_inv hstep
+      obtain ⟨y, rfl, hmy⟩ := autReaches_sumGAut_inl hreach
+      obtain ⟨n, hstep2, hreach2⟩ := hr21
+      obtain ⟨n', rfl, hyn⟩ := autStep1_sumGAut_inl_inv hstep2
+      obtain ⟨z, hz, hnz⟩ := autReaches_sumGAut_inl hreach2
+      have hzx : x = z := by injection hz
+      exact h₁ x y (mem_sumGAut_inl hs1) ⟨m', hsm, hmy⟩
+        ⟨n', hyn, by rw [hzx]; exact hnz⟩
+  | inr x =>
+      obtain ⟨m, hstep, hreach⟩ := hr12
+      obtain ⟨m', rfl, hsm⟩ := autStep1_sumGAut_inr_inv hstep
+      obtain ⟨y, rfl, hmy⟩ := autReaches_sumGAut_inr hreach
+      obtain ⟨n, hstep2, hreach2⟩ := hr21
+      obtain ⟨n', rfl, hyn⟩ := autStep1_sumGAut_inr_inv hstep2
+      obtain ⟨z, hz, hnz⟩ := autReaches_sumGAut_inr hreach2
+      have hzx : x = z := by injection hz
+      exact h₂ x y (mem_sumGAut_inr hs1) ⟨m', hsm, hmy⟩
+        ⟨n', hyn, by rw [hzx]; exact hnz⟩
+
+#print axioms Nested_sumGAut
+
 end GkatSumQuotient
