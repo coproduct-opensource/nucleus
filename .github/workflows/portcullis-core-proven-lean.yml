@@ -144,7 +144,13 @@ jobs:
             GkatCertK4n3 \
             GkatCertT1 \
             GkatCertT2 \
+            GkatCertR1 \
+            GkatCertR2 \
+            GkatCertR3 \
+            GkatCertR4 \
             GkatCertR5 \
+            GkatCertR6 \
+            GkatRingSupportProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
