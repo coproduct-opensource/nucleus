@@ -5823,7 +5823,7 @@ pullback: {ok} / {}", res.len());
                                     // SATURATION LADDER.  The closure is exponential in rounds, so 0.4% at
                                     // rounds=2 is a LOWER BOUND.  If the curve climbs, a deeper search is
                                     // worth building; if it plateaus, the witness is intrinsically weak.
-                                    for rd in 1..=4u32 {
+                                    for rd in (1..=4u32).filter(|_| std::env::var("PAD_REFLADDER").is_ok()) {
                                         let hits = crux.iter().take(600).filter(|&&(a, b)|
                                             refinement_witness(&list, &prov, a as u32, b as u32,
                                                 1u8 << NA, rd, 3000)).count();
@@ -5831,7 +5831,7 @@ pullback: {ok} / {}", res.len());
                                             100.0 * hits as f64 / 600.0);
                                     }
                                     let (mut fires, mut fn2) = (0usize, 0usize);
-                                    for &(a, b) in crux.iter().take(1500) {
+                                    for &(a, b) in crux.iter().take(if std::env::var("PAD_REFVAL").is_ok() { 1500 } else { 0 }) {
                                         fn2 += 1;
                                         if refinement_witness(&list, &prov, a as u32, b as u32,
                                             1u8 << NA, 2, 1500) { fires += 1; }
@@ -5839,7 +5839,7 @@ pullback: {ok} / {}", res.len());
                                     let (mut bad, mut bn) = (0usize, 0usize);
                                     let mut r5: u64 = 0x2545F4914F6CDD1D;
                                     let mut rr = move || { r5 ^= r5 << 13; r5 ^= r5 >> 7; r5 ^= r5 << 17; r5 };
-                                    while bn < 1500 {
+                                    while bn < if std::env::var("PAD_REFVAL").is_ok() { 1500 } else { 0 } {
                                         let a = (rr() as usize) % list.len();
                                         let b = (rr() as usize) % list.len();
                                         if behaviour(&list[a]) == behaviour(&list[b]) { continue; }
