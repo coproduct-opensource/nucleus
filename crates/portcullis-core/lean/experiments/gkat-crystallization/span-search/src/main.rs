@@ -5284,7 +5284,40 @@ pullback: {ok} / {}", res.len());
                         }
                         let nm = ["states", "has-cycle", "reducible", "halt-in-cycle",
                                   "decided-frac", "two-exit", "two-halt"];
-                        println!("  RESIDUE vs COVERED (search-reach shows ONLY a size gap):");
+                        // THE OPEN QUESTION, MADE MEASURABLE.  Direct elimination stops exactly
+                    // where it would need an UNGUARDED UNION (a halt or a second variable on a
+                    // recurrence atom, created by substitution).  Does the congruence lattice
+                    // always contain a quotient where that never happens?
+                    {
+                        let (mut nfail, mut byelim, mut bythom, mut byboth, mut neither) =
+                            (0usize, 0usize, 0usize, 0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                if symbolic_eliminable(&su) { continue; }
+                                nfail += 1;
+                                let mut e_ok = false; let mut t_ok = false;
+                                for cg in lattice_congruences(&su).iter() {
+                                    if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                        if symbolic_eliminable(&q) { e_ok = true; }
+                                        if trim_canon(&q).and_then(|t| canon(&t))
+                                            .map(|c| seen.contains_key(&c)).unwrap_or(false) { t_ok = true; }
+                                    }
+                                }
+                                match (e_ok, t_ok) {
+                                    (true, true) => byboth += 1,
+                                    (true, false) => byelim += 1,
+                                    (false, true) => bythom += 1,
+                                    (false, false) => neither += 1,
+                                }
+                            }
+                        }
+                        println!("  DOES A QUOTIENT AVOID THE UNION?  (of the systems needing a KA step)");
+                        println!("    need a KA step directly : {nfail}");
+                        println!("      a quotient ELIMINATES  : {}", byelim + byboth);
+                        println!("      only Thompson helps    : {bythom}");
+                        println!("      neither                : {neither}");
+                    }
+                    println!("  RESIDUE vs COVERED (search-reach shows ONLY a size gap):");
                         println!("    covered {nc}, residue {nr2}");
                         for t in 0..7 {
                             let a = if nc == 0 { 0.0 } else { cov[t] / nc as f64 };
