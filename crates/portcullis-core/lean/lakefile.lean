@@ -717,6 +717,10 @@ lean_lib «GkatResidueFamilyProofs» where
 lean_lib «GkatDeadExitElimProofs» where
   roots := #[`GkatDeadExitElimProofs]
 
+-- The nesting coequation closed under quotients: the covariety's other half.
+lean_lib «GkatNestedClosureProofs» where
+  roots := #[`GkatNestedClosureProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
