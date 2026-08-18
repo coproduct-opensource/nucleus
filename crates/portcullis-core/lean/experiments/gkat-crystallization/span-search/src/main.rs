@@ -4678,7 +4678,7 @@ pullback: {ok} / {}", res.len());
                         // discharges it, and a separating model needs one of these to separate.
                         let mut shown = 0;
                         for (ci, &(i, j)) in crux.iter().enumerate() {
-                            if shown >= 4 { break; }
+                            if shown >= 12 { break; }
                             if facts[ci].0 { continue; }
                             if let Some(su) = sum_core(&list[i], &list[j]) {
                                 if thompson_somewhere_in_lattice(&su, &seen) { continue; }

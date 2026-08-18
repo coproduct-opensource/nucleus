@@ -237,6 +237,87 @@ theorem residue_pair_three_act (b : BExp T) (a : A) :
         (.ite (.not b) (.wh (.not b) (.seq (resA b (.act a)) (resC b (.act a)))) (.act a)))) :=
   residue_pair_three b (.act a) (fun _ _ _ => rfl)
 
+/-! ## Pair #2, from the same core
+
+    Printed side by side, #2 and #3 differ only by an appended `; p` and by their else arms:
+
+        #2  e = ( p ; ( ((A ; p^(nb)) ; p)      +_{nb} b ) )^(nb)
+            f = ( p ; ( ((A ; C)^(nb) ; p)      +_{nb} b ) )^(nb)
+        #3  e = ( p ; (  (A ; p^(nb))           +_{nb} p ) )^(nb)
+            f = ( p ; (  (A ; C)^(nb)           +_{nb} p ) )^(nb)
+
+    So both rest on one equality — `A ; p^(nb) ≡ (A;C)^(nb)`, *under the guard* — and the two
+    contexts around it are reached by ordinary congruence.  Isolating that equality proves
+    both, and would prove any further member of the family whatever its continuation and else
+    arm turn out to be. -/
+
+/-- **Congruence under a guard.**  Two branches that agree once the guard is asserted may be
+    exchanged inside the choice, even when they disagree everywhere else.  `U4` both ways. -/
+theorem ite_congr_under_guard {g : BExp T} {X Y Z : Exp A T}
+    (h : EquivBA (.seq (.test g) X) (.seq (.test g) Y)) :
+    EquivBA (.ite g X Z) (.ite g Y Z) :=
+  EquivBA.trans (EquivBA.base (Equiv.u4 g X Z))
+    (EquivBA.trans (EquivBA.ite_c h (EquivBA.base (Equiv.refl Z)))
+      (EquivBA.symm (EquivBA.base (Equiv.u4 g Y Z))))
+
+/-- An assertion passes through a continuation: agreeing under `g` survives postcomposition. -/
+theorem seq_under_guard {g : BExp T} {X Y : Exp A T} (q : Exp A T)
+    (h : EquivBA (.seq (.test g) X) (.seq (.test g) Y)) :
+    EquivBA (.seq (.test g) (.seq X q)) (.seq (.test g) (.seq Y q)) :=
+  EquivBA.trans (EquivBA.symm (seq_assoc _ _ _))
+    (EquivBA.trans (EquivBA.seq_c h (EquivBA.base (Equiv.refl q))) (seq_assoc _ _ _))
+
+/-- **The core equality shared by #2 and #3.**  Under `¬b`, running `A` and then the loop is
+    running the coarser loop.  Left side: `A ≡ p` under the guard, so it is `p · p^(nb)`.
+    Right side: `wh_cyc_body` collapses the coarser loop to `p^(nb)`, and W1 unrolls it to the
+    same `p · p^(nb)`. -/
+theorem guarded_core (b : BExp T) (p : Exp A T)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+    EquivBA (.seq (.test (.not b)) (.seq (resA b p) (.wh (.not b) p)))
+      (.seq (.test (.not b)) (.wh (.not b) (.seq (resA b p) (resC b p)))) := by
+  have hL : EquivBA (.seq (.test (.not b)) (.seq (resA b p) (.wh (.not b) p)))
+      (.seq (.test (.not b)) (.seq p (.wh (.not b) p))) :=
+    EquivBA.trans (EquivBA.symm (seq_assoc _ _ _))
+      (EquivBA.trans
+        (EquivBA.seq_c (test_seq_ite_else b (.test .zero) p) (EquivBA.base (Equiv.refl _)))
+        (seq_assoc _ _ _))
+  have hR : EquivBA (.seq (.test (.not b)) (.wh (.not b) p))
+      (.seq (.test (.not b)) (.seq p (.wh (.not b) p))) :=
+    EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.w1 (.not b) p)))
+      (test_seq_ite_of_implies (b := .not b) (z := .not b) _ _ (fun _ _ _ h => h))
+  exact EquivBA.trans (EquivBA.trans hL (EquivBA.symm hR))
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.symm (wh_resA_resC b p hEp)))
+
+/-- **Pair #2 of the residue, proved from the finite axioms.**  Stated for an arbitrary
+    continuation `q` and an arbitrary else arm `Z`, since neither participates in the
+    derivation — the harness's #2 is `q := p`, `Z := b?`. -/
+theorem residue_pair_two (b : BExp T) (p q Z : Exp A T)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+    EquivBA
+      (.wh (.not b) (.seq p
+        (.ite (.not b) (.seq (.seq (resA b p) (.wh (.not b) p)) q) Z)))
+      (.wh (.not b) (.seq p
+        (.ite (.not b) (.seq (.wh (.not b) (.seq (resA b p) (resC b p))) q) Z))) :=
+  EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl p))
+    (ite_congr_under_guard (seq_under_guard q (guarded_core b p hEp))))
+
+/-- Pair #2 exactly as the harness produced it: `q := p`, `Z := b?`, `p` an action. -/
+theorem residue_pair_two_act (b : BExp T) (a : A) :
+    EquivBA
+      (.wh (.not b) (.seq (.act a)
+        (.ite (.not b)
+          (.seq (.seq (resA b (.act a)) (.wh (.not b) (.act a))) (.act a)) (.test b))))
+      (.wh (.not b) (.seq (.act a)
+        (.ite (.not b)
+          (.seq (.wh (.not b) (.seq (resA b (.act a)) (resC b (.act a)))) (.act a)) (.test b)))) :=
+  residue_pair_two b (.act a) (.act a) (.test b) (fun _ _ _ => rfl)
+
+#print axioms ite_congr_under_guard
+#print axioms seq_under_guard
+#print axioms guarded_core
+#print axioms residue_pair_two
+#print axioms residue_pair_two_act
 #print axioms ite_then_test
 #print axioms wh_restrict_body
 #print axioms test_seq_ite_else
