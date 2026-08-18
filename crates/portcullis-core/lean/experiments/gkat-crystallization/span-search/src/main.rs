@@ -5311,7 +5311,40 @@ pullback: {ok} / {}", res.len());
                                 }
                             }
                         }
-                        println!("  DOES A QUOTIENT AVOID THE UNION?  (of the systems needing a KA step)");
+                        // IS THE 100% VACUOUS?  `sum_core` keeps only A's initial transitions, so
+                    // B's half is unreachable and TRIMMING COULD DELETE IT — leaving Thompson(e)
+                    // alone, which is trivially Thompson.  The conjunct demands the two START
+                    // STATES be identified; the harness never checked that.  Check it now.
+                    {
+                        let (mut ok_any, mut ok_start, mut n) = (0usize, 0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                n += 1;
+                                let mut any = false; let mut wstart = false;
+                                let (blk, nb) = bisim_blocks(&su);
+                                let mut cands: Vec<([usize; MAXK], usize)> = vec![(blk, nb)];
+                                cands.extend(lattice_congruences(&su));
+                                for (b2, nb2) in cands.iter() {
+                                    if let Some(q) = quotient_by(&su, b2, *nb2) {
+                                        let isT = trim_canon(&q).and_then(|t| canon(&t))
+                                            .map(|c| seen.contains_key(&c)).unwrap_or(false);
+                                        if !isT { continue; }
+                                        any = true;
+                                        // the conjunct's start condition: both starts in one block
+                                        if ka < su.k as usize && b2[0] == b2[ka] { wstart = true; }
+                                    }
+                                }
+                                if any { ok_any += 1; }
+                                if wstart { ok_start += 1; }
+                            }
+                        }
+                        let pc7 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                        println!("  IS THE 100% VACUOUS?  (does the Thompson quotient MERGE THE STARTS?)");
+                        println!("    some quotient is Thompson            : {ok_any} / {n} ({:.1}%)", pc7(ok_any, n));
+                        println!("    ... AND identifies the two starts    : {ok_start} / {n} ({:.1}%)", pc7(ok_start, n));
+                    }
+                    println!("  DOES A QUOTIENT AVOID THE UNION?  (of the systems needing a KA step)");
                         println!("    need a KA step directly : {nfail}");
                         println!("      a quotient ELIMINATES  : {}", byelim + byboth);
                         println!("      only Thompson helps    : {bythom}");
