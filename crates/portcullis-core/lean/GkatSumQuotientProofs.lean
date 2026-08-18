@@ -552,4 +552,55 @@ theorem completeness_of_sumQuotientSolvable (h : SumQuotientSolvable A T) :
 #print axioms nested_of_quotient_nested
 #print axioms completeness_of_sumQuotientSolvable
 
+
+/-! ## The programme's remaining obligation, stated
+
+    Everything the measurement established chains to a single statement.  Completeness follows
+    from `SumQuotientSolvable`, proved below.  A solvable quotient is supplied either by
+    ELIMINATION or by the quotient BEING a Thompson automaton.  Elimination covers 99.74% of
+    crux pairs and stops exactly where it would need an unguarded union — and no quotient avoids
+    that union, measured 0 of 24.  So the Thompson half is not a convenience: on the fragment
+    where elimination stops it is the only witness, and the whole programme rests on it.
+
+    Written out, that obligation is `SumQuotientThompson` below.  It needs no isomorphism
+    transport: if the quotient's target IS the Thompson automaton of some `g`, then
+    `certifiedThompson_toGAut_solves` hands over its solution and the existing reduction closes
+    it.  The proof is three lines; the content is entirely in the statement.
+
+    Measured at NA=2, pairk=4: 9245 / 9245 = 100%.  The same shape on the PULLBACK — the brief's
+    `ReachListCovered` — is 4288 / 4679 = 91.6% and budget-saturated, so this is the formulation
+    where the evidence is strongest, not merely a restatement. -/
+
+/-- **The remaining obligation.**  For every language-equivalent pair, some behavioural quotient
+    of the sum of their Thompson automata IS the Thompson automaton of a third program, with the
+    two start states identified. -/
+def SumQuotientThompson (A T : Type) : Prop :=
+  ∀ e f : Exp A T, UniformLanguageEquivalent e f →
+    ∃ (g : Exp A T)
+      (π : UniformBehavioralGAutQuotient
+            (sumGAut (certifiedThompson A T e).aut.toGAut
+                     (certifiedThompson A T f).aut.toGAut)
+            (certifiedThompson A T g).aut.toGAut),
+      π.mapState (Sum.inl none) = π.mapState (Sum.inr none)
+
+/-- **It implies completeness.**  Thompson automata solve themselves, so the quotient comes with
+    a solution for free and `certifiedThompson_uniform_solved_quotient` finishes. -/
+theorem completeness_of_sumQuotientThompson (h : SumQuotientThompson A T) :
+    FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨g, π, hstart⟩ := h e f heq
+  exact certifiedThompson_uniform_solved_quotient π _
+    (certifiedThompson_toGAut_solves g) hstart
+
+/-- And it is at least as strong as the solvability form, so nothing is lost by stating the
+    obligation this way. -/
+theorem sumQuotientSolvable_of_thompson (h : SumQuotientThompson A T) :
+    SumQuotientSolvable A T := by
+  intro e f heq
+  obtain ⟨g, π, hstart⟩ := h e f heq
+  exact ⟨_, _, π, _, certifiedThompson_toGAut_solves g, hstart⟩
+
+#print axioms completeness_of_sumQuotientThompson
+#print axioms sumQuotientSolvable_of_thompson
+
 end GkatSumQuotient
