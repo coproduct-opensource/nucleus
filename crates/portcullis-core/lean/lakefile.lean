@@ -705,6 +705,10 @@ lean_lib «GkatDupCoverProofs» where
 lean_lib «GkatRefinesProofs» where
   roots := #[`GkatRefinesProofs]
 
+-- The residue, discharged: pair #3 of the eight open instances, proved without UA.
+lean_lib «GkatResidueProofs» where
+  roots := #[`GkatResidueProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
