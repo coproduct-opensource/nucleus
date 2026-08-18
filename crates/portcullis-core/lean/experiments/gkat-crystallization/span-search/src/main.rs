@@ -5820,6 +5820,16 @@ pullback: {ok} / {}", res.len());
                                 // soundness is by construction (Refines moves are proved), so the
                                 // control is the one that matters, and non-vacuity is the other half.
                                 {
+                                    // SATURATION LADDER.  The closure is exponential in rounds, so 0.4% at
+                                    // rounds=2 is a LOWER BOUND.  If the curve climbs, a deeper search is
+                                    // worth building; if it plateaus, the witness is intrinsically weak.
+                                    for rd in 1..=4u32 {
+                                        let hits = crux.iter().take(600).filter(|&&(a, b)|
+                                            refinement_witness(&list, &prov, a as u32, b as u32,
+                                                1u8 << NA, rd, 3000)).count();
+                                        println!("    power at rounds={rd} : {hits} / 600 ({:.1}%)",
+                                            100.0 * hits as f64 / 600.0);
+                                    }
                                     let (mut fires, mut fn2) = (0usize, 0usize);
                                     for &(a, b) in crux.iter().take(1500) {
                                         fn2 += 1;
