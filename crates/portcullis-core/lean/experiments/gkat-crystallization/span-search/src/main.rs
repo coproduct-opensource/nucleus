@@ -1014,6 +1014,86 @@ fn orbit_stable<const NA: usize>(h: &Aut<NA>) -> bool {
 }
 
 
+
+/// **Targeted layer streaming — sound POSITIVES for Thompson-ness above the pool.**
+///
+/// An expression with `n` actions has immediate subexpressions with at most `n` actions
+/// (tests contribute none), so the `n`-state Thompson automata are reachable from the pool by
+/// combination.  Deciding membership for a specific target therefore does not need the layer
+/// STORED, only enumerated — and because every automaton produced here really is the Thompson
+/// automaton of an expression, ANY HIT IS A PROOF.  Misses are inconclusive, which is the safe
+/// direction: this can only raise measured coverage, never falsely.
+///
+/// `rounds` bounds how often `wh`/`ite`-with-a-test wrappers may be re-applied within the
+/// layer.  Unbounded closure at n=6 is the 55M the brief flags; bounded, storage is O(frontier)
+/// and a miss simply stays unknown.
+fn stream_layer<const NA: usize>(
+    by_k: &[Vec<Aut<NA>>], n: usize, nguards: u8, rounds: usize,
+    targets: &FxSet<Aut<NA>>,
+) -> FxSet<Aut<NA>> {
+    let mut hits: FxSet<Aut<NA>> = FxSet::default();
+    let mut layer: Vec<Aut<NA>> = Vec::new();
+    let mut seenl: FxSet<Aut<NA>> = FxSet::default();
+    let mut note = |a: &Aut<NA>, hits: &mut FxSet<Aut<NA>>| {
+        if let Some(c) = canon(a) {
+            if targets.contains(&c) { hits.insert(c); }
+        }
+    };
+    // seed: one combination step from strictly lower layers (tests have k = 0)
+    for i in 0..=n {
+        let j = n - i;
+        if i >= by_k.len() || j >= by_k.len() { continue; }
+        for l in by_k[i].iter() {
+            for r in by_k[j].iter() {
+                if let Some(a) = a_seq(l, r) {
+                    note(&a, &mut hits);
+                    if a.k as usize == n && seenl.insert(a) { layer.push(a); }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite(g, l, r) {
+                        note(&a, &mut hits);
+                        if a.k as usize == n && seenl.insert(a) { layer.push(a); }
+                    }
+                }
+            }
+        }
+    }
+    // bounded re-wrapping inside the layer: wh, and ite against a test
+    for _ in 0..rounds {
+        let mut next: Vec<Aut<NA>> = Vec::new();
+        for b in layer.iter() {
+            for g in 0..nguards {
+                let a = a_wh(g, b);
+                note(&a, &mut hits);
+                if a.k as usize == n && seenl.insert(a) { next.push(a); }
+                if 0 < by_k.len() {
+                    for t in by_k[0].iter() {
+                        if let Some(a) = a_ite(g, b, t) {
+                            note(&a, &mut hits);
+                            if a.k as usize == n && seenl.insert(a) { next.push(a); }
+                        }
+                        if let Some(a) = a_ite(g, t, b) {
+                            note(&a, &mut hits);
+                            if a.k as usize == n && seenl.insert(a) { next.push(a); }
+                        }
+                        if let Some(a) = a_seq(t, b) {
+                            note(&a, &mut hits);
+                            if a.k as usize == n && seenl.insert(a) { next.push(a); }
+                        }
+                        if let Some(a) = a_seq(b, t) {
+                            note(&a, &mut hits);
+                            if a.k as usize == n && seenl.insert(a) { next.push(a); }
+                        }
+                    }
+                }
+            }
+        }
+        if next.is_empty() { break; }
+        layer = next;
+    }
+    hits
+}
+
 /// **REFUTED — NOT a necessary condition.  Kept as a record of why.**
 ///
 /// Validation caught it: 2 / 20000 pool automata, which are Thompson by construction, violate
@@ -4928,6 +5008,40 @@ pullback: {ok} / {}", res.len());
                         println!("    BLOCKER LIVENESS: quotients needing an oracle (k > {poolk}) : {big} / {} ({:.1}%)",
                             big + small, pc6(big, big + small));
                         println!("           sizes above the pool: {:?}", &bigk[..]);
+                        // VALIDATE THE STREAMER on the k=5 layer, where the pool is ground
+                        // truth — and seed it only from k <= 4, so nothing is found trivially.
+                        {
+                            let mut by_k4: Vec<Vec<Aut<NA>>> = vec![Vec::new(); 5];
+                            let mut by_k5: Vec<Vec<Aut<NA>>> = vec![Vec::new(); 6];
+                            for a in list.iter() {
+                                let kk = a.k as usize;
+                                if kk <= 4 { by_k4[kk].push(*a); }
+                                if kk <= 5 { by_k5[kk].push(*a); }
+                            }
+                            let t5: FxSet<Aut<NA>> = list.iter().filter(|a| a.k as usize == 5)
+                                .filter_map(|a| canon(a)).collect();
+                            let n5 = t5.len();
+                            let h5 = stream_layer(&by_k4, 5, 1u8 << NA, 3, &t5);
+                            println!("    STREAMER VALIDATION (k=5 from k<=4): recovered {} / {n5} ({:.1}%)",
+                                h5.len(), pc6(h5.len(), n5));
+                            // now the live question: the k=6 quotients nothing could decide
+                            let mut t6: FxSet<Aut<NA>> = FxSet::default();
+                            for &(i, j) in crux.iter() {
+                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                    for cg in lattice_congruences(&su).iter() {
+                                        if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                            if q.k as usize == 6 {
+                                                if let Some(c) = canon(&q) { t6.insert(c); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let n6 = t6.len();
+                            let h6 = stream_layer(&by_k5, 6, 1u8 << NA, 3, &t6);
+                            println!("    k=6 QUOTIENTS DECIDED THOMPSON (sound positives): {} / {n6} ({:.1}%)",
+                                h6.len(), pc6(h6.len(), n6));
+                        }
                         println!("    POWER: known non-Thompson quotients caught {neg_caught} / {neg} ({:.1}%)",
                             pc6(neg_caught, neg));
                         println!("           (known Thompson quotients seen for scale: {pos_seen})");
