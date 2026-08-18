@@ -1013,7 +1013,64 @@ fn orbit_stable<const NA: usize>(h: &Aut<NA>) -> bool {
     true
 }
 
+
+/// **REFUTED — NOT a necessary condition.  Kept as a record of why.**
+///
+/// Validation caught it: 2 / 20000 pool automata, which are Thompson by construction, violate
+/// it.  The smallest is `((p +_b p) ; (p ; b?))^(1)`, whose orbit is `{s0, s2}` while `s1` sits
+/// in the loop BODY without lying on any cycle.  So the premise below — that an orbit is a loop
+/// body, hence that every edge into it from outside is a loop entry — is FALSE.  The edge
+/// `s1 → s2` is body-internal and lands on a different state than the entry `→ s0` does.
+///
+/// This is the "invisible entry under a guard" trap in its graph-theoretic form, and it is the
+/// same ambiguity that sank the flat stability test: a body-internal edge into the entry set
+/// cannot be told from a loop entry by inspecting the graph.
+///
+/// An orbit is the body `B` of some `wh g B`, and `loopInitialized` is the only constructor
+/// that creates a cycle.  Every edge into `B` from OUTSIDE therefore comes from the loop's own
+/// entry transitions, which are `initTrans B` conjoined with `g` — one target per atom, fixed
+/// by `B` alone.  So for each atom, every external edge into the orbit lands on the SAME state,
+/// no matter which outside state it leaves from.
+///
+/// This is the companion of `orbit_entry_halt_disjoint` and shares its virtue: it looks only at
+/// edges crossing INTO the orbit, which are unambiguous, never at internal edges, which cannot
+/// be told apart from back edges by inspecting the graph.  That ambiguity is what sank the flat
+/// stability test.
+#[allow(dead_code)]
+fn orbit_entry_unique<const NA: usize>(h: &Aut<NA>) -> bool {
+    let k = h.k as usize;
+    for o in orbits(h).iter() {
+        let mut tgt = [usize::MAX; NA];
+        // entries from the initial pseudostate
+        for y in 0..NA {
+            if h.it[y] != 0 {
+                let t = (h.it[y] - 1) as usize;
+                if o & (1 << t) != 0 {
+                    if tgt[y] == usize::MAX { tgt[y] = t; } else if tgt[y] != t { return false; }
+                }
+            }
+        }
+        // entries from states outside the orbit
+        for u in 0..k {
+            if o & (1 << u) != 0 { continue; }
+            for y in 0..NA {
+                if h.st[u][y] == 0 { continue; }
+                let t = (h.st[u][y] - 1) as usize;
+                if o & (1 << t) == 0 { continue; }
+                if tgt[y] == usize::MAX { tgt[y] = t; } else if tgt[y] != t { return false; }
+            }
+        }
+    }
+    true
+}
+
 /// **Orbit entry/halt disjointness — a NECESSARY condition, from the guard law.**
+///
+/// CAUTION, and this was found the hard way.  The justification below assumes an orbit IS a
+/// loop body.  That assumption is FALSE — see `orbit_entry_unique`, refuted by a pool automaton
+/// whose loop body contains a state off every cycle.  This condition nevertheless survives
+/// validation on 20000 pool automata, so it is EMPIRICALLY VALIDATED, not proved.  Treat a
+/// refutation it reports as strong evidence rather than as a theorem.
 ///
 /// `loopInitialized` is the only constructor that creates a cycle, so every orbit is a loop
 /// body `B` of some `wh g B`.  It is also the only way into `B`: every edge from outside `B`
@@ -4790,7 +4847,20 @@ pullback: {ok} / {}", res.len());
                     // merely unfound.  Validate that claim on the pool before using it.
                     let refuted = |a: &Aut<NA>| -> bool { !orbit_entry_halt_disjoint(a) };
                     let mut false_refute = 0usize;
-                    for a in list.iter().take(20000) { if refuted(a) { false_refute += 1; } }
+                    for (ai, a) in list.iter().take(20000).enumerate() {
+                        if refuted(a) {
+                            false_refute += 1;
+                            if false_refute <= 2 {
+                                println!("    WRONGLY REFUTED #{false_refute}: k={} ih={} it={:?}", a.k, a.ih, a.it);
+                                for sx in 0..a.k as usize {
+                                    println!("      s{sx}: hl={} st={:?}", a.hl[sx], &a.st[sx][..NA]);
+                                }
+                                println!("      orbits={:?} halt_disj={} entry_uniq={}",
+                                    orbits(a), orbit_entry_halt_disjoint(a), orbit_entry_unique(a));
+                                println!("      expr={}", expr_of(&list, &prov, ai as u32, 12));
+                            }
+                        }
+                    }
                     println!("  THOMPSON REFUTER VALIDATION:");
                     println!("    pool automata wrongly refuted : {false_refute} / {} (must be 0)",
                         list.len().min(20000));
