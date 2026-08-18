@@ -5560,6 +5560,45 @@ pullback: {ok} / {}", res.len());
                                                 }
                                             }
                                         }
+                                        // Extend the same validation into the RISKY region: the
+                                        // size-2 SCCs of the shape `elim_scc2` proves.  Those are
+                                        // inside the 14.3% where oracle and proofs could disagree.
+                                        {
+                                            let (mut s2, mut s2_ok) = (0usize, 0usize);
+                                            for &(i, j) in crux.iter() {
+                                                let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                    if ka >= su.k as usize { continue; }
+                                                    if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                        if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                            let qq = trim_canon(&q).unwrap_or(q);
+                                                            let os = orbits(&qq);
+                                                            if os.iter().map(|o| o.count_ones()).max().unwrap_or(0) != 2 { continue; }
+                                                            let mut shape = false;
+                                                            for o in os.iter() {
+                                                                if o.count_ones() != 2 { continue; }
+                                                                let mut mem: Vec<usize> = Vec::new();
+                                                                for t in 0..qq.k as usize {
+                                                                    if o & (1 << t) != 0 { mem.push(t); }
+                                                                }
+                                                                let facs = |a: usize, b: usize| -> bool {
+                                                                    qq.hl[a] == 0 && (0..NA).all(|y|
+                                                                        qq.st[a][y] == 0
+                                                                        || (qq.st[a][y] - 1) as usize == b)
+                                                                };
+                                                                if facs(mem[0], mem[1]) || facs(mem[1], mem[0]) { shape = true; }
+                                                            }
+                                                            if !shape { continue; }
+                                                            s2 += 1;
+                                                            if symbolic_eliminable(&qq) { s2_ok += 1; }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            println!("  ORACLE vs PROOFS, risky region (elim2 on the elim_scc2 shape):");
+                                            println!("    elim2 accepts : {s2_ok} / {s2} ({:.1}%)  (must be all)",
+                                                pc7(s2_ok, s2));
+                                        }
                                         println!("  ORACLE vs PROOFS (elim2 on chain-shaped, which chain_solves proves):");
                                         println!("    elim2 accepts : {ch_ok} / {ch} ({:.1}%)  (must be all)",
                                             pc7(ch_ok, ch));
