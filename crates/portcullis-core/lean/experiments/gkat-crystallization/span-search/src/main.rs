@@ -1070,6 +1070,49 @@ fn trim_canon<const NA: usize>(a: &Aut<NA>) -> Option<Aut<NA>> {
     Some(c)
 }
 
+
+/// **The THIRD witness: a common refinement.**
+///
+/// `equivBA_of_common_refinement` is proved in the corpus, and `Refines` (unroll, dup, cyc plus
+/// congruence) is a sound derivation — it discharged residue pair #3, whose two sides differ
+/// only by where the iteration boundary falls.  The sum route's witness set has only ever
+/// tested "eliminable OR Thompson", so a pair discharged by a refinement chain counts as a
+/// failure.  This closes that gap.
+fn refinement_witness<const NA: usize>(
+    list: &[Aut<NA>], prov: &[Prov], i: u32, j: u32, nguards: u8, rounds: u32, cap: usize,
+) -> bool {
+    let mut pool = Pool::<NA>::new();
+    let ri = pool.of_prov(list, prov, i);
+    let rj = pool.of_prov(list, prov, j);
+    fn close<const NA: usize>(pool: &mut Pool<NA>, root: u32, nguards: u8,
+        rounds: u32, cap: usize) -> FxSet<Aut<NA>> {
+        let mut seen: FxSet<u32> = FxSet::default();
+        let mut auts: FxSet<Aut<NA>> = FxSet::default();
+        let mut frontier = vec![root];
+        seen.insert(root);
+        if let Some(a) = pool.aut(root) { if let Some(c) = canon(&a) { auts.insert(c); } }
+        for _ in 0..rounds {
+            let mut next: Vec<u32> = Vec::new();
+            for &t in frontier.iter() {
+                refinements(pool, t, nguards, true, true, 2, 2, &mut next);
+            }
+            let mut keep: Vec<u32> = Vec::new();
+            for t in next {
+                if !seen.insert(t) { continue; }
+                if let Some(a) = pool.aut(t) { if let Some(c) = canon(&a) { auts.insert(c); } }
+                keep.push(t);
+                if keep.len() >= cap { break; }
+            }
+            if keep.is_empty() { break; }
+            frontier = keep;
+        }
+        auts
+    }
+    let ai = close(&mut pool, ri, nguards, rounds, cap);
+    let aj = close(&mut pool, rj, nguards, rounds, cap);
+    ai.iter().any(|a| aj.contains(a))
+}
+
 /// A canon-INVARIANT signature: `canon` only renumbers states, so the multiset of
 /// (halt mask, out-degree) pairs and the state count survive it.  Candidates whose signature
 /// matches no target cannot BE a target, and are dropped before paying for `canon` — which is
@@ -5405,6 +5448,7 @@ pullback: {ok} / {}", res.len());
                             {
                                 let (mut u_ok, mut u_n, mut only_e, mut only_t) =
                                     (0usize, 0usize, 0usize, 0usize);
+                                let mut refw = 0usize;
                                 for &(i, j) in crux.iter() {
                                     let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
                                     if let Some(su) = sum_core(&list[i], &list[j]) {
@@ -5425,6 +5469,10 @@ pullback: {ok} / {}", res.len());
                                                 if trim_canon(&q).and_then(|t| canon(&t))
                                                     .map(|c| seen.contains_key(&c)).unwrap_or(false) { t_ok = true; }
                                             }
+                                        }
+                                        if !(e_ok || t_ok) {
+                                            if refinement_witness(&list, &prov, i as u32, j as u32,
+                                                1u8 << NA, 3, 4000) { refw += 1; }
                                         }
                                         if e_ok || t_ok { u_ok += 1; }
                                         if e_ok && !t_ok { only_e += 1; }
@@ -5728,10 +5776,46 @@ pullback: {ok} / {}", res.len());
                                             }
                                         }
                                     }
+                                    // THE FAILURES, AS PROGRAMS.  Printing the eight residue pairs
+                                    // turned them from opaque into four lines of syntax, and three
+                                    // fell the same day.  Same move here.
+                                    {
+                                        let mut shown = 0;
+                                        for &(i, j) in crux.iter() {
+                                            if shown >= 6 { break; }
+                                            let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                if ka >= su.k as usize { continue; }
+                                                let base = match close_congruence(&su, &[(0, ka)]) {
+                                                    Some(c) => c, None => continue };
+                                                let mut cands: Vec<([usize; MAXK], usize)> = vec![base];
+                                                for cg in lattice_congruences(&su).iter() {
+                                                    if cg.0[0] == cg.0[ka] { cands.push(*cg); }
+                                                }
+                                                let mut ok = false;
+                                                let mut best = MAXK;
+                                                for (b2, nb2) in cands.iter() {
+                                                    if let Some(q) = quotient_by(&su, b2, *nb2) {
+                                                        let qq = trim_canon(&q).unwrap_or(q);
+                                                        if (qq.k as usize) < best { best = qq.k as usize; }
+                                                        if symbolic_eliminable(&qq) { ok = true; }
+                                                        if canon(&qq).map(|c| seen.contains_key(&c))
+                                                            .unwrap_or(false) { ok = true; }
+                                                    }
+                                                }
+                                                if ok { continue; }
+                                                shown += 1;
+                                                println!("    FAILURE #{shown} (smallest quotient k={best})");
+                                                println!("      e = {}", expr_of(&list, &prov, i as u32, 14));
+                                                println!("      f = {}", expr_of(&list, &prov, j as u32, 14));
+                                            }
+                                        }
+                                    }
                                     println!("  THE FAILURES: smallest quotient size (pool bound {poolk2}):");
                                     println!("    sizes {:?}", &szs[..]);
                                     println!("    of which UNDECIDABLE (k > {poolk2}) : {undec}");
                                 }
+                                println!("    of the failures, a COMMON REFINEMENT discharges : {refw}");
                                 println!("  THE UNION CONJUNCT (starts merged, Thompson OR eliminable):");
                                 println!("    holds : {u_ok} / {u_n} ({:.1}%)", pc7(u_ok, u_n));
                                 println!("    only elimination works : {only_e}");
