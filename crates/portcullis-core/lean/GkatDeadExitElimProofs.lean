@@ -301,4 +301,44 @@ theorem elim_front (rec : List (Branch A T)) (rest : List (BExp T × Exp A T))
 
 #print axioms elim_front
 
+/-! ## Composing steps
+
+    One step leaves the tail alone, so steps compose whenever the tail's unknowns are ALREADY
+    SOLVED — substituting a closed expression is congruence and nothing more.  That is why a
+    chain of states, each with its own self-loop, needs no witness anywhere: solve the last,
+    substitute, solve the next.
+
+    It is also exactly where the general case stops.  If the tail's unknown is not yet solved,
+    substituting `x := U^(B)·Tail` puts the next unknown UNDER a product, and gathering it again
+    would need `a·(fold)` distributed over the fold — the left-distributivity that GKAT does not
+    have.  So composition is free down a chain and blocked around a cycle, which is the same
+    boundary the kernels hit, now visible at the level of the procedure rather than the rule. -/
+
+/-- **Two levels of a chain.**  `x₂` is solved first and its closed form substituted into `x₁`'s
+    fold by congruence; then `x₁` is solved.  No guard-pullback witness appears. -/
+theorem elim_two_level (rec1 rec2 : List (Branch A T)) (β : BExp T) (a fb1 fb2 : Exp A T)
+    {x1 x2 : Exp A T}
+    (hE1 : ∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold rec1)) y = false)
+    (hE2 : ∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold rec2)) y = false)
+    (h1 : EquivBA x1 (guardedFold (rec1.map (fun p => (p.1, .seq p.2 x1)) ++ [(β, .seq a x2)]) fb1))
+    (h2 : EquivBA x2 (guardedFold (rec2.map (fun p => (p.1, .seq p.2 x2))) fb2)) :
+    EquivBA x1
+      (.seq (.wh (orGuards rec1) (bodyFold rec1))
+        (guardedFold [(β, .seq a (.seq (.wh (orGuards rec2) (bodyFold rec2)) fb2))] fb1)) := by
+  -- solve the tail state first; its solution is closed
+  have hx2 : EquivBA x2 (.seq (.wh (orGuards rec2) (bodyFold rec2)) fb2) := by
+    refine elim_front rec2 [] fb2 hE2 ?_
+    rw [List.append_nil]
+    exact h2
+  -- substitute it into x₁'s fold: congruence, no distribution
+  refine elim_front rec1 [(β, .seq a (.seq (.wh (orGuards rec2) (bodyFold rec2)) fb2))] fb1 hE1 ?_
+  refine EquivBA.trans h1 ?_
+  rw [guardedFold_append, guardedFold_append]
+  refine guardedFold_fallback_congr _ ?_
+  show EquivBA (.ite β (.seq a x2) fb1) (.ite β (.seq a _) fb1)
+  exact EquivBA.ite_c (EquivBA.seq_c (EquivBA.base (Equiv.refl a)) hx2)
+    (EquivBA.base (Equiv.refl fb1))
+
+#print axioms elim_two_level
+
 end GkatDeadExitElim
