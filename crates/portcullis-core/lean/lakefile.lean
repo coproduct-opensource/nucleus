@@ -721,6 +721,10 @@ lean_lib «GkatDeadExitElimProofs» where
 lean_lib «GkatNestedClosureProofs» where
   roots := #[`GkatNestedClosureProofs]
 
+-- Thompson automata satisfy the nesting coequation: the covariety chain's last leaf.
+lean_lib «GkatThompsonNestedProofs» where
+  roots := #[`GkatThompsonNestedProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
