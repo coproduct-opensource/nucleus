@@ -3709,10 +3709,136 @@ fn parse_attack<const NA: usize>(s: &[u8], pos: &mut usize) -> (Aut<NA>, String,
     }
 }
 
+
+/// SCCs of a quotient's transition graph (Kosaraju on <= MAXK states).
+fn sccs_of<const NA: usize>(q: &Aut<NA>) -> Vec<Vec<usize>> {
+    let k = q.k as usize;
+    let mut order: Vec<usize> = Vec::new();
+    let mut seen = [false; MAXK];
+    for s0 in 0..k {
+        if seen[s0] { continue; }
+        // iterative DFS with post-order
+        let mut stack: Vec<(usize, usize)> = vec![(s0, 0)];
+        seen[s0] = true;
+        while let Some(&(s, i)) = stack.last() {
+            if i >= NA { order.push(s); stack.pop(); continue; }
+            stack.last_mut().unwrap().1 += 1;
+            if q.st[s][i] != 0 {
+                let t = (q.st[s][i] - 1) as usize;
+                if !seen[t] { seen[t] = true; stack.push((t, 0)); }
+            }
+        }
+    }
+    // reverse graph
+    let mut radj: Vec<Vec<usize>> = vec![Vec::new(); k];
+    for s in 0..k { for a in 0..NA { if q.st[s][a] != 0 {
+        radj[(q.st[s][a] - 1) as usize].push(s); } } }
+    let mut comp = [usize::MAX; MAXK];
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for &s0 in order.iter().rev() {
+        if comp[s0] != usize::MAX { continue; }
+        let c = out.len();
+        let mut members = vec![s0];
+        comp[s0] = c;
+        let mut st2 = vec![s0];
+        while let Some(s) = st2.pop() {
+            for &t in radj[s].iter() {
+                if comp[t] == usize::MAX { comp[t] = c; members.push(t); st2.push(t); }
+            }
+        }
+        out.push(members);
+    }
+    out
+}
+
+/// Halt masks reachable from `s` (including s's own).
+fn reachable_halts<const NA: usize>(q: &Aut<NA>, s: usize) -> u8 {
+    let mut seen = [false; MAXK];
+    let mut st = vec![s];
+    seen[s] = true;
+    let mut acc = 0u8;
+    while let Some(u) = st.pop() {
+        acc |= q.hl[u];
+        for a in 0..NA {
+            if q.st[u][a] != 0 {
+                let t = (q.st[u][a] - 1) as usize;
+                if !seen[t] { seen[t] = true; st.push(t); }
+            }
+        }
+    }
+    acc
+}
+
+/// **The ring/uniformity classifier.**  Necessary-shape check for the ring witness: every
+/// nontrivial SCC has (a) all its member halts on ONE shared guard mask c != 0 (interior
+/// states may be halt-free), (b) at least one member halting exactly on c (a header
+/// candidate), and (c) every halt reachable from the SCC also on c (exit continuations
+/// terminate through the same guard, so they can be inlined).  Singleton SCCs are always
+/// fine (guardedFold / levelSol).  This is the SHAPE the six Lean-certified ring
+/// solutions (GkatCertR1-R6) instantiate; it does not itself build the walk.
+fn ring_uniform<const NA: usize>(q: &Aut<NA>) -> bool {
+    let sccs = sccs_of(q);
+    for members in sccs.iter() {
+        let nontrivial = members.len() > 1
+            || members.iter().any(|&s| (0..NA).any(|a|
+                q.st[s][a] != 0 && (q.st[s][a] - 1) as usize == s && members.len() == 1))
+                && false; // self-loop singletons are levelSol-able: trivial
+        if members.len() <= 1 && !nontrivial { continue; }
+        let mut c = 0u8;
+        for &s in members.iter() { c |= q.hl[s]; }
+        if c == 0 { return false; }           // no exit at all: dead cycle (non-live)
+        for &s in members.iter() {
+            if q.hl[s] != 0 && q.hl[s] != c { return false; }   // non-uniform halts
+        }
+        if !members.iter().any(|&s| q.hl[s] == c) { return false; } // no header
+        // exits' reachable halts must stay on c
+        for &s in members.iter() {
+            for a in 0..NA {
+                if q.st[s][a] != 0 {
+                    let t = (q.st[s][a] - 1) as usize;
+                    if !members.contains(&t) {
+                        let rh = reachable_halts(q, t);
+                        if rh & !c != 0 { return false; }
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 /// PAD_ATTACK: the k=6 residue pairs, re-analysed in isolation.  For each pair: every
 /// merged-start congruence quotient with its size / eliminability / pool verdict, and the
 /// full table of each small quotient — the raw material for a hand proof.
 fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>) {
+    // Base rate first (standing rule): how common is the ring/uniform shape among
+    // automata KNOWN to be fine (the Thompson pool itself)?
+    {
+        let mut uni = 0usize;
+        let mut tot = 0usize;
+        for a in list.iter().take(20000) {
+            if let Some(g) = to_gaut(a) {
+                tot += 1;
+                if ring_uniform(&g) { uni += 1; }
+            }
+        }
+        println!("RING-UNIFORM base rate on pool automata : {uni} / {tot}");
+    }
+    let filed: Vec<(String, String)> = std::env::var("PAD_ATTACK_FILE").ok()
+        .map(|f| {
+            let txt = std::fs::read_to_string(&f).expect("PAD_ATTACK_FILE unreadable");
+            let mut es: Option<String> = None;
+            let mut out = Vec::new();
+            for line in txt.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("e = ") { es = Some(rest.to_string()); }
+                else if let Some(rest) = t.strip_prefix("f = ") {
+                    out.push((es.take().expect("f without e"), rest.to_string()));
+                }
+            }
+            out
+        })
+        .unwrap_or_default();
     let pairs: [(&str, &str); 6] = [
         ("((([t2] +2 p);(p)^2);(((([t0] +2 p);([t1] +1 p));([t2] +2 p)))^1)",
          "((p;(p)^2);(((([t0] +2 p);([t1] +1 p));([t2] +2 p)))^1)"),
@@ -3727,7 +3853,12 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
         ("((((p;p);(p)^1);(([t0] +1 p);([t1] +1 p))))^2",
          "((((([t0] +1 p);([t1] +1 p));(p)^1);(([t0] +1 p);([t1] +1 p))))^2"),
     ];
-    for (pi, (es, fs)) in pairs.iter().enumerate() {
+    let all_pairs: Vec<(String, String)> = if filed.is_empty() {
+        pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    } else { filed };
+    let mut ring_yes = 0usize;
+    let mut ring_no = 0usize;
+    for (pi, (es, fs)) in all_pairs.iter().enumerate() {
         let mut pos = 0usize;
         let (ae, el, epaths) = parse_attack::<NA>(es.as_bytes(), &mut pos);
         assert_eq!(pos, es.len(), "trailing input in e #{}", pi + 1);
@@ -3764,7 +3895,8 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
                 }
                 let elim = symbolic_eliminable(&qq);
                 let inpool = canon(&qq).map(|c| seen.contains_key(&c)).unwrap_or(false);
-                println!("    quotient k={} elim={elim} pool={inpool} classes={:?}",
+                let ring = ring_uniform(&qq);
+                println!("    quotient k={} elim={elim} pool={inpool} ring={ring} classes={:?}",
                     qq.k, &b2[..su.k as usize]);
                 if (qq.k as usize) <= 6 {
                     println!("      init: ih={:#04b} it={:?}", qq.ih,
@@ -3777,6 +3909,10 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
                     }
                 }
             }
+        }
+        if let Some((_, _, ref q)) = best_cert {
+            if ring_uniform(q) { ring_yes += 1; } else { ring_no += 1;
+                println!("  RING-NONUNIFORM pair #{}", pi + 1); }
         }
         // CERT block for the smallest untrimmed-clean quotient, in emit_cert.py's format.
         if let Some((blk, nb, q)) = best_cert {
@@ -3812,6 +3948,7 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
             }
         }
     }
+    println!("RING-UNIFORM smallest quotients : {ring_yes} yes, {ring_no} no");
 }
 
 fn run<const NA: usize>(maxk: usize, pairk: usize) {
@@ -6125,7 +6262,7 @@ pullback: {ok} / {}", res.len());
                                     {
                                         let mut shown = 0;
                                         for &(i, j) in crux.iter() {
-                                            if shown >= 6 { break; }
+                                            if shown >= 80 { break; }
                                             let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
                                             if let Some(su) = sum_core(&list[i], &list[j]) {
                                                 if ka >= su.k as usize { continue; }
