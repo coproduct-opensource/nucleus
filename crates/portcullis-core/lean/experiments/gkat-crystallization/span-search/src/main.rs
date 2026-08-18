@@ -5607,6 +5607,39 @@ pullback: {ok} / {}", res.len());
                                                     }
                                                 }
                                             }
+                                            // DOES elim2 ACCEPT THE SHAPE I CLAIM IS UNDERIVABLE?  A 2-cycle where
+                                            // BOTH states have a live fallback is blocked at expression level in both
+                                            // elimination orders.  If elim2 REJECTS those, my doubt evaporates and the
+                                            // 98.2% comes from other shapes.  If it accepts them, the doubt is real.
+                                            {
+                                                let (mut both, mut both_acc) = (0usize, 0usize);
+                                                for &(i, j) in crux.iter() {
+                                                    let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                    if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                        if ka >= su.k as usize { continue; }
+                                                        if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                            if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                                let qq = trim_canon(&q).unwrap_or(q);
+                                                                let mut hit = false;
+                                                                for o in orbits(&qq).iter() {
+                                                                    if o.count_ones() != 2 { continue; }
+                                                                    let mut mem: Vec<usize> = Vec::new();
+                                                                    for t in 0..qq.k as usize {
+                                                                        if o & (1 << t) != 0 { mem.push(t); }
+                                                                    }
+                                                                    if qq.hl[mem[0]] != 0 && qq.hl[mem[1]] != 0 { hit = true; }
+                                                                }
+                                                                if !hit { continue; }
+                                                                both += 1;
+                                                                if symbolic_eliminable(&qq) { both_acc += 1; }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                println!("  DOES elim2 ACCEPT THE BLOCKED SHAPE? (2-cycle, BOTH fallbacks live)");
+                                                println!("    quotients with that shape : {both}");
+                                                println!("    of those, elim2 ACCEPTS   : {both_acc} ({:.1}%)", pc7(both_acc, both));
+                                            }
                                             println!("  TWIN-CRYSTAL TEST (are the SCC states bisimilar?):");
                                             println!("    SCCs containing a bisimilar pair : {tw} / {nsc} ({:.1}%)", pc7(tw, nsc));
                                         }
