@@ -45,7 +45,31 @@ section below.
 #4 reduces to LOOP FUSION — `while g { (while g K); Y } ≡ while g { K; if ¬g then Y }` — and
 `loop_fusion` below proves it.  All eight are discharged; see that section for why the obvious
 route fails and what replaces it.
--/
+
+## Where these laws sit relative to the corpus's UA machinery
+
+`GkatChainEliminationProofs` reduces the whole scheme to `UAₙ = UA₁ + (n−1) guard-pullback
+witnesses`, a witness being a test `c₁ = wp(e₀,b₁)` that decides *before* `e₀` runs whether
+`b₁` will hold after it.  `GkatDecidedUAProofs` then PRODUCES those witnesses whenever the
+crossing guard is DECIDED by the prefix — the prefix always establishes it, or always refutes
+it — giving `ua2_eliminated_of_decided_true/_false`.  The open case is the UNDECIDED crossing,
+and it is open for a concrete reason: in the language model an action may be followed by any
+atom, so `wp(a,b)` is not a test at all unless `b` is constant.
+
+None of the five laws in this file uses a pullback witness; no such hypothesis appears in any
+of them.  And the crossings they cross are not decided.  In `loop_fusion` the crossing tests
+`g` after `K = A;C`: if `A` lands on `¬g` then `C` is a skip and `K` ends refuting `g`, while
+if `A` lands on `g` then `C` runs `p` and may end either way.  So the prefix neither always
+establishes nor always refutes the guard.
+
+Stated carefully, because it would be easy to overclaim.  These are equivalences of expressions
+proved by two applications of W3, not instances of `UABA` for a two-state automaton, so this is
+not "UA₂ proved at an undecided crossing".  What it is: a set of equivalences that the decided
+-crossing route cannot reach, discharged without a witness it cannot supply.  Whether the
+technique — find two EXPRESSIBLE terms satisfying a common one-unknown equation — generalises
+into an elimination rule is exactly the question the literature poses as "no general method to
+transform a system with n+1 unknowns into one with n unknowns, though this is possible in
+certain cases".  These are certain cases.-/
 
 namespace GkatResidueFamily
 
