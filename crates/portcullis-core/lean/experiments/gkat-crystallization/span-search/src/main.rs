@@ -5543,6 +5543,44 @@ pullback: {ok} / {}", res.len());
                                 println!("  IS THE START-MERGED QUOTIENT NESTED? (the covariety test)");
                                     println!("    nested : {nst} / {nn3} ({:.1}%)", pc7(nst, nn3));
                                 }
+                                // THE FAILURES: are they DECIDABLE?  "No Thompson quotient" is only
+                                // meaningful if the quotient is small enough to look up.  Report
+                                // the sizes of the failures' quotients against the pool bound.
+                                {
+                                    let poolk2 = list.iter().map(|a| a.k as usize).max().unwrap_or(0);
+                                    let mut szs = [0usize; MAXK + 1];
+                                    let mut undec = 0usize;
+                                    for &(i, j) in crux.iter() {
+                                        let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                                            if ka >= su.k as usize { continue; }
+                                            let base = match close_congruence(&su, &[(0, ka)]) {
+                                                Some(c) => c, None => continue };
+                                            let mut cands: Vec<([usize; MAXK], usize)> = vec![base];
+                                            for cg in lattice_congruences(&su).iter() {
+                                                if cg.0[0] == cg.0[ka] { cands.push(*cg); }
+                                            }
+                                            let mut ok = false;
+                                            let mut minsz = MAXK;
+                                            for (b2, nb2) in cands.iter() {
+                                                if let Some(q) = quotient_by(&su, b2, *nb2) {
+                                                    let qq = trim_canon(&q).unwrap_or(q);
+                                                    if (qq.k as usize) < minsz { minsz = qq.k as usize; }
+                                                    if symbolic_eliminable(&qq) { ok = true; }
+                                                    if canon(&qq).map(|c| seen.contains_key(&c))
+                                                        .unwrap_or(false) { ok = true; }
+                                                }
+                                            }
+                                            if !ok {
+                                                szs[minsz.min(MAXK)] += 1;
+                                                if minsz > poolk2 { undec += 1; }
+                                            }
+                                        }
+                                    }
+                                    println!("  THE FAILURES: smallest quotient size (pool bound {poolk2}):");
+                                    println!("    sizes {:?}", &szs[..]);
+                                    println!("    of which UNDECIDABLE (k > {poolk2}) : {undec}");
+                                }
                                 println!("  THE UNION CONJUNCT (starts merged, Thompson OR eliminable):");
                                 println!("    holds : {u_ok} / {u_n} ({:.1}%)", pc7(u_ok, u_n));
                                 println!("    only elimination works : {only_e}");
