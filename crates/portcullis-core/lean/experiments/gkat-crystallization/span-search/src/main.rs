@@ -1114,6 +1114,48 @@ fn refinement_witness<const NA: usize>(
 }
 
 
+
+/// Rebuild the STRUCTURAL (construction-ordered) automaton from provenance — no canon.
+fn structural<const NA: usize>(list: &[Aut<NA>], prov: &[Prov], idx: u32) -> Aut<NA> {
+    match prov[idx as usize] {
+        Prov::Leaf => {
+            let a = &list[idx as usize];
+            if a.k == 0 { a_test(a.ih) } else { a_act() }
+        }
+        Prov::Seq(l, r) =>
+            a_seq(&structural(list, prov, l), &structural(list, prov, r)).unwrap(),
+        Prov::Ite(g, l, r) =>
+            a_ite(g, &structural(list, prov, l), &structural(list, prov, r)).unwrap(),
+        Prov::Wh(g, b) => a_wh(g, &structural(list, prov, b)),
+    }
+}
+
+/// canon's BFS order over a structural automaton: `order[structural] = canonical`.
+fn canon_order<const NA: usize>(a: &Aut<NA>) -> [u8; MAXK] {
+    let k = a.k as usize;
+    let mut order = [u8::MAX; MAXK];
+    let mut queue = [0usize; MAXK];
+    let (mut qh, mut qt) = (0usize, 0usize);
+    let mut n = 0u8;
+    for i in 0..NA {
+        if a.it[i] != 0 {
+            let t = (a.it[i] - 1) as usize;
+            if order[t] == u8::MAX { order[t] = n; n += 1; queue[qt] = t; qt += 1; }
+        }
+    }
+    while qh < qt {
+        let s = queue[qh]; qh += 1;
+        for i in 0..NA {
+            if a.st[s][i] != 0 {
+                let t = (a.st[s][i] - 1) as usize;
+                if order[t] == u8::MAX { order[t] = n; n += 1; queue[qt] = t; qt += 1; }
+            }
+        }
+    }
+    let _ = k;
+    order
+}
+
 /// Lean syntax for a guard mask at NA=2 with a single primitive test `bT`.
 fn mask_lean(g: u8) -> String {
     match g {
@@ -6044,8 +6086,22 @@ pullback: {ok} / {}", res.len());
                     // Lean-side data for the emitter
                     println!("    LEAN e := {}", expr_lean(&list, &prov, i as u32));
                     println!("    LEAN f := {}", expr_lean(&list, &prov, j as u32));
-                    let pe = state_paths(&list, &prov, i as u32);
-                    let pf = state_paths(&list, &prov, j as u32);
+                    // paths in CANONICAL order: pool automata are canon-BFS-renumbered,
+                    // so permute construction-order paths through canon's BFS.
+                    let permute = |idx: u32| -> Vec<String> {
+                        let paths = state_paths(&list, &prov, idx);
+                        let sa = structural(&list, &prov, idx);
+                        debug_assert_eq!(canon(&sa).as_ref(), Some(&list[idx as usize]));
+                        let ord = canon_order(&sa);
+                        let mut out = vec![String::new(); paths.len()];
+                        for (sidx, p) in paths.iter().enumerate() {
+                            let c = ord[sidx];
+                            if c != u8::MAX { out[c as usize] = p.clone(); }
+                        }
+                        out
+                    };
+                    let pe = permute(i as u32);
+                    let pf = permute(j as u32);
                     // class of each sum state, in trim order: recompute the trim renumbering
                     let mut cls_of = |sum_idx: usize| -> String {
                         let b = b2[sum_idx];

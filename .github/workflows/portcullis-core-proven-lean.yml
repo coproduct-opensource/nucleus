@@ -132,6 +132,13 @@ jobs:
             GkatThompsonNestedProofs \
             GkatSolvableNestedProofs \
             GkatCertPilotProofs \
+            GkatCertSupportProofs \
+            GkatCertGen1 \
+            GkatCertGen2 \
+            GkatCertGen3 \
+            GkatCertGen4 \
+            GkatCertGen5 \
+            GkatCertGen6 \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
