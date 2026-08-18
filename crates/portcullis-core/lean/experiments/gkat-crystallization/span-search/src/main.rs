@@ -4672,6 +4672,23 @@ pullback: {ok} / {}", res.len());
                         }
                     }
                     let pc5 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                    {
+                        // THE EIGHT, AS PROGRAMS.  Both routes terminate here, so the actual
+                        // expressions are worth having: a derivation for even one pair
+                        // discharges it, and a separating model needs one of these to separate.
+                        let mut shown = 0;
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
+                            if shown >= 4 { break; }
+                            if facts[ci].0 { continue; }
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                if thompson_somewhere_in_lattice(&su, &seen) { continue; }
+                                shown += 1;
+                                println!("    OPEN PAIR #{shown}");
+                                println!("      e = {}", expr_of(&list, &prov, i as u32, 12));
+                                println!("      f = {}", expr_of(&list, &prov, j as u32, 12));
+                            }
+                        }
+                    }
                     println!("  ALREADY SETTLED BY SKIP-FREE COMPLETENESS (no UA needed):");
                     println!("    both sides skip-free : {sf} / {sfn}  ({:.1}%)", pc5(sf, sfn));
                     println!("    NOT skip-free        : {nonsf}, of which this programme discharges {nonsf_ok}  ({:.1}%)",
