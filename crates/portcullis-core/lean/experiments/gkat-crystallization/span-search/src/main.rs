@@ -1113,6 +1113,51 @@ fn refinement_witness<const NA: usize>(
     ai.iter().any(|a| aj.contains(a))
 }
 
+
+/// Lean syntax for a guard mask at NA=2 with a single primitive test `bT`.
+fn mask_lean(g: u8) -> String {
+    match g {
+        0 => "BExp.zero".to_string(),
+        1 => "(BExp.not bT)".to_string(),
+        2 => "bT".to_string(),
+        _ => "BExp.one".to_string(),
+    }
+}
+
+/// Lean `Exp` term for a provenance node (NA = 2, T = Unit, A = Unit).
+fn expr_lean<const NA: usize>(list: &[Aut<NA>], prov: &[Prov], idx: u32) -> String {
+    match prov[idx as usize] {
+        Prov::Leaf => {
+            let a = &list[idx as usize];
+            if a.k == 0 { format!("(Exp.test {})", mask_lean(a.ih)) } else { "pA".to_string() }
+        }
+        Prov::Seq(l, r) => format!("(Exp.seq {} {})",
+            expr_lean(list, prov, l), expr_lean(list, prov, r)),
+        Prov::Ite(g, l, r) => format!("(Exp.ite {} {} {})",
+            mask_lean(g), expr_lean(list, prov, l), expr_lean(list, prov, r)),
+        Prov::Wh(g, b) => format!("(Exp.wh {} {})", mask_lean(g), expr_lean(list, prov, b)),
+    }
+}
+
+/// Lean `State` injection paths for a provenance node's Thompson automaton, in the harness's
+/// state order (a_ite/a_seq put the left component first; a_wh keeps the body's).
+fn state_paths<const NA: usize>(list: &[Aut<NA>], prov: &[Prov], idx: u32) -> Vec<String> {
+    match prov[idx as usize] {
+        Prov::Leaf => {
+            let a = &list[idx as usize];
+            if a.k == 0 { vec![] } else { vec!["()".to_string()] }
+        }
+        Prov::Seq(l, r) | Prov::Ite(_, l, r) => {
+            let mut out: Vec<String> = state_paths(list, prov, l).into_iter()
+                .map(|s| format!("(Sum.inl {s})")).collect();
+            out.extend(state_paths(list, prov, r).into_iter()
+                .map(|s| format!("(Sum.inr {s})")));
+            out
+        }
+        Prov::Wh(_, b) => state_paths(list, prov, b),
+    }
+}
+
 /// A canon-INVARIANT signature: `canon` only renumbers states, so the multiset of
 /// (halt mask, out-degree) pairs and the state count survive it.  Candidates whose signature
 /// matches no target cannot BE a target, and are dropped before paying for `canon` — which is
@@ -5996,6 +6041,51 @@ pullback: {ok} / {}", res.len());
                                                         }
                                                     }
                                                     println!("    solve order (reverse-topological): {:?}", order);
+                    // Lean-side data for the emitter
+                    println!("    LEAN e := {}", expr_lean(&list, &prov, i as u32));
+                    println!("    LEAN f := {}", expr_lean(&list, &prov, j as u32));
+                    let pe = state_paths(&list, &prov, i as u32);
+                    let pf = state_paths(&list, &prov, j as u32);
+                    // class of each sum state, in trim order: recompute the trim renumbering
+                    let mut cls_of = |sum_idx: usize| -> String {
+                        let b = b2[sum_idx];
+                        // map block id to trimmed index via the same BFS trim_canon performs
+                        if let Some(qraw) = quotient_by(&su, &b2, nb2) {
+                            if let Some(_qt) = trim_canon(&qraw) {
+                                // recompute BFS order over qraw
+                                let mut ord = [u8::MAX; MAXK];
+                                let mut queue = [0usize; MAXK];
+                                let (mut qh, mut qt2) = (0usize, 0usize);
+                                let mut n = 0u8;
+                                for y in 0..NA {
+                                    if qraw.it[y] != 0 {
+                                        let t = (qraw.it[y] - 1) as usize;
+                                        if ord[t] == u8::MAX { ord[t] = n; n += 1; queue[qt2] = t; qt2 += 1; }
+                                    }
+                                }
+                                while qh < qt2 {
+                                    let sq = queue[qh]; qh += 1;
+                                    for y in 0..NA {
+                                        if qraw.st[sq][y] != 0 {
+                                            let t = (qraw.st[sq][y] - 1) as usize;
+                                            if ord[t] == u8::MAX { ord[t] = n; n += 1; queue[qt2] = t; qt2 += 1; }
+                                        }
+                                    }
+                                }
+                                if ord[b] == u8::MAX { return "UNREACHABLE".to_string(); }
+                                return format!("s{}", ord[b]);
+                            }
+                        }
+                        "?".to_string()
+                    };
+                    println!("    LEAN qmap (e-side): none -> {}", cls_of(0));
+                    for (pi, path) in pe.iter().enumerate() {
+                        println!("      inl (some {}) -> {}", path, cls_of(1 + pi));
+                    }
+                    println!("    LEAN qmap (f-side): none -> {}", cls_of(ka));
+                    for (pi, path) in pf.iter().enumerate() {
+                        println!("      inr (some {}) -> {}", path, cls_of(ka + 1 + pi));
+                    }
                                                 }
                                             }
                                         }
