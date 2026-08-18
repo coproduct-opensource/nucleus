@@ -4780,6 +4780,46 @@ pullback: {ok} / {}", res.len());
                             }
                         }
                     }
+                    // IS THE RESIDUE AN OBSTRUCTION, OR JUST SEARCH REACH?
+                    // `orbit_entry_halt_disjoint` is a NECESSARY condition for being a Thompson
+                    // automaton, derived from the guard law rather than by inverting the
+                    // construction: every orbit is a loop body `wh g B`, every edge into it is
+                    // an entry conjoined with `g`, and orbit states carry halt guard `... ∧ ¬g`.
+                    // So it can never reject a real Thompson automaton — which makes it a sound
+                    // REFUTER, and a refuted quotient is provably out of reach rather than
+                    // merely unfound.  Validate that claim on the pool before using it.
+                    let refuted = |a: &Aut<NA>| -> bool { !orbit_entry_halt_disjoint(a) };
+                    let mut false_refute = 0usize;
+                    for a in list.iter().take(20000) { if refuted(a) { false_refute += 1; } }
+                    println!("  THOMPSON REFUTER VALIDATION:");
+                    println!("    pool automata wrongly refuted : {false_refute} / {} (must be 0)",
+                        list.len().min(20000));
+                    if false_refute == 0 {
+                        let (mut all_ref, mut any_ref, mut nn) = (0usize, 0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                nn += 1;
+                                let ls = lattice_congruences(&su);
+                                let mut all = true;
+                                let mut any = false;
+                                let mut nq = 0usize;
+                                for cg in ls.iter() {
+                                    if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                        nq += 1;
+                                        if refuted(&q) { any = true; } else { all = false; }
+                                    }
+                                }
+                                // NON-VACUITY: an empty lattice makes `all` true for free.
+                                if nq == 0 { nn -= 1; continue; }
+                                if all { all_ref += 1; }
+                                if any { any_ref += 1; }
+                            }
+                        }
+                        println!("    crux systems with EVERY lattice quotient refuted : {all_ref} / {nn} ({:.1}%)",
+                            pc6(all_ref, nn));
+                        println!("    crux systems with SOME quotient refuted          : {any_ref} / {nn} ({:.1}%)",
+                            pc6(any_ref, nn));
+                    }
                     println!("  UA-COUNTEREXAMPLE CANDIDATES (crux pairs whose system has a cycle):");
                     println!("    candidates {cyc_n} / {tot_n} ({:.1}%), of which the kernels reach {cyc_elim} ({:.1}%)",
                         pc6(cyc_n, tot_n), pc6(cyc_elim, cyc_n));
