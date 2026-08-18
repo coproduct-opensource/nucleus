@@ -521,4 +521,60 @@ theorem level_satisfies (L : LevelG A T) :
 
 #print axioms level_satisfies
 
+/-! ## Existence for the two-state SCC certificate
+
+    `elim_scc2` is the uniqueness half of the size-2 SCC case; a certificate EMITTER needs the
+    existence half — that the closed forms actually satisfy the pair's equations, so a quotient
+    solution assembled from them discharges `SolvesBA` directly.
+
+    With `x` the state that factors through `y` (all branches to `y`, dead fallback) and
+
+        solY := levelSol (recy ++ [(β, ax · bodyFold bsx)], [], fby)
+        solX := bodyFold bsx · solY
+
+    the `x` obligation is `branchFold_factor` read backwards, and the `y` obligation is
+    `level_satisfies` at the combined level plus one associativity step inside the fold. -/
+
+/-- Congruence in the body of a fold's last entry. -/
+theorem guardedFold_last_congr (A' : List (BExp T × Exp A T)) {g : BExp T}
+    {e e' fb : Exp A T} (h : EquivBA e e') :
+    EquivBA (guardedFold (A' ++ [(g, e)]) fb) (guardedFold (A' ++ [(g, e')]) fb) := by
+  rw [guardedFold_append, guardedFold_append]
+  exact guardedFold_fallback_congr A'
+    (EquivBA.ite_c h (EquivBA.base (Equiv.refl fb)))
+
+/-- **The `y` obligation.**  The SCC pair's closed form for `y` satisfies `y`'s equation, with
+    `x`'s branch carrying `x`'s own closed form. -/
+theorem scc2_satisfies_y (bsx recy : List (Branch A T)) (β : BExp T) (ax fby : Exp A T) :
+    EquivBA
+      (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby))
+      (guardedFold
+        (recy.map (fun p : Branch A T =>
+            (p.1, Exp.seq p.2 (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby)))) ++
+          [(β, Exp.seq ax
+            (Exp.seq (bodyFold bsx)
+              (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby))))])
+        fby) := by
+  refine EquivBA.trans (level_satisfies (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby)) ?_
+  have hmap : ((recy ++ [(β, Exp.seq ax (bodyFold bsx))]).map
+        (fun p : Branch A T => (p.1, Exp.seq p.2
+          (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby)))) ++
+          ([] : List (BExp T × Exp A T)))
+      = (recy.map (fun p : Branch A T => (p.1, Exp.seq p.2
+          (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby)))) ++
+         [(β, Exp.seq (Exp.seq ax (bodyFold bsx))
+            (levelSol (recy ++ [(β, Exp.seq ax (bodyFold bsx))], [], fby)))]) := by
+    rw [List.append_nil, List.map_append]
+    rfl
+  rw [hmap]
+  exact guardedFold_last_congr _ (seq_assoc ax (bodyFold bsx) _)
+
+/-- **The `x` obligation.**  `bodyFold bsx · solY` satisfies `x`'s equation. -/
+theorem scc2_satisfies_x (bsx : List (Branch A T)) (solY : Exp A T) :
+    EquivBA (Exp.seq (bodyFold bsx) solY) (branchFold bsx solY) :=
+  EquivBA.symm (branchFold_factor bsx solY)
+
+#print axioms scc2_satisfies_y
+#print axioms scc2_satisfies_x
+
 end GkatDeadExitElim
