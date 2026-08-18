@@ -399,4 +399,65 @@ theorem chain_solves : ∀ (l : List (Level A T × Exp A T)) (z : Exp A T),
 
 #print axioms chain_solves
 
+/-! ## A two-state SCC
+
+    `chain_solves` takes singleton SCCs only, and 14.3% of the start-merged quotients contain a
+    multi-state one — measured, all of size 2 or 3, and 98.2% of them eliminate anyway.  So the
+    checker, not the mathematics, is the binding constraint.  This closes the size-2 case.
+
+    The mechanism the harness uses, read off its successes: if one state's branches ALL lead to
+    the other and its fallback is dead, `branchFold_factor` turns it into a clean product
+    `U·y` — not a choice, a product.  Substituting that into the other state's equation turns
+    its `x`-branch into a `y`-branch, so EVERY branch recurs to `y`, and `elim_front` closes it.
+
+    The dead fallback is what makes this work and is not a convenience: with a live fallback the
+    factored form is `ite B (U·y) fb`, and substituting puts `y` under a choice inside a product
+    — the nesting left-distributivity cannot undo. -/
+
+/-- **A two-state SCC eliminates** when one state factors through the other. -/
+theorem elim_scc2 (bsx recy : List (Branch A T)) (β : BExp T) (ax fby : Exp A T)
+    {x y : Exp A T}
+    (hE : ∀ (X : Type) (W : T → X → Bool) (z : X),
+      bval W (E (bodyFold (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))) z = false)
+    (hx : EquivBA x (branchFold bsx y))
+    (hy : EquivBA y (guardedFold (recy.map (fun p : Branch A T => (p.1, Exp.seq p.2 y)) ++
+            [(β, .seq ax x)]) fby)) :
+    EquivBA y (.seq (.wh (orGuards (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))
+      (bodyFold (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))) fby) := by
+  -- x is a PRODUCT through y, not a choice
+  have hxy : EquivBA x (.seq (bodyFold bsx) y) :=
+    EquivBA.trans hx (branchFold_factor bsx y)
+  -- so y's x-branch becomes a y-branch, and every branch now recurs to y
+  have hstep : EquivBA y (guardedFold
+      ((recy ++ [(β, Exp.seq ax (bodyFold bsx))]).map (fun p : Branch A T => (p.1, Exp.seq p.2 y))) fby) := by
+    refine EquivBA.trans hy ?_
+    rw [List.map_append]
+    rw [guardedFold_append, guardedFold_append]
+    refine guardedFold_fallback_congr _ ?_
+    show EquivBA (.ite β (.seq ax x) fby) (.ite β (.seq (Exp.seq ax (bodyFold bsx)) y) fby)
+    exact EquivBA.ite_c
+      (EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl ax)) hxy)
+        (EquivBA.symm (seq_assoc ax (bodyFold bsx) y)))
+      (EquivBA.base (Equiv.refl fby))
+  refine elim_front (recy ++ [(β, Exp.seq ax (bodyFold bsx))]) [] fby hE ?_
+  rw [List.append_nil]
+  exact hstep
+
+/-- And then the other state's solution follows by substitution. -/
+theorem elim_scc2_fst (bsx recy : List (Branch A T)) (β : BExp T) (ax fby : Exp A T)
+    {x y : Exp A T}
+    (hE : ∀ (X : Type) (W : T → X → Bool) (z : X),
+      bval W (E (bodyFold (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))) z = false)
+    (hx : EquivBA x (branchFold bsx y))
+    (hy : EquivBA y (guardedFold (recy.map (fun p : Branch A T => (p.1, Exp.seq p.2 y)) ++
+            [(β, .seq ax x)]) fby)) :
+    EquivBA x (.seq (bodyFold bsx)
+      (.seq (.wh (orGuards (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))
+        (bodyFold (recy ++ [(β, Exp.seq ax (bodyFold bsx))]))) fby)) :=
+  EquivBA.trans (EquivBA.trans hx (branchFold_factor bsx y))
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (elim_scc2 bsx recy β ax fby hE hx hy))
+
+#print axioms elim_scc2
+#print axioms elim_scc2_fst
+
 end GkatDeadExitElim
