@@ -31,6 +31,11 @@ rejects.  Rejection and halting are genuinely different here, and conflating the
 this development already made once and corrected (`reject is not halt`, which moved
 completeness from 13615 to 19558 of 20020 by letting `0 ≡ 0·s(x)` discharge dead branches).
 
+The kernel is proved twice: once for a single transition, and once for a state with an
+ARBITRARY transition list (`chain_elim_dead_exit_fold`).  The second is the one the 17.4%
+measurement actually needs — that figure counts every never-halting state regardless of how
+many transitions it has, so the single-transition kernel alone would not have earned it.
+
 Scope: this is one kernel, not a completeness proof.  It eliminates one unknown from one
 crossing under one hypothesis.  What it establishes is that decidedness is not the only route
 through a crossing, which the 10.9% figure makes worth knowing.
@@ -97,6 +102,81 @@ theorem ua2_of_dead_exit_snd {b0 b1 : BExp T} {e0 e1 f0 : Exp A T}
           (ua2_of_dead_exit hE0 h0 h1 h0' h1'))
         (EquivBA.base (Equiv.refl _)))
       (EquivBA.symm h1'))
+
+
+/-! ## Arbitrarily many branches
+
+    The kernel above takes a state with ONE transition.  Real automaton states have up to one
+    transition per atom, and their equation is a fold
+
+        g₁ ≡ α₁?(a₁·g₀) : α₂?(a₂·g₀) : … : 0
+
+    so the single-transition kernel does not reach them, and a measurement that counts every
+    never-halting state is counting more than that kernel proves.  This section closes the gap.
+
+    The mechanism is U5, used in the direction that FACTORS A COMMON TAIL.  Every branch ends
+    in the same unknown, so the whole fold factors as `U · g₀` where `U` is the same fold with
+    the unknown stripped — and the base case works because `0 ≡ 0 · g₀` by S2, which is exactly
+    the reject-is-not-halt distinction doing real work again. -/
+
+/-- One branch of a state's transition list: a guard and the body taken under it. -/
+abbrev Branch (A T : Type) := BExp T × Exp A T
+
+/-- The state's equation: each branch runs its body and returns to `g₀`; the fold ends in
+    rejection. -/
+def branchFold (bs : List (Branch A T)) (g0 : Exp A T) : Exp A T :=
+  bs.foldr (fun p acc => .ite p.1 (.seq p.2 g0) acc) (.test .zero)
+
+/-- The same fold with the unknown stripped out. -/
+def branchBody (bs : List (Branch A T)) : Exp A T :=
+  bs.foldr (fun p acc => .ite p.1 p.2 acc) (.test .zero)
+
+/-- **A never-halting state factors through its successor.**  `U5` pulls the common tail out
+    of every branch at once; `S2` supplies the base case, `0 ≡ 0·g₀`. -/
+theorem branchFold_factor (bs : List (Branch A T)) (g0 : Exp A T) :
+    EquivBA (branchFold bs g0) (.seq (branchBody bs) g0) := by
+  induction bs with
+  | nil => exact EquivBA.symm (EquivBA.base (Equiv.s2 g0))
+  | cons b bs ih =>
+      show EquivBA (.ite b.1 (.seq b.2 g0) (branchFold bs g0))
+        (.seq (.ite b.1 b.2 (branchBody bs)) g0)
+      exact EquivBA.trans
+        (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih)
+        (EquivBA.symm (ite_seq_right b.1 b.2 (branchBody bs) g0))
+
+/-- **The dead-exit kernel, at arbitrary branch count.**  A two-state cycle whose intermediate
+    state never halts collapses to one `W3` loop, however many transitions that state has and
+    whatever its guards do. -/
+theorem chain_elim_dead_exit_fold {b0 : BExp T} {e0 f0 g0 g1 : Exp A T}
+    (bs : List (Branch A T))
+    (hE0 : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e0) x = false)
+    (h0 : EquivBA g0 (.ite b0 (.seq e0 g1) f0))
+    (h1 : EquivBA g1 (branchFold bs g0)) :
+    EquivBA g0 (.seq (.wh b0 (.seq e0 (branchBody bs))) f0) := by
+  have hbody : EquivBA (.seq e0 g1) (.seq (.seq e0 (branchBody bs)) g0) :=
+    EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl e0))
+        (EquivBA.trans h1 (branchFold_factor bs g0)))
+      (EquivBA.symm (seq_assoc e0 (branchBody bs) g0))
+  refine EquivBA.w3_ba (EquivBA.baTest ?_)
+    (EquivBA.trans h0 (EquivBA.ite_c hbody (EquivBA.base (Equiv.refl f0))))
+  intro X W x
+  show (bval W (E e0) x && _) = false
+  rw [hE0 X W x]; rfl
+
+/-- **UA₂ at a never-halting crossing of any branch count.** -/
+theorem ua2_of_dead_exit_fold {b0 : BExp T} {e0 f0 : Exp A T} (bs : List (Branch A T))
+    (hE0 : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e0) x = false)
+    {g0 g1 g0' g1' : Exp A T}
+    (h0 : EquivBA g0 (.ite b0 (.seq e0 g1) f0)) (h1 : EquivBA g1 (branchFold bs g0))
+    (h0' : EquivBA g0' (.ite b0 (.seq e0 g1') f0)) (h1' : EquivBA g1' (branchFold bs g0')) :
+    EquivBA g0 g0' :=
+  EquivBA.trans (chain_elim_dead_exit_fold bs hE0 h0 h1)
+    (EquivBA.symm (chain_elim_dead_exit_fold bs hE0 h0' h1'))
+
+#print axioms branchFold_factor
+#print axioms chain_elim_dead_exit_fold
+#print axioms ua2_of_dead_exit_fold
 
 #print axioms chain_elim_dead_exit
 #print axioms ua2_of_dead_exit
