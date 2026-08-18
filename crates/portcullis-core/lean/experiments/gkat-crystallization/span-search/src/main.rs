@@ -5595,7 +5595,39 @@ pullback: {ok} / {}", res.len());
                                                     }
                                                 }
                                             }
-                                            println!("  ORACLE vs PROOFS, risky region (elim2 on the elim_scc2 shape):");
+                                            // IS THE LINEAR-CHAIN RESTRICTION BINDING?  `chain_solves`
+                                        // takes ONE forward exit per level, so its reach may be
+                                        // below the 85.7% chain-shaped figure.  Measure how many
+                                        // chain-shaped quotients are LINEAR: every state has at
+                                        // most one distinct forward successor.
+                                        {
+                                            let (mut lin, mut chn) = (0usize, 0usize);
+                                            for &(i, j) in crux.iter() {
+                                                let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                    if ka >= su.k as usize { continue; }
+                                                    if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                        if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                            let qq = trim_canon(&q).unwrap_or(q);
+                                                            if !orbits(&qq).iter().all(|o| o.count_ones() <= 1) { continue; }
+                                                            chn += 1;
+                                                            let ok = (0..qq.k as usize).all(|u| {
+                                                                let mut fw: Vec<u8> = (0..NA)
+                                                                    .filter(|&y| qq.st[u][y] != 0
+                                                                        && (qq.st[u][y] - 1) as usize != u)
+                                                                    .map(|y| qq.st[u][y]).collect();
+                                                                fw.sort_unstable(); fw.dedup();
+                                                                fw.len() <= 1
+                                                            });
+                                                            if ok { lin += 1; }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            println!("  IS THE LINEAR RESTRICTION BINDING? (one forward successor per state)");
+                                            println!("    linear : {lin} / {chn} chain-shaped ({:.1}%)", pc7(lin, chn));
+                                        }
+                                        println!("  ORACLE vs PROOFS, risky region (elim2 on the elim_scc2 shape):");
                                             println!("    elim2 accepts : {s2_ok} / {s2} ({:.1}%)  (must be all)",
                                                 pc7(s2_ok, s2));
                                         }
