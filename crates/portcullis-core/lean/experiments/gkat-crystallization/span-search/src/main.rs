@@ -5636,6 +5636,37 @@ pullback: {ok} / {}", res.len());
                                                         }
                                                     }
                                                 }
+                                                {
+                                                    let (mut n2, mut dead, mut dead_single) = (0usize, 0usize, 0usize);
+                                                    for &(i, j) in crux.iter() {
+                                                        let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                            if ka >= su.k as usize { continue; }
+                                                            if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                                if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                                    let qq = trim_canon(&q).unwrap_or(q);
+                                                                    for o in orbits(&qq).iter() {
+                                                                        if o.count_ones() != 2 { continue; }
+                                                                        n2 += 1;
+                                                                        let mut mem: Vec<usize> = Vec::new();
+                                                                        for t in 0..qq.k as usize {
+                                                                            if o & (1 << t) != 0 { mem.push(t); }
+                                                                        }
+                                                                        let (u, v) = (mem[0], mem[1]);
+                                                                        let dd = |a: usize| qq.hl[a] == 0;
+                                                                        let single = |a: usize, b: usize| (0..NA).all(|y|
+                                                                            qq.st[a][y] == 0 || (qq.st[a][y] - 1) as usize == b);
+                                                                        if dd(u) || dd(v) { dead += 1; }
+                                                                        if (dd(u) && single(u, v)) || (dd(v) && single(v, u)) { dead_single += 1; }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    println!("  WHICH CONDITION BINDS? (size-2 SCCs)");
+                                                    println!("    total {n2}, at least one DEAD fallback : {dead} ({:.1}%)", pc7(dead, n2));
+                                                    println!("    ... AND that state single-successor    : {dead_single} ({:.1}%)", pc7(dead_single, n2));
+                                                }
                                                 println!("  DOES elim2 ACCEPT THE BLOCKED SHAPE? (2-cycle, BOTH fallbacks live)");
                                                 println!("    quotients with that shape : {both}");
                                                 println!("    of those, elim2 ACCEPTS   : {both_acc} ({:.1}%)", pc7(both_acc, both));
