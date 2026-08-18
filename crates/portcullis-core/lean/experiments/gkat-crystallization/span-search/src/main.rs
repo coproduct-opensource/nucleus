@@ -5130,13 +5130,17 @@ pullback: {ok} / {}", res.len());
                             // Storing the layer is what costs memory, so use the SMALLEST depth
                             // that is complete at k=5 and carry it up.  Positives stay sound at
                             // every depth; only completeness varies.
-                            let mut best_depth = 3usize;
-                            for d in 0..=3 {
+                            // The depth curve is settled (0: 68.2%, 1: 86.6%, 2: 100.0%) and
+                            // costs 2.7M automata per depth, so it is off unless asked for.
+                            let mut best_depth = 2usize;
+                            let redo = std::env::var("PAD_STREAMER").is_ok();
+                            for d in 0..=(if redo { 3 } else { 0usize.wrapping_sub(1) }) {
                                 let h = stream_layer(&by_k4, 5, 1u8 << NA, d, &t5);
                                 println!("    STREAMER VALIDATION (k=5 from k<=4, depth {d}): {} / {n5} ({:.1}%)",
                                     h.len(), pc6(h.len(), n5));
                                 if h.len() == n5 { best_depth = d; break; }
                             }
+                            if !redo { println!("    STREAMER: depth curve cached (complete at depth 2); set PAD_STREAMER=1 to redo"); }
                             println!("    -> smallest complete depth at k=5: {best_depth}");
                             // now the live question: the k=6 quotients nothing could decide
                             let mut t6: FxSet<Aut<NA>> = FxSet::default();
@@ -5219,6 +5223,53 @@ pullback: {ok} / {}", res.len());
                         pc5(nonsf_ok, nonsf));
                     println!("  FULL SOUND TEST (any congruence: eliminable OR Thompson):");
                     println!("    solvable : {lat2} / {lat2n}");
+                    // THE DECIDING COMPARISON.  If the residue differs from the covered
+                    // population ONLY BY SIZE, it is a search-reach limit; if a structural
+                    // feature separates them, it is an obstruction.  Same diagnostic that read
+                    // the 391 pullback residue, now applied to the sum-quotient residue.
+                    {
+                        // feature vector: states, has-cycle, reducible, halt-in-cycle,
+                        // decided-state fraction, two-exit states, two-halt states
+                        let feats = |a: &Aut<NA>| -> [f64; 7] {
+                            let k = a.k as usize;
+                            let mut twoex = 0usize; let mut twoha = 0usize; let mut dec = 0usize;
+                            for sx in 0..k {
+                                let mut tg: Vec<u8> = (0..NA).filter(|&i| a.st[sx][i] != 0)
+                                    .map(|i| a.st[sx][i]).collect();
+                                tg.sort_unstable(); tg.dedup();
+                                if tg.len() >= 2 { twoex += 1; }
+                                if (a.hl[sx].count_ones() as usize) >= 2 { twoha += 1; }
+                                let n = (0..NA).filter(|&i| a.st[sx][i] != 0).count();
+                                if n == 0 || n == NA { dec += 1; }
+                            }
+                            [k as f64,
+                             if orbits(a).is_empty() { 0.0 } else { 1.0 },
+                             if reducible(a) { 1.0 } else { 0.0 },
+                             if halt_in_cycle(a) { 1.0 } else { 0.0 },
+                             if k == 0 { 0.0 } else { dec as f64 / k as f64 },
+                             twoex as f64, twoha as f64]
+                        };
+                        let (mut cov, mut res) = ([0f64; 7], [0f64; 7]);
+                        let (mut nc, mut nr2) = (0usize, 0usize);
+                        for (ci, &(i, j)) in crux.iter().enumerate() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                let ok = facts[ci].0 || thompson_somewhere_in_lattice(&su, &seen);
+                                let f = feats(&su);
+                                if ok { for t in 0..7 { cov[t] += f[t]; } nc += 1; }
+                                else { for t in 0..7 { res[t] += f[t]; } nr2 += 1; }
+                            }
+                        }
+                        let nm = ["states", "has-cycle", "reducible", "halt-in-cycle",
+                                  "decided-frac", "two-exit", "two-halt"];
+                        println!("  RESIDUE vs COVERED (search-reach shows ONLY a size gap):");
+                        println!("    covered {nc}, residue {nr2}");
+                        for t in 0..7 {
+                            let a = if nc == 0 { 0.0 } else { cov[t] / nc as f64 };
+                            let b = if nr2 == 0 { 0.0 } else { res[t] / nr2 as f64 };
+                            println!("      {:<14} covered {:>7.3}   residue {:>7.3}   delta {:>+7.3}",
+                                nm[t], a, b, b - a);
+                        }
+                    }
                     println!("  COMBINED SOUND TEST (eliminable OR Thompson):");
                     println!("    solvable : {comb} / {combn}");
                     println!("  IS THE QUOTIENT ITSELF THOMPSON?  (then it provably has a solution)");
