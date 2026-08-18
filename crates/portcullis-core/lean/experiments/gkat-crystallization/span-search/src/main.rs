@@ -5416,7 +5416,32 @@ pullback: {ok} / {}", res.len());
                                             }
                                         }
                                     }
-                                    println!("  IS THE START-MERGED QUOTIENT NESTED? (the covariety test)");
+                                    // HOW MUCH OF THE ROUTE DOES THE LEAN CERTIFICATE REACH?
+                                // `chain_solves` checks a CHAIN: self-loops plus forward edges,
+                                // each substitution hitting an already-closed tail.  A
+                                // multi-state SCC needs the case left-distributivity blocks.  So
+                                // the certificate's reach is exactly the quotients whose SCCs are
+                                // all singletons.
+                                {
+                                    let (mut sing, mut nn4) = (0usize, 0usize);
+                                    for &(i, j) in crux.iter() {
+                                        let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                                            if ka >= su.k as usize { continue; }
+                                            if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                    let qq = trim_canon(&q).unwrap_or(q);
+                                                    nn4 += 1;
+                                                    if orbits(&qq).iter()
+                                                        .all(|o| o.count_ones() <= 1) { sing += 1; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    println!("  CERTIFICATE REACH (all SCCs singleton = chain-shaped):");
+                                    println!("    chain-shaped : {sing} / {nn4} ({:.1}%)", pc7(sing, nn4));
+                                }
+                                println!("  IS THE START-MERGED QUOTIENT NESTED? (the covariety test)");
                                     println!("    nested : {nst} / {nn3} ({:.1}%)", pc7(nst, nn3));
                                 }
                                 println!("  THE UNION CONJUNCT (starts merged, Thompson OR eliminable):");
