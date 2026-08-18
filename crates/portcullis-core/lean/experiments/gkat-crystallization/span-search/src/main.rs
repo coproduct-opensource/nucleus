@@ -3778,15 +3778,27 @@ fn reachable_halts<const NA: usize>(q: &Aut<NA>, s: usize) -> u8 {
 /// solutions (GkatCertR1-R6) instantiate; it does not itself build the walk.
 fn ring_uniform<const NA: usize>(q: &Aut<NA>) -> bool {
     let sccs = sccs_of(q);
-    for members in sccs.iter() {
-        let nontrivial = members.len() > 1
-            || members.iter().any(|&s| (0..NA).any(|a|
-                q.st[s][a] != 0 && (q.st[s][a] - 1) as usize == s && members.len() == 1))
-                && false; // self-loop singletons are levelSol-able: trivial
-        if members.len() <= 1 && !nontrivial { continue; }
+    'scc: for members in sccs.iter() {
+        if members.len() <= 1 { continue; }
         let mut c = 0u8;
         for &s in members.iter() { c |= q.hl[s]; }
-        if c == 0 { return false; }           // no exit at all: dead cycle (non-live)
+        if c == 0 {
+            // No internal halts.  Case A: DEAD — no halt reachable from the SCC at
+            // all: every member solves as `test 0` (S2/S3).  Case B2: EDGE-EXIT RING —
+            // all exits concentrated at one header member as out-edges; the loop's
+            // fallback is the exit continuation (plain levelSol shape).
+            let mut reach = 0u8;
+            for &s in members.iter() { reach |= reachable_halts(q, s); }
+            if reach == 0 { continue 'scc; }                       // dead: zero solutions
+            let mut exit_members = members.iter().filter(|&&s| (0..NA).any(|a|
+                q.st[s][a] != 0 && !members.contains(&((q.st[s][a] - 1) as usize))));
+            let h = match (exit_members.next(), exit_members.next()) {
+                (Some(&h), None) => h,                              // exits at one member
+                _ => return false,
+            };
+            let _ = h;
+            continue 'scc;
+        }
         for &s in members.iter() {
             if q.hl[s] != 0 && q.hl[s] != c { return false; }   // non-uniform halts
         }
@@ -4102,13 +4114,39 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
     {
         let mut uni = 0usize;
         let mut tot = 0usize;
+        // THE UNIFORMIZATION EXPERIMENT.  Uniformity is FALSE for ~4% of Thompson
+        // automata, so the general invariant must be existential: SOME quotient
+        // uniformizes.  Candidate canonical construction: the coarsest behavioural
+        // quotient.  Test it on exactly the automata where uniformity fails.
+        let mut nonuni = 0usize;
+        let mut restored = 0usize;
+        let mut already_min = 0usize;
+        let mut samples = 0usize;
         for a in list.iter().take(20000) {
             if let Some(g) = to_gaut(a) {
                 tot += 1;
-                if ring_uniform(&g) { uni += 1; }
+                if ring_uniform(&g) { uni += 1; } else {
+                    nonuni += 1;
+                    let (blk, nb) = bisim_blocks(&g);
+                    if nb == g.k as usize { already_min += 1; }
+                    if let Some(q) = quotient_by(&g, &blk, nb) {
+                        if ring_uniform(&q) { restored += 1; }
+                        else if samples < 5 {
+                            samples += 1;
+                            println!("  UNIFORMIZATION FAILURE sample #{samples} (k={} -> {nb}):", g.k);
+                            for s in 0..q.k as usize {
+                                let steps: Vec<String> = (0..NA).map(|i|
+                                    if q.st[s][i] == 0 { "-".to_string() }
+                                    else { format!("{}", q.st[s][i] - 1) }).collect();
+                                println!("    {s}: hlt=0b{:02b} st={:?}", q.hl[s], steps);
+                            }
+                        }
+                    }
+                }
             }
         }
         println!("RING-UNIFORM base rate on pool automata : {uni} / {tot}");
+        println!("UNIFORMIZATION: non-uniform {nonuni}, coarsest-quotient restores {restored}, already-minimal {already_min}");
     }
     let filed: Vec<(String, String)> = std::env::var("PAD_ATTACK_FILE").ok()
         .map(|f| {
