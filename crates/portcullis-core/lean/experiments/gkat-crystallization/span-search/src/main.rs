@@ -5815,6 +5815,32 @@ pullback: {ok} / {}", res.len());
                                     println!("    sizes {:?}", &szs[..]);
                                     println!("    of which UNDECIDABLE (k > {poolk2}) : {undec}");
                                 }
+                                // VALIDATE THE NEW WITNESS before citing it.  It must FIRE on
+                                // language-equivalent pairs and NEVER on non-equivalent ones —
+                                // soundness is by construction (Refines moves are proved), so the
+                                // control is the one that matters, and non-vacuity is the other half.
+                                {
+                                    let (mut fires, mut fn2) = (0usize, 0usize);
+                                    for &(a, b) in crux.iter().take(1500) {
+                                        fn2 += 1;
+                                        if refinement_witness(&list, &prov, a as u32, b as u32,
+                                            1u8 << NA, 2, 1500) { fires += 1; }
+                                    }
+                                    let (mut bad, mut bn) = (0usize, 0usize);
+                                    let mut r5: u64 = 0x2545F4914F6CDD1D;
+                                    let mut rr = move || { r5 ^= r5 << 13; r5 ^= r5 >> 7; r5 ^= r5 << 17; r5 };
+                                    while bn < 1500 {
+                                        let a = (rr() as usize) % list.len();
+                                        let b = (rr() as usize) % list.len();
+                                        if behaviour(&list[a]) == behaviour(&list[b]) { continue; }
+                                        bn += 1;
+                                        if refinement_witness(&list, &prov, a as u32, b as u32,
+                                            1u8 << NA, 2, 1500) { bad += 1; }
+                                    }
+                                    println!("  REFINEMENT WITNESS VALIDATION:");
+                                    println!("    fires on equivalent pairs : {fires} / {fn2} ({:.1}%)  (non-vacuity)", pc7(fires, fn2));
+                                    println!("    fires on NON-equivalent   : {bad} / {bn}  (must be 0)");
+                                }
                                 println!("    of the failures, a COMMON REFINEMENT discharges : {refw}");
                                 println!("  THE UNION CONJUNCT (starts merged, Thompson OR eliminable):");
                                 println!("    holds : {u_ok} / {u_n} ({:.1}%)", pc7(u_ok, u_n));
