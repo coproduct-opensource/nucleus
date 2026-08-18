@@ -42,16 +42,9 @@ is presumably theirs rediscovered.
 #1 and #7 fall to W3 used as what it is — a uniqueness principle for ONE unknown.  See the
 section below.
 
-Remaining after this file: **#4 alone**.  Substituting the core equality into it reduces it to
-
-    (K^(g)) ; Y  looped on g     ≡     (K ; (Y +_c 1))  looped on g          (K = A;C)
-
-i.e. `while g { (while g K); Y }  ≡  while g { K; if ¬g then Y }` — LOOP FUSION, the inner
-loop absorbed into the outer one.  Attempting it by the #1 route does not close: assuming the
-right side satisfies the left's equation reduces, under the guard, to the same statement again,
-so a single application of W3 cannot discharge it.  What that argument needs is a simultaneous
-equation in the two unknowns `Z` and `K^(g);Y;Z` — a 2-unknown system, which is UA_2.  That is
-suggestive but NOT a proof that #4 requires UA: it shows one route fails, not that all do.
+#4 reduces to LOOP FUSION — `while g { (while g K); Y } ≡ while g { K; if ¬g then Y }` — and
+`loop_fusion` below proves it.  All eight are discharged; see that section for why the obvious
+route fails and what replaces it.
 -/
 
 namespace GkatResidueFamily
@@ -454,6 +447,126 @@ theorem residue_pair_one
 
 end PairOne
 
+
+/-! ## Loop fusion, and pair #4
+
+    The reduction of #4 is `while g { (while g K); Y } ≡ while g { K; if ¬g then Y }` — an
+    inner loop absorbed into the outer one.  Assuming one side satisfies the other's equation
+    reduces, under the guard, to the same statement again, so a single W3 does not close it.
+
+    The way through is to apply W3 to a DIFFERENT equation.  Write `T = K^(g);Y;R` and
+    `T' = (Y +_c 1);R`, where `R` is the fused loop.  Unrolling each shows that both satisfy
+
+        Z  ≡  K·Z  +_g  (Y;R)
+
+which is one Salomaa equation in ONE unknown, and `K` is productive — so W3 identifies them
+with each other.  That is the step the circular argument was missing.  With `T ≡ T'` in hand,
+`R` satisfies the unfused loop's equation, and W3 closes it a second time.
+
+So no 2-unknown system is needed after all.  The earlier note that this looked like UA_2
+territory was reporting the failure of one route, and it was wrong to read more into it. -/
+
+section Fusion
+
+variable {g c : BExp T}
+
+/-- A choice on `g` nested in another `g`-choice's THEN arm collapses to the inner then arm. -/
+theorem ite_then_ite_same (X Z W' : Exp A T) :
+    EquivBA (.ite g (.ite g X Z) W') (.ite g X W') :=
+  EquivBA.trans (EquivBA.base (Equiv.u4 g (.ite g X Z) W'))
+    (EquivBA.trans
+      (EquivBA.ite_c
+        (test_seq_ite_of_implies (b := g) (z := g) X Z (fun _ _ _ h => h))
+        (EquivBA.base (Equiv.refl W')))
+      (EquivBA.symm (EquivBA.base (Equiv.u4 g X W'))))
+
+/-- **Loop fusion.**  `(K^(g) ; Y)^(g) ≡ (K ; (Y +_c 1))^(g)` for productive `K` and `Y`. -/
+theorem loop_fusion {K Y : Exp A T}
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEK : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E K) x = false)
+    (hEY : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E Y) x = false) :
+    EquivBA (.wh g (.seq (.wh g K) Y)) (.wh g (.seq K (.ite c Y (.test .one)))) := by
+  -- R is the fused loop; T' is its residue after one turn; T is the unfused counterpart
+  -- R ≡ K·T' +_g 1
+  have hR1 : EquivBA (.wh g (.seq K (.ite c Y (.test .one))) : Exp A T)
+      (.ite g (.seq K (.seq (.ite c Y (.test .one))
+        (.wh g (.seq K (.ite c Y (.test .one)))))) (.test .one)) :=
+    EquivBA.trans (EquivBA.base (Equiv.w1 g _))
+      (EquivBA.ite_c (seq_assoc _ _ _) (EquivBA.base (Equiv.refl _)))
+  -- T' ≡ K·T' +_g (Y;R)
+  have hT' : EquivBA
+      (.seq (.ite c Y (.test .one)) (.wh g (.seq K (.ite c Y (.test .one)))) : Exp A T)
+      (.ite g (.seq K (.seq (.ite c Y (.test .one))
+          (.wh g (.seq K (.ite c Y (.test .one))))))
+        (.seq Y (.wh g (.seq K (.ite c Y (.test .one)))))) := by
+    refine EquivBA.trans (ite_seq_right c Y (.test .one) _) ?_
+    refine EquivBA.trans
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.s4 _))) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.u2 c _ _)) ?_
+    refine EquivBA.trans (EquivBA.ite_guard (fun X W x => by
+      show (!bval W c x) = bval W g x
+      rw [hgc X W x]; cases bval W g x <;> rfl)) ?_
+    exact EquivBA.trans (EquivBA.ite_c hR1 (EquivBA.base (Equiv.refl _)))
+      (ite_then_ite_same _ _ _)
+  -- T ≡ K·T +_g (Y;R), by unrolling the inner loop
+  have hT : EquivBA
+      (.seq (.wh g K) (.seq Y (.wh g (.seq K (.ite c Y (.test .one))))) : Exp A T)
+      (.ite g (.seq K (.seq (.wh g K)
+          (.seq Y (.wh g (.seq K (.ite c Y (.test .one)))))))
+        (.seq Y (.wh g (.seq K (.ite c Y (.test .one)))))) := by
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.w1 g K)) (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (ite_seq_right g (.seq K (.wh g K)) (.test .one) _) ?_
+    exact EquivBA.ite_c (seq_assoc _ _ _) (EquivBA.base (Equiv.s4 _))
+  -- W3: both solve the same one-unknown equation, so they are equal
+  have hTT' : EquivBA
+      (.seq (.wh g K) (.seq Y (.wh g (.seq K (.ite c Y (.test .one))))) : Exp A T)
+      (.seq (.ite c Y (.test .one)) (.wh g (.seq K (.ite c Y (.test .one))))) :=
+    EquivBA.trans (EquivBA.w3_ba (EquivBA.baTest hEK) hT)
+      (EquivBA.symm (EquivBA.w3_ba (EquivBA.baTest hEK) hT'))
+  -- hence R satisfies the UNFUSED loop's equation
+  have hguard : EquivBA
+      (.seq (.test g) (.seq (.wh g K)
+        (.seq Y (.wh g (.seq K (.ite c Y (.test .one))))))  : Exp A T)
+      (.seq (.test g) (.seq K (.seq (.wh g K)
+        (.seq Y (.wh g (.seq K (.ite c Y (.test .one)))))))) :=
+    EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hT)
+      (test_seq_ite_of_implies (b := g) (z := g) _ _ (fun _ _ _ h => h))
+  have hR4 : EquivBA (.wh g (.seq K (.ite c Y (.test .one))) : Exp A T)
+      (.ite g (.seq (.seq (.wh g K) Y) (.wh g (.seq K (.ite c Y (.test .one)))))
+        (.test .one)) := by
+    refine EquivBA.trans hR1 ?_
+    refine EquivBA.trans
+      (EquivBA.ite_c (EquivBA.seq_c (EquivBA.base (Equiv.refl K)) (EquivBA.symm hTT'))
+        (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (ite_congr_under_guard (EquivBA.symm hguard)) ?_
+    exact EquivBA.ite_c (EquivBA.symm (seq_assoc _ _ _)) (EquivBA.base (Equiv.refl _))
+  exact EquivBA.symm
+    (EquivBA.trans (EquivBA.w3_ba (EquivBA.baTest (E_seq_right hEY)) hR4) (seq_one _))
+
+end Fusion
+
+/-- **Pair #4**, the last of the eight.  Its `e` runs an inner loop to exhaustion inside the
+    body; its `f` lets the outer loop do that work, guarding `Y` so it fires only on exit.
+    `guarded_core_gen` turns `e`'s body into the fused shape and `loop_fusion` does the rest. -/
+theorem residue_pair_four {g c : BExp T} {p : Exp A T}
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false)
+    (Y : Exp A T)
+    (hEY : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E Y) x = false) :
+    EquivBA
+      (.wh g (.seq (.seq (resA c p) (.wh g p)) Y))
+      (.wh g (.seq (.seq (resA c p) (resC c p)) (.ite c Y (.test g)))) := by
+  have hcg : ∀ (Y' : Type) (W : T → Y' → Bool) (x : Y'), bval W g x = !bval W c x := by
+    intro Y' W x; rw [hgc Y' W x]; cases bval W g x <;> rfl
+  refine EquivBA.trans
+    (wh_congr_under_guard (seq_under_guard Y (guarded_core_gen hgc hEp))
+      (E_seq_left (E_seq_left (E_resA hEp))) (E_seq_right hEY)) ?_
+  refine EquivBA.trans (loop_fusion hgc (E_seq_left (E_resA hEp)) hEY) ?_
+  exact EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+    (EquivBA.symm (ite_else_test_gen Y hcg)))
+
+
 #print axioms ite_unsat
 #print axioms ite_then_test_gen
 #print axioms guarded_core_gen
@@ -464,6 +577,8 @@ end PairOne
 #print axioms wh_exit
 #print axioms residue_pair_eight
 #print axioms residue_pair_one
+#print axioms loop_fusion
+#print axioms residue_pair_four
 #print axioms residue_pair_five_act
 
 end GkatResidueFamily
