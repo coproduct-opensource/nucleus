@@ -39,10 +39,19 @@ is false when a loop ends", `e^(b) ≡ e^(b) · b̄` — in the original GKAT pa
 here because the corpus did not have it, not because it was unknown, and the derivation below
 is presumably theirs rediscovered.
 
-Remaining after this file: #1, #4 and #7.  #1 and #7 are not top-level loops at all — `e` is a
-sequence whose second factor is a loop — and #4 is the one pair whose two sides iterate
-different numbers of times per turn without an inner loop on either side.  Their shapes are
-recorded above so the boundary is visible rather than implied.
+#1 and #7 fall to W3 used as what it is — a uniqueness principle for ONE unknown.  See the
+section below.
+
+Remaining after this file: **#4 alone**.  Substituting the core equality into it reduces it to
+
+    (K^(g)) ; Y  looped on g     ≡     (K ; (Y +_c 1))  looped on g          (K = A;C)
+
+i.e. `while g { (while g K); Y }  ≡  while g { K; if ¬g then Y }` — LOOP FUSION, the inner
+loop absorbed into the outer one.  Attempting it by the #1 route does not close: assuming the
+right side satisfies the left's equation reduces, under the guard, to the same statement again,
+so a single application of W3 cannot discharge it.  What that argument needs is a simultaneous
+equation in the two unknowns `Z` and `K^(g);Y;Z` — a 2-unknown system, which is UA_2.  That is
+suggestive but NOT a proof that #4 requires UA: it shows one route fails, not that all do.
 -/
 
 namespace GkatResidueFamily
@@ -357,6 +366,94 @@ theorem residue_pair_five_act (b : BExp T) (a : A) :
         (.ite b (.wh b (.seq (resA (.not b) (.act a)) (resC (.not b) (.act a)))) (.act a)))) :=
   residue_pair_three_five (fun _ _ _ => rfl) (fun _ _ _ => rfl) _
 
+
+/-! ## Pair #1, by solving the other side's equation
+
+    #1 and #7 are not top-level loops: `e` is `C ; ((p;p) ; C)^(g)`, a loop with a factor in
+    front of it, and no amount of body-congruence reaches that from `f = (p ; (p;p +_g c?))^(g)`.
+    In Kleene algebra the identity relating them is loop rotation, `x(yx)* = (xy)*x`, which is
+    not among W1–W3 and not among the refinement moves either.
+
+    It is not needed.  W3 says a productive Salomaa equation has ONE solution, so it is enough
+    to show that `e` — with its factor in front — satisfies the equation `f` satisfies.  Unrolling
+    `e` once puts its leading `C` and the loop's first turn together, and what comes out is
+    exactly `f`'s body applied to `e`.  W3 then identifies them.
+
+    This is the uniqueness axiom's job being done by the single-unknown axiom that is already
+    finite.  UA generalises W3 to systems of `n` unknowns; here one unknown suffices, because
+    the two programs share a single equation rather than a system. -/
+
+section PairOne
+
+variable {g c : BExp T} {p : Exp A T}
+
+/-- A choice on `g` nested in another `g`-choice's else arm is unreachable. -/
+theorem ite_else_ite_same (Y X Z : Exp A T) :
+    EquivBA (.ite g Y (.ite g X Z)) (.ite g Y Z) := by
+  have hng : ∀ (Y' : Type) (W : T → Y' → Bool) (x : Y'),
+      bval W g x = !bval W (.not g) x := by
+    intro Y' W x
+    show bval W g x = !(!bval W g x)
+    cases bval W g x <;> rfl
+  exact EquivBA.trans (ite_restrict_else g Y (.ite g X Z))
+    (EquivBA.trans
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl Y)) (test_seq_ite_else_gen hng X Z))
+      (EquivBA.symm (ite_restrict_else g Y Z)))
+
+/-- **Pair #1 (and #7, its atom-exchange).**  `C ; ((p;p);C)^(g) ≡ (p ; ((p;p) +_g c?))^(g)`. -/
+theorem residue_pair_one
+    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
+    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+    EquivBA
+      (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
+      (.wh g (.seq p (.ite g (.seq p p) (.test c)))) := by
+  have hcg : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W g x = !bval W c x := by
+    intro Y W x; rw [hgc Y W x]; cases bval W g x <;> rfl
+  -- abbreviations, spelled out because the terms recur
+  have hW : EquivBA (.wh g (.seq (.seq p p) (resDg g p)) : Exp A T)
+      (.ite g (.seq (.seq (.seq p p) (resDg g p))
+        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one)) :=
+    EquivBA.base (Equiv.w1 g _)
+  -- the else arm of both sides collapses: under c the loop exits and C is a skip
+  have hElse : EquivBA
+      (.seq (.test c) (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p)))))
+      (.test c) := by
+    refine EquivBA.trans (EquivBA.symm (seq_assoc _ _ _)) ?_
+    refine EquivBA.trans
+      (EquivBA.seq_c
+        (EquivBA.trans (test_seq_ite_else_gen hcg p (.test .one)) (seq_one _))
+        (EquivBA.base (Equiv.refl _))) ?_
+    exact EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hW)
+      (EquivBA.trans (test_seq_ite_else_gen hcg _ (.test .one)) (seq_one _))
+  -- LHS: unroll the loop, push C through the choice, drop the unreachable nested arm
+  have hL : EquivBA (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
+      (.ite g (.seq p (.ite g (.seq (.seq (.seq p p) (resDg g p))
+        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one))) (.test .one)) := by
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hW) ?_
+    refine EquivBA.trans (ite_seq_right g p (.test .one) _) ?_
+    refine EquivBA.trans
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.s4 _))) ?_
+    exact ite_else_ite_same _ _ _
+  -- RHS: f's body applied to e reduces to the very same thing
+  have hR : EquivBA
+      (.seq (.seq p (.ite g (.seq p p) (.test c)))
+        (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p)))))
+      (.seq p (.ite g (.seq (.seq (.seq p p) (resDg g p))
+        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one))) := by
+    refine EquivBA.trans (seq_assoc _ _ _) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl p)) ?_
+    refine EquivBA.trans (ite_seq_right g (.seq p p) (.test c) _) ?_
+    refine EquivBA.trans
+      (EquivBA.ite_c (EquivBA.symm (seq_assoc _ _ _)) hElse) ?_
+    exact ite_else_test_gen _ hgc
+  have hsol : EquivBA (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
+      (.ite g (.seq (.seq p (.ite g (.seq p p) (.test c)))
+        (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))) (.test .one)) :=
+    EquivBA.trans hL (EquivBA.ite_c (EquivBA.symm hR) (EquivBA.base (Equiv.refl _)))
+  exact EquivBA.trans (EquivBA.w3_ba (EquivBA.baTest (E_seq_left hEp)) hsol) (seq_one _)
+
+end PairOne
+
 #print axioms ite_unsat
 #print axioms ite_then_test_gen
 #print axioms guarded_core_gen
@@ -366,6 +463,7 @@ theorem residue_pair_five_act (b : BExp T) (a : A) :
 #print axioms residue_pair_six_act
 #print axioms wh_exit
 #print axioms residue_pair_eight
+#print axioms residue_pair_one
 #print axioms residue_pair_five_act
 
 end GkatResidueFamily
