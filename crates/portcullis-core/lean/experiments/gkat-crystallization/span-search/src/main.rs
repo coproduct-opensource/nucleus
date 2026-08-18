@@ -4908,6 +4908,26 @@ pullback: {ok} / {}", res.len());
                                 }
                             }
                         }
+                        // HOW LIVE IS THE ENGINEERING BLOCKER?  Pool membership DECIDES
+                        // Thompson-ness for k <= K.  Only quotients larger than the pool need
+                        // an oracle at all, so count them before building one.
+                        let (mut big, mut small) = (0usize, 0usize);
+                        let mut bigk = [0usize; MAXK + 1];
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                for cg in lattice_congruences(&su).iter() {
+                                    if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                        if (q.k as usize) > poolk {
+                                            big += 1;
+                                            bigk[(q.k as usize).min(MAXK)] += 1;
+                                        } else { small += 1; }
+                                    }
+                                }
+                            }
+                        }
+                        println!("    BLOCKER LIVENESS: quotients needing an oracle (k > {poolk}) : {big} / {} ({:.1}%)",
+                            big + small, pc6(big, big + small));
+                        println!("           sizes above the pool: {:?}", &bigk[..]);
                         println!("    POWER: known non-Thompson quotients caught {neg_caught} / {neg} ({:.1}%)",
                             pc6(neg_caught, neg));
                         println!("           (known Thompson quotients seen for scale: {pos_seen})");
