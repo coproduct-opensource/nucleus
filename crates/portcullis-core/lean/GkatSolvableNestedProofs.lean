@@ -236,4 +236,15 @@ theorem Nested_of_semSolves {aut : GAut S A T} {V : T → Atom → Bool}
 
 #print axioms Nested_of_semSolves
 
+/-- **Provable solvability implies the nesting coequation.**  The `SolvesBA` corollary, via
+    soundness of the axioms: this is the exact statement every sound-procedure control in the
+    measurement harness relies on, in its contrapositive — a non-nested automaton has no
+    provable solution. -/
+theorem Nested_of_solvesBA {aut : GAut S A T} {V : T → Atom → Bool}
+    {sol : S → Exp A T} (hwf : WF V aut) (hsol : SolvesBA aut sol) :
+    Nested V aut :=
+  Nested_of_semSolves hwf (solvesBA_semSolves (V := V) hsol)
+
+#print axioms Nested_of_solvesBA
+
 end GkatSolvableNested
