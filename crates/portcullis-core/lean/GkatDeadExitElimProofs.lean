@@ -460,4 +460,46 @@ theorem elim_scc2_fst (bsx recy : List (Branch A T)) (β : BExp T) (ax fby : Exp
 #print axioms elim_scc2
 #print axioms elim_scc2_fst
 
+/-! ## The certificate needs no ordering
+
+    `chain_solves` threads a tail through a linear chain, and measurement says only 24.6% of
+    start-merged quotients are linear while 85.7% have all-singleton SCCs.  The gap looked like
+    missing machinery for topological order.  It is not: `elim_front` already takes an ARBITRARY
+    forward branch list, so if the certificate PRODUCER substitutes the already-solved forward
+    bodies, each level is an independent check and the checker never needs the order.
+
+    That is the right division.  Finding an order is search, and search belongs to the producer;
+    the checker verifies one `elim_front` per level, in any sequence, with no accumulator. -/
+
+/-- One level of a certificate: recurring branches, forward branches with ALREADY-SUBSTITUTED
+    bodies, and the fallback. -/
+abbrev LevelG (A T : Type) := List (Branch A T) × List (BExp T × Exp A T) × Exp A T
+
+/-- The closed form a level denotes. -/
+def levelSol (L : LevelG A T) : Exp A T :=
+  .seq (.wh (orGuards L.1) (bodyFold L.1)) (guardedFold L.2.1 L.2.2)
+
+/-- **One level checks.**  This is `elim_front` in certificate shape. -/
+theorem level_solves (L : LevelG A T) {x : Exp A T}
+    (hE : ∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold L.1)) y = false)
+    (hx : EquivBA x (guardedFold (L.1.map (fun p : Branch A T => (p.1, Exp.seq p.2 x)) ++ L.2.1)
+            L.2.2)) :
+    EquivBA x (levelSol L) :=
+  elim_front L.1 L.2.1 L.2.2 hE hx
+
+/-- **A whole certificate checks, in any order.**  Every level is verified independently; no
+    accumulator, no topological sort, no threading.  The producer's job was to substitute. -/
+theorem levels_solve (ls : List (LevelG A T × Exp A T))
+    (h : ∀ p ∈ ls,
+      (∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold p.1.1)) y = false) ∧
+      EquivBA p.2 (guardedFold
+        (p.1.1.map (fun q : Branch A T => (q.1, Exp.seq q.2 p.2)) ++ p.1.2.1) p.1.2.2)) :
+    ∀ p ∈ ls, EquivBA p.2 (levelSol p.1) := by
+  intro p hp
+  obtain ⟨hE, hx⟩ := h p hp
+  exact level_solves p.1 hE hx
+
+#print axioms level_solves
+#print axioms levels_solve
+
 end GkatDeadExitElim
