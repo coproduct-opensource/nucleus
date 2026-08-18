@@ -37,9 +37,9 @@ variable {A T S Q Atom : Type}
     `open Classical` decidability instance; no Mathlib. -/
 
 /-- Strictly monotone reindexing that skips index `i0`. -/
-private def skipIdx (i0 k : Nat) : Nat := if k < i0 then k else k + 1
+def skipIdx (i0 k : Nat) : Nat := if k < i0 then k else k + 1
 
-private theorem skipIdx_ne (i0 k : Nat) : skipIdx i0 k ≠ i0 := by
+theorem skipIdx_ne (i0 k : Nat) : skipIdx i0 k ≠ i0 := by
   unfold skipIdx
   by_cases h : k < i0
   · rw [if_pos h]; exact Nat.ne_of_lt h
@@ -47,7 +47,7 @@ private theorem skipIdx_ne (i0 k : Nat) : skipIdx i0 k ≠ i0 := by
     intro he
     exact absurd (he ▸ Nat.lt_succ_of_le (Nat.le_of_not_lt h)) (Nat.lt_irrefl _)
 
-private theorem skipIdx_mono {i0 k l : Nat} (h : k < l) : skipIdx i0 k < skipIdx i0 l := by
+theorem skipIdx_mono {i0 k l : Nat} (h : k < l) : skipIdx i0 k < skipIdx i0 l := by
   unfold skipIdx
   by_cases hk : k < i0 <;> by_cases hl : l < i0
   · rw [if_pos hk, if_pos hl]; exact h
@@ -55,14 +55,14 @@ private theorem skipIdx_mono {i0 k l : Nat} (h : k < l) : skipIdx i0 k < skipIdx
   · exact absurd (Nat.lt_trans h hl) hk
   · rw [if_neg hk, if_neg hl]; exact Nat.succ_lt_succ h
 
-private theorem skipIdx_lt {i0 k m : Nat} (h : k < m) : skipIdx i0 k < m + 1 := by
+theorem skipIdx_lt {i0 k m : Nat} (h : k < m) : skipIdx i0 k < m + 1 := by
   unfold skipIdx
   by_cases hk : k < i0
   · rw [if_pos hk]; exact Nat.lt_succ_of_lt h
   · rw [if_neg hk]; exact Nat.succ_lt_succ h
 
 /-- **A `Nat`-indexed family drawn from a finite list repeats.** -/
-private theorem exists_repeat {α : Type} :
+theorem exists_repeat {α : Type} :
     ∀ (l : List α) (f : Nat → α), (∀ i, i < l.length + 1 → f i ∈ l) →
       ∃ i j, i < j ∧ f i = f j := by
   intro l

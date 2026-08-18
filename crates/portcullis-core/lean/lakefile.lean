@@ -725,6 +725,10 @@ lean_lib «GkatNestedClosureProofs» where
 lean_lib «GkatThompsonNestedProofs» where
   roots := #[`GkatThompsonNestedProofs]
 
+-- Semantically solvable automata satisfy the nesting coequation.
+lean_lib «GkatSolvableNestedProofs» where
+  roots := #[`GkatSolvableNestedProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]

@@ -130,6 +130,7 @@ jobs:
             GkatDeadExitElimProofs \
             GkatNestedClosureProofs \
             GkatThompsonNestedProofs \
+            GkatSolvableNestedProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
