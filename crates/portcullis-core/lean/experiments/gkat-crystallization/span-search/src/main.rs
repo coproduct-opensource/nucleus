@@ -6078,6 +6078,14 @@ pullback: {ok} / {}", res.len());
                         }
                         "?".to_string()
                     };
+                    // full SUM state table: hlt mask + per-atom step target index
+                    println!("    LEAN sum table (index: hlt, steps by atom):");
+                    for sx in 0..su.k as usize {
+                        let tgts: Vec<String> = (0..NA).map(|y|
+                            if su.st[sx][y] == 0 { "-".to_string() }
+                            else { format!("{}", su.st[sx][y] - 1) }).collect();
+                        println!("      {}: hlt={:#04b} steps={:?}", sx, su.hl[sx], tgts);
+                    }
                     println!("    LEAN qmap (e-side): none -> {}", cls_of(0));
                     for (pi, path) in pe.iter().enumerate() {
                         println!("      inl (some {}) -> {}", path, cls_of(1 + pi));
