@@ -393,57 +393,69 @@ theorem ite_else_ite_same (Y X Z : Exp A T) :
       (EquivBA.ite_c (EquivBA.base (Equiv.refl Y)) (test_seq_ite_else_gen hng X Z))
       (EquivBA.symm (ite_restrict_else g Y Z)))
 
-/-- **Pair #1 (and #7, its atom-exchange).**  `C ; ((p;p);C)^(g) ≡ (p ; ((p;p) +_g c?))^(g)`. -/
-theorem residue_pair_one
-    (hgc : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W c x = !bval W g x)
-    (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
+/-- **Loop rotation.**  `(X +_g 1) ; (B ; (X +_g 1))^(g) ≡ (X ; (B +_g c?))^(g)`.
+
+    Pairs #1 and #7 are the instance `X := p`, `B := p;p`.  Nothing in the derivation depends
+    on that, so it is stated for arbitrary `X` and `B`, with `X` productive. -/
+theorem loop_rotation {X B : Exp A T}
+    (hgc : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W c x = !bval W g x)
+    (hEX : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W (E X) x = false) :
     EquivBA
-      (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
-      (.wh g (.seq p (.ite g (.seq p p) (.test c)))) := by
+      (.seq (resDg g X) (.wh g (.seq (B) (resDg g X))))
+      (.wh g (.seq X (.ite g (B) (.test c)))) := by
   have hcg : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W g x = !bval W c x := by
     intro Y W x; rw [hgc Y W x]; cases bval W g x <;> rfl
   -- abbreviations, spelled out because the terms recur
-  have hW : EquivBA (.wh g (.seq (.seq p p) (resDg g p)) : Exp A T)
-      (.ite g (.seq (.seq (.seq p p) (resDg g p))
-        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one)) :=
+  have hW : EquivBA (.wh g (.seq (B) (resDg g X)) : Exp A T)
+      (.ite g (.seq (.seq (B) (resDg g X))
+        (.wh g (.seq (B) (resDg g X)))) (.test .one)) :=
     EquivBA.base (Equiv.w1 g _)
   -- the else arm of both sides collapses: under c the loop exits and C is a skip
   have hElse : EquivBA
-      (.seq (.test c) (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p)))))
+      (.seq (.test c) (.seq (resDg g X) (.wh g (.seq (B) (resDg g X)))))
       (.test c) := by
     refine EquivBA.trans (EquivBA.symm (seq_assoc _ _ _)) ?_
     refine EquivBA.trans
       (EquivBA.seq_c
-        (EquivBA.trans (test_seq_ite_else_gen hcg p (.test .one)) (seq_one _))
+        (EquivBA.trans (test_seq_ite_else_gen hcg X (.test .one)) (seq_one _))
         (EquivBA.base (Equiv.refl _))) ?_
     exact EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hW)
       (EquivBA.trans (test_seq_ite_else_gen hcg _ (.test .one)) (seq_one _))
   -- LHS: unroll the loop, push C through the choice, drop the unreachable nested arm
-  have hL : EquivBA (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
-      (.ite g (.seq p (.ite g (.seq (.seq (.seq p p) (resDg g p))
-        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one))) (.test .one)) := by
+  have hL : EquivBA (.seq (resDg g X) (.wh g (.seq (B) (resDg g X))))
+      (.ite g (.seq X (.ite g (.seq (.seq (B) (resDg g X))
+        (.wh g (.seq (B) (resDg g X)))) (.test .one))) (.test .one)) := by
     refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hW) ?_
-    refine EquivBA.trans (ite_seq_right g p (.test .one) _) ?_
+    refine EquivBA.trans (ite_seq_right g X (.test .one) _) ?_
     refine EquivBA.trans
       (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.s4 _))) ?_
     exact ite_else_ite_same _ _ _
   -- RHS: f's body applied to e reduces to the very same thing
   have hR : EquivBA
-      (.seq (.seq p (.ite g (.seq p p) (.test c)))
-        (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p)))))
-      (.seq p (.ite g (.seq (.seq (.seq p p) (resDg g p))
-        (.wh g (.seq (.seq p p) (resDg g p)))) (.test .one))) := by
+      (.seq (.seq X (.ite g (B) (.test c)))
+        (.seq (resDg g X) (.wh g (.seq (B) (resDg g X)))))
+      (.seq X (.ite g (.seq (.seq (B) (resDg g X))
+        (.wh g (.seq (B) (resDg g X)))) (.test .one))) := by
     refine EquivBA.trans (seq_assoc _ _ _) ?_
-    refine EquivBA.seq_c (EquivBA.base (Equiv.refl p)) ?_
-    refine EquivBA.trans (ite_seq_right g (.seq p p) (.test c) _) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl X)) ?_
+    refine EquivBA.trans (ite_seq_right g (B) (.test c) _) ?_
     refine EquivBA.trans
       (EquivBA.ite_c (EquivBA.symm (seq_assoc _ _ _)) hElse) ?_
     exact ite_else_test_gen _ hgc
-  have hsol : EquivBA (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
-      (.ite g (.seq (.seq p (.ite g (.seq p p) (.test c)))
-        (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))) (.test .one)) :=
+  have hsol : EquivBA (.seq (resDg g X) (.wh g (.seq (B) (resDg g X))))
+      (.ite g (.seq (.seq X (.ite g (B) (.test c)))
+        (.seq (resDg g X) (.wh g (.seq (B) (resDg g X))))) (.test .one)) :=
     EquivBA.trans hL (EquivBA.ite_c (EquivBA.symm hR) (EquivBA.base (Equiv.refl _)))
-  exact EquivBA.trans (EquivBA.w3_ba (EquivBA.baTest (E_seq_left hEp)) hsol) (seq_one _)
+  exact EquivBA.trans (EquivBA.w3_ba (EquivBA.baTest (E_seq_left hEX)) hsol) (seq_one _)
+
+/-- Pairs #1 and #7, as the harness produced them. -/
+theorem residue_pair_one {p : Exp A T}
+    (hgc : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W c x = !bval W g x)
+    (hEp : ∀ (Y : Type) (W : T → Y → Bool) (x : Y), bval W (E p) x = false) :
+    EquivBA
+      (.seq (resDg g p) (.wh g (.seq (.seq p p) (resDg g p))))
+      (.wh g (.seq p (.ite g (.seq p p) (.test c)))) :=
+  loop_rotation hgc hEp
 
 end PairOne
 
@@ -576,6 +588,7 @@ theorem residue_pair_four {g c : BExp T} {p : Exp A T}
 #print axioms residue_pair_six_act
 #print axioms wh_exit
 #print axioms residue_pair_eight
+#print axioms loop_rotation
 #print axioms residue_pair_one
 #print axioms loop_fusion
 #print axioms residue_pair_four
