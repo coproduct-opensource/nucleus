@@ -3658,6 +3658,162 @@ k={} ih={} it={:?} hl={:?} st={:?}",
 
 // ---------------------------------------------------------------- driver
 
+
+/// Parse the harness's printed program syntax back into an automaton + Lean term.
+/// Grammar (fully parenthesised): `p`, `[tN]`, `(X;Y)`, `(X +N Y)`, `(X)^N`.
+fn parse_attack<const NA: usize>(s: &[u8], pos: &mut usize) -> (Aut<NA>, String, Vec<String>) {
+    let (a, st, paths) = match s[*pos] {
+        b'p' => { *pos += 1; (a_act(), "pA".to_string(), vec!["()".to_string()]) }
+        b'[' => {
+            *pos += 2;
+            let n = s[*pos] - b'0';
+            *pos += 2;
+            (a_test(n), format!("(Exp.test {})", mask_lean(n)), vec![])
+        }
+        b'(' => {
+            *pos += 1;
+            let (l, ls, lp) = parse_attack(s, pos);
+            let (a, st, paths) = match s[*pos] {
+                b')' => (l, ls, lp),
+                b';' => {
+                    *pos += 1;
+                    let (r, rs, rp) = parse_attack(s, pos);
+                    let mut ps: Vec<String> = lp.iter().map(|q| format!("(Sum.inl {q})")).collect();
+                    ps.extend(rp.iter().map(|q| format!("(Sum.inr {q})")));
+                    (a_seq(&l, &r).unwrap(), format!("(Exp.seq {ls} {rs})"), ps)
+                }
+                b' ' => {
+                    *pos += 2;
+                    let n = s[*pos] - b'0';
+                    *pos += 2;
+                    let (r, rs, rp) = parse_attack(s, pos);
+                    let mut ps: Vec<String> = lp.iter().map(|q| format!("(Sum.inl {q})")).collect();
+                    ps.extend(rp.iter().map(|q| format!("(Sum.inr {q})")));
+                    (a_ite(n, &l, &r).unwrap(), format!("(Exp.ite {} {ls} {rs})", mask_lean(n)), ps)
+                }
+                c => panic!("parse_attack: unexpected {}", c as char),
+            };
+            assert_eq!(s[*pos], b')');
+            *pos += 1;
+            (a, st, paths)
+        }
+        c => panic!("parse_attack: unexpected {}", c as char),
+    };
+    if *pos < s.len() && s[*pos] == b'^' {
+        *pos += 1;
+        let n = s[*pos] - b'0';
+        *pos += 1;
+        (a_wh(n, &a), format!("(Exp.wh {} {st})", mask_lean(n)), paths)
+    } else {
+        (a, st, paths)
+    }
+}
+
+/// PAD_ATTACK: the k=6 residue pairs, re-analysed in isolation.  For each pair: every
+/// merged-start congruence quotient with its size / eliminability / pool verdict, and the
+/// full table of each small quotient — the raw material for a hand proof.
+fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>) {
+    let pairs: [(&str, &str); 6] = [
+        ("((([t2] +2 p);(p)^2);(((([t0] +2 p);([t1] +1 p));([t2] +2 p)))^1)",
+         "((p;(p)^2);(((([t0] +2 p);([t1] +1 p));([t2] +2 p)))^1)"),
+        ("(((p;(([t0] +1 p) +2 (p;[t1]))))^2 +2 (p;[t1]))",
+         "((([t1] +1 p);((p;[t1]) +1 [t2]));((p;((p;((p;[t1]) +1 [t2])) +2 [t1])))^2)"),
+        ("(([t0] +2 p);((p;((([t0] +1 p);[t1]) +2 (([t0] +2 p);([t2] +2 p)))))^1)",
+         "(((p;((p;(((([t0] +1 p);([t0] +2 p)))^2;p)) +1 [t2])))^1 +1 [t0])"),
+        ("((p;(((p;p);(p)^2) +2 p)))^2",
+         "((p;(((([t0] +1 p);([t2] +2 p));(p)^2) +2 p)))^2"),
+        ("(((([t0] +1 p);([t2] +2 p)) +2 [t1]);(((p)^1;(([t0] +1 p);([t2] +2 p))))^1)",
+         "(((p)^1;([t0] +1 p));((p;(((p)^1;([t0] +1 p)) +1 [t2])))^1)"),
+        ("((((p;p);(p)^1);(([t0] +1 p);([t1] +1 p))))^2",
+         "((((([t0] +1 p);([t1] +1 p));(p)^1);(([t0] +1 p);([t1] +1 p))))^2"),
+    ];
+    for (pi, (es, fs)) in pairs.iter().enumerate() {
+        let mut pos = 0usize;
+        let (ae, el, epaths) = parse_attack::<NA>(es.as_bytes(), &mut pos);
+        assert_eq!(pos, es.len(), "trailing input in e #{}", pi + 1);
+        pos = 0;
+        let (af, fl, fpaths) = parse_attack::<NA>(fs.as_bytes(), &mut pos);
+        assert_eq!(pos, fs.len(), "trailing input in f #{}", pi + 1);
+        println!("ATTACK #{}", pi + 1);
+        println!("  e = {es}");
+        println!("  f = {fs}");
+        println!("  LEAN e := {el}");
+        println!("  LEAN f := {fl}");
+        println!("  behaviour equal : {}", behaviour(&ae) == behaviour(&af));
+        let ka = match to_gaut(&ae) { Some(g) => g.k as usize, None => { println!("  e not convertible"); continue } };
+        let su = match sum_core(&ae, &af) { Some(s) => s, None => { println!("  no sum"); continue } };
+        println!("  sum: k={} (e-side 0..{}, f-side {}..{})", su.k, ka - 1, ka, su.k as usize - 1);
+        for s in 0..su.k as usize {
+            let steps: Vec<String> = (0..NA).map(|i|
+                if su.st[s][i] == 0 { "-".to_string() } else { format!("{}", su.st[s][i] - 1) }).collect();
+            println!("    {s}: hlt={:#04b} st={:?}", su.hl[s], steps);
+        }
+        let base = match close_congruence(&su, &[(0, ka)]) { Some(c) => c, None => { println!("  starts not mergeable"); continue } };
+        let mut cands: Vec<([usize; MAXK], usize)> = vec![base];
+        for cg in lattice_congruences(&su).iter() {
+            if cg.0[0] == cg.0[ka] { cands.push(*cg); }
+        }
+        println!("  merged-start congruences : {}", cands.len());
+        let mut best_cert: Option<([usize; MAXK], usize, Aut<NA>)> = None;
+        for (b2, nb2) in cands.iter() {
+            if let Some(q) = quotient_by(&su, b2, *nb2) {
+                let qq = trim_canon(&q).unwrap_or(q);
+                if qq.k == *nb2 as u8
+                    && best_cert.as_ref().map(|c| (qq.k as usize) < c.1).unwrap_or(true) {
+                    best_cert = Some((*b2, *nb2, q));
+                }
+                let elim = symbolic_eliminable(&qq);
+                let inpool = canon(&qq).map(|c| seen.contains_key(&c)).unwrap_or(false);
+                println!("    quotient k={} elim={elim} pool={inpool} classes={:?}",
+                    qq.k, &b2[..su.k as usize]);
+                if (qq.k as usize) <= 6 {
+                    println!("      init: ih={:#04b} it={:?}", qq.ih,
+                        (0..NA).map(|i| if qq.it[i] == 0 { "-".to_string() }
+                            else { format!("{}", qq.it[i] - 1) }).collect::<Vec<_>>());
+                    for s in 0..qq.k as usize {
+                        let steps: Vec<String> = (0..NA).map(|i|
+                            if qq.st[s][i] == 0 { "-".to_string() } else { format!("{}", qq.st[s][i] - 1) }).collect();
+                        println!("      {s}: hlt={:#04b} st={:?}", qq.hl[s], steps);
+                    }
+                }
+            }
+        }
+        // CERT block for the smallest untrimmed-clean quotient, in emit_cert.py's format.
+        if let Some((blk, nb, q)) = best_cert {
+            println!("  CERT #A{}", pi + 1);
+            println!("    quotient k={nb}");
+            println!("    LEAN e := {el}");
+            println!("    LEAN f := {fl}");
+            for c in 0..nb {
+                let recs: Vec<String> = (0..NA)
+                    .filter(|&i| q.st[c][i] as usize == c + 1)
+                    .map(|i| format!("atom{i}")).collect();
+                let fwds: Vec<String> = (0..NA)
+                    .filter(|&i| q.st[c][i] != 0 && q.st[c][i] as usize != c + 1)
+                    .map(|i| format!("(atom{i}, act, s{})", q.st[c][i] - 1)).collect();
+                println!("    s{c}: rec=[{}] fwd=[{}] hlt=0b{:02b}",
+                    recs.join(", "), fwds.join(", "), q.hl[c]);
+            }
+            let order: Vec<String> = (0..nb).rev().map(|c| c.to_string()).collect();
+            println!("    solve order (reverse-topological): [{}]", order.join(", "));
+            for s in 0..su.k as usize {
+                let steps: Vec<String> = (0..NA).map(|i|
+                    if su.st[s][i] == 0 { "\"-\"".to_string() }
+                    else { format!("\"{}\"", su.st[s][i] - 1) }).collect();
+                println!("      {s}: hlt=0b{:02b} steps=[{}]", su.hl[s], steps.join(", "));
+            }
+            println!("    qmap (e-side): none -> s{}", blk[0]);
+            for (i, pth) in epaths.iter().enumerate() {
+                println!("      inl (some {pth}) -> s{}", blk[1 + i]);
+            }
+            println!("    qmap (f-side): none -> s{}", blk[ka]);
+            for (i, pth) in fpaths.iter().enumerate() {
+                println!("      inr (some {pth}) -> s{}", blk[ka + 1 + i]);
+            }
+        }
+    }
+}
+
 fn run<const NA: usize>(maxk: usize, pairk: usize) {
     let nguards = 1u8 << NA;
     // Phase timing. The last two optimisation passes both found their biggest win in a
@@ -3848,6 +4004,11 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             front = fresh;
         }
         println!("  entry/body-separated subclass: {} automata", entryonly.len());
+    }
+
+    if std::env::var("PAD_ATTACK").is_ok() {
+        attack_residue::<NA>(&list, &seen);
+        return;
     }
 
     // ---- index by behaviour
