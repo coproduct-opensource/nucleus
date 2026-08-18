@@ -5366,7 +5366,7 @@ pullback: {ok} / {}", res.len());
                     // where it would need an UNGUARDED UNION (a halt or a second variable on a
                     // recurrence atom, created by substitution).  Does the congruence lattice
                     // always contain a quotient where that never happens?
-                    {
+                    if std::env::var("PAD_DIAG").is_ok() {
                         let (mut nfail, mut byelim, mut bythom, mut byboth, mut neither) =
                             (0usize, 0usize, 0usize, 0usize, 0usize);
                         for &(i, j) in crux.iter() {
@@ -5393,7 +5393,7 @@ pullback: {ok} / {}", res.len());
                     // B's half is unreachable and TRIMMING COULD DELETE IT — leaving Thompson(e)
                     // alone, which is trivially Thompson.  The conjunct demands the two START
                     // STATES be identified; the harness never checked that.  Check it now.
-                    {
+                    if std::env::var("PAD_DIAG").is_ok() {
                         let (mut ok_any, mut ok_start, mut n) = (0usize, 0usize, 0usize);
                         for &(i, j) in crux.iter() {
                             let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
@@ -5484,7 +5484,7 @@ pullback: {ok} / {}", res.len());
                                 // COEQUATION, a covariety — closed under quotients and coproducts,
                                 // and preserved by minimisation.  Thompson automata satisfy it, so
                                 // the sum does, so every quotient should.  Measure it.
-                                {
+                                if std::env::var("PAD_DIAG").is_ok() {
                                     let (mut nst, mut nn3) = (0usize, 0usize);
                                     for &(i, j) in crux.iter() {
                                         let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
@@ -5505,7 +5505,7 @@ pullback: {ok} / {}", res.len());
                                 // multi-state SCC needs the case left-distributivity blocks.  So
                                 // the certificate's reach is exactly the quotients whose SCCs are
                                 // all singletons.
-                                {
+                                if std::env::var("PAD_DIAG").is_ok() {
                                     let (mut sing, mut nn4) = (0usize, 0usize);
                                     for &(i, j) in crux.iter() {
                                         let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
@@ -5548,7 +5548,7 @@ pullback: {ok} / {}", res.len());
                                         // one state of the pair steps ONLY into the other and never
                                         // halts — a dead fallback with a common tail.  Measure the
                                         // fraction of size-2 SCCs that have that shape.
-                                        {
+                                        if std::env::var("PAD_DIAG").is_ok() {
                                             let (mut sh, mut n2) = (0usize, 0usize);
                                             for &(i, j) in crux.iter() {
                                                 let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
@@ -5636,7 +5636,7 @@ pullback: {ok} / {}", res.len());
                                                         }
                                                     }
                                                 }
-                                                {
+                                                if std::env::var("PAD_DIAG").is_ok() {
                                                     let (mut n2, mut dead, mut dead_single) = (0usize, 0usize, 0usize);
                                                     for &(i, j) in crux.iter() {
                                                         let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
@@ -5772,7 +5772,7 @@ pullback: {ok} / {}", res.len());
                                             // cases where both states have live fallbacks and both
                                             // elimination orders nest, i.e. genuine UA_2 instances.
                                             // Does the Thompson witness still cover them?
-                                            {
+                                            if std::env::var("PAD_DIAG").is_ok() {
                                                 let (mut susp, mut susp_t) = (0usize, 0usize);
                                                 for &(i, j) in crux.iter() {
                                                     let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
