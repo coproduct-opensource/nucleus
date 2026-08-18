@@ -5438,6 +5438,35 @@ pullback: {ok} / {}", res.len());
                                             }
                                         }
                                     }
+                                    // WHAT IS THE REMAINING OBJECT?  Size distribution of the
+                                    // multi-state SCCs, and whether they are eliminable anyway.
+                                    {
+                                        let mut dist = [0usize; MAXK + 1];
+                                        let (mut multi, mut multi_elim) = (0usize, 0usize);
+                                        for &(i, j) in crux.iter() {
+                                            let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                if ka >= su.k as usize { continue; }
+                                                if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                    if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                        let qq = trim_canon(&q).unwrap_or(q);
+                                                        let mx = orbits(&qq).iter()
+                                                            .map(|o| o.count_ones() as usize).max().unwrap_or(0);
+                                                        if mx >= 2 {
+                                                            multi += 1;
+                                                            dist[mx.min(MAXK)] += 1;
+                                                            if symbolic_eliminable(&qq) { multi_elim += 1; }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        println!("  THE REMAINING OBJECT (multi-state SCCs):");
+                                        println!("    quotients with one : {multi}");
+                                        println!("    largest SCC size   : {:?}", &dist[2..8]);
+                                        println!("    of those, ELIMINABLE anyway : {multi_elim} ({:.1}%)",
+                                            pc7(multi_elim, multi));
+                                    }
                                     println!("  CERTIFICATE REACH (all SCCs singleton = chain-shaped):");
                                     println!("    chain-shaped : {sing} / {nn4} ({:.1}%)", pc7(sing, nn4));
                                 }
