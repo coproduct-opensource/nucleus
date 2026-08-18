@@ -341,4 +341,62 @@ theorem elim_two_level (rec1 rec2 : List (Branch A T)) (β : BExp T) (a fb1 fb2 
 
 #print axioms elim_two_level
 
+/-! ## An elimination certificate
+
+    `elim_two_level` shows two steps compose; the blocker for stating the whole route in Lean is
+    that "eliminable" needs a certificate — a LIST of steps, checkable, of any length.  A chain
+    is the case where composition is free (each substitution targets an already-closed tail), so
+    that is the certificate this section builds.
+
+    A `Level` is one state's data: its recurring branches, the guard and action of its single
+    forward exit, and its fallback.  `chainSol` reads off the closed form, `ChainOK` is the
+    checkable hypothesis, and `chain_solves` is the induction.  Nothing here searches; a
+    certificate found by any means (the harness tries orders exhaustively) is checked by it. -/
+
+/-- One level of a chain: recurring branches, forward guard, forward action, fallback. -/
+abbrev Level (A T : Type) := List (Branch A T) × BExp T × Exp A T × Exp A T
+
+/-- The closed form the certificate denotes. -/
+def chainSol : List (Level A T) → Exp A T → Exp A T
+  | [], z => z
+  | L :: rest, z =>
+      .seq (.wh (orGuards L.1) (bodyFold L.1))
+        (guardedFold [(L.2.1, .seq L.2.2.1 (chainSol rest z))] L.2.2.2)
+
+/-- The unknown a chain currently exposes: the head's, or the terminal expression. -/
+def nextUnk : List (Level A T × Exp A T) → Exp A T → Exp A T
+  | [], z => z
+  | p :: _, _ => p.2
+
+/-- The certificate's checkable content: each level's equation, and productivity of its body. -/
+def ChainOK : List (Level A T × Exp A T) → Exp A T → Prop
+  | [], _ => True
+  | (L, x) :: rest, z =>
+      (∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold L.1)) y = false)
+      ∧ EquivBA x (guardedFold (L.1.map (fun p => (p.1, .seq p.2 x)) ++
+            [(L.2.1, .seq L.2.2.1 (nextUnk rest z))]) L.2.2.2)
+      ∧ ChainOK rest z
+
+/-- **A chain certificate solves its head.**  Induction on the certificate: solve the tail,
+    substitute its closed form by congruence, then one `elim_front`. -/
+theorem chain_solves : ∀ (l : List (Level A T × Exp A T)) (z : Exp A T),
+    ChainOK l z → EquivBA (nextUnk l z) (chainSol (l.map Prod.fst) z)
+  | [], z, _ => EquivBA.base (Equiv.refl z)
+  | (L, x) :: rest, z, h => by
+      obtain ⟨hE, hx, hrest⟩ := h
+      have ih := chain_solves rest z hrest
+      show EquivBA x (.seq (.wh (orGuards L.1) (bodyFold L.1))
+        (guardedFold [(L.2.1, .seq L.2.2.1 (chainSol (rest.map Prod.fst) z))] L.2.2.2))
+      refine elim_front L.1 [(L.2.1, .seq L.2.2.1 (chainSol (rest.map Prod.fst) z))]
+        L.2.2.2 hE ?_
+      refine EquivBA.trans hx ?_
+      rw [guardedFold_append, guardedFold_append]
+      refine guardedFold_fallback_congr _ ?_
+      show EquivBA (.ite L.2.1 (.seq L.2.2.1 (nextUnk rest z)) L.2.2.2)
+        (.ite L.2.1 (.seq L.2.2.1 _) L.2.2.2)
+      exact EquivBA.ite_c (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ih)
+        (EquivBA.base (Equiv.refl _))
+
+#print axioms chain_solves
+
 end GkatDeadExitElim
