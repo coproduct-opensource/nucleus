@@ -5537,6 +5537,33 @@ pullback: {ok} / {}", res.len());
                                         println!("    of those, ELIMINABLE anyway : {multi_elim} ({:.1}%)",
                                             pc7(multi_elim, multi));
                                     }
+                                    // VALIDATE THE ORACLE AGAINST THE PROOFS.  The brief's harness
+                                    // checks elim2 against the POOL; this checks it against
+                                    // LEAN-PROVED ground truth.  `chain_solves` proves a
+                                    // chain-shaped system solvable, so elim2 must accept every
+                                    // chain-shaped quotient — a disagreement is a gap in the
+                                    // oracle that the proofs can see and the pool cannot.
+                                    {
+                                        let (mut ch, mut ch_ok) = (0usize, 0usize);
+                                        for &(i, j) in crux.iter() {
+                                            let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                if ka >= su.k as usize { continue; }
+                                                if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                    if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                        let qq = trim_canon(&q).unwrap_or(q);
+                                                        if orbits(&qq).iter().all(|o| o.count_ones() <= 1) {
+                                                            ch += 1;
+                                                            if symbolic_eliminable(&qq) { ch_ok += 1; }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        println!("  ORACLE vs PROOFS (elim2 on chain-shaped, which chain_solves proves):");
+                                        println!("    elim2 accepts : {ch_ok} / {ch} ({:.1}%)  (must be all)",
+                                            pc7(ch_ok, ch));
+                                    }
                                     println!("  CERTIFICATE REACH (all SCCs singleton = chain-shaped):");
                                     println!("    chain-shaped : {sing} / {nn4} ({:.1}%)", pc7(sing, nn4));
                                 }
