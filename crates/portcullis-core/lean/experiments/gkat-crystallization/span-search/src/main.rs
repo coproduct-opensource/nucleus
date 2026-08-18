@@ -4885,6 +4885,32 @@ pullback: {ok} / {}", res.len());
                                 if any { any_ref += 1; }
                             }
                         }
+                        // POWER OF THE INSTRUMENT.  `0/4017` is only evidence if the refuter
+                        // can detect the thing at all.  Calibrate on a population KNOWN to be
+                        // non-Thompson: quotients small enough to decide against the pool
+                        // (k <= K) whose canonical form is absent from it.
+                        // the pool holds every Thompson automaton of an expression with <= K
+                        // actions, and a Thompson automaton with k states comes from exactly k
+                        // actions — so for k <= K, absence from the pool IS non-Thompson.
+                        let poolk = list.iter().map(|a| a.k as usize).max().unwrap_or(0);
+                        let (mut neg, mut neg_caught, mut pos_seen) = (0usize, 0usize, 0usize);
+                        for &(i, j) in crux.iter() {
+                            if let Some(su) = sum_core(&list[i], &list[j]) {
+                                for cg in lattice_congruences(&su).iter() {
+                                    if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
+                                        if (q.k as usize) > poolk { continue; }
+                                        let isT = canon(&q).map(|c| seen.contains_key(&c))
+                                            .unwrap_or(false);
+                                        if isT { pos_seen += 1; continue; }
+                                        neg += 1;
+                                        if refuted(&q) { neg_caught += 1; }
+                                    }
+                                }
+                            }
+                        }
+                        println!("    POWER: known non-Thompson quotients caught {neg_caught} / {neg} ({:.1}%)",
+                            pc6(neg_caught, neg));
+                        println!("           (known Thompson quotients seen for scale: {pos_seen})");
                         println!("    crux systems with EVERY lattice quotient refuted : {all_ref} / {nn} ({:.1}%)",
                             pc6(all_ref, nn));
                         println!("    crux systems with SOME quotient refuted          : {any_ref} / {nn} ({:.1}%)",
