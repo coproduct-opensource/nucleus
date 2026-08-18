@@ -275,4 +275,30 @@ theorem self_elim_atom_indexed (bs : List (Branch A T)) (fb : Exp A T) {g : Exp 
 #print axioms guardedFold_factor_gen
 #print axioms self_elim_atom_indexed
 
+/-! ## The elimination step, with an arbitrary tail
+
+    Gaussian elimination on a GKAT system picks a state, solves its own equation by W3, and
+    substitutes the closed form into the rest.  Substitution is congruence, so the only step
+    that needs an argument is solving — and the branches that recur must be gathered before W3
+    applies.  The corpus already has the gathering: `guardedFold_move_to_front_of_disjoint`
+    permutes a branch to the front whenever its guard is disjoint from what it crosses, which
+    for atom guards is automatic.
+
+    So with the recurring branches at the front, `guardedFold_append` turns the appended fold
+    into a nested one and `self_elim_atom_indexed` finishes.  The tail is arbitrary: it may
+    halt, and it may contain other unknowns. -/
+
+/-- **One elimination step.**  A state whose recurring branches lead the fold is solved by W3,
+    with everything else — halts, other unknowns — carried untouched into the tail. -/
+theorem elim_front (rec : List (Branch A T)) (rest : List (BExp T × Exp A T))
+    (fb : Exp A T) {x : Exp A T}
+    (hE : ∀ (X : Type) (W : T → X → Bool) (y : X), bval W (E (bodyFold rec)) y = false)
+    (hx : EquivBA x (guardedFold (rec.map (fun p => (p.1, .seq p.2 x)) ++ rest) fb)) :
+    EquivBA x (.seq (.wh (orGuards rec) (bodyFold rec)) (guardedFold rest fb)) := by
+  refine self_elim_atom_indexed rec (guardedFold rest fb) hE ?_
+  rw [guardedFold_append] at hx
+  exact hx
+
+#print axioms elim_front
+
 end GkatDeadExitElim
