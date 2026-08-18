@@ -3807,6 +3807,292 @@ fn ring_uniform<const NA: usize>(q: &Aut<NA>) -> bool {
     true
 }
 
+
+/// One factor of a ring body walk.
+#[derive(Debug, Clone)]
+enum RingStep {
+    /// Plain action to the next walk state (both atoms same target, or lone live atom).
+    Act(usize),
+    /// Halt on the exit guard, parked; action to next on the complement.
+    Park(usize),
+    /// Self-loop on atom `a` (inner `wh`), then the state's remaining behaviour follows.
+    SelfLoop(usize),
+    /// `ite (atom a) (p ; sol_ext) p`: exit to an already-solved state, inlined; continue to next.
+    Inline(usize, usize, usize),
+    /// `ite (atom a) p 0?`: dead guard (reject on the other atom); continue to next.
+    DeadGuard(usize, usize),
+    /// Nested sub-cycle entered on atom `a` at this state: inner while with its own walk.
+    Sub(usize, Vec<(usize, Vec<RingStep>)>),
+    /// Branch: on atom `a`, a linear side chain to the header; else continue the trunk.
+    Branch(usize, Vec<(usize, Vec<RingStep>)>, usize),
+}
+
+/// Is a factor actionless under the exit guard `c`?  (Parked runs pass through these.)
+fn park_transparent(s: &RingStep) -> bool {
+    matches!(s, RingStep::Park(_) | RingStep::SelfLoop(_))
+}
+
+/// Validity: once a walk parks, every later factor must be transparent under `c`.
+fn walk_park_valid(walk: &[(usize, Vec<RingStep>)]) -> bool {
+    let mut parked = false;
+    for (_, steps) in walk.iter() {
+        for st in steps.iter() {
+            if parked && !park_transparent(st) { return false; }
+            if matches!(st, RingStep::Park(_)) { parked = true; }
+        }
+    }
+    true
+}
+
+/// A linear chain from `t` to the header: Act/Park/SelfLoop/DeadGuard only, no
+/// branching, park-valid.  Used for the side arm of a Branch factor.
+fn side_chain<const NA: usize>(q: &Aut<NA>, members: &[usize], h: usize, t0: usize, c: u8)
+    -> Option<Vec<(usize, Vec<RingStep>)>> {
+    let inscc = |t: usize| members.contains(&t);
+    let mut cur = t0;
+    let mut out: Vec<(usize, Vec<RingStep>)> = Vec::new();
+    let mut fuel = 2 * members.len() + 4;
+    while cur != h {
+        if fuel == 0 { return None; }
+        fuel -= 1;
+        let s = cur;
+        if !inscc(s) { return None; }
+        let mut steps: Vec<RingStep> = Vec::new();
+        let selfatoms: Vec<usize> = (0..NA)
+            .filter(|&a| q.st[s][a] != 0 && (q.st[s][a] - 1) as usize == s).collect();
+        if selfatoms.len() > 1 { return None; }
+        for &a in selfatoms.iter() { steps.push(RingStep::SelfLoop(a)); }
+        let rest: Vec<usize> = (0..NA).filter(|a| !selfatoms.contains(a)).collect();
+        let ins: Vec<(usize, usize)> = rest.iter().cloned()
+            .filter(|&a| q.st[s][a] != 0 && (q.st[s][a] - 1) as usize != s)
+            .map(|a| (a, (q.st[s][a] - 1) as usize)).collect();
+        let halts: Vec<usize> = rest.iter().cloned()
+            .filter(|&a| q.st[s][a] == 0 && q.hl[s] & (1 << a) != 0).collect();
+        let rejects: Vec<usize> = rest.iter().cloned()
+            .filter(|&a| q.st[s][a] == 0 && q.hl[s] & (1 << a) == 0).collect();
+        if q.hl[s] != 0 && q.hl[s] & !c != 0 { return None; }
+        if ins.len() != 1 && !(ins.len() == 2 && ins[0].1 == ins[1].1) { return None; }
+        let t = ins[0].1;
+        if !inscc(t) { return None; }
+        if ins.len() == 2 { steps.push(RingStep::Act(t)); }
+        else if !halts.is_empty() { steps.push(RingStep::Park(t)); }
+        else if !rejects.is_empty() { steps.push(RingStep::DeadGuard(ins[0].0, t)); }
+        else { steps.push(RingStep::Act(t)); }
+        out.push((s, steps));
+        cur = t;
+    }
+    if !walk_park_valid(&out) { return None; }
+    Some(out)
+}
+
+/// Attempt a walk plan for one SCC: header + ordered per-state factor lists.
+/// Returns (header, walk as [(state, factors)]) or None.
+fn plan_scc<const NA: usize>(q: &Aut<NA>, members: &[usize]) -> Option<(usize, Vec<(usize, Vec<RingStep>)>)> {
+    let inscc = |t: usize| members.contains(&t);
+    let mut c = 0u8;
+    for &s in members.iter() { c |= q.hl[s]; }
+    if c == 0 { return None; }
+    // header: halts exactly on c, exactly one out-transition, target in SCC
+    'hdr: for &h in members.iter() {
+        if q.hl[h] != c { continue; }
+        let outs: Vec<(usize, usize)> = (0..NA)
+            .filter(|&a| q.st[h][a] != 0)
+            .map(|a| (a, (q.st[h][a] - 1) as usize)).collect();
+        if outs.len() != 1 || !inscc(outs[0].1) { continue; }
+        let mut cur = outs[0].1;
+        let mut visited = vec![h];
+        let mut walk: Vec<(usize, Vec<RingStep>)> = Vec::new();
+        let mut fuel = 4 * members.len() + 8;
+        while cur != h {
+            if visited.contains(&cur) { continue 'hdr; }
+            if fuel == 0 { continue 'hdr; }
+            fuel -= 1;
+            visited.push(cur);
+            let s = cur;
+            let mut steps: Vec<RingStep> = Vec::new();
+            // self-loop first
+            let selfatoms: Vec<usize> = (0..NA)
+                .filter(|&a| q.st[s][a] != 0 && (q.st[s][a] - 1) as usize == s).collect();
+            if selfatoms.len() > 1 { continue 'hdr; }
+            for &a in selfatoms.iter() { steps.push(RingStep::SelfLoop(a)); }
+            let rest: Vec<usize> = (0..NA).filter(|a| !selfatoms.contains(a)).collect();
+            let ins: Vec<(usize, usize)> = rest.iter().cloned()
+                .filter(|&a| q.st[s][a] != 0 && inscc((q.st[s][a] - 1) as usize) && (q.st[s][a] - 1) as usize != s)
+                .map(|a| (a, (q.st[s][a] - 1) as usize)).collect();
+            let exts: Vec<(usize, usize)> = rest.iter().cloned()
+                .filter(|&a| q.st[s][a] != 0 && !inscc((q.st[s][a] - 1) as usize))
+                .map(|a| (a, (q.st[s][a] - 1) as usize)).collect();
+            let halts: Vec<usize> = rest.iter().cloned()
+                .filter(|&a| q.st[s][a] == 0 && q.hl[s] & (1 << a) != 0).collect();
+            let rejects: Vec<usize> = rest.iter().cloned()
+                .filter(|&a| q.st[s][a] == 0 && q.hl[s] & (1 << a) == 0).collect();
+            if q.hl[s] != 0 && q.hl[s] & !c != 0 { continue 'hdr; }
+            let next: usize;
+            match ins.len() {
+                1 => {
+                    let (_, t) = ins[0];
+                    if !halts.is_empty() {
+                        steps.push(RingStep::Park(t));
+                    } else if let Some(&(ae, te)) = exts.first() {
+                        if reachable_halts(q, te) & !c != 0 { continue 'hdr; }
+                        steps.push(RingStep::Inline(ae, te, t));
+                    } else if !rejects.is_empty() {
+                        steps.push(RingStep::DeadGuard(ins[0].0, t));
+                    } else {
+                        steps.push(RingStep::Act(t));
+                    }
+                    next = t;
+                }
+                2 => {
+                    let (a0, t0) = ins[0];
+                    let (a1, t1) = ins[1];
+                    if t0 == t1 { steps.push(RingStep::Act(t0)); next = t0; }
+                    else if {
+                        let returns_chk = |t: usize| -> bool {
+                            let mut seen = [false; MAXK];
+                            let mut st2 = vec![t];
+                            seen[t] = true;
+                            while let Some(u) = st2.pop() {
+                                if u == s { return true; }
+                                if u == h { continue; }
+                                for a in 0..NA {
+                                    if q.st[u][a] != 0 {
+                                        let v = (q.st[u][a] - 1) as usize;
+                                        if !seen[v] { seen[v] = true; st2.push(v); }
+                                    }
+                                }
+                            }
+                            false
+                        };
+                        (returns_chk(ins[0].1) && !returns_chk(ins[1].1))
+                            || (returns_chk(ins[1].1) && !returns_chk(ins[0].1))
+                    } {
+                        // one branch is a sub-cycle returning to s without passing h
+                        let returns = |t: usize| -> bool {
+                            let mut seen = [false; MAXK];
+                            let mut st2 = vec![t];
+                            seen[t] = true;
+                            while let Some(u) = st2.pop() {
+                                if u == s { return true; }
+                                if u == h { continue; }
+                                for a in 0..NA {
+                                    if q.st[u][a] != 0 {
+                                        let v = (q.st[u][a] - 1) as usize;
+                                        if !seen[v] { seen[v] = true; st2.push(v); }
+                                    }
+                                }
+                            }
+                            false
+                        };
+                        let (a0, t0) = ins[0];
+                        let (a1, t1) = ins[1];
+                        let (asub, tsub, tcont) = if returns(t0) && !returns(t1) { (a0, t0, t1) }
+                            else if returns(t1) && !returns(t0) { (a1, t1, t0) }
+                            else { continue 'hdr };
+                        // inner walk from tsub back to s: only Act/DeadGuard/SelfLoop factors
+                        let mut icur = tsub;
+                        let mut iwalk: Vec<(usize, Vec<RingStep>)> = Vec::new();
+                        let mut ifuel = 2 * members.len() + 4;
+                        let ok = loop {
+                            if icur == s { break true; }
+                            if ifuel == 0 { break false; }
+                            ifuel -= 1;
+                            let u = icur;
+                            if q.hl[u] != 0 { break false; }
+                            let mut isteps: Vec<RingStep> = Vec::new();
+                            let uself: Vec<usize> = (0..NA)
+                                .filter(|&a| q.st[u][a] != 0 && (q.st[u][a] - 1) as usize == u).collect();
+                            if uself.len() > 1 { break false; }
+                            for &a in uself.iter() { isteps.push(RingStep::SelfLoop(a)); }
+                            let urest: Vec<usize> = (0..NA).filter(|a| !uself.contains(a)).collect();
+                            let uins: Vec<(usize, usize)> = urest.iter().cloned()
+                                .filter(|&a| q.st[u][a] != 0)
+                                .map(|a| (a, (q.st[u][a] - 1) as usize)).collect();
+                            let urejects: Vec<usize> = urest.iter().cloned()
+                                .filter(|&a| q.st[u][a] == 0).collect();
+                            match uins.len() {
+                                1 => {
+                                    let (ua, ut) = uins[0];
+                                    if !urejects.is_empty() { isteps.push(RingStep::DeadGuard(ua, ut)); }
+                                    else { isteps.push(RingStep::Act(ut)); }
+                                    iwalk.push((u, isteps));
+                                    icur = ut;
+                                }
+                                2 if uins[0].1 == uins[1].1 => {
+                                    isteps.push(RingStep::Act(uins[0].1));
+                                    let t = uins[0].1;
+                                    iwalk.push((u, isteps));
+                                    icur = t;
+                                }
+                                _ => break false,
+                            }
+                        };
+                        if !ok { continue 'hdr; }
+                        steps.push(RingStep::Sub(asub, iwalk));
+                        steps.push(RingStep::Act(tcont));
+                        next = tcont;
+                    }
+                    else if ins.iter().any(|&(_, t)| t == h) {
+                        // BRANCH: one arm to the header directly, the other continues the
+                        // trunk — or a linear side chain to the header (checked below).
+                        let (ah, _) = *ins.iter().find(|&&(_, t)| t == h).unwrap();
+                        let (_, tc) = *ins.iter().find(|&&(_, t)| t != h).unwrap();
+                        steps.push(RingStep::Branch(ah, Vec::new(), tc));
+                        next = tc;
+                    }
+                    else if let Some((aside, side, tcont)) = {
+                        // try each arm as a linear side chain to the header
+                        let mut found: Option<(usize, Vec<(usize, Vec<RingStep>)>, usize)> = None;
+                        for (i, &(ai, ti)) in ins.iter().enumerate() {
+                            let other = ins[1 - i].1;
+                            if let Some(chain) = side_chain(q, members, h, ti, c) {
+                                // side chain must not re-enter the trunk
+                                if chain.iter().all(|(u, _)| *u != other && !visited.contains(u)) {
+                                    found = Some((ai, chain, other));
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    } {
+                        steps.push(RingStep::Branch(aside, side, tcont));
+                        next = tcont;
+                    }
+                    else { continue 'hdr; }
+                }
+                _ => continue 'hdr,
+            }
+            walk.push((s, steps));
+            cur = next;
+        }
+        if !walk_park_valid(&walk) { continue 'hdr; }
+        return Some((h, walk));
+    }
+    None
+}
+
+/// Print a ring plan for every nontrivial SCC of `q`; returns false if any SCC has no plan.
+fn print_ring_plan<const NA: usize>(q: &Aut<NA>) -> bool {
+    let sccs = sccs_of(q);
+    let mut ok = true;
+    for members in sccs.iter() {
+        let nontrivial = members.len() > 1;
+        if !nontrivial { continue; }
+        match plan_scc(q, members) {
+            Some((h, walk)) => {
+                let mut c = 0u8;
+                for &s in members.iter() { c |= q.hl[s]; }
+                println!("    RING SCC {:?} header={} exit=0b{:02b}", members, h, c);
+                for (s, steps) in walk.iter() {
+                    println!("      state {s}: {:?}", steps);
+                }
+            }
+            None => { println!("    RING SCC {:?}: NO PLAN", members); ok = false; }
+        }
+    }
+    ok
+}
+
 /// PAD_ATTACK: the k=6 residue pairs, re-analysed in isolation.  For each pair: every
 /// merged-start congruence quotient with its size / eliminability / pool verdict, and the
 /// full table of each small quotient — the raw material for a hand proof.
@@ -3913,6 +4199,7 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
         if let Some((_, _, ref q)) = best_cert {
             if ring_uniform(q) { ring_yes += 1; } else { ring_no += 1;
                 println!("  RING-NONUNIFORM pair #{}", pi + 1); }
+            if !print_ring_plan(q) { println!("  RING-UNPLANNABLE pair #{}", pi + 1); }
         }
         // CERT block for the smallest untrimmed-clean quotient, in emit_cert.py's format.
         if let Some((blk, nb, q)) = best_cert {
