@@ -765,6 +765,12 @@ lean_lib «GkatCertK4n2» where
 lean_lib «GkatCertK4n3» where
   roots := #[`GkatCertK4n3]
 
+lean_lib «GkatCertT1» where
+  roots := #[`GkatCertT1]
+
+lean_lib «GkatCertT2» where
+  roots := #[`GkatCertT2]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]

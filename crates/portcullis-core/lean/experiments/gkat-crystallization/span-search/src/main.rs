@@ -6050,6 +6050,89 @@ pullback: {ok} / {}", res.len());
                                             if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
                                                 if let Some(q) = quotient_by(&su, &b2, nb2) {
                                                     let qq = trim_canon(&q).unwrap_or(q);
+                                                    let tmode = std::env::var("PAD_EMIT_T").is_ok();
+                                                    if tmode {
+                                                        if symbolic_eliminable(&qq) { continue; }
+                                                        let gidx = match canon(&qq).and_then(|c| seen.get(&c).copied()) {
+                                                            Some(g) => g as usize, None => continue };
+                                                        done += 1;
+                                                        println!("  CERT-T #{done}");
+                                                        println!("    LEAN e := {}", expr_lean(&list, &prov, i as u32));
+                                                        println!("    LEAN f := {}", expr_lean(&list, &prov, j as u32));
+                                                        println!("    LEAN g := {}", expr_lean(&list, &prov, gidx as u32));
+                                                        let gpaths = state_paths(&list, &prov, gidx as u32);
+                                                        let gs = structural(&list, &prov, gidx as u32);
+                                                        let gord = canon_order(&gs);
+                                                        let mut path_of_trim = vec![String::new(); qq.k as usize];
+                                                        for (sidx, pth) in gpaths.iter().enumerate() {
+                                                            let c = gord[sidx];
+                                                            if c != u8::MAX { path_of_trim[c as usize] = pth.clone(); }
+                                                        }
+                                                        println!("    LEAN g table (structural index: hlt, steps, path):");
+                                                        for sx in 0..gs.k as usize {
+                                                            let tg: Vec<String> = (0..NA).map(|y|
+                                                                if gs.st[sx][y] == 0 { "-".to_string() }
+                                                                else { gpaths[(gs.st[sx][y]-1) as usize].clone() }).collect();
+                                                            println!("      {}: hlt={:#04b} steps={:?} path={}",
+                                                                sx, gs.hl[sx], tg, gpaths[sx]);
+                                                        }
+                                                        println!("    LEAN sum table (index: hlt, steps by atom):");
+                                                        for sx in 0..su.k as usize {
+                                                            let tgts: Vec<String> = (0..NA).map(|y|
+                                                                if su.st[sx][y] == 0 { "-".to_string() }
+                                                                else { format!("{}", su.st[sx][y] - 1) }).collect();
+                                                            println!("      {}: hlt={:#04b} steps={:?}", sx, su.hl[sx], tgts);
+                                                        }
+                                                        let gpath_of = |sum_idx: usize| -> String {
+                                                            let b = b2[sum_idx];
+                                                            if let Some(qraw) = quotient_by(&su, &b2, nb2) {
+                                                                let mut ord = [u8::MAX; MAXK];
+                                                                let mut queue = [0usize; MAXK];
+                                                                let (mut qh, mut qt2) = (0usize, 0usize);
+                                                                let mut n = 0u8;
+                                                                for y in 0..NA {
+                                                                    if qraw.it[y] != 0 {
+                                                                        let t = (qraw.it[y] - 1) as usize;
+                                                                        if ord[t] == u8::MAX { ord[t] = n; n += 1; queue[qt2] = t; qt2 += 1; }
+                                                                    }
+                                                                }
+                                                                while qh < qt2 {
+                                                                    let sq = queue[qh]; qh += 1;
+                                                                    for y in 0..NA {
+                                                                        if qraw.st[sq][y] != 0 {
+                                                                            let t = (qraw.st[sq][y] - 1) as usize;
+                                                                            if ord[t] == u8::MAX { ord[t] = n; n += 1; queue[qt2] = t; qt2 += 1; }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                if ord[b] == u8::MAX { return "UNREACHABLE".to_string(); }
+                                                                return path_of_trim[ord[b] as usize].clone();
+                                                            }
+                                                            "?".to_string()
+                                                        };
+                                                        let permute2 = |idx: u32| -> Vec<String> {
+                                                            let paths = state_paths(&list, &prov, idx);
+                                                            let sa = structural(&list, &prov, idx);
+                                                            let ord = canon_order(&sa);
+                                                            let mut out = vec![String::new(); paths.len()];
+                                                            for (sidx, p) in paths.iter().enumerate() {
+                                                                let c = ord[sidx];
+                                                                if c != u8::MAX { out[c as usize] = p.clone(); }
+                                                            }
+                                                            out
+                                                        };
+                                                        let pe2 = permute2(i as u32);
+                                                        let pf2 = permute2(j as u32);
+                                                        println!("    LEAN tmap (e-side): none -> {}", gpath_of(0));
+                                                        for (pi, path) in pe2.iter().enumerate() {
+                                                            println!("      inl (some {}) -> {}", path, gpath_of(1 + pi));
+                                                        }
+                                                        println!("    LEAN tmap (f-side): none -> {}", gpath_of(ka));
+                                                        for (pi, path) in pf2.iter().enumerate() {
+                                                            println!("      inr (some {}) -> {}", path, gpath_of(ka + 1 + pi));
+                                                        }
+                                                        continue;
+                                                    }
                                                     if !orbits(&qq).iter().all(|o| o.count_ones() <= 1) { continue; }
                                                     done += 1;
                                                     println!("  CERT #{done}");
