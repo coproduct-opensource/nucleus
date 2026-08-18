@@ -182,4 +182,97 @@ theorem ua2_of_dead_exit_fold {b0 : BExp T} {e0 f0 : Exp A T} (bs : List (Branch
 #print axioms ua2_of_dead_exit
 #print axioms ua2_of_dead_exit_snd
 
+
+
+/-! ## The atom-indexed kernel
+
+    `chain_elim_dead_exit_fold` demands the eliminated state NEVER HALT.  That is far stronger
+    than what the elimination actually needs, and the gap is large: measured, a per-STATE
+    condition reaches 17.4% of the systems completeness must solve, while the same rule applied
+    PER LEAF-ATOM reaches 99.74%.  A state may halt freely, so long as no halt sits at an atom
+    where the variable recurs.
+
+    The reason is that the fold's branches are guarded by disjoint atoms, so the recurring
+    branches and the halting ones never overlap.  Gathering the recurring branches turns the
+    equation into Salomaa form `x ≡ E·x +_b F`, where `F` keeps every halt — and then it is
+    W3, with no side condition beyond productivity of `E`.
+
+    The gathering step is below.  It is U5 (factor the common tail out of each branch), U3
+    (reassociate the accumulated guard), and a congruence under `¬α` to see that `α ∨ β` and
+    `β` agree in the else arm. -/
+
+/-- The disjunction of a branch list's guards. -/
+def orGuards (bs : List (Branch A T)) : BExp T :=
+  bs.foldr (fun p acc => .or p.1 acc) .zero
+
+/-- The branch list with the common tail stripped. -/
+def bodyFold (bs : List (Branch A T)) : Exp A T :=
+  bs.foldr (fun p acc => .ite p.1 p.2 acc) (.test .zero)
+
+/-- A choice on an unsatisfiable guard is its else arm. -/
+theorem ite_zero_guard {z : BExp T} (e f : Exp A T)
+    (hz : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W z x = false) :
+    EquivBA (.ite z e f) f :=
+  EquivBA.trans (EquivBA.base (Equiv.u2 z e f))
+    (ite_taut f e (fun X W x => by
+      show (!bval W z x) = true
+      rw [hz X W x]; rfl))
+
+/-- Gathering step: `P +_α (Q +_β R) ≡ (P +_α Q) +_{α∨β} R`. -/
+theorem ite_gather {α β : BExp T} (P Q R : Exp A T) :
+    EquivBA (.ite α P (.ite β Q R)) (.ite (.or α β) (.ite α P Q) R) := by
+  refine EquivBA.symm (EquivBA.trans (EquivBA.base (Equiv.u3 α (.or α β) P Q R)) ?_)
+  refine EquivBA.trans (EquivBA.ite_guard (fun _ W x => by
+    show (bval W α x && (bval W α x || bval W β x)) = bval W α x
+    cases bval W α x <;> rfl)) ?_
+  -- in the else arm `α ∨ β` and `β` agree, since `¬α` holds there
+  have hmid : EquivBA (.seq (.test (.not α)) (.ite (.or α β) Q R))
+      (.seq (.test (.not α)) (.ite β Q R)) := by
+    refine EquivBA.trans (test_seq_ite (.not α) (.or α β) Q R) ?_
+    refine EquivBA.trans (EquivBA.ite_guard
+      (b := .and (.not α) (.or α β)) (c := .and (.not α) β)
+      (fun _ W x => by
+        show ((!bval W α x) && (bval W α x || bval W β x))
+          = ((!bval W α x) && bval W β x)
+        cases bval W α x <;> cases bval W β x <;> rfl)) ?_
+    exact EquivBA.symm (test_seq_ite (.not α) β Q R)
+  refine EquivBA.trans (EquivBA.base (Equiv.u2 α P (.ite (.or α β) Q R))) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.u4 (.not α) (.ite (.or α β) Q R) P)) ?_
+  refine EquivBA.trans
+    (EquivBA.ite_c (e := .seq (.test (.not α)) (.ite (.or α β) Q R))
+      (e' := .seq (.test (.not α)) (.ite β Q R)) hmid (EquivBA.base (Equiv.refl P))) ?_
+  exact EquivBA.trans
+    (EquivBA.symm (EquivBA.base (Equiv.u4 (.not α) (.ite β Q R) P)))
+    (EquivBA.symm (EquivBA.base (Equiv.u2 α P (.ite β Q R))))
+
+/-- **Factoring a common tail out of a whole fold, with an arbitrary fallback.**
+
+    Every branch runs its own body and then the SAME `g`; the fallback is untouched and may
+    halt.  The result is Salomaa-shaped in `g`. -/
+theorem guardedFold_factor_gen (bs : List (Branch A T)) (g fb : Exp A T) :
+    EquivBA (guardedFold (bs.map (fun p => (p.1, .seq p.2 g))) fb)
+      (.ite (orGuards bs) (.seq (bodyFold bs) g) fb) := by
+  induction bs with
+  | nil =>
+      exact EquivBA.symm (ite_zero_guard _ _ (fun _ _ _ => rfl))
+  | cons b bs ih =>
+      show EquivBA (.ite b.1 (.seq b.2 g) (guardedFold (bs.map _) fb)) _
+      refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih) ?_
+      refine EquivBA.trans (ite_gather _ _ _) ?_
+      exact EquivBA.ite_c (EquivBA.symm (ite_seq_right b.1 b.2 (bodyFold bs) g))
+        (EquivBA.base (Equiv.refl fb))
+
+/-- **The atom-indexed elimination kernel.**  A state whose recurring branches all return to
+    itself, with halts allowed anywhere else, eliminates by W3 alone. -/
+theorem self_elim_atom_indexed (bs : List (Branch A T)) (fb : Exp A T) {g : Exp A T}
+    (hE : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E (bodyFold bs)) x = false)
+    (hg : EquivBA g (guardedFold (bs.map (fun p => (p.1, .seq p.2 g))) fb)) :
+    EquivBA g (.seq (.wh (orGuards bs) (bodyFold bs)) fb) :=
+  EquivBA.w3_ba (EquivBA.baTest hE)
+    (EquivBA.trans hg (guardedFold_factor_gen bs g fb))
+
+#print axioms ite_gather
+#print axioms guardedFold_factor_gen
+#print axioms self_elim_atom_indexed
+
 end GkatDeadExitElim
