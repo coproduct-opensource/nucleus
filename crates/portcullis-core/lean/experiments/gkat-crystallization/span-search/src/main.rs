@@ -3799,6 +3799,22 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     // guard-split duplication move.  If that is what is going on here, "the pullback is not
     // itself syntax-generated" should coincide with "the pullback is irreducible".
     {
+        // DOES THE canon-REJECTS-NON-TRIM BUG REACH THE MAIN CONJUNCT?  The conjunct is the
+        // pullback LISTED ON ITS REACHABLE STATES, so trimming is the intended semantics, not a
+        // relaxation — and `unshare_rec` bails at `canon(p)?`, so a non-trim pullback stalls.
+        {
+            let (mut ntrim, mut shrank, mut tot) = (0usize, 0usize, 0usize);
+            for r in pb.iter() {
+                if let Some(q) = pullback(&list[r.0], &list[r.1]) {
+                    tot += 1;
+                    if canon(&q).is_none() { ntrim += 1; }
+                    if let Some(t) = trim_canon(&q) { if t.k < q.k { shrank += 1; } }
+                }
+            }
+            let pcx = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+            println!("  [diag] pullbacks: {tot}, canon-rejected (non-trim) {ntrim} ({:.1}%), shrink under trim {shrank}",
+                pcx(ntrim, tot));
+        }
         let (mut tr, mut tn, mut nr, mut nn) = (0usize, 0usize, 0usize, 0usize);
         for r in pb.iter() {
             if !r.3 { continue; }
