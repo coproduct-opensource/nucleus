@@ -5393,7 +5393,7 @@ pullback: {ok} / {}", res.len());
                     // B's half is unreachable and TRIMMING COULD DELETE IT — leaving Thompson(e)
                     // alone, which is trivially Thompson.  The conjunct demands the two START
                     // STATES be identified; the harness never checked that.  Check it now.
-                    if std::env::var("PAD_DIAG").is_ok() {
+                    {
                         let (mut ok_any, mut ok_start, mut n) = (0usize, 0usize, 0usize);
                         for &(i, j) in crux.iter() {
                             let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
