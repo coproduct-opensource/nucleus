@@ -729,6 +729,10 @@ lean_lib «GkatThompsonNestedProofs» where
 lean_lib «GkatSolvableNestedProofs» where
   roots := #[`GkatSolvableNestedProofs]
 
+-- The certificate pipeline's first instance: CERT #3, kernel-checked end to end.
+lean_lib «GkatCertPilotProofs» where
+  roots := #[`GkatCertPilotProofs]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
