@@ -5624,6 +5624,59 @@ pullback: {ok} / {}", res.len());
                                                     }
                                                 }
                                             }
+                                            // ROBUSTNESS.  Suppose elim2 is discounted ENTIRELY on
+                                            // multi-state SCCs without the `elim_scc2` shape — the
+                                            // cases where both states have live fallbacks and both
+                                            // elimination orders nest, i.e. genuine UA_2 instances.
+                                            // Does the Thompson witness still cover them?
+                                            {
+                                                let (mut susp, mut susp_t) = (0usize, 0usize);
+                                                for &(i, j) in crux.iter() {
+                                                    let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                    if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                        if ka >= su.k as usize { continue; }
+                                                        if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                            if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                                let qq = trim_canon(&q).unwrap_or(q);
+                                                                let os = orbits(&qq);
+                                                                if os.iter().all(|o| o.count_ones() <= 1) { continue; }
+                                                                let mut shape = false;
+                                                                for o in os.iter() {
+                                                                    if o.count_ones() != 2 { continue; }
+                                                                    let mut mem: Vec<usize> = Vec::new();
+                                                                    for t in 0..qq.k as usize {
+                                                                        if o & (1 << t) != 0 { mem.push(t); }
+                                                                    }
+                                                                    let facs = |a: usize, b: usize| -> bool {
+                                                                        qq.hl[a] == 0 && (0..NA).all(|y|
+                                                                            qq.st[a][y] == 0
+                                                                            || (qq.st[a][y] - 1) as usize == b)
+                                                                    };
+                                                                    if facs(mem[0], mem[1]) || facs(mem[1], mem[0]) { shape = true; }
+                                                                }
+                                                                if shape { continue; }
+                                                                susp += 1;
+                                                                // does ANY start-merging quotient give Thompson?
+                                                                let mut cands: Vec<([usize; MAXK], usize)> = vec![(b2, nb2)];
+                                                                for cg in lattice_congruences(&su).iter() {
+                                                                    if cg.0[0] == cg.0[ka] { cands.push(*cg); }
+                                                                }
+                                                                for (c2, cn2) in cands.iter() {
+                                                                    if let Some(qz) = quotient_by(&su, c2, *cn2) {
+                                                                        if trim_canon(&qz).and_then(|t| canon(&t))
+                                                                            .map(|c| seen.contains_key(&c))
+                                                                            .unwrap_or(false) { susp_t += 1; break; }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                println!("  ROBUSTNESS: discount elim2 on unshaped multi-SCCs — does Thompson cover?");
+                                                println!("    unshaped multi-SCC quotients : {susp}");
+                                                println!("    of those, a Thompson quotient exists : {susp_t} ({:.1}%)",
+                                                    pc7(susp_t, susp));
+                                            }
                                             println!("  IS THE LINEAR RESTRICTION BINDING? (one forward successor per state)");
                                             println!("    linear : {lin} / {chn} chain-shaped ({:.1}%)", pc7(lin, chn));
                                         }
