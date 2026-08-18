@@ -5366,7 +5366,7 @@ pullback: {ok} / {}", res.len());
                     // where it would need an UNGUARDED UNION (a halt or a second variable on a
                     // recurrence atom, created by substitution).  Does the congruence lattice
                     // always contain a quotient where that never happens?
-                    if std::env::var("PAD_DIAG").is_ok() {
+                    {
                         let (mut nfail, mut byelim, mut bythom, mut byboth, mut neither) =
                             (0usize, 0usize, 0usize, 0usize, 0usize);
                         for &(i, j) in crux.iter() {
@@ -5947,6 +5947,60 @@ pullback: {ok} / {}", res.len());
                                     println!("    fires on NON-equivalent   : {bad} / {bn}  (must be 0)");
                                 }
                                 println!("    of the failures, a COMMON REFINEMENT discharges : {refw}");
+                                // CERTIFICATE EXTRACTION.  For chain-shaped start-merged quotients, dump the
+                                // per-state level data (recurring branches, forward branches, fallback) plus a
+                                // reverse-topological order — everything the Lean checker (`level_satisfies` +
+                                // `levels_solve`) consumes.  Producer data first, emitted proofs second.
+                                if std::env::var("PAD_EMIT").is_ok() {
+                                    let want: usize = std::env::var("PAD_EMIT").ok()
+                                        .and_then(|v| v.parse().ok()).unwrap_or(3);
+                                    let mut done = 0usize;
+                                    for &(i, j) in crux.iter() {
+                                        if done >= want { break; }
+                                        let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                        if let Some(su) = sum_core(&list[i], &list[j]) {
+                                            if ka >= su.k as usize { continue; }
+                                            if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                    let qq = trim_canon(&q).unwrap_or(q);
+                                                    if !orbits(&qq).iter().all(|o| o.count_ones() <= 1) { continue; }
+                                                    done += 1;
+                                                    println!("  CERT #{done}");
+                                                    println!("    e = {}", expr_of(&list, &prov, i as u32, 14));
+                                                    println!("    f = {}", expr_of(&list, &prov, j as u32, 14));
+                                                    println!("    quotient k={} ih={} it={:?}", qq.k, qq.ih, &qq.it[..]);
+                                                    for sx in 0..qq.k as usize {
+                                                        let mut rec: Vec<String> = Vec::new();
+                                                        let mut fwd: Vec<String> = Vec::new();
+                                                        for y in 0..NA {
+                                                            if qq.st[sx][y] == 0 { continue; }
+                                                            let t = (qq.st[sx][y] - 1) as usize;
+                                                            if t == sx { rec.push(format!("(atom{y}, act)")); }
+                                                            else { fwd.push(format!("(atom{y}, act, s{t})")); }
+                                                        }
+                                                        println!("    s{sx}: rec={:?} fwd={:?} hlt={:#04b}", rec, fwd, qq.hl[sx]);
+                                                    }
+                                                    // reverse-topological order over the condensation (singleton SCCs)
+                                                    let k = qq.k as usize;
+                                                    let mut order: Vec<usize> = Vec::new();
+                                                    let mut placed = vec![false; k];
+                                                    while order.len() < k {
+                                                        for sx in 0..k {
+                                                            if placed[sx] { continue; }
+                                                            let ready = (0..NA).all(|y| {
+                                                                if qq.st[sx][y] == 0 { return true; }
+                                                                let t = (qq.st[sx][y] - 1) as usize;
+                                                                t == sx || placed[t]
+                                                            });
+                                                            if ready { placed[sx] = true; order.push(sx); }
+                                                        }
+                                                    }
+                                                    println!("    solve order (reverse-topological): {:?}", order);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 println!("  THE UNION CONJUNCT (starts merged, Thompson OR eliminable):");
                                 println!("    holds : {u_ok} / {u_n} ({:.1}%)", pc7(u_ok, u_n));
                                 println!("    only elimination works : {only_e}");
