@@ -4430,6 +4430,41 @@ pullback: {ok} / {}", res.len());
                                    !llee(ra) as usize))
                         .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
                     rs += tallies.0; rp += tallies.1; rl += tallies.2;
+                    // THE DISCRIMINATOR.  The control above keeps only NON-nested automata and
+                    // measures REJECTION — it tests soundness against semantic unsolvability.
+                    // The complement decides a different question: does `symbolic_eliminable`
+                    // track SOLVABILITY or DERIVABILITY?  Nested automata are exactly the
+                    // solvable ones.  If elim2 accepts essentially all of them it is measuring
+                    // solvability, which the covariety gives for free; if it rejects a real
+                    // fraction it is stricter, and may track derivability.
+                    {
+                        let mut rng4: u64 = 0x9E3779B97F4A7C15;
+                        let mut rnd4 = move || { rng4 ^= rng4 << 13; rng4 ^= rng4 >> 7; rng4 ^= rng4 << 17; rng4 };
+                        let mut pos: Vec<Aut<NA>> = Vec::new();
+                        let mut tried4 = 0usize;
+                        while pos.len() < 5000 && tried4 < 4000000 {
+                            tried4 += 1;
+                            let kk = 4 + (rnd4() % 5) as usize;
+                            let mut st = [[0u8; NA]; MAXK];
+                            let mut hl = [0u8; MAXK];
+                            for x in 0..kk {
+                                for y in 0..NA {
+                                    if rnd4() % 3 == 0 { hl[x] |= 1 << y; }
+                                    else if rnd4() % 2 == 0 { st[x][y] = 1 + (rnd4() % kk as u64) as u8; }
+                                }
+                            }
+                            let mut it0 = [0u8; NA];
+                            for y in 0..NA { it0[y] = 1 + (rnd4() % kk as u64) as u8; }
+                            let ra = Aut::<NA> { k: kk as u8, it: it0, ih: (rnd4() % 4) as u8, st, hl };
+                            let ra = match canon(&ra) { Some(c) => c, None => continue };
+                            if !nested(&ra) { continue; }      // keep only the SOLVABLE ones
+                            pos.push(ra);
+                        }
+                        let acc = pos.par_iter().filter(|ra| symbolic_eliminable(ra)).count();
+                        let pc9 = |a: usize, b: usize| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+                        println!("    DISCRIMINATOR: elim2 accepts {acc} / {} nested (solvable) automata ({:.1}%)",
+                            pos.len(), pc9(acc, pos.len()));
+                    }
                     // print one unsound acceptance: non-nested (hence no solution) yet llee-accepted
                     {
                         let mut rng3: u64 = 0xD1B54A32D192ED03;
