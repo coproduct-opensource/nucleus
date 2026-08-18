@@ -5579,6 +5579,37 @@ pullback: {ok} / {}", res.len());
                                             println!("  DOES elim_scc2 APPLY? (one state factors through the other, dead exit)");
                                             println!("    shape holds : {sh} / {n2} ({:.1}%)", pc7(sh, n2));
                                         }
+                                        // TWIN-CRYSTAL TEST.  Grabmayer: SCCs that resist collapse take a
+                                        // "twin-crystal" shape — bisimilar copies that cannot be merged.  If my
+                                        // multi-state SCCs are twins, a coarser quotient collapses them and they
+                                        // are not really the hard case.  If their states are NOT bisimilar, they
+                                        // are genuinely distinct and the twin-crystal frame does not apply.
+                                        {
+                                            let (mut tw, mut nsc) = (0usize, 0usize);
+                                            for &(i, j) in crux.iter() {
+                                                let ka = match to_gaut(&list[i]) { Some(g) => g.k as usize, None => continue };
+                                                if let Some(su) = sum_core(&list[i], &list[j]) {
+                                                    if ka >= su.k as usize { continue; }
+                                                    if let Some((b2, nb2)) = close_congruence(&su, &[(0, ka)]) {
+                                                        if let Some(q) = quotient_by(&su, &b2, nb2) {
+                                                            let qq = trim_canon(&q).unwrap_or(q);
+                                                            let (bb, _) = bisim_blocks(&qq);
+                                                            for o in orbits(&qq).iter() {
+                                                                if o.count_ones() < 2 { continue; }
+                                                                nsc += 1;
+                                                                let mut mem: Vec<usize> = Vec::new();
+                                                                for t in 0..qq.k as usize {
+                                                                    if o & (1 << t) != 0 { mem.push(t); }
+                                                                }
+                                                                if mem.iter().any(|&a| mem.iter().any(|&b| a != b && bb[a] == bb[b])) { tw += 1; }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            println!("  TWIN-CRYSTAL TEST (are the SCC states bisimilar?):");
+                                            println!("    SCCs containing a bisimilar pair : {tw} / {nsc} ({:.1}%)", pc7(tw, nsc));
+                                        }
                                         println!("  THE REMAINING OBJECT (multi-state SCCs):");
                                         println!("    quotients with one : {multi}");
                                         println!("    largest SCC size   : {:?}", &dist[2..8]);
