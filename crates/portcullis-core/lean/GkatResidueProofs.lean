@@ -102,6 +102,45 @@ theorem test_seq_ite_else (b : BExp T) (e f : Exp A T) :
     (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.base (Equiv.u2 b e f)))
     (test_seq_ite_of_implies (b := .not b) (z := .not b) f e (fun _ _ _ h => h))
 
+/-! ## The schema
+
+    Pair #3 is an instance of something general, and the general statement is the part worth
+    keeping: it is the tool for attacking the other seven. -/
+
+/-- Productivity is inherited by every cyclic power: if `e` cannot halt immediately, neither
+    can `e` iterated `n` times, because `E` of a sequence is the conjunction. -/
+theorem E_expK (g : BExp T) {e : Exp A T}
+    (hEe : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e) x = false) (n : Nat) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E (expK g e n)) x = false := by
+  induction n with
+  | zero => exact hEe
+  | succ m ih =>
+      intro X W x
+      show (bval W (E (expK g e m)) x && _) = false
+      rw [ih X W x]; rfl
+
+/-- **A loop whose body is a cyclic power of `e`, asserted under the guard, is `e`'s loop.**
+
+    `body ≡ g? · eⁿ  ⟹  body^(g) ≡ e^(g)`, for productive `e`.
+
+    This is the schema behind pair #3, and it says something simple: where the iteration
+    boundary falls is not observable.  A loop that does two turns of work per iteration and one
+    that does one are the same loop, provided the bodies agree once the guard is asserted —
+    which is the only place they need to agree, since the body runs nowhere else.
+
+    All three ingredients were already present.  `Refines.cyc` supplies the change of
+    granularity (via `cyclicCoverExp`, a genuine cover, not an axiom), `wh_restrict_body`
+    strips the guard assertion the first step introduces, and `E_expK` discharges the
+    productivity obligation from productivity of `e` alone. -/
+theorem wh_cyc_body {g : BExp T} {body e : Exp A T} {n : Nat}
+    (hbody : EquivBA body (.seq (.test g) (expK g e n)))
+    (hEe : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E e) x = false) :
+    EquivBA (.wh g body) (.wh g e) :=
+  EquivBA.trans (EquivBA.wh_c hbody)
+    (EquivBA.trans
+      (EquivBA.symm (wh_restrict_body (EquivBA.baTest (E_expK g hEe n))))
+      (EquivBA.symm (equivBA_of_refines (Refines.cyc g e n))))
+
 /-! ## The pair -/
 
 /-- `A = 0 +_b p` — fail under `b`, run `p` otherwise. -/
@@ -147,14 +186,8 @@ theorem resA_seq_resC (b : BExp T) (p : Exp A T) :
     proof that granularity is immaterial. -/
 theorem wh_resA_resC (b : BExp T) (p : Exp A T)
     (hEp : ∀ (X : Type) (W : T → X → Bool) (x : X), bval W (E p) x = false) :
-    EquivBA (.wh (.not b) (.seq (resA b p) (resC b p))) (.wh (.not b) p) := by
-  have hE : EquivBA (.test (E (.seq p (resD b p))) : Exp A T) (.test .zero) :=
-    EquivBA.baTest (fun X W x => by
-      show (bval W (E p) x && _) = false
-      rw [hEp X W x]; rfl)
-  refine EquivBA.trans (EquivBA.wh_c (resA_seq_resC b p)) ?_
-  refine EquivBA.trans (EquivBA.symm (wh_restrict_body hE)) ?_
-  exact EquivBA.symm (equivBA_of_refines (Refines.cyc (.not b) p 1))
+    EquivBA (.wh (.not b) (.seq (resA b p) (resC b p))) (.wh (.not b) p) :=
+  wh_cyc_body (n := 1) (resA_seq_resC b p) hEp
 
 /-- **Step 4.**  Under `¬b`, `A · p^(¬b)` and `p^(¬b)` agree: the left side runs `p` and then
     the loop, and W1 says the right side does the same. -/
@@ -207,6 +240,8 @@ theorem residue_pair_three_act (b : BExp T) (a : A) :
 #print axioms ite_then_test
 #print axioms wh_restrict_body
 #print axioms test_seq_ite_else
+#print axioms E_expK
+#print axioms wh_cyc_body
 #print axioms wh_resA_resC
 #print axioms branches_agree
 #print axioms residue_pair_three
