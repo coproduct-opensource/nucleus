@@ -2211,7 +2211,7 @@ fn lattice_congruences<const NA: usize>(su: &Aut<NA>) -> Vec<([usize; MAXK], usi
 /// outright.  Checking only the full collapse tests one point of the lattice; the residue is
 /// made of collapses that left the Thompson class, so a FINER quotient may still be inside it.
 fn thompson_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>,
-    seen: &FxMap<Aut<NA>, u32>) -> bool {
+    seen: &Interner) -> bool {
     // TRIM before looking up.  `canon` rejects automata with unreachable states, and quotients
     // of a sum routinely have them — which silently hid 44851 of 55627 quotients from this
     // test.  Dropping unreachable states is the corpus's proved dead-code elimination, not a
@@ -2220,12 +2220,12 @@ fn thompson_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>,
     let (blk, nb) = bisim_blocks(su);
     if let Some(q) = quotient_by(su, &blk, nb) {
         if trim_canon(&q).and_then(|t| canon(&t))
-            .map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+            .map(|c| seen.contains(&c)).unwrap_or(false) { return true; }
     }
     for (b2, nb2) in lattice_congruences(su) {
         if let Some(q) = quotient_by(su, &b2, nb2) {
             if trim_canon(&q).and_then(|t| canon(&t))
-                .map(|c| seen.contains_key(&c)).unwrap_or(false) { return true; }
+                .map(|c| seen.contains(&c)).unwrap_or(false) { return true; }
         }
     }
     false
@@ -4108,7 +4108,7 @@ fn print_ring_plan<const NA: usize>(q: &Aut<NA>) -> bool {
 /// PAD_ATTACK: the k=6 residue pairs, re-analysed in isolation.  For each pair: every
 /// merged-start congruence quotient with its size / eliminability / pool verdict, and the
 /// full table of each small quotient — the raw material for a hand proof.
-fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>) {
+fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &Interner) {
     // Base rate first (standing rule): how common is the ring/uniform shape among
     // automata KNOWN to be fine (the Thompson pool itself)?
     {
@@ -4122,11 +4122,21 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
         let mut restored = 0usize;
         let mut already_min = 0usize;
         let mut samples = 0usize;
-        for a in list.iter().take(20000) {
+        let stride = (list.len() / 20000).max(1);
+        for a in list.iter().step_by(stride).take(20000) {
             if let Some(g) = to_gaut(a) {
                 tot += 1;
                 if ring_uniform(&g) { uni += 1; } else {
                     nonuni += 1;
+                    if nonuni <= 5 {
+                        println!("  GENUINE NON-UNIFORM #{nonuni} (k={}):", g.k);
+                        for s in 0..g.k as usize {
+                            let steps: Vec<String> = (0..NA).map(|i|
+                                if g.st[s][i] == 0 { "-".to_string() }
+                                else { format!("{}", g.st[s][i] - 1) }).collect();
+                            println!("    {s}: hlt=0b{:02b} st={:?}", g.hl[s], steps);
+                        }
+                    }
                     let (blk, nb) = bisim_blocks(&g);
                     if nb == g.k as usize { already_min += 1; }
                     if let Some(q) = quotient_by(&g, &blk, nb) {
@@ -4147,7 +4157,42 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
         }
         println!("RING-UNIFORM base rate on pool automata : {uni} / {tot}");
         println!("UNIFORMIZATION: non-uniform {nonuni}, coarsest-quotient restores {restored}, already-minimal {already_min}");
+        // The decisive sub-question: do MIXED-HALT SCCs (two mutually-reachable states
+        // with different nonzero halt guards) occur at all?  At NA=2 the guard algebra
+        // may be too small for them; at NA=4 (two primitive tests) they are the shape
+        // linear parking cannot handle.
+        let mut mixed = 0usize;
+        let mut mixed_min = 0usize;
+        let mut shown = 0usize;
+        for a in list.iter().step_by(stride).take(20000) {
+            if let Some(g) = to_gaut(a) {
+                let has_mixed = |q: &Aut<NA>| sccs_of(q).iter().any(|members|
+                    members.len() > 1 && members.iter().any(|&s| q.hl[s] != 0
+                        && members.iter().any(|&t| q.hl[t] != 0 && q.hl[t] != q.hl[s])));
+                if has_mixed(&g) {
+                    mixed += 1;
+                    let (blk, nb) = bisim_blocks(&g);
+                    if let Some(q) = quotient_by(&g, &blk, nb) {
+                        if has_mixed(&q) {
+                            mixed_min += 1;
+                            if shown < 3 {
+                                shown += 1;
+                                println!("  MIXED-HALT MINIMAL sample #{shown} (k={}):", q.k);
+                                for s in 0..q.k as usize {
+                                    let steps: Vec<String> = (0..NA).map(|i|
+                                        if q.st[s][i] == 0 { "-".to_string() }
+                                        else { format!("{}", q.st[s][i] - 1) }).collect();
+                                    println!("    {s}: hlt={:#06b} st={:?}", q.hl[s], steps);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("MIXED-HALT SCCs: raw {mixed} / 20000, surviving minimization {mixed_min}");
     }
+    if std::env::var("PAD_ATTACK_NOPAIRS").is_ok() { return; }
     let filed: Vec<(String, String)> = std::env::var("PAD_ATTACK_FILE").ok()
         .map(|f| {
             let txt = std::fs::read_to_string(&f).expect("PAD_ATTACK_FILE unreadable");
@@ -4218,7 +4263,7 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
                     best_cert = Some((*b2, *nb2, q));
                 }
                 let elim = symbolic_eliminable(&qq);
-                let inpool = canon(&qq).map(|c| seen.contains_key(&c)).unwrap_or(false);
+                let inpool = canon(&qq).map(|c| seen.contains(&c)).unwrap_or(false);
                 let ring = ring_uniform(&qq);
                 println!("    quotient k={} elim={elim} pool={inpool} ring={ring} classes={:?}",
                     qq.k, &b2[..su.k as usize]);
@@ -4276,6 +4321,119 @@ fn attack_residue<const NA: usize>(list: &[Aut<NA>], seen: &FxMap<Aut<NA>, u32>)
     println!("RING-UNIFORM smallest quotients : {ring_yes} yes, {ring_no} no");
 }
 
+
+
+/// Global closure interner keyed by 128-bit fingerprints instead of full canonical
+/// automata: two independently-seeded SipHash states give a (u64, u64) key, cutting
+/// seen-set key memory ~6x (collision odds at 10^8 keys are ~2^-48 — negligible for
+/// measurement integrity).  FastDedup-style fingerprinting; the `list` keeps the full
+/// automata, so nothing downstream loses information.
+struct Interner {
+    h1: std::collections::hash_map::RandomState,
+    h2: std::collections::hash_map::RandomState,
+    map: FxMap<(u64, u64), u32>,
+}
+
+impl Interner {
+    fn new() -> Self {
+        Interner {
+            h1: std::collections::hash_map::RandomState::new(),
+            h2: std::collections::hash_map::RandomState::new(),
+            map: FxMap::default(),
+        }
+    }
+    fn fp<T: std::hash::Hash>(&self, t: &T) -> (u64, u64) {
+        use std::hash::BuildHasher;
+        (self.h1.hash_one(t), self.h2.hash_one(t))
+    }
+    fn contains<T: std::hash::Hash>(&self, t: &T) -> bool {
+        self.map.contains_key(&self.fp(t))
+    }
+    fn insert<T: std::hash::Hash>(&mut self, t: &T, v: u32) {
+        let k = self.fp(t);
+        self.map.insert(k, v);
+    }
+    fn get<T: std::hash::Hash>(&self, t: &T) -> Option<&u32> {
+        self.map.get(&self.fp(t))
+    }
+    #[allow(dead_code)]
+    fn len(&self) -> usize { self.map.len() }
+}
+
+/// PAD_MIXSAMPLE: random Thompson expressions (no closure — crash-safe), measuring the
+/// rate of MIXED-HALT SCCs.  This is the NA=4 question the exhaustive closure cannot
+/// reach on 48GB: with two primitive tests, do loop bodies produce mutually-reachable
+/// halting states with different guards?
+fn mixsample<const NA: usize>(nguards: u8, maxk: usize) {
+    // deterministic xorshift
+    let mut st: u64 = 0x9E3779B97F4A7C15;
+    let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
+    fn genexp<const NA: usize>(rnd: &mut impl FnMut() -> u64, depth: usize, nguards: u8,
+        maxk: usize) -> Option<Aut<NA>> {
+        let pick = rnd() % if depth == 0 { 2 } else { 5 };
+        match pick {
+            0 => Some(a_act()),
+            1 => Some(a_test((rnd() % nguards as u64) as u8)),
+            2 => {
+                let l = genexp(rnd, depth - 1, nguards, maxk)?;
+                let r = genexp(rnd, depth - 1, nguards, maxk)?;
+                let a = a_seq(&l, &r)?;
+                if a.k as usize <= maxk { Some(a) } else { None }
+            }
+            3 => {
+                let g = (rnd() % nguards as u64) as u8;
+                let l = genexp(rnd, depth - 1, nguards, maxk)?;
+                let r = genexp(rnd, depth - 1, nguards, maxk)?;
+                let a = a_ite(g, &l, &r)?;
+                if a.k as usize <= maxk { Some(a) } else { None }
+            }
+            _ => {
+                let g = (rnd() % nguards as u64) as u8;
+                let b = genexp(rnd, depth - 1, nguards, maxk)?;
+                Some(a_wh(g, &b))
+            }
+        }
+    }
+    let has_mixed = |q: &Aut<NA>| sccs_of(q).iter().any(|members|
+        members.len() > 1 && members.iter().any(|&s| q.hl[s] != 0
+            && members.iter().any(|&t| q.hl[t] != 0 && q.hl[t] != q.hl[s])));
+    let mut tot = 0usize;
+    let mut mixed = 0usize;
+    let mut mixed_min = 0usize;
+    let mut shown = 0usize;
+    let mut tries = 0usize;
+    while tot < 100_000 && tries < 2_000_000 {
+        tries += 1;
+        if let Some(a) = genexp::<NA>(&mut rnd, 5, nguards, maxk) {
+            if a.k < 2 { continue; }
+            if let Some(g) = to_gaut(&a) {
+                tot += 1;
+                if has_mixed(&g) {
+                    mixed += 1;
+                    let (blk, nb) = bisim_blocks(&g);
+                    if let Some(q) = quotient_by(&g, &blk, nb) {
+                        if has_mixed(&q) {
+                            mixed_min += 1;
+                            if shown < 3 {
+                                shown += 1;
+                                println!("  MIXED-HALT MINIMAL sample #{shown} (k={}):", q.k);
+                                for s in 0..q.k as usize {
+                                    let steps: Vec<String> = (0..NA).map(|i|
+                                        if q.st[s][i] == 0 { "-".to_string() }
+                                        else { format!("{}", q.st[s][i] - 1) }).collect();
+                                    println!("    {s}: hlt={:#06b} st={:?}", q.hl[s], steps);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("MIXSAMPLE (random Thompson, NA={NA}, depth<=5, k<={maxk}):");
+    println!("  sampled {tot}, mixed-halt SCC raw {mixed}, surviving minimization {mixed_min}");
+}
+
 fn run<const NA: usize>(maxk: usize, pairk: usize) {
     let nguards = 1u8 << NA;
     // Phase timing. The last two optimisation passes both found their biggest win in a
@@ -4288,6 +4446,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         *mark = now;
     };
     println!("atoms = {NA}, semantic guards = {nguards}, closure bound K = {maxk}, pairs from k <= {pairk}");
+    if std::env::var("PAD_MIXSAMPLE").is_ok() {
+        mixsample::<NA>(nguards as u8, 12.min(MAXK - 1));
+        return;
+    }
 
     // ---- closure
     //
@@ -4298,15 +4460,15 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     //     no hashing at all — it used to pay a hash lookup per (x, y) pair;
     //   * filtering against `seen` inside the parallel section, so the round's output holds
     //     only genuinely new automata instead of every product.
-    let mut seen: FxMap<Aut<NA>, u32> = FxMap::default();
+    let mut seen = Interner::new();
     let mut list: Vec<Aut<NA>> = Vec::new();
     let mut prov: Vec<Prov> = Vec::new();
     let mut frontier: Vec<u32> = Vec::new();
     {
         let mut seed = |a: Aut<NA>| {
             if let Some(c) = canon(&a) {
-                if !seen.contains_key(&c) {
-                    seen.insert(c, list.len() as u32);
+                if !seen.contains(&c) {
+                    seen.insert(&c, list.len() as u32);
                     frontier.push(list.len() as u32);
                     list.push(c);
                     prov.push(Prov::Leaf);
@@ -4333,18 +4495,30 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         }
         let seen_ref = &seen;
         let bucket_ref = &bucket;
+        // Chunked rounds with a hard cap.  A single whole-frontier collect can allocate
+        // tens of GB before dedup (NA=4, K=3) — fast enough to starve watchdogd and
+        // panic the machine (panic-full-2026-08-18: "no checkins from watchdogd").
+        // Chunking bounds peak memory to one chunk's candidates and lets the cap abort
+        // cleanly between chunks.
+        let cap: usize = std::env::var("PAD_MAXLIST").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+        let mut fresh: Vec<u32> = Vec::new();
+        for chunk in frontier.chunks(50_000) {
+        let seen_ref = &seen;
         let list_ref = &list;
-        let produced: Vec<(Aut<NA>, Prov)> = frontier
-            .par_iter()
-            .flat_map_iter(|&xi| {
-                let x = &list_ref[xi as usize];
+        let produced: Vec<(Aut<NA>, Prov)> = chunk
+            .par_chunks(512)
+            .flat_map_iter(|xs| {
+                let mut local: FxSet<Aut<NA>> = FxSet::default();
                 let mut out: Vec<(Aut<NA>, Prov)> = Vec::new();
+                for &xi in xs {
+                let x = &list_ref[xi as usize];
                 {
                     let mut push = |a: Option<Aut<NA>>, pv: Prov| {
                         if let Some(a) = a {
                             if a.k as usize <= maxk {
                                 if let Some(c) = canon(&a) {
-                                    if !seen_ref.contains_key(&c) {
+                                    if !seen_ref.contains(&c) && local.insert(c) {
                                         out.push((c, pv));
                                     }
                                 }
@@ -4371,17 +4545,23 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
                         }
                     }
                 }
+                }
                 out
             })
             .collect();
-        let mut fresh: Vec<u32> = Vec::new();
         for (a, pv) in produced {
-            if !seen.contains_key(&a) {
-                seen.insert(a, list.len() as u32);
+            if !seen.contains(&a) {
+                seen.insert(&a, list.len() as u32);
                 fresh.push(list.len() as u32);
                 list.push(a);
                 prov.push(pv);
             }
+        }
+        if list.len() > cap {
+            println!("  ABORT: closure exceeded PAD_MAXLIST={cap} at round {round} ({} automata)",
+                list.len());
+            std::process::exit(2);
+        }
         }
         println!("  round {round}: {} automata (+{})", list.len(), fresh.len());
         frontier = fresh;
@@ -4533,7 +4713,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             None => (i, j, false, false),
             Some(q) => match canon(&q) {
                 None => (i, j, true, false),
-                Some(c) => (i, j, true, seen.contains_key(&c)),
+                Some(c) => (i, j, true, seen.contains(&c)),
             },
         })
         .collect();
@@ -4560,7 +4740,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
             None => (i, j, 0, false, false),                    // too big to represent
             Some(p) => match canon(&p) {
                 None => (i, j, p.k, true, false),               // unreachable states: reject
-                Some(c) => (i, j, p.k, true, seen.contains_key(&c)),
+                Some(c) => (i, j, p.k, true, seen.contains(&c)),
             },
         })
         .collect();
@@ -5478,7 +5658,7 @@ pullback: {ok} / {}", res.len());
                         if let Some(su) = sum_core(&list[i], &list[j]) {
                             let (blk, nb0) = bisim_blocks(&su);
                             let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
-                            let inpool = canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false);
+                            let inpool = canon(&q).map(|c| seen.contains(&c)).unwrap_or(false);
                             if facts[ci].0 { spn += 1; if inpool { spool += 1; } }
                             else { fpn += 1; if inpool { fpool += 1; } }
                         }
@@ -5523,9 +5703,9 @@ pullback: {ok} / {}", res.len());
                                 let (blk, nb0) = bisim_blocks(&su);
                                 let q = match quotient_by(&su, &blk, nb0) { Some(q) => q, None => continue };
                                 let c = match canon(&q) { Some(c) => c, None => continue };
-                                if !seen.contains_key(&c) { continue; }
+                                if !seen.contains(&c) { continue; }
                                 shown += 1;
-                                let widx = seen[&c];
+                                let widx = *seen.get(&c).unwrap();
                                 println!("    IN-POOL YET UNSOLVED  k={} it={:?} ih={}", c.k, &c.it[..NA], c.ih);
                                 println!("      EXPRESSION: {}", expr_of(&list, &prov, widx, 14));
                                 for t in 0..c.k as usize {
@@ -5545,7 +5725,7 @@ pullback: {ok} / {}", res.len());
                             if facts[ci].0 { comb += 1; continue; }
                             let (blk, nb0) = bisim_blocks(&su);
                             if let Some(q) = quotient_by(&su, &blk, nb0) {
-                                if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) {
+                                if canon(&q).map(|c| seen.contains(&c)).unwrap_or(false) {
                                     comb += 1;
                                 }
                             }
@@ -5561,7 +5741,7 @@ pullback: {ok} / {}", res.len());
                             if facts[ci].0 { continue; }
                             let (blk, nb0) = bisim_blocks(&su);
                             if let Some(q) = quotient_by(&su, &blk, nb0) {
-                                if canon(&q).map(|c| seen.contains_key(&c)).unwrap_or(false) { continue; }
+                                if canon(&q).map(|c| seen.contains(&c)).unwrap_or(false) { continue; }
                                 let kk = canon(&q).map(|c| c.k as usize).unwrap_or(0);
                                 if kk < 12 { szhist[kk] += 1; }
                             }
@@ -5578,7 +5758,7 @@ pullback: {ok} / {}", res.len());
                                 let (blk, nb0) = bisim_blocks(&su);
                                 if let Some(q) = quotient_by(&su, &blk, nb0) {
                                     if let Some(c) = canon(&q) {
-                                        if seen.contains_key(&c) { continue; }
+                                        if seen.contains(&c) { continue; }
                                         if distinct.iter().any(|d| *d == c) { continue; }
                                         distinct.push(c);
                                         if shown < 4 {
@@ -5673,7 +5853,7 @@ pullback: {ok} / {}", res.len());
                                                 let w = a_wh(g, &body);
                                                 if let Some(c) = canon(&w) {
                                                     if c.k == 3 {
-                                                        let inp = seen.contains_key(&c);
+                                                        let inp = seen.contains(&c);
                                                         println!("    HAND EXPR g={g} g2={g2} -> k=3 it={:?} ih={} inpool={}",
                                                             &c.it[..NA], c.ih, inp);
                                                         for t in 0..3 {
@@ -5895,7 +6075,7 @@ pullback: {ok} / {}", res.len());
                                 for cg in lattice_congruences(&su).iter() {
                                     if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
                                         if (q.k as usize) > poolk { continue; }
-                                        let isT = canon(&q).map(|c| seen.contains_key(&c))
+                                        let isT = canon(&q).map(|c| seen.contains(&c))
                                             .unwrap_or(false);
                                         if isT { pos_seen += 1; continue; }
                                         neg += 1;
@@ -5992,7 +6172,7 @@ pullback: {ok} / {}", res.len());
                                                 if let Some(t) = trim_canon(&q) {
                                                     after[(t.k as usize).min(MAXK)] += 1;
                                                     if (t.k as usize) <= poolk
-                                                        && canon(&t).map(|c| seen.contains_key(&c))
+                                                        && canon(&t).map(|c| seen.contains(&c))
                                                             .unwrap_or(false) { nowT += 1; }
                                                 }
                                             }
@@ -6088,7 +6268,7 @@ pullback: {ok} / {}", res.len());
                                     if let Some(q) = quotient_by(&su, &cg.0, cg.1) {
                                         if symbolic_eliminable(&q) { e_ok = true; }
                                         if trim_canon(&q).and_then(|t| canon(&t))
-                                            .map(|c| seen.contains_key(&c)).unwrap_or(false) { t_ok = true; }
+                                            .map(|c| seen.contains(&c)).unwrap_or(false) { t_ok = true; }
                                     }
                                 }
                                 match (e_ok, t_ok) {
@@ -6116,7 +6296,7 @@ pullback: {ok} / {}", res.len());
                                 for (b2, nb2) in cands.iter() {
                                     if let Some(q) = quotient_by(&su, b2, *nb2) {
                                         let isT = trim_canon(&q).and_then(|t| canon(&t))
-                                            .map(|c| seen.contains_key(&c)).unwrap_or(false);
+                                            .map(|c| seen.contains(&c)).unwrap_or(false);
                                         if !isT { continue; }
                                         any = true;
                                         // the conjunct's start condition: both starts in one block
@@ -6145,7 +6325,7 @@ pullback: {ok} / {}", res.len());
                                         Some((b2, nb2)) => {
                                             if let Some(q) = quotient_by(&su, &b2, nb2) {
                                                 if trim_canon(&q).and_then(|t| canon(&t))
-                                                    .map(|c| seen.contains_key(&c)).unwrap_or(false) { hit += 1; }
+                                                    .map(|c| seen.contains(&c)).unwrap_or(false) { hit += 1; }
                                             }
                                         }
                                     }
@@ -6177,7 +6357,7 @@ pullback: {ok} / {}", res.len());
                                             if let Some(q) = quotient_by(&su, b2, *nb2) {
                                                 if symbolic_eliminable(&q) { e_ok = true; }
                                                 if trim_canon(&q).and_then(|t| canon(&t))
-                                                    .map(|c| seen.contains_key(&c)).unwrap_or(false) { t_ok = true; }
+                                                    .map(|c| seen.contains(&c)).unwrap_or(false) { t_ok = true; }
                                             }
                                         }
                                         if !(e_ok || t_ok) {
@@ -6517,7 +6697,7 @@ pullback: {ok} / {}", res.len());
                                                                 for (c2, cn2) in cands.iter() {
                                                                     if let Some(qz) = quotient_by(&su, c2, *cn2) {
                                                                         if trim_canon(&qz).and_then(|t| canon(&t))
-                                                                            .map(|c| seen.contains_key(&c))
+                                                                            .map(|c| seen.contains(&c))
                                                                             .unwrap_or(false) { susp_t += 1; break; }
                                                                     }
                                                                 }
@@ -6571,7 +6751,7 @@ pullback: {ok} / {}", res.len());
                                                     let qq = trim_canon(&q).unwrap_or(q);
                                                     if (qq.k as usize) < minsz { minsz = qq.k as usize; }
                                                     if symbolic_eliminable(&qq) { ok = true; }
-                                                    if canon(&qq).map(|c| seen.contains_key(&c))
+                                                    if canon(&qq).map(|c| seen.contains(&c))
                                                         .unwrap_or(false) { ok = true; }
                                                 }
                                             }
@@ -6604,7 +6784,7 @@ pullback: {ok} / {}", res.len());
                                                         let qq = trim_canon(&q).unwrap_or(q);
                                                         if (qq.k as usize) < best { best = qq.k as usize; }
                                                         if symbolic_eliminable(&qq) { ok = true; }
-                                                        if canon(&qq).map(|c| seen.contains_key(&c))
+                                                        if canon(&qq).map(|c| seen.contains(&c))
                                                             .unwrap_or(false) { ok = true; }
                                                     }
                                                 }
