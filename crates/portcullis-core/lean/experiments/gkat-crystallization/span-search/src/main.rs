@@ -1492,7 +1492,8 @@ fn orbit_reduces<const NA: usize>(h: &Aut<NA>) -> bool {
 /// body is `body.hlt ∧ ¬g` and the back edge is `body.hlt ∧ g`, so the atoms at which body
 /// states halt must be disjoint from the atoms at which they take back edges.
 fn llee<const NA: usize>(h: &Aut<NA>) -> bool {
-    let mut budget = 200000usize;
+    let mut budget = std::env::var("PAD_LLEE_BUDGET").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(200000usize);
     llee_go(h, h.st, &mut budget)
 }
 
@@ -1736,9 +1737,9 @@ fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
     let key = (h1.hash_one(&(NA as u64, h)), h2.hash_one(&(NA as u64, h)));
     let shard = &shards[(key.0 as usize) & 63];
     let calls = ELIM_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    if calls % 5_000_000 == 0 {
+    if calls % 100_000 == 0 {
         let hits = ELIM_HITS.load(Ordering::Relaxed);
-        eprintln!("[elim] {}M calls, {:.1}% memo hits", calls / 1_000_000,
+        eprintln!("[elim] {}k calls, {:.1}% memo hits", calls / 1_000,
             100.0 * hits as f64 / calls as f64);
     }
     if let Some(&v) = shard.lock().unwrap().get(&key) {
@@ -5035,6 +5036,7 @@ periods={:?}", p.k, p.ih, &p.it[..], &p.hl[..p.k as usize], &p.st[..p.k as usize
     // class — *any* program with the right behaviour.  But the synthesis, and the Lean
     // statement `GkatRefines.RefinementSuffices`, need the cover to be a refinement of `e`
     // (or `f`) ITSELF.  That is strictly stronger and has never been tested.
+    if std::env::var("PAD_PULLTABLE").is_ok() {
     {
         let rounds: u32 = std::env::var("G2_ROUNDS").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -5077,6 +5079,7 @@ periods={:?}", p.k, p.ih, &p.it[..], &p.hl[..p.k as usize], &p.st[..p.k as usize
         let ok = res.iter().filter(|b| **b).count();
         println!("\n  GATE 2 (RefinementSuffices): a refinement of e or f covers the \
 pullback: {ok} / {}", res.len());
+    }
     }
     println!("\nintermediate (pullback) solvable by the syntax: {s_hit}");
     println!("  of {} crux pairs, {s_dec} have |P| <= K so the answer is decided", crux.len());
