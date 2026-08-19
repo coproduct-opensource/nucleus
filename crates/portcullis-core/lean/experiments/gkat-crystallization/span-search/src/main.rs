@@ -1491,10 +1491,28 @@ fn orbit_reduces<const NA: usize>(h: &Aut<NA>) -> bool {
 /// The GKAT termination clause is the visible form of `loopInitialized`: halting inside the
 /// body is `body.hlt ∧ ¬g` and the back edge is `body.hlt ∧ g`, so the atoms at which body
 /// states halt must be disjoint from the atoms at which they take back edges.
+static LLEE_MEMO: std::sync::OnceLock<(
+    std::collections::hash_map::RandomState,
+    std::collections::hash_map::RandomState,
+    Vec<std::sync::Mutex<FxMap<(u64, u64), bool>>>,
+)> = std::sync::OnceLock::new();
+
+/// Memoized like `symbolic_eliminable`: LLEE is a pure function of the automaton.
 fn llee<const NA: usize>(h: &Aut<NA>) -> bool {
+    use std::hash::BuildHasher;
+    let (h1, h2, shards) = LLEE_MEMO.get_or_init(|| {
+        (std::collections::hash_map::RandomState::new(),
+         std::collections::hash_map::RandomState::new(),
+         (0..64).map(|_| std::sync::Mutex::new(FxMap::default())).collect())
+    });
+    let key = (h1.hash_one(&(NA as u64, h)), h2.hash_one(&(NA as u64, h)));
+    let shard = &shards[(key.0 as usize) & 63];
+    if let Some(&v) = shard.lock().unwrap().get(&key) { return v; }
     let mut budget = std::env::var("PAD_LLEE_BUDGET").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(200000usize);
-    llee_go(h, h.st, &mut budget)
+    let v = llee_go(h, h.st, &mut budget);
+    shard.lock().unwrap().insert(key, v);
+    v
 }
 
 /// LLEE is an EXISTENTIAL property — a witness labelling has to exist — so deciding it is a
@@ -5600,6 +5618,7 @@ pullback: {ok} / {}", res.len());
                     println!("    peelable             : {}", peelable(&f3));
                     println!("    llee                 : {}", llee(&f3));
                 }
+                if std::env::var("PAD_LLEE_VALIDATE").is_ok() {
                 {
                     // THE DECISIVE MEASUREMENT.  Grabmayer: the image of the process
                     // interpretation is NOT closed under bisimulation collapse, so quotienting
@@ -5630,6 +5649,7 @@ pullback: {ok} / {}", res.len());
                     println!("  IS THE SUM-QUOTIENT LLEE?  (the route lives on this)");
                     println!("    equivalent pairs : {good} / {tot}");
                     println!("    CONTROL arbitrary: {arb} / {arbn}");
+                }
                 }
                 {
                     // FULL COLLAPSE vs MINIMAL INTERMEDIATE QUOTIENT, on the same pairs.
