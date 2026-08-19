@@ -1713,8 +1713,41 @@ fn bisim_blocks<const NA: usize>(h: &Aut<NA>) -> ([usize; MAXK], usize) {
 /// `wh 1 ((p +_b q);(r +_b t))` is Thompson yet defeats elimination state-by-state, because
 /// the two branch states are bisimilar and their solutions coincide; on the quotient the
 /// same system eliminates in two steps.
+static ELIM_MEMO: std::sync::OnceLock<(
+    std::collections::hash_map::RandomState,
+    std::collections::hash_map::RandomState,
+    Vec<std::sync::Mutex<FxMap<(u64, u64), bool>>>,
+)> = std::sync::OnceLock::new();
+static ELIM_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static ELIM_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Memoized: eliminability is a pure function of the automaton, and the same canonical
+/// quotients recur across hundreds of thousands of crux pairs.  128-bit fingerprint keys,
+/// 64 shards.  Every 5M calls the hit rate goes to stderr — the progress telemetry the
+/// silent phases lacked.
 fn symbolic_eliminable<const NA: usize>(h: &Aut<NA>) -> bool {
-    symbolic_eliminable_gen(h, true)
+    use std::hash::BuildHasher;
+    use std::sync::atomic::Ordering;
+    let (h1, h2, shards) = ELIM_MEMO.get_or_init(|| {
+        (std::collections::hash_map::RandomState::new(),
+         std::collections::hash_map::RandomState::new(),
+         (0..64).map(|_| std::sync::Mutex::new(FxMap::default())).collect())
+    });
+    let key = (h1.hash_one(&(NA as u64, h)), h2.hash_one(&(NA as u64, h)));
+    let shard = &shards[(key.0 as usize) & 63];
+    let calls = ELIM_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    if calls % 5_000_000 == 0 {
+        let hits = ELIM_HITS.load(Ordering::Relaxed);
+        eprintln!("[elim] {}M calls, {:.1}% memo hits", calls / 1_000_000,
+            100.0 * hits as f64 / calls as f64);
+    }
+    if let Some(&v) = shard.lock().unwrap().get(&key) {
+        ELIM_HITS.fetch_add(1, Ordering::Relaxed);
+        return v;
+    }
+    let v = symbolic_eliminable_gen(h, true);
+    shard.lock().unwrap().insert(key, v);
+    v
 }
 
 fn symbolic_eliminable_raw<const NA: usize>(h: &Aut<NA>) -> bool {
