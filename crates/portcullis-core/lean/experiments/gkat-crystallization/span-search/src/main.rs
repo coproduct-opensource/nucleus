@@ -5027,6 +5027,7 @@ pullback: {ok} / {}", res.len());
     }
 
     println!("\nrefinement test on {} uncoverable pullbacks (MAXK={MAXK}):", unsolved.len());
+    if std::env::var("PAD_MECH").is_ok() {
     for &(mode_unr, mode_dup, mode_cyc, rounds, label) in
         [(true, false, 1u32, 1u32, "W1 x1"), (true, false, 1, 2, "W1 x2"),
          (true, true, 1, 1, "W1+dup x1"), (true, true, 1, 2, "W1+dup x2"),
@@ -5079,6 +5080,7 @@ pullback: {ok} / {}", res.len());
         }
         println!("  {label:<14}: rescued {rescued} / {}  (largest variant {biggest} states)",
             unsolved.len());
+    }
     }
 
     if std::env::var("PADDED").is_ok() {
