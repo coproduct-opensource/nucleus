@@ -4360,6 +4360,87 @@ impl Interner {
     fn len(&self) -> usize { self.map.len() }
 }
 
+
+/// Closure cache: the (list, prov) pair is deterministic given (NA, maxk), and rebuilding
+/// it dominates iteration time for attack/classifier runs.  Raw little-endian dump with a
+/// params header; the interner is rebuilt on load (its hash seeds are per-process).
+fn save_closure<const NA: usize>(path: &str, maxk: usize, list: &[Aut<NA>], prov: &[Prov]) {
+    use std::io::Write;
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect("save_closure"));
+    f.write_all(b"GKCL1\0").unwrap();
+    f.write_all(&(NA as u32).to_le_bytes()).unwrap();
+    f.write_all(&(maxk as u32).to_le_bytes()).unwrap();
+    f.write_all(&(list.len() as u64).to_le_bytes()).unwrap();
+    for a in list.iter() {
+        f.write_all(&[a.k, a.ih]).unwrap();
+        f.write_all(&a.it[..]).unwrap();
+        for s in 0..MAXK { f.write_all(&a.st[s][..]).unwrap(); }
+        f.write_all(&a.hl[..]).unwrap();
+    }
+    for pv in prov.iter() {
+        match pv {
+            Prov::Leaf => f.write_all(&[0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+            Prov::Seq(l, r) => {
+                f.write_all(&[1u8, 0]).unwrap();
+                f.write_all(&l.to_le_bytes()).unwrap();
+                f.write_all(&r.to_le_bytes()).unwrap();
+            }
+            Prov::Ite(g, l, r) => {
+                f.write_all(&[2u8, *g]).unwrap();
+                f.write_all(&l.to_le_bytes()).unwrap();
+                f.write_all(&r.to_le_bytes()).unwrap();
+            }
+            Prov::Wh(g, b) => {
+                f.write_all(&[3u8, *g]).unwrap();
+                f.write_all(&b.to_le_bytes()).unwrap();
+                f.write_all(&0u32.to_le_bytes()).unwrap();
+            }
+        }
+    }
+}
+
+fn load_closure<const NA: usize>(path: &str, maxk: usize) -> Option<(Vec<Aut<NA>>, Vec<Prov>)> {
+    use std::io::Read;
+    let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut hdr = [0u8; 6];
+    f.read_exact(&mut hdr).ok()?;
+    if &hdr != b"GKCL1\0" { return None; }
+    let mut w4 = [0u8; 4];
+    f.read_exact(&mut w4).ok()?;
+    if u32::from_le_bytes(w4) as usize != NA { return None; }
+    f.read_exact(&mut w4).ok()?;
+    if u32::from_le_bytes(w4) as usize != maxk { return None; }
+    let mut w8 = [0u8; 8];
+    f.read_exact(&mut w8).ok()?;
+    let n = u64::from_le_bytes(w8) as usize;
+    let mut list: Vec<Aut<NA>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut a = Aut::<NA> { k: 0, ih: 0, it: [0; NA], st: [[0; NA]; MAXK], hl: [0; MAXK] };
+        let mut b2 = [0u8; 2];
+        f.read_exact(&mut b2).ok()?;
+        a.k = b2[0]; a.ih = b2[1];
+        f.read_exact(&mut a.it[..]).ok()?;
+        for s in 0..MAXK { f.read_exact(&mut a.st[s][..]).ok()?; }
+        f.read_exact(&mut a.hl[..]).ok()?;
+        list.push(a);
+    }
+    let mut prov: Vec<Prov> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut rec = [0u8; 10];
+        f.read_exact(&mut rec).ok()?;
+        let l = u32::from_le_bytes([rec[2], rec[3], rec[4], rec[5]]);
+        let r = u32::from_le_bytes([rec[6], rec[7], rec[8], rec[9]]);
+        prov.push(match rec[0] {
+            0 => Prov::Leaf,
+            1 => Prov::Seq(l, r),
+            2 => Prov::Ite(rec[1], l, r),
+            3 => Prov::Wh(rec[1], l),
+            _ => return None,
+        });
+    }
+    Some((list, prov))
+}
+
 /// PAD_MIXSAMPLE: random Thompson expressions (no closure — crash-safe), measuring the
 /// rate of MIXED-HALT SCCs.  This is the NA=4 question the exhaustive closure cannot
 /// reach on 48GB: with two primitive tests, do loop bodies produce mutually-reachable
@@ -4464,6 +4545,19 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     let mut list: Vec<Aut<NA>> = Vec::new();
     let mut prov: Vec<Prov> = Vec::new();
     let mut frontier: Vec<u32> = Vec::new();
+    let mut cached = false;
+    if let Ok(pth) = std::env::var("PAD_LOAD_CLOSURE") {
+        if let Some((l, pv)) = load_closure::<NA>(&pth, maxk) {
+            list = l;
+            prov = pv;
+            for (i, a) in list.iter().enumerate() { seen.insert(a, i as u32); }
+            println!("CLOSED (cached from {pth}): {} automata", list.len());
+            cached = true;
+        } else {
+            println!("  closure cache miss or mismatch at {pth}; rebuilding");
+        }
+    }
+    if !cached {
     {
         let mut seed = |a: Aut<NA>| {
             if let Some(c) = canon(&a) {
@@ -4567,6 +4661,11 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         frontier = fresh;
     }
     println!("CLOSED: {} fully reachable Thompson automata with <= {maxk} core states", list.len());
+    if let Ok(pth) = std::env::var("PAD_SAVE_CLOSURE") {
+        save_closure::<NA>(&pth, maxk, &list, &prov);
+        println!("  closure saved to {pth}");
+    }
+    }
     phase("closure", &mut mark);
     {
         // Sanity for the predicate: a structured program's flow graph must be reducible.
