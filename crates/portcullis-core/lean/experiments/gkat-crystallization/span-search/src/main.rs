@@ -2324,6 +2324,10 @@ fn sub_aut<const NA: usize>(h: &Aut<NA>, mask: u16, ih: u8, it: [u8; NA],
 /// 55M automata at six states, while this touches one automaton at a time.
 fn is_thompson<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
     memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    // The hand-inverted decomposition oracle is REFUTED (10/301) and its subset
+    // enumeration explodes combinatorially beyond NA=2 (16 guards hung a sweep for
+    // 1h19m at 18 cores).  Reject conservatively there; it only feeds diagnostics.
+    if NA > 2 { return false; }
     let c = match canon(h) { Some(c) => c, None => return false };
     if let Some(&b) = memo.get(&c) { return b; }
     if depth == 0 { return false; }
@@ -2337,6 +2341,10 @@ fn is_thompson<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
 /// existentially completed.  Getting this wrong made the oracle reject `ite(a,a)` and `wh(a)`.
 fn is_thompson_free<const NA: usize>(a: &Aut<NA>, free: u8, guards: &[u8], depth: usize,
     memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    // The hand-inverted decomposition oracle is REFUTED (10/301) and its subset
+    // enumeration explodes combinatorially beyond NA=2 (16 guards hung a sweep for
+    // 1h19m at 18 cores).  Reject conservatively there; it only feeds diagnostics.
+    if NA > 2 { return false; }
     let mut fs: Vec<usize> = Vec::new();
     for y in 0..NA { if bit_set(free, y) { fs.push(y); } }
     if fs.is_empty() { return is_thompson(a, guards, depth, memo); }
@@ -2368,6 +2376,10 @@ fn is_thompson_free<const NA: usize>(a: &Aut<NA>, free: u8, guards: &[u8], depth
 /// guessed — taking them maximally was the last heuristic in the oracle.
 fn is_thompson_free2<const NA: usize>(a: &Aut<NA>, free_entry: u8, free_hl: u8,
     guards: &[u8], depth: usize, memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    // The hand-inverted decomposition oracle is REFUTED (10/301) and its subset
+    // enumeration explodes combinatorially beyond NA=2 (16 guards hung a sweep for
+    // 1h19m at 18 cores).  Reject conservatively there; it only feeds diagnostics.
+    if NA > 2 { return false; }
     let k = a.k as usize;
     let mut hs: Vec<usize> = Vec::new();
     for y in 0..NA { if bit_set(free_hl, y) { hs.push(y); } }
@@ -2390,6 +2402,10 @@ fn is_thompson_free2<const NA: usize>(a: &Aut<NA>, free_entry: u8, free_hl: u8,
 
 fn is_thompson_raw<const NA: usize>(h: &Aut<NA>, guards: &[u8], depth: usize,
     memo: &mut FxMap<Aut<NA>, bool>) -> bool {
+    // The hand-inverted decomposition oracle is REFUTED (10/301) and its subset
+    // enumeration explodes combinatorially beyond NA=2 (16 guards hung a sweep for
+    // 1h19m at 18 cores).  Reject conservatively there; it only feeds diagnostics.
+    if NA > 2 { return false; }
     let k = h.k as usize;
     // leaves
     if k == 0 {
