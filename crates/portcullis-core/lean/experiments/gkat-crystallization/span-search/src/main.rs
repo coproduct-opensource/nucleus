@@ -5428,7 +5428,7 @@ pullback: {ok} / {}", res.len());
                     if orbit_entry_halt_disjoint(a) { eok += 1; }
                 }
                 let mut ero = 0usize; let mut ern = 0usize;
-                for p in uncovered.iter() { ern += 1; if orbit_entry_halt_disjoint(p) { ero += 1; } }
+                for p in uncovered.iter().take(300) { ern += 1; if orbit_entry_halt_disjoint(p) { ero += 1; } }
                 let mut lp = 0usize; let mut ln = 0usize;
                 for (i, a) in list.iter().enumerate() {
                     if i % step2 != 0 { continue; }
@@ -5436,7 +5436,7 @@ pullback: {ok} / {}", res.len());
                     if llee(a) { lp += 1; }
                 }
                 let (mut lr, mut lrn) = (0usize, 0usize);
-                for p in uncovered.iter() { lrn += 1; if llee(p) { lr += 1; } }
+                for p in uncovered.iter().take(300) { lrn += 1; if llee(p) { lr += 1; } }
                 let mut pk = 0usize; let mut pn = 0usize;
                 for (i, a) in list.iter().enumerate() {
                     if i % step2 != 0 { continue; }
@@ -5444,7 +5444,7 @@ pullback: {ok} / {}", res.len());
                     if peelable(a) { pk += 1; }
                 }
                 let (mut pr, mut prn) = (0usize, 0usize);
-                for p in uncovered.iter() { prn += 1; if peelable(p) { pr += 1; } }
+                for p in uncovered.iter().take(300) { prn += 1; if peelable(p) { pr += 1; } }
                 let mut sk = 0usize; let mut sn = 0usize;
                 for (i, a) in list.iter().enumerate() {
                     if i % step2 != 0 { continue; }
@@ -5452,7 +5452,7 @@ pullback: {ok} / {}", res.len());
                     if symbolic_eliminable(a) { sk += 1; }
                 }
                 let (mut sr, mut srn) = (0usize, 0usize);
-                for p in uncovered.iter() { srn += 1; if symbolic_eliminable(p) { sr += 1; } }
+                for p in uncovered.iter().take(300) { srn += 1; if symbolic_eliminable(p) { sr += 1; } }
                 {
                     // THE THESIS ROUTE'S OBLIGATION, measured directly: does the bisimulation
                     // quotient of the SUM `Me + Mf` have a solution?  That is what
