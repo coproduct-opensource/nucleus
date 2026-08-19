@@ -59,3 +59,5 @@ here is machine-measured; kernel-checked claims say so explicitly.
   `PADDED=1 PAD_TOTAL=1 PAD_SAMPLE=1 PAD_ROUNDS=1 PAD_FRONTIER=50
    PAD_PARTS_ROUNDS=1 PAD_PARTS_FRONTIER=200 PAD_ORACLE=1 PAD_ORACLE_N=2`.
 - Closure cache: `PAD_SAVE_CLOSURE=path` / `PAD_LOAD_CLOSURE=path`.
+- mimalloc global allocator: ~8% CPU-time reduction on the classify workload,
+  identical outputs; macOS system allocator serializes under parallel churn.

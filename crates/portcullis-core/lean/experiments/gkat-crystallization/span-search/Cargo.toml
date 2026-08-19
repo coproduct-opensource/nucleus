@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 rayon = "1"
+mimalloc = "0.1"
 
 [profile.release]
 opt-level = 3
