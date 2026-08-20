@@ -29,7 +29,13 @@ import GkatDeadExitElimProofs
     * **S3 — assembly**: from constructive S2, the `qsol` assignment and witnesses
       (definitional given S2's form).
 
-    S1 is done modulo S0; S0 and S2 are the open work. -/
+    S1 is done modulo S0; S0 and S2 are the open work.
+
+    LATER (see `GkatTrimProofs`): the summit was rewired — trim the AUTOMATON,
+    not the program; `completeness_of_roleCovered` reduces the open problem to
+    role existence alone.  This file additionally carries the S2 strata:
+    `dag_roles` (acyclic), `selfloop_dag_roles`, `selfarm_roles`, and
+    `singleton_scc_roles` (the complete 1-cycle theorem). -/
 
 namespace GkatPlanExistence
 

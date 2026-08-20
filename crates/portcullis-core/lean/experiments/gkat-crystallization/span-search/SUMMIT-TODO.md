@@ -94,3 +94,25 @@ SUPERSEDED on the critical path by the automaton-level trim:
 RoleCovered is exactly the object the harness measures (trim + canonize before
 everything).  Remaining mathematics: S2 (roles) — acyclic stratum proved
 (dag_roles); next: single-SCC rings, then SCC-DAG assembly.
+
+## S2 stratum ledger (GkatPlanExistenceProofs / GkatDecompProofs)
+
+- [x] acyclic: dag_roles (WF step relation ⟹ all folds)
+- [x] head-position self-loops: selfloop_dag_roles (StateRole.selfLoop, closes
+      by salomaa_solution_exists, no side conditions)
+- [x] single self-arm anywhere: selfarm_roles (arm_commute walks the arm to the
+      head; StateRole.salomaaE = EquivBA-massaged Salomaa state)
+- [x] THE SINGLETON-SCC THEOREM: singleton_scc_roles — any number of self-arms,
+      any positions (arms_merge fuses self-calls; multi_gather = every dispatch
+      is provably one guarded self-call over its non-self remainder).  Subsumes
+      all previous strata.  [propext, Classical.choice, Quot.sound]
+- [ ] multi-state SCCs (the research frontier): post-action branching defeats
+      direct Salomaa folding (left distribution FAILS in GKAT — corpus
+      theorem), which is exactly why rings need walk/parking.  Next moves:
+      (a) harness measurement — what fraction of canonical trimmed-quotient
+      states at the frontier are covered by fold+salomaaE alone, and which
+      multi-state SCC shapes actually occur; (b) the unbranching-cycle
+      reduction (cycles whose return paths are single unconditional arms
+      flatten to composite-body self-loops by s1); (c) the general ring
+      existence theory against extHeaderSol/extSol (walk-planner as the
+      constructive skeleton, absorption via the outG emission theory).
