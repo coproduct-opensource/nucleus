@@ -182,4 +182,186 @@ theorem single_port_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms single_port_cycle_roles
 
+/-! ## The assembly: mixed strata under one well-founded recursion
+
+    One solution for a whole automaton whose states are (i) base — arms to self
+    or strictly lower rank (the singleton stratum), or (ii) members of
+    designated single-port simple cycles.  The solution dispatches per state:
+    gathered Salomaa closed forms at base states, chain/port closed forms on
+    cycles; every equation the local theorems need holds by construction. -/
+
+private theorem foldTL_congr' {sol₁ sol₂ : S → Exp A T} (h : BExp T) :
+    ∀ L : List (BExp T × A × S), (∀ e ∈ L, sol₁ e.2.2 = sol₂ e.2.2) →
+    foldTL sol₁ h L = foldTL sol₂ h L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons hd tl ih =>
+      intro hL
+      show Exp.ite hd.1 (.seq (.act hd.2.1) (sol₁ hd.2.2)) (foldTL sol₁ h tl)
+        = Exp.ite hd.1 (.seq (.act hd.2.1) (sol₂ hd.2.2)) (foldTL sol₂ h tl)
+      rw [hL hd (by simp), ih (fun e he => hL e (by simp [he]))]
+
+open Classical in
+/-- The port's closed form, parametric in the ambient solution. -/
+noncomputable def portExprOf (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    (sol : S → Exp A T) : Exp A T :=
+  .seq (.wh (gGuard (m 1) (aut.trans (m 0)))
+      (prodCore (gBody (m 1) (aut.trans (m 0)))
+        (factsFrom aut m len 1 (len - 1))))
+    (foldTL sol (aut.hlt (m 0)) (gOthers (m 1) (aut.trans (m 0))))
+
+open Classical in
+/-- The closed form of cycle position `i`. -/
+noncomputable def cycSolOf (aut : GAut S A T) (m : Nat → S) (len i : Nat)
+    (sol : S → Exp A T) : Exp A T :=
+  if i = 0 then portExprOf aut m len sol
+  else prodR (factsFrom aut m len i (len - i)) (portExprOf aut m len sol)
+
+open Classical in
+private theorem cycSolOf_congr (aut : GAut S A T) (m : Nat → S) (len i : Nat)
+    {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthers (m 1) (aut.trans (m 0)), sol₁ e.2.2 = sol₂ e.2.2) :
+    cycSolOf aut m len i sol₁ = cycSolOf aut m len i sol₂ := by
+  unfold cycSolOf portExprOf
+  rw [foldTL_congr' (aut.hlt (m 0)) (gOthers (m 1) (aut.trans (m 0))) h]
+
+open Classical in
+/-- The assembled solution: base states take the gathered Salomaa closed form,
+    cycle members their chain/port closed forms, by well-founded recursion. -/
+noncomputable def asmSol (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some (len, m, i) =>
+        cycSolOf aut m len i
+          (fun t => if h : rank t < rank s then rec t h else .test .zero))
+
+open Classical in
+theorem asmSol_eq (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) (s : S) :
+    asmSol aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSol aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some (len, m, i) =>
+            cycSolOf aut m len i
+              (fun t =>
+                if _ : rank t < rank s then asmSol aut rank cy t
+                else .test .zero)) := by
+  unfold asmSol
+  rw [WellFounded.fix_eq]
+
+open Classical in
+private theorem asm_none_sol (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) {s : S} (hcys : cy s = none)
+    (hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s) :
+    asmSol aut rank cy s
+      = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (asmSol aut rank cy) (aut.hlt s)
+            (gOthers s (aut.trans s))) := by
+  rw [asmSol_eq, hcys]
+  exact congrArg _ (foldTL_congr' (aut.hlt s) (gOthers s (aut.trans s))
+    (fun e he => dif_pos (hlow e he)))
+
+open Classical in
+private theorem asm_cyc_sol (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) {s : S} {len i : Nat}
+    {m : Nat → S} (hcys : cy s = some (len, m, i))
+    (hlow : ∀ e ∈ gOthers (m 1) (aut.trans (m 0)), rank e.2.2 < rank s) :
+    asmSol aut rank cy s = cycSolOf aut m len i (asmSol aut rank cy) := by
+  rw [asmSol_eq, hcys]
+  exact cycSolOf_congr aut m len i (fun e he => dif_pos (hlow e he))
+
+open Classical in
+/-- **THE ASSEMBLY THEOREM**: an automaton whose every state is base
+    (self-or-descending) or a member of a designated single-port simple cycle
+    is fully role-covered. -/
+theorem assembly_roles (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat))
+    (hcy : ∀ s len m i, cy s = some (len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (len, m, j)) ∧
+      (∀ j, j < len → rank (m j) = rank (m 0)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        (∀ e ∈ aut.trans (m j),
+          e.2.2 = (if j + 1 = len then m 0 else m (j + 1)))
+        ∧ GuardEmpty (aut.hlt (m j))) ∧
+      (∀ e ∈ aut.trans (m 0), e.2.2 = m 1 ∨ rank e.2.2 < rank (m 0)))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSol aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      -- base: the singleton stratum, gathered Salomaa role
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      refine StateRole.salomaaE (gGuard s (aut.trans s))
+        (gBody s (aut.trans s))
+        (foldTL (asmSol aut rank cy) (aut.hlt s) (gOthers s (aut.trans s)))
+        (asm_none_sol aut rank cy hcys hlow) ?_
+      rw [eqRHS_foldTL]
+      exact multi_gather (asmSol aut rank cy) (aut.hlt s) s (aut.trans s)
+  | some q =>
+      obtain ⟨len, m, i⟩ := q
+      obtain ⟨hilt, hlen, hmi, hcoh, hrank, hint, hport⟩ :=
+        hcy s len m i hcys
+      -- port-REST targets are strictly below every cycle member
+      have hlowAt : ∀ j, j < len →
+          ∀ e ∈ gOthers (m 1) (aut.trans (m 0)), rank e.2.2 < rank (m j) := by
+        intro j hj e he
+        obtain ⟨heL, hne⟩ := gOthers_sub (m 1) (aut.trans (m 0)) e he
+        rcases hport e heL with h1 | h2
+        · exact absurd h1 hne
+        · rw [hrank j hj]; exact h2
+      -- the port equation
+      have hsol_port : asmSol aut rank cy (m 0)
+          = portExprOf aut m len (asmSol aut rank cy) := by
+        rw [asm_cyc_sol aut rank cy (hcoh 0 (by omega))
+          (hlowAt 0 (by omega))]
+        unfold cycSolOf
+        rw [if_pos rfl]
+      -- the interior equations
+      have hsol_int : ∀ j, 1 ≤ j → j < len →
+          asmSol aut rank cy (m j)
+            = .seq (factorAt aut m len j)
+              (asmSol aut rank cy (if j + 1 = len then m 0 else m (j + 1))) := by
+        intro j hj hjlt
+        rw [asm_cyc_sol aut rank cy (hcoh j hjlt) (hlowAt j hjlt)]
+        unfold cycSolOf
+        rw [if_neg (by omega : ¬ (j = 0)),
+            show len - j = (len - (j + 1)) + 1 from by omega]
+        by_cases hj1 : j + 1 = len
+        · rw [if_pos hj1, hsol_port,
+              show len - (j + 1) = 0 from by omega]
+          rfl
+        · rw [if_neg hj1,
+              asm_cyc_sol aut rank cy (hcoh (j + 1) (by omega))
+                (hlowAt (j + 1) (by omega))]
+          unfold cycSolOf
+          rw [if_neg (by omega : ¬ (j + 1 = 0))]
+          rfl
+      have hroles := single_port_cycle_roles aut (asmSol aut rank cy) m len
+        hlen hsol_int
+        (by rw [hsol_port]; rfl)
+        (fun j hj hjlt => (hint j hj hjlt).1)
+        (fun j hj hjlt => (hint j hj hjlt).2)
+      rw [← hmi]
+      exact hroles i hilt
+
+#print axioms assembly_roles
+
 end GkatCycle
