@@ -1334,3 +1334,24 @@ THE WALKED MIRROR IS FUNCTIONALLY COMPLETE for the glue: every lemma the
 rankNxt discharge consumed now has a walked twin (or reuses verbatim).
 Remaining: walked_rankNxt_quot_solvesBA (the glue — orbCy reused, hcy
 discharge re-threaded with hnontriv in hos), then the NESTED FRAGMENT.
+
+## ============================================================
+## THE WALKED GLUE (iteration 47, "continue")
+## ============================================================
+
+- walked_orbit_cy_bundle: the complete per-orbit package under WalkedDec
+- walked_rankNxt_quot_solvesBA: A WALKED RANK-MODULO-CYCLE AUTOMATON
+  WITH A COVERING ORBIT LIST HAS A SOLVABLE CANONICAL QUOTIENT. orbCy
+  and walked_assembly_roles reuse verbatim (the assembly always allowed
+  member self-loops); hos gains hnontriv per entry; coherence re-threads
+  through walked_inOrbit_track + walked_qpos_qm.
+
+THE WALKED ORBIT LAYER IS COMPLETE (~24 theorems, zero redesigns).
+Remaining for nestedloops_complete: THE NESTED FRAGMENT —
+1. nested spine shape (members with optional atomic inner self-loops)
+   through act/seq/inner-wh Thompson composition
+2. WalkedDec for the looped composite (fired arms: inner-self, outer-
+   next, or the port feedback)
+3. hnontriv via shortest-exit stratification
+4. hfire/hnoeps/hstates/cover mirrors of the chain fragment
+5. the wrapper.

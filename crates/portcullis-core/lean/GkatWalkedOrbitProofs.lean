@@ -1035,4 +1035,273 @@ theorem walked_inOrbit_track (aut : GAut S A T) (rank : S → Nat)
 #print axioms walked_qpos_qm
 #print axioms walked_inOrbit_track
 
+/-! ## The walked bundle package and THE WALKED GLUE
+
+    The per-orbit package under the three-way discipline, then the master:
+    a walked rank-modulo-cycle automaton with a covering orbit list has a
+    solvable canonical quotient.  `orbCy` and the walked assembly reuse
+    verbatim — the assembly always allowed member self-loops. -/
+
+open Classical in
+theorem walked_orbit_cy_bundle (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    (hlen2 : 2 ≤ qPeriod aut nxt u₀ k)
+    (hstates : ∀ j, bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states)
+    (hNoDescInt : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+        ¬ minRank (trimAut aut) rank e.2.2
+            < minRank (trimAut aut) rank
+                (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+    (hnoeps : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      ∀ α : T → Bool,
+        ¬ autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α []) :
+    (∀ j, j < qPeriod aut nxt u₀ k →
+      minRank (trimAut aut) rank
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+        = minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)))
+    ∧ (∀ e ∈ gOthers
+        (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) 0)
+        (restL (cleanAut (bisimQuotAut (trimAut aut)))
+          (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+        minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        gOthers
+          (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+            (qPeriod aut nxt u₀ k) j)
+          (restL (cleanAut (bisimQuotAut (trimAut aut)))
+            (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) j)
+          = [])
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀))))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        ∀ e ∈ gOthers
+          (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+            (qPeriod aut nxt u₀ k) 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut)))
+            (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+          GuardEmpty (.and
+            ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))) e.1))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+          (.not (.or
+            (selfG (cleanAut (bisimQuotAut (trimAut aut)))
+              (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0)
+            (nextG (cleanAut (bisimQuotAut (trimAut aut)))
+              (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+              (qPeriod aut nxt u₀ k) 0)))) := by
+  have hEmpty : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      GuardEmpty ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀))) := by
+    intro j hj hjlt
+    exact orbit_halt_empty aut nxt j (hnoeps j hj hjlt)
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro j _
+    exact walked_orbit_rank_eq aut rank nxt hdec hnxt_rank hfire hk
+      hper hlive hnofix hmin j 0
+  · exact walked_orbit_port_descent aut rank nxt hdec hnxt_rank hfire
+      hk hper hlive hnofix hmin hnontriv hlen2 (hstates 0)
+  · intro j hj hjlt
+    exact hint_nil_of_pinned (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j
+      (walked_orbit_arms_pinned_nxtAt aut rank nxt hdec hnxt_rank hfire
+        hk hper hlive hnofix hmin hnontriv j (hstates j)
+        (hNoDescInt j hj hjlt))
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).1
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).2.1
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).2.2
+
+open Classical in
+private theorem orbCy_none' (aut : GAut S A T) (nxt : S → S)
+    (os : List (S × Nat)) {c : S}
+    (h : firstMem (fun p => InOrbit aut nxt p.1 c) os = none) :
+    orbCy aut nxt os c = none := by
+  unfold orbCy
+  rw [h]
+
+open Classical in
+private theorem orbCy_some' (aut : GAut S A T) (nxt : S → S)
+    (os : List (S × Nat)) {c : S} {p : S × Nat}
+    (h : firstMem (fun p => InOrbit aut nxt p.1 c) os = some p) :
+    orbCy aut nxt os c = some (qPeriod aut nxt p.1 p.2,
+      fun t => bisimRep (trimAut aut) (nxtIter nxt t p.1),
+      qpos aut nxt p.1 p.2 c) := by
+  unfold orbCy
+  rw [h]
+
+open Classical in
+/-- **THE WALKED GLUE**: a walked rank-modulo-cycle automaton with a
+    covering orbit list has a solvable canonical quotient. -/
+theorem walked_rankNxt_quot_solvesBA (aut : GAut S A T)
+    (rank : S → Nat) (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    (os : List (S × Nat))
+    (hos : ∀ p ∈ os,
+      1 ≤ p.2 ∧ nxtIter nxt p.2 p.1 = p.1 ∧ Live (trimAut aut) p.1
+      ∧ (∀ j, j < p.2 →
+          nxt (nxtIter nxt j p.1) ≠ nxtIter nxt j p.1)
+      ∧ (∀ w, autLang (genW T) (trimAut aut) w
+          = autLang (genW T) (trimAut aut) p.1 → rank p.1 ≤ rank w)
+      ∧ (∀ j : Nat,
+          autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) p.1)
+            ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j p.1))
+      ∧ 2 ≤ qPeriod aut nxt p.1 p.2
+      ∧ (∀ j, bisimRep (trimAut aut) (nxtIter nxt j p.1)
+          ∈ (bisimQuotAut (trimAut aut)).states)
+      ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt p.1 p.2 →
+          ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+              (bisimRep (trimAut aut) (nxtIter nxt j p.1)),
+            ¬ minRank (trimAut aut) rank e.2.2
+                < minRank (trimAut aut) rank
+                    (bisimRep (trimAut aut) (nxtIter nxt j p.1)))
+      ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt p.1 p.2 →
+          ∀ α : T → Bool,
+            ¬ autRun (genW T) (trimAut aut) (nxtIter nxt j p.1) α []))
+    (hcover : ∀ c ∈ (cleanAut (bisimQuotAut (trimAut aut))).states,
+      (∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans c,
+        e.2.2 = c ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank c)
+      ∨ ∃ p ∈ os, InOrbit aut nxt p.1 c) :
+    ∃ qsol : S → Exp A T,
+      SolvesBA (bisimQuotAut (trimAut aut)) qsol := by
+  have hcy : ∀ s len m i, orbCy aut nxt os s = some (len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → orbCy aut nxt os (m j) = some (len, m, j)) ∧
+      (∀ j, j < len →
+        minRank (trimAut aut) rank (m j)
+          = minRank (trimAut aut) rank (m 0)) ∧
+      (∀ e ∈ gOthers (nxtAt m len 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m 0),
+        minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank (m 0)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        gOthers (nxtAt m len j)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m j) = []) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j))
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m 0))) ∧
+      (∀ j, 1 ≤ j → j < len →
+        ∀ e ∈ gOthers (nxtAt m len 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m 0),
+          GuardEmpty (.and
+            ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j)) e.1)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j))
+          (.not (.or
+            (selfG (cleanAut (bisimQuotAut (trimAut aut))) m 0)
+            (nextG (cleanAut (bisimQuotAut (trimAut aut))) m len
+              0)))) := by
+    intro s len m i hcys
+    cases hfm : firstMem (fun p => InOrbit aut nxt p.1 s) os with
+    | none =>
+        rw [orbCy_none' aut nxt os hfm] at hcys
+        exact nomatch hcys
+    | some p =>
+        rw [orbCy_some' aut nxt os hfm] at hcys
+        have hinj := Option.some.inj hcys
+        rw [Prod.mk.injEq, Prod.mk.injEq] at hinj
+        obtain ⟨hlenE, hmE, hiE⟩ := hinj
+        subst hlenE
+        subst hmE
+        subst hiE
+        obtain ⟨hpmem, hio⟩ := firstMem_mem hfm
+        obtain ⟨hk, hper, hlive, hnofix, hmin, hnontriv, hlen2,
+          hstates, hnodesc, hnoeps⟩ := hos p hpmem
+        obtain ⟨hc3, hposlt⟩ := walked_qpos_spec aut rank nxt hdec
+          hnxt_rank hfire hk hper hlive hnofix hmin hnontriv hio
+        obtain ⟨hB1, hB2, hB3, hB4, hB5, hB6⟩ := walked_orbit_cy_bundle
+          aut rank nxt hdec hnxt_rank hfire hk hper hlive hnofix hmin
+          hnontriv hlen2 hstates hnodesc hnoeps
+        refine ⟨hposlt, hlen2, hc3, ?_, hB1, hB2, hB3, hB4, hB5, hB6⟩
+        intro j hj
+        have hcongr : firstMem (fun p' => InOrbit aut nxt p'.1
+            (bisimRep (trimAut aut) (nxtIter nxt j p.1))) os
+            = firstMem (fun p' => InOrbit aut nxt p'.1 s) os := by
+          apply firstMem_congr_mem
+          intro p' hp'
+          obtain ⟨hk', hper', hlive', hnofix', hmin', -, -, -, -, -⟩ :=
+            hos p' hp'
+          constructor
+          · intro hin
+            have h2 := walked_inOrbit_track aut rank nxt hdec
+              hnxt_rank hfire hk hper hlive hnofix hmin hnontriv
+              hk' hper' hlive' hnofix' hmin'
+              (t := j) (t' := qpos aut nxt p.1 p.2 s) hin
+            rw [hc3] at h2
+            exact h2
+          · intro hin
+            have hin' : InOrbit aut nxt p'.1 (bisimRep (trimAut aut)
+                (nxtIter nxt (qpos aut nxt p.1 p.2 s) p.1)) := by
+              rw [hc3]
+              exact hin
+            exact walked_inOrbit_track aut rank nxt hdec hnxt_rank
+              hfire hk hper hlive hnofix hmin hnontriv
+              hk' hper' hlive' hnofix' hmin'
+              (t := qpos aut nxt p.1 p.2 s) (t' := j) hin'
+        rw [orbCy_some' aut nxt os (hcongr.trans hfm)]
+        rw [walked_qpos_qm aut rank nxt hdec hnxt_rank hfire hk hper
+          hlive hnofix hmin hnontriv hj]
+  have hbase : ∀ s ∈ (cleanAut (bisimQuotAut (trimAut aut))).states,
+      orbCy aut nxt os s = none →
+      ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans s,
+        e.2.2 = s ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank s := by
+    intro s hs hnone e he
+    rcases hcover s hs with hbase' | ⟨p, hp, hio⟩
+    · exact hbase' e he
+    · obtain ⟨y, hy⟩ := firstMem_isSome
+        (P := fun p => InOrbit aut nxt p.1 s) hp hio
+      rw [orbCy_some' aut nxt os hy] at hnone
+      exact nomatch hnone
+  obtain ⟨qsol, hroles⟩ := walked_assembly_roles
+    (cleanAut (bisimQuotAut (trimAut aut)))
+    (fun c => minRank (trimAut aut) rank c)
+    (orbCy aut nxt os) hcy hbase
+  exact ⟨qsol, solvesBA_unclean _ (decomp_solves _ _ hroles)⟩
+
+#print axioms walked_orbit_cy_bundle
+#print axioms walked_rankNxt_quot_solvesBA
+
 end GkatWalkedOrbit
