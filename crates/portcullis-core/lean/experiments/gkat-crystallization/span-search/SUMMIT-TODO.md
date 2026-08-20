@@ -849,3 +849,27 @@ interior_no_desc/hnoeps), hcover. NEXT: the master assembly theorem
 interior_no_desc plumbing at iterate positions), then the wrapper
 (equivBA_of_quot_solvesBA) for wh b1 chain1 ~ wh b2 chain2, then the
 degenerate branches.
+
+## THE MASTER ASSEMBLY: chain_loops_solvable (loop iteration 26b, "Proceed")
+
+chain_loops_solvable: THE CANONICAL QUOTIENT OF THE SUM OF TWO CHAIN-LOOP
+THOMPSON AUTOMATA IS SOLVABLE — rankNxt_quot_solvesBA instantiated with
+the complete stack: sum_chain_hdec/nxt_rank/hfire, the two-port orbit
+list with full bundles (hper/hnofix/hlive/hmin/qP>=2/hstates/
+interior_no_desc-fed-by-deterministic-steps/hnoeps), and the total cover.
+[propext, Classical.choice, Quot.sound], no sorries.
+
+Fix inventory: qPeriod atoms are opaque to omega — convert bounds with
+Nat.lt_of_lt_of_le at the TERM level; wrapped iterate equations need rw
+of the inner lemma, not exact; named-hole ?tag inside obtain is not a
+thing — hoist to have.
+
+This is the existence half of the fourth theorem. Remaining:
+1. chain_shape upgrade: also return hexh (chain_exhaustive), hlen2
+   (2 <= spine length for multi-action chains), head-tie hfl.
+2. The wrapper: ChainLoopPair fragment (e = wh b1 chain1, f = wh b2
+   chain2, guards nondegenerate) -> chainloops_complete via
+   equivBA_of_quot_solvesBA. Note SUMof A T e f must be DEFEQ-related to
+   sumGAut (toGAut (certifiedThompson e).aut) ... — check SUMof def.
+3. Degenerate branches (b unsat / not-b unsat / len 1) via
+   prune/atomic-loop routes.

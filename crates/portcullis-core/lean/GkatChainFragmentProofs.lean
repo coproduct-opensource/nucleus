@@ -2134,4 +2134,345 @@ theorem sum_chain_cover {S₁ S₂ : Type}
 
 #print axioms sum_chain_cover
 
+/-! ## THE MASTER ASSEMBLY: sums of chain loops are solvable
+
+    Instantiate the orbit glue with everything proved: the canonical
+    quotient of the sum of two chain-loop Thompson automata is solvable —
+    the existence half that, through `equivBA_of_quot_solvesBA`, decides
+    `wh b₁ (p₁;…;pₙ) ≡ wh b₂ (q₁;…;qₘ)` from the finite axioms alone. -/
+
+open Classical in
+/-- Right mirror of trim-level interior silence. -/
+theorem sum_chain_noeps_inr {S₁ S₂ : Type} {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l)
+    (aut₁ : GAut (Option S₁) A T)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut aut₁ (loopInitialized b B).toGAut))
+          (Sum.inr (some (l[j]'(by omega)))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((loopInitialized b B).core.hlt (l[j]'(by omega))) α = true := h
+  rw [loop_hlt_int b hsp j h1 α] at h'
+  exact nomatch h'
+
+open Classical in
+/-- **SUMS OF CHAIN LOOPS ARE SOLVABLE**: the canonical quotient of the
+    sum of two chain-loop Thompson automata admits a syntactic solution,
+    from the finite axioms alone. -/
+theorem chain_loops_solvable {S₁ S₂ : Type}
+    {B₁ : InitializedGAut S₁ A T} {B₂ : InitializedGAut S₂ A T}
+    (b₁ b₂ : BExp T) {l₁ : List S₁} {l₂ : List S₂}
+    (hsp₁ : ChainSpine B₁ l₁) (hsp₂ : ChainSpine B₂ l₂)
+    {f₁ : S₁} {f₂ : S₂} (hin₁ : ChainInit B₁ f₁)
+    (hin₂ : ChainInit B₂ f₂)
+    (hct₁ : CoreTargetsListed B₁) (hit₁ : InitTargetsListed B₁)
+    (hct₂ : CoreTargetsListed B₂) (hit₂ : InitTargetsListed B₂)
+    (hstates₁ : B₁.core.states = l₁) (hstates₂ : B₂.core.states = l₂)
+    (hexh₁ : ∀ x : S₁, x ∈ l₁) (hexh₂ : ∀ x : S₂, x ∈ l₂)
+    (hexit₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hexit₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbsat₁ : ∃ α : T → Bool, bval (genW T) b₁ α = true)
+    (hbsat₂ : ∃ α : T → Bool, bval (genW T) b₂ α = true)
+    (hlen2₁ : 2 ≤ l₁.length) (hlen2₂ : 2 ≤ l₂.length)
+    (hfl₁ : l₁[0]'(by omega) = f₁) (hfl₂ : l₂[0]'(by omega) = f₂) :
+    ∃ qsol : Sum (Option S₁) (Option S₂) → Exp A T,
+      SolvesBA (bisimQuotAut (trimAut (sumGAut
+        (loopInitialized b₁ B₁).toGAut
+        (loopInitialized b₂ B₂).toGAut))) qsol := by
+  refine rankNxt_quot_solvesBA
+    (sumGAut (loopInitialized b₁ B₁).toGAut
+      (loopInitialized b₂ B₂).toGAut)
+    (Sum.elim (fun o : Option S₁ => if o.isSome then 0 else 1)
+      (fun o : Option S₂ => if o.isSome then 0 else 1))
+    (Sum.elim (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+      (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+    (sum_chain_hdec b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hexh₁ hexh₂)
+    (sum_chain_nxt_rank (spineNext f₁ l₁) (spineNext f₂ l₂))
+    (sum_chain_hfire b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hct₁ hit₁ hct₂ hit₂
+      hstates₁ hstates₂ hexh₁ hexh₂ hexit₁ hexit₂ hbsat₁ hbsat₂
+      (fun _ => hfl₁) (fun _ => hfl₂))
+    [((Sum.inl (some (l₁[l₁.length - 1]'(by omega)))
+        : Sum (Option S₁) (Option S₂)), l₁.length),
+      (Sum.inr (some (l₂[l₂.length - 1]'(by omega))), l₂.length)]
+    ?_ ?_
+  · intro p hp
+    rcases List.mem_cons.mp hp with hp1 | hp'
+    · subst hp1
+      obtain ⟨hq1, hq2, hq3, hq4⟩ := qPeriod_spec
+        (sumGAut (loopInitialized b₁ B₁).toGAut
+          (loopInitialized b₂ B₂).toGAut)
+        (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+          (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+        (Sum.inl (some (l₁[l₁.length - 1]'(by omega)))) l₁.length
+        (by omega) (sum_chain_hper hsp₁ (spineNext f₂ l₂) (by omega)
+          hfl₁)
+      refine ⟨by omega,
+        sum_chain_hper hsp₁ (spineNext f₂ l₂) (by omega) hfl₁,
+        live_trimAut (spine_mem_live_inl b₁ hsp₁ f₁ _ hexit₁
+          (List.getElem_mem _)),
+        sum_chain_hnofix hsp₁ (spineNext f₂ l₂) hlen2₁ hfl₁,
+        fun w _ => Nat.zero_le _,
+        sum_chain_qperiod2 b₁ hsp₁ _ (spineNext f₂ l₂) hlen2₁ hfl₁
+          hexit₁,
+        ?_, ?_, ?_⟩
+      · intro j
+        rw [nxtIter_lift_inl]
+        exact sum_chain_states b₁ hstates₁ _
+          (spineNext_iter_mem hsp₁ (by omega) hfl₁ j
+            (List.getElem_mem _))
+      · intro j hj1 hjq
+        have hjlen : j < l₁.length := Nat.lt_of_lt_of_le hjq hq3
+        have hiter : nxtIter (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂)))) j
+            (Sum.inl (some (l₁[l₁.length - 1]'(by omega))))
+            = Sum.inl (some (l₁[j - 1]'(by omega))) := by
+          rw [nxtIter_lift_inl]
+          have h := spine_iter_port hsp₁ (by omega) hfl₁ (j - 1)
+            (by omega)
+          rw [show j - 1 + 1 = j from by omega] at h
+          rw [h]
+        refine interior_no_desc
+          (sumGAut (loopInitialized b₁ B₁).toGAut
+            (loopInitialized b₂ B₂).toGAut)
+          (Sum.elim (fun o : Option S₁ => if o.isSome then 0 else 1)
+            (fun o : Option S₂ => if o.isSome then 0 else 1))
+          (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+          (sum_chain_hdec b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hexh₁ hexh₂)
+          (sum_chain_nxt_rank (spineNext f₁ l₁) (spineNext f₂ l₂))
+          (sum_chain_hfire b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hct₁ hit₁ hct₂
+            hit₂ hstates₁ hstates₂ hexh₁ hexh₂ hexit₁ hexit₂ hbsat₁
+            hbsat₂ (fun _ => hfl₁) (fun _ => hfl₂))
+          (by omega)
+          (sum_chain_hper hsp₁ (spineNext f₂ l₂) (by omega) hfl₁)
+          (live_trimAut (spine_mem_live_inl b₁ hsp₁ f₁ _ hexit₁
+            (List.getElem_mem _)))
+          (sum_chain_hnofix hsp₁ (spineNext f₂ l₂) hlen2₁ hfl₁)
+          (fun w _ => Nat.zero_le _)
+          j ?_
+        intro α
+        obtain ⟨a, hstep⟩ := sum_chain_step_interior b₁ hsp₁ f₁ _
+          hct₁ hit₁ hstates₁ hexh₁ hexit₁ (j - 1) (by omega) α
+        refine ⟨a, ?_⟩
+        rw [hiter]
+        have hiter2 : nxtIter (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+            (j + 1)
+            (Sum.inl (some (l₁[l₁.length - 1]'(by omega))))
+            = Sum.inl (some (l₁[j]'(by omega))) := by
+          rw [nxtIter_lift_inl]
+          rw [spine_iter_port hsp₁ (by omega) hfl₁ j (by omega)]
+        rw [hiter2]
+        have hidx : j - 1 + 1 = j := by omega
+        rw [show (l₁[j]'(by omega) : S₁)
+            = l₁[j - 1 + 1]'(by omega) from by
+          simp only [hidx]]
+        exact hstep
+      · intro j hj1 hjq α
+        have hjlen : j < l₁.length := Nat.lt_of_lt_of_le hjq hq3
+        have hiter : nxtIter (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂)))) j
+            (Sum.inl (some (l₁[l₁.length - 1]'(by omega))))
+            = Sum.inl (some (l₁[j - 1]'(by omega))) := by
+          rw [nxtIter_lift_inl]
+          have h := spine_iter_port hsp₁ (by omega) hfl₁ (j - 1)
+            (by omega)
+          rw [show j - 1 + 1 = j from by omega] at h
+          rw [h]
+        rw [hiter]
+        exact sum_chain_noeps b₁ hsp₁ _ (j - 1) (by omega) α
+    · rcases List.mem_cons.mp hp' with hp2 | hnil
+      · subst hp2
+        have hper2 : nxtIter (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+            l₂.length (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+            = Sum.inr (some (l₂[l₂.length - 1]'(by omega))) := by
+          rw [nxtIter_lift_inr]
+          rw [spine_period_port hsp₂ (by omega) hfl₂]
+        obtain ⟨hq1, hq2, hq3, hq4⟩ := qPeriod_spec
+          (sumGAut (loopInitialized b₁ B₁).toGAut
+            (loopInitialized b₂ B₂).toGAut)
+          (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+          (Sum.inr (some (l₂[l₂.length - 1]'(by omega)))) l₂.length
+          (by omega) hper2
+        refine ⟨by omega, hper2, ?_, ?_, fun w _ => Nat.zero_le _,
+          ?_, ?_, ?_, ?_⟩
+        · exact live_trimAut (spine_live_sum_inr b₂ hsp₂ f₂ _ hexit₂
+            (l₂.length - 1) (by omega))
+        · intro j hj hcontra
+          rw [nxtIter_lift_inr] at hcontra
+          exact spine_nofix_port hsp₂ hlen2₂ hfl₂ j hj
+            (Option.some.inj (Sum.inr.inj hcontra))
+        · obtain ⟨hs1, hs2, hs3, hs4⟩ := qPeriod_spec
+            (sumGAut (loopInitialized b₁ B₁).toGAut
+              (loopInitialized b₂ B₂).toGAut)
+            (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o : Option S₂ =>
+                Sum.inr (o.map (spineNext f₂ l₂))))
+            (Sum.inr (some (l₂[l₂.length - 1]'(by omega)))) l₂.length
+            (by omega) hper2
+          -- qPeriod ≥ 2 for the right summand: mirror argument
+          generalize hqgen : qPeriod
+              (sumGAut (loopInitialized b₁ B₁).toGAut
+                (loopInitialized b₂ B₂).toGAut)
+              (Sum.elim
+                (fun o : Option S₁ =>
+                  Sum.inl (o.map (spineNext f₁ l₁)))
+                (fun o : Option S₂ =>
+                  Sum.inr (o.map (spineNext f₂ l₂))))
+              (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+              l₂.length = qp at hs1 hs2 hs3 hs4 ⊢
+          rcases Nat.lt_or_ge qp 2 with hlt | hge
+          · exfalso
+            have hqp1 : qp = 1 := by omega
+            rw [hqp1] at hs1
+            have hn : nxtIter (Sum.elim
+                (fun o : Option S₁ =>
+                  Sum.inl (o.map (spineNext f₁ l₁)))
+                (fun o : Option S₂ =>
+                  Sum.inr (o.map (spineNext f₂ l₂)))) 1
+                (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+                = Sum.inr (some f₂) := by
+              show Sum.inr (some (spineNext f₂ l₂
+                (l₂[l₂.length - 1]'(by omega)))) = _
+              rw [spineNext_last f₂ l₂ hsp₂ (by omega)]
+            rw [hn] at hs1
+            have hL : autLang (genW T)
+                (trimAut (sumGAut (loopInitialized b₁ B₁).toGAut
+                  (loopInitialized b₂ B₂).toGAut))
+                (Sum.inr (some f₂))
+                = autLang (genW T)
+                  (trimAut (sumGAut (loopInitialized b₁ B₁).toGAut
+                    (loopInitialized b₂ B₂).toGAut))
+                  (Sum.inr (some (l₂[l₂.length - 1]'(by omega)))) := by
+              rw [← rep_lang (sumGAut (loopInitialized b₁ B₁).toGAut
+                (loopInitialized b₂ B₂).toGAut) (Sum.inr (some f₂)),
+                hs1,
+                rep_lang (sumGAut (loopInitialized b₁ B₁).toGAut
+                  (loopInitialized b₂ B₂).toGAut)]
+            obtain ⟨αe, hαe⟩ := hexit₂
+            have hiff := iff_of_eq (congrFun hL (αe, []))
+            have hport : autRun (genW T)
+                (trimAut (sumGAut (loopInitialized b₁ B₁).toGAut
+                  (loopInitialized b₂ B₂).toGAut))
+                (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+                αe [] := by
+              show bval (genW T)
+                ((loopInitialized b₂ B₂).core.hlt
+                  (l₂[l₂.length - 1]'(by omega))) αe = true
+              rw [loop_hlt_port b₂ hsp₂ (by omega) αe, hαe]
+              rfl
+            have hf := hiff.mpr hport
+            have hf' : bval (genW T)
+                ((loopInitialized b₂ B₂).core.hlt f₂) αe = true := hf
+            rw [← hfl₂] at hf'
+            rw [loop_hlt_int b₂ hsp₂ 0 (by omega) αe] at hf'
+            exact nomatch hf'
+          · exact hge
+        · intro j
+          rw [nxtIter_lift_inr]
+          exact List.mem_map.mpr ⟨Sum.inr (some
+            (nxtIter (spineNext f₂ l₂) j
+              (l₂[l₂.length - 1]'(by omega)))), by
+            refine List.mem_append.mpr (Or.inr (List.mem_map.mpr
+              ⟨some (nxtIter (spineNext f₂ l₂) j
+                (l₂[l₂.length - 1]'(by omega))), ?_, rfl⟩))
+            refine List.mem_cons.mpr (Or.inr (List.mem_map.mpr
+              ⟨_, ?_, rfl⟩))
+            show nxtIter (spineNext f₂ l₂) j
+              (l₂[l₂.length - 1]'(by omega)) ∈ B₂.core.states
+            rw [hstates₂]
+            exact spineNext_iter_mem hsp₂ (by omega) hfl₂ j
+              (List.getElem_mem _), rfl⟩
+        · intro j hj1 hjq
+          have hjlen : j < l₂.length := Nat.lt_of_lt_of_le hjq hq3
+          have hiter : nxtIter (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o : Option S₂ =>
+                Sum.inr (o.map (spineNext f₂ l₂)))) j
+              (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+              = Sum.inr (some (l₂[j - 1]'(by omega))) := by
+            rw [nxtIter_lift_inr]
+            have h := spine_iter_port hsp₂ (by omega) hfl₂ (j - 1)
+              (by omega)
+            rw [show j - 1 + 1 = j from by omega] at h
+            rw [h]
+          refine interior_no_desc
+            (sumGAut (loopInitialized b₁ B₁).toGAut
+              (loopInitialized b₂ B₂).toGAut)
+            (Sum.elim (fun o : Option S₁ => if o.isSome then 0 else 1)
+              (fun o : Option S₂ => if o.isSome then 0 else 1))
+            (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o : Option S₂ =>
+                Sum.inr (o.map (spineNext f₂ l₂))))
+            (sum_chain_hdec b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hexh₁ hexh₂)
+            (sum_chain_nxt_rank (spineNext f₁ l₁) (spineNext f₂ l₂))
+            (sum_chain_hfire b₁ b₂ hsp₁ hsp₂ hin₁ hin₂ hct₁ hit₁ hct₂
+              hit₂ hstates₁ hstates₂ hexh₁ hexh₂ hexit₁ hexit₂ hbsat₁
+              hbsat₂ (fun _ => hfl₁) (fun _ => hfl₂))
+            (by omega)
+            hper2
+            (live_trimAut (spine_live_sum_inr b₂ hsp₂ f₂ _ hexit₂
+              (l₂.length - 1) (by omega)))
+            (by
+              intro i hi hcontra
+              rw [nxtIter_lift_inr] at hcontra
+              exact spine_nofix_port hsp₂ hlen2₂ hfl₂ i hi
+                (Option.some.inj (Sum.inr.inj hcontra)))
+            (fun w _ => Nat.zero_le _)
+            j ?_
+          intro α
+          obtain ⟨a, hstep⟩ := sum_chain_step_interior_inr b₂ hsp₂ f₂ _
+            hct₂ hit₂ hstates₂ hexh₂ hexit₂ (j - 1) (by omega) α
+          refine ⟨a, ?_⟩
+          rw [hiter]
+          have hiter2 : nxtIter (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o : Option S₂ =>
+                Sum.inr (o.map (spineNext f₂ l₂)))) (j + 1)
+              (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+              = Sum.inr (some (l₂[j]'(by omega))) := by
+            rw [nxtIter_lift_inr]
+            rw [spine_iter_port hsp₂ (by omega) hfl₂ j (by omega)]
+          rw [hiter2]
+          have hidx : j - 1 + 1 = j := by omega
+          rw [show (l₂[j]'(by omega) : S₂)
+              = l₂[j - 1 + 1]'(by omega) from by
+            simp only [hidx]]
+          exact hstep
+        · intro j hj1 hjq α
+          have hjlen : j < l₂.length := Nat.lt_of_lt_of_le hjq hq3
+          have hiter : nxtIter (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o : Option S₂ =>
+                Sum.inr (o.map (spineNext f₂ l₂)))) j
+              (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+              = Sum.inr (some (l₂[j - 1]'(by omega))) := by
+            rw [nxtIter_lift_inr]
+            have h := spine_iter_port hsp₂ (by omega) hfl₂ (j - 1)
+              (by omega)
+            rw [show j - 1 + 1 = j from by omega] at h
+            rw [h]
+          rw [hiter]
+          exact sum_chain_noeps_inr b₂ hsp₂ _ (j - 1) (by omega) α
+      · exact nomatch hnil
+  · intro c hc
+    exact Or.inr (sum_chain_cover b₁ b₂ hsp₁ hsp₂ hct₁ hit₁ hct₂ hit₂
+      hstates₁ hstates₂ hexh₁ hexh₂ hexit₁ hexit₂ (by omega) (by omega)
+      hfl₁ hfl₂ c hc)
+
+#print axioms chain_loops_solvable
+
 end GkatChainFragment
