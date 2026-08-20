@@ -1355,3 +1355,31 @@ Remaining for nestedloops_complete: THE NESTED FRAGMENT —
 3. hnontriv via shortest-exit stratification
 4. hfire/hnoeps/hstates/cover mirrors of the chain fragment
 5. the wrapper.
+
+## ============================================================
+## THE TWO-LOOP FRAGMENT OPENS (iteration 48)
+## ============================================================
+
+SCOPING DISCOVERY (the iteration's core product): general inner loops
+are SKIPPABLE — the ¬c bypass creates per-atom branching to two forward
+cycle positions, genuinely beyond WalkedDec (the census hard 2%,
+confirmed by hand-computing Thompson automata). BUT the shape
+  wh b ((wh c q); r)
+— inner loop first, one trailing action — fits WalkedDec EXACTLY: the
+re-entry skip lands on the port itself (self-arm), giving two
+interlocking cycles (inner self-loop + outer 2-cycle) sharing states.
+
+New file GkatTwoLoopProofs.lean:
+- twoLoop/twoLoopBody/twoLoopAut/twoNxt defs
+- two_state_dec (every target is self-or-swap — ZERO AXIOMS; hdec is
+  free in a 2-state space), twoNxt_period/nofix
+- twoLoop_hlt_inl (interior silence) / twoLoop_hlt_inr (port exits ¬b)
+- twoLoop_step_inl_self/adv, twoLoop_step_inr_feed/self/none: the FIVE
+  concrete step facts at (c), (¬c), (b∧c), (b∧¬c), (¬b) atoms — the
+  show-normal-forms machine-verify the hand-computed automaton.
+
+Remaining: Σ-level (liveness under sat(b∧c)/sat(¬c)/sat(¬b), trim
+transparency, walked-hos discharge with hnontriv from port/interior
+ε-distinctness, cover with init~port), the wrapper:
+TWOLOOPS_COMPLETE — the FIFTH theorem, first with genuinely nested
+cycles.

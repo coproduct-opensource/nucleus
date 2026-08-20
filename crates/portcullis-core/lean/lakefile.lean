@@ -837,6 +837,9 @@ lean_lib «GkatDecideProofs» where
 lean_lib «GkatWalkedOrbitProofs» where
   roots := #[`GkatWalkedOrbitProofs]
 
+lean_lib «GkatTwoLoopProofs» where
+  roots := #[`GkatTwoLoopProofs]
+
 lean_lib «GkatCertR1» where
   roots := #[`GkatCertR1]
 
