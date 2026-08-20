@@ -1116,4 +1116,253 @@ def stepEquivWithinDec [DecidableEq T] [DecidableEq A]
 #print axioms forall_optStepRel_iff
 #print axioms stepEquivWithinDec
 
+/-! ## Stabilization: bisimilarity decides at the pair bound
+
+    The count of level-equivalent pairs over a closed pool is antitone;
+    a descending Nat function has a fixpoint within its initial value;
+    at a fixpoint level the refinement stops and propagates upward.  So
+    generic bisimilarity on pool states IS step equivalence at
+    `|pool|²` — and that level decides. -/
+
+instance stepEquivInst [DecidableEq T] [DecidableEq A]
+    (aut : GAut S A T) (n : Nat) (s t : S) :
+    Decidable (stepEquivWithin aut n s t) :=
+  stepEquivWithinDec aut n s t
+
+/-- Generalized antitonicity. -/
+theorem stepEquiv_le (aut : GAut S A T) :
+    ∀ {m n : Nat}, m ≤ n → ∀ {s t : S},
+      stepEquivWithin aut n s t → stepEquivWithin aut m s t := by
+  intro m n hmn
+  induction n with
+  | zero =>
+      intro s t h
+      have hm : m = 0 := by omega
+      subst hm
+      exact h
+  | succ n ih =>
+      intro s t h
+      rcases Nat.lt_or_ge m (n + 1) with hlt | hge
+      · exact ih (by omega) (stepEquivWithin_antitone aut n s t h)
+      · have hm : m = n + 1 := by omega
+        subst hm
+        exact h
+
+/-- Steps stay in a closed pool. -/
+theorem autStep_target_pool (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) {α : T → Bool} {q : A} {s' : S}
+    (h : autStep (genW T) aut s α = some (q, s')) : s' ∈ pool := by
+  obtain ⟨e, he, -, -, he2⟩ :=
+    effList_of_firstMatch (genW T) α (aut.trans s) .zero rfl h
+  obtain ⟨g₀, hg₀⟩ := effList_target_mem (aut.trans s) .zero e he
+  have := hclosed s hs (g₀, e.2.1, e.2.2) hg₀
+  rw [he2] at this
+  exact this
+
+/-- A stable level propagates upward on a closed pool. -/
+theorem stepEquiv_stable_succ (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) (N : Nat)
+    (hstab : ∀ x ∈ pool, ∀ y ∈ pool, stepEquivWithin aut N x y →
+      stepEquivWithin aut (N + 1) x y) :
+    ∀ (k : Nat), ∀ x ∈ pool, ∀ y ∈ pool, stepEquivWithin aut N x y →
+      stepEquivWithin aut (N + k) x y := by
+  intro k
+  induction k with
+  | zero => intro x _ y _ h; exact h
+  | succ k ih =>
+      intro x hx y hy h
+      have h1 := hstab x hx y hy h
+      rw [stepEquivWithin_succ] at h1
+      show stepEquivWithin aut (N + k + 1) x y
+      rw [stepEquivWithin_succ]
+      refine ⟨h1.1, ?_⟩
+      intro α
+      have h2 := h1.2 α
+      cases hs : autStep (genW T) aut x α with
+      | none =>
+          cases ht : autStep (genW T) aut y α with
+          | none => exact trivial
+          | some o =>
+              rw [hs, ht] at h2
+              exact h2.elim
+      | some o =>
+          cases ht : autStep (genW T) aut y α with
+          | none =>
+              rw [hs, ht] at h2
+              exact h2.elim
+          | some o' =>
+              rw [hs, ht] at h2
+              refine ⟨h2.1, ?_⟩
+              exact ih o.2 (autStep_target_pool aut pool hclosed hx hs)
+                o'.2 (autStep_target_pool aut pool hclosed hy ht) h2.2
+
+/-- All ordered pairs over a pool. -/
+def pairList {γ : Type} (pool : List γ) : List (γ × γ) :=
+  pool.flatMap (fun x => pool.map (fun y => (x, y)))
+
+theorem pairList_mem {γ : Type} (pool : List γ) (x y : γ)
+    (hx : x ∈ pool) (hy : y ∈ pool) : (x, y) ∈ pairList pool :=
+  List.mem_flatMap.mpr ⟨x, hx, List.mem_map.mpr ⟨y, hy, rfl⟩⟩
+
+/-- Filter length is monotone under pointwise implication. -/
+theorem filter_length_mono {γ : Type} (f g : γ → Bool) :
+    ∀ L : List γ, (∀ e ∈ L, f e = true → g e = true) →
+      (L.filter f).length ≤ (L.filter g).length := by
+  intro L
+  induction L with
+  | nil => intro _; exact Nat.le_refl _
+  | cons x xs ih =>
+      intro h
+      have hxs := ih (fun e he => h e (List.mem_cons_of_mem _ he))
+      cases hf : f x with
+      | true =>
+          rw [List.filter_cons_of_pos hf,
+              List.filter_cons_of_pos (h x (List.mem_cons_self ..) hf)]
+          simp only [List.length_cons]
+          omega
+      | false =>
+          rw [List.filter_cons_of_neg (p := f)
+            (by rw [hf]; exact Bool.false_ne_true)]
+          cases hg : g x with
+          | true =>
+              rw [List.filter_cons_of_pos (p := g) hg]
+              simp only [List.length_cons]
+              omega
+          | false =>
+              rw [List.filter_cons_of_neg (p := g)
+                (by rw [hg]; exact Bool.false_ne_true)]
+              exact hxs
+
+/-- Equal filter lengths under pointwise implication force pointwise
+    equivalence on members. -/
+theorem filter_eq_of_length_eq {γ : Type} (f g : γ → Bool) :
+    ∀ L : List γ, (∀ e ∈ L, f e = true → g e = true) →
+      (L.filter g).length = (L.filter f).length →
+      ∀ e ∈ L, g e = true → f e = true := by
+  intro L
+  induction L with
+  | nil => intro _ _ e he; exact nomatch he
+  | cons x xs ih =>
+      intro himp hlen e he hge
+      have himp' := fun e he => himp e (List.mem_cons_of_mem _ he)
+      cases hf : f x with
+      | true =>
+          rw [List.filter_cons_of_pos
+              (himp x (List.mem_cons_self ..) hf),
+            List.filter_cons_of_pos hf] at hlen
+          simp only [List.length_cons] at hlen
+          rcases List.mem_cons.mp he with heq | hm
+          · exact heq ▸ hf
+          · exact ih himp' (by omega) e hm hge
+      | false =>
+          rw [List.filter_cons_of_neg (p := f)
+            (by rw [hf]; exact Bool.false_ne_true)] at hlen
+          cases hgx : g x with
+          | true =>
+              exfalso
+              rw [List.filter_cons_of_pos (p := g) hgx] at hlen
+              simp only [List.length_cons] at hlen
+              have := filter_length_mono f g xs himp'
+              omega
+          | false =>
+              rw [List.filter_cons_of_neg (p := g)
+                (by rw [hgx]; exact Bool.false_ne_true)] at hlen
+              rcases List.mem_cons.mp he with heq | hm
+              · rw [heq] at hge
+                rw [hgx] at hge
+                exact nomatch hge
+              · exact ih himp' hlen e hm hge
+
+/-- A descending Nat function has a fixpoint within its initial value. -/
+theorem desc_fix (f : Nat → Nat) (hdesc : ∀ n, f (n + 1) ≤ f n) :
+    ∃ N, N ≤ f 0 ∧ f (N + 1) = f N := by
+  have key : ∀ k : Nat, f k + k ≤ f 0 ∨ ∃ N < k, f (N + 1) = f N := by
+    intro k
+    induction k with
+    | zero => exact Or.inl (by omega)
+    | succ k ih =>
+        rcases ih with hle | ⟨N, hN, hfix⟩
+        · rcases Nat.lt_or_ge (f (k + 1)) (f k) with hlt | hge
+          · refine Or.inl ?_
+            omega
+          · have : f (k + 1) = f k :=
+              Nat.le_antisymm (hdesc k) hge
+            exact Or.inr ⟨k, by omega, this⟩
+        · exact Or.inr ⟨N, by omega, hfix⟩
+  rcases key (f 0 + 1) with hle | ⟨N, hN, hfix⟩
+  · exact absurd hle (by omega)
+  · exact ⟨N, by omega, hfix⟩
+
+/-- The count of level-equivalent pairs. -/
+private def eqCnt [DecidableEq T] [DecidableEq A] (aut : GAut S A T)
+    (pool : List S) (N : Nat) : Nat :=
+  ((pairList pool).filter
+    (fun p => decide (stepEquivWithin aut N p.1 p.2))).length
+
+/-- **STABILIZATION**: on a closed pool, bisimilarity is step equivalence
+    at the pair bound. -/
+theorem genBisimilar_iff_pairBound [DecidableEq T] [DecidableEq A]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {x y : S} (hx : x ∈ pool) (hy : y ∈ pool) :
+    GenBisimilar aut x y
+      ↔ stepEquivWithin aut (pairList pool).length x y := by
+  constructor
+  · intro h
+    exact genBisimilar_stepEquiv aut h _
+  · intro h
+    have hdesc : ∀ N, eqCnt aut pool (N + 1) ≤ eqCnt aut pool N := by
+      intro N
+      refine filter_length_mono _ _ (pairList pool) ?_
+      intro e _ hf
+      exact decide_eq_true (stepEquivWithin_antitone aut N e.1 e.2
+        (of_decide_eq_true hf))
+    obtain ⟨N, hNle, hNfix⟩ := desc_fix (eqCnt aut pool) hdesc
+    have hcnt0 : eqCnt aut pool 0 ≤ (pairList pool).length := by
+      show (List.filter _ (pairList pool)).length ≤ _
+      exact List.length_filter_le _ _
+    have hstab : ∀ a ∈ pool, ∀ b ∈ pool, stepEquivWithin aut N a b →
+        stepEquivWithin aut (N + 1) a b := by
+      intro a ha b hb hab
+      have hmem := pairList_mem pool a b ha hb
+      have hNfix' : ((pairList pool).filter
+          (fun p => decide (stepEquivWithin aut N p.1 p.2))).length
+          = ((pairList pool).filter
+            (fun p => decide (stepEquivWithin aut (N + 1) p.1
+              p.2))).length := hNfix.symm
+      have := filter_eq_of_length_eq
+        (fun p => decide (stepEquivWithin aut (N + 1) p.1 p.2))
+        (fun p => decide (stepEquivWithin aut N p.1 p.2))
+        (pairList pool)
+        (fun e _ hf => decide_eq_true
+          (stepEquivWithin_antitone aut N e.1 e.2
+            (of_decide_eq_true hf)))
+        hNfix'
+        (a, b) hmem (decide_eq_true hab)
+      exact of_decide_eq_true this
+    refine stepEquiv_all_bisim aut ?_
+    intro n
+    have hxyN : stepEquivWithin aut N x y :=
+      stepEquiv_le aut (by omega) h
+    rcases Nat.lt_or_ge n N with hlt | hge
+    · exact stepEquiv_le aut (by omega) hxyN
+    · have := stepEquiv_stable_succ aut pool hclosed N hstab
+        (n - N) x hx y hy hxyN
+      rw [show N + (n - N) = n from by omega] at this
+      exact this
+
+/-- **DECIDABLE BISIMILARITY** on closed pools — computable, no
+    choice. -/
+def genBisimilarDec [DecidableEq T] [DecidableEq A]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {x y : S} (hx : x ∈ pool) (hy : y ∈ pool) :
+    Decidable (GenBisimilar aut x y) :=
+  decidable_of_iff _
+    (genBisimilar_iff_pairBound aut pool hclosed hx hy).symm
+
+#print axioms genBisimilar_iff_pairBound
+#print axioms genBisimilarDec
+
 end GkatGuardDecide

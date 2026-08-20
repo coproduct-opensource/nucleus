@@ -1081,3 +1081,27 @@ rw [h] finds nothing; check the goal, not the plan.
 Remaining phase 3: count-based stabilization (filter-length measure over
 the pair list, strict drop per refinement, hence a fixpoint by |pool|^2)
 => genBisimilar decidable => bisimRepD := first-equivalent-in-list.
+
+## DE-CHOICE PHASE 3c: BISIMILARITY DECIDES (iteration 36)
+
+- stepEquiv_le (generalized antitone), autStep_target_pool,
+  stepEquiv_stable_succ (a stable level propagates upward on a closed
+  pool)
+- pairList + filter_length_mono + filter_eq_of_length_eq (equal filter
+  counts under pointwise implication force pointwise equivalence)
+- desc_fix: a descending Nat function has a fixpoint within its initial
+  value (pure constructive arithmetic)
+- genBisimilar_iff_pairBound: STABILIZATION — on a closed pool, generic
+  bisimilarity IS step equivalence at the |pool|^2 pair bound (the
+  Moore/partition-refinement bound, via the eqCnt measure)
+- genBisimilarDec: DECIDABLE GENERIC BISIMILARITY on closed pools —
+  computable, [propext, Quot.sound].
+
+The keystone of phase 3. Remaining: bisimRepD := first-equivalent-in-
+list + coherence lemmas (rep equal iff bisimilar; idempotence), then the
+quotient tower transport (bisimQuotAutD = bisimQuotAut over closed
+pools), then minRank (phase 4) and the sweep (phase 5).
+
+Lean lessons: `set` is Mathlib (banned) — hoist counters to private
+defs; unifier picks the wrong filter instance — pin (p := f); explicit
+type ascription forces defeq through private defs.
