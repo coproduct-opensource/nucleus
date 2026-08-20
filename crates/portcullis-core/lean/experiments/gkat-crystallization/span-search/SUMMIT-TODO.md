@@ -1320,3 +1320,17 @@ NESTED FRAGMENT: spines-with-inner-self-loops (WalkedDec by
 construction; hnontriv by shortest-exit stratification; the walked
 interior-no-descent via per-atom self-or-next stepping) and
 nestedloops_complete — the fifth theorem.
+
+## WALKED POSITIONS + TRACKING (iteration 46)
+
+- walked_qorb_period_all / walked_qorb_qmod: class-level periodicity and
+  mod reduction under WalkedDec
+- walked_qpos_spec / walked_qpos_qm: canonical positions with walked
+  injectivity (qpos def reused verbatim)
+- walked_orbit_track_from / walked_inOrbit_track: cross-witness tracking
+  and orbit closure. All first pass.
+
+THE WALKED MIRROR IS FUNCTIONALLY COMPLETE for the glue: every lemma the
+rankNxt discharge consumed now has a walked twin (or reuses verbatim).
+Remaining: walked_rankNxt_quot_solvesBA (the glue — orbCy reused, hcy
+discharge re-threaded with hnontriv in hos), then the NESTED FRAGMENT.

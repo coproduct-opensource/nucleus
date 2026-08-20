@@ -804,4 +804,235 @@ theorem walked_orbit_port_descent (aut : GAut S A T) (rank : S → Nat)
 #print axioms walked_orbit_arms_pinned_nxtAt
 #print axioms walked_orbit_port_descent
 
+/-! ## Walked positions, tracking, and the bundle package
+
+    Class-level mod reduction, canonical positions, cross-witness orbit
+    closure, and the complete per-orbit package — the `qpos`/`firstMem`
+    definitions reuse verbatim; the proofs re-thread through the walked
+    successor machinery. -/
+
+open Classical in
+theorem walked_qorb_period_all (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀)) :
+    ∀ t, bisimRep (trimAut aut)
+      (nxtIter nxt (t + qPeriod aut nxt u₀ k) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt t u₀) := by
+  intro t
+  have hA1 := (qPeriod_spec aut nxt u₀ k hk hper).1
+  have h0 := walked_qsucc_iter aut rank nxt hdec hnxt_rank hfire hk
+    hper hlive hnofix hmin hnontriv
+    (i := qPeriod aut nxt u₀ k) (j := 0) hA1 t
+  rw [Nat.zero_add] at h0
+  rw [Nat.add_comm t (qPeriod aut nxt u₀ k)]
+  exact h0
+
+open Classical in
+theorem walked_qorb_qmod (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀)) :
+    ∀ j, bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      = bisimRep (trimAut aut)
+          (nxtIter nxt (j % qPeriod aut nxt u₀ k) u₀) := by
+  have hmul : ∀ q r, bisimRep (trimAut aut)
+      (nxtIter nxt (r + qPeriod aut nxt u₀ k * q) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt r u₀) := by
+    intro q
+    induction q with
+    | zero => intro r; rfl
+    | succ q ih =>
+        intro r
+        rw [show qPeriod aut nxt u₀ k * (q + 1)
+            = qPeriod aut nxt u₀ k * q + qPeriod aut nxt u₀ k from
+              Nat.mul_succ _ _]
+        rw [show r + (qPeriod aut nxt u₀ k * q + qPeriod aut nxt u₀ k)
+            = (r + qPeriod aut nxt u₀ k * q) + qPeriod aut nxt u₀ k from
+              by omega]
+        rw [walked_qorb_period_all aut rank nxt hdec hnxt_rank hfire hk
+          hper hlive hnofix hmin hnontriv
+          (r + qPeriod aut nxt u₀ k * q)]
+        exact ih r
+  intro j
+  have hdm := Nat.div_add_mod j (qPeriod aut nxt u₀ k)
+  have h0 := hmul (j / qPeriod aut nxt u₀ k)
+    (j % qPeriod aut nxt u₀ k)
+  rw [show j % qPeriod aut nxt u₀ k
+      + qPeriod aut nxt u₀ k * (j / qPeriod aut nxt u₀ k) = j from
+        by omega] at h0
+  exact h0
+
+open Classical in
+theorem walked_qpos_spec (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    {c : S} (h : InOrbit aut nxt u₀ c) :
+    bisimRep (trimAut aut)
+      (nxtIter nxt (qpos aut nxt u₀ k c) u₀) = c
+    ∧ qpos aut nxt u₀ k c < qPeriod aut nxt u₀ k := by
+  unfold qpos
+  rw [dif_pos h]
+  have hc := Classical.choose_spec h
+  constructor
+  · rw [← walked_qorb_qmod aut rank nxt hdec hnxt_rank hfire hk hper
+      hlive hnofix hmin hnontriv (Classical.choose h)]
+    exact hc.symm
+  · exact Nat.mod_lt _ (by
+      have := (qPeriod_spec aut nxt u₀ k hk hper).2.1
+      omega)
+
+open Classical in
+theorem walked_qpos_qm (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    {j : Nat} (hj : j < qPeriod aut nxt u₀ k) :
+    qpos aut nxt u₀ k (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+      = j := by
+  have hio : InOrbit aut nxt u₀
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀)) := ⟨j, rfl⟩
+  obtain ⟨heq, hlt⟩ := walked_qpos_spec aut rank nxt hdec hnxt_rank
+    hfire hk hper hlive hnofix hmin hnontriv hio
+  rcases Nat.lt_trichotomy
+    (qpos aut nxt u₀ k (bisimRep (trimAut aut) (nxtIter nxt j u₀))) j
+    with hlt' | heq' | hgt'
+  · exact absurd heq
+      (fun hcontra => walked_qorb_injective aut rank nxt hdec hnxt_rank
+        hfire hk hper hlive hnofix hmin hnontriv hlt' hj hcontra)
+  · exact heq'
+  · exact absurd heq.symm
+      (fun hcontra => walked_qorb_injective aut rank nxt hdec hnxt_rank
+        hfire hk hper hlive hnofix hmin hnontriv hgt' hlt hcontra)
+
+open Classical in
+/-- Walked cross-witness tracking. -/
+theorem walked_orbit_track_from (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u : S} {k : Nat} (hkU : 1 ≤ k) (hperU : nxtIter nxt k u = u)
+    (hliveU : Live (trimAut aut) u)
+    (hnofixU : ∀ j, j < k → nxt (nxtIter nxt j u) ≠ nxtIter nxt j u)
+    (hminU : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u → rank u ≤ rank w)
+    (hnontrivU : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u))
+    {v : S} {k₁ : Nat} (hkV : 1 ≤ k₁) (hperV : nxtIter nxt k₁ v = v)
+    (hliveV : Live (trimAut aut) v)
+    (hnofixV : ∀ j, j < k₁ → nxt (nxtIter nxt j v) ≠ nxtIter nxt j v)
+    (hminV : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) v → rank v ≤ rank w)
+    {t s : Nat}
+    (heq : bisimRep (trimAut aut) (nxtIter nxt s v)
+      = bisimRep (trimAut aut) (nxtIter nxt t u)) :
+    ∀ d, bisimRep (trimAut aut) (nxtIter nxt (s + d) v)
+      = bisimRep (trimAut aut) (nxtIter nxt (t + d) u) := by
+  intro d
+  have hL : autLang (genW T) (trimAut aut) (nxtIter nxt s v)
+      = autLang (genW T) (trimAut aut) (nxtIter nxt t u) := by
+    rw [← rep_lang aut (nxtIter nxt s v), heq, rep_lang aut]
+  have hrv : rank v = rank u := by
+    have h1 := walked_cycle_level_all aut rank nxt hdec hnxt_rank hfire
+      hkV hperV hliveV hnofixV hminV s
+    have h2 := walked_cycle_level_all aut rank nxt hdec hnxt_rank hfire
+      hkU hperU hliveU hnofixU hminU t
+    rw [heq] at h1
+    omega
+  have hr : rank (nxtIter nxt s v) = rank u := by
+    rw [nxtIter_rank hnxt_rank v s]
+    exact hrv
+  have h3 := walked_orbit_lang_determined aut rank nxt hdec hnxt_rank
+    hfire hkU hperU hliveU hnofixU hminU hnontrivU
+    (i := t) (u' := nxtIter nxt s v) hL hr d
+  have h4 : autLang (genW T) (trimAut aut) (nxtIter nxt (s + d) v)
+      = autLang (genW T) (trimAut aut) (nxtIter nxt (t + d) u) := by
+    rw [← h3, ← nxtIter_add]
+  exact rep_lang_congr aut h4
+
+open Classical in
+/-- Walked orbit closure of `InOrbit`. -/
+theorem walked_inOrbit_track (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u : S} {k : Nat} (hkU : 1 ≤ k) (hperU : nxtIter nxt k u = u)
+    (hliveU : Live (trimAut aut) u)
+    (hnofixU : ∀ j, j < k → nxt (nxtIter nxt j u) ≠ nxtIter nxt j u)
+    (hminU : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u → rank u ≤ rank w)
+    (hnontrivU : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u))
+    {w : S} {k₂ : Nat} (hkW : 1 ≤ k₂) (hperW : nxtIter nxt k₂ w = w)
+    (hliveW : Live (trimAut aut) w)
+    (hnofixW : ∀ j, j < k₂ → nxt (nxtIter nxt j w) ≠ nxtIter nxt j w)
+    (hminW : ∀ x, autLang (genW T) (trimAut aut) x
+      = autLang (genW T) (trimAut aut) w → rank w ≤ rank x)
+    {t t' : Nat}
+    (h : InOrbit aut nxt w (bisimRep (trimAut aut) (nxtIter nxt t u))) :
+    InOrbit aut nxt w
+      (bisimRep (trimAut aut) (nxtIter nxt t' u)) := by
+  obtain ⟨s, hs⟩ := h
+  have htrack := walked_orbit_track_from aut rank nxt hdec hnxt_rank
+    hfire hkU hperU hliveU hnofixU hminU hnontrivU hkW hperW hliveW
+    hnofixW hminW (t := t) (s := s) hs.symm
+  refine ⟨s + ((k - t % k) + t'), ?_⟩
+  rw [htrack ((k - t % k) + t')]
+  have hik : t % k < k := Nat.mod_lt t (by omega)
+  have hdm := Nat.div_add_mod t k
+  rw [show t + ((k - t % k) + t') = k * (t / k) + (k + t') from
+    by omega]
+  rw [nxtIter_add, nxtIter_mul_period hperU, nxtIter_add, hperU]
+
+#print axioms walked_qorb_qmod
+#print axioms walked_qpos_qm
+#print axioms walked_inOrbit_track
+
 end GkatWalkedOrbit
