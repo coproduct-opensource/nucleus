@@ -2649,4 +2649,210 @@ theorem chord_lang_ne_p_x_r (b c : BExp T) (p x y : A)
 #print axioms chord_lang_ne_p_x
 #print axioms chord_lang_ne_p_x_r
 
+/-! ## Cross-side pairings
+
+    Language equality of the two start classes propagates around the
+    cycle by DERIVATIVE TRANSFER: if two states have equal languages and
+    both step at some atom, determinism forces the fired actions equal
+    and the successor languages equal (given the first successor is
+    nonempty).  Around the cycle this pairs the two summands' classes
+    AND extracts the action equalities `p = p'`, `x = x'`, `y = y'`
+    from the semantic hypothesis. -/
+
+open Classical in
+/-- **DERIVATIVE TRANSFER**: equal languages step to equal-action,
+    equal-language successors. -/
+theorem chord_lang_deriv {S' : Type} (aut : GAut S' A T)
+    {s₁ s₂ t₁ t₂ : S'} {a₁ a₂ : A} {α : T → Bool}
+    (hL : autLang (genW T) aut s₁ = autLang (genW T) aut s₂)
+    (h₁ : autStep (genW T) aut s₁ α = some (a₁, t₁))
+    (h₂ : autStep (genW T) aut s₂ α = some (a₂, t₂))
+    (hne : ∃ gs : GS A (T → Bool), autLang (genW T) aut t₁ gs) :
+    a₁ = a₂ ∧ autLang (genW T) aut t₁ = autLang (genW T) aut t₂ := by
+  obtain ⟨⟨β, w⟩, hw⟩ := hne
+  have hrun₁ : autRun (genW T) aut s₁ α ((a₁, β) :: w) := ⟨t₁, h₁, hw⟩
+  have hrun₂ := (iff_of_eq (congrFun hL (α, (a₁, β) :: w))).mp hrun₁
+  obtain ⟨s', hs', -⟩ := hrun₂
+  rw [h₂] at hs'
+  have hpair := Option.some.inj hs'
+  have ha : a₂ = a₁ := congrArg Prod.fst hpair
+  rw [ha] at h₂
+  refine ⟨ha.symm, ?_⟩
+  funext gs
+  apply propext
+  constructor
+  · intro hg
+    have h1 : autRun (genW T) aut s₁ α ((a₁, gs.1) :: gs.2) :=
+      ⟨t₁, h₁, hg⟩
+    have h2 := (iff_of_eq (congrFun hL (α, (a₁, gs.1) :: gs.2))).mp h1
+    obtain ⟨u, hu, hrun⟩ := h2
+    rw [h₂] at hu
+    have hupair := Option.some.inj hu
+    have hu' : t₂ = u := congrArg Prod.snd hupair
+    rw [← hu'] at hrun
+    exact hrun
+  · intro hg
+    have h1 : autRun (genW T) aut s₂ α ((a₁, gs.1) :: gs.2) :=
+      ⟨t₂, h₂, hg⟩
+    have h2 := (iff_of_eq (congrFun hL (α, (a₁, gs.1) :: gs.2))).mpr h1
+    obtain ⟨u, hu, hrun⟩ := h2
+    rw [h₁] at hu
+    have hupair := Option.some.inj hu
+    have hu' : t₁ = u := congrArg Prod.snd hupair
+    rw [← hu'] at hrun
+    exact hrun
+
+open Classical in
+/-- **PORT PAIRING**: the two summands' port classes coincide. -/
+theorem chord_pair_port (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr none)) :
+    autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inr (Sum.inr ()))))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inr ())))) := by
+  refine ((chord_none_lang b c p x y _ hexitC hexitB).symm.trans
+    heq).trans ?_
+  exact chord_none_lang_r b' c' p' x' y' _ hexitC' hexitB'
+
+open Classical in
+/-- **BRANCH PAIRING** (+ `p = p'`): given `sat b`, the port pairing
+    transfers along the feedback arms. -/
+theorem chord_pair_p (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (hport : autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inr (Sum.inr ()))))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inr ()))))) :
+    p = p' ∧ autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inl ())))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inl ()))) := by
+  obtain ⟨αB, hαB, hαB'⟩ := hentB
+  obtain ⟨αc, hαc⟩ := id hexitC
+  obtain ⟨αb, hαb⟩ := id hexitB
+  refine chord_lang_deriv _ hport
+    (chord_trim_step_yr_feed b c p x y _ hexitC hexitB αB hαB)
+    (chord_trim_step_yr_feed_r b' c' p' x' y' _ hexitC' hexitB' αB hαB')
+    ⟨(αc, [(y, αb)]), ?_⟩
+  refine ⟨Sum.inl (some (Sum.inr (Sum.inr ()))), ?_, ?_⟩
+  · exact chord_trim_step_p_skip b c p x y _ hexitC hexitB αc hαc
+  · show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) αb
+        = true
+    rw [chord_hlt_yr, hαb]
+    rfl
+
+open Classical in
+/-- **MID PAIRING** (+ `x = x'`): the branch pairing transfers along the
+    enter arms. -/
+theorem chord_pair_x (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (hP : autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inl ())))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inl ())))) :
+    x = x' ∧ autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) := by
+  obtain ⟨αC, hαC, hαC'⟩ := hentC
+  obtain ⟨αb, hαb⟩ := id hexitB
+  refine chord_lang_deriv _ hP
+    (chord_trim_step_p_enter b c p x y _ hexitC hexitB αC hαC)
+    (chord_trim_step_p_enter_r b' c' p' x' y' _ hexitC' hexitB' αC hαC')
+    ⟨(αb, [(y, αb)]), ?_⟩
+  refine ⟨Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))), ?_, ?_⟩
+  · exact chord_trim_step_x b c p x y _ hexitC hexitB αb
+  · show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt
+        (Sum.inr (Sum.inl (Sum.inr ())))) αb = true
+    rw [chord_hlt_yl, hαb]
+    rfl
+
+open Classical in
+/-- **DETOUR-PORT PAIRING** (+ `y = y'`): the mid pairing transfers
+    along the unconditional arms. -/
+theorem chord_pair_y (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (hX : autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ())))))) :
+    y = y' ∧ autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+          (chordLoopAut b' c' p' x' y').toGAut))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))
+      = autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut
+            (chordLoopAut b' c' p' x' y').toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) := by
+  obtain ⟨αb, hαb⟩ := id hexitB
+  refine chord_lang_deriv _ hX
+    (chord_trim_step_x b c p x y _ hexitC hexitB αb)
+    (chord_trim_step_x_r b' c' p' x' y' _ hexitC' hexitB' αb)
+    ⟨(αb, []), ?_⟩
+  show bval (genW T)
+    ((chordLoopAut b c p x y).core.hlt
+      (Sum.inr (Sum.inl (Sum.inr ())))) αb = true
+  rw [chord_hlt_yl, hαb]
+  rfl
+
+#print axioms chord_lang_deriv
+#print axioms chord_pair_port
+#print axioms chord_pair_p
+#print axioms chord_pair_x
+#print axioms chord_pair_y
+
 end GkatThreeLoop

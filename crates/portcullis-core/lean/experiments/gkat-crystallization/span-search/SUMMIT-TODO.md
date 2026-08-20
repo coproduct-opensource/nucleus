@@ -1838,3 +1838,33 @@ lang portL = lang portR from the ULE start hypothesis — one-step
 determinism transfer, no induction: P-classes are the b∧c / b∧¬c
 derivatives of the start class, X-classes the c-derivative of P), then
 bisimRep computations, classifier, bundle.
+
+## Iteration 66 — CROSS-SIDE PAIRINGS + derivative transfer
+
+Five lemmas in GkatThreeLoopProofs.lean:
+
+- `chord_lang_deriv` ([propext, Quot.sound]): **derivative transfer** —
+  equal languages + both states stepping at an atom + nonempty first
+  successor language ⟹ fired actions EQUAL and successor languages
+  equal. Deterministic-automaton language calculus, generic in the
+  automaton; the concrete engine for all pairings. (Gotcha: subst on the
+  extracted action equality eliminates the wrong variable — rewrite h₂
+  with it instead.)
+
+- `chord_pair_port` — transitivity through init~port both sides.
+- `chord_pair_p` — port pairing transfers along the feedback arms at a
+  shared b∧b′-atom (hentB : ∃ α, b α ∧ b′ α), yielding **p = p′** plus
+  the branch pairing. Witness for nonemptiness: the skip probe.
+- `chord_pair_x` — branch pairing transfers along the enter arms at a
+  shared c∧c′-atom (hentC), yielding **x = x′** plus the mid pairing.
+- `chord_pair_y` — mid pairing transfers along the unconditional arms,
+  yielding **y = y′** plus the detour-port pairing.
+
+The action equalities come FROM the semantic hypothesis — the sixth
+theorem needs no syntactic side conditions on actions. Nondegeneracy
+set: sat(¬b), sat(¬c), sat(b∧b′), sat(c∧c′) (+ mirrored ¬b′, ¬c′).
+
+All six live classes are now paired and separated. Next: bisimRep
+computations (rep values at the 12 sum states from the pair/sep facts),
+the classifier cy, cleanList phantom-drop on the quotient arm lists,
+bundle discharge, `chordLoops_solvable`, `chordloops_complete`.
