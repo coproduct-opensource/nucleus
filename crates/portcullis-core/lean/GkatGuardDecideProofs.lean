@@ -1,4 +1,5 @@
 import GkatPlanExistenceProofs
+import GkatListPigeonProofs
 
 /-! # Decidable guard satisfiability — the de-choice keystone
 
@@ -11,7 +12,7 @@ import GkatPlanExistenceProofs
 
 namespace GkatGuardDecide
 
-open GkatSyntax GkatGS GkatPlanExistence
+open GkatSyntax GkatGS GkatPlanExistence GkatListPigeon
 
 variable {S A T : Type}
 
@@ -455,5 +456,171 @@ theorem run_liveWithin_len (aut : GAut S A T) :
 #print axioms liveWithin_chain
 #print axioms chain_liveWithin
 #print axioms run_liveWithin_len
+
+/-! ## Constructive dedup: `Live ↔ liveWithin |pool|`
+
+    A chain longer than a closed pool repeats a state (constructive
+    pigeonhole via decidable equality); splicing at the repetition
+    shortens it, preserving the head.  Shortest chains fit in the pool,
+    so liveness is bounded liveness at `|pool|` — decidably. -/
+
+/-- Effective arms carry original targets. -/
+theorem effList_target_mem :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      ∀ e ∈ effList L D, ∃ g₀, (g₀, e.2.1, e.2.2) ∈ L := by
+  intro L
+  induction L with
+  | nil => intro D e he; exact nomatch he
+  | cons hd rest ih =>
+      intro D e he
+      obtain ⟨g, a, t⟩ := hd
+      rw [effList_cons] at he
+      rcases List.mem_cons.mp he with heq | hmem
+      · subst heq
+        exact ⟨g, List.mem_cons_self ..⟩
+      · obtain ⟨g₀, hg₀⟩ := ih (.or D g) e hmem
+        exact ⟨g₀, List.mem_cons_of_mem _ hg₀⟩
+
+/-- Chains from a pool state stay in a closed pool. -/
+theorem stepChain_mem_pool (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    ∀ (ch : List S) (s : S), StepChain aut ch → ch.head? = some s →
+      s ∈ pool → ∀ x ∈ ch, x ∈ pool := by
+  intro ch
+  induction ch with
+  | nil => intro s _ hh; exact nomatch hh
+  | cons y ch' ih =>
+      intro s hch hh hs x hx
+      have hy : y = s := Option.some.inj hh
+      subst hy
+      cases ch' with
+      | nil =>
+          rcases List.mem_cons.mp hx with heq | hm
+          · exact heq ▸ hs
+          · exact nomatch hm
+      | cons z rest =>
+          rw [stepChain_cons] at hch
+          obtain ⟨⟨e, he, -, het⟩, hrest⟩ := hch
+          have hz : z ∈ pool := by
+            obtain ⟨g₀, hg₀⟩ := effList_target_mem (aut.trans y) .zero e he
+            have := hclosed y hs (g₀, e.2.1, e.2.2) hg₀
+            rw [het] at this
+            exact this
+          rcases List.mem_cons.mp hx with heq | hm
+          · exact heq ▸ hs
+          · exact ih z hrest rfl hz x hm
+
+/-- A cons-suffix of a chain is a chain. -/
+theorem stepChain_drop (aut : GAut S A T) :
+    ∀ (l₁ l₂ : List S), StepChain aut (l₁ ++ l₂) → l₂ ≠ [] →
+      StepChain aut l₂ := by
+  intro l₁
+  induction l₁ with
+  | nil => intro l₂ h _; exact h
+  | cons x l₁' ih =>
+      intro l₂ h hne
+      cases hll : l₁' ++ l₂ with
+      | nil =>
+          rcases List.append_eq_nil_iff.mp hll with ⟨-, h2⟩
+          exact absurd h2 hne
+      | cons z rest =>
+          have h' : StepChain aut (x :: z :: rest) := by
+            rw [← hll]
+            exact h
+          rw [stepChain_cons] at h'
+          refine ih l₂ ?_ hne
+          rw [hll]
+          exact h'.2
+
+/-- **SPLICE**: a chain with a repeated state shortens across the
+    repetition, keeping its head. -/
+theorem stepChain_splice (aut : GAut S A T) :
+    ∀ (pre : List S) (a : S) (mid post : List S),
+      StepChain aut (pre ++ a :: mid ++ a :: post) →
+      StepChain aut (pre ++ a :: post) := by
+  intro pre
+  induction pre with
+  | nil =>
+      intro a mid post h
+      exact stepChain_drop aut (a :: mid) (a :: post) h (by simp)
+  | cons x pre' ih =>
+      intro a mid post h
+      cases pre' with
+      | nil =>
+          have h' : StepChain aut (x :: a :: (mid ++ a :: post)) := h
+          rw [stepChain_cons] at h'
+          show StepChain aut (x :: a :: post)
+          rw [stepChain_cons]
+          exact ⟨h'.1, ih a mid post h'.2⟩
+      | cons y pre'' =>
+          have h' : StepChain aut
+              (x :: y :: (pre'' ++ a :: mid ++ a :: post)) := h
+          rw [stepChain_cons] at h'
+          show StepChain aut (x :: y :: (pre'' ++ a :: post))
+          rw [stepChain_cons]
+          exact ⟨h'.1, ih a mid post h'.2⟩
+
+/-- Splicing keeps the head. -/
+private theorem splice_head {γ : Type} (pre : List γ) (a : γ)
+    (mid post : List γ) :
+    (pre ++ a :: post).head? = (pre ++ a :: mid ++ a :: post).head? := by
+  cases pre with
+  | nil => rfl
+  | cons x pre' => rfl
+
+/-- **CHAIN SHORTENING**: every chain from a pool state shortens to fit
+    the pool. -/
+theorem chain_shorten [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    ∀ (n : Nat) (ch : List S) (s : S), ch.length ≤ n →
+      StepChain aut ch → ch.head? = some s → s ∈ pool →
+      ∃ ch' : List S, StepChain aut ch' ∧ ch'.head? = some s
+        ∧ ch'.length ≤ pool.length := by
+  intro n
+  induction n with
+  | zero =>
+      intro ch s hlen hch hh hs
+      cases ch with
+      | nil => exact nomatch hh
+      | cons x ch' => exact absurd hlen (by simp)
+  | succ n ih =>
+      intro ch s hlen hch hh hs
+      rcases Nat.lt_or_ge pool.length ch.length with hlong | hshort
+      · have hin := stepChain_mem_pool aut pool hclosed ch s hch hh hs
+        obtain ⟨a, pre, mid, post, hsplit⟩ :=
+          long_in_pool_has_dup ch pool hin hlong
+        subst hsplit
+        have hch' := stepChain_splice aut pre a mid post hch
+        have hh' : (pre ++ a :: post).head? = some s := by
+          rw [splice_head pre a mid post]
+          exact hh
+        refine ih (pre ++ a :: post) s ?_ hch' hh' hs
+        have h1 : (pre ++ a :: mid ++ a :: post).length ≤ n + 1 := hlen
+        simp only [List.length_append, List.length_cons] at h1 ⊢
+        omega
+      · exact ⟨ch, hch, hh, hshort⟩
+
+/-- **LIVENESS IS BOUNDED LIVENESS** — over a closed pool, decidably. -/
+theorem live_iff_liveWithin [DecidableEq S] (aut : GAut S A T)
+    (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (s : S) (hs : s ∈ pool) :
+    Live aut s ↔ liveWithin aut pool.length s := by
+  constructor
+  · rintro ⟨α, w, hrun⟩
+    have h1 := run_liveWithin_len aut w s α hrun
+    obtain ⟨ch, hch, hh, -⟩ := liveWithin_chain aut w.length s h1
+    obtain ⟨ch', hch', hh', hlen'⟩ := chain_shorten aut pool hclosed
+      ch.length ch s (Nat.le_refl _) hch hh hs
+    have h2 := chain_liveWithin aut ch' s hch' hh'
+    have hpos : 0 < ch'.length := by
+      cases ch' with
+      | nil => exact nomatch hh'
+      | cons x t => simp
+    exact liveWithin_mono aut (ch'.length - 1) pool.length
+      (by omega) s h2
+  · exact liveWithin_live aut pool.length s
+
+#print axioms live_iff_liveWithin
 
 end GkatGuardDecide

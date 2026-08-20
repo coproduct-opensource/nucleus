@@ -1001,3 +1001,25 @@ pigeonhole/pumping argument; then trimListD := computable trim.
 Remaining for phase 2: chain dedup against a closed pool ([DecidableEq S]:
 not_nodup_split extraction, splice preserves StepChain, Nodup+subset =>
 length <= pool) => live_iff_liveWithin => computable trim.
+
+## DE-CHOICE PHASE 2b-2: LIVENESS IS DECIDABLE (iteration 32)
+
+- GkatListPigeonProofs.lean (NEW, import-free): removeOne (choice-free
+  removal — core List.erase lemmas pull Classical.choice!) +
+  long_in_pool_has_dup (constructive pigeonhole). Kept import-free
+  because the Gkat import chain carries an ambient classical instance
+  that pollutes downstream decidable case splits.
+- effList_target_mem, stepChain_mem_pool (chains stay in closed pools),
+  stepChain_drop, stepChain_splice (splice at a repeated state, head
+  preserved), chain_shorten (strong-induction shrink to |pool|)
+- live_iff_liveWithin: LIVE <-> liveWithin |pool| over a closed pool —
+  [propext, Quot.sound], CHOICE-FREE. With liveWithinDec this makes
+  liveness DECIDABLE.
+
+Axiom-leak lessons: core List.length_erase_of_mem depends on
+Classical.choice; ambient classical instances from imports silently win
+instance resolution — isolate constructive kernels in import-free files.
+
+Remaining de-choice: computable trim (trimListD via the decidable
+liveness + equivalence to trimList), then bisim (phase 3), minRank
+(phase 4), sweep (phase 5).
