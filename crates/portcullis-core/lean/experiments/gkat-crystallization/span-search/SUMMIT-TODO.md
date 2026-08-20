@@ -363,3 +363,26 @@ least p ≥ 1 with rep(nxtIter p u0) = rep u0, via minUpTo on p ≤ k) and the
 cy-bundle construction discharging walked_assembly_roles' coherence
 (hint_nil/himpc/hdisj/hexcl from chain-shape source hypotheses, level
 equality from cycle_level_min); (b) ChainLoops fragment rank; (c) glue.
+
+## ORBIT COMBINATORICS (loop iteration 6)
+
+- nxtIter_add / qorb_periodic: the quotient orbit inherits the source period
+- min_fire: a firing whose target rank is not below the source must land
+  exactly on the nxt-successor (mod-nxt arm dichotomy)
+- class_succ_eq: CLASS-SUCCESSOR WELL-DEFINEDNESS — two same-rank source
+  states with equal languages firing at a common live-derivative atom have
+  nxt-successors with equal languages.  With cycle_level_min supplying the
+  min-level hypothesis, the quotient successor is a FUNCTION of the class —
+  quotient orbits behave like function orbits, enabling the classic
+  least-period/injectivity arguments.
+All [propext, Classical.choice, Quot.sound].
+
+Web-search note: Böhm–Jacopini is propositionally FALSE (Kozen–Tseng 2008 —
+the paper where GKAT was born as "propositional while programs"), so no
+single-loop normal form collapses the fragment ladder; it must be climbed.
+
+REMAINING for chainloops_complete: least quotient period (findFrom search +
+injectivity via class_succ_eq), canonical orbit basepoint (choice-coherence
+on the rotation-invariant orbit predicate), the cy-bundle side conditions
+(interior classes have no descending arms — semantic, from chain-shape
+sources), fragment rank, glue.

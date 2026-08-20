@@ -249,4 +249,90 @@ theorem cycle_level_min (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 
 #print axioms cycle_level_min
 
+/-! ## Orbit combinatorics: the quotient orbit behaves like a function orbit -/
+
+theorem nxtIter_add (nxt : S → S) (a b : Nat) (s : S) :
+    nxtIter nxt (a + b) s = nxtIter nxt b (nxtIter nxt a s) := by
+  induction b with
+  | zero => rfl
+  | succ b ih =>
+      show nxtIter nxt (a + b + 1) s = nxt (nxtIter nxt b (nxtIter nxt a s))
+      rw [← ih]
+      rfl
+
+open Classical in
+/-- The quotient orbit inherits the source period. -/
+theorem qorb_periodic (aut : GAut S A T) (nxt : S → S) (u₀ : S) (k : Nat)
+    (hper : nxtIter nxt k u₀ = u₀) (j : Nat) :
+    bisimRep (trimAut aut) (nxtIter nxt (j + k) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt j u₀) := by
+  rw [show j + k = k + j from by omega, nxtIter_add, hper]
+
+open Classical in
+/-- **MIN-LEVEL FIRING**: a firing whose target's rank is not below the
+    source's must land exactly on the `nxt`-successor. -/
+theorem min_fire (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    {s v : S} {α : T → Bool} {a : A}
+    (hstep : autStep (genW T) (trimAut aut) s α = some (a, v))
+    (hvmin : rank s ≤ rank v) :
+    v = nxt s := by
+  have hdecT : ∀ s, ∀ e ∈ (trimAut aut).trans s,
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
+    intro s e he
+    obtain ⟨g₀, hg₀⟩ := trimList_target_mem aut (aut.trans s) .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀
+  obtain ⟨ea, hea, -, heat⟩ := firstMatch_mem (genW T) hstep
+  have heat' : ea.2.2 = v := heat
+  rcases hdecT s ea hea with hEq | hLt
+  · exact heat'.symm.trans hEq
+  · rw [heat'] at hLt
+    omega
+
+open Classical in
+/-- **CLASS-SUCCESSOR WELL-DEFINEDNESS**: two same-rank source states with
+    equal languages that both fire at a common live-derivative atom have
+    `nxt`-successors with equal languages — so the quotient successor is a
+    function of the class. -/
+theorem class_succ_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    {s₁ s₂ : S} {α : T → Bool} {a : A}
+    (hL : autLang (genW T) (trimAut aut) s₁
+      = autLang (genW T) (trimAut aut) s₂)
+    (hrank : rank s₂ = rank s₁)
+    (hstep₁ : autStep (genW T) (trimAut aut) s₁ α = some (a, nxt s₁))
+    (hlive : Live (trimAut aut) (nxt s₁))
+    (hmin₂ : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) (nxt s₁) → rank s₁ ≤ rank w) :
+    autLang (genW T) (trimAut aut) (nxt s₂)
+      = autLang (genW T) (trimAut aut) (nxt s₁) := by
+  obtain ⟨β, ws, hwits⟩ := hlive
+  have hword₁ : autRun (genW T) (trimAut aut) s₁ α ((a, β) :: ws) :=
+    ⟨nxt s₁, hstep₁, hwits⟩
+  have hword₂ : autRun (genW T) (trimAut aut) s₂ α ((a, β) :: ws) :=
+    (iff_of_eq (congrFun hL (α, (a, β) :: ws))).mp hword₁
+  obtain ⟨v, hstep₂, -⟩ : ∃ v,
+      autStep (genW T) (trimAut aut) s₂ α = some (a, v)
+      ∧ autRun (genW T) (trimAut aut) v β ws := hword₂
+  have hvL : autLang (genW T) (trimAut aut) v
+      = autLang (genW T) (trimAut aut) (nxt s₁) := by
+    funext gs
+    obtain ⟨γ, l⟩ := gs
+    apply propext
+    have h1 := step_derivative hstep₂ γ l
+    have h2 := step_derivative hstep₁ γ l
+    have h3 : autRun (genW T) (trimAut aut) s₂ α ((a, γ) :: l)
+        ↔ autRun (genW T) (trimAut aut) s₁ α ((a, γ) :: l) :=
+      (iff_of_eq (congrFun hL (α, (a, γ) :: l))).symm
+    exact h1.trans (h3.trans h2.symm)
+  have hv : v = nxt s₂ := by
+    refine min_fire aut rank nxt hdec hstep₂ ?_
+    have := hmin₂ v hvL
+    omega
+  rw [← hv]
+  exact hvL
+
+#print axioms class_succ_eq
+
 end GkatOrbit
