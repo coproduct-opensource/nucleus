@@ -386,3 +386,23 @@ injectivity via class_succ_eq), canonical orbit basepoint (choice-coherence
 on the rotation-invariant orbit predicate), the cy-bundle side conditions
 (interior classes have no descending arms — semantic, from chain-shape
 sources), fragment rank, glue.
+
+## SHIFTED-ORBIT TRACKING (loop iteration 7)
+
+- nxtIter_wrap/mul_period/mod: orbit wrap arithmetic (all indices reduce
+  mod the source period)
+- orbit_live_all / orbit_nofix_all / cycle_level_all: liveness, nofix, and
+  level facts at unbounded indices
+- minRank_lang_congr / rep_lang_congr: minimal ranks and representatives
+  are LANGUAGE-DETERMINED (the trim is LiveSteps, so language equality is
+  bisimilarity)
+- orbit_lang_determined: SHIFTED-ORBIT TRACKING — any same-rank realizer of
+  an orbit language generates the SAME orbit of languages, shifted by the
+  position.  One induction over class_succ_eq with cycle_level_all
+  supplying the min-level hypothesis at every step.
+All [propext, Classical.choice, Quot.sound].
+
+CONSEQUENCE: orbit SETS are basepoint-independent (rep-orbits of orbit-mates
+are rotations of each other, via rep_lang_congr on the tracked languages) —
+the canonical-basepoint construction is now purely mechanical.  Remaining:
+basepoint + least period + cy-bundle side conditions + fragment rank + glue.

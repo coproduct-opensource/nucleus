@@ -335,4 +335,164 @@ theorem class_succ_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 
 #print axioms class_succ_eq
 
+/-! ## Orbit wrap arithmetic and language congruences -/
+
+theorem nxtIter_wrap {nxt : S → S} {u₀ : S} {k : Nat}
+    (hper : nxtIter nxt k u₀ = u₀) :
+    ∀ n, nxtIter nxt (k + n) u₀ = nxtIter nxt n u₀ := by
+  intro n
+  rw [nxtIter_add, hper]
+
+theorem nxtIter_mul_period {nxt : S → S} {u₀ : S} {k : Nat}
+    (hper : nxtIter nxt k u₀ = u₀) :
+    ∀ q, nxtIter nxt (k * q) u₀ = u₀ := by
+  intro q
+  induction q with
+  | zero => rfl
+  | succ q ih =>
+      rw [Nat.mul_succ, nxtIter_add, ih, hper]
+
+theorem nxtIter_mod {nxt : S → S} {u₀ : S} {k : Nat} (hk : 1 ≤ k)
+    (hper : nxtIter nxt k u₀ = u₀) :
+    ∀ n, nxtIter nxt n u₀ = nxtIter nxt (n % k) u₀ := by
+  intro n
+  conv =>
+    lhs
+    rw [show n = k * (n / k) + n % k from (Nat.div_add_mod n k).symm]
+  rw [nxtIter_add, nxtIter_mul_period hper]
+
+open Classical in
+/-- Orbit liveness, unbounded index. -/
+theorem orbit_live_all (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀) :
+    ∀ j, Live (trimAut aut) (nxtIter nxt j u₀) := by
+  intro j
+  rw [nxtIter_mod hk hper]
+  exact orbit_track aut rank nxt hfire u₀ hlive (j % k)
+    (fun i hi => hnofix i (by
+      have := Nat.mod_lt j (show 0 < k by omega)
+      omega))
+
+open Classical in
+/-- Orbit non-fixedness, unbounded index. -/
+theorem orbit_nofix_all {nxt : S → S} {u₀ : S} {k : Nat} (hk : 1 ≤ k)
+    (hper : nxtIter nxt k u₀ = u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀) :
+    ∀ j, nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀ := by
+  intro j
+  rw [nxtIter_mod hk hper]
+  exact hnofix (j % k) (Nat.mod_lt j (show 0 < k by omega))
+
+open Classical in
+/-- Minimal realizer ranks are language-determined. -/
+theorem minRank_lang_congr (aut : GAut S A T) (rank : S → Nat) {c₁ c₂ : S}
+    (h : autLang (genW T) (trimAut aut) c₁
+      = autLang (genW T) (trimAut aut) c₂) :
+    minRank (trimAut aut) rank c₁ = minRank (trimAut aut) rank c₂ := by
+  refine Nat.le_antisymm ?_ ?_
+  · obtain ⟨u, hule, huL⟩ := minRank_spec (trimAut aut) rank c₂
+    have := minRank_le (trimAut aut) rank (huL.trans h.symm)
+    omega
+  · obtain ⟨u, hule, huL⟩ := minRank_spec (trimAut aut) rank c₁
+    have := minRank_le (trimAut aut) rank (huL.trans h)
+    omega
+
+open Classical in
+/-- Representatives are language-determined (the trim is LiveSteps, so
+    language equality is bisimilarity). -/
+theorem rep_lang_congr (aut : GAut S A T) {x y : S}
+    (h : autLang (genW T) (trimAut aut) x
+      = autLang (genW T) (trimAut aut) y) :
+    bisimRep (trimAut aut) x = bisimRep (trimAut aut) y := by
+  refine bisimRep_coherent (trimAut aut) ?_
+  refine genBisimilar_of_uniformStateEquiv (liveSteps_trimAut aut) ?_
+  exact uniformStateEquiv_of_gen h
+
+open Classical in
+/-- Orbit levels, unbounded index. -/
+theorem cycle_level_all (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w) :
+    ∀ j, minRank (trimAut aut) rank
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀)) = rank u₀ := by
+  intro j
+  rw [show nxtIter nxt j u₀ = nxtIter nxt (j % k) u₀
+    from nxtIter_mod hk hper j]
+  exact cycle_level_min aut rank nxt hdec hnxt_rank hfire u₀ k hper hlive
+    hnofix hmin (j % k) (by
+      have := Nat.mod_lt j (show 0 < k by omega)
+      omega)
+
+open Classical in
+/-- **SHIFTED-ORBIT TRACKING**: any same-rank realizer of an orbit language
+    generates the SAME orbit of languages, shifted — the key to canonical
+    basepoints. -/
+theorem orbit_lang_determined (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {i : Nat} {u' : S}
+    (hu'L : autLang (genW T) (trimAut aut) u'
+      = autLang (genW T) (trimAut aut) (nxtIter nxt i u₀))
+    (hu'rank : rank u' = rank u₀) :
+    ∀ j, autLang (genW T) (trimAut aut) (nxtIter nxt j u')
+      = autLang (genW T) (trimAut aut) (nxtIter nxt (i + j) u₀) := by
+  intro j
+  induction j with
+  | zero =>
+      rw [Nat.add_zero]
+      exact hu'L
+  | succ j ih =>
+      have hlij : Live (trimAut aut) (nxtIter nxt (i + j) u₀) :=
+        orbit_live_all aut rank nxt hfire hk hper hlive hnofix (i + j)
+      obtain ⟨α, a, hstepS⟩ := hfire (nxtIter nxt (i + j) u₀) hlij
+        (orbit_nofix_all hk hper hnofix (i + j))
+      have hlnext : Live (trimAut aut) (nxt (nxtIter nxt (i + j) u₀)) :=
+        orbit_live_all aut rank nxt hfire hk hper hlive hnofix (i + j + 1)
+      have hmin₂ : ∀ w, autLang (genW T) (trimAut aut) w
+          = autLang (genW T) (trimAut aut) (nxt (nxtIter nxt (i + j) u₀)) →
+          rank (nxtIter nxt (i + j) u₀) ≤ rank w := by
+        intro w hw
+        have hlvl := cycle_level_all aut rank nxt hdec hnxt_rank hfire hk
+          hper hlive hnofix hmin (i + j + 1)
+        have hwrep : autLang (genW T) (trimAut aut) w
+            = autLang (genW T) (trimAut aut)
+              (bisimRep (trimAut aut) (nxtIter nxt (i + j + 1) u₀)) := by
+          rw [rep_lang aut]
+          exact hw
+        have hle := minRank_le (trimAut aut) rank hwrep
+        rw [hlvl] at hle
+        rw [nxtIter_rank hnxt_rank u₀ (i + j)]
+        omega
+      have hrankeq : rank (nxtIter nxt j u') = rank (nxtIter nxt (i + j) u₀) := by
+        rw [nxtIter_rank hnxt_rank u' j, hu'rank,
+            nxtIter_rank hnxt_rank u₀ (i + j)]
+      have hstep := class_succ_eq aut rank nxt hdec hnxt_rank
+        ih.symm hrankeq hstepS hlnext hmin₂
+      rw [show i + (j + 1) = (i + j) + 1 from by omega]
+      exact hstep
+
+#print axioms orbit_lang_determined
+
 end GkatOrbit
+
