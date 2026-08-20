@@ -668,4 +668,396 @@ theorem chord_assembly_roles {S : Type} (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms chord_assembly_roles
 
+/-! ## The de-choiced chord assembly
+
+    `Classical.choice` enters `chord_assembly_roles` solely through the
+    classical `if u = t` state-equality decisions in `gGuard`/`gBody`/
+    `gOthers`.  With `[DecidableEq S]` — structural on every concrete
+    quotient state type — the same gathering, the same gather lemmas
+    (their EquivBA cores `arms_merge`/`arm_commute`/`ite_zero_guard` are
+    axiom-free), and the same assembly re-elaborate choice-free. -/
+
+/-- Decidable gathered guard. -/
+def gGuardD {S : Type} [DecidableEq S] (t : S) :
+    List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | (g, _, u) :: rest =>
+      if u = t then .or g (gGuardD t rest)
+      else .and (gGuardD t rest) (.not g)
+
+/-- Decidable gathered body. -/
+def gBodyD {S : Type} [DecidableEq S] (t : S) :
+    List (BExp T × A × S) → Exp A T
+  | [] => .test .zero
+  | (g, a, u) :: rest =>
+      if u = t then .ite g (.act a) (gBodyD t rest)
+      else gBodyD t rest
+
+/-- Decidable non-self remainder. -/
+def gOthersD {S : Type} [DecidableEq S] (t : S) :
+    List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, a, u) :: rest =>
+      if u = t then gOthersD t rest
+      else (g, a, u) :: gOthersD t rest
+
+private theorem gGuardD_cons {S : Type} [DecidableEq S] (t : S) (g : BExp T)
+    (a : A) (u : S) (rest : List (BExp T × A × S)) :
+    gGuardD t ((g, a, u) :: rest)
+      = if u = t then .or g (gGuardD t rest)
+        else .and (gGuardD t rest) (.not g) := rfl
+
+private theorem gBodyD_cons {S : Type} [DecidableEq S] (t : S) (g : BExp T)
+    (a : A) (u : S) (rest : List (BExp T × A × S)) :
+    gBodyD t ((g, a, u) :: rest)
+      = if u = t then .ite g (.act a) (gBodyD t rest)
+        else gBodyD t rest := rfl
+
+private theorem gOthersD_cons {S : Type} [DecidableEq S] (t : S) (g : BExp T)
+    (a : A) (u : S) (rest : List (BExp T × A × S)) :
+    gOthersD t ((g, a, u) :: rest)
+      = if u = t then gOthersD t rest
+        else (g, a, u) :: gOthersD t rest := rfl
+
+theorem gOthersD_sub {S : Type} [DecidableEq S] (t : S) :
+    ∀ L : List (BExp T × A × S), ∀ e ∈ gOthersD t L,
+      e ∈ L ∧ e.2.2 ≠ t := by
+  intro L
+  induction L with
+  | nil => intro e he; exact nomatch he
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      intro e he
+      rw [gOthersD_cons] at he
+      by_cases hu : u = t
+      · rw [if_pos hu] at he
+        obtain ⟨h1, h2⟩ := ih e he
+        exact ⟨List.mem_cons_of_mem _ h1, h2⟩
+      · rw [if_neg hu] at he
+        rcases List.mem_cons.mp he with heq | hmem
+        · subst heq
+          exact ⟨by exact List.mem_cons_self .., hu⟩
+        · obtain ⟨h1, h2⟩ := ih e hmem
+          exact ⟨List.mem_cons_of_mem _ h1, h2⟩
+
+/-- Bridges to the classical gathering (for interop with existing
+    lemmas; not used by the choice-free assembly). -/
+theorem gGuardD_eq_gGuard {S : Type} [DecidableEq S] (t : S) :
+    ∀ L : List (BExp T × A × S), gGuardD t L = gGuard t L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      simp only [gGuardD, gGuard]
+      by_cases hu : u = t
+      · rw [if_pos hu, if_pos hu, ih]
+      · rw [if_neg hu, if_neg hu, ih]
+
+theorem gBodyD_eq_gBody {S : Type} [DecidableEq S] (t : S) :
+    ∀ L : List (BExp T × A × S), gBodyD t L = gBody t L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      simp only [gBodyD, gBody]
+      by_cases hu : u = t
+      · rw [if_pos hu, if_pos hu, ih]
+      · rw [if_neg hu, if_neg hu, ih]
+
+theorem gOthersD_eq_gOthers {S : Type} [DecidableEq S] (t : S) :
+    ∀ L : List (BExp T × A × S), gOthersD t L = gOthers t L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      simp only [gOthersD, gOthers]
+      by_cases hu : u = t
+      · rw [if_pos hu, if_pos hu, ih]
+      · rw [if_neg hu, if_neg hu, ih]
+
+/-- Choice-free `multi_gather`. -/
+theorem multi_gatherD {S : Type} [DecidableEq S] (sol : S → Exp A T)
+    (h : BExp T) (t : S) :
+    ∀ L : List (BExp T × A × S),
+    EquivBA (foldTL sol h L)
+      (.ite (gGuardD t L) (.seq (gBodyD t L) (sol t))
+        (foldTL sol h (gOthersD t L))) := by
+  intro L
+  induction L with
+  | nil =>
+      exact EquivBA.symm (GkatDeadExitElim.ite_zero_guard _ _
+        (fun X W x => rfl))
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      rw [gGuardD_cons, gBodyD_cons, gOthersD_cons]
+      by_cases hu : u = t
+      · subst hu
+        rw [if_pos rfl, if_pos rfl, if_pos rfl]
+        show EquivBA (.ite g (.seq (.act a) (sol u)) (foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih) ?_
+        exact arms_merge g (gGuardD u rest) (.act a) (gBodyD u rest) (sol u)
+          (foldTL sol h (gOthersD u rest))
+      · rw [if_neg hu, if_neg hu, if_neg hu]
+        show EquivBA (.ite g (.seq (.act a) (sol u)) (foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih) ?_
+        exact arm_commute g (gGuardD t rest) (.seq (.act a) (sol u))
+          (.seq (gBodyD t rest) (sol t)) (foldTL sol h (gOthersD t rest))
+
+/-- Choice-free `double_gather`. -/
+theorem double_gatherD {S : Type} [DecidableEq S] (sol : S → Exp A T)
+    (h : BExp T) (u v : S) (L : List (BExp T × A × S)) :
+    EquivBA (foldTL sol h L)
+      (.ite (gGuardD u L) (.seq (gBodyD u L) (sol u))
+        (.ite (gGuardD v (gOthersD u L))
+          (.seq (gBodyD v (gOthersD u L)) (sol v))
+          (foldTL sol h (gOthersD v (gOthersD u L))))) :=
+  EquivBA.trans (multi_gatherD sol h u L)
+    (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+      (multi_gatherD sol h v (gOthersD u L)))
+
+#print axioms multi_gatherD
+#print axioms double_gatherD
+
+/-- Choice-free port closed form. -/
+def chordPortED {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .seq (.wh (gGuardD Ps (aut.trans Rs))
+      (.seq (gBodyD Ps (aut.trans Rs))
+        (chordPreS (gGuardD Qs (aut.trans Ps)) (gGuardD Qs (aut.trans Qs))
+          (gBodyD Qs (aut.trans Ps)) (gBodyD Qs (aut.trans Qs))
+          (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+          (gBodyD Rs (gOthersD Qs (aut.trans Ps))))))
+    (foldTL dsol (aut.hlt Rs) (gOthersD Ps (aut.trans Rs)))
+
+/-- Choice-free inner closed form. -/
+def chordInnerED {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .seq (.wh (gGuardD Qs (aut.trans Qs)) (gBodyD Qs (aut.trans Qs)))
+    (.seq (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+      (chordPortED aut dsol Rs Ps Qs))
+
+/-- Choice-free branch closed form. -/
+def chordBranchED {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .ite (gGuardD Qs (aut.trans Ps))
+    (.seq (gBodyD Qs (aut.trans Ps)) (chordInnerED aut dsol Rs Ps Qs))
+    (.seq (gBodyD Rs (gOthersD Qs (aut.trans Ps)))
+      (chordPortED aut dsol Rs Ps Qs))
+
+private theorem chordPortED_congr {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthersD Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordPortED aut sol₁ Rs Ps Qs = chordPortED aut sol₂ Rs Ps Qs := by
+  unfold chordPortED
+  rw [foldTL_congrC (aut.hlt Rs) (gOthersD Ps (aut.trans Rs)) h]
+
+private theorem chordInnerED_congr {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthersD Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordInnerED aut sol₁ Rs Ps Qs = chordInnerED aut sol₂ Rs Ps Qs := by
+  unfold chordInnerED
+  rw [chordPortED_congr aut Rs Ps Qs h]
+
+private theorem chordBranchED_congr {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthersD Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordBranchED aut sol₁ Rs Ps Qs = chordBranchED aut sol₂ Rs Ps Qs := by
+  unfold chordBranchED
+  rw [chordInnerED_congr aut Rs Ps Qs h, chordPortED_congr aut Rs Ps Qs h]
+
+/-- The choice-free chord assembly solution. -/
+def asmSolCD {S : Type} [DecidableEq S] (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option ((S × S × S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuardD s (aut.trans s)) (gBodyD s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthersD s (aut.trans s)))
+    | some ((Rs, Ps, Qs), i) =>
+        if i = 0 then
+          chordPortED aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs
+        else if i = 1 then
+          chordBranchED aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs
+        else
+          chordInnerED aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs)
+
+theorem asmSolCD_eq {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (rank : S → Nat) (cy : S → Option ((S × S × S) × Nat)) (s : S) :
+    asmSolCD aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuardD s (aut.trans s)) (gBodyD s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSolCD aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthersD s (aut.trans s)))
+        | some ((Rs, Ps, Qs), i) =>
+            if i = 0 then
+              chordPortED aut
+                (fun t => if _ : rank t < rank s then asmSolCD aut rank cy t
+                  else .test .zero) Rs Ps Qs
+            else if i = 1 then
+              chordBranchED aut
+                (fun t => if _ : rank t < rank s then asmSolCD aut rank cy t
+                  else .test .zero) Rs Ps Qs
+            else
+              chordInnerED aut
+                (fun t => if _ : rank t < rank s then asmSolCD aut rank cy t
+                  else .test .zero) Rs Ps Qs) := by
+  unfold asmSolCD
+  rw [WellFounded.fix_eq]
+
+/-- **THE CHOICE-FREE CHORD ASSEMBLY THEOREM**: `chord_assembly_roles`
+    with decidable state equality — no `Classical.choice`. -/
+theorem chord_assembly_rolesD {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (rank : S → Nat) (cy : S → Option ((S × S × S) × Nat))
+    (hcy : ∀ s Rs Ps Qs i, cy s = some ((Rs, Ps, Qs), i) →
+      ((i = 0 ∧ s = Rs) ∨ (i = 1 ∧ s = Ps) ∨ (i = 2 ∧ s = Qs))
+      ∧ cy Rs = some ((Rs, Ps, Qs), 0)
+      ∧ cy Ps = some ((Rs, Ps, Qs), 1)
+      ∧ cy Qs = some ((Rs, Ps, Qs), 2)
+      ∧ rank Ps = rank Rs ∧ rank Qs = rank Rs
+      ∧ (∀ e ∈ gOthersD Ps (aut.trans Rs), rank e.2.2 < rank Rs)
+      ∧ gOthersD Rs (gOthersD Qs (aut.trans Ps)) = []
+      ∧ gOthersD Rs (gOthersD Qs (aut.trans Qs)) = []
+      ∧ GuardImplies (.not (gGuardD Qs (aut.trans Ps)))
+          (gGuardD Rs (gOthersD Qs (aut.trans Ps)))
+      ∧ GuardImplies (.not (gGuardD Qs (aut.trans Qs)))
+          (gGuardD Rs (gOthersD Qs (aut.trans Qs)))
+      ∧ GuardEmpty (aut.hlt Ps) ∧ GuardEmpty (aut.hlt Qs))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSolCD aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthersD s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthersD_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      have hsol : asmSolCD aut rank cy s
+          = .seq (.wh (gGuardD s (aut.trans s)) (gBodyD s (aut.trans s)))
+              (foldTL (asmSolCD aut rank cy) (aut.hlt s)
+                (gOthersD s (aut.trans s))) := by
+        rw [asmSolCD_eq, hcys]
+        exact congrArg _ (foldTL_congrC (aut.hlt s) (gOthersD s (aut.trans s))
+          (fun e he => dif_pos (hlow e he)))
+      refine StateRole.salomaaE (gGuardD s (aut.trans s))
+        (gBodyD s (aut.trans s))
+        (foldTL (asmSolCD aut rank cy) (aut.hlt s) (gOthersD s (aut.trans s)))
+        hsol ?_
+      rw [eqRHS_foldTL]
+      exact multi_gatherD (asmSolCD aut rank cy) (aut.hlt s) s (aut.trans s)
+  | some q =>
+      obtain ⟨⟨Rs, Ps, Qs⟩, i⟩ := q
+      obtain ⟨hpos, hcyR, hcyP, hcyQ, hrkP, hrkQ, hport_lo, hnilP, hnilQ,
+        himpP, himpQ, hempP, hempQ⟩ := hcy s Rs Ps Qs i hcys
+      have hlowR : ∀ e ∈ gOthersD Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Rs then asmSolCD aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolCD aut rank cy e.2.2 :=
+        fun e he => dif_pos (hport_lo e he)
+      have hlowP : ∀ e ∈ gOthersD Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Ps then asmSolCD aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolCD aut rank cy e.2.2 :=
+        fun e he => dif_pos (by rw [hrkP]; exact hport_lo e he)
+      have hlowQ : ∀ e ∈ gOthersD Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Qs then asmSolCD aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolCD aut rank cy e.2.2 :=
+        fun e he => dif_pos (by rw [hrkQ]; exact hport_lo e he)
+      have hsolR_eq : asmSolCD aut rank cy Rs
+          = chordPortED aut (asmSolCD aut rank cy) Rs Ps Qs := by
+        rw [asmSolCD_eq, hcyR]
+        show (if (0 : Nat) = 0 then _ else _) = _
+        rw [if_pos rfl]
+        exact chordPortED_congr aut Rs Ps Qs hlowR
+      have hsolP_eq : asmSolCD aut rank cy Ps
+          = chordBranchED aut (asmSolCD aut rank cy) Rs Ps Qs := by
+        rw [asmSolCD_eq, hcyP]
+        show (if (1 : Nat) = 0 then _ else if (1 : Nat) = 1 then _ else _) = _
+        rw [if_neg (by omega : ¬ (1 : Nat) = 0), if_pos rfl]
+        exact chordBranchED_congr aut Rs Ps Qs hlowP
+      have hsolQ_eq : asmSolCD aut rank cy Qs
+          = chordInnerED aut (asmSolCD aut rank cy) Rs Ps Qs := by
+        rw [asmSolCD_eq, hcyQ]
+        show (if (2 : Nat) = 0 then _ else if (2 : Nat) = 1 then _ else _) = _
+        rw [if_neg (by omega : ¬ (2 : Nat) = 0),
+          if_neg (by omega : ¬ (2 : Nat) = 1)]
+        exact chordInnerED_congr aut Rs Ps Qs hlowQ
+      have hsolQ' : asmSolCD aut rank cy Qs
+          = .seq (.wh (gGuardD Qs (aut.trans Qs)) (gBodyD Qs (aut.trans Qs)))
+              (.seq (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+                (asmSolCD aut rank cy Rs)) := by
+        rw [hsolQ_eq]
+        show chordInnerED aut (asmSolCD aut rank cy) Rs Ps Qs
+          = .seq (.wh (gGuardD Qs (aut.trans Qs)) (gBodyD Qs (aut.trans Qs)))
+              (.seq (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+                (asmSolCD aut rank cy Rs))
+        rw [hsolR_eq]
+        rfl
+      have hsolP' : asmSolCD aut rank cy Ps
+          = .ite (gGuardD Qs (aut.trans Ps))
+              (.seq (gBodyD Qs (aut.trans Ps)) (asmSolCD aut rank cy Qs))
+              (.seq (gBodyD Rs (gOthersD Qs (aut.trans Ps)))
+                (asmSolCD aut rank cy Rs)) := by
+        rw [hsolP_eq]
+        show chordBranchED aut (asmSolCD aut rank cy) Rs Ps Qs = _
+        rw [hsolR_eq, hsolQ_eq]
+        rfl
+      have hsolR' : asmSolCD aut rank cy Rs
+          = .seq (.wh (gGuardD Ps (aut.trans Rs))
+              (.seq (gBodyD Ps (aut.trans Rs))
+                (chordPreS (gGuardD Qs (aut.trans Ps))
+                  (gGuardD Qs (aut.trans Qs)) (gBodyD Qs (aut.trans Ps))
+                  (gBodyD Qs (aut.trans Qs))
+                  (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+                  (gBodyD Rs (gOthersD Qs (aut.trans Ps))))))
+              (foldTL (asmSolCD aut rank cy) (aut.hlt Rs)
+                (gOthersD Ps (aut.trans Rs))) := by
+        rw [hsolR_eq]
+        rfl
+      have hroles := chord3_roles_split aut (asmSolCD aut rank cy) Ps Qs Rs
+        (gGuardD Ps (aut.trans Rs)) (gGuardD Qs (aut.trans Ps))
+        (gGuardD Qs (aut.trans Qs)) (gBodyD Ps (aut.trans Rs))
+        (gBodyD Qs (aut.trans Ps)) (gBodyD Qs (aut.trans Qs))
+        (gBodyD Rs (gOthersD Qs (aut.trans Qs)))
+        (gBodyD Rs (gOthersD Qs (aut.trans Ps)))
+        (foldTL (asmSolCD aut rank cy) (aut.hlt Rs)
+          (gOthersD Ps (aut.trans Rs)))
+        hsolQ' hsolP' hsolR'
+        (by
+          rw [eqRHS_foldTL]
+          refine EquivBA.trans (double_gatherD (asmSolCD aut rank cy)
+            (aut.hlt Qs) Qs Rs (aut.trans Qs)) ?_
+          rw [hnilQ]
+          exact chord_else_collapse himpQ hempQ _ _)
+        (by
+          rw [eqRHS_foldTL]
+          refine EquivBA.trans (double_gatherD (asmSolCD aut rank cy)
+            (aut.hlt Ps) Qs Rs (aut.trans Ps)) ?_
+          rw [hnilP]
+          exact chord_else_collapse himpP hempP _ _)
+        (by
+          rw [eqRHS_foldTL]
+          exact multi_gatherD (asmSolCD aut rank cy) (aut.hlt Rs) Ps
+            (aut.trans Rs))
+      obtain ⟨hroleP, hroleQ, hroleR⟩ := hroles
+      rcases hpos with ⟨-, hsR⟩ | ⟨-, hsP⟩ | ⟨-, hsQ⟩
+      · rw [hsR]; exact hroleR
+      · rw [hsP]; exact hroleP
+      · rw [hsQ]; exact hroleQ
+
+#print axioms chord_assembly_rolesD
+
 end GkatThreeLoop

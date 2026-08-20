@@ -1670,3 +1670,33 @@ Next bite: start the threeLoop fragment facts — sum-automaton step lemmas
 (Σ-lifts of the six step lemmas), liveness of the three states, and the
 language-distinctness facts (`hnontriv` analogues: lang P ≠ lang Q ≠
 lang R under guard-nondegeneracy sat hypotheses).
+
+## Iteration 60b (user-directed) — THE CHOICE-FREE CHORD ASSEMBLY
+
+User asked: can we eliminate choice? Trace: `Classical.choice` enters the
+assembly SOLELY through the classical `if u = t` state-equality decisions
+in `gGuard`/`gBody`/`gOthers` (GkatPlanExistence, `open Classical`). The
+EquivBA cores were already clean (`arms_merge`/`arm_commute`/
+`ite_zero_guard`/`foldTL`: zero axioms).
+
+De-choiced in GkatThreeLoopProofs.lean via the trimAutD/bisimRepDT
+pattern, with `[DecidableEq S]`:
+- `gGuardD`/`gBodyD`/`gOthersD` (computable) + `gOthersD_sub`
+- `multi_gatherD`, `double_gatherD` — **ZERO axioms**
+- `chordPortED`/`chordInnerED`/`chordBranchED` + congruences, `asmSolCD`
+- **`chord_assembly_rolesD` : [propext, Quot.sound]** — choice ELIMINATED
+  from the entire assembly half of the open problem.
+- Bridges `gGuardD_eq_gGuard`/`gBodyD_eq_gBody`/`gOthersD_eq_gOthers` for
+  interop with classical-side lemmas (proved by `simp only` equation
+  unfolding + double `if_pos/if_neg`; the private classical cons lemmas
+  are inaccessible and the two `ite`s carry different Decidable
+  instances, so `rfl`/`show` transport does NOT work — rewrite each side).
+
+Whole-chain de-choice (summit reduction + fragment) remains a STEELMAN
+HARDENING item. The fragment half should now target the D-bundle
+directly (concrete state types have structural DecidableEq via
+thompsonDecEq), so the sixth theorem can inherit the leaner profile.
+
+Next bite (back on mainline): the threeLoop fragment facts — Σ-lifted
+step lemmas, liveness, language distinctness, quotient cover — feeding
+`chord_assembly_rolesD`.
