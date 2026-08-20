@@ -604,3 +604,42 @@ Phantom feedback arms of loopInitialized are now exempt: the fragment
 discharges them by refuting the firing witness (their guards are
 semantically empty). The hdec obligation is now constructively provable
 for chain Thompson automata.
+
+## QUEUED CAMPAIGN: DE-CHOICE (user-approved 2026-08-20)
+
+After chainloops_complete lands, the standing loop pivots to removing
+Classical.choice from the axiom base (target: [propext, Quot.sound], making
+the completeness witness computable). Phases:
+1. Finite-support satisfiability: bval depends only on tests occurring in
+   the guard => decidable by finite Boolean enumeration.
+2. Decidable liveness (bounded reachability over the finite state list).
+3. Decidable bisimilarity (partition refinement at genW over mentioned
+   tests); bisimRep := first-bisimilar-in-list (canonical, choice-free).
+4. minRank as list-minimum over aut.states; requantify hmin over states.
+5. Replace classical dites/by_cases with decidable instances; shrink axiom
+   prints file by file.
+
+## THE CHAIN SHAPE THEOREM (loop iteration 18)
+
+New file GkatChainFragmentProofs.lean:
+- Chain: bodies that are sequences of actions
+- ChainInit: deterministic silent-free entry (initHlt semantically zero,
+  one everywhere-firing init arm into first, all fired init arms agree)
+- ChainSpine: recursive spine predicate — interior states silent +
+  deterministic (everywhere-firing arm to successor, all fired arms agree,
+  distinct from the rest), last state halts everywhere with no arms
+- chainSpine_seq_right / chainSpine_seq_left: the spine survives Thompson
+  sequential composition — right summand verbatim, left summand with its
+  last state rewired into the right head through the glue arms (the glue
+  guard leftHlt ∧ rightInit fires everywhere at the junction, nowhere at
+  interiors; left-last's composite halt dies against rightInitHlt)
+- chainInit_seq: entry survives on the left
+- chain_shape: EVERY chain body's Thompson automaton is a spine with
+  deterministic entry, states = spine exactly.
+Axioms: [propext, Quot.sound] — CHOICE-FREE (a head start on the queued
+de-choice campaign).
+
+Also queued this iteration (user-approved): the DE-CHOICE campaign after
+chainloops_complete. Next: the loop case — loopInitialized of a spine is
+rank-mod-nxt with the orbit bundle facts (hstep_uniq/hnoeps/hfire/hdec),
+then toGAut/sumGAut transport, os construction, wrapper.
