@@ -1517,3 +1517,28 @@ pair-projection beta-noise from subst blocks rewrites.
 NEXT per user queue: the OPEN PROBLEM campaign (branching-successor
 discipline for skippable inner loops — the located obstacle), then
 STEELMAN HARDENING.
+
+## ============================================================
+## THE OPEN-PROBLEM CAMPAIGN OPENS: THE CHORD (iteration 56)
+## ============================================================
+
+DESIGN (the pivot's core): the branching obstacle resolves in two
+coordinated moves —
+1. ASSEMBLY: a cycle with forward chords still unrolls to ONE Salomaa
+   equation per basepoint (every path returns within a lap), so w3
+   alone solves it — the chord-cycle role generalizes wChain's linear
+   dispatch to a guarded DAG dispatch.
+2. ORBIT: the atom-indexed derivative is class-determined, so a
+   successor SET (the forward cascade) replaces the successor function;
+   pinning says fired arms hit self ∨ the cascade ∨ descent.
+
+New file GkatThreeLoopProofs.lean — the minimal beyond-walked program
+wh b (p; (wh c q); r): cycle p → q → r → p with CHORD p → r (skip) and
+self-loop at q. Machine-verified: the branch (p enters at c / SKIPS TO
+THE PORT at ¬c — the chord), inner self/adv, port feed/rest (with the
+two phantom feedback arms written out), and the halt structure
+(p, q silent; r exits ¬b). All [propext, Quot.sound].
+
+Next: the chord-cycle role at the GkatCycle level (the w3 unrolling for
+the 3-cycle-with-chord), then the branching orbit layer (successor
+sets), then sixth theorem threeloops_complete, then generalize.
