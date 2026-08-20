@@ -1808,7 +1808,8 @@ fn symbolic_eliminable_gen<const NA: usize>(h: &Aut<NA>, collapse: bool) -> bool
             }
         }
     }
-    let mut budget = 2000000usize;
+    let mut budget = std::env::var("PAD_ELIM_BUDGET").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2000000usize);
     // Depth 2 was measured to rescue NOTHING — pool completeness 19718/20020 and
     // sum-quotients 9221/9245 both unchanged — while nesting the entry-list enumeration,
     // which is ~nb^NA per level and dominates on the 10-state sums.  Keep depth 1.
@@ -5496,7 +5497,8 @@ pullback: {ok} / {}", res.len());
                     let (mut n, mut rs, mut rp, mut rl) = (0usize, 0usize, 0usize, 0usize);
                     let mut sample: Vec<Aut<NA>> = Vec::new();
                     let mut tried = 0usize;
-                    while n < 5000 && tried < 4000000 {
+                    let ncap = if NA > 2 { 500 } else { 5000 };
+                    while n < ncap && tried < 4000000 {
                         tried += 1;
                         let kk = 4 + (rnd() % 5) as usize;
                         let mut st = [[0u8; NA]; MAXK];
@@ -5549,7 +5551,8 @@ pullback: {ok} / {}", res.len());
                         let mut rnd4 = move || { rng4 ^= rng4 << 13; rng4 ^= rng4 >> 7; rng4 ^= rng4 << 17; rng4 };
                         let mut pos: Vec<Aut<NA>> = Vec::new();
                         let mut tried4 = 0usize;
-                        while pos.len() < 5000 && tried4 < 4000000 {
+                        let pcap = if NA > 2 { 500 } else { 5000 };
+                        while pos.len() < pcap && tried4 < 4000000 {
                             tried4 += 1;
                             let kk = 4 + (rnd4() % 5) as usize;
                             let mut st = [[0u8; NA]; MAXK];
