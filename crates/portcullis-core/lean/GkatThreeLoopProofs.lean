@@ -3051,4 +3051,243 @@ theorem chord_reps_distinct (b c : BExp T) (p x y : A)
 #print axioms chord_census
 #print axioms chord_reps_distinct
 
+/-! ## Representative membership
+
+    Each representative is pinned to its class's concrete members: the
+    rep is a carrier value with the class language, and the separations
+    kill every value outside the class. -/
+
+open Classical in
+/-- The branch representative is one of the two branch states. -/
+theorem chord_repP_cases (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    chordRepP b c p x y b' c' p' x' y' = Sum.inl (some (Sum.inl ()))
+      ∨ chordRepP b c p x y b' c' p' x' y'
+          = Sum.inr (some (Sum.inl ())) := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hlangP : autLang (genW T)
+      (trimAut (chordSum b c p x y b' c' p' x' y'))
+      (chordRepP b c p x y b' c' p' x' y')
+    = autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inl ()))) :=
+    rep_lang (chordSum b c p x y b' c' p' x' y') _
+  have hCne : ∃ α : T → Bool, bval (genW T) c α = true :=
+    ⟨Classical.choose hentC, (Classical.choose_spec hentC).1⟩
+  cases hval : chordRepP b c p x y b' c' p' x' y' with
+  | inl o =>
+      rw [hval] at hlangP
+      cases o with
+      | none =>
+          exfalso
+          exact chord_lang_ne_p_yr b c p x y _ hexitB
+            (((chord_none_lang b c p x y _ hexitC hexitB).symm.trans
+              hlangP).symm)
+      | some u =>
+          cases u with
+          | inl v => cases v; exact Or.inl rfl
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_p_x b c p x y _ hCne hexitC
+                        hexitB hlangP.symm
+                  | inr v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_p_yr b c p x y _ hexitB
+                        (((chord_yl_yr_lang b c p x y _ hexitC
+                          hexitB).symm.trans hlangP).symm)
+              | inr v =>
+                  cases v
+                  exfalso
+                  exact chord_lang_ne_p_yr b c p x y _ hexitB hlangP.symm
+  | inr o =>
+      rw [hval] at hlangP
+      cases o with
+      | none =>
+          exfalso
+          refine chord_lang_ne_p_yr b c p x y
+            ((chordLoopAut b' c' p' x' y').toGAut) hexitB ?_
+          have h1 : autLang (genW T)
+              (trimAut (chordSum b c p x y b' c' p' x' y'))
+              (Sum.inr none)
+            = autLang (genW T)
+                (trimAut (chordSum b c p x y b' c' p' x' y'))
+                (Sum.inl (some (Sum.inr (Sum.inr ())))) :=
+            (chord_none_lang_r b' c' p' x' y' _ hexitC' hexitB').trans
+              hport.symm
+          exact (h1.symm.trans hlangP).symm
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              refine Or.inr ?_
+              rfl
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_p_x b c p x y _ hCne hexitC
+                        hexitB (hlangP.symm.trans hpairx.2.symm)
+                  | inr v =>
+                      cases v
+                      exfalso
+                      refine chord_lang_ne_p_yr b c p x y
+                        ((chordLoopAut b' c' p' x' y').toGAut) hexitB ?_
+                      have h1 : autLang (genW T)
+                          (trimAut (chordSum b c p x y b' c' p' x' y'))
+                          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ())))))
+                        = autLang (genW T)
+                            (trimAut (chordSum b c p x y b' c' p' x' y'))
+                            (Sum.inl (some (Sum.inr (Sum.inr ())))) :=
+                        (chord_yl_yr_lang_r b' c' p' x' y' _ hexitC'
+                          hexitB').trans hport.symm
+                      exact (h1.symm.trans hlangP).symm
+              | inr v =>
+                  cases v
+                  exfalso
+                  exact chord_lang_ne_p_yr b c p x y _ hexitB
+                    (hport.trans hlangP).symm
+
+open Classical in
+/-- The mid representative is one of the two mid states. -/
+theorem chord_repX_cases (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    chordRepX b c p x y b' c' p' x' y'
+        = Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))
+      ∨ chordRepX b c p x y b' c' p' x' y'
+          = Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ())))) := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hlangX : autLang (genW T)
+      (trimAut (chordSum b c p x y b' c' p' x' y'))
+      (chordRepX b c p x y b' c' p' x' y')
+    = autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) :=
+    rep_lang (chordSum b c p x y b' c' p' x' y') _
+  have hCne : ∃ α : T → Bool, bval (genW T) c α = true :=
+    ⟨Classical.choose hentC, (Classical.choose_spec hentC).1⟩
+  cases hval : chordRepX b c p x y b' c' p' x' y' with
+  | inl o =>
+      rw [hval] at hlangX
+      cases o with
+      | none =>
+          exfalso
+          exact chord_lang_ne_x_yr b c p x y _ hexitB
+            (((chord_none_lang b c p x y _ hexitC hexitB).symm.trans
+              hlangX).symm)
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exfalso
+              exact chord_lang_ne_p_x b c p x y _ hCne hexitC hexitB
+                hlangX
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v => cases v; exact Or.inl rfl
+                  | inr v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_x_yr b c p x y _ hexitB
+                        (((chord_yl_yr_lang b c p x y _ hexitC
+                          hexitB).symm.trans hlangX).symm)
+              | inr v =>
+                  cases v
+                  exfalso
+                  exact chord_lang_ne_x_yr b c p x y _ hexitB hlangX.symm
+  | inr o =>
+      rw [hval] at hlangX
+      cases o with
+      | none =>
+          exfalso
+          refine chord_lang_ne_x_yr b c p x y
+            ((chordLoopAut b' c' p' x' y').toGAut) hexitB ?_
+          have h1 : autLang (genW T)
+              (trimAut (chordSum b c p x y b' c' p' x' y'))
+              (Sum.inr none)
+            = autLang (genW T)
+                (trimAut (chordSum b c p x y b' c' p' x' y'))
+                (Sum.inl (some (Sum.inr (Sum.inr ())))) :=
+            (chord_none_lang_r b' c' p' x' y' _ hexitC' hexitB').trans
+              hport.symm
+          exact (h1.symm.trans hlangX).symm
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exfalso
+              exact chord_lang_ne_p_x b c p x y _ hCne hexitC hexitB
+                (hpair.2.trans hlangX)
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v => cases v; exact Or.inr rfl
+                  | inr v =>
+                      cases v
+                      exfalso
+                      refine chord_lang_ne_x_yr b c p x y
+                        ((chordLoopAut b' c' p' x' y').toGAut) hexitB ?_
+                      have h1 : autLang (genW T)
+                          (trimAut (chordSum b c p x y b' c' p' x' y'))
+                          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ())))))
+                        = autLang (genW T)
+                            (trimAut (chordSum b c p x y b' c' p' x' y'))
+                            (Sum.inl (some (Sum.inr (Sum.inr ())))) :=
+                        (chord_yl_yr_lang_r b' c' p' x' y' _ hexitC'
+                          hexitB').trans hport.symm
+                      exact (h1.symm.trans hlangX).symm
+              | inr v =>
+                  cases v
+                  exfalso
+                  exact chord_lang_ne_x_yr b c p x y _ hexitB
+                    (hport.trans hlangX).symm
+
+#print axioms chord_repP_cases
+#print axioms chord_repX_cases
+
 end GkatThreeLoop
