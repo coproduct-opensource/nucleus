@@ -1605,3 +1605,33 @@ so the branch state needs no new gathering machinery.
 Next bite: `chord_assembly_roles` — the classifier-keyed WF-recursion
 solution (asmSolC) + the per-cluster role theorem consuming gathered-arm
 bundle facts, mirroring `walked_assembly_roles`.
+
+## Iteration 59 — split-parameter chord roles + the else-collapse massage
+
+Two new certified pieces in GkatThreeLoopProofs.lean:
+
+- `chord_else_collapse` (**zero axioms**): a two-way dispatch whose guards
+  cover (`GuardImplies (¬g₁) g₂`) and whose halt is empty collapses:
+  `ite g₁ X (ite g₂ Y (test h)) ≡ ite g₁ X Y`. Route:
+  `ite_else_restrict` (Faithfulness) → `ite_guard` (¬g₁∧g₂ ≡ ¬g₁ under the
+  cover) → `baTest` (empty halt → 0) → `ite_zero_else` → symm
+  `ite_restrict_else` (GuardedAlgebra). This is THE massage that turns
+  `double_gather`'s three-layer output into the chord dispatch shape.
+
+- `chord3_roles_split` (**[propext]**, first-try): the roles theorem with
+  SEPARATE gathered data at the branch state (`cG qB rB`) and the inner
+  state (`cQ qBQ rBQ`) — on a real quotient each state gathers its own arm
+  list, so the guards need not coincide syntactically. `chordPreS` splices
+  the inner state's own solved loop into the branch dispatch; the factoring
+  lemma is parameter-agnostic.
+
+The per-cluster derivation pipeline is now fully stocked:
+`eqRHS_foldTL` → `double_gather` (any two distinguished targets) →
+`chord_else_collapse` → `chord3_roles_split`. What remains for the sixth
+theorem is the classifier assembly (`asmSolC` + `chord_assembly_roles`
+mirroring `walked_assembly_roles`) and the fragment facts for the concrete
+threeLoop quotient (cover, liveness, guard facts — the twoLoop playbook).
+
+Lit check: cyclic proof systems for GKAT (2405.07505) and GKAT automata
+learning both work modulo the standard UA-based completeness; nothing
+touching UA-free nested/chord fragments.

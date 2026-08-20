@@ -286,4 +286,113 @@ theorem chord3_roles_tail {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms chord3_roles_tail
 
+/-! ## The assembly-facing forms
+
+    Gathered quotient arms produce (i) a second `ite` layer ending in the
+    state's halt test — collapsed by `chord_else_collapse` when the two
+    dispatch guards cover and the halt is empty — and (ii) SEPARATE guard
+    and body data at the branch state and the inner state (each gathers its
+    own arm list), handled by the split-parameter roles theorem. -/
+
+open Classical in
+/-- **ELSE-COLLAPSE**: a two-way dispatch whose guards cover (`¬g₁ → g₂`)
+    and whose halt is empty is a plain `ite`. -/
+theorem chord_else_collapse {g₁ g₂ h : BExp T}
+    (himp : GuardImplies (.not g₁) g₂) (hemp : GuardEmpty h)
+    (X Y : Exp A T) :
+    EquivBA (.ite g₁ X (.ite g₂ Y (.test h))) (.ite g₁ X Y) := by
+  refine EquivBA.trans (ite_else_restrict g₁ g₂ X Y (.test h)) ?_
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.ite_guard (e := Y) (f := .test h) (fun Z W x => by
+      show (bval W (.not g₁) x && bval W g₂ x) = bval W (.not g₁) x
+      cases hb : bval W (.not g₁) x
+      · rfl
+      · rw [himp Z W x hb]
+        rfl))) ?_
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.ite_c (EquivBA.base (Equiv.refl Y))
+      (EquivBA.baTest (b := h) (c := .zero)
+        (fun Z W x => hemp Z W x)))) ?_
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (ite_zero_else (.not g₁) Y)) ?_
+  exact EquivBA.symm (ite_restrict_else g₁ X Y)
+
+#print axioms chord_else_collapse
+
+open Classical in
+/-- The lap prefix, split-parameter form: the branch state's own gathered
+    data (`cG`, `qB`, `rB`) with the inner state's own solved loop
+    (`cQ`, `qBQ`, `rBQ`) spliced into the enter arm. -/
+def chordPreS (cG cQ : BExp T) (qB qBQ rBQ rB : Exp A T) : Exp A T :=
+  .ite cG (.seq qB (.seq (.wh cQ qBQ) rBQ)) rB
+
+open Classical in
+/-- **THE SPLIT CHORD-CYCLE ROLES**: as `chord3_roles_tail`, but the
+    branch state and the inner state each carry their own gathered guards
+    and bodies — the exact shape `double_gather` + `chord_else_collapse`
+    produce on a canonical quotient. -/
+theorem chord3_roles_split {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (P Q R : S) (bG cG cQ : BExp T) (pB qB qBQ rBQ rB tail : Exp A T)
+    (hsolQ : sol Q = .seq (.wh cQ qBQ) (.seq rBQ (sol R)))
+    (hsolP : sol P = .ite cG (.seq qB (sol Q)) (.seq rB (sol R)))
+    (hsolR : sol R
+      = .seq (.wh bG (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))) tail)
+    (hrhsQ : EquivBA (eqRHS aut sol Q)
+      (.ite cQ (.seq qBQ (sol Q)) (.seq rBQ (sol R))))
+    (hrhsP : EquivBA (eqRHS aut sol P)
+      (.ite cG (.seq qB (sol Q)) (.seq rB (sol R))))
+    (hrhsR : EquivBA (eqRHS aut sol R)
+      (.ite bG (.seq pB (sol P)) tail)) :
+    StateRole aut sol P ∧ StateRole aut sol Q
+      ∧ StateRole aut sol R := by
+  have hQwh : EquivBA (.seq qBQ (sol Q))
+      (.seq qBQ (.seq (.wh cQ qBQ) (.seq rBQ (sol R)))) := by
+    rw [hsolQ]
+    exact EquivBA.base (Equiv.refl _)
+  have hPfactor : EquivBA
+      (.seq (chordPreS cG cQ qB qBQ rBQ rB) (sol R)) (sol P) := by
+    show EquivBA
+      (.seq (.ite cG (.seq qB (.seq (.wh cQ qBQ) rBQ)) rB) (sol R)) _
+    refine EquivBA.trans (EquivBA.symm
+      (EquivBA.base (Equiv.u5 cG (.seq qB (.seq (.wh cQ qBQ) rBQ)) rB
+        (sol R)))) ?_
+    rw [hsolP]
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+    refine EquivBA.trans
+      (EquivBA.base (Equiv.s1 qB (.seq (.wh cQ qBQ) rBQ) (sol R))) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl qB)) ?_
+    rw [hsolQ]
+    exact EquivBA.base (Equiv.s1 (.wh cQ qBQ) rBQ (sol R))
+  have hunroll : EquivBA (sol R)
+      (.ite bG (.seq pB (sol P)) tail) := by
+    conv => lhs; rw [hsolR]
+    refine EquivBA.trans (EquivBA.seq_c
+      (EquivBA.base (Equiv.w1 bG
+        (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))))
+      (EquivBA.base (Equiv.refl tail))) ?_
+    refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u5 bG
+      (.seq (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))
+        (.wh bG (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))))
+      (.test .one) tail))) ?_
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.s4 tail))
+    refine EquivBA.trans (EquivBA.base (Equiv.s1
+      (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))
+      (.wh bG (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))) tail)) ?_
+    refine EquivBA.trans (EquivBA.base
+      (Equiv.s1 pB (chordPreS cG cQ qB qBQ rBQ rB)
+        (.seq (.wh bG (.seq pB (chordPreS cG cQ qB qBQ rBQ rB))) tail))) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl pB)) ?_
+    rw [← hsolR]
+    exact hPfactor
+  refine ⟨?_, ?_, ?_⟩
+  · refine StateRole.equivFold ?_
+    refine EquivBA.trans ?_ hrhsP.symm
+    rw [hsolP]
+    exact EquivBA.base (Equiv.refl _)
+  · exact StateRole.salomaaE cQ qBQ (.seq rBQ (sol R)) hsolQ hrhsQ
+  · refine StateRole.equivFold ?_
+    exact EquivBA.trans hunroll hrhsR.symm
+
+#print axioms chord3_roles_split
+
 end GkatThreeLoop
