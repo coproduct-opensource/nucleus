@@ -137,7 +137,9 @@ open Classical in
     around the cycle without rank increase — at each cycle atom its firing
     target realizes the next orbit language at the same or lower rank. -/
 theorem realizer_propagate (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -150,11 +152,13 @@ theorem realizer_propagate (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
     ∃ w', autLang (genW T) (trimAut aut) w'
         = autLang (genW T) (trimAut aut) (nxtIter nxt (j + steps) u₀)
       ∧ rank w' ≤ rank w := by
-  have hdecT : ∀ s, ∀ e ∈ (trimAut aut).trans s,
+  have hdecT : ∀ s (α : T → Bool), ∀ e ∈ (trimAut aut).trans s,
+      bval (genW T) e.1 α = true →
       e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
-    intro s e he
-    obtain ⟨g₀, hg₀⟩ := trimList_target_mem aut (aut.trans s) .zero e he
-    exact hdec s (g₀, e.2.1, e.2.2) hg₀
+    intro s α e he hb
+    obtain ⟨g₀, hg₀, himp⟩ := trimList_target_mem_fires aut (aut.trans s)
+      .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀ ⟨α, himp α hb⟩
   intro steps
   induction steps with
   | zero =>
@@ -190,10 +194,10 @@ theorem realizer_propagate (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
               ((a, γ) :: l) :=
           iff_of_eq (congrFun hw (α, (a, γ) :: l))
         exact h1.trans (h3.trans h2.symm)
-      obtain ⟨ea, hea, -, heat⟩ := firstMatch_mem (genW T) hstepW
+      obtain ⟨ea, hea, hbea, -, heat⟩ := firstMatch_mem_fires (genW T) hstepW
       have heat' : ea.2.2 = v := heat
       have hvrank : rank v ≤ rank w := by
-        rcases hdecT w ea hea with hEq | hLt
+        rcases hdecT w α ea hea hbea with hEq | hLt
         · rw [← heat', hEq, hnxt_rank]
           exact Nat.le_refl _
         · rw [heat'] at hLt
@@ -208,7 +212,9 @@ open Classical in
     a minimal realizer of its own language, every orbit class sits at exactly
     the basepoint's rank. -/
 theorem cycle_level_min (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -272,19 +278,23 @@ open Classical in
 /-- **MIN-LEVEL FIRING**: a firing whose target's rank is not below the
     source's must land exactly on the `nxt`-successor. -/
 theorem min_fire (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     {s v : S} {α : T → Bool} {a : A}
     (hstep : autStep (genW T) (trimAut aut) s α = some (a, v))
     (hvmin : rank s ≤ rank v) :
     v = nxt s := by
-  have hdecT : ∀ s, ∀ e ∈ (trimAut aut).trans s,
+  have hdecT : ∀ s (α : T → Bool), ∀ e ∈ (trimAut aut).trans s,
+      bval (genW T) e.1 α = true →
       e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
-    intro s e he
-    obtain ⟨g₀, hg₀⟩ := trimList_target_mem aut (aut.trans s) .zero e he
-    exact hdec s (g₀, e.2.1, e.2.2) hg₀
-  obtain ⟨ea, hea, -, heat⟩ := firstMatch_mem (genW T) hstep
+    intro s α e he hb
+    obtain ⟨g₀, hg₀, himp⟩ := trimList_target_mem_fires aut (aut.trans s)
+      .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀ ⟨α, himp α hb⟩
+  obtain ⟨ea, hea, hbea, -, heat⟩ := firstMatch_mem_fires (genW T) hstep
   have heat' : ea.2.2 = v := heat
-  rcases hdecT s ea hea with hEq | hLt
+  rcases hdecT s α ea hea hbea with hEq | hLt
   · exact heat'.symm.trans hEq
   · rw [heat'] at hLt
     omega
@@ -295,7 +305,9 @@ open Classical in
     `nxt`-successors with equal languages — so the quotient successor is a
     function of the class. -/
 theorem class_succ_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     {s₁ s₂ : S} {α : T → Bool} {a : A}
     (hL : autLang (genW T) (trimAut aut) s₁
@@ -416,7 +428,9 @@ theorem rep_lang_congr (aut : GAut S A T) {x y : S}
 open Classical in
 /-- Orbit levels, unbounded index. -/
 theorem cycle_level_all (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -441,7 +455,9 @@ open Classical in
     generates the SAME orbit of languages, shifted — the key to canonical
     basepoints. -/
 theorem orbit_lang_determined (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -501,7 +517,9 @@ open Classical in
 /-- **QUOTIENT SUCCESSOR WELL-DEFINEDNESS**: equal orbit classes have equal
     successor classes. -/
 theorem qsucc_well_defined (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -551,7 +569,9 @@ theorem qsucc_well_defined (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 open Classical in
 /-- Iterated successor well-definedness. -/
 theorem qsucc_iter (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -648,7 +668,9 @@ open Classical in
 /-- **ORBIT INJECTIVITY**: below the first-return period, orbit classes are
     pairwise distinct. -/
 theorem qorb_injective (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -709,7 +731,9 @@ open Classical in
 /-- Rank minimality transports along the orbit: every shifted basepoint is a
     minimal-rank realizer of its own language. -/
 theorem shift_min (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -864,7 +888,9 @@ open Classical in
     minimal-realizer rank, or targets the NEXT orbit class
     `⟦nxtIter (j+1) u₀⟧`. -/
 theorem orbit_dichotomy (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -928,7 +954,9 @@ open Classical in
 /-- **DESCENT-FREE PINNING**: an orbit class with no descending arms has
     every cleaned arm pinned to self or the next orbit class. -/
 theorem orbit_arms_pinned (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -970,7 +998,9 @@ open Classical in
     `m j := ⟦nxtIter j u₀⟧` at length `qPeriod`. -/
 theorem orbit_arms_pinned_nxtAt (aut : GAut S A T) (rank : S → Nat)
     (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1100,7 +1130,9 @@ open Classical in
 /-- Rank equality along the orbit cycle: every class sits at level
     `rank u₀`. -/
 theorem orbit_rank_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1124,7 +1156,9 @@ open Classical in
 /-- **PORT DESCENT**: the port's non-self, non-next arms all strictly
     descend in minimal-realizer rank. -/
 theorem orbit_port_descent (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1167,7 +1201,9 @@ open Classical in
     map `m j := ⟦nxtIter j u₀⟧` at length `qPeriod`.  The fragment supplies
     only interior descent-freeness and interior empty-word-freeness. -/
 theorem orbit_cy_bundle (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1280,7 +1316,9 @@ open Classical in
 /-- **ROTATION INVARIANCE OF THE PERIOD**: every shifted basepoint sees the
     same first-return period. -/
 theorem qPeriod_shift (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1340,7 +1378,9 @@ open Classical in
 /-- **WITNESS INVARIANCE OF THE ENUMERATION**: any same-rank realizer of an
     orbit language enumerates the SAME classes, shifted. -/
 theorem orbit_m_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1365,7 +1405,9 @@ open Classical in
     an orbit language has the SAME first-return period — regardless of its
     own source period `k₁`. -/
 theorem qPeriod_congr (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1426,7 +1468,9 @@ theorem qPeriod_congr (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 open Classical in
 /-- The class sequence is `qPeriod`-periodic. -/
 theorem qorb_period_all (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1451,7 +1495,9 @@ open Classical in
 /-- **CLASS-LEVEL MOD REDUCTION**: every orbit index reduces modulo the
     first-return period. -/
 theorem qorb_qmod (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1493,7 +1539,9 @@ open Classical in
 /-- **CROSS-WITNESS TRACKING**: orbits of different witnesses that meet in
     one class track together forever. -/
 theorem orbit_track_from (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1536,7 +1584,9 @@ open Classical in
 /-- **ORBIT-CLOSURE OF `InOrbit`**: a witness containing one class of an
     orbit contains them all. -/
 theorem inOrbit_track (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1592,7 +1642,9 @@ noncomputable def qpos (aut : GAut S A T) (nxt : S → S) (u₀ : S) (k : Nat)
 
 open Classical in
 theorem qpos_spec (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1621,7 +1673,9 @@ open Classical in
 /-- **POSITION COHERENCE**: the canonical position of the `j`-th orbit
     class is `j` itself, for `j` below the period. -/
 theorem qpos_qm (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1696,7 +1750,9 @@ open Classical in
     covering orbit list has a solvable canonical quotient. -/
 theorem rankNxt_quot_solvesBA (aut : GAut S A T) (rank : S → Nat)
     (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),
@@ -1837,7 +1893,9 @@ open Classical in
     uniquely to its successor at every atom gives its quotient class no
     descending arms. -/
 theorem interior_no_desc (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s)
     (hnxt_rank : ∀ s, rank (nxt s) = rank s)
     (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
       ∃ (α : T → Bool) (a : A),

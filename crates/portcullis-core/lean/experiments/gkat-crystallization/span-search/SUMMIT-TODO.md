@@ -581,3 +581,26 @@ one guard-1 arm). Fragment obligations for chainloops_complete now:
                  hstep_uniq at interiors, hnoeps at interiors
   global: hdec/hnxt_rank/hfire, cover (minRank realizer case-split)
 Next: ChainLoops inductive + chain-Thompson structural facts.
+
+## THE FIRED-ARM WEAKENING (loop iteration 17)
+
+Obstacle found while reading loopInitialized: the Thompson loop construction
+adds feedback arms to EVERY body state (guard hlt(state) ∧ b ∧ init-guard).
+At interior chain positions hlt is semantically empty, so these arms never
+fire — but they exist syntactically, targeting the loop head, violating
+hdec as stated (target ≠ nxt, equal rank).
+
+Fix: hdec is only ever CONSUMED on arms found by firstMatch — arms that
+fired at a generic atom. Weakened hdec across the entire orbit layer to
+  ∀ s, ∀ e ∈ aut.trans s, (∃ α, bval (genW T) e.1 α = true) → dichotomy
+- trimList_target_mem_fires: trim membership + the original guard fires
+  wherever the trimmed guard does (trim guards are g ∧ ¬D conjunctions)
+- firstMatch_mem_fires: firstMatch returns a FIRING arm
+- 27 signatures weakened in GkatOrbitProofs + quot_cycle_dichotomy;
+  3 hdecT consumption sites patched with firing witnesses.
+ZERO new errors — every proof in the layer survived the weakening intact.
+
+Phantom feedback arms of loopInitialized are now exempt: the fragment
+discharges them by refuting the firing witness (their guards are
+semantically empty). The hdec obligation is now constructively provable
+for chain Thompson automata.

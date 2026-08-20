@@ -29,12 +29,76 @@ open GkatLoopFree GkatAtomicLoop
 variable {S A T : Type}
 
 open Classical in
+private theorem trimList_cons₃ (aut : GAut S A T) (g : BExp T) (a : A)
+    (t : S) (rest : List (BExp T × A × S)) (D : BExp T) :
+    trimList aut ((g, a, t) :: rest) D
+      = if Live aut t then (.and g (.not D), a, t) :: trimList aut rest D
+        else trimList aut rest (.or D g) := rfl
+
+open Classical in
+/-- Strengthened trim membership: the original guard fires wherever the
+    trimmed guard does. -/
+theorem trimList_target_mem_fires (aut : GAut S A T) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T), ∀ e ∈ trimList aut L D,
+      ∃ g₀, (g₀, e.2.1, e.2.2) ∈ L ∧
+        ∀ α : T → Bool, bval (genW T) e.1 α = true →
+          bval (genW T) g₀ α = true := by
+  intro L
+  induction L with
+  | nil => intro D e he; exact nomatch he
+  | cons hd rest ih =>
+      intro D e he
+      obtain ⟨g, a, t⟩ := hd
+      rw [trimList_cons₃] at he
+      by_cases hl : Live aut t
+      · rw [if_pos hl] at he
+        rcases List.mem_cons.mp he with heq | hmem
+        · subst heq
+          refine ⟨g, by simp, ?_⟩
+          intro α hb
+          have hb' : (bval (genW T) g α
+              && !(bval (genW T) D α)) = true := hb
+          rw [Bool.and_eq_true] at hb'
+          exact hb'.1
+        · obtain ⟨g₀, hg₀, himp⟩ := ih D e hmem
+          exact ⟨g₀, by simp [hg₀], himp⟩
+      · rw [if_neg hl] at he
+        obtain ⟨g₀, hg₀, himp⟩ := ih (.or D g) e he
+        exact ⟨g₀, by simp [hg₀], himp⟩
+
+open Classical in
+/-- `firstMatch` returns a firing arm. -/
+theorem firstMatch_mem_fires {Atom : Type} (V : T → Atom → Bool) {x : Atom}
+    {L : List (BExp T × A × S)} {y : A × S}
+    (h : firstMatch V x L = some y) :
+    ∃ e ∈ L, bval V e.1 x = true ∧ e.2.1 = y.1 ∧ e.2.2 = y.2 := by
+  induction L with
+  | nil => exact nomatch h
+  | cons hd rest ih =>
+      obtain ⟨g, a, t⟩ := hd
+      rw [show firstMatch V x ((g, a, t) :: rest)
+          = if bval V g x = true then some (a, t)
+            else firstMatch V x rest from rfl] at h
+      by_cases hb : bval V g x = true
+      · rw [if_pos hb] at h
+        have hinj := Option.some.inj h
+        refine ⟨(g, a, t), by simp, hb, ?_, ?_⟩
+        · rw [← hinj]
+        · rw [← hinj]
+      · rw [if_neg hb] at h
+        obtain ⟨e, he, h1, h2, h3⟩ := ih h
+        exact ⟨e, by simp [he], h1, h2, h3⟩
+
+
+open Classical in
 /-- **THE CYCLE DICHOTOMY**: each state of the cleaned canonical quotient of a
     rank-modulo-simple-cycle automaton carries a minimal realizer `u` such
     that every cleaned arm is a self-arm, strictly descends in minimal-realizer
     rank, or targets exactly the class of `nxt u`. -/
 theorem quot_cycle_dichotomy (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
-    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s) :
+    (hdec : ∀ s, ∀ e ∈ aut.trans s,
+      (∃ α : T → Bool, bval (genW T) e.1 α = true) →
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s) :
     ∀ c ∈ (bisimQuotAut (trimAut aut)).states,
     ∃ u, rank u ≤ minRank (trimAut aut) rank c ∧
       autLang (genW T) (trimAut aut) u = autLang (genW T) (trimAut aut) c ∧
@@ -42,11 +106,13 @@ theorem quot_cycle_dichotomy (aut : GAut S A T) (rank : S → Nat) (nxt : S → 
         e.2.2 = c ∨
         minRank (trimAut aut) rank e.2.2 < minRank (trimAut aut) rank c ∨
         e.2.2 = bisimRep (trimAut aut) (nxt u) := by
-  have hdecT : ∀ s, ∀ e ∈ (trimAut aut).trans s,
+  have hdecT : ∀ s (α : T → Bool), ∀ e ∈ (trimAut aut).trans s,
+      bval (genW T) e.1 α = true →
       e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
-    intro s e he
-    obtain ⟨g₀, hg₀⟩ := trimList_target_mem aut (aut.trans s) .zero e he
-    exact hdec s (g₀, e.2.1, e.2.2) hg₀
+    intro s α e he hb
+    obtain ⟨g₀, hg₀, himp⟩ := trimList_target_mem_fires aut (aut.trans s)
+      .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀ ⟨α, himp α hb⟩
   intro c hc
   obtain ⟨u, hule, huL⟩ := minRank_spec (trimAut aut) rank c
   refine ⟨u, hule, huL, ?_⟩
@@ -123,9 +189,9 @@ theorem quot_cycle_dichotomy (aut : GAut S A T) (rank : S → Nat) (nxt : S → 
         iff_of_eq (congrFun huL (α, (e.2.1, β) :: w))
       exact hDU.trans (hcu.trans hDc.symm)
     -- v is an arm target of u: the cycle successor or strictly lower
-    obtain ⟨ea, hea, -, heat⟩ := firstMatch_mem (genW T) hstepU
+    obtain ⟨ea, hea, hbea, -, heat⟩ := firstMatch_mem_fires (genW T) hstepU
     have heat' : ea.2.2 = v := heat
-    rcases hdecT u ea hea with hEq | hLt
+    rcases hdecT u α ea hea hbea with hEq | hLt
     · -- the cycle case: the target IS the class of `nxt u`
       refine Or.inr (Or.inr ?_)
       have hvn : v = nxt u := heat'.symm.trans hEq
