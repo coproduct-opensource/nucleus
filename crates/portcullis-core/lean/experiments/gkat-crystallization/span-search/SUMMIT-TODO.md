@@ -1750,3 +1750,38 @@ pairings (lang Pl = lang Pr etc. from the ULE hypothesis via word
 analysis), bisimRep computations, the concrete classifier + bundle
 discharge (cleanList phantom-drop), and assembly into
 `threeLoops_solvable` + `threeloops_complete`.
+
+## Iteration 63 — COURSE CORRECTION: the true chord witness
+
+**Discovery**: `wh b (p; (wh c q); r)` is NOT a chord witness. The branch
+state (post-p) and the inner-loop head have IDENTICAL residuals
+(`(wh c q); r; loop`) — an inner while at the head of its residual always
+re-enters at the branch position, so the two states are bisimilar and the
+canonical quotient collapses to the walked 2-cycle shape (port + one
+self-loop class). Its completeness follows from the WALKED machinery; it
+never exercises the chord assembly. This holds for ANY inner body:
+skippable inner whiles are quotient-invisible. The census 2% must be
+realized by branches that rejoin LATER than the skip.
+
+**The true witness**: `chordLoop b c p x y := wh b (p; ite c (x; y) y)`.
+Thompson states: P = post-p (branch), X = post-x (mid), Yl/Yr = post-y
+(collapse into the port with init). Quotient: port → P → X → port with
+the CHORD P → port. P maps per-atom onto TWO forward positions — beyond
+WalkedDec — and the cluster fits `chord_assembly_roles` exactly, with
+the inner state (X) having a semantically-zero self-guard (the assembly
+never required an actual self-loop: `wh 0 body ≡ skip` rides through
+salomaaE with E(gBody)=0 trivially).
+
+Grounded in GkatThreeLoopProofs.lean (14 lemmas, all first-try, arm
+lists via #reduce): chordBody/chordLoop/chordLoopAut,
+chord_step_p_enter (c: detour via x), chord_step_p_skip (¬c: THE CHORD,
+y straight to the skip-port), chord_step_x (unconditional y → detour
+port), chord_step_yl/yr_feed/none, chord_hlt_p/x (silent),
+chord_hlt_yl/yr (¬b), chord_step_init_enter/none.
+
+Note: the old threeLoop fragment lemmas (iterations 61–62) remain valid
+and useful as a walked-stratum instance; the sixth-theorem chain now
+proceeds on chordLoop. Next: liveness + trim transparency for the
+chordLoop sum, then Yl~Yr~init~port language identifications, then
+separations (port ≠ P ≠ X) under sat(¬b), sat(b∧c), and cross-side
+pairings.

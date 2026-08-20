@@ -1591,4 +1591,224 @@ theorem threeLoop_none_lang_r (b c : BExp T) (p q r : A)
 #print axioms threeLoop_none_lang
 #print axioms threeLoop_none_lang_r
 
+/-! ## THE TRUE CHORD WITNESS
+
+    Course correction: in `wh b (p; (wh c q); r)` the branch state and
+    the inner-loop head have IDENTICAL residuals (`(wh c q); r; loop`),
+    so they are bisimilar and the canonical quotient collapses to the
+    walked 2-cycle shape — that program is NOT beyond the walked
+    discipline.  The genuine frontier witness makes the entered branch
+    rejoin LATER than the skip:
+
+        `chordLoop b c p x y  :=  wh b (p; ite c (x; y) y)`
+
+    Quotient classes: port (= both post-`y` states and init), the branch
+    `P` (post-`p`), and the mid state `X` (post-`x`).  Cycle
+    port → P → X → port with the CHORD P → port — the branch state maps
+    per-atom onto TWO forward positions, beyond `WalkedDec`, and exactly
+    the `chord_assembly_roles` cluster with the inner state's self-guard
+    semantically zero. -/
+
+/-- The chord witness body: a two-action detour or a straight skip. -/
+def chordBody (c : BExp T) (p x y : A) : Exp A T :=
+  .seq (.act p) (.ite c (.seq (.act x) (.act y)) (.act y))
+
+/-- The chord witness program. -/
+def chordLoop (b c : BExp T) (p x y : A) : Exp A T :=
+  .wh b (chordBody c p x y)
+
+/-- Its loop automaton.  States: `inl () = P` (post-`p`, the branch),
+    `inr (inl (inl ())) = X` (post-`x`), `inr (inl (inr ())) = Yl`
+    (post-`y`, detour), `inr (inr ()) = Yr` (post-`y`, skip). -/
+def chordLoopAut (b c : BExp T) (p x y : A) :
+    InitializedGAut (Sum Unit (Sum (Sum Unit Unit) Unit)) A T :=
+  loopInitialized b (certifiedThompson A T (chordBody c p x y)).aut
+
+/-- **THE BRANCH, ENTER**: at a `c`-atom, `P` takes the detour. -/
+theorem chord_step_p_enter (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hc : bval (genW T) c α = true) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans (Sum.inl ()))
+      = some (x, Sum.inr (Sum.inl (Sum.inl ()))) := by
+  show (if (true && (bval (genW T) c α && true)) = true
+    then some (x, Sum.inr (Sum.inl (Sum.inl ())))
+    else _) = some (x, Sum.inr (Sum.inl (Sum.inl ())))
+  rw [hc]
+  rfl
+
+/-- **THE CHORD**: at a `¬c`-atom, `P` skips straight to a port state. -/
+theorem chord_step_p_skip (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hc : bval (genW T) c α = false) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans (Sum.inl ()))
+      = some (y, Sum.inr (Sum.inr ())) := by
+  show (if (true && (bval (genW T) c α && true)) = true
+    then some (x, Sum.inr (Sum.inl (Sum.inl ())))
+    else if (true && (bval (genW T) c α && (false && true))) = true
+      then some (y, Sum.inr (Sum.inl (Sum.inr ())))
+      else if (true && (!(bval (genW T) c α) && true)) = true
+        then some (y, Sum.inr (Sum.inr ()))
+        else _) = some (y, Sum.inr (Sum.inr ()))
+  rw [hc]
+  rfl
+
+/-- The mid state fires `y` to the detour port at EVERY atom. -/
+theorem chord_step_x (b c : BExp T) (p x y : A) (α : T → Bool) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans
+          (Sum.inr (Sum.inl (Sum.inl ()))))
+      = some (y, Sum.inr (Sum.inl (Sum.inr ()))) := by
+  show (if (true && true) = true
+    then some (y, Sum.inr (Sum.inl (Sum.inr ())))
+    else _) = some (y, Sum.inr (Sum.inl (Sum.inr ())))
+  rfl
+
+/-- Detour-port feedback at a `b`-atom. -/
+theorem chord_step_yl_feed (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans
+          (Sum.inr (Sum.inl (Sum.inr ()))))
+      = some (p, Sum.inl ()) := by
+  show (if (true && (bval (genW T) b α && true)) = true
+    then some (p, Sum.inl ())
+    else _) = some (p, Sum.inl ())
+  rw [hb]
+  rfl
+
+/-- Detour-port rest at a `¬b`-atom. -/
+theorem chord_step_yl_none (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = false) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans
+          (Sum.inr (Sum.inl (Sum.inr ()))))
+      = none := by
+  show (if (true && (bval (genW T) b α && true)) = true
+    then some (p, Sum.inl ())
+    else if (true && (bval (genW T) b α
+        && (false && (bval (genW T) c α && true)))) = true
+      then some (x, Sum.inr (Sum.inl (Sum.inl ())))
+      else if (true && (bval (genW T) b α
+          && (false && (bval (genW T) c α && (false && true))))) = true
+        then some (y, Sum.inr (Sum.inl (Sum.inr ())))
+        else if (true && (bval (genW T) b α
+            && (false && (!(bval (genW T) c α) && true)))) = true
+          then some (y, Sum.inr (Sum.inr ()))
+          else none) = none
+  rw [hb]
+  cases bval (genW T) c α <;> rfl
+
+/-- Skip-port feedback at a `b`-atom. -/
+theorem chord_step_yr_feed (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans (Sum.inr (Sum.inr ())))
+      = some (p, Sum.inl ()) := by
+  show (if (true && (bval (genW T) b α && true)) = true
+    then some (p, Sum.inl ())
+    else _) = some (p, Sum.inl ())
+  rw [hb]
+  rfl
+
+/-- Skip-port rest at a `¬b`-atom. -/
+theorem chord_step_yr_none (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = false) :
+    firstMatch (genW T) α
+        ((chordLoopAut b c p x y).core.trans (Sum.inr (Sum.inr ())))
+      = none := by
+  show (if (true && (bval (genW T) b α && true)) = true
+    then some (p, Sum.inl ())
+    else if (true && (bval (genW T) b α
+        && (false && (bval (genW T) c α && true)))) = true
+      then some (x, Sum.inr (Sum.inl (Sum.inl ())))
+      else if (true && (bval (genW T) b α
+          && (false && (bval (genW T) c α && (false && true))))) = true
+        then some (y, Sum.inr (Sum.inl (Sum.inr ())))
+        else if (true && (bval (genW T) b α
+            && (false && (!(bval (genW T) c α) && true)))) = true
+          then some (y, Sum.inr (Sum.inr ()))
+          else none) = none
+  rw [hb]
+  cases bval (genW T) c α <;> rfl
+
+/-- The branch state never halts. -/
+theorem chord_hlt_p (b c : BExp T) (p x y : A) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt (Sum.inl ())) α = false := by
+  intro α
+  show ((true && ((bval (genW T) c α && (false && false))
+      || (!(bval (genW T) c α) && false)))
+    && !(bval (genW T) b α)) = false
+  cases bval (genW T) c α <;> cases bval (genW T) b α <;> rfl
+
+/-- The mid state never halts. -/
+theorem chord_hlt_x (b c : BExp T) (p x y : A) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt
+          (Sum.inr (Sum.inl (Sum.inl ())))) α = false := by
+  intro α
+  show ((true && false) && !(bval (genW T) b α)) = false
+  cases bval (genW T) b α <;> rfl
+
+/-- The detour port halts exactly at `¬b`. -/
+theorem chord_hlt_yl (b c : BExp T) (p x y : A) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt
+          (Sum.inr (Sum.inl (Sum.inr ())))) α
+        = !(bval (genW T) b α) := by
+  intro α
+  show (true && !(bval (genW T) b α)) = !(bval (genW T) b α)
+  cases bval (genW T) b α <;> rfl
+
+/-- The skip port halts exactly at `¬b`. -/
+theorem chord_hlt_yr (b c : BExp T) (p x y : A) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) α
+        = !(bval (genW T) b α) := by
+  intro α
+  show (true && !(bval (genW T) b α)) = !(bval (genW T) b α)
+  cases bval (genW T) b α <;> rfl
+
+/-- Init enter at a `b`-atom. -/
+theorem chord_step_init_enter (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    firstMatch (genW T) α ((chordLoopAut b c p x y).initTrans)
+      = some (p, Sum.inl ()) := by
+  show (if (bval (genW T) b α && true) = true
+    then some (p, Sum.inl ())
+    else _) = some (p, Sum.inl ())
+  rw [hb]
+  rfl
+
+/-- Init rest at a `¬b`-atom. -/
+theorem chord_step_init_none (b c : BExp T) (p x y : A)
+    (α : T → Bool) (hb : bval (genW T) b α = false) :
+    firstMatch (genW T) α ((chordLoopAut b c p x y).initTrans)
+      = none := by
+  show (if (bval (genW T) b α && true) = true
+    then some (p, Sum.inl ())
+    else if (bval (genW T) b α
+        && (false && (bval (genW T) c α && true))) = true
+      then some (x, Sum.inr (Sum.inl (Sum.inl ())))
+      else if (bval (genW T) b α
+          && (false && (bval (genW T) c α && (false && true)))) = true
+        then some (y, Sum.inr (Sum.inl (Sum.inr ())))
+        else if (bval (genW T) b α
+            && (false && (!(bval (genW T) c α) && true))) = true
+          then some (y, Sum.inr (Sum.inr ()))
+          else none) = none
+  rw [hb]
+  cases bval (genW T) c α <;> rfl
+
+#print axioms chord_step_p_enter
+#print axioms chord_step_p_skip
+#print axioms chord_step_x
+#print axioms chord_step_yl_none
+#print axioms chord_hlt_p
+#print axioms chord_step_init_none
+
 end GkatThreeLoop
