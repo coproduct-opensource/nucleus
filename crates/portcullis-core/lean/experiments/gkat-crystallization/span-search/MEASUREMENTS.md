@@ -62,6 +62,11 @@ here is machine-measured; kernel-checked claims say so explicitly.
   guards need only be subsets of the header's exit guard.  Classifier v3: candidate
   reclassifies ring-only, NA=4 forge neither=0 all strata, k=6 80/80 unchanged.
   Paper + classifier verified; Lean certification awaits the T=2 support layer.**
+- **CERTIFIED (commit 463e54cd): GkatMixPilotProofs — the candidate's UA-free
+  equivalence kernel-checked via subset parking, first certificate at two primitive
+  tests.  Emitted from Rust (emit_mix_pilot, PAD_EMIT_MIX), first-emission compile.
+  Support: GkatCertSupportBoolProofs (Tst=Bool layer) + ite_or_split +
+  test_header_absorb_sub (axiom-free).**
 - **Union conjunct at NA=4 K=2: 214,635 / 214,635 (100.0%), residue ZERO**
   (runs/na4k2j.txt).  only-elimination 3,104; only-Thompson 0 — elimination at some
   merged-start congruence covers the entire space by itself.  Need-a-KA-step: 0 (no
