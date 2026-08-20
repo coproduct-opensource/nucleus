@@ -4524,6 +4524,323 @@ fn load_closure<const NA: usize>(path: &str, maxk: usize) -> Option<(Vec<Aut<NA>
 /// only under-counts coverage, so "neither" is a conservative residue-candidate list.
 /// Env: PAD_FORGE_N (target pairs, default 2000), PAD_FORGE_DEPTH (default 6),
 /// PAD_FORGE_KMIN/KMAX (default 3/8).
+
+/// PAD_EMIT_MIX: emit the complete Lean certificate for a subset-parking 2-ring pair
+/// (the mixed-halt frontier shape) over Tst = Bool.  Returns false if the quotient does
+/// not match the supported shape.  Paths are translated from construction order to the
+/// canon numbering the sum uses (the python pilot's misalignment bug, fixed at the
+/// source: the harness owns canon_order).
+#[allow(clippy::too_many_arguments)]
+fn emit_mix_pilot<const NA: usize>(path: &str, ae: &str, be: &str,
+    astr: &Aut<NA>, bstr: &Aut<NA>, apaths: &[String], bpaths: &[String],
+    su: &Aut<NA>, q: &Aut<NA>, blk: &[usize; MAXK], nb: usize) -> bool {
+    if NA != 4 || nb != 2 { return false; }
+    // shape: header h (halt = join, one self atom, one step atom to s); s (two self
+    // atoms, one exit atom to h, halt a proper subset of the join)
+    let join = q.hl[0] | q.hl[1];
+    let h = if q.hl[0] == join { 0usize } else if q.hl[1] == join { 1 } else { return false };
+    let s = 1 - h;
+    if q.hl[s] & !join != 0 || q.hl[s] == join { return false; }
+    let selfa: Vec<usize> = (0..NA).filter(|&a| q.st[h][a] as usize == h + 1).collect();
+    let stepa: Vec<usize> = (0..NA).filter(|&a| q.st[h][a] as usize == s + 1).collect();
+    if selfa.len() != 1 || stepa.len() != 1 { return false; }
+    let sself: Vec<usize> = (0..NA).filter(|&a| q.st[s][a] as usize == s + 1).collect();
+    let sexit: Vec<usize> = (0..NA).filter(|&a| q.st[s][a] as usize == h + 1).collect();
+    if sself.len() != 2 || sexit.len() != 1 { return false; }
+    let (ha, pa) = (selfa[0], stepa[0]);
+    let (r1, r2, xa) = (sself[0], sself[1], sexit[0]);
+    let m = |a: usize| mask_lean_gen::<NA>(1u8 << a);
+    let g_step = m(pa);
+    let g_self = m(ha);
+    let g_r1 = m(r1);
+    let g_r2 = m(r2);
+    let g_x = m(xa);
+    let g_ch = mask_lean_gen::<NA>(q.hl[h]);
+    let g_cs = mask_lean_gen::<NA>(q.hl[s]);
+    // sum-index -> (lean term, class): 0 = e-init; canon-core j -> 1+j; then f side
+    let ka = astr.k as usize + 1;
+    let aord = canon_order(astr);
+    let bord = canon_order(bstr);
+    let mut terms: Vec<(String, usize)> = Vec::new();
+    terms.push(("(Sum.inl none)".to_string(), blk[0]));
+    for j in 0..astr.k as usize {
+        let i = (0..astr.k as usize).find(|&i| aord[i] as usize == j).unwrap();
+        terms.push((format!("(Sum.inl (some {}))", apaths[i]), blk[1 + j]));
+    }
+    terms.push(("(Sum.inr none)".to_string(), blk[ka]));
+    for j in 0..bstr.k as usize {
+        let i = (0..bstr.k as usize).find(|&i| bord[i] as usize == j).unwrap();
+        terms.push((format!("(Sum.inr (some {}))", bpaths[i]), blk[ka + 1 + j]));
+    }
+    // quotient step table per class per atom
+    let qstep = |c: usize, a: usize| -> Option<usize> {
+        if q.st[c][a] == 0 { None } else { Some(q.st[c][a] as usize - 1) }
+    };
+    let mut out = String::new();
+    let mut w = |t: &str| { out.push_str(t); out.push('\n'); };
+    w("import GkatCertSupportBoolProofs");
+    w("import GkatRingSupportProofs");
+    w("import GkatDeadExitElimProofs");
+    w("");
+    w("/-! # GkatMixPilot: the mixed-halt frontier candidate, certified (emitted from Rust;");
+    w("    see emit_mix_pilot in span-search).  Subset parking over Tst = Bool: the interior");
+    w("    halt guard is a proper subset of the header's exit guard.  First certificate at");
+    w("    two primitive tests. -/");
+    w("");
+    w("namespace GkatMixPilot");
+    w("");
+    w("open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatDeadExitElim");
+    w("open GkatCertSupportBool GkatGuardedAlgebra GkatRingSupport GkatResidue");
+    w("");
+    w("abbrev Tst := Bool");
+    w("abbrev Act := Unit");
+    w("def bT1 : BExp Tst := .prim true");
+    w("def bT2 : BExp Tst := .prim false");
+    w("def pA : Exp Act Tst := .act ()");
+    w(&format!("def eP : Exp Act Tst := {ae}"));
+    w(&format!("def fP : Exp Act Tst := {be}"));
+    w("");
+    w("abbrev eAut := (certifiedThompson Act Tst eP).aut.toGAut");
+    w("abbrev fAut := (certifiedThompson Act Tst fP).aut.toGAut");
+    w("abbrev SUM := sumGAut eAut fAut");
+    w("");
+    w("/-! ## Subset-parking solutions -/");
+    w("");
+    w(&format!("def SLs : Exp Act Tst := .wh (.or {g_r1} {g_r2}) pA"));
+    w(&format!("def PKs : Exp Act Tst := .ite {g_x} pA (.test {g_cs})"));
+    w(&format!("def BODY : Exp Act Tst := .ite {g_self} pA (.seq pA (.seq SLs PKs))"));
+    w(&format!("def solH : Exp Act Tst := .seq (.wh (.or {g_step} {g_self}) BODY) (.test {g_ch})"));
+    w("def solS : Exp Act Tst := .seq SLs (.seq PKs solH)");
+    w("");
+    w("/-! ## Guard facts (four-valuation case analysis) -/");
+    w("");
+    w(&format!("private theorem himp_step : GuardImplies {g_step} (.not {g_self}) := by"));
+    w("  intro X W x h");
+    w("  revert h");
+    w("  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]");
+    w(&format!("private theorem himp_selfg : GuardImplies {g_self} {g_self} :="));
+    w("  fun _ _ _ h => h");
+    w(&format!("private theorem himp_park : GuardImplies {g_cs} (.not (.or {g_step} {g_self})) := by"));
+    w("  intro X W x h");
+    w("  revert h");
+    w("  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]");
+    w("");
+    w(&format!("private theorem hsub : ∀ (X : Type) (W : Tst → X → Bool) (x : X),"));
+    w(&format!("    (bval W {g_cs} x && bval W {g_ch} x) = bval W {g_cs} x := by"));
+    w("  intro X W x");
+    w("  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]");
+    w("");
+    w(&format!("private theorem habs_sub : EquivBA (.seq (.test {g_cs}) solH) (.test {g_cs}) :="));
+    w(&format!("  test_header_absorb_sub {g_cs} {g_ch} (.or {g_step} {g_self}) BODY himp_park hsub"));
+    w("");
+    w("/-! ## The two SolvesBA obligations -/");
+    w("");
+    w("theorem ring_EH : EquivBA solH");
+    w(&format!("    (.ite {g_step} (.seq pA solS) (.ite {g_self} (.seq pA solH) (.test {g_ch}))) := by"));
+    w(&format!("  refine EquivBA.trans (EquivBA.base (salomaa_solution_exists (.or {g_step} {g_self}) BODY (.test {g_ch}))) ?_"));
+    w(&format!("  refine EquivBA.trans (ite_or_split {g_step} {g_self} (.seq BODY solH) (.test {g_ch})) ?_"));
+    w(&format!("  have h_step : EquivBA (.seq (.test {g_step}) (.seq BODY solH))"));
+    w(&format!("      (.seq (.test {g_step}) (.seq pA solS)) := by"));
+    w(&format!("    have hstep : EquivBA (.seq (.test {g_step}) BODY)"));
+    w(&format!("        (.seq (.test {g_step}) (.seq pA (.seq SLs PKs))) := by"));
+    w("      refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))");
+    w(&format!("        (EquivBA.base (Equiv.u2 {g_self} pA (.seq pA (.seq SLs PKs))))) ?_"));
+    w("      exact test_seq_ite_of_implies _ _ himp_step");
+    w("    refine EquivBA.trans (seq_under_guard solH hstep) ?_");
+    w("    refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_");
+    w("    refine EquivBA.trans (EquivBA.base (Equiv.s1 pA (.seq SLs PKs) solH)) ?_");
+    w("    exact EquivBA.seq_c (EquivBA.base (Equiv.refl _))");
+    w("      (EquivBA.base (Equiv.s1 SLs PKs solH))");
+    w(&format!("  have h_self : EquivBA (.seq (.test {g_self}) (.seq BODY solH))"));
+    w(&format!("      (.seq (.test {g_self}) (.seq pA solH)) := by"));
+    w(&format!("    have hstep : EquivBA (.seq (.test {g_self}) BODY) (.seq (.test {g_self}) pA) :="));
+    w("      test_seq_ite_of_implies _ _ himp_selfg");
+    w("    exact seq_under_guard solH hstep");
+    w("  exact EquivBA.trans (ite_congr_under_guard h_step)");
+    w("    (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (ite_congr_under_guard h_self))");
+    w("");
+    w("theorem ring_ES : EquivBA solS");
+    w(&format!("    (.ite {g_r1} (.seq pA solS) (.ite {g_r2} (.seq pA solS)"));
+    w(&format!("      (.ite {g_x} (.seq pA solH) (.test {g_cs})))) := by"));
+    w(&format!("  refine EquivBA.trans (EquivBA.base (salomaa_solution_exists (.or {g_r1} {g_r2}) pA"));
+    w("    (.seq PKs solH))) ?_");
+    w(&format!("  refine EquivBA.trans (ite_or_split {g_r1} {g_r2} (.seq pA solS) (.seq PKs solH)) ?_"));
+    w("  refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_");
+    w("  refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_");
+    w(&format!("  refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u5 {g_x} pA (.test {g_cs}) solH))) ?_"));
+    w("  exact EquivBA.ite_c (EquivBA.base (Equiv.refl _)) habs_sub");
+    w("");
+    w("/-! ## Quotient, map, bisimulation -/");
+    w("");
+    w("def QAut : GAut Nat Act Tst where");
+    w("  states := [0, 1]");
+    w("  hlt");
+    w(&format!("    | 0 => {}", if h == 0 { &g_ch } else { &g_cs }));
+    w(&format!("    | 1 => {}", if h == 1 { &g_ch } else { &g_cs }));
+    w("    | _ => BExp.zero");
+    w("  trans");
+    let t_h = format!("[({g_step}, (), {s}), ({g_self}, (), {h})]");
+    let t_s = format!("[({g_r1}, (), {s}), ({g_r2}, (), {s}), ({g_x}, (), {h})]");
+    w(&format!("    | {h} => {t_h}"));
+    w(&format!("    | {s} => {t_s}"));
+    w("    | _ => []");
+    w(&format!("  start := {}", blk[0]));
+    w("");
+    w("def qmap : Sum (Option (certifiedThompson Act Tst eP).State)");
+    w("             (Option (certifiedThompson Act Tst fP).State) → Nat");
+    for (t, c) in terms.iter() {
+        let pat = if t.starts_with("(Sum.inl none)") { ".inl none".to_string() }
+            else if t.starts_with("(Sum.inr none)") { ".inr none".to_string() }
+            else if t.starts_with("(Sum.inl") {
+                format!(".inl (some {})", &t[len_inl(t)..t.len() - 2])
+            } else {
+                format!(".inr (some {})", &t[len_inl(t)..t.len() - 2])
+            };
+        w(&format!("  | {pat} => {c}"));
+    }
+    w("  | _ => 0");
+    w("");
+    w("variable {X : Type} (W : Tst → X → Bool) (x : X)");
+    w("");
+    for c in 0..2usize {
+        for b1 in [false, true] {
+            for b2 in [false, true] {
+                let a = (b1 as usize) | ((b2 as usize) << 1);
+                let res = match qstep(c, a) {
+                    None => "none".to_string(),
+                    Some(t) => format!("some ((), {t})"),
+                };
+                w(&format!("theorem qstep_{c}_{}{} (h1 : W true x = {b1}) (h2 : W false x = {b2}) :",
+                    b1 as u8, b2 as u8));
+                w(&format!("    autStep W QAut {c} x = {res} := by"));
+                w("  rw [autStep_bool, h1, h2]; rfl");
+            }
+        }
+    }
+    w("");
+    w("theorem qmap_bisim : GAutBisim W SUM QAut (fun s q => qmap s = q) := by");
+    w("  rintro s1 s2 rfl");
+    w("  match s1 with");
+    for (idx, (t, c)) in terms.iter().enumerate() {
+        let inner = &t[1..t.len() - 1];
+        w(&format!("  | {inner} =>"));
+        w("      first | simp only [qmap] | skip");
+        w("      refine ⟨fun a => ?_, fun a q s' hst => ?_, fun a q s2' hst => ?_⟩");
+        w(&format!("      · show bval W (SUM.hlt {t}) a = bval W (QAut.hlt {c}) a"));
+        w("        rw [bval_hlt_bool SUM, bval_hlt_bool QAut]");
+        w("        cases hb1 : W true a <;> cases hb2 : W false a <;> rfl");
+        for dir in 0..2 {
+            w("      · rw [autStep_bool] at hst");
+            w("        cases hb1 : W true a with");
+            for b1 in [false, true] {
+                w(&format!("        | {b1} =>"));
+                w("          rw [hb1] at hst");
+                w("          cases hb2 : W false a with");
+                for b2 in [false, true] {
+                    let a = (b1 as usize) | ((b2 as usize) << 1);
+                    let stgt = if su.st[idx][a] == 0 { None } else { Some(su.st[idx][a] as usize - 1) };
+                    let qtgt = qstep(*c, a);
+                    let cv = format!("(fun b (_ : Unit) => cond b {b1} {b2})");
+                    w(&format!("          | {b2} =>"));
+                    w("              rw [hb2] at hst");
+                    if dir == 0 {
+                        match stgt {
+                            None => {
+                                w(&format!("              have hred : autStep {cv} SUM {t} () = none := by rfl"));
+                                w("              rw [hred] at hst");
+                                w("              exact absurd hst (by simp)");
+                            }
+                            Some(tg) => {
+                                let (tt, tc) = &terms[tg];
+                                w(&format!("              have hred : autStep {cv} SUM {t} ()"));
+                                w(&format!("                  = some ((), {tt}) := by rfl"));
+                                w("              rw [hred] at hst");
+                                w("              have hs := congrArg Prod.snd (Option.some.inj hst)");
+                                w("              subst hs");
+                                w(&format!("              exact ⟨{tc}, qstep_{c}_{}{} W a hb1 hb2, rfl⟩",
+                                    b1 as u8, b2 as u8));
+                            }
+                        }
+                    } else {
+                        match qtgt {
+                            None => {
+                                w(&format!("              have hred : autStep {cv} QAut {c} () = none := by rfl"));
+                                w("              rw [hred] at hst");
+                                w("              exact absurd hst (by simp)");
+                            }
+                            Some(qt) => {
+                                let tg = stgt.expect("cert mismatch");
+                                let (tt, tc) = &terms[tg];
+                                assert_eq!(*tc, qt, "class mismatch");
+                                w(&format!("              have hred : autStep {cv} QAut {c} ()"));
+                                w(&format!("                  = some ((), {qt}) := by rfl"));
+                                w("              rw [hred] at hst");
+                                w("              have hs := congrArg Prod.snd (Option.some.inj hst)");
+                                w("              subst hs");
+                                w(&format!("              refine ⟨{tt}, ?_, rfl⟩"));
+                                w("              rw [autStep_bool, hb1, hb2]");
+                                w("              rfl");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    w("");
+    w("def qquot : UniformBehavioralGAutQuotient SUM QAut where");
+    w("  mapState := qmap");
+    w("  maps_states := by");
+    w("    intro s _");
+    w("    match s with");
+    for (t, c) in terms.iter() {
+        let inner = &t[1..t.len() - 1];
+        let mut chain = "(List.Mem.head _)".to_string();
+        for _ in 0..*c { chain = format!("(List.Mem.tail _ {chain})"); }
+        w(&format!("    | {inner} => exact {chain}"));
+    }
+    w("  onto_states := by");
+    w("    intro q hq");
+    w("    match q, hq with");
+    for c in 0..2usize {
+        let (wi, (t, _)) = terms.iter().enumerate().find(|(_, (_, tc))| *tc == c).unwrap();
+        let mem = if wi == 0 {
+            "(List.mem_append.mpr (Or.inl (List.mem_map_of_mem (List.Mem.head _))))".to_string()
+        } else if wi < ka {
+            let inner = &t["(Sum.inl (some ".len()..t.len() - 2];
+            format!("(List.mem_append.mpr (Or.inl (List.mem_map_of_mem (List.Mem.tail _ (List.mem_map_of_mem (GkatTotalization.thompson_states_complete eP {inner}))))))")
+        } else if wi == ka {
+            "(List.mem_append.mpr (Or.inr (List.mem_map_of_mem (List.Mem.head _))))".to_string()
+        } else {
+            let inner = &t["(Sum.inr (some ".len()..t.len() - 2];
+            format!("(List.mem_append.mpr (Or.inr (List.mem_map_of_mem (List.Mem.tail _ (List.mem_map_of_mem (GkatTotalization.thompson_states_complete fP {inner}))))))")
+        };
+        w(&format!("    | {c}, _ => exact ⟨{t}, {mem}, rfl⟩"));
+    }
+    w("  bisim_graph := fun _ W => qmap_bisim W");
+    w("");
+    w("def qsol : Nat → Exp Act Tst");
+    w(&format!("  | {h} => solH"));
+    w(&format!("  | {s} => solS"));
+    w("  | _ => Exp.test BExp.zero");
+    w("");
+    w("theorem qsol_solves : SolvesBA QAut qsol := by");
+    w("  intro st hst");
+    w("  match st, hst with");
+    w(&format!("  | {h}, _ => exact ring_EH"));
+    w(&format!("  | {s}, _ => exact ring_ES"));
+    w("");
+    w("theorem cert : EquivBA eP fP :=");
+    w("  certifiedThompson_uniform_solved_quotient qquot qsol qsol_solves rfl");
+    w("");
+    w("#print axioms cert");
+    w("");
+    w("end GkatMixPilot");
+    std::fs::write(path, out).is_ok()
+}
+
+fn len_inl(_t: &str) -> usize { "(Sum.inl (some ".len() }
+
 fn forge<const NA: usize>(nguards: u8) {
     let npairs: usize = std::env::var("PAD_FORGE_N").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(2000);
@@ -4535,23 +4852,28 @@ fn forge<const NA: usize>(nguards: u8) {
         .and_then(|v| v.parse().ok()).unwrap_or(8);
     let mut st: u64 = 0xDEADBEEFCAFEF00D;
     let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
-    let mut buckets: FxMap<Vec<u8>, Vec<(Aut<NA>, String)>> = FxMap::default();
-    let mut pairs: Vec<(Aut<NA>, Aut<NA>, String, String)> = Vec::new();
+    // bucket entries carry the STRUCTURAL automaton and its paths alongside the canon
+    // form: canon renumbers by BFS, and Lean-side state paths follow construction
+    // order, so the pilot emitter needs canon_order to translate between them.
+    let mut buckets: FxMap<Vec<u8>, Vec<(Aut<NA>, String, Aut<NA>, Vec<String>)>> = FxMap::default();
+    let mut pairs: Vec<(Aut<NA>, Aut<NA>, String, String, Aut<NA>, Aut<NA>, Vec<String>, Vec<String>)> = Vec::new();
     let mut sampled = 0usize;
     let mut tries = 0usize;
     while pairs.len() < npairs && tries < 30_000_000 {
         tries += 1;
-        if let Some((a, ae)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
+        if let Some((a, ae, ap)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
             if (a.k as usize) < kmin || (a.k as usize) > kmax { continue; }
             let c = match canon(&a) { Some(c) => c, None => continue };
             sampled += 1;
             let beh = behaviour(&c);
             let v = buckets.entry(beh).or_default();
-            if v.iter().any(|(x, _)| *x == c) { continue; }
-            for (x, xe) in v.iter() {
-                if pairs.len() < npairs { pairs.push((*x, c, xe.clone(), ae.clone())); }
+            if v.iter().any(|(x, _, _, _)| *x == c) { continue; }
+            for (x, xe, xs, xp) in v.iter() {
+                if pairs.len() < npairs {
+                    pairs.push((*x, c, xe.clone(), ae.clone(), *xs, a, xp.clone(), ap.clone()));
+                }
             }
-            if v.len() < 8 { v.push((c, ae.clone())); }
+            if v.len() < 8 { v.push((c, ae.clone(), a, ap.clone())); }
         }
     }
     println!("FORGE (NA={NA}, depth<={depth}, k in [{kmin},{kmax}]):");
@@ -4559,7 +4881,9 @@ fn forge<const NA: usize>(nguards: u8) {
     println!("  equivalent pairs found: {}", pairs.len());
     let mut by_k: FxMap<usize, (usize, usize, usize, usize)> = FxMap::default();
     let mut shown = 0usize;
-    for (a, b, ae, be) in pairs.iter() {
+    let emit_mix = std::env::var("PAD_EMIT_MIX").ok();
+    let mut emitted_mix = false;
+    for (a, b, ae, be, astr, bstr, apaths, bpaths) in pairs.iter() {
         let ka = match to_gaut(a) { Some(g) => g.k as usize, None => continue };
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let kk = a.k.max(b.k) as usize;
@@ -4580,7 +4904,29 @@ fn forge<const NA: usize>(nguards: u8) {
             }
         }
         if elim_ok { e.1 += 1; }
-        else if ring_ok { e.2 += 1; }
+        else if ring_ok {
+            e.2 += 1;
+            if let Some(path) = emit_mix.as_ref() {
+                if !emitted_mix && NA == 4 {
+                    // smallest merged-start quotient + its class map
+                    let mut best: Option<([usize; MAXK], usize)> = None;
+                    for (b2, nb2) in cands.iter() {
+                        if best.as_ref().map(|x| *nb2 < x.1).unwrap_or(true) {
+                            best = Some((*b2, *nb2));
+                        }
+                    }
+                    if let Some((blk, nb)) = best {
+                        if let Some(q) = quotient_by(&su, &blk, nb) {
+                            if emit_mix_pilot::<NA>(path, ae, be, astr, bstr,
+                                    apaths, bpaths, &su, &q, &blk, nb) {
+                                emitted_mix = true;
+                                println!("  PILOT EMITTED to {path}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
         else {
             e.3 += 1;
             if shown < 6 {
@@ -4663,35 +5009,39 @@ fn product_bisim<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> bool {
 }
 
 fn genexp<const NA: usize>(rnd: &mut impl FnMut() -> u64, depth: usize, nguards: u8,
-    maxk: usize) -> Option<(Aut<NA>, String)> {
+    maxk: usize) -> Option<(Aut<NA>, String, Vec<String>)> {
     let pick = rnd() % if depth == 0 { 2 } else { 5 };
     match pick {
-        0 => Some((a_act(), "pA".to_string())),
+        0 => Some((a_act(), "pA".to_string(), vec!["()".to_string()])),
         1 => {
             let g = (rnd() % nguards as u64) as u8;
-            Some((a_test(g), format!("(Exp.test {})", mask_lean_gen::<NA>(g))))
+            Some((a_test(g), format!("(Exp.test {})", mask_lean_gen::<NA>(g)), Vec::new()))
         }
         2 => {
-            let (l, ls) = genexp(rnd, depth - 1, nguards, maxk)?;
-            let (r, rs) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (l, ls, lp) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (r, rs, rp) = genexp(rnd, depth - 1, nguards, maxk)?;
             let a = a_seq(&l, &r)?;
             if a.k as usize <= maxk {
-                Some((a, format!("(Exp.seq {ls} {rs})")))
+                let mut ps: Vec<String> = lp.iter().map(|q| format!("(Sum.inl {q})")).collect();
+                ps.extend(rp.iter().map(|q| format!("(Sum.inr {q})")));
+                Some((a, format!("(Exp.seq {ls} {rs})"), ps))
             } else { None }
         }
         3 => {
             let g = (rnd() % nguards as u64) as u8;
-            let (l, ls) = genexp(rnd, depth - 1, nguards, maxk)?;
-            let (r, rs) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (l, ls, lp) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (r, rs, rp) = genexp(rnd, depth - 1, nguards, maxk)?;
             let a = a_ite(g, &l, &r)?;
             if a.k as usize <= maxk {
-                Some((a, format!("(Exp.ite {} {ls} {rs})", mask_lean_gen::<NA>(g))))
+                let mut ps: Vec<String> = lp.iter().map(|q| format!("(Sum.inl {q})")).collect();
+                ps.extend(rp.iter().map(|q| format!("(Sum.inr {q})")));
+                Some((a, format!("(Exp.ite {} {ls} {rs})", mask_lean_gen::<NA>(g)), ps))
             } else { None }
         }
         _ => {
             let g = (rnd() % nguards as u64) as u8;
-            let (b, bs) = genexp(rnd, depth - 1, nguards, maxk)?;
-            Some((a_wh(g, &b), format!("(Exp.wh {} {bs})", mask_lean_gen::<NA>(g))))
+            let (b, bs, bp) = genexp(rnd, depth - 1, nguards, maxk)?;
+            Some((a_wh(g, &b), format!("(Exp.wh {} {bs})", mask_lean_gen::<NA>(g)), bp))
         }
     }
 }
@@ -4714,7 +5064,7 @@ fn mixsample<const NA: usize>(nguards: u8, maxk: usize) {
     let mut tries = 0usize;
     while tot < 100_000 && tries < 2_000_000 {
         tries += 1;
-        if let Some((a, _)) = genexp::<NA>(&mut rnd, 5, nguards, maxk) {
+        if let Some((a, _, _)) = genexp::<NA>(&mut rnd, 5, nguards, maxk) {
             if a.k < 2 { continue; }
             if let Some(g) = to_gaut(&a) {
                 tot += 1;

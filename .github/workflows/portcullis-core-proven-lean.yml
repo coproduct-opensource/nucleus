@@ -231,6 +231,8 @@ jobs:
             GkatK6R79 \
             GkatK6R80 \
             GkatRingSupportProofs \
+            GkatCertSupportBoolProofs \
+            GkatMixPilotProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
