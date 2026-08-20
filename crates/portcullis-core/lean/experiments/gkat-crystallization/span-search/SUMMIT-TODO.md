@@ -921,3 +921,31 @@ constructed loop word (needs den-level or automaton-level word
 construction + soundness transport EquivBA -> ULE). Also mixed
 single-action-vs-multi (needs a one-sided-orbit assembly variant or the
 atomic route). NEXT per queue after closure: DE-CHOICE campaign.
+
+## ============================================================
+## THE HYPOTHESIS-FREE FOURTH THEOREM (iteration 28b, "Continue")
+## ============================================================
+
+chainloops_complete_free: UNIFORMLY EQUIVALENT WHILE LOOPS OVER
+MULTI-ACTION CHAIN BODIES ARE PROVABLY EQUAL FROM THE FINITE AXIOMS —
+ARBITRARY GUARDS, no uniqueness axiom, no side conditions beyond the
+Chain2 shape. [propext, Classical.choice, Quot.sound].
+
+  theorem chainloops_complete_free (b1 b2) (hc1 : Chain2 body1)
+    (hc2 : Chain2 body2) (heq : ULE (wh b1 body1) (wh b2 body2)) :
+    EquivBA (wh b1 body1) (wh b2 body2)
+
+Closure pieces (28b): ule_congr_left/right + ule_symm (soundness
+transports over sound_BA); test_test_equiv (uniform test equality =>
+baTest); chain_den_word (a chain denotes its actions between ANY atoms);
+wh_chain_word (a live loop denotes a word with an action);
+test_ne_liveloop (tests never equal live loops); a 9-way classical case
+split (degenerate sides collapse via wh_guard_semantic_one/zero, mixed
+test-vs-live refuted, live-live delegates to chainloops_complete).
+
+THE LADDER (all UA-free, no semantic side conditions):
+  loopfree_complete -> atomicloops_complete -> gloops_complete
+  -> chainloops_complete_free
+
+PIVOT: per the user-approved queue, the loop now moves to the DE-CHOICE
+campaign (plan under QUEUED CAMPAIGN above).

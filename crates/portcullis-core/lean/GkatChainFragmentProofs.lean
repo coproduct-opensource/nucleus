@@ -2638,4 +2638,220 @@ theorem wh_guard_semantic_zero {b : BExp T} (e : Exp A T)
 #print axioms wh_guard_semantic_one
 #print axioms wh_guard_semantic_zero
 
+/-! ## The hypothesis-free closure
+
+    Degenerate sides collapse to tests; tests compare by `baTest`; a test
+    never equals a live loop (which denotes a word with an action); live
+    sides meet `chainloops_complete`.  The guard hypotheses vanish. -/
+
+open Classical in
+private theorem bval_all_false {b : BExp T}
+    (h : ¬ ∃ α : T → Bool, bval (genW T) b α = true) :
+    ∀ α : T → Bool, bval (genW T) b α = false := by
+  intro α
+  cases hb : bval (genW T) b α with
+  | false => rfl
+  | true => exact absurd ⟨α, hb⟩ h
+
+open Classical in
+private theorem bval_all_true {b : BExp T}
+    (h : ¬ ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ α : T → Bool, bval (genW T) b α = true := by
+  intro α
+  cases hb : bval (genW T) b α with
+  | true => rfl
+  | false => exact absurd ⟨α, hb⟩ h
+
+open Classical in
+/-- Soundness transport on the left. -/
+theorem ule_congr_left {e e' f : Exp A T} (h : EquivBA e e')
+    (hu : UniformLanguageEquivalent e f) :
+    UniformLanguageEquivalent e' f :=
+  fun X W gs => (sound_BA (V := W) h gs).symm.trans (hu X W gs)
+
+open Classical in
+/-- Soundness transport on the right. -/
+theorem ule_congr_right {e f f' : Exp A T} (h : EquivBA f f')
+    (hu : UniformLanguageEquivalent e f) :
+    UniformLanguageEquivalent e f' :=
+  fun X W gs => (hu X W gs).trans (sound_BA (V := W) h gs)
+
+open Classical in
+theorem ule_symm {e f : Exp A T} (hu : UniformLanguageEquivalent e f) :
+    UniformLanguageEquivalent f e :=
+  fun X W gs => (hu X W gs).symm
+
+open Classical in
+/-- Uniformly equivalent tests are provably equal. -/
+theorem test_test_equiv {c₁ c₂ : BExp T}
+    (hu : UniformLanguageEquivalent (.test c₁ : Exp A T) (.test c₂)) :
+    EquivBA (.test c₁ : Exp A T) (.test c₂) := by
+  refine EquivBA.baTest ?_
+  intro X W x
+  have h := hu X W (x, [])
+  simp only [den_test] at h
+  cases hb : bval W c₁ x with
+  | true =>
+      have := (h.mp ⟨hb, True.intro⟩).1
+      rw [this]
+  | false =>
+      cases hb2 : bval W c₂ x with
+      | false => rfl
+      | true =>
+          have := (h.mpr ⟨hb2, True.intro⟩).1
+          rw [hb] at this
+          exact nomatch this
+
+open Classical in
+/-- A chain denotes a word of its actions between ANY atoms. -/
+theorem chain_den_word {body : Exp A T} (h : Chain body) :
+    ∀ a target : T → Bool,
+      ∃ l : List (A × (T → Bool)), l ≠ []
+        ∧ den (genW T) body (a, l) ∧ lastAtom a l = target := by
+  induction h with
+  | act p =>
+      intro a target
+      refine ⟨[(p, target)], by simp, ⟨a, target, rfl⟩, rfl⟩
+  | @seq e f he hf ihe ihf =>
+      intro a target
+      obtain ⟨l₁, h1ne, h1den, h1last⟩ := ihe a target
+      obtain ⟨l₂, h2ne, h2den, h2last⟩ := ihf target target
+      refine ⟨l₁ ++ l₂, ?_, ?_, ?_⟩
+      · intro hcontra
+        rcases List.append_eq_nil_iff.mp hcontra with ⟨h1, -⟩
+        exact h1ne h1
+      · refine ⟨l₁, l₂, rfl, h1den, ?_⟩
+        rw [h1last]
+        exact h2den
+      · rw [lastAtom_append, h1last, h2last]
+
+open Classical in
+/-- A live chain loop denotes a word with at least one action. -/
+theorem wh_chain_word {b : BExp T} {body : Exp A T} (hc : Chain body)
+    {αb αe : T → Bool}
+    (hb : bval (genW T) b αb = true)
+    (he : bval (genW T) b αe = false) :
+    ∃ gs : GS A (T → Bool), gs.2 ≠ []
+      ∧ den (genW T) (.wh b body) gs := by
+  obtain ⟨l, hne, hden, hlast⟩ := chain_den_word hc αb αe
+  refine ⟨(αb, l ++ []), ?_, ?_⟩
+  · simp only [List.append_nil]
+    exact hne
+  · exact InLoop.step αb l [] hb hden
+      (by
+        rw [hlast]
+        exact InLoop.exit αe he)
+
+open Classical in
+/-- A test is never uniformly equivalent to a live chain loop. -/
+theorem test_ne_liveloop {c b : BExp T} {body : Exp A T}
+    (hc : Chain body)
+    (hbsat : ∃ α : T → Bool, bval (genW T) b α = true)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hu : UniformLanguageEquivalent (.test c : Exp A T) (.wh b body)) :
+    False := by
+  obtain ⟨αb, hb⟩ := hbsat
+  obtain ⟨αe, he⟩ := hexit
+  obtain ⟨gs, hne, hden⟩ := wh_chain_word hc hb he
+  have := (hu (T → Bool) (genW T) gs).mpr hden
+  exact hne this.2
+
+open Classical in
+/-- **THE HYPOTHESIS-FREE FOURTH THEOREM**: uniformly equivalent while
+    loops over multi-action chain bodies are provably equal from the
+    finite GKAT axioms — ARBITRARY guards, no uniqueness axiom. -/
+theorem chainloops_complete_free (b₁ b₂ : BExp T)
+    {body₁ body₂ : Exp A T}
+    (hc₁ : Chain2 body₁) (hc₂ : Chain2 body₂)
+    (heq : UniformLanguageEquivalent (.wh b₁ body₁) (.wh b₂ body₂)) :
+    EquivBA (.wh b₁ body₁) (.wh b₂ body₂) := by
+  rcases Classical.em (∃ α : T → Bool, bval (genW T) b₁ α = true)
+    with hbsat₁ | hbdeg₁
+  case inr =>
+    have hcol₁ : EquivBA (.wh b₁ body₁ : Exp A T) (.test .one) :=
+      wh_guard_semantic_zero body₁ (bval_all_false hbdeg₁)
+    rcases Classical.em (∃ α : T → Bool, bval (genW T) b₂ α = true)
+      with hbsat₂ | hbdeg₂
+    case inr =>
+      have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T) (.test .one) :=
+        wh_guard_semantic_zero body₂ (bval_all_false hbdeg₂)
+      exact EquivBA.trans hcol₁
+        (EquivBA.trans
+          (test_test_equiv (ule_congr_right hcol₂
+            (ule_congr_left hcol₁ heq)))
+          (EquivBA.symm hcol₂))
+    case inl =>
+      rcases Classical.em (∃ α : T → Bool, bval (genW T) b₂ α = false)
+        with hexit₂ | hnexit₂
+      case inr =>
+        have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T) (.test .zero) :=
+          wh_guard_semantic_one body₂ (bval_all_true hnexit₂)
+        exact EquivBA.trans hcol₁
+          (EquivBA.trans
+            (test_test_equiv (ule_congr_right hcol₂
+              (ule_congr_left hcol₁ heq)))
+            (EquivBA.symm hcol₂))
+      case inl =>
+        exact absurd (ule_congr_left hcol₁ heq)
+          (fun hu => test_ne_liveloop (chain2_chain hc₂) hbsat₂
+            hexit₂ hu)
+  case inl =>
+    rcases Classical.em (∃ α : T → Bool, bval (genW T) b₁ α = false)
+      with hexit₁ | hnexit₁
+    case inr =>
+      have hcol₁ : EquivBA (.wh b₁ body₁ : Exp A T) (.test .zero) :=
+        wh_guard_semantic_one body₁ (bval_all_true hnexit₁)
+      rcases Classical.em (∃ α : T → Bool, bval (genW T) b₂ α = true)
+        with hbsat₂ | hbdeg₂
+      case inr =>
+        have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T) (.test .one) :=
+          wh_guard_semantic_zero body₂ (bval_all_false hbdeg₂)
+        exact EquivBA.trans hcol₁
+          (EquivBA.trans
+            (test_test_equiv (ule_congr_right hcol₂
+              (ule_congr_left hcol₁ heq)))
+            (EquivBA.symm hcol₂))
+      case inl =>
+        rcases Classical.em
+          (∃ α : T → Bool, bval (genW T) b₂ α = false)
+          with hexit₂ | hnexit₂
+        case inr =>
+          have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T)
+              (.test .zero) :=
+            wh_guard_semantic_one body₂ (bval_all_true hnexit₂)
+          exact EquivBA.trans hcol₁
+            (EquivBA.trans
+              (test_test_equiv (ule_congr_right hcol₂
+                (ule_congr_left hcol₁ heq)))
+              (EquivBA.symm hcol₂))
+        case inl =>
+          exact absurd (ule_congr_left hcol₁ heq)
+            (fun hu => test_ne_liveloop (chain2_chain hc₂) hbsat₂
+              hexit₂ hu)
+    case inl =>
+      rcases Classical.em (∃ α : T → Bool, bval (genW T) b₂ α = true)
+        with hbsat₂ | hbdeg₂
+      case inr =>
+        have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T) (.test .one) :=
+          wh_guard_semantic_zero body₂ (bval_all_false hbdeg₂)
+        exact absurd (ule_symm (ule_congr_right hcol₂ heq))
+          (fun hu => test_ne_liveloop (chain2_chain hc₁) hbsat₁
+            hexit₁ hu)
+      case inl =>
+        rcases Classical.em
+          (∃ α : T → Bool, bval (genW T) b₂ α = false)
+          with hexit₂ | hnexit₂
+        case inr =>
+          have hcol₂ : EquivBA (.wh b₂ body₂ : Exp A T)
+              (.test .zero) :=
+            wh_guard_semantic_one body₂ (bval_all_true hnexit₂)
+          exact absurd (ule_symm (ule_congr_right hcol₂ heq))
+            (fun hu => test_ne_liveloop (chain2_chain hc₁) hbsat₁
+              hexit₁ hu)
+        case inl =>
+          exact chainloops_complete b₁ b₂ hc₁ hc₂ hexit₁ hexit₂
+            hbsat₁ hbsat₂ heq
+
+#print axioms chainloops_complete_free
+
 end GkatChainFragment
