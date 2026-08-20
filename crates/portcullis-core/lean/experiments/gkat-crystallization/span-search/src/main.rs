@@ -4841,6 +4841,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut multi_hist: FxMap<(usize, bool, usize, usize, usize), usize> = FxMap::default();
     let mut multi_examples: Vec<String> = Vec::new();
     let mut multi_port_dumps = 0usize;
+    let mut n_walked_scc = 0usize;
+    let mut n_open_scc = 0usize;
     for (a, b) in pairs.iter() {
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let k = su.k as usize;
@@ -4952,6 +4954,43 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     if itargets.len() >= 2 { branchers += 1; }
                     if itargets.len() != 1 { simple = false; }
                 }
+                // walked-coverage: some port choice makes this a walked parked
+                // cycle (walked_cycle_roles): unique non-self in-SCC successors
+                // forming one cycle, no exits, subset halts, port exclusivity
+                let walked = 'w: {
+                    if n_exit_arms > 0 { break 'w false; }
+                    let mut succ: Vec<(usize, usize)> = Vec::new();
+                    for &s in scc.iter() {
+                        let mut ns: Vec<usize> = Vec::new();
+                        for i in 0..NA {
+                            let t = q.st[s][i];
+                            if t != 0 {
+                                let t = (t - 1) as usize;
+                                if t != s && inscc(t) && !ns.contains(&t) { ns.push(t); }
+                            }
+                        }
+                        if ns.len() != 1 { break 'w false; }
+                        succ.push((s, ns[0]));
+                    }
+                    let get = |s: usize| succ.iter().find(|x| x.0 == s).map(|x| x.1).unwrap();
+                    let mut cur = scc[0];
+                    let mut cnt = 0usize;
+                    loop {
+                        cur = get(cur);
+                        cnt += 1;
+                        if cur == scc[0] { break; }
+                        if cnt > scc.len() { break 'w false; }
+                    }
+                    if cnt != scc.len() { break 'w false; }
+                    scc.iter().any(|&p| {
+                        scc.iter().all(|&s| q.hl[s] & !q.hl[p] == 0) && {
+                            let mut armmask = 0u8;
+                            for i in 0..NA { if q.st[p][i] != 0 { armmask |= 1 << i; } }
+                            q.hl[p] & armmask == 0
+                        }
+                    })
+                };
+                if walked { n_walked_scc += 1; } else { n_open_scc += 1; }
                 *multi_hist.entry((scc.len(), simple, n_halting, n_exit_arms, branchers))
                     .or_insert(0) += 1;
                 if multi_examples.len() < 5 {
@@ -4987,6 +5026,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  pairs analysed: {pairs_done}; FULLY covered by proved strata (fold+salomaaE): {pairs_covered} ({:.1}%)",
         100.0 * pairs_covered as f64 / pairs_done.max(1) as f64);
     println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");
+    println!("  multi-state SCCs: walked-covered (walked_cycle_roles): {n_walked_scc}; OPEN (exits/tree): {n_open_scc}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");

@@ -119,3 +119,17 @@ equations collapse to straight lines (ite b e 0? = b?e), the cycle composes
 into one Salomaa body at the port, and multi_gather (proved, arbitrary target)
 does the per-state gathering.  Parking is only needed for the rare multi-port
 tail.
+
+## Walked-coverage census (2026-08-20, second refinement)
+
+NA=4, depth<=7, 60000 pairs, walked-coverage classifier added (unique
+non-self in-SCC successors forming one cycle, no exits, subset halts, port
+halt/step exclusivity — the walked_cycle_roles hypotheses):
+
+- pairs fully covered by fold+salomaaE: 57776/59947 (96.4%)
+- multi-state SCCs: 2171 total; **walked-covered: 1936 (89.2%)**;
+  OPEN: 235 (exit-flavored ports ~185, non-subset-halt/tree shapes ~50)
+
+So proved-theorem coverage after walked_cycle_roles: all but 235 SCC
+instances in 60k pairs.  The open residue = multi-member exit ports +
+two-independent-halt cycles + genuine tree walks.

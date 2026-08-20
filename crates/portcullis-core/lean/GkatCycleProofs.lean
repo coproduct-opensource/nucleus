@@ -699,4 +699,204 @@ theorem full_assembly_roles (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms full_assembly_roles
 
+/-! ## The walked cycle: members may self-loop
+
+    In a 2-state SCC, a brancher can only branch to itself and the other
+    member — so every 2-state "branchy" census row is a cycle whose members
+    carry self-loops.  Gathering self-arms per member and Salomaa-wrapping them
+    locally turns each member into a `wh`-prefixed straight-line factor; the
+    port's own self-loop folds into the cycle body by `arms_merge`.  Parked
+    halts are carried through as before. -/
+
+open Classical in
+/-- Gather a dispatch twice: self-arms first, then next-arms among the rest. -/
+theorem double_gather (sol : S → Exp A T) (h : BExp T) (u v : S)
+    (L : List (BExp T × A × S)) :
+    EquivBA (foldTL sol h L)
+      (.ite (gGuard u L) (.seq (gBody u L) (sol u))
+        (.ite (gGuard v (gOthers u L)) (.seq (gBody v (gOthers u L)) (sol v))
+          (foldTL sol h (gOthers v (gOthers u L))))) :=
+  EquivBA.trans (multi_gather sol h u L)
+    (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+      (multi_gather sol h v (gOthers u L)))
+
+open Classical in
+/-- The gathered self-loop guard of position `j`. -/
+noncomputable def selfG (aut : GAut S A T) (m : Nat → S) (j : Nat) : BExp T :=
+  gGuard (m j) (aut.trans (m j))
+
+open Classical in
+/-- The gathered self-loop body of position `j`. -/
+noncomputable def selfB (aut : GAut S A T) (m : Nat → S) (j : Nat) : Exp A T :=
+  gBody (m j) (aut.trans (m j))
+
+open Classical in
+/-- The non-self remainder of position `j`'s dispatch. -/
+noncomputable def restL (aut : GAut S A T) (m : Nat → S) (j : Nat) :
+    List (BExp T × A × S) :=
+  gOthers (m j) (aut.trans (m j))
+
+open Classical in
+/-- The gathered next-step guard of position `j` (within the non-self rest). -/
+noncomputable def nextG (aut : GAut S A T) (m : Nat → S) (len j : Nat) :
+    BExp T :=
+  gGuard (nxtAt m len j) (restL aut m j)
+
+open Classical in
+/-- The gathered next-step body of position `j`. -/
+noncomputable def nextB (aut : GAut S A T) (m : Nat → S) (len j : Nat) :
+    Exp A T :=
+  gBody (nxtAt m len j) (restL aut m j)
+
+open Classical in
+/-- The walked chain from position `j`: locally loop the self-arms, then step
+    onward or halt in place. -/
+noncomputable def wChain (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    (term : Exp A T) : Nat → Nat → Exp A T
+  | 0, _ => term
+  | c + 1, j =>
+      .seq (.wh (selfG aut m j) (selfB aut m j))
+        (.ite (nextG aut m len j)
+          (.seq (nextB aut m len j) (wChain aut m len term c (j + 1)))
+          (.test (aut.hlt (m j))))
+
+open Classical in
+/-- The walked port solution: the port's own self-loop is merged into the
+    cycle body. -/
+noncomputable def walkedPortE (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    Exp A T :=
+  .seq (.wh (.or (selfG aut m 0) (nextG aut m len 0))
+      (.ite (selfG aut m 0) (selfB aut m 0)
+        (.seq (nextB aut m len 0) (wChain aut m len (.test .one) (len - 1) 1))))
+    (.test (aut.hlt (m 0)))
+
+open Classical in
+/-- **THE WALKED SPLIT**: the port solution right-distributes out of the whole
+    walked chain — associativity through the local `wh` prefixes, `u5` on the
+    step arms, `park_absorb` on the halt arms. -/
+theorem wChain_split (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    (himp : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hexcl : GuardImplies (aut.hlt (m 0))
+      (.not (.or (selfG aut m 0) (nextG aut m len 0)))) :
+    ∀ c j, 1 ≤ j → j + c ≤ len →
+      EquivBA (wChain aut m len (walkedPortE aut m len) c j)
+        (.seq (wChain aut m len (.test .one) c j)
+          (walkedPortE aut m len)) := by
+  intro c
+  induction c with
+  | zero =>
+      intro j _ _
+      exact EquivBA.symm (EquivBA.base (Equiv.s4 (walkedPortE aut m len)))
+  | succ c ih =>
+      intro j hj hle
+      show EquivBA
+        (.seq (.wh (selfG aut m j) (selfB aut m j))
+          (.ite (nextG aut m len j)
+            (.seq (nextB aut m len j)
+              (wChain aut m len (walkedPortE aut m len) c (j + 1)))
+            (.test (aut.hlt (m j)))))
+        (.seq (.seq (.wh (selfG aut m j) (selfB aut m j))
+          (.ite (nextG aut m len j)
+            (.seq (nextB aut m len j)
+              (wChain aut m len (.test .one) c (j + 1)))
+            (.test (aut.hlt (m j)))))
+          (walkedPortE aut m len))
+      refine EquivBA.trans ?_ (seq_assoc' _ _ (walkedPortE aut m len))
+      refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+      refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+        (EquivBA.base (Equiv.u5 _ _ _ (walkedPortE aut m len)))
+      · refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (ih (j + 1) (by omega) (by omega))) ?_
+        exact seq_assoc' _ _ (walkedPortE aut m len)
+      · exact park_absorb _ (himp j hj (by omega)) hexcl
+
+open Classical in
+/-- **THE WALKED CYCLE THEOREM** (cycle-local): a cycle whose members may each
+    carry self-loops, with parked halts and single next-successors, is fully
+    role-covered — every member (port included) is a `salomaaE` state. -/
+theorem walked_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) (hlen : 2 ≤ len)
+    (hsol_int : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = wChain aut m len (walkedPortE aut m len) (len - j) j)
+    (hsol_port : sol (m 0) = walkedPortE aut m len)
+    (hint_nil : ∀ j, 1 ≤ j → j < len →
+      gOthers (nxtAt m len j) (restL aut m j) = [])
+    (hport_nil : gOthers (nxtAt m len 0) (restL aut m 0) = [])
+    (himp : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hexcl : GuardImplies (aut.hlt (m 0))
+      (.not (.or (selfG aut m 0) (nextG aut m len 0)))) :
+    ∀ j, j < len → StateRole aut sol (m j) := by
+  have hstep : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = .seq (.wh (selfG aut m j) (selfB aut m j))
+        (.ite (nextG aut m len j)
+          (.seq (nextB aut m len j) (sol (nxtAt m len j)))
+          (.test (aut.hlt (m j)))) := by
+    intro j hj hjlt
+    rw [hsol_int j hj hjlt,
+        show len - j = (len - (j + 1)) + 1 from by omega]
+    by_cases hj1 : j + 1 = len
+    · have hnx : sol (nxtAt m len j) = walkedPortE aut m len := by
+        unfold nxtAt
+        rw [if_pos hj1]
+        exact hsol_port
+      rw [hnx, show len - (j + 1) = 0 from by omega]
+      rfl
+    · have hnx : sol (nxtAt m len j)
+          = wChain aut m len (walkedPortE aut m len) (len - (j + 1))
+            (j + 1) := by
+        unfold nxtAt
+        rw [if_neg hj1]
+        exact hsol_int (j + 1) (by omega) (by omega)
+      rw [hnx]
+      rfl
+  intro j hj
+  cases Nat.eq_zero_or_pos j with
+  | inl hzero =>
+      subst hzero
+      refine StateRole.salomaaE
+        (.or (selfG aut m 0) (nextG aut m len 0))
+        (.ite (selfG aut m 0) (selfB aut m 0)
+          (.seq (nextB aut m len 0)
+            (wChain aut m len (.test .one) (len - 1) 1)))
+        (.test (aut.hlt (m 0))) hsol_port ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (double_gather sol (aut.hlt (m 0)) (m 0)
+        (nxtAt m len 0) (aut.trans (m 0))) ?_
+      rw [show gOthers (nxtAt m len 0) (gOthers (m 0) (aut.trans (m 0))) = []
+        from hport_nil]
+      have hx1 : sol (nxtAt m len 0)
+          = wChain aut m len (walkedPortE aut m len) (len - 1) 1 := by
+        unfold nxtAt
+        rw [if_neg (by omega : ¬ (0 + 1 = len))]
+        exact hsol_int 1 (Nat.le_refl 1) (by omega)
+      rw [hx1]
+      refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.ite_c
+          (EquivBA.trans
+            (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+              (wChain_split aut m len himp hexcl (len - 1) 1
+                (Nat.le_refl 1) (by omega)))
+            (seq_assoc' _ _ (walkedPortE aut m len)))
+          (EquivBA.base (Equiv.refl _)))) ?_
+      rw [← hsol_port]
+      exact arms_merge (selfG aut m 0) (nextG aut m len 0) (selfB aut m 0)
+        (.seq (nextB aut m len 0) (wChain aut m len (.test .one) (len - 1) 1))
+        (sol (m 0)) (.test (aut.hlt (m 0)))
+  | inr hpos =>
+      refine StateRole.salomaaE (selfG aut m j) (selfB aut m j)
+        (.ite (nextG aut m len j)
+          (.seq (nextB aut m len j) (sol (nxtAt m len j)))
+          (.test (aut.hlt (m j))))
+        (hstep j hpos hj) ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (double_gather sol (aut.hlt (m j)) (m j)
+        (nxtAt m len j) (aut.trans (m j))) ?_
+      rw [show gOthers (nxtAt m len j) (gOthers (m j) (aut.trans (m j))) = []
+        from hint_nil j hpos hj]
+      exact EquivBA.base (Equiv.refl _)
+
+#print axioms walked_cycle_roles
+
 end GkatCycle

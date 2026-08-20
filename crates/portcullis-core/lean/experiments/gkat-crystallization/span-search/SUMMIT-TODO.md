@@ -184,3 +184,16 @@ REMAINING (the true open residue):
    canonical trimmed quotients ALWAYS decompose into the covered shapes (or
    extend the shape library until they do).  This is the research core that
    remains genuinely open.
+
+## Walked cycles (2026-08-20, continuation)
+
+- double_gather: gather a dispatch twice — self-arms, then next-arms
+- wChain/walkedPortE + wChain_split: walked chains with local wh prefixes;
+  the port solution right-distributes out (assoc through wh, u5 on steps,
+  park_absorb on halts)
+- walked_cycle_roles: cycles whose members may each SELF-LOOP, with parked
+  halts and single next-successors — every member (port included) a salomaaE
+  state; the port's own self-loop folds into the cycle body by arms_merge.
+  [propext, Classical.choice, Quot.sound]
+- Census (60k pairs, NA=4): 89.2% of ALL multi-state SCCs are walked-covered;
+  open residue = 235 instances (exit ports ~185, non-subset halts/trees ~50).
