@@ -900,4 +900,202 @@ theorem twoLoop_cover_inr (b c : BExp T) (q r : A)
 #print axioms twoLoop_none_lang_r
 #print axioms twoLoop_cover_inr
 
+/-! ## Right-summand orbit bundle -/
+
+open Classical in
+theorem twoLoop_hper_r {S₁ : Type} (g₁ : S₁ → S₁) :
+    nxtIter (twoNxtR (S₁ := S₁) g₁) 2
+        (Sum.inr (some (Sum.inr ())))
+      = Sum.inr (some (Sum.inr ())) := by
+  unfold twoNxtR
+  rw [nxtIter_lift_inr]
+  rw [twoNxt_iter]
+  rfl
+
+open Classical in
+theorem twoLoop_hnofix_r {S₁ : Type} (g₁ : S₁ → S₁) :
+    ∀ j, j < 2 →
+      twoNxtR (S₁ := S₁) g₁
+          (nxtIter (twoNxtR (S₁ := S₁) g₁) j
+            (Sum.inr (some (Sum.inr ()))))
+        ≠ nxtIter (twoNxtR (S₁ := S₁) g₁) j
+            (Sum.inr (some (Sum.inr ()))) := by
+  intro j hj hcontra
+  unfold twoNxtR at hcontra
+  rw [nxtIter_lift_inr] at hcontra
+  have h1 : twoNxt (nxtIter twoNxt j (Sum.inr ()))
+      = nxtIter twoNxt j (Sum.inr ()) :=
+    Option.some.inj (Sum.inr.inj hcontra)
+  exact twoNxt_nofix _ h1
+
+open Classical in
+theorem twoLoop_lang_ne_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some (Sum.inr ()))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+      (Sum.inr (some (Sum.inr ()))) αb [] := by
+    show bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+    rw [twoLoop_hlt_inr, hαb]
+    rfl
+  have hinner := hiff.mpr hport
+  have hinner' : bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inl ())) αb = true := hinner
+  rw [twoLoop_hlt_inl] at hinner'
+  exact nomatch hinner'
+
+open Classical in
+theorem twoLoop_hnontriv_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) (g₁ : S₁ → S₁)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ j : Nat,
+      autLang (genW T)
+          (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (nxtIter (twoNxtR (S₁ := S₁) g₁) (j + 1)
+            (Sum.inr (some (Sum.inr ()))))
+        ≠ autLang (genW T)
+            (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+            (nxtIter (twoNxtR (S₁ := S₁) g₁) j
+              (Sum.inr (some (Sum.inr ())))) := by
+  intro j
+  unfold twoNxtR
+  rw [nxtIter_lift_inr, nxtIter_lift_inr, twoNxt_iter, twoNxt_iter]
+  rcases Nat.mod_two_eq_zero_or_one j with h | h
+  · rw [if_pos h, if_neg (by omega)]
+    exact twoLoop_lang_ne_r b c q r aut₁ hexitB
+  · rw [if_pos (by omega), if_neg (by omega)]
+    exact (twoLoop_lang_ne_r b c q r aut₁ hexitB).symm
+
+open Classical in
+theorem twoLoop_qperiod2_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) (g₁ : S₁ → S₁)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    2 ≤ qPeriod (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+        (twoNxtR (S₁ := S₁) g₁)
+        (Sum.inr (some (Sum.inr ()))) 2 := by
+  obtain ⟨h1, h2, h3, h4⟩ := qPeriod_spec
+    (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+    (twoNxtR (S₁ := S₁) g₁)
+    (Sum.inr (some (Sum.inr ()))) 2 (by omega)
+    (twoLoop_hper_r (S₁ := S₁) g₁)
+  generalize hqgen : qPeriod (sumGAut aut₁
+      (twoLoopAut b c q r).toGAut)
+      (twoNxtR (S₁ := S₁) g₁)
+      (Sum.inr (some (Sum.inr ()))) 2 = qp at h1 h2 h3 h4 ⊢
+  rcases Nat.lt_or_ge qp 2 with hlt | hge
+  · exfalso
+    have hqp1 : qp = 1 := by omega
+    rw [hqp1] at h1
+    have hn : nxtIter (twoNxtR (S₁ := S₁) g₁) 1
+        (Sum.inr (some (Sum.inr ())))
+        = Sum.inr (some (Sum.inl ())) := rfl
+    rw [hn] at h1
+    have hL : autLang (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some (Sum.inl ())))
+        = autLang (genW T)
+          (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some (Sum.inr ()))) := by
+      rw [← rep_lang (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+        (Sum.inr (some (Sum.inl ()))), h1,
+        rep_lang (sumGAut aut₁ (twoLoopAut b c q r).toGAut)]
+    exact twoLoop_lang_ne_r b c q r aut₁ hexitB hL
+  · exact hge
+
+open Classical in
+/-- The mirror rank (generic left summand). -/
+def twoRankR {S₁ : Type} :
+    Sum (Option S₁) (Option (Sum Unit Unit)) → Nat :=
+  Sum.elim (fun o => if o.isSome then 0 else 1)
+    (fun o => if o.isSome then 0 else 1)
+
+open Classical in
+theorem twoLoop_minRank_zero_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (x : Sum Unit Unit) :
+    minRank (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (twoRankR (S₁ := S₁))
+        (bisimRep (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some x))) = 0 := by
+  have h1 : autLang (genW T)
+      (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+      (Sum.inr (some x))
+      = autLang (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (bisimRep (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some x))) :=
+    (rep_lang (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+      (Sum.inr (some x))).symm
+  have h2 := minRank_le
+    (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+    (twoRankR (S₁ := S₁)) h1
+  have h3 : twoRankR (S₁ := S₁) (Sum.inr (some x)) = 0 := rfl
+  omega
+
+open Classical in
+theorem twoLoop_hnodesc_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) (x : Sum Unit Unit) :
+    ∀ e ∈ (cleanAut (bisimQuotAut
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut)))).trans
+        (bisimRep (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some x))),
+      ¬ minRank (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (twoRankR (S₁ := S₁)) e.2.2
+        < minRank (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+            (twoRankR (S₁ := S₁))
+            (bisimRep (trimAut
+              (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+              (Sum.inr (some x))) := by
+  intro e _ hcontra
+  rw [twoLoop_minRank_zero_r] at hcontra
+  exact Nat.not_lt_zero _ hcontra
+
+open Classical in
+theorem twoLoop_hstates_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) (x : Sum Unit Unit) :
+    bisimRep (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some x))
+      ∈ (bisimQuotAut
+          (trimAut (sumGAut aut₁
+            (twoLoopAut b c q r).toGAut))).states := by
+  refine List.mem_map.mpr ⟨Sum.inr (some x), ?_, rfl⟩
+  refine List.mem_append.mpr (Or.inr (List.mem_map.mpr
+    ⟨some x, ?_, rfl⟩))
+  refine List.mem_cons.mpr (Or.inr (List.mem_map.mpr ⟨x, ?_, rfl⟩))
+  show x ∈ (certifiedThompson A T (twoLoopBody c q r)).aut.core.states
+  cases x with
+  | inl u =>
+      cases u
+      exact List.mem_cons_self ..
+  | inr u =>
+      cases u
+      exact List.mem_cons_of_mem _ (List.mem_cons_self ..)
+
+open Classical in
+theorem twoLoop_noeps_inl_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some (Sum.inl ()))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inl ())) α = true := h
+  rw [twoLoop_hlt_inl] at h'
+  exact nomatch h'
+
+#print axioms twoLoop_hnontriv_r
+#print axioms twoLoop_qperiod2_r
+#print axioms twoLoop_hnodesc_r
+
 end GkatTwoLoop

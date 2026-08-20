@@ -1474,3 +1474,14 @@ assembly: hdec/hnxt_rank/hfire at the pair level (two_state_dec makes
 hdec near-trivial), the os-list hos tuples (all components proved), the
 combined cover, walked_rankNxt_quot_solvesBA application, and the
 equivBA_of_quot_solvesBA wrapper. NEXT FIRING: THE FIFTH THEOREM.
+
+## TWO-LOOP RIGHT ORBIT BUNDLE (iteration 54)
+
+hper_r, hnofix_r, lang_ne_r, hnontriv_r, qperiod2_r, twoRankR +
+minRank_zero_r + hnodesc_r, hstates_r, noeps_inl_r — the complete
+right-summand orbit bundle. All proved.
+
+EVERY component of both hos tuples now exists. NEXT FIRING: the
+assembly (twoLoops_solvable via walked_rankNxt_quot_solvesBA — note
+twoNxtL twoNxt = twoNxtR twoNxt definitionally, so one nxt serves both
+sides) + the wrapper = TWOLOOPS_COMPLETE.
