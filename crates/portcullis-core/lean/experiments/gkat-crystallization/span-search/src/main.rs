@@ -3871,8 +3871,11 @@ fn ring_uniform<const NA: usize>(q: &Aut<NA>) -> bool {
             let _ = h;
             continue 'scc;
         }
+        // SUBSET parking (the mixed-halt candidate's lesson): an interior halt may be
+        // any SUBSET of the header's exit guard — the parked atom still fails the loop
+        // guard and passes the exit test.  Header: a state whose halt IS the join.
         for &s in members.iter() {
-            if q.hl[s] != 0 && q.hl[s] != c { return false; }   // non-uniform halts
+            if q.hl[s] & !c != 0 { return false; }              // outside the join
         }
         if !members.iter().any(|&s| q.hl[s] == c) { return false; } // no header
         // exits' reachable halts must stay on c
@@ -4532,23 +4535,23 @@ fn forge<const NA: usize>(nguards: u8) {
         .and_then(|v| v.parse().ok()).unwrap_or(8);
     let mut st: u64 = 0xDEADBEEFCAFEF00D;
     let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
-    let mut buckets: FxMap<Vec<u8>, Vec<Aut<NA>>> = FxMap::default();
-    let mut pairs: Vec<(Aut<NA>, Aut<NA>)> = Vec::new();
+    let mut buckets: FxMap<Vec<u8>, Vec<(Aut<NA>, String)>> = FxMap::default();
+    let mut pairs: Vec<(Aut<NA>, Aut<NA>, String, String)> = Vec::new();
     let mut sampled = 0usize;
     let mut tries = 0usize;
     while pairs.len() < npairs && tries < 30_000_000 {
         tries += 1;
-        if let Some(a) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
+        if let Some((a, ae)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
             if (a.k as usize) < kmin || (a.k as usize) > kmax { continue; }
             let c = match canon(&a) { Some(c) => c, None => continue };
             sampled += 1;
             let beh = behaviour(&c);
             let v = buckets.entry(beh).or_default();
-            if v.iter().any(|x| *x == c) { continue; }
-            for x in v.iter() {
-                if pairs.len() < npairs { pairs.push((*x, c)); }
+            if v.iter().any(|(x, _)| *x == c) { continue; }
+            for (x, xe) in v.iter() {
+                if pairs.len() < npairs { pairs.push((*x, c, xe.clone(), ae.clone())); }
             }
-            if v.len() < 8 { v.push(c); }
+            if v.len() < 8 { v.push((c, ae.clone())); }
         }
     }
     println!("FORGE (NA={NA}, depth<={depth}, k in [{kmin},{kmax}]):");
@@ -4556,7 +4559,7 @@ fn forge<const NA: usize>(nguards: u8) {
     println!("  equivalent pairs found: {}", pairs.len());
     let mut by_k: FxMap<usize, (usize, usize, usize, usize)> = FxMap::default();
     let mut shown = 0usize;
-    for (a, b) in pairs.iter() {
+    for (a, b, ae, be) in pairs.iter() {
         let ka = match to_gaut(a) { Some(g) => g.k as usize, None => continue };
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let kk = a.k.max(b.k) as usize;
@@ -4583,11 +4586,27 @@ fn forge<const NA: usize>(nguards: u8) {
             if shown < 6 {
                 shown += 1;
                 println!("  FORGE RESIDUE CANDIDATE #{shown} (k={kk}, sum k={}):", su.k);
+                println!("    INDEPENDENT product-bisim equivalent : {}", product_bisim(a, b));
+                println!("    LEAN e := {ae}");
+                println!("    LEAN f := {be}");
                 for s in 0..su.k as usize {
                     let steps: Vec<String> = (0..NA).map(|i|
                         if su.st[s][i] == 0 { "-".to_string() }
                         else { format!("{}", su.st[s][i] - 1) }).collect();
                     println!("    {s}: hlt={:#06b} st={:?}", su.hl[s], steps);
+                }
+                println!("    merged-start quotients:");
+                for (b2, nb2) in cands.iter() {
+                    if let Some(q) = quotient_by(&su, b2, *nb2) {
+                        let qq = trim_canon(&q).unwrap_or(q);
+                        println!("      quotient k={} classes={:?}", qq.k, &b2[..su.k as usize]);
+                        for s in 0..qq.k as usize {
+                            let steps: Vec<String> = (0..NA).map(|i|
+                                if qq.st[s][i] == 0 { "-".to_string() }
+                                else { format!("{}", qq.st[s][i] - 1) }).collect();
+                            println!("        {s}: hlt={:#06b} st={:?}", qq.hl[s], steps);
+                        }
+                    }
                 }
             }
         }
@@ -4601,29 +4620,78 @@ fn forge<const NA: usize>(nguards: u8) {
     }
 }
 
+fn mask_lean_gen<const NA: usize>(m: u8) -> String {
+    // NA=2: one primitive bT.  NA=4: two primitives bT1 bT2, atom = bit0|bit1<<1.
+    if NA == 2 { return mask_lean(m); }
+    if m == 0 { return "BExp.zero".to_string(); }
+    if m == 0b1111 { return "BExp.one".to_string(); }
+    let lit = |on: bool, name: &str| if on { name.to_string() }
+        else { format!("(BExp.not {name})") };
+    let mut terms: Vec<String> = Vec::new();
+    for a in 0..4u8 {
+        if m & (1 << a) != 0 {
+            terms.push(format!("(BExp.and {} {})",
+                lit(a & 1 != 0, "bT1"), lit(a & 2 != 0, "bT2")));
+        }
+    }
+    let mut out = terms.pop().unwrap();
+    while let Some(t) = terms.pop() { out = format!("(BExp.or {t} {out})"); }
+    out
+}
+
+/// Independent equivalence check: product BFS — a different algorithm from behaviour().
+fn product_bisim<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> bool {
+    let (ga, gb) = match (to_gaut(a), to_gaut(b)) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return false,
+    };
+    let mut seen: FxSet<(u8, u8)> = FxSet::default();
+    let mut queue: Vec<(u8, u8)> = vec![(0, 0)];
+    seen.insert((0, 0));
+    while let Some((x, y)) = queue.pop() {
+        if ga.hl[x as usize] != gb.hl[y as usize] { return false; }
+        for i in 0..NA {
+            let tx = ga.st[x as usize][i];
+            let ty = gb.st[y as usize][i];
+            if tx == 0 && ty == 0 { continue; }
+            if tx == 0 || ty == 0 { return false; }
+            let pr = (tx - 1, ty - 1);
+            if seen.insert(pr) { queue.push(pr); }
+        }
+    }
+    true
+}
+
 fn genexp<const NA: usize>(rnd: &mut impl FnMut() -> u64, depth: usize, nguards: u8,
-    maxk: usize) -> Option<Aut<NA>> {
+    maxk: usize) -> Option<(Aut<NA>, String)> {
     let pick = rnd() % if depth == 0 { 2 } else { 5 };
     match pick {
-        0 => Some(a_act()),
-        1 => Some(a_test((rnd() % nguards as u64) as u8)),
+        0 => Some((a_act(), "pA".to_string())),
+        1 => {
+            let g = (rnd() % nguards as u64) as u8;
+            Some((a_test(g), format!("(Exp.test {})", mask_lean_gen::<NA>(g))))
+        }
         2 => {
-            let l = genexp(rnd, depth - 1, nguards, maxk)?;
-            let r = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (l, ls) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (r, rs) = genexp(rnd, depth - 1, nguards, maxk)?;
             let a = a_seq(&l, &r)?;
-            if a.k as usize <= maxk { Some(a) } else { None }
+            if a.k as usize <= maxk {
+                Some((a, format!("(Exp.seq {ls} {rs})")))
+            } else { None }
         }
         3 => {
             let g = (rnd() % nguards as u64) as u8;
-            let l = genexp(rnd, depth - 1, nguards, maxk)?;
-            let r = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (l, ls) = genexp(rnd, depth - 1, nguards, maxk)?;
+            let (r, rs) = genexp(rnd, depth - 1, nguards, maxk)?;
             let a = a_ite(g, &l, &r)?;
-            if a.k as usize <= maxk { Some(a) } else { None }
+            if a.k as usize <= maxk {
+                Some((a, format!("(Exp.ite {} {ls} {rs})", mask_lean_gen::<NA>(g))))
+            } else { None }
         }
         _ => {
             let g = (rnd() % nguards as u64) as u8;
-            let b = genexp(rnd, depth - 1, nguards, maxk)?;
-            Some(a_wh(g, &b))
+            let (b, bs) = genexp(rnd, depth - 1, nguards, maxk)?;
+            Some((a_wh(g, &b), format!("(Exp.wh {} {bs})", mask_lean_gen::<NA>(g))))
         }
     }
 }
@@ -4646,7 +4714,7 @@ fn mixsample<const NA: usize>(nguards: u8, maxk: usize) {
     let mut tries = 0usize;
     while tot < 100_000 && tries < 2_000_000 {
         tries += 1;
-        if let Some(a) = genexp::<NA>(&mut rnd, 5, nguards, maxk) {
+        if let Some((a, _)) = genexp::<NA>(&mut rnd, 5, nguards, maxk) {
             if a.k < 2 { continue; }
             if let Some(g) = to_gaut(&a) {
                 tot += 1;
