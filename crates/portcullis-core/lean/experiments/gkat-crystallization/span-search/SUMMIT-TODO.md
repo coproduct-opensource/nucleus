@@ -131,3 +131,23 @@ everything).  Remaining mathematics: S2 (roles) — acyclic stratum proved
 - This covers the census-dominant multi-SCC shape (~82% at NA=4).  Remaining:
   the ambient ASSEMBLY (define the solution by WF recursion mixing strata) and
   the multi-port tail (parking — rare: 3 in 20k pairs).
+
+## Assembly + parked cycles (GkatCycleProofs, 2026-08-20, second push)
+
+- assembly_roles: THE ASSEMBLY THEOREM — one solution by WF recursion on rank
+  dispatching gathered-Salomaa closed forms at base states and chain/port
+  closed forms on designated single-port simple cycles; all congruences reduce
+  to pointwise foldTL rewriting.  [propext, Classical.choice, Quot.sound]
+- Multi-port census dump (PAD_CENSUS_N=60000, NA=4): 12 multi-port SCCs in 60k
+  pairs; EVERY halt-flavored instance has interior halt guards ⊆ the port halt
+  guard (subset parking!); exit-flavored instances share one external target.
+- parked_cycle_roles: THE PARKED CYCLE THEOREM — simple cycles with interior
+  halts ⊆ port halt: park_absorb (halts absorb the port solution, via
+  test_header_absorb) + pChain_split (u5 right-distributes the port solution
+  out of the whole parked chain) close the port as salomaaE; interiors are
+  equivFolds of literal chain forms.  [propext, Classical.choice, Quot.sound]
+
+Remaining observed-but-unproved shapes: branchy multi-state SCCs (interior
+with ≥2 distinct in-SCC successors — needs the tree-walk machinery,
+GkatRingPlan2 Sub/Branch style) and multi-member exit ports; both rare.
+Also: assembly extension to dispatch parked cycles (mechanical).

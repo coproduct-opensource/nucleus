@@ -4840,6 +4840,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut pairs_covered = 0usize;
     let mut multi_hist: FxMap<(usize, bool, usize, usize, usize), usize> = FxMap::default();
     let mut multi_examples: Vec<String> = Vec::new();
+    let mut multi_port_dumps = 0usize;
     for (a, b) in pairs.iter() {
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let k = su.k as usize;
@@ -4956,6 +4957,28 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 if multi_examples.len() < 5 {
                     multi_examples.push(format!("scc {:?} in quotient k={} (pair #{})",
                         scc, q.k, pairs_done));
+                }
+                // multi-PORT dump: ports = members that halt or carry external arms
+                let ports = scc.iter().filter(|&&s| {
+                    q.hl[s] != 0 || (0..NA).any(|i| {
+                        let t = q.st[s][i];
+                        t != 0 && !inscc((t - 1) as usize)
+                    })
+                }).count();
+                if ports >= 2 && multi_port_dumps < 40 {
+                    multi_port_dumps += 1;
+                    println!("  MULTI-PORT #{multi_port_dumps} (pair #{pairs_done}, quotient k={}, scc {:?}):", q.k, scc);
+                    for &s in scc.iter() {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = q.st[s][i];
+                            if t == 0 { "-".to_string() }
+                            else {
+                                let t = (t - 1) as usize;
+                                if inscc(t) { format!("s{t}") } else { format!("X{t}") }
+                            }
+                        }).collect();
+                        println!("    state {s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
+                    }
                 }
             }
         }
