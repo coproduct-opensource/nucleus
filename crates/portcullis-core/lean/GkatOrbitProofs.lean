@@ -494,5 +494,196 @@ theorem orbit_lang_determined (aut : GAut S A T) (rank : S → Nat) (nxt : S →
 
 #print axioms orbit_lang_determined
 
+/-! ## Quotient-cycle enumeration: well-defined successors, first-return
+    periods, and injectivity -/
+
+open Classical in
+/-- **QUOTIENT SUCCESSOR WELL-DEFINEDNESS**: equal orbit classes have equal
+    successor classes. -/
+theorem qsucc_well_defined (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {i j : Nat}
+    (h : bisimRep (trimAut aut) (nxtIter nxt i u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt j u₀)) :
+    bisimRep (trimAut aut) (nxtIter nxt (i + 1) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+  -- equal classes have equal languages
+  have hL : autLang (genW T) (trimAut aut) (nxtIter nxt i u₀)
+      = autLang (genW T) (trimAut aut) (nxtIter nxt j u₀) := by
+    rw [← rep_lang aut (nxtIter nxt i u₀), h, rep_lang aut]
+  -- fire the i-side; transfer to the j-side by class_succ_eq
+  have hli : Live (trimAut aut) (nxtIter nxt i u₀) :=
+    orbit_live_all aut rank nxt hfire hk hper hlive hnofix i
+  obtain ⟨α, a, hstepI⟩ := hfire (nxtIter nxt i u₀) hli
+    (orbit_nofix_all hk hper hnofix i)
+  have hlnext : Live (trimAut aut) (nxt (nxtIter nxt i u₀)) :=
+    orbit_live_all aut rank nxt hfire hk hper hlive hnofix (i + 1)
+  have hmin₂ : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) (nxt (nxtIter nxt i u₀)) →
+      rank (nxtIter nxt i u₀) ≤ rank w := by
+    intro w hw
+    have hlvl := cycle_level_all aut rank nxt hdec hnxt_rank hfire hk
+      hper hlive hnofix hmin (i + 1)
+    have hwrep : autLang (genW T) (trimAut aut) w
+        = autLang (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxtIter nxt (i + 1) u₀)) := by
+      rw [rep_lang aut]
+      exact hw
+    have hle := minRank_le (trimAut aut) rank hwrep
+    rw [hlvl] at hle
+    rw [nxtIter_rank hnxt_rank u₀ i]
+    omega
+  have hrank : rank (nxtIter nxt j u₀) = rank (nxtIter nxt i u₀) := by
+    rw [nxtIter_rank hnxt_rank u₀ i, nxtIter_rank hnxt_rank u₀ j]
+  have hLsucc := class_succ_eq aut rank nxt hdec hnxt_rank
+    hL hrank hstepI hlnext hmin₂
+  exact (rep_lang_congr aut hLsucc).symm
+
+open Classical in
+/-- Iterated successor well-definedness. -/
+theorem qsucc_iter (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {i j : Nat}
+    (h : bisimRep (trimAut aut) (nxtIter nxt i u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt j u₀)) :
+    ∀ t, bisimRep (trimAut aut) (nxtIter nxt (i + t) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt (j + t) u₀) := by
+  intro t
+  induction t with
+  | zero => exact h
+  | succ t ih =>
+      have := qsucc_well_defined aut rank nxt hdec hnxt_rank hfire hk hper
+        hlive hnofix hmin ih
+      rw [show i + (t + 1) = (i + t) + 1 from by omega,
+          show j + (t + 1) = (j + t) + 1 from by omega]
+      exact this
+
+open Classical in
+/-- Upward search: the least index in `[i, i+fuel]` satisfying `P`, else the
+    end of the range. -/
+noncomputable def findFrom (P : Nat → Prop) : Nat → Nat → Nat
+  | i, 0 => i
+  | i, fuel + 1 => if P i then i else findFrom P (i + 1) fuel
+
+open Classical in
+private theorem findFrom_succ (P : Nat → Prop) (i fuel : Nat) :
+    findFrom P i (fuel + 1) = if P i then i else findFrom P (i + 1) fuel := rfl
+
+open Classical in
+theorem findFrom_spec (P : Nat → Prop) :
+    ∀ fuel i, P (i + fuel) →
+      (P (findFrom P i fuel)
+        ∧ i ≤ findFrom P i fuel ∧ findFrom P i fuel ≤ i + fuel
+        ∧ ∀ t, i ≤ t → t < findFrom P i fuel → ¬ P t) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+      intro i hP
+      have h0 : findFrom P i 0 = i := rfl
+      rw [Nat.add_zero] at hP
+      rw [h0]
+      exact ⟨hP, Nat.le_refl _, by omega, fun t h1 h2 => by omega⟩
+  | succ fuel ih =>
+      intro i hP
+      rw [findFrom_succ]
+      by_cases hPi : P i
+      · rw [if_pos hPi]
+        exact ⟨hPi, Nat.le_refl _, by omega, fun t h1 h2 => by omega⟩
+      · rw [if_neg hPi]
+        have hP' : P ((i + 1) + fuel) := by
+          rw [show (i + 1) + fuel = i + (fuel + 1) from by omega]
+          exact hP
+        obtain ⟨hf1, hf2, hf3, hf4⟩ := ih (i + 1) hP'
+        refine ⟨hf1, by omega, by omega, ?_⟩
+        intro t h1 h2
+        by_cases ht : t = i
+        · rw [ht]; exact hPi
+        · exact hf4 t (by omega) h2
+
+open Classical in
+/-- The first-return period of the quotient orbit: least `p ≥ 1` with
+    `⟦nxtIter p u₀⟧ = ⟦u₀⟧`. -/
+noncomputable def qPeriod (aut : GAut S A T) (nxt : S → S) (u₀ : S)
+    (k : Nat) : Nat :=
+  findFrom (fun p => bisimRep (trimAut aut) (nxtIter nxt p u₀)
+    = bisimRep (trimAut aut) u₀) 1 (k - 1)
+
+open Classical in
+theorem qPeriod_spec (aut : GAut S A T) (nxt : S → S) (u₀ : S) (k : Nat)
+    (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀) :
+    (bisimRep (trimAut aut) (nxtIter nxt (qPeriod aut nxt u₀ k) u₀)
+      = bisimRep (trimAut aut) u₀)
+    ∧ 1 ≤ qPeriod aut nxt u₀ k ∧ qPeriod aut nxt u₀ k ≤ k
+    ∧ ∀ t, 1 ≤ t → t < qPeriod aut nxt u₀ k →
+        bisimRep (trimAut aut) (nxtIter nxt t u₀)
+          ≠ bisimRep (trimAut aut) u₀ := by
+  unfold qPeriod
+  have hPk : bisimRep (trimAut aut) (nxtIter nxt (1 + (k - 1)) u₀)
+      = bisimRep (trimAut aut) u₀ := by
+    rw [show 1 + (k - 1) = k from by omega, hper]
+  obtain ⟨h1, h2, h3, h4⟩ := findFrom_spec
+    (fun p => bisimRep (trimAut aut) (nxtIter nxt p u₀)
+      = bisimRep (trimAut aut) u₀) (k - 1) 1 hPk
+  exact ⟨h1, h2, by omega, fun t ht1 ht2 => h4 t ht1 ht2⟩
+
+open Classical in
+/-- **ORBIT INJECTIVITY**: below the first-return period, orbit classes are
+    pairwise distinct. -/
+theorem qorb_injective (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {i j : Nat} (hij : i < j) (hjp : j < qPeriod aut nxt u₀ k)
+    (h : bisimRep (trimAut aut) (nxtIter nxt i u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt j u₀)) :
+    False := by
+  obtain ⟨hp1, hp2, hp3, hp4⟩ := qPeriod_spec aut nxt u₀ k hk hper
+  -- shift the coincidence to the basepoint: qorb 0 = qorb (j - i)
+  have hshift := qsucc_iter aut rank nxt hdec hnxt_rank hfire hk hper hlive
+    hnofix hmin h (k - i)
+  have hk0 : bisimRep (trimAut aut) (nxtIter nxt k u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt (k + (j - i)) u₀) := by
+    rw [show i + (k - i) = k from by omega] at hshift
+    rw [show j + (k - i) = k + (j - i) from by omega] at hshift
+    exact hshift
+  have hbase : bisimRep (trimAut aut) u₀
+      = bisimRep (trimAut aut) (nxtIter nxt (j - i) u₀) := by
+    have e1 : bisimRep (trimAut aut) (nxtIter nxt k u₀)
+        = bisimRep (trimAut aut) u₀ := by rw [hper]
+    have e2 : bisimRep (trimAut aut) (nxtIter nxt (k + (j - i)) u₀)
+        = bisimRep (trimAut aut) (nxtIter nxt (j - i) u₀) := by
+      rw [show k + (j - i) = (j - i) + k from by omega]
+      exact qorb_periodic aut nxt u₀ k hper (j - i)
+    rw [← e1, hk0, e2]
+  exact hp4 (j - i) (by omega) (by omega) hbase.symm
+
+#print axioms qorb_injective
+
 end GkatOrbit
+
 

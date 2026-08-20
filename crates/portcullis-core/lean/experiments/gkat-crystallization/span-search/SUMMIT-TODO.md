@@ -406,3 +406,20 @@ CONSEQUENCE: orbit SETS are basepoint-independent (rep-orbits of orbit-mates
 are rotations of each other, via rep_lang_congr on the tracked languages) —
 the canonical-basepoint construction is now purely mechanical.  Remaining:
 basepoint + least period + cy-bundle side conditions + fragment rank + glue.
+
+## QUOTIENT-CYCLE ENUMERATION (loop iteration 8)
+
+- qsucc_well_defined / qsucc_iter: equal orbit classes have equal successor
+  classes (class_succ_eq + rep_lang_congr), iterated
+- findFrom + findFrom_spec: bounded upward search with first-hit minimality
+- qPeriod + qPeriod_spec: the first-return period of the quotient orbit —
+  least p in [1, k] with the p-th class equal to the basepoint class
+- qorb_injective: ORBIT INJECTIVITY below the first-return period — a
+  coincidence at (i, j) shifts by k - i to the basepoint (k-periodicity),
+  contradicting first-return minimality.
+All [propext, Classical.choice, Quot.sound].
+
+The quotient cycle is now a genuine finite cycle: well-defined successor,
+period, pairwise-distinct members m j := rep (nxtIter j u₀) for j < qPeriod.
+Remaining for chainloops_complete: canonical basepoint (port detection),
+the cy-bundle side conditions, fragment rank, glue.
