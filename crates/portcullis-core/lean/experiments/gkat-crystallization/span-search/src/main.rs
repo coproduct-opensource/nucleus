@@ -4513,6 +4513,121 @@ fn load_closure<const NA: usize>(path: &str, maxk: usize) -> Option<(Vec<Aut<NA>
     Some((list, prov))
 }
 
+
+/// PAD_FORGE: the sampled crux forge — union-conjunct evidence beyond closure reach.
+/// Random expressions per size stratum; behaviour-hash collisions give equivalent pairs;
+/// each pair's merged-start congruence lattice is tested with POOL-FREE witnesses only
+/// (symbolic elimination + the ring/uniformity shape).  Losing the Thompson-pool witness
+/// only under-counts coverage, so "neither" is a conservative residue-candidate list.
+/// Env: PAD_FORGE_N (target pairs, default 2000), PAD_FORGE_DEPTH (default 6),
+/// PAD_FORGE_KMIN/KMAX (default 3/8).
+fn forge<const NA: usize>(nguards: u8) {
+    let npairs: usize = std::env::var("PAD_FORGE_N").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2000);
+    let depth: usize = std::env::var("PAD_FORGE_DEPTH").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(6);
+    let kmin: usize = std::env::var("PAD_FORGE_KMIN").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(3);
+    let kmax: usize = std::env::var("PAD_FORGE_KMAX").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(8);
+    let mut st: u64 = 0xDEADBEEFCAFEF00D;
+    let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
+    let mut buckets: FxMap<Vec<u8>, Vec<Aut<NA>>> = FxMap::default();
+    let mut pairs: Vec<(Aut<NA>, Aut<NA>)> = Vec::new();
+    let mut sampled = 0usize;
+    let mut tries = 0usize;
+    while pairs.len() < npairs && tries < 30_000_000 {
+        tries += 1;
+        if let Some(a) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
+            if (a.k as usize) < kmin || (a.k as usize) > kmax { continue; }
+            let c = match canon(&a) { Some(c) => c, None => continue };
+            sampled += 1;
+            let beh = behaviour(&c);
+            let v = buckets.entry(beh).or_default();
+            if v.iter().any(|x| *x == c) { continue; }
+            for x in v.iter() {
+                if pairs.len() < npairs { pairs.push((*x, c)); }
+            }
+            if v.len() < 8 { v.push(c); }
+        }
+    }
+    println!("FORGE (NA={NA}, depth<={depth}, k in [{kmin},{kmax}]):");
+    println!("  sampled {sampled} distinct-canon automata over {tries} tries");
+    println!("  equivalent pairs found: {}", pairs.len());
+    let mut by_k: FxMap<usize, (usize, usize, usize, usize)> = FxMap::default();
+    let mut shown = 0usize;
+    for (a, b) in pairs.iter() {
+        let ka = match to_gaut(a) { Some(g) => g.k as usize, None => continue };
+        let su = match sum_core(a, b) { Some(s) => s, None => continue };
+        let kk = a.k.max(b.k) as usize;
+        let e = by_k.entry(kk).or_insert((0, 0, 0, 0));
+        e.0 += 1;
+        let base = match close_congruence(&su, &[(0, ka)]) { Some(c) => c, None => continue };
+        let mut cands: Vec<([usize; MAXK], usize)> = vec![base];
+        for cg in lattice_congruences(&su).iter() {
+            if cg.0[0] == cg.0[ka] { cands.push(*cg); }
+        }
+        let mut elim_ok = false;
+        let mut ring_ok = false;
+        for (b2, nb2) in cands.iter() {
+            if let Some(q) = quotient_by(&su, b2, *nb2) {
+                let qq = trim_canon(&q).unwrap_or(q);
+                if symbolic_eliminable(&qq) { elim_ok = true; break; }
+                if ring_uniform(&qq) { ring_ok = true; }
+            }
+        }
+        if elim_ok { e.1 += 1; }
+        else if ring_ok { e.2 += 1; }
+        else {
+            e.3 += 1;
+            if shown < 6 {
+                shown += 1;
+                println!("  FORGE RESIDUE CANDIDATE #{shown} (k={kk}, sum k={}):", su.k);
+                for s in 0..su.k as usize {
+                    let steps: Vec<String> = (0..NA).map(|i|
+                        if su.st[s][i] == 0 { "-".to_string() }
+                        else { format!("{}", su.st[s][i] - 1) }).collect();
+                    println!("    {s}: hlt={:#06b} st={:?}", su.hl[s], steps);
+                }
+            }
+        }
+    }
+    let mut ks: Vec<usize> = by_k.keys().cloned().collect();
+    ks.sort();
+    println!("  stratum  pairs  elim  ring-only  neither");
+    for k in ks {
+        let (n, e, r, x) = by_k[&k];
+        println!("  k={k:<2}     {n:<6} {e:<5} {r:<9} {x}");
+    }
+}
+
+fn genexp<const NA: usize>(rnd: &mut impl FnMut() -> u64, depth: usize, nguards: u8,
+    maxk: usize) -> Option<Aut<NA>> {
+    let pick = rnd() % if depth == 0 { 2 } else { 5 };
+    match pick {
+        0 => Some(a_act()),
+        1 => Some(a_test((rnd() % nguards as u64) as u8)),
+        2 => {
+            let l = genexp(rnd, depth - 1, nguards, maxk)?;
+            let r = genexp(rnd, depth - 1, nguards, maxk)?;
+            let a = a_seq(&l, &r)?;
+            if a.k as usize <= maxk { Some(a) } else { None }
+        }
+        3 => {
+            let g = (rnd() % nguards as u64) as u8;
+            let l = genexp(rnd, depth - 1, nguards, maxk)?;
+            let r = genexp(rnd, depth - 1, nguards, maxk)?;
+            let a = a_ite(g, &l, &r)?;
+            if a.k as usize <= maxk { Some(a) } else { None }
+        }
+        _ => {
+            let g = (rnd() % nguards as u64) as u8;
+            let b = genexp(rnd, depth - 1, nguards, maxk)?;
+            Some(a_wh(g, &b))
+        }
+    }
+}
+
 /// PAD_MIXSAMPLE: random Thompson expressions (no closure — crash-safe), measuring the
 /// rate of MIXED-HALT SCCs.  This is the NA=4 question the exhaustive closure cannot
 /// reach on 48GB: with two primitive tests, do loop bodies produce mutually-reachable
@@ -4521,32 +4636,6 @@ fn mixsample<const NA: usize>(nguards: u8, maxk: usize) {
     // deterministic xorshift
     let mut st: u64 = 0x9E3779B97F4A7C15;
     let mut rnd = move || { st ^= st << 13; st ^= st >> 7; st ^= st << 17; st };
-    fn genexp<const NA: usize>(rnd: &mut impl FnMut() -> u64, depth: usize, nguards: u8,
-        maxk: usize) -> Option<Aut<NA>> {
-        let pick = rnd() % if depth == 0 { 2 } else { 5 };
-        match pick {
-            0 => Some(a_act()),
-            1 => Some(a_test((rnd() % nguards as u64) as u8)),
-            2 => {
-                let l = genexp(rnd, depth - 1, nguards, maxk)?;
-                let r = genexp(rnd, depth - 1, nguards, maxk)?;
-                let a = a_seq(&l, &r)?;
-                if a.k as usize <= maxk { Some(a) } else { None }
-            }
-            3 => {
-                let g = (rnd() % nguards as u64) as u8;
-                let l = genexp(rnd, depth - 1, nguards, maxk)?;
-                let r = genexp(rnd, depth - 1, nguards, maxk)?;
-                let a = a_ite(g, &l, &r)?;
-                if a.k as usize <= maxk { Some(a) } else { None }
-            }
-            _ => {
-                let g = (rnd() % nguards as u64) as u8;
-                let b = genexp(rnd, depth - 1, nguards, maxk)?;
-                Some(a_wh(g, &b))
-            }
-        }
-    }
     let has_mixed = |q: &Aut<NA>| sccs_of(q).iter().any(|members|
         members.len() > 1 && members.iter().any(|&s| q.hl[s] != 0
             && members.iter().any(|&t| q.hl[t] != 0 && q.hl[t] != q.hl[s])));
@@ -4601,6 +4690,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     println!("atoms = {NA}, semantic guards = {nguards}, closure bound K = {maxk}, pairs from k <= {pairk}");
     if std::env::var("PAD_MIXSAMPLE").is_ok() {
         mixsample::<NA>(nguards as u8, 12.min(MAXK - 1));
+        return;
+    }
+    if std::env::var("PAD_FORGE").is_ok() {
+        forge::<NA>(nguards as u8);
         return;
     }
 
