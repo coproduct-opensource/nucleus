@@ -1023,3 +1023,19 @@ instance resolution — isolate constructive kernels in import-free files.
 Remaining de-choice: computable trim (trimListD via the decidable
 liveness + equivalence to trimList), then bisim (phase 3), minRank
 (phase 4), sweep (phase 5).
+
+## DE-CHOICE PHASE 2c: THE COMPUTABLE TRIM (iteration 33)
+
+- liveWithinInst: the decidable-liveness instance (beats low-priority
+  Classical.propDecidable; computability check confirms resolution)
+- trimListD / trimAutD: the COMPUTABLE trim — [propext, Quot.sound],
+  compiles without noncomputable markers
+- trimListD_eq_trimList / trimAutD_eq_trimAut: over a pool closed under
+  transitions and covering all targets, the computable trim IS trimAut
+  (the equality theorems inherit choice from trimList's own classical
+  definition — the computable OBJECT is clean).
+
+PHASE 2 COMPLETE. Every theorem about trimAut transports to trimAutD by
+rewriting along trimAutD_eq_trimAut. Next: phase 3 — decidable
+bisimilarity at genW (the big one: de-chooses bisimRep and every
+quotient theorem), then minRank as list-min, then the sweep.

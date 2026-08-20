@@ -1,4 +1,4 @@
-import GkatPlanExistenceProofs
+import GkatTrimProofs
 import GkatListPigeonProofs
 
 /-! # Decidable guard satisfiability — the de-choice keystone
@@ -12,7 +12,7 @@ import GkatListPigeonProofs
 
 namespace GkatGuardDecide
 
-open GkatSyntax GkatGS GkatPlanExistence GkatListPigeon
+open GkatSyntax GkatGS GkatPlanExistence GkatListPigeon GkatTrim
 
 variable {S A T : Type}
 
@@ -622,5 +622,94 @@ theorem live_iff_liveWithin [DecidableEq S] (aut : GAut S A T)
   · exact liveWithin_live aut pool.length s
 
 #print axioms live_iff_liveWithin
+
+/-! ## The computable trim
+
+    With decidable bounded liveness, the trim becomes computable: swap
+    the classical `if Live` for `if liveWithin |pool|`.  Over a closed
+    pool covering all arm targets, the computable trim IS the trim. -/
+
+instance liveWithinInst [DecidableEq T] (aut : GAut S A T) (n : Nat)
+    (s : S) : Decidable (liveWithin aut n s) :=
+  liveWithinDec aut n s
+
+/-- Computable trim of an arm list. -/
+def trimListD [DecidableEq T] (aut : GAut S A T) (n : Nat) :
+    List (BExp T × A × S) → BExp T → List (BExp T × A × S)
+  | [], _ => []
+  | (g, a, t) :: rest, D =>
+      if liveWithin aut n t then
+        (.and g (.not D), a, t) :: trimListD aut n rest D
+      else trimListD aut n rest (.or D g)
+
+private theorem trimListD_cons [DecidableEq T] (aut : GAut S A T)
+    (n : Nat) (g : BExp T) (a : A) (t : S)
+    (rest : List (BExp T × A × S)) (D : BExp T) :
+    trimListD aut n ((g, a, t) :: rest) D
+      = if liveWithin aut n t then
+          (.and g (.not D), a, t) :: trimListD aut n rest D
+        else trimListD aut n rest (.or D g) := rfl
+
+open Classical in
+private theorem trimList_cons₅ (aut : GAut S A T) (g : BExp T) (a : A)
+    (t : S) (rest : List (BExp T × A × S)) (D : BExp T) :
+    trimList aut ((g, a, t) :: rest) D
+      = if Live aut t then (.and g (.not D), a, t) :: trimList aut rest D
+        else trimList aut rest (.or D g) := rfl
+
+/-- **THE COMPUTABLE TRIM IS THE TRIM** over a closed pool covering the
+    targets. -/
+theorem trimListD_eq_trimList [DecidableEq T] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      (∀ e ∈ L, e.2.2 ∈ pool) →
+      trimListD aut pool.length L D = trimList aut L D := by
+  intro L
+  induction L with
+  | nil => intro D _; rfl
+  | cons hd rest ih =>
+      intro D hin
+      obtain ⟨g, a, t⟩ := hd
+      have ht : t ∈ pool := hin (g, a, t) (List.mem_cons_self ..)
+      have hrest : ∀ e ∈ rest, e.2.2 ∈ pool :=
+        fun e he => hin e (List.mem_cons_of_mem _ he)
+      rw [trimListD_cons, trimList_cons₅]
+      by_cases hl : Live aut t
+      · rw [if_pos ((live_iff_liveWithin aut pool hclosed t ht).mp hl),
+            if_pos hl, ih D hrest]
+      · rw [if_neg (fun hlw =>
+            hl ((live_iff_liveWithin aut pool hclosed t ht).mpr hlw)),
+            if_neg hl, ih (.or D g) hrest]
+
+/-- Computable trimmed automaton. -/
+def trimAutD [DecidableEq T] (aut : GAut S A T) (n : Nat) :
+    GAut S A T where
+  states := aut.states
+  hlt := aut.hlt
+  trans := fun s => trimListD aut n (aut.trans s) .zero
+  start := aut.start
+
+/-- **THE COMPUTABLE TRIMMED AUTOMATON IS `trimAut`** when a pool covers
+    every state's arm targets. -/
+theorem trimAutD_eq_trimAut [DecidableEq T] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (htargets : ∀ s : S, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    trimAutD aut pool.length = trimAut aut := by
+  have hfun : (fun s => trimListD aut pool.length (aut.trans s) .zero)
+      = fun s => trimList aut (aut.trans s) .zero := by
+    funext s
+    exact trimListD_eq_trimList aut pool hclosed (aut.trans s) .zero
+      (htargets s)
+  show GAut.mk aut.states aut.hlt
+      (fun s => trimListD aut pool.length (aut.trans s) .zero)
+      aut.start
+    = GAut.mk aut.states aut.hlt
+      (fun s => trimList aut (aut.trans s) .zero) aut.start
+  rw [hfun]
+
+#print axioms trimListD_eq_trimList
+#print axioms trimAutD_eq_trimAut
 
 end GkatGuardDecide
