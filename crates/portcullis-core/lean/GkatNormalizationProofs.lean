@@ -1,6 +1,6 @@
 import GkatPlanExistenceProofs
 
-/-! # S0: the normalization bridge — loop-free interface algebra
+/-! # S0: the normalization bridge — the interface algebra
 
     `NormalizationBridge` needs, per program, a provably-equivalent program whose
     Thompson automaton has no silent transitions.  Following the skip-free GKAT
@@ -9,7 +9,7 @@ import GkatPlanExistenceProofs
     (early termination, `e·0 ≡ 0`) making the pruning provable.
 
     With tests, deadness is ATOM-INDEXED: a subterm is dead only relative to the
-    guard describing the atoms that can reach it.  This file builds the loop-free
+    guard describing the atoms that can reach it.  This file builds the
     interface algebra:
 
     * `outG g e` — the OUTPUT GUARD of `g?·e`: the tightest test its accepted
@@ -19,9 +19,13 @@ import GkatPlanExistenceProofs
       `seq` (the continuation's input guard is the head's output guard), which is
       exactly what pruning and, later, Thompson silent-freeness need.
 
-    Loops are the next stratum (their output guard is a finite fixpoint; unguarded
-    loops need `w2`/`w3_ba`); nothing here depends on them — `outG` carries a
-    placeholder on `wh` and every theorem is stated for `LoopFree` terms. -/
+    Loops are handled SOUNDLY but not tightly: `outG` over-approximates a loop's
+    output by `1` (emission against `1` is `s5`), and `prune` does not descend into
+    loop bodies (rewriting a body under the loop guard needs the guardedness
+    normalization, the next stratum).  Both spine theorems are therefore
+    UNCONDITIONAL over all of GKAT.  The first tight loop fact is proved below:
+    a PRODUCTIVE loop provably emits its exit guard (`wh_emits_exit`, via `w3_ba`
+    and `else_guard_test` — no UA). -/
 
 namespace GkatNormalization
 
@@ -30,19 +34,12 @@ open GkatRingSupport GkatRingPlan
 
 variable {A T : Type}
 
-/-- The loop-free fragment. -/
-inductive LoopFree : Exp A T → Prop where
-  | act (p : A) : LoopFree (.act p)
-  | test (b : BExp T) : LoopFree (.test b)
-  | seq {e f : Exp A T} : LoopFree e → LoopFree f → LoopFree (.seq e f)
-  | ite (b : BExp T) {e f : Exp A T} :
-      LoopFree e → LoopFree f → LoopFree (.ite b e f)
-
 open Classical in
 /-- The output guard of `g?·e`: the last atoms of its accepted strings.  An action
     resets the interface (`1` if anything reaches it, `0` if nothing does); tests
-    conjoin; `seq` composes; `ite` splits the input guard and joins.  The `wh` case
-    is a placeholder — every theorem below is restricted to `LoopFree`. -/
+    conjoin; `seq` composes; `ite` splits the input guard and joins.  The `wh`
+    case is the SOUND over-approximation `1` (tightening it is the loop
+    stratum). -/
 noncomputable def outG : BExp T → Exp A T → BExp T
   | g, .test b => .and g b
   | g, .act _ => if GuardEmpty g then .zero else .one
@@ -90,12 +87,12 @@ theorem himp_or_right (b c : BExp T) : GuardImplies c (.or b c) := by
   rw [h]
   cases bval W b x <;> rfl
 
-/-- **THE EMISSION THEOREM** (loop-free): running `g?·e` establishes `outG g e` —
-    provably, in the finite axioms. -/
-theorem outG_emits {e : Exp A T} (hLF : LoopFree e) :
+/-- **THE EMISSION THEOREM**: running `g?·e` establishes `outG g e` — provably,
+    in the finite axioms, for every GKAT program. -/
+theorem outG_emits (e : Exp A T) :
     ∀ g : BExp T,
       EquivBA (.seq (.test g) e) (.seq (.test g) (.seq e (.test (outG g e)))) := by
-  induction hLF with
+  induction e with
   | act p =>
       intro g
       by_cases hE : GuardEmpty g
@@ -117,7 +114,7 @@ theorem outG_emits {e : Exp A T} (hLF : LoopFree e) :
       refine EquivBA.trans (EquivBA.seq_c (EquivBA.symm (EquivBA.s6 g b))
         (EquivBA.base (Equiv.refl _))) ?_
       exact EquivBA.base (Equiv.s1 (.test g) (.test b) (.test (.and g b)))
-  | @seq e f _ _ ihe ihf =>
+  | seq e f ihe ihf =>
       intro g
       show EquivBA (.seq (.test g) (.seq e f))
         (.seq (.test g) (.seq (.seq e f) (.test (outG (outG g e) f))))
@@ -147,7 +144,7 @@ theorem outG_emits {e : Exp A T} (hLF : LoopFree e) :
           (EquivBA.base (Equiv.s1 (.test g) e f)))
         (EquivBA.base (Equiv.refl _))) ?_
       exact EquivBA.base (Equiv.s1 (.test g) (.seq e f) (.test (outG (outG g e) f)))
-  | @ite b e f _ _ ihe ihf =>
+  | ite b e f ihe ihf =>
       intro g
       show EquivBA (.seq (.test g) (.ite b e f))
         (.seq (.test g) (.seq (.ite b e f)
@@ -204,6 +201,11 @@ theorem outG_emits {e : Exp A T} (hLF : LoopFree e) :
         exact EquivBA.ite_c (EquivBA.base (Equiv.refl _))
           (EquivBA.base (Equiv.s1 (.test g) f (.test _)))
       exact EquivBA.trans hL (EquivBA.symm hR)
+  | wh b e _ =>
+      intro g
+      rw [show outG g (Exp.wh b e : Exp A T) = BExp.one from rfl]
+      exact EquivBA.symm (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.base (Equiv.s5 (.wh b e))))
 
 #print axioms outG_emits
 
@@ -250,7 +252,7 @@ theorem guard_zero_test {c : BExp T} (h : GuardEmpty c) :
 open Classical in
 /-- Prune `e` to its successfully-terminating branches, relative to the input
     guard `g`.  Returns literally `0?` on empty behaviours so deadness propagates
-    syntactically.  The `wh` case is a placeholder (the loop stratum). -/
+    syntactically.  Loop bodies are not descended into (the loop stratum). -/
 noncomputable def prune : BExp T → Exp A T → Exp A T
   | g, .test b => if GuardEmpty (.and g b) then .test .zero else .test b
   | g, .act p => if GuardEmpty g then .test .zero else .act p
@@ -262,15 +264,15 @@ noncomputable def prune : BExp T → Exp A T → Exp A T
       if prune (.and g b) e = .test .zero ∧ prune (.and g (.not b)) f = .test .zero
       then .test .zero
       else .ite b (prune (.and g b) e) (prune (.and g (.not b)) f)
-  | _, .wh b e => .wh b e
+  | g, .wh b e => if GuardEmpty g then .test .zero else .wh b e
 
 open Classical in
-/-- **THE PRUNING THEOREM** (loop-free): pruning is provable in the finite axioms,
-    under the input guard. -/
-theorem prune_equiv {e : Exp A T} (hLF : LoopFree e) :
+/-- **THE PRUNING THEOREM**: pruning is provable in the finite axioms, under the
+    input guard, for every GKAT program. -/
+theorem prune_equiv (e : Exp A T) :
     ∀ g : BExp T,
       EquivBA (.seq (.test g) e) (.seq (.test g) (prune g e)) := by
-  induction hLF with
+  induction e with
   | act p =>
       intro g
       by_cases hE : GuardEmpty g
@@ -296,11 +298,11 @@ theorem prune_equiv {e : Exp A T} (hLF : LoopFree e) :
       · rw [show prune g (Exp.test b : Exp A T) = .test b by
           unfold prune; exact if_neg hE]
         exact EquivBA.base (Equiv.refl _)
-  | @seq e f he hf ihe ihf =>
+  | seq e f ihe ihf =>
       intro g
       have main : EquivBA (.seq (.test g) (.seq e f))
           (.seq (.test g) (.seq (prune g e) (prune (outG g e) f))) := by
-        refine EquivBA.trans (tail_rewrite (outG_emits he g) (ihf (outG g e))) ?_
+        refine EquivBA.trans (tail_rewrite (outG_emits e g) (ihf (outG g e))) ?_
         refine EquivBA.trans (seq_assoc' (.test g) e (prune (outG g e) f)) ?_
         refine EquivBA.trans (EquivBA.seq_c (ihe g)
           (EquivBA.base (Equiv.refl _))) ?_
@@ -324,7 +326,7 @@ theorem prune_equiv {e : Exp A T} (hLF : LoopFree e) :
               else Exp.seq (prune g e) (prune (outG g e) f) := rfl
         rw [heq, if_neg hz]
         exact main
-  | @ite b e f he hf ihe ihf =>
+  | ite b e f ihe ihf =>
       intro g
       have main : EquivBA (.seq (.test g) (.ite b e f))
           (.seq (.test g)
@@ -356,16 +358,42 @@ theorem prune_equiv {e : Exp A T} (hLF : LoopFree e) :
               else Exp.ite b (prune (.and g b) e) (prune (.and g (.not b)) f) := rfl
         rw [heq, if_neg hz]
         exact main
+  | wh b e _ =>
+      intro g
+      by_cases hE : GuardEmpty g
+      · rw [show prune g (Exp.wh b e : Exp A T) = .test .zero by
+          unfold prune; exact if_pos hE]
+        exact EquivBA.trans (test_empty_absorb hE _)
+          (EquivBA.symm (test_empty_absorb hE _))
+      · rw [show prune g (Exp.wh b e : Exp A T) = .wh b e by
+          unfold prune; exact if_neg hE]
+        exact EquivBA.base (Equiv.refl _)
 
 #print axioms prune_equiv
 
-/-- The unguarded corollary: `e ≡ prune 1 e` for loop-free `e`. -/
-theorem prune_equiv_top {e : Exp A T} (hLF : LoopFree e) :
+/-- The unguarded corollary: `e ≡ prune 1 e`, for EVERY GKAT program. -/
+theorem prune_equiv_top (e : Exp A T) :
     EquivBA e (prune .one e) :=
   EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.s4 e)))
-    (EquivBA.trans (prune_equiv hLF .one)
+    (EquivBA.trans (prune_equiv e .one)
       (EquivBA.base (Equiv.s4 (prune .one e))))
 
 #print axioms prune_equiv_top
+
+/-! ## The first tight loop fact: productive loops emit their exit guard -/
+
+/-- **Exit emission for productive loops**: when the body is strictly productive
+    (`E e ≡ 0`, the `w3` side condition), the loop provably ends in `¬b` — the
+    tight output guard, with no input-guard fixpoint needed.  `w1` unrolls, the
+    else arm strengthens from `1?` to `(¬b)?` (`else_guard_test`), and `w3_ba`
+    refolds against the strengthened continuation.  No UA. -/
+theorem wh_emits_exit {b : BExp T} {e : Exp A T}
+    (hprod : EquivBA (.test (E e) : Exp A T) (.test .zero)) :
+    EquivBA (.wh b e) (.seq (.wh b e) (.test (.not b))) :=
+  EquivBA.w3_ba hprod
+    (EquivBA.trans (EquivBA.base (Equiv.w1 b e))
+      (GkatSumQuotient.else_guard_test b (.seq e (.wh b e))))
+
+#print axioms wh_emits_exit
 
 end GkatNormalization

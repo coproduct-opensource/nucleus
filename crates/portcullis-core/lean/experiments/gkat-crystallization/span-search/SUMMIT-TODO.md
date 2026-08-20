@@ -31,8 +31,13 @@
             * outG_emits: g?·e ≡ g?·(e·(outG g e)?) in the finite axioms
             * prune + prune_equiv (+ _top): dead-branch elimination provable,
               deadness propagates syntactically (prune = 0? on empty behaviours)
-            * NEXT: loop stratum (outG fixpoint for wh; unguarded loops via
-              w2/w3_ba: wh 1 e ≡ 0), then LiveTerm invariant, then Thompson
+            * spine now UNCONDITIONAL over all of GKAT: loops handled soundly
+              (outG wh = 1 via s5; prune keeps bodies), LoopFree dropped
+            * wh_emits_exit: PRODUCTIVE loops provably emit their exit guard ¬b
+              (w1 + else_guard_test + w3_ba) — axiom-free, no UA
+            * NEXT: tight loop stratum (body descent needs wh b e ≡ wh b (b?·e),
+              which needs productivity, which needs the w2 guardedness
+              normalization — that unlocks wh 1 e ≡ 0 too), then Thompson
               silent-freeness of pruned terms (the mountain), then wire into
               NormalizationBridge
       - [~] S2: role existence for the canonical quotient (the research core) —
