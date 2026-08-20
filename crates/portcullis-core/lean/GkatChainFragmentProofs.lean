@@ -1963,4 +1963,175 @@ theorem sum_chain_qperiod2 {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
 #print axioms sum_chain_hnofix
 #print axioms sum_chain_qperiod2
 
+/-! ## The cover: every class is on a listed orbit
+
+    Right-summand mirrors of the init–port identification, then the cover:
+    each quotient state of the composite is the class of an init state
+    (which IS the port class) or of a spine state (which is a port
+    iterate) — of the left or right loop. -/
+
+open Classical in
+/-- Right mirror: init arms have live targets. -/
+theorem sum_targets_live_none_inr {S₁ S₂ : Type}
+    {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) (first : S₂)
+    (aut₁ : GAut (Option S₁) A T)
+    (hit : InitTargetsListed B)
+    (hstates : B.core.states = l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ e ∈ (sumGAut aut₁ (loopInitialized b B).toGAut).trans
+        (Sum.inr (none : Option S₂)),
+      Live (sumGAut aut₁ (loopInitialized b B).toGAut) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  obtain ⟨tB, htB, heqB⟩ := List.mem_map.mp ht₀
+  rw [← heq₁, ← heq₀, ← heqB]
+  show Live _ (Sum.inr (some tB.2.2))
+  have hmem : tB.2.2 ∈ l := by
+    have := hit tB htB
+    rw [hstates] at this
+    exact this
+  obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem hmem
+  rw [← hjx]
+  exact spine_live_sum_inr b hsp first aut₁ hexit j hj
+
+open Classical in
+/-- Right mirror of the init–port identification. -/
+theorem sum_chain_none_lang_inr {S₁ S₂ : Type}
+    {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) (first : S₂)
+    (aut₁ : GAut (Option S₁) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₂, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (h0 : 0 < l.length) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (loopInitialized b B).toGAut))
+        (Sum.inr (none : Option S₂))
+      = autLang (genW T)
+          (trimAut (sumGAut aut₁ (loopInitialized b B).toGAut))
+          (Sum.inr (some (l[l.length - 1]'(by omega)))) := by
+  apply lang_eq_of_step_hlt
+  · intro α
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (sum_targets_live_none_inr b hsp first aut₁ hit hstates hexit) α]
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (sum_targets_live_inr b hsp first aut₁ hct hit hstates hexh hexit
+        (l[l.length - 1]'(by omega))) α]
+    rw [autStep_sumGAut_inr, autStep_sumGAut_inr]
+    rw [autStep_toGAut_none, autStep_toGAut_some]
+    have hfm : firstMatch (genW T) α (loopInitialized b B).initTrans
+        = firstMatch (genW T) α
+          ((loopInitialized b B).core.trans
+            (l[l.length - 1]'(by omega))) := by
+      show firstMatch (genW T) α
+          (B.initTrans.map (fun t => (.and b t.1, t.2)))
+        = firstMatch (genW T) α
+          (B.core.trans (l[l.length - 1]'(by omega))
+            ++ B.initTrans.map (fun t =>
+              (.and (B.core.hlt (l[l.length - 1]'(by omega)))
+                (.and b t.1), t.2)))
+      rw [spine_last_nil l hsp h0]
+      show firstMatch (genW T) α
+          (B.initTrans.map (fun t => ((.and b t.1 : BExp T), t.2)))
+        = firstMatch (genW T) α
+          (B.initTrans.map (fun t =>
+            ((.and (B.core.hlt (l[l.length - 1]'(by omega)))
+              (.and b t.1) : BExp T), t.2)))
+      apply firstMatch_map_guard_congr
+      intro t _
+      show bval (genW T) (.and b t.1) α
+        = (bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+          && bval (genW T) (.and b t.1) α)
+      rw [spine_hlt_last l hsp h0 α]
+      rfl
+    rw [hfm]
+  · intro α
+    show (!(bval (genW T) b α))
+      = bval (genW T)
+          ((loopInitialized b B).core.hlt
+            (l[l.length - 1]'(by omega))) α
+    rw [loop_hlt_port b hsp h0 α]
+
+open Classical in
+/-- **THE COVER**: every quotient class of the chain-loop composite is on
+    one of the two listed orbits. -/
+theorem sum_chain_cover {S₁ S₂ : Type}
+    {B₁ : InitializedGAut S₁ A T} {B₂ : InitializedGAut S₂ A T}
+    (b₁ b₂ : BExp T) {l₁ : List S₁} {l₂ : List S₂}
+    (hsp₁ : ChainSpine B₁ l₁) (hsp₂ : ChainSpine B₂ l₂)
+    {f₁ : S₁} {f₂ : S₂}
+    (hct₁ : CoreTargetsListed B₁) (hit₁ : InitTargetsListed B₁)
+    (hct₂ : CoreTargetsListed B₂) (hit₂ : InitTargetsListed B₂)
+    (hstates₁ : B₁.core.states = l₁) (hstates₂ : B₂.core.states = l₂)
+    (hexh₁ : ∀ x : S₁, x ∈ l₁) (hexh₂ : ∀ x : S₂, x ∈ l₂)
+    (hexit₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hexit₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (h01 : 0 < l₁.length) (h02 : 0 < l₂.length)
+    (hfl₁ : l₁[0]'h01 = f₁) (hfl₂ : l₂[0]'h02 = f₂) :
+    ∀ c ∈ (cleanAut (bisimQuotAut (trimAut
+        (sumGAut (loopInitialized b₁ B₁).toGAut
+          (loopInitialized b₂ B₂).toGAut)))).states,
+      ∃ p ∈ [((Sum.inl (some (l₁[l₁.length - 1]'(by omega)))
+            : Sum (Option S₁) (Option S₂)), l₁.length),
+          (Sum.inr (some (l₂[l₂.length - 1]'(by omega))), l₂.length)],
+        InOrbit (sumGAut (loopInitialized b₁ B₁).toGAut
+            (loopInitialized b₂ B₂).toGAut)
+          (Sum.elim
+            (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+            (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+          p.1 c := by
+  intro c hc
+  obtain ⟨x, hx, hrep⟩ := List.mem_map.mp hc
+  rcases List.mem_append.mp hx with hL | hR
+  · obtain ⟨o, ho, hoeq⟩ := List.mem_map.mp hL
+    rcases List.mem_cons.mp ho with hnone | hsome
+    · refine ⟨_, List.mem_cons_self .., 0, ?_⟩
+      rw [← hrep, ← hoeq, hnone]
+      exact (rep_lang_congr _
+        (sum_chain_none_lang b₁ hsp₁ f₁ _ hct₁ hit₁ hstates₁ hexh₁
+          hexit₁ h01)).symm.symm
+    · obtain ⟨s, hs, hseq⟩ := List.mem_map.mp hsome
+      have hsl : s ∈ l₁ := by
+        rw [← hstates₁]
+        exact hs
+      obtain ⟨j, hj, hjs⟩ := List.getElem_of_mem hsl
+      refine ⟨_, List.mem_cons_self .., j + 1, ?_⟩
+      rw [← hrep, ← hoeq, ← hseq, ← hjs]
+      have hn : nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+          (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+          (j + 1) (Sum.inl (some (l₁[l₁.length - 1]'(by omega))))
+          = Sum.inl (some (l₁[j]'hj)) := by
+        rw [nxtIter_lift_inl]
+        rw [spine_iter_port hsp₁ h01 hfl₁ j hj]
+      rw [hn]
+  · obtain ⟨o, ho, hoeq⟩ := List.mem_map.mp hR
+    rcases List.mem_cons.mp ho with hnone | hsome
+    · refine ⟨_, List.mem_cons.mpr (Or.inr (List.mem_cons_self ..)),
+        0, ?_⟩
+      rw [← hrep, ← hoeq, hnone]
+      exact rep_lang_congr _
+        (sum_chain_none_lang_inr b₂ hsp₂ f₂ _ hct₂ hit₂ hstates₂ hexh₂
+          hexit₂ h02)
+    · obtain ⟨s, hs, hseq⟩ := List.mem_map.mp hsome
+      have hsl : s ∈ l₂ := by
+        rw [← hstates₂]
+        exact hs
+      obtain ⟨j, hj, hjs⟩ := List.getElem_of_mem hsl
+      refine ⟨_, List.mem_cons.mpr (Or.inr (List.mem_cons_self ..)),
+        j + 1, ?_⟩
+      rw [← hrep, ← hoeq, ← hseq, ← hjs]
+      have hn : nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext f₁ l₁)))
+          (fun o : Option S₂ => Sum.inr (o.map (spineNext f₂ l₂))))
+          (j + 1) (Sum.inr (some (l₂[l₂.length - 1]'(by omega))))
+          = Sum.inr (some (l₂[j]'hj)) := by
+        rw [nxtIter_lift_inr]
+        rw [spine_iter_port hsp₂ h02 hfl₂ j hj]
+      rw [hn]
+
+#print axioms sum_chain_cover
+
 end GkatChainFragment

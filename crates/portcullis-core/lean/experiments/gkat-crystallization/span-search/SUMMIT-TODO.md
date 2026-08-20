@@ -829,3 +829,23 @@ chain-loop composite (both-sat case): the os entry
 hstates/hnodesc (via interior_no_desc + hstep_uniq)/hnoeps. Remaining:
 the cover (init class via none~port + orbit membership of spine classes;
 inr side; degenerate branches), then the master assembly + wrapper.
+
+## THE COVER (loop iteration 26)
+
+- sum_targets_live_none_inr + sum_chain_none_lang_inr: right mirrors of
+  the init-port identification
+- sum_chain_cover: EVERY quotient class of the chain-loop composite is on
+  one of the two listed orbits. Four class shapes: inl none -> port class
+  at index 0 (rep_lang_congr over the init-port language equality);
+  inl (some s) -> port iterate at index j+1 (lift + spine_iter_port);
+  inr mirrors. ZERO ERRORS FIRST PASS. No base branch needed in the
+  both-sat case.
+
+ALL hypotheses of rankNxt_quot_solvesBA now proved for the chain-loop
+composite (both-sat): hdec, hnxt_rank, hfire, os = two port entries with
+full bundles (hk/hper/hlive/hnofix/hmin/qP>=2/hstates/hnodesc via
+interior_no_desc/hnoeps), hcover. NEXT: the master assembly theorem
+(chain_loops_solvable: instantiate rankNxt with all of the above +
+interior_no_desc plumbing at iterate positions), then the wrapper
+(equivBA_of_quot_solvesBA) for wh b1 chain1 ~ wh b2 chain2, then the
+degenerate branches.
