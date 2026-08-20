@@ -1383,3 +1383,23 @@ transparency, walked-hos discharge with hnontriv from port/interior
 ε-distinctness, cover with init~port), the wrapper:
 TWOLOOPS_COMPLETE — the FIFTH theorem, first with genuinely nested
 cycles.
+
+## QUEUED CAMPAIGN: STEELMAN HARDENING (user-directed 2026-08-20)
+
+After the open-problem campaign, the loop pivots to pre-empting the
+steelman objections (analysis on record in session):
+1. GkatStatementKernel.lean — the ~200-line trusted statement base a
+   referee must read, annotated with paper citations.
+2. BA-congruence derivability: baTest/ite_guard/wh_guard derivable from
+   the published syntactic Boolean-algebra axioms.
+3. Model equivalence: UniformLanguageEquivalent <-> guarded-string
+   language equality over atoms 2^T; note the language-vs-bisimulation
+   fork explicitly.
+4. Edge cases: T/A empty/degenerate; no typeclass leakage into the
+   completeness statement.
+5. Harness validation: differential-test uleDec against an independent
+   GKAT implementation.
+6. Claim-wording pass: n-ary UA scheme eliminated (W3 = n=1 retained);
+   language-model completeness; decidability-not-efficiency.
+
+FULL QUEUE: two-loop/nested -> OPEN PROBLEM -> STEELMAN HARDENING.
