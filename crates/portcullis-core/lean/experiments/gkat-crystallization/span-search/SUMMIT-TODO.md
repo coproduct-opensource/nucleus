@@ -949,3 +949,22 @@ THE LADDER (all UA-free, no semantic side conditions):
 
 PIVOT: per the user-approved queue, the loop now moves to the DE-CHOICE
 campaign (plan under QUEUED CAMPAIGN above).
+
+## DE-CHOICE PHASE 1: DECIDABLE GUARD SATISFIABILITY (iteration 29)
+
+New file GkatGuardDecideProofs.lean:
+- testsOf: the primitive tests occurring in a guard
+- override / enumAtoms: all Boolean assignments over a finite test list
+- bval_testsOf: FINITE SUPPORT — generic evaluation sees only occurring
+  tests
+- enumAtoms_complete: the enumeration realizes every atom on the list
+- guardSatDecidable / guardRefDecidable: DECIDABLE satisfiability and
+  refutability of guards at generic atoms, over [DecidableEq T] —
+  computable instances at [propext, Quot.sound]. NO CHOICE.
+
+Every Classical.em on guard degeneracy in the ladder (the 9-way split of
+chainloops_complete_free, the collapse selection) can now run on these
+instances. Next phases: decidable liveness (bounded reachability),
+decidable bisimilarity at genW over mentioned tests (partition
+refinement, bisimRep := first-in-list), minRank as list-min, then sweep
+the classical dites.
