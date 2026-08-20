@@ -441,3 +441,21 @@ All [propext, Classical.choice, Quot.sound].
 
 Remaining for chainloops_complete: cy-bundle side conditions (port detection,
 interior-class arm targeting from the dichotomy), fragment rank, glue.
+
+## THE ORBIT DICHOTOMY + hint_nil BRIDGE (loop iteration 10)
+
+- orbit_dichotomy: the ABSTRACT successor of quot_cycle_dichotomy (⟦nxt u⟧
+  for a choice-picked realizer u) IS the concrete next orbit class
+  ⟦nxtIter (j+1) u₀⟧ — rank identification via cycle_level_all + shift_min,
+  successor identification via class_succ_eq + rep_lang_congr. Every cleaned
+  quotient arm at an orbit class: self ∨ minRank-descending ∨ NEXT-ON-CYCLE.
+- orbit_arms_pinned / orbit_arms_pinned_nxtAt: descent-free classes have
+  every arm pinned to self-or-next, through the nxtAt wrap at qPeriod
+  (qm_wrap = first-return periodicity).
+- hint_nil_of_pinned: pinned arms collapse the double gOthers — the
+  walked-exit interior side condition hint_nil holds SEMANTICALLY.
+All [propext, Classical.choice, Quot.sound].
+
+The first cy-bundle side condition is discharged from pure semantics.
+Remaining: himpc/hdisj/hexcl (halt-guard conditions — need the fragment's
+halt structure), fragment rank, glue rankNxt_quot_solvesBA.

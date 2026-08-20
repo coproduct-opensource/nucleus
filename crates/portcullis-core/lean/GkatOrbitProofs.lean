@@ -850,4 +850,178 @@ theorem basepoint_isSome (aut : GAut S A T) (nxt : S → S)
 #print axioms basepoint_shift
 #print axioms basepoint_isSome
 
+/-! ## The orbit dichotomy: pinning quotient arms to the concrete cycle
+
+    `quot_cycle_dichotomy` classifies cleaned quotient arms against an
+    ABSTRACT successor `⟦nxt u⟧` for a choice-picked minimal realizer `u`.
+    On orbit classes the abstract successor IS the concrete next orbit class,
+    so descent-free classes have every arm pinned to self-or-next — which is
+    exactly the walked-exit side condition `hint_nil`. -/
+
+open Classical in
+/-- **THE ORBIT DICHOTOMY**: every cleaned arm of the canonical quotient at
+    the orbit class `⟦nxtIter j u₀⟧` is a self-arm, strictly descends in
+    minimal-realizer rank, or targets the NEXT orbit class
+    `⟦nxtIter (j+1) u₀⟧`. -/
+theorem orbit_dichotomy (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (j : Nat)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      e.2.2 = bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+      ∨ e.2.2 = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+  obtain ⟨u, hule, huL, harms⟩ :=
+    quot_cycle_dichotomy aut rank nxt hdec _ hc
+  have hsucc : bisimRep (trimAut aut) (nxt u)
+      = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+    have hlvl := cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper
+      hlive hnofix hmin j
+    have hrankJ : rank (nxtIter nxt j u₀) = rank u₀ :=
+      nxtIter_rank hnxt_rank u₀ j
+    have hL1 : autLang (genW T) (trimAut aut) (nxtIter nxt j u₀)
+        = autLang (genW T) (trimAut aut) u :=
+      (huL.trans (rep_lang aut _)).symm
+    have hranku : rank u = rank (nxtIter nxt j u₀) := by
+      rw [hlvl] at hule
+      have h2 : rank (nxtIter nxt j u₀) ≤ rank u :=
+        shift_min aut rank nxt hdec hnxt_rank hfire hk hper hlive hnofix
+          hmin j u hL1.symm
+      omega
+    obtain ⟨α, a, hstep⟩ := hfire (nxtIter nxt j u₀)
+      (orbit_live_all aut rank nxt hfire hk hper hlive hnofix j)
+      (orbit_nofix_all hk hper hnofix j)
+    have hlnext : Live (trimAut aut) (nxt (nxtIter nxt j u₀)) :=
+      orbit_live_all aut rank nxt hfire hk hper hlive hnofix (j + 1)
+    have hmin₂ : ∀ w, autLang (genW T) (trimAut aut) w
+        = autLang (genW T) (trimAut aut) (nxt (nxtIter nxt j u₀)) →
+        rank (nxtIter nxt j u₀) ≤ rank w := by
+      intro w hw
+      have h3 := shift_min aut rank nxt hdec hnxt_rank hfire hk hper hlive
+        hnofix hmin (j + 1) w hw
+      rw [nxtIter_rank hnxt_rank u₀ (j + 1)] at h3
+      rw [hrankJ]
+      exact h3
+    have hLsucc := class_succ_eq aut rank nxt hdec hnxt_rank hL1 hranku
+      hstep hlnext hmin₂
+    exact rep_lang_congr aut hLsucc
+  intro e he
+  rcases harms e he with h | h | h
+  · exact Or.inl h
+  · exact Or.inr (Or.inl h)
+  · exact Or.inr (Or.inr (h.trans hsucc))
+
+open Classical in
+/-- **DESCENT-FREE PINNING**: an orbit class with no descending arms has
+    every cleaned arm pinned to self or the next orbit class. -/
+theorem orbit_arms_pinned (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (j : Nat)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states)
+    (hNoDesc : ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      ¬ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      e.2.2 = bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∨ e.2.2 = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+  intro e he
+  rcases orbit_dichotomy aut rank nxt hdec hnxt_rank hfire hk hper hlive
+    hnofix hmin j hc e he with h | h | h
+  · exact Or.inl h
+  · exact absurd h (hNoDesc e he)
+  · exact Or.inr h
+
+open Classical in
+/-- The orbit's cycle map wraps at the first-return period. -/
+theorem qm_wrap (aut : GAut S A T) (nxt : S → S) (u₀ : S) (k : Nat)
+    (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀) :
+    bisimRep (trimAut aut) (nxtIter nxt (qPeriod aut nxt u₀ k) u₀)
+      = bisimRep (trimAut aut) (nxtIter nxt 0 u₀) :=
+  (qPeriod_spec aut nxt u₀ k hk hper).1
+
+open Classical in
+/-- Arms pinned to self-or-next through the `nxtAt` wrap of the cycle map
+    `m j := ⟦nxtIter j u₀⟧` at length `qPeriod`. -/
+theorem orbit_arms_pinned_nxtAt (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (j : Nat)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states)
+    (hNoDesc : ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      ¬ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      e.2.2 = bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∨ e.2.2 = nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) j := by
+  intro e he
+  rcases orbit_arms_pinned aut rank nxt hdec hnxt_rank hfire hk hper hlive
+    hnofix hmin j hc hNoDesc e he with h | h
+  · exact Or.inl h
+  · refine Or.inr ?_
+    unfold nxtAt
+    rcases Classical.em (j + 1 = qPeriod aut nxt u₀ k) with hlen | hlen
+    · rw [if_pos hlen]
+      show e.2.2 = bisimRep (trimAut aut) (nxtIter nxt 0 u₀)
+      rw [h, hlen]
+      exact qm_wrap aut nxt u₀ k hk hper
+    · rw [if_neg hlen]
+      exact h
+
+open Classical in
+/-- **PINNED ARMS GIVE `hint_nil`**: when every arm at `m j` targets self or
+    `nxtAt m len j`, the walked-exit interior side condition holds. -/
+theorem hint_nil_of_pinned (Q : GAut S A T) (m : Nat → S) (len j : Nat)
+    (hpin : ∀ e ∈ Q.trans (m j), e.2.2 = m j ∨ e.2.2 = nxtAt m len j) :
+    gOthers (nxtAt m len j) (restL Q m j) = [] := by
+  apply gOthers_nil_of_all
+  intro e he
+  obtain ⟨heL, hne⟩ := gOthers_sub (m j) (Q.trans (m j)) e he
+  rcases hpin e heL with h | h
+  · exact absurd h hne
+  · exact h
+
+#print axioms orbit_dichotomy
+#print axioms orbit_arms_pinned_nxtAt
+#print axioms hint_nil_of_pinned
+
 end GkatOrbit
