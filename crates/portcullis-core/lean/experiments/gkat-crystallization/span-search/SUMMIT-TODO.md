@@ -561,3 +561,23 @@ Remaining for chainloops_complete: the ChainLoops fragment — Thompson
 automata of wh b (p1;...;pn) chains are rank-mod-nxt with a covering orbit
 list (hos/hcover discharge by construction), then the completeness wrapper
 (equivBA_of_quot_solvesBA pattern from atomicloops_complete).
+
+## INTERIOR DESCENT-FREENESS FROM DETERMINISTIC STEPPING (loop iteration 16)
+
+- interior_no_desc: an orbit member that steps UNIQUELY to its successor at
+  every atom (hstep_uniq: autStep = some (a, next) for all alpha) gives its
+  quotient class NO descending arms. Every cleaned quotient arm fires at
+  some atom; the class word at that atom must start with the unique source
+  letter (letter extraction by determinism); the arm target's language is
+  then THE successor's language (derivative pinch from both sides), and
+  successor + self both sit at cycle level rank u0 — descent is
+  Nat.lt_irrefl. [propext, Classical.choice, Quot.sound] — FIRST PASS.
+
+This converts rankNxt_quot_solvesBA's hnodesc obligation (about CLEANED
+QUOTIENT arms — hard for a fragment to see) into hstep_uniq (a constructive
+single-step fact about the source Thompson automaton — chain positions have
+one guard-1 arm). Fragment obligations for chainloops_complete now:
+  per orbit rep: hk/hper/hlive/hnofix/hmin, 2 <= qPeriod, hstates,
+                 hstep_uniq at interiors, hnoeps at interiors
+  global: hdec/hnxt_rank/hfire, cover (minRank realizer case-split)
+Next: ChainLoops inductive + chain-Thompson structural facts.

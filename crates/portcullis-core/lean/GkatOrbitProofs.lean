@@ -1823,7 +1823,149 @@ theorem rankNxt_quot_solvesBA (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms rankNxt_quot_solvesBA
 
+/-! ## Interior descent-freeness from deterministic stepping
+
+    An interior chain position steps UNIQUELY: at every atom, the one thing
+    it can do is perform the next chain action and advance.  Semantically
+    this pins every cleaned quotient arm's target to the successor class —
+    which sits at the SAME cycle level — so no arm descends.  This converts
+    `rankNxt_quot_solvesBA`'s `hnodesc` obligation into a constructive
+    single-step fact about the source automaton. -/
+
+open Classical in
+/-- **DETERMINISTIC STEP ⟹ NO DESCENT**: an orbit member that steps
+    uniquely to its successor at every atom gives its quotient class no
+    descending arms. -/
+theorem interior_no_desc (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (j : Nat)
+    (hstep_uniq : ∀ α : T → Bool, ∃ a : A,
+      autStep (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+        = some (a, nxtIter nxt (j + 1) u₀)) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      ¬ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀)) := by
+  intro e he
+  -- the arm fires at some generic atom
+  obtain ⟨α, -, hfm⟩ := cleanList_fires
+    (bisimQuotAut (trimAut aut))
+    ((bisimQuotAut (trimAut aut)).trans
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀))) .zero e he
+  have hstepQ : autStep (genW T) (bisimQuotAut (trimAut aut))
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+      = some (e.2.1, e.2.2) := by
+    rw [← autStep_cleanAut (genW T)]
+    exact hfm
+  -- the quotient step is a language derivative (in trim terms)
+  have hDT : ∀ (β : T → Bool) (w : List (A × (T → Bool))),
+      autRun (genW T) (trimAut aut) e.2.2 β w ↔
+        autRun (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+          ((e.2.1, β) :: w) := by
+    intro β w
+    have h1 := step_derivative hstepQ β w
+    have h2 : autRun (genW T) (bisimQuotAut (trimAut aut)) e.2.2 β w
+        ↔ autRun (genW T) (trimAut aut) e.2.2 β w :=
+      iff_of_eq (congrFun (quot_lang_eq aut e.2.2) (β, w))
+    have h3 : autRun (genW T) (bisimQuotAut (trimAut aut))
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+          ((e.2.1, β) :: w)
+        ↔ autRun (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+          ((e.2.1, β) :: w) :=
+      iff_of_eq (congrFun
+        (quot_lang_eq aut (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+        (α, (e.2.1, β) :: w))
+    exact (h2.symm.trans h1).trans h3
+  -- the target is live: it accepts some word
+  have heQ : e ∈ (bisimQuotAut (trimAut aut)).trans
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀)) :=
+    cleanList_sub _ .zero e he
+  obtain ⟨v'', hv'', hrep⟩ : ∃ v'',
+      v'' ∈ (trimAut aut).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)) ∧
+      bisimRep (trimAut aut) v''.2.2 = e.2.2 := by
+    obtain ⟨v'', hv'', heq⟩ := List.mem_map.mp heQ
+    exact ⟨v'', hv'', congrArg (fun z => z.2.2) heq⟩
+  have htlive : ∃ (β : T → Bool) (w : List (A × (T → Bool))),
+      autRun (genW T) (trimAut aut) e.2.2 β w := by
+    have hlv : Live aut v''.2.2 :=
+      trimList_target_live aut
+        (aut.trans (bisimRep (trimAut aut) (nxtIter nxt j u₀))) .zero
+        v'' hv''
+    have hlvT : Live (trimAut aut) v''.2.2 := live_trimAut hlv
+    obtain ⟨β, w, hw⟩ := hlvT
+    have hle : autLang (genW T) (trimAut aut) v''.2.2
+        = autLang (genW T) (trimAut aut) e.2.2 := by
+      rw [← hrep]
+      exact autLang_eq_of_gautBisim (genBisimilar_bisim (trimAut aut))
+        (bisimRep_bisim (trimAut aut) v''.2.2)
+    exact ⟨β, w, (iff_of_eq (congrFun hle (β, w))).mp hw⟩
+  -- the class's word at α starts with the UNIQUE source letter
+  obtain ⟨a, hstepS⟩ := hstep_uniq α
+  obtain ⟨β₀, w₀, hw₀⟩ := htlive
+  have hwordC : autRun (genW T) (trimAut aut)
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+      ((e.2.1, β₀) :: w₀) := (hDT β₀ w₀).mp hw₀
+  have hwordS : autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+      ((e.2.1, β₀) :: w₀) :=
+    (iff_of_eq (congrFun (rep_lang aut (nxtIter nxt j u₀))
+      (α, (e.2.1, β₀) :: w₀))).mp hwordC
+  obtain ⟨s', hs', -⟩ : ∃ s',
+      autStep (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+        = some (e.2.1, s')
+      ∧ autRun (genW T) (trimAut aut) s' β₀ w₀ := hwordS
+  have hletter : e.2.1 = a := by
+    have h0 := hs'.symm.trans hstepS
+    have h1 := Option.some.inj h0
+    rw [Prod.mk.injEq] at h1
+    exact h1.1
+  -- the target's language IS the successor's language
+  have htL : autLang (genW T) (trimAut aut) e.2.2
+      = autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+    funext gs
+    obtain ⟨β, w⟩ := gs
+    apply propext
+    have hDS := step_derivative hstepS β w
+    have hDc := hDT β w
+    have hcs : autRun (genW T) (trimAut aut)
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)) α
+        ((e.2.1, β) :: w)
+        ↔ autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+          ((e.2.1, β) :: w) :=
+      iff_of_eq (congrFun (rep_lang aut (nxtIter nxt j u₀))
+        (α, (e.2.1, β) :: w))
+    rw [hletter] at hDc hcs
+    exact hDc.trans (hcs.trans hDS.symm)
+  -- both levels are rank u₀
+  intro hcontra
+  have h1 : minRank (trimAut aut) rank e.2.2
+      = minRank (trimAut aut) rank
+        (bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀)) := by
+    apply minRank_lang_congr
+    rw [htL, rep_lang aut]
+  have h2 := cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper
+    hlive hnofix hmin (j + 1)
+  have h3 := cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper
+    hlive hnofix hmin j
+  rw [h1, h2, h3] at hcontra
+  exact Nat.lt_irrefl _ hcontra
+
+#print axioms interior_no_desc
+
 end GkatOrbit
+
 
 
 
