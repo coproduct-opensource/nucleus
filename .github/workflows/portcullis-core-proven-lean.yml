@@ -237,6 +237,7 @@ jobs:
             GkatRingPlan2Proofs \
             GkatRingDecompProofs \
             GkatDecompPilotProofs \
+            GkatDecompProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
