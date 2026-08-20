@@ -1700,3 +1700,30 @@ thompsonDecEq), so the sixth theorem can inherit the leaner profile.
 Next bite (back on mainline): the threeLoop fragment facts — Σ-lifted
 step lemmas, liveness, language distinctness, quotient cover — feeding
 `chord_assembly_rolesD`.
+
+## Iteration 61 — fragment facts, left side: liveness + trim transparency
+
+Route decision locked in after reading the walked glue tail and
+`cleanAut`: the sixth theorem needs NO general branching-orbit layer.
+The pipeline is `chord_assembly_roles` applied to
+`cleanAut (bisimQuotAut (trimAut sum))` → `decomp_solves` →
+`solvesBA_unclean` → `equivBA_of_quot_solvesBA`, with the cluster bundle
+facts COMPUTED CONCRETELY: `cleanList` provably drops the port's two
+phantom arms (guards contain `.and .zero`), so the cleaned quotient arm
+lists are 1–2 elements and the gathered-guard facts are direct
+computations. (cleanAut is classical → the sixth theorem carries choice
+like theorems 1–5; cleanAutD is STEELMAN work.)
+
+New block in GkatThreeLoopProofs.lean (12 lemmas, twoLoop playbook):
+- `threeLoop_live_r/q/p/all` — every core state live given sat(¬c),
+  sat(¬b); runs [(r, αb)] through the chord/adv arms.
+- `threeLoop_targets_live` — all composite arm targets live (double
+  List.mem_map unpack).
+- `threeLoop_trim_step_p_enter/p_skip/q_self/q_adv/r_feed/r_none` — the
+  trimmed sum steps are the concrete steps verbatim
+  (`autStep_trimAut_all_live`). Gotcha: the `none` case needs a trailing
+  `rfl` (nested `Option.map` on `none` isn't closed by `rw`).
+
+Next: the right-side (_r) mirrors, then the language facts (ε-separation
+`lang P ≠ lang Q ≠ lang R` under nondegeneracy sats + cross-side
+pairings), then bisimRep computations and the classifier.

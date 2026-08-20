@@ -1060,4 +1060,222 @@ theorem chord_assembly_rolesD {S : Type} [DecidableEq S] (aut : GAut S A T)
 
 #print axioms chord_assembly_rolesD
 
+/-! ## The fragment facts, left side: liveness and trim transparency
+
+    With the exits satisfiable (`sat ¬c`, `sat ¬b`), every core state
+    reaches a halt, so the trim is invisible and the trimmed sum steps
+    are the concrete step lemmas verbatim. -/
+
+open Classical in
+/-- The port is live: exit at `¬b`. -/
+theorem threeLoop_live_r (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    Live (sumGAut (threeLoopAut b c p q r).toGAut aut₂)
+      (Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  refine ⟨αb, [], ?_⟩
+  rw [autRun_sumGAut_inl,
+    autRun_toGAut_some (start := Sum.inr (Sum.inr ()))]
+  show bval (genW T)
+    ((threeLoopAut b c p q r).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+  rw [threeLoop_hlt_r, hαb]
+  rfl
+
+open Classical in
+/-- The inner state is live: advance at `¬c`, exit at `¬b`. -/
+theorem threeLoop_live_q (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    Live (sumGAut (threeLoopAut b c p q r).toGAut aut₂)
+      (Sum.inl (some (Sum.inr (Sum.inl ())))) := by
+  obtain ⟨αc, hαc⟩ := hexitC
+  obtain ⟨αb, hαb⟩ := hexitB
+  refine ⟨αc, [(r, αb)], ?_⟩
+  rw [autRun_sumGAut_inl,
+    autRun_toGAut_some (start := Sum.inr (Sum.inl ()))]
+  refine ⟨Sum.inr (Sum.inr ()), ?_, ?_⟩
+  · show firstMatch (genW T) αc
+      ((threeLoopAut b c p q r).core.trans (Sum.inr (Sum.inl ())))
+      = some (r, Sum.inr (Sum.inr ()))
+    exact threeLoop_step_q_adv b c p q r αc hαc
+  · show bval (genW T)
+      ((threeLoopAut b c p q r).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [threeLoop_hlt_r, hαb]
+    rfl
+
+open Classical in
+/-- The branch state is live: skip at `¬c`, exit at `¬b`. -/
+theorem threeLoop_live_p (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    Live (sumGAut (threeLoopAut b c p q r).toGAut aut₂)
+      (Sum.inl (some (Sum.inl ()))) := by
+  obtain ⟨αc, hαc⟩ := hexitC
+  obtain ⟨αb, hαb⟩ := hexitB
+  refine ⟨αc, [(r, αb)], ?_⟩
+  rw [autRun_sumGAut_inl,
+    autRun_toGAut_some (start := Sum.inl ())]
+  refine ⟨Sum.inr (Sum.inr ()), ?_, ?_⟩
+  · show firstMatch (genW T) αc
+      ((threeLoopAut b c p q r).core.trans (Sum.inl ()))
+      = some (r, Sum.inr (Sum.inr ()))
+    exact threeLoop_step_p_skip b c p q r αc hαc
+  · show bval (genW T)
+      ((threeLoopAut b c p q r).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [threeLoop_hlt_r, hαb]
+    rfl
+
+open Classical in
+/-- Every core state of the chord automaton is live. -/
+theorem threeLoop_live_all (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit (Sum Unit Unit)) :
+    Live (sumGAut (threeLoopAut b c p q r).toGAut aut₂)
+      (Sum.inl (some s)) := by
+  cases s with
+  | inl u =>
+      cases u
+      exact threeLoop_live_p b c p q r aut₂ hexitC hexitB
+  | inr v =>
+      cases v with
+      | inl u =>
+          cases u
+          exact threeLoop_live_q b c p q r aut₂ hexitC hexitB
+      | inr u =>
+          cases u
+          exact threeLoop_live_r b c p q r aut₂ hexitB
+
+open Classical in
+/-- All composite arms at a chord core state have live targets. -/
+theorem threeLoop_targets_live (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit (Sum Unit Unit)) :
+    ∀ e ∈ (sumGAut (threeLoopAut b c p q r).toGAut aut₂).trans
+        (Sum.inl (some s)),
+      Live (sumGAut (threeLoopAut b c p q r).toGAut aut₂) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inl (some t₀.2.2))
+  exact threeLoop_live_all b c p q r aut₂ hexitC hexitB t₀.2.2
+
+open Classical in
+/-- Trimmed sum step, branch state, `c`-atom: enter the inner loop. -/
+theorem threeLoop_trim_step_p_enter (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ()))) α
+      = some (q, Sum.inl (some (Sum.inr (Sum.inl ())))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB (Sum.inl ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_p_enter b c p q r α hc]
+  rfl
+
+open Classical in
+/-- Trimmed sum step, branch state, `¬c`-atom: the chord to the port. -/
+theorem threeLoop_trim_step_p_skip (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ()))) α
+      = some (r, Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB (Sum.inl ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_p_skip b c p q r α hc]
+  rfl
+
+open Classical in
+/-- Trimmed sum step, inner state, `c`-atom: self. -/
+theorem threeLoop_trim_step_q_self (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr (Sum.inl ())))) α
+      = some (q, Sum.inl (some (Sum.inr (Sum.inl ())))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB
+      (Sum.inr (Sum.inl ()))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_q_self b c p q r α hc]
+  rfl
+
+open Classical in
+/-- Trimmed sum step, inner state, `¬c`-atom: advance to the port. -/
+theorem threeLoop_trim_step_q_adv (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr (Sum.inl ())))) α
+      = some (r, Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB
+      (Sum.inr (Sum.inl ()))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_q_adv b c p q r α hc]
+  rfl
+
+open Classical in
+/-- Trimmed sum step, port, `b`-atom: feed back to the branch state. -/
+theorem threeLoop_trim_step_r_feed (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr (Sum.inr ())))) α
+      = some (p, Sum.inl (some (Sum.inl ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB
+      (Sum.inr (Sum.inr ()))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_r_feed b c p q r α hb]
+  rfl
+
+open Classical in
+/-- Trimmed sum step, port, `¬b`-atom: no step. -/
+theorem threeLoop_trim_step_r_none (b c : BExp T) (p q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hb : bval (genW T) b α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut (threeLoopAut b c p q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr (Sum.inr ())))) α
+      = none := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (threeLoop_targets_live b c p q r aut₂ hexitC hexitB
+      (Sum.inr (Sum.inr ()))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [threeLoop_step_r_none b c p q r α hb]
+  rfl
+
+#print axioms threeLoop_live_all
+#print axioms threeLoop_targets_live
+#print axioms threeLoop_trim_step_p_skip
+#print axioms threeLoop_trim_step_r_none
+
 end GkatThreeLoop
