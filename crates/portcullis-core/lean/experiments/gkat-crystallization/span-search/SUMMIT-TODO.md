@@ -1105,3 +1105,21 @@ pools), then minRank (phase 4) and the sweep (phase 5).
 Lean lessons: `set` is Mathlib (banned) — hoist counters to private
 defs; unifier picks the wrong filter instance — pin (p := f); explicit
 type ascription forces defeq through private defs.
+
+## DE-CHOICE PHASE 3d: THE CANONICAL REPRESENTATIVE (iteration 37)
+
+- findBisim: first-equivalent-in-pool search over genBisimilarDec (letI
+  the instance, so the ite reduces by cases on the decision term)
+- findBisim_bisim / _mem / _coherent: the search finds an equivalent
+  in-pool state, and equivalent queries find THE SAME state (mixed
+  decision branches refuted by symm/trans; both carried the same
+  existential invariant so the exhausted case is vacuous)
+- bisimRepDT: the total canonical representative (dite on membership)
+  with the FULL bisimRep spec: bisimRepDT_bisim, bisimRepDT_coherent,
+  bisimRepDT_idem, bisimRepDT_mem — all [propext, Quot.sound].
+
+Classical.choose's three load-bearing properties are now matched by a
+computable function. Remaining phase 3: bisimQuotAutD (quotient over
+bisimRepDT) + transport of quot_lang_eq/canonicalQuotient facts; then
+phase 4 (minRank as bounded search over the pool — MOSTLY DONE ALREADY
+via minUpTo once realizers restrict to states), phase 5 sweep.

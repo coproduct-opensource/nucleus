@@ -1365,4 +1365,170 @@ def genBisimilarDec [DecidableEq T] [DecidableEq A]
 #print axioms genBisimilar_iff_pairBound
 #print axioms genBisimilarDec
 
+/-! ## The canonical representative
+
+    `Classical.choose` gave each class an arbitrary representative; with
+    decidable bisimilarity the FIRST equivalent state in the pool is a
+    canonical one — computable, coherent, idempotent. -/
+
+def findBisim [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    (cands : List S) → (∀ x ∈ cands, x ∈ pool) → S
+  | [], _ => s
+  | c :: cs, hc =>
+      letI : Decidable (GenBisimilar aut s c) :=
+        genBisimilarDec aut pool hclosed hs
+          (hc c (List.mem_cons_self ..))
+      if GenBisimilar aut s c then c
+      else findBisim aut pool hclosed hs cs
+        (fun x hx => hc x (List.mem_cons_of_mem _ hx))
+
+private theorem findBisim_cons [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) (c : S) (cs : List S)
+    (hc : ∀ x ∈ c :: cs, x ∈ pool) :
+    findBisim aut pool hclosed hs (c :: cs) hc
+      = (letI : Decidable (GenBisimilar aut s c) :=
+          genBisimilarDec aut pool hclosed hs
+            (hc c (List.mem_cons_self ..))
+        if GenBisimilar aut s c then c
+        else findBisim aut pool hclosed hs cs
+          (fun x hx => hc x (List.mem_cons_of_mem _ hx))) := rfl
+
+theorem findBisim_bisim [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    ∀ (cands : List S) (hc : ∀ x ∈ cands, x ∈ pool),
+      (∃ x ∈ cands, GenBisimilar aut s x) →
+      GenBisimilar aut s (findBisim aut pool hclosed hs cands hc) := by
+  intro cands
+  induction cands with
+  | nil =>
+      intro hc hex
+      obtain ⟨x, hx, -⟩ := hex
+      exact nomatch hx
+  | cons c cs ih =>
+      intro hc hex
+      rw [findBisim_cons]
+      cases hdec : genBisimilarDec aut pool hclosed hs
+          (hc c (List.mem_cons_self ..)) with
+      | isTrue h => exact h
+      | isFalse h =>
+          refine ih _ ?_
+          obtain ⟨x, hx, hbx⟩ := hex
+          rcases List.mem_cons.mp hx with heq | hm
+          · exact absurd (heq ▸ hbx) h
+          · exact ⟨x, hm, hbx⟩
+
+theorem findBisim_mem [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    ∀ (cands : List S) (hc : ∀ x ∈ cands, x ∈ pool),
+      findBisim aut pool hclosed hs cands hc ∈ pool := by
+  intro cands
+  induction cands with
+  | nil => intro hc; exact hs
+  | cons c cs ih =>
+      intro hc
+      rw [findBisim_cons]
+      cases hdec : genBisimilarDec aut pool hclosed hs
+          (hc c (List.mem_cons_self ..)) with
+      | isTrue h => exact hc c (List.mem_cons_self ..)
+      | isFalse h => exact ih _
+
+theorem findBisim_coherent [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s t : S} (hs : s ∈ pool) (ht : t ∈ pool)
+    (hst : GenBisimilar aut s t) :
+    ∀ (cands : List S) (hc : ∀ x ∈ cands, x ∈ pool),
+      (∃ x ∈ cands, GenBisimilar aut s x) →
+      findBisim aut pool hclosed hs cands hc
+        = findBisim aut pool hclosed ht cands hc := by
+  intro cands
+  induction cands with
+  | nil =>
+      intro hc hex
+      obtain ⟨x, hx, -⟩ := hex
+      exact nomatch hx
+  | cons c cs ih =>
+      intro hc hex
+      rw [findBisim_cons, findBisim_cons]
+      cases hdec₁ : genBisimilarDec aut pool hclosed hs
+          (hc c (List.mem_cons_self ..)) with
+      | isTrue h₁ =>
+          cases hdec₂ : genBisimilarDec aut pool hclosed ht
+              (hc c (List.mem_cons_self ..)) with
+          | isTrue h₂ => rfl
+          | isFalse h₂ => exact absurd (hst.symm.trans h₁) h₂
+      | isFalse h₁ =>
+          cases hdec₂ : genBisimilarDec aut pool hclosed ht
+              (hc c (List.mem_cons_self ..)) with
+          | isTrue h₂ => exact absurd (hst.trans h₂) h₁
+          | isFalse h₂ =>
+              refine ih _ ?_
+              obtain ⟨x, hx, hbx⟩ := hex
+              rcases List.mem_cons.mp hx with heq | hm
+              · exact absurd (heq ▸ hbx) h₁
+              · exact ⟨x, hm, hbx⟩
+
+/-- **THE CANONICAL COMPUTABLE REPRESENTATIVE**: first equivalent state
+    in the pool. -/
+def bisimRepDT [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (s : S) : S :=
+  if hs : s ∈ pool then
+    findBisim aut pool hclosed hs pool (fun _ hx => hx)
+  else s
+
+theorem bisimRepDT_bisim [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    GenBisimilar aut s (bisimRepDT aut pool hclosed s) := by
+  unfold bisimRepDT
+  rw [dif_pos hs]
+  exact findBisim_bisim aut pool hclosed hs pool (fun _ hx => hx)
+    ⟨s, hs, GenBisimilar.refl aut s⟩
+
+theorem bisimRepDT_mem [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    bisimRepDT aut pool hclosed s ∈ pool := by
+  unfold bisimRepDT
+  rw [dif_pos hs]
+  exact findBisim_mem aut pool hclosed hs pool (fun _ hx => hx)
+
+theorem bisimRepDT_coherent [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s t : S} (hs : s ∈ pool) (ht : t ∈ pool)
+    (hst : GenBisimilar aut s t) :
+    bisimRepDT aut pool hclosed s = bisimRepDT aut pool hclosed t := by
+  unfold bisimRepDT
+  rw [dif_pos hs, dif_pos ht]
+  exact findBisim_coherent aut pool hclosed hs ht hst pool
+    (fun _ hx => hx) ⟨s, hs, GenBisimilar.refl aut s⟩
+
+theorem bisimRepDT_idem [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    bisimRepDT aut pool hclosed (bisimRepDT aut pool hclosed s)
+      = bisimRepDT aut pool hclosed s :=
+  (bisimRepDT_coherent aut pool hclosed
+    (bisimRepDT_mem aut pool hclosed hs) hs
+    (bisimRepDT_bisim aut pool hclosed hs).symm).trans rfl
+
+#print axioms bisimRepDT_bisim
+#print axioms bisimRepDT_coherent
+#print axioms bisimRepDT_idem
+
 end GkatGuardDecide
