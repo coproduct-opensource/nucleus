@@ -1463,3 +1463,14 @@ Remaining: inr-side mirrors + hfire + init~port via lang_eq_of_step_hlt
 Remaining for twoloops_complete: inr mirrors (live/targets/trim-steps/
 none_lang/cover — mechanical), hfire (sat(b∧c) hypothesis), the
 walked-hos assembly, wrapper. ONE OR TWO FIRINGS.
+
+## TWO-LOOP RIGHT MIRRORS (iteration 53)
+
+All right-summand mirrors first pass: live_all_r, targets_live_r (+none),
+trim steps (self/adv/feed), none_lang_r, twoNxtR, cover_inr.
+
+EVERYTHING for twoloops_complete is now proved except the final
+assembly: hdec/hnxt_rank/hfire at the pair level (two_state_dec makes
+hdec near-trivial), the os-list hos tuples (all components proved), the
+combined cover, walked_rankNxt_quot_solvesBA application, and the
+equivBA_of_quot_solvesBA wrapper. NEXT FIRING: THE FIFTH THEOREM.

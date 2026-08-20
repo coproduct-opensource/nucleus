@@ -704,4 +704,200 @@ theorem twoLoop_cover_inl (b c : BExp T) (q r : A)
 #print axioms twoLoop_none_lang
 #print axioms twoLoop_cover_inl
 
+/-! ## Right-summand mirrors -/
+
+open Classical in
+theorem twoLoop_live_all_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit Unit) :
+    Live (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+      (Sum.inr (some s)) := by
+  cases s with
+  | inl u =>
+      cases u
+      obtain ⟨αc, hαc⟩ := hexitC
+      obtain ⟨αb, hαb⟩ := hexitB
+      refine ⟨αc, [(r, αb)], ?_⟩
+      rw [autRun_sumGAut_inr,
+        autRun_toGAut_some (start := Sum.inr ())]
+      refine ⟨Sum.inr (), ?_, ?_⟩
+      · exact twoLoop_step_inl_adv b c q r αc hαc
+      · show bval (genW T)
+          ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+        rw [twoLoop_hlt_inr, hαb]
+        rfl
+  | inr u =>
+      cases u
+      obtain ⟨αb, hαb⟩ := hexitB
+      refine ⟨αb, [], ?_⟩
+      rw [autRun_sumGAut_inr,
+        autRun_toGAut_some (start := Sum.inr ())]
+      show bval (genW T)
+        ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+      rw [twoLoop_hlt_inr, hαb]
+      rfl
+
+open Classical in
+theorem twoLoop_targets_live_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit Unit) :
+    ∀ e ∈ (sumGAut aut₁ (twoLoopAut b c q r).toGAut).trans
+        (Sum.inr (some s)),
+      Live (sumGAut aut₁ (twoLoopAut b c q r).toGAut) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inr (some t₀.2.2))
+  exact twoLoop_live_all_r b c q r aut₁ hexitC hexitB t₀.2.2
+
+open Classical in
+theorem twoLoop_targets_live_none_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ e ∈ (sumGAut aut₁ (twoLoopAut b c q r).toGAut).trans
+        (Sum.inr (none : Option (Sum Unit Unit))),
+      Live (sumGAut aut₁ (twoLoopAut b c q r).toGAut) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inr (some t₀.2.2))
+  exact twoLoop_live_all_r b c q r aut₁ hexitC hexitB t₀.2.2
+
+open Classical in
+theorem twoLoop_trim_step_inl_self_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some (Sum.inl ()))) α
+      = some (q, Sum.inr (some (Sum.inl ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live_r b c q r aut₁ hexitC hexitB
+      (Sum.inl ())) α]
+  rw [autStep_sumGAut_inr, autStep_toGAut_some]
+  rw [twoLoop_step_inl_self b c q r α hc]
+  rfl
+
+open Classical in
+theorem twoLoop_trim_step_inl_adv_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some (Sum.inl ()))) α
+      = some (r, Sum.inr (some (Sum.inr ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live_r b c q r aut₁ hexitC hexitB
+      (Sum.inl ())) α]
+  rw [autStep_sumGAut_inr, autStep_toGAut_some]
+  rw [twoLoop_step_inl_adv b c q r α hc]
+  rfl
+
+open Classical in
+theorem twoLoop_trim_step_inr_feed_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hb : bval (genW T) b α = true)
+    (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (some (Sum.inr ()))) α
+      = some (q, Sum.inr (some (Sum.inl ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live_r b c q r aut₁ hexitC hexitB
+      (Sum.inr ())) α]
+  rw [autStep_sumGAut_inr, autStep_toGAut_some]
+  rw [twoLoop_step_inr_feed b c q r α hb hc]
+  rfl
+
+open Classical in
+theorem twoLoop_none_lang_r (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr (none : Option (Sum Unit Unit)))
+      = autLang (genW T)
+          (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+          (Sum.inr (some (Sum.inr ()))) := by
+  apply lang_eq_of_step_hlt
+  · intro α
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (twoLoop_targets_live_none_r b c q r aut₁ hexitC hexitB) α]
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (twoLoop_targets_live_r b c q r aut₁ hexitC hexitB
+        (Sum.inr ())) α]
+    rw [autStep_sumGAut_inr, autStep_sumGAut_inr]
+    rw [autStep_toGAut_none, autStep_toGAut_some]
+    cases hb : bval (genW T) b α with
+    | false =>
+        rw [twoLoop_step_init_none b c q r α hb,
+          twoLoop_step_inr_none b c q r α hb]
+    | true =>
+        cases hc : bval (genW T) c α with
+        | true =>
+            rw [twoLoop_step_init_feed b c q r α hb hc,
+              twoLoop_step_inr_feed b c q r α hb hc]
+        | false =>
+            rw [twoLoop_step_init_skip b c q r α hb hc,
+              twoLoop_step_inr_self b c q r α hb hc]
+  · intro α
+    show (!(bval (genW T) b α))
+      = bval (genW T)
+          ((twoLoopAut b c q r).core.hlt (Sum.inr ())) α
+    rw [twoLoop_hlt_inr]
+
+open Classical in
+/-- The right-summand successor lift. -/
+def twoNxtR {S₁ : Type} (g₁ : S₁ → S₁) :
+    Sum (Option S₁) (Option (Sum Unit Unit))
+      → Sum (Option S₁) (Option (Sum Unit Unit)) :=
+  Sum.elim (fun o => Sum.inl (o.map g₁))
+    (fun o => Sum.inr (o.map twoNxt))
+
+open Classical in
+theorem twoLoop_cover_inr (b c : BExp T) (q r : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) (g₁ : S₁ → S₁)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (o : Option (Sum Unit Unit)) :
+    InOrbit (sumGAut aut₁ (twoLoopAut b c q r).toGAut)
+      (twoNxtR (S₁ := S₁) g₁)
+      (Sum.inr (some (Sum.inr ())))
+      (bisimRep (trimAut (sumGAut aut₁ (twoLoopAut b c q r).toGAut))
+        (Sum.inr o)) := by
+  cases o with
+  | none =>
+      refine ⟨0, ?_⟩
+      exact (rep_lang_congr _
+        (twoLoop_none_lang_r b c q r aut₁ hexitC hexitB)).symm.symm
+  | some x =>
+      cases x with
+      | inr u =>
+          cases u
+          exact ⟨0, rfl⟩
+      | inl u =>
+          cases u
+          refine ⟨1, ?_⟩
+          have h1 : nxtIter (twoNxtR (S₁ := S₁) g₁) 1
+              (Sum.inr (some (Sum.inr ())))
+              = Sum.inr (some (Sum.inl ())) := rfl
+          rw [h1]
+
+#print axioms twoLoop_none_lang_r
+#print axioms twoLoop_cover_inr
+
 end GkatTwoLoop
