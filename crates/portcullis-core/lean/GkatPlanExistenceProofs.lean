@@ -626,4 +626,59 @@ theorem completeness_of_decompCoveredTrim {A T : Type}
 #print axioms decompCovered_false
 #print axioms completeness_of_decompCoveredTrim
 
+/-! ## S2, opened: the acyclic case
+
+    Role existence for a canonical quotient must produce a `StateRole` per state.
+    The base stratum is acyclic: when the one-step target relation is well-founded,
+    the equations solve THEMSELVES — define the solution by well-founded recursion
+    and every state is a `fold`.  Rings then enter exactly at the cycles, which is
+    the shape the walk-planner measured. -/
+
+/-- The one-step target relation: `t` is a transition target of `s`. -/
+def StepRel (aut : GAut S A T) (t s : S) : Prop :=
+  ∃ e ∈ aut.trans s, e.2.2 = t
+
+/-- `eqRHS` only reads the solution at transition targets. -/
+theorem eqRHS_congr (aut : GAut S A T) {sol₁ sol₂ : S → Exp A T} (s : S)
+    (h : ∀ e ∈ aut.trans s, sol₁ e.2.2 = sol₂ e.2.2) :
+    eqRHS aut sol₁ s = eqRHS aut sol₂ s := by
+  have haux : ∀ L : List (BExp T × A × S), (∀ e ∈ L, sol₁ e.2.2 = sol₂ e.2.2) →
+      L.foldr (fun t acc => Exp.ite t.1 (.seq (.act t.2.1) (sol₁ t.2.2)) acc)
+          (Exp.test (aut.hlt s))
+        = L.foldr (fun t acc => Exp.ite t.1 (.seq (.act t.2.1) (sol₂ t.2.2)) acc)
+          (Exp.test (aut.hlt s)) := by
+    intro L
+    induction L with
+    | nil => intro _; rfl
+    | cons hd tl ih =>
+        intro hL
+        show Exp.ite hd.1 (.seq (.act hd.2.1) (sol₁ hd.2.2)) _
+          = Exp.ite hd.1 (.seq (.act hd.2.1) (sol₂ hd.2.2)) _
+        rw [hL hd (by simp), ih (fun e he => hL e (by simp [he]))]
+  exact haux _ h
+
+open Classical in
+/-- The self-solving assignment of a well-founded automaton. -/
+noncomputable def dagSol (aut : GAut S A T)
+    (hwf : WellFounded (StepRel aut)) : S → Exp A T :=
+  hwf.fix (fun s rec =>
+    eqRHS aut (fun t =>
+      if h : StepRel aut t s then rec t h else .test .zero) s)
+
+theorem dagSol_eq (aut : GAut S A T) (hwf : WellFounded (StepRel aut)) (s : S) :
+    dagSol aut hwf s = eqRHS aut (dagSol aut hwf) s := by
+  unfold dagSol
+  rw [WellFounded.fix_eq]
+  apply eqRHS_congr
+  intro e he
+  rw [dif_pos ⟨e, he, rfl⟩]
+
+/-- **The acyclic stratum of S2**: an automaton with a well-founded step relation
+    has a full `StateRole` cover — every state a `fold`. -/
+theorem dag_roles (aut : GAut S A T) (hwf : WellFounded (StepRel aut)) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s :=
+  ⟨dagSol aut hwf, fun s _ => StateRole.fold (dagSol_eq aut hwf s)⟩
+
+#print axioms dag_roles
+
 end GkatPlanExistence
