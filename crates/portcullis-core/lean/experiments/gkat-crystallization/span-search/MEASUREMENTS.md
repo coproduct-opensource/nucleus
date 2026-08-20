@@ -95,3 +95,27 @@ here is machine-measured; kernel-checked claims say so explicitly.
 - Closure cache: `PAD_SAVE_CLOSURE=path` / `PAD_LOAD_CLOSURE=path`.
 - mimalloc global allocator: ~8% CPU-time reduction on the classify workload,
   identical outputs; macOS system allocator serializes under parallel churn.
+
+## SCC census (PAD_SCC_CENSUS, 2026-08-20) — the S2 stratum census
+
+Canonical quotient of the TRIMMED sum (liveness-trim + language minimization,
+mirroring Lean `canonicalQuotient (trimAut (SUMof e f))`), per forge-sampled
+language-equivalent pair; states classified against the PROVED strata.
+
+- NA=2, depth<=6, 20000 pairs: **99.3% of pairs fully covered by fold+salomaaE**
+  (singleton_scc_roles).  11474 quotient states: 10475 fold, 624 singleton-self,
+  375 (3.3%) in multi-state SCCs.  EVERY multi-SCC shape observed has
+  halting-members + exit-arms = 1 (single way out).
+- NA=4, depth<=7, 20000 pairs: **96.8% fully covered**.  48096 states: 44016
+  fold, 2705 singleton-self, 1375 (2.9%) multi.  Shape histogram dominated by
+  (size, simple, 1 halting, 0 exits): 439+80+4 = 523 of ~638 SCCs (~82%);
+  single-exit-no-halt simple cycles next; multi-port shapes (two halting members
+  or halts+exits mixed) are a 3-occurrence tail.
+
+DESIGN CONSEQUENCE: the priority ring stratum is SINGLE-PORT SIMPLE CYCLES
+(one member carries the halt-or-exit port; interiors are halt-free with all
+arms to their single successor).  For that shape NO PARKING is needed: interior
+equations collapse to straight lines (ite b e 0? = b?e), the cycle composes
+into one Salomaa body at the port, and multi_gather (proved, arbitrary target)
+does the per-state gathering.  Parking is only needed for the rare multi-port
+tail.

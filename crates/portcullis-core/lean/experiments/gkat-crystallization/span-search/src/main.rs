@@ -4792,6 +4792,187 @@ fn emit_mix_pilot<const NA: usize>(path: &str, ae: &str, be: &str,
 
 fn len_inl(_t: &str) -> usize { "(Sum.inl (some ".len() }
 
+
+/// PAD_SCC_CENSUS: the S2 stratum census.  For forge-sampled language-equivalent pairs,
+/// build the canonical quotient of the TRIMMED sum (liveness-trim, then language
+/// minimization — on a deterministic trimmed automaton bisimilarity IS language equality,
+/// mirroring the Lean `canonicalQuotient (trimAut (SUMof e f))`), decompose into SCCs, and
+/// classify every state against the PROVED strata: fold (acyclic position) / salomaaE
+/// (singleton SCC, any number of self-arms) / OPEN (multi-state SCC).  Multi-state SCCs
+/// get a shape histogram feeding the ring-stratum design.
+/// Env: PAD_CENSUS_N (pairs, default 20000), PAD_CENSUS_DEPTH (default 6),
+/// PAD_CENSUS_KMIN/KMAX (default 3/10).
+fn scc_census<const NA: usize>(nguards: u8) {
+    let npairs: usize = std::env::var("PAD_CENSUS_N").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(20_000);
+    let depth: usize = std::env::var("PAD_CENSUS_DEPTH").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(6);
+    let kmin: usize = std::env::var("PAD_CENSUS_KMIN").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(3);
+    let kmax: usize = std::env::var("PAD_CENSUS_KMAX").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(10);
+    let mut st0: u64 = 0x5EEDCAFE12345678;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let mut buckets: FxMap<Vec<u8>, Vec<Aut<NA>>> = FxMap::default();
+    let mut pairs: Vec<(Aut<NA>, Aut<NA>)> = Vec::new();
+    let mut tries = 0usize;
+    while pairs.len() < npairs && tries < 50_000_000 {
+        tries += 1;
+        if let Some((a, _ae, _ap)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
+            if (a.k as usize) < kmin || (a.k as usize) > kmax { continue; }
+            let c = match canon(&a) { Some(c) => c, None => continue };
+            let beh = behaviour(&c);
+            let v = buckets.entry(beh).or_default();
+            if v.iter().any(|x| *x == c) { continue; }
+            for x in v.iter() {
+                if pairs.len() < npairs { pairs.push((*x, c)); }
+            }
+            if v.len() < 8 { v.push(c); }
+        }
+    }
+    println!("SCC CENSUS (NA={NA}, depth<={depth}, k in [{kmin},{kmax}]): {} pairs over {} tries",
+        pairs.len(), tries);
+    let mut n_states = 0usize;
+    let mut n_fold = 0usize;
+    let mut n_self = 0usize;
+    let mut n_multi = 0usize;
+    let mut pairs_done = 0usize;
+    let mut pairs_covered = 0usize;
+    let mut multi_hist: FxMap<(usize, bool, usize, usize, usize), usize> = FxMap::default();
+    let mut multi_examples: Vec<String> = Vec::new();
+    for (a, b) in pairs.iter() {
+        let su = match sum_core(a, b) { Some(s) => s, None => continue };
+        let k = su.k as usize;
+        // liveness fixpoint (Live in the Lean sense: nonempty language)
+        let mut live = [false; MAXK];
+        loop {
+            let mut changed = false;
+            for s in 0..k {
+                if live[s] { continue; }
+                let mut l = su.hl[s] != 0;
+                if !l {
+                    for i in 0..NA {
+                        let t = su.st[s][i];
+                        if t != 0 && live[(t - 1) as usize] { l = true; break; }
+                    }
+                }
+                if l { live[s] = true; changed = true; }
+            }
+            if !changed { break; }
+        }
+        // trimAut: dead-target arms become rejection
+        let mut tr = su;
+        for s in 0..k {
+            for i in 0..NA {
+                let t = tr.st[s][i];
+                if t != 0 && !live[(t - 1) as usize] { tr.st[s][i] = 0; }
+            }
+        }
+        for i in 0..NA {
+            let t = tr.it[i];
+            if t != 0 && !live[(t - 1) as usize] { tr.it[i] = 0; }
+        }
+        // language minimization = the canonical bisimilarity quotient of the trim
+        let mut cls = [0u8; MAXK];
+        {
+            let mut seen = [255u8; 256];
+            let mut n = 0u8;
+            for s in 0..k {
+                let h = tr.hl[s] as usize;
+                if seen[h] == 255 { seen[h] = n; n += 1; }
+                cls[s] = seen[h];
+            }
+        }
+        loop {
+            let mut sigs: Vec<(u8, [u8; NA])> = Vec::new();
+            let mut next = [0u8; MAXK];
+            for s in 0..k {
+                let mut row = [255u8; NA];
+                for i in 0..NA {
+                    if tr.st[s][i] != 0 { row[i] = cls[(tr.st[s][i] - 1) as usize]; }
+                }
+                let sig = (cls[s], row);
+                let j = match sigs.iter().position(|x| *x == sig) {
+                    Some(j) => j,
+                    None => { sigs.push(sig); sigs.len() - 1 }
+                };
+                next[s] = j as u8;
+            }
+            let (mut c0, mut c1) = (0usize, 0usize);
+            {
+                let mut m = [false; MAXK];
+                for s in 0..k { if !m[cls[s] as usize] { m[cls[s] as usize] = true; c0 += 1; } }
+                let mut m2 = [false; MAXK];
+                for s in 0..k { if !m2[next[s] as usize] { m2[next[s] as usize] = true; c1 += 1; } }
+            }
+            cls = next;
+            if c1 == c0 { break; }
+        }
+        let nb = {
+            let mut m = [false; MAXK];
+            let mut c = 0usize;
+            for s in 0..k { if !m[cls[s] as usize] { m[cls[s] as usize] = true; c += 1; } }
+            c
+        };
+        let mut blk = [0usize; MAXK];
+        for s in 0..k { blk[s] = cls[s] as usize; }
+        let q0 = match quotient_by(&tr, &blk, nb) { Some(q) => q, None => continue };
+        let q = match trim_canon(&q0) { Some(q) => q, None => continue };
+        pairs_done += 1;
+        let sccs = sccs_of(&q);
+        let mut covered = true;
+        for scc in sccs.iter() {
+            if scc.len() == 1 {
+                let s = scc[0];
+                let selfarms = (0..NA).filter(|&i| q.st[s][i] as usize == s + 1).count();
+                n_states += 1;
+                if selfarms == 0 { n_fold += 1; } else { n_self += 1; }
+            } else {
+                n_states += scc.len();
+                n_multi += scc.len();
+                covered = false;
+                let inscc = |t: usize| scc.contains(&t);
+                let mut n_halting = 0usize;
+                let mut n_exit_arms = 0usize;
+                let mut branchers = 0usize;
+                let mut simple = true;
+                for &s in scc.iter() {
+                    if q.hl[s] != 0 { n_halting += 1; }
+                    let mut itargets: Vec<usize> = Vec::new();
+                    for i in 0..NA {
+                        let t = q.st[s][i];
+                        if t != 0 {
+                            let t = (t - 1) as usize;
+                            if inscc(t) {
+                                if !itargets.contains(&t) { itargets.push(t); }
+                            } else { n_exit_arms += 1; }
+                        }
+                    }
+                    if itargets.len() >= 2 { branchers += 1; }
+                    if itargets.len() != 1 { simple = false; }
+                }
+                *multi_hist.entry((scc.len(), simple, n_halting, n_exit_arms, branchers))
+                    .or_insert(0) += 1;
+                if multi_examples.len() < 5 {
+                    multi_examples.push(format!("scc {:?} in quotient k={} (pair #{})",
+                        scc, q.k, pairs_done));
+                }
+            }
+        }
+        if covered { pairs_covered += 1; }
+    }
+    println!("  pairs analysed: {pairs_done}; FULLY covered by proved strata (fold+salomaaE): {pairs_covered} ({:.1}%)",
+        100.0 * pairs_covered as f64 / pairs_done.max(1) as f64);
+    println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");
+    let mut hist: Vec<_> = multi_hist.into_iter().collect();
+    hist.sort_by(|x, y| y.1.cmp(&x.1));
+    println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");
+    for ((sz, simple, nh, nx, br), c) in hist.iter().take(30) {
+        println!("    ({sz}, {}, {nh}, {nx}, {br}) -> {c}", if *simple { "simple" } else { "branchy" });
+    }
+    for ex in multi_examples { println!("    example: {ex}"); }
+}
+
 fn forge<const NA: usize>(nguards: u8) {
     let npairs: usize = std::env::var("PAD_FORGE_N").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(2000);
@@ -5063,6 +5244,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_FORGE").is_ok() {
         forge::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_SCC_CENSUS").is_ok() {
+        scc_census::<NA>(nguards as u8);
         return;
     }
 
