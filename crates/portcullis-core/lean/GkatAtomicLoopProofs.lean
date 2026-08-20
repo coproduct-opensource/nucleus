@@ -257,4 +257,226 @@ theorem rankSelf_quot_solvesBA (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms rankSelf_quot_solvesBA
 
+/-! ## The atomic-loop fragment: loops over single actions -/
+
+/-- Loop-free structure plus loops whose bodies are single actions. -/
+inductive AtomicLoops : Exp A T → Prop where
+  | act (p : A) : AtomicLoops (.act p)
+  | test (b : BExp T) : AtomicLoops (.test b)
+  | seq {e f : Exp A T} : AtomicLoops e → AtomicLoops f →
+      AtomicLoops (.seq e f)
+  | ite (b : BExp T) {e f : Exp A T} : AtomicLoops e → AtomicLoops f →
+      AtomicLoops (.ite b e f)
+  | wh (b : BExp T) (p : A) : AtomicLoops (.wh b (.act p))
+
+/-- A ranked-modulo-self initialized automaton. -/
+structure InitRankedSelf {S' : Type} (aut : InitializedGAut S' A T)
+    (r : S' → Nat) (top : Nat) : Prop where
+  init : ∀ t ∈ aut.initTrans, r t.2.2 < top
+  core : ∀ s, ∀ t ∈ aut.core.trans s, t.2.2 = s ∨ r t.2.2 < r s
+  bound : ∀ s, r s < top
+
+/-- Atomic-loop Thompson automata are ranked modulo self-loops. -/
+theorem atomicLoops_initRankedSelf {e : Exp A T} (h : AtomicLoops e) :
+    ∃ (r : (certifiedThompson A T e).State → Nat) (top : Nat),
+      InitRankedSelf (certifiedThompson A T e).aut r top := by
+  induction h with
+  | act p =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_cons.mp ht with heq | hmem
+        · subst heq; exact Nat.zero_lt_one
+        · exact nomatch hmem
+      · intro s t ht
+        exact nomatch ht
+      · intro _; exact Nat.zero_lt_one
+  | test b =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht; exact nomatch ht
+      · intro s; exact nomatch s
+      · intro s; exact nomatch s
+  | wh b p =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        exact Nat.zero_lt_one
+      · intro s t ht
+        exact Or.inl rfl
+      · intro _; exact Nat.zero_lt_one
+  | @seq e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim (fun s => r₁ s + t₂) r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 + t₂ < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          have := h₂.bound t₀.2.2
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            rcases List.mem_append.mp ht with hL | hR
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+              rcases h₁.core u t₀ ht₀ with hEq | hLt
+              · refine Or.inl ?_
+                rw [← heq]
+                show Sum.inl t₀.2.2 = Sum.inl u
+                rw [hEq]
+              · refine Or.inr ?_
+                rw [← heq]
+                show r₁ t₀.2.2 + t₂ < r₁ u + t₂
+                omega
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+              refine Or.inr ?_
+              rw [← heq]
+              have := h₂.init t₀ ht₀
+              show r₂ t₀.2.2 < r₁ u + t₂
+              omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₂.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inr t₀.2.2 = Sum.inr u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₂ t₀.2.2 < r₂ u
+              omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u + t₂ < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+  | @ite b e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim r₁ r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₁.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inl t₀.2.2 = Sum.inl u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₁ t₀.2.2 < r₁ u
+              omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₂.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inr t₀.2.2 = Sum.inr u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₂ t₀.2.2 < r₂ u
+              omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+
+theorem toGAut_rankedSelf {S' : Type} {aut : InitializedGAut S' A T}
+    {r : S' → Nat} {top : Nat} (h : InitRankedSelf aut r top) :
+    ∀ s, ∀ e ∈ aut.toGAut.trans s,
+      e.2.2 = s ∨ optRank r top e.2.2 < optRank r top s := by
+  intro s e he
+  cases s with
+  | none =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      refine Or.inr ?_
+      rw [← heq]
+      exact h.init t₀ ht₀
+  | some u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rcases h.core u t₀ ht₀ with hEq | hLt
+      · refine Or.inl ?_
+        rw [← heq]
+        show some t₀.2.2 = some u
+        rw [hEq]
+      · refine Or.inr ?_
+        rw [← heq]
+        exact hLt
+
+theorem sumGAut_rankedSelf {S₁ S₂ : Type} {aut₁ : GAut S₁ A T}
+    {aut₂ : GAut S₂ A T} {rk₁ : S₁ → Nat} {rk₂ : S₂ → Nat}
+    (h₁ : ∀ s, ∀ e ∈ aut₁.trans s, e.2.2 = s ∨ rk₁ e.2.2 < rk₁ s)
+    (h₂ : ∀ s, ∀ e ∈ aut₂.trans s, e.2.2 = s ∨ rk₂ e.2.2 < rk₂ s) :
+    ∀ s, ∀ e ∈ (sumGAut aut₁ aut₂).trans s,
+      e.2.2 = s ∨ Sum.elim rk₁ rk₂ e.2.2 < Sum.elim rk₁ rk₂ s := by
+  intro s e he
+  cases s with
+  | inl u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rcases h₁ u t₀ ht₀ with hEq | hLt
+      · refine Or.inl ?_
+        rw [← heq]
+        show Sum.inl t₀.2.2 = Sum.inl u
+        rw [hEq]
+      · refine Or.inr ?_
+        rw [← heq]
+        exact hLt
+  | inr u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rcases h₂ u t₀ ht₀ with hEq | hLt
+      · refine Or.inl ?_
+        rw [← heq]
+        show Sum.inr t₀.2.2 = Sum.inr u
+        rw [hEq]
+      · refine Or.inr ?_
+        rw [← heq]
+        exact hLt
+
+open GkatSumQuotient in
+/-- **ATOMIC-LOOP COMPLETENESS** — unconditional: the finite GKAT axioms with
+    the test Boolean algebra are complete for uniformly-language-equivalent
+    programs whose loops range over single actions.  Strictly extends
+    `loopfree_complete`; no uniqueness axiom, no hypotheses. -/
+theorem atomicloops_complete (e f : Exp A T)
+    (he : AtomicLoops e) (hf : AtomicLoops f)
+    (heq : UniformLanguageEquivalent e f) : EquivBA e f := by
+  obtain ⟨r₁, t₁, h₁⟩ := atomicLoops_initRankedSelf he
+  obtain ⟨r₂, t₂, h₂⟩ := atomicLoops_initRankedSelf hf
+  obtain ⟨qsol, hq⟩ := rankSelf_quot_solvesBA (SUMof A T e f)
+    (Sum.elim (optRank r₁ t₁) (optRank r₂ t₂))
+    (sumGAut_rankedSelf (toGAut_rankedSelf h₁) (toGAut_rankedSelf h₂))
+  exact equivBA_of_quot_solvesBA e f heq hq
+
+#print axioms atomicloops_complete
+
 end GkatAtomicLoop

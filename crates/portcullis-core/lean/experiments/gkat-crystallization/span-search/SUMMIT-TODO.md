@@ -233,3 +233,25 @@ The engine is fragment-agnostic: ANY class of programs whose Thompson sums
 can be ranked (or whose quotients can otherwise be shown acyclic) inherits
 completeness the same way.  The general case reduces to: canonical quotients
 of (possibly looping) Thompson sums decompose into the proved shape library.
+
+## ATOMIC-LOOP COMPLETENESS (2026-08-20, keep-pushing round)
+
+atomicloops_complete (GkatAtomicLoopProofs): the finite GKAT axioms + test BA
+are complete for uniformly-language-equivalent programs whose loops range
+over single actions (wh b (act p) bodies + all loop-free structure).  The
+SECOND unconditional completeness theorem — now WITH LOOPS.  No UA, no
+hypotheses, [propext, Classical.choice, Quot.sound].
+
+The engine behind it, rankSelf_quot_solvesBA (THE SELF-LOOP ENGINE):
+canonical quotients of rank-modulo-self-loop automata are provably solvable,
+by MINIMAL-RANK-REALIZER DESCENT — a firing quotient arm between distinct
+states takes languages to derivatives; the minimal-rank source realizer must
+fire to a realizer that is either itself (forcing the quotient states equal
+via rep-fixedness) or strictly lower, so minRank strictly descends.  minRank
+is a hand-rolled monotone-predicate minimum (minUpTo) — Mathlib-free.
+
+NEXT ESCALATIONS: (a) one-action-per-body loops (tests around the action —
+needs the loopInitialized back-edge analysis for test-padded bodies);
+(b) nested atomic loops (wh over bodies containing atomic loops — back-edges
+into loop headers create 2-cycles: needs the walked-cycle shapes inside the
+engine, i.e. rank-modulo-COVERED-SCC engines); (c) the general case.
