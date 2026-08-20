@@ -1796,4 +1796,171 @@ theorem sum_chain_none_lang {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
 #print axioms lang_eq_of_step_hlt
 #print axioms sum_chain_none_lang
 
+/-! ## Orbit-bundle packaging: closure, membership, period, non-fixedness,
+    and the genuine two-class period -/
+
+open Classical in
+/-- The spine is closed under its successor. -/
+theorem spineNext_mem {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (h0 : 0 < l.length) (hfl : l[0]'h0 = first)
+    {x : S'} (hx : x ∈ l) : spineNext first l x ∈ l := by
+  obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem hx
+  subst hjx
+  rcases Nat.lt_or_ge (j + 1) l.length with hint | hport
+  · rw [spineNext_at first l hsp j hint]
+    exact List.getElem_mem _
+  · have hj' : j = l.length - 1 := by omega
+    subst hj'
+    rw [spineNext_last first l hsp (by omega), ← hfl]
+    exact List.getElem_mem _
+
+open Classical in
+/-- Iterates of the spine successor stay on the spine. -/
+theorem spineNext_iter_mem {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (h0 : 0 < l.length) (hfl : l[0]'h0 = first) :
+    ∀ (k : Nat) {x : S'}, x ∈ l →
+      nxtIter (spineNext first l) k x ∈ l := by
+  intro k
+  induction k with
+  | zero => intro x hx; exact hx
+  | succ k ih =>
+      intro x hx
+      show spineNext first l (nxtIter (spineNext first l) k x) ∈ l
+      exact spineNext_mem hsp h0 hfl (ih hx)
+
+open Classical in
+/-- Spine members' classes are quotient states of the composite. -/
+theorem sum_chain_states {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hstates₁ : B.core.states = l)
+    (aut₂ : GAut (Option S₂) A T)
+    {x : S₁} (hx : x ∈ l) :
+    bisimRep (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+        (Sum.inl (some x))
+      ∈ (bisimQuotAut
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))).states := by
+  have hmem : Sum.inl (some x)
+      ∈ (sumGAut (loopInitialized b B).toGAut aut₂).states := by
+    refine List.mem_append.mpr (Or.inl (List.mem_map.mpr
+      ⟨some x, ?_, rfl⟩))
+    refine List.mem_cons.mpr (Or.inr (List.mem_map.mpr ⟨x, ?_, rfl⟩))
+    show x ∈ B.core.states
+    rw [hstates₁]
+    exact hx
+  exact List.mem_map.mpr ⟨Sum.inl (some x), hmem, rfl⟩
+
+open Classical in
+/-- The lifted period at the port. -/
+theorem sum_chain_hper {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    {l : List S₁} (hsp : ChainSpine B l) {first : S₁}
+    (g₂ : S₂ → S₂) (h0 : 0 < l.length) (hfl : l[0]'h0 = first) :
+    nxtIter (Sum.elim
+        (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+        (fun o : Option S₂ => Sum.inr (o.map g₂)))
+      l.length (Sum.inl (some (l[l.length - 1]'(by omega))))
+      = Sum.inl (some (l[l.length - 1]'(by omega))) := by
+  rw [nxtIter_lift_inl]
+  rw [spine_period_port hsp h0 hfl]
+
+open Classical in
+/-- The lifted walk never fixes below the period. -/
+theorem sum_chain_hnofix {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    {l : List S₁} (hsp : ChainSpine B l) {first : S₁}
+    (g₂ : S₂ → S₂) (hlen2 : 2 ≤ l.length)
+    (hfl : l[0]'(by omega) = first) :
+    ∀ j, j < l.length →
+      (Sum.elim
+        (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+        (fun o : Option S₂ => Sum.inr (o.map g₂)))
+        (nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+          (fun o : Option S₂ => Sum.inr (o.map g₂))) j
+          (Sum.inl (some (l[l.length - 1]'(by omega)))))
+      ≠ nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+          (fun o : Option S₂ => Sum.inr (o.map g₂))) j
+          (Sum.inl (some (l[l.length - 1]'(by omega)))) := by
+  intro j hj hcontra
+  rw [nxtIter_lift_inl] at hcontra
+  have h1 : spineNext first l
+      (nxtIter (spineNext first l) j (l[l.length - 1]'(by omega)))
+      = nxtIter (spineNext first l) j (l[l.length - 1]'(by omega)) :=
+    Option.some.inj (Sum.inl.inj hcontra)
+  exact spine_nofix_port hsp hlen2 hfl j hj h1
+
+open Classical in
+/-- **A GENUINE TWO-CLASS CYCLE**: with at least two spine states and the
+    exit satisfiable, the quotient period at the port is at least 2. -/
+theorem sum_chain_qperiod2 {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) {first : S₁}
+    (aut₂ : GAut (Option S₂) A T) (g₂ : S₂ → S₂)
+    (hlen2 : 2 ≤ l.length) (hfl : l[0]'(by omega) = first)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    2 ≤ qPeriod (sumGAut (loopInitialized b B).toGAut aut₂)
+        (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+          (fun o : Option S₂ => Sum.inr (o.map g₂)))
+        (Sum.inl (some (l[l.length - 1]'(by omega))))
+        l.length := by
+  obtain ⟨h1, h2, h3, h4⟩ := qPeriod_spec
+    (sumGAut (loopInitialized b B).toGAut aut₂)
+    (Sum.elim
+      (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+      (fun o : Option S₂ => Sum.inr (o.map g₂)))
+    (Sum.inl (some (l[l.length - 1]'(by omega)))) l.length
+    (by omega) (sum_chain_hper hsp g₂ (by omega) hfl)
+  generalize hqgen : qPeriod (sumGAut (loopInitialized b B).toGAut aut₂)
+      (Sum.elim
+        (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+        (fun o : Option S₂ => Sum.inr (o.map g₂)))
+      (Sum.inl (some (l[l.length - 1]'(by omega))))
+      l.length = qp at h1 h2 h3 h4 ⊢
+  rcases Nat.lt_or_ge qp 2 with hlt | hge
+  · exfalso
+    have hqp1 : qp = 1 := by omega
+    rw [hqp1] at h1
+    have hn : nxtIter (Sum.elim
+        (fun o : Option S₁ => Sum.inl (o.map (spineNext first l)))
+        (fun o : Option S₂ => Sum.inr (o.map g₂))) 1
+        (Sum.inl (some (l[l.length - 1]'(by omega))))
+        = Sum.inl (some first) := by
+      show Sum.inl ((some (l[l.length - 1]'(by omega))).map
+        (spineNext first l)) = _
+      show Sum.inl (some (spineNext first l
+        (l[l.length - 1]'(by omega)))) = _
+      rw [spineNext_last first l hsp (by omega)]
+    rw [hn] at h1
+    have hL : autLang (genW T)
+        (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+        (Sum.inl (some first))
+        = autLang (genW T)
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+          (Sum.inl (some (l[l.length - 1]'(by omega)))) := by
+      rw [← rep_lang (sumGAut (loopInitialized b B).toGAut aut₂)
+        (Sum.inl (some first)), h1,
+        rep_lang (sumGAut (loopInitialized b B).toGAut aut₂)]
+    obtain ⟨αe, hαe⟩ := hexit
+    have hiff := iff_of_eq (congrFun hL (αe, []))
+    have hport : autRun (genW T)
+        (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+        (Sum.inl (some (l[l.length - 1]'(by omega)))) αe [] := by
+      show bval (genW T)
+        ((loopInitialized b B).core.hlt
+          (l[l.length - 1]'(by omega))) αe = true
+      rw [loop_hlt_port b hsp (by omega) αe, hαe]
+      rfl
+    have hfirst := hiff.mpr hport
+    have hfirst' : bval (genW T)
+        ((loopInitialized b B).core.hlt first) αe = true := hfirst
+    rw [← hfl] at hfirst'
+    rw [loop_hlt_int b hsp 0 (by omega) αe] at hfirst'
+    exact nomatch hfirst'
+  · exact hge
+
+#print axioms sum_chain_states
+#print axioms sum_chain_hper
+#print axioms sum_chain_hnofix
+#print axioms sum_chain_qperiod2
+
 end GkatChainFragment

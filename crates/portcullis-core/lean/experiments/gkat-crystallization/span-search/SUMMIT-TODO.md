@@ -807,3 +807,25 @@ The cover's last semantic ingredient. ⟦inl none⟧ = ⟦port⟧ via
 rep_lang_congr => the init class IS on the orbit (position 0).
 Remaining: qPeriod >= 2, hstates/spineNext_mem closure, os/cover
 assembly, wrapper, degenerate branches.
+
+## ORBIT-BUNDLE PACKAGING (loop iteration 25b, "Continue")
+
+- spineNext_mem / spineNext_iter_mem: the spine is closed under its
+  successor and all iterates
+- sum_chain_states: spine members' classes are quotient states (hstates)
+- sum_chain_hper: the lifted period at the port (nxtIter_lift +
+  spine_period_port)
+- sum_chain_hnofix: the lifted walk never fixes below the period
+  (inl/some injectivity down to spine_nofix_port)
+- sum_chain_qperiod2: 2 <= qPeriod — if the quotient period were 1, the
+  port's class would equal the head's class, giving language equality
+  refuted at (exit-atom, []): the port halts there, the head (interior,
+  len >= 2) is silent. (Generalize-the-qPeriod-term first: omega treats
+  syntactically distinct occurrences as distinct atoms.)
+
+EVERY per-orbit obligation of rankNxt_quot_solvesBA is now proved for the
+chain-loop composite (both-sat case): the os entry
+(inl (some port), l.length) has hk/hper/hlive/hnofix/hmin/qPeriod>=2/
+hstates/hnodesc (via interior_no_desc + hstep_uniq)/hnoeps. Remaining:
+the cover (init class via none~port + orbit membership of spine classes;
+inr side; degenerate branches), then the master assembly + wrapper.
