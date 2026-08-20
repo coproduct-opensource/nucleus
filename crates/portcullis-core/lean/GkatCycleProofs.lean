@@ -1104,4 +1104,188 @@ theorem walked_exit_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms walked_exit_cycle_roles
 
+/-! ## The walked-exit assembly
+
+    The engine-facing assembly: states are BASE (all arms self or strictly
+    descending — the gathered Salomaa closed form covers self-arms) or members
+    of designated WALKED-EXIT cycles — exactly the two shapes the cycle
+    dichotomy produces on cleaned canonical quotients. -/
+
+open Classical in
+private theorem walkedExitPortE_congr (aut : GAut S A T) (m : Nat → S)
+    (len : Nat) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+      sol₁ e.2.2 = sol₂ e.2.2) :
+    walkedExitPortE aut sol₁ m len = walkedExitPortE aut sol₂ m len := by
+  unfold walkedExitPortE
+  rw [foldTL_congr' (aut.hlt (m 0))
+    (gOthers (nxtAt m len 0) (restL aut m 0)) h]
+
+open Classical in
+private theorem wChain_term_congr (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    {t₁ t₂ : Exp A T} (h : t₁ = t₂) :
+    ∀ c j, wChain aut m len t₁ c j = wChain aut m len t₂ c j := by
+  intro c
+  induction c with
+  | zero => intro j; exact h
+  | succ c ih =>
+      intro j
+      show Exp.seq _ (.ite _ (.seq _ (wChain aut m len t₁ c (j + 1))) _)
+        = Exp.seq _ (.ite _ (.seq _ (wChain aut m len t₂ c (j + 1))) _)
+      rw [ih (j + 1)]
+
+open Classical in
+/-- The walked assembly solution: gathered Salomaa closed forms at base
+    states, walked-exit chain/port closed forms on designated cycles. -/
+noncomputable def asmSolW (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some (len, m, i) =>
+        if i = 0 then
+          walkedExitPortE aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            m len
+        else
+          wChain aut m len
+            (walkedExitPortE aut
+              (fun t => if h : rank t < rank s then rec t h else .test .zero)
+              m len)
+            (len - i) i)
+
+open Classical in
+theorem asmSolW_eq (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) (s : S) :
+    asmSolW aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSolW aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some (len, m, i) =>
+            if i = 0 then
+              walkedExitPortE aut
+                (fun t =>
+                  if _ : rank t < rank s then asmSolW aut rank cy t
+                  else .test .zero) m len
+            else
+              wChain aut m len
+                (walkedExitPortE aut
+                  (fun t =>
+                    if _ : rank t < rank s then asmSolW aut rank cy t
+                    else .test .zero) m len)
+                (len - i) i) := by
+  unfold asmSolW
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE WALKED-EXIT ASSEMBLY THEOREM**: an automaton whose every state is
+    base (arms self or strictly descending) or a member of a designated
+    walked-exit cycle is fully role-covered. -/
+theorem walked_assembly_roles (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat))
+    (hcy : ∀ s len m i, cy s = some (len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (len, m, j)) ∧
+      (∀ j, j < len → rank (m j) = rank (m 0)) ∧
+      (∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+        rank e.2.2 < rank (m 0)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        gOthers (nxtAt m len j) (restL aut m j) = []) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies (aut.hlt (m j)) (aut.hlt (m 0))) ∧
+      (∀ j, 1 ≤ j → j < len →
+        ∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+          GuardEmpty (.and (aut.hlt (m j)) e.1)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies (aut.hlt (m j))
+          (.not (.or (selfG aut m 0) (nextG aut m len 0)))))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSolW aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      have hsol : asmSolW aut rank cy s
+          = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (asmSolW aut rank cy) (aut.hlt s)
+                (gOthers s (aut.trans s))) := by
+        rw [asmSolW_eq, hcys]
+        exact congrArg _ (foldTL_congr' (aut.hlt s) (gOthers s (aut.trans s))
+          (fun e he => dif_pos (hlow e he)))
+      refine StateRole.salomaaE (gGuard s (aut.trans s))
+        (gBody s (aut.trans s))
+        (foldTL (asmSolW aut rank cy) (aut.hlt s) (gOthers s (aut.trans s)))
+        hsol ?_
+      rw [eqRHS_foldTL]
+      exact multi_gather (asmSolW aut rank cy) (aut.hlt s) s (aut.trans s)
+  | some q =>
+      obtain ⟨len, m, i⟩ := q
+      obtain ⟨hilt, hlen, hmi, hcoh, hrank, hport_lo, hint_nil, himpc,
+        hdisj, hexcl⟩ := hcy s len m i hcys
+      have hlowAt : ∀ j, j < len →
+          ∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+            rank e.2.2 < rank (m j) := by
+        intro j hj e he
+        rw [hrank j hj]
+        exact hport_lo e he
+      have hcycsol : ∀ j, j < len →
+          asmSolW aut rank cy (m j)
+            = (if j = 0 then
+                walkedExitPortE aut (asmSolW aut rank cy) m len
+              else
+                wChain aut m len
+                  (walkedExitPortE aut (asmSolW aut rank cy) m len)
+                  (len - j) j) := by
+        intro j hj
+        rw [asmSolW_eq, hcoh j hj]
+        show (if j = 0 then
+            walkedExitPortE aut
+              (fun t => if _ : rank t < rank (m j) then asmSolW aut rank cy t
+                else Exp.test BExp.zero) m len
+          else
+            wChain aut m len
+              (walkedExitPortE aut
+                (fun t => if _ : rank t < rank (m j) then asmSolW aut rank cy t
+                  else Exp.test BExp.zero) m len)
+              (len - j) j) = _
+        by_cases hj0 : j = 0
+        · rw [if_pos hj0, if_pos hj0]
+          exact walkedExitPortE_congr aut m len
+            (fun e he => dif_pos (hlowAt j hj e he))
+        · rw [if_neg hj0, if_neg hj0]
+          exact wChain_term_congr aut m len
+            (walkedExitPortE_congr aut m len
+              (fun e he => dif_pos (hlowAt j hj e he))) (len - j) j
+      have hsol_port : asmSolW aut rank cy (m 0)
+          = walkedExitPortE aut (asmSolW aut rank cy) m len := by
+        have h0 := hcycsol 0 (by omega)
+        rw [if_pos rfl] at h0
+        exact h0
+      have hsol_int : ∀ j, 1 ≤ j → j < len →
+          asmSolW aut rank cy (m j)
+            = wChainE aut (asmSolW aut rank cy) m len (len - j) j := by
+        intro j hj hjlt
+        have h0 := hcycsol j hjlt
+        rw [if_neg (by omega : ¬ (j = 0))] at h0
+        exact h0
+      have hroles := walked_exit_cycle_roles aut (asmSolW aut rank cy)
+        m len hlen hsol_int hsol_port hint_nil himpc hdisj hexcl
+      rw [← hmi]
+      exact hroles i hilt
+
+#print axioms walked_assembly_roles
+
 end GkatCycle

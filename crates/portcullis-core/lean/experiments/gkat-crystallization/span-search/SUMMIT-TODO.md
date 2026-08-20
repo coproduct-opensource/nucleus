@@ -298,3 +298,26 @@ finite states list are cycles (pigeonhole or minUpTo-style first-return);
 (single-port condition from chain-body halt structure); (c) ChainLoops
 fragment rank (wh over multi-action chains) → the fourth unconditional
 completeness theorem.
+
+## THE WALKED-EXIT ASSEMBLY (loop iteration 3)
+
+walked_assembly_roles (GkatCycleProofs): the engine-facing assembly — an
+automaton whose every state is BASE (arms self or strictly descending; the
+gathered Salomaa form covers self-arms) or a member of a designated
+WALKED-EXIT cycle is fully role-covered.  Exactly the two shapes the cycle
+dichotomy produces on cleaned canonical quotients.  Closed forms carry the
+ambient solution only in the port residual (walkedExitPortE_congr /
+wChain_term_congr keep all congruences pointwise).
+[propext, Classical.choice, Quot.sound]
+
+REMAINING for the fourth unconditional theorem (multi-action loop bodies):
+1. ORBIT MACHINERY: from quot_cycle_dichotomy, build the cy-assignment —
+   qnxt-orbits close (source periodicity: nxt^k u = u on cycle states),
+   canonical basepoint per orbit (bisimRep-style choice-coherence), periods,
+   positions; derive the walked_assembly hcy coherence bundle (rank equality
+   from minRank along cycles; hint_nil/himpc/hdisj/hexcl from the source
+   chain-halt structure).
+2. ChainLoops fragment: Thompson rank-mod-nxt for wh over multi-action
+   chains (nxt follows the chain, wraps at the back-edge).
+3. Glue: rankNxt_quot_solvesBA := dichotomy + orbits + walked_assembly +
+   solvesBA_unclean; then chainloops_complete.
