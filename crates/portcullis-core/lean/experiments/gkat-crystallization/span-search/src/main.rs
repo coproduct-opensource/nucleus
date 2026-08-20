@@ -4958,7 +4958,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 // cycle (walked_cycle_roles): unique non-self in-SCC successors
                 // forming one cycle, no exits, subset halts, port exclusivity
                 let walked = 'w: {
-                    if n_exit_arms > 0 { break 'w false; }
+                    // unique non-self in-SCC successors forming one cycle
                     let mut succ: Vec<(usize, usize)> = Vec::new();
                     for &s in scc.iter() {
                         let mut ns: Vec<usize> = Vec::new();
@@ -4982,12 +4982,30 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         if cnt > scc.len() { break 'w false; }
                     }
                     if cnt != scc.len() { break 'w false; }
+                    // some port choice p: exits confined to p, interior halts
+                    // fall through p's exit fold (walked_exit_cycle_roles)
                     scc.iter().any(|&p| {
-                        scc.iter().all(|&s| q.hl[s] & !q.hl[p] == 0) && {
-                            let mut armmask = 0u8;
-                            for i in 0..NA { if q.st[p][i] != 0 { armmask |= 1 << i; } }
-                            q.hl[p] & armmask == 0
+                        let mut exitmask = 0u8;
+                        let mut ok = true;
+                        for &s in scc.iter() {
+                            for i in 0..NA {
+                                let t = q.st[s][i];
+                                if t != 0 && !inscc((t - 1) as usize) {
+                                    if s == p { exitmask |= 1 << i; }
+                                    else { ok = false; }
+                                }
+                            }
                         }
+                        if !ok { return false; }
+                        let mut cyclemask = 0u8;
+                        for i in 0..NA {
+                            let t = q.st[p][i];
+                            if t != 0 && inscc((t - 1) as usize) { cyclemask |= 1 << i; }
+                        }
+                        scc.iter().all(|&s| s == p
+                            || (q.hl[s] & !q.hl[p] == 0
+                                && q.hl[s] & exitmask == 0
+                                && q.hl[s] & cyclemask == 0))
                     })
                 };
                 if walked { n_walked_scc += 1; } else { n_open_scc += 1; }

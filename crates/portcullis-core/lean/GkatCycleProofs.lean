@@ -899,4 +899,209 @@ theorem walked_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms walked_cycle_roles
 
+/-! ## The exit port: the walked cycle with an arbitrary port residual
+
+    The port may carry exit arms: its REST becomes the residual fold over its
+    non-cycle dispatch.  Parked interior halts must then FALL THROUGH the
+    port's exit fold to its final halt: three `bval`-level side conditions
+    (halt inside the port halt, disjoint from every port exit guard, excluded
+    from the port loop guard), each census-checkable. -/
+
+open Classical in
+/-- A guard disjoint from every arm falls through a Salomaa fold to its final
+    test, and a sub-halt is absorbed there. -/
+theorem fold_absorb {sol : S → Exp A T} {h c : BExp T}
+    (himpc : GuardImplies h c) :
+    ∀ E : List (BExp T × A × S), (∀ e ∈ E, GuardEmpty (.and h e.1)) →
+    EquivBA (.seq (.test h) (foldTL sol c E)) (.test h) := by
+  intro E
+  induction E with
+  | nil =>
+      intro _
+      refine EquivBA.trans (EquivBA.s6 h c) ?_
+      refine EquivBA.baTest ?_
+      intro X W x
+      show (bval W h x && bval W c x) = bval W h x
+      cases hh : bval W h x with
+      | true => rw [himpc X W x hh]; rfl
+      | false => rfl
+  | cons hd rest ih =>
+      intro hdisj
+      obtain ⟨g, a, t⟩ := hd
+      show EquivBA (.seq (.test h)
+        (.ite g (.seq (.act a) (sol t)) (foldTL sol c rest))) (.test h)
+      refine EquivBA.trans (test_seq_ite h g _ _) ?_
+      refine EquivBA.trans (GkatDeadExitElim.ite_zero_guard _ _
+        (fun X W x => hdisj (g, a, t) (by simp) X W x)) ?_
+      exact ih (fun e he => hdisj e (by simp [he]))
+
+open Classical in
+/-- **Parking absorption through an exit fold**: a halt excluded from the loop
+    guard and from every exit guard, and inside the final halt, absorbs the
+    whole port solution. -/
+theorem park_absorb_exits {sol : S → Exp A T} {h c G : BExp T} (B : Exp A T)
+    {E : List (BExp T × A × S)}
+    (himpG : GuardImplies h (.not G))
+    (hdisj : ∀ e ∈ E, GuardEmpty (.and h e.1))
+    (himpc : GuardImplies h c) :
+    EquivBA (.test h : Exp A T)
+      (.seq (.test h) (.seq (.wh G B) (foldTL sol c E))) := by
+  refine EquivBA.symm ?_
+  refine EquivBA.trans (seq_assoc' (.test h) (.wh G B) (foldTL sol c E)) ?_
+  refine EquivBA.trans (EquivBA.seq_c (test_wh_absorb h G B himpG)
+    (EquivBA.base (Equiv.refl _))) ?_
+  exact fold_absorb himpc E hdisj
+
+open Classical in
+/-- The exit-port walked port solution: loop the walked chain, exit into the
+    port's residual fold. -/
+noncomputable def walkedExitPortE (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) : Exp A T :=
+  .seq (.wh (.or (selfG aut m 0) (nextG aut m len 0))
+      (.ite (selfG aut m 0) (selfB aut m 0)
+        (.seq (nextB aut m len 0) (wChain aut m len (.test .one) (len - 1) 1))))
+    (foldTL sol (aut.hlt (m 0)) (gOthers (nxtAt m len 0) (restL aut m 0)))
+
+open Classical in
+/-- The walked chain terminated at the exit-port solution. -/
+noncomputable def wChainE (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) : Nat → Nat → Exp A T :=
+  wChain aut m len (walkedExitPortE aut sol m len)
+
+open Classical in
+/-- The walked split, exit-port version. -/
+theorem wChainE_split (aut : GAut S A T) (sol : S → Exp A T) (m : Nat → S)
+    (len : Nat)
+    (himpc : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hdisj : ∀ j, 1 ≤ j → j < len →
+      ∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+        GuardEmpty (.and (aut.hlt (m j)) e.1))
+    (hexcl : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j))
+        (.not (.or (selfG aut m 0) (nextG aut m len 0)))) :
+    ∀ c j, 1 ≤ j → j + c ≤ len →
+      EquivBA (wChainE aut sol m len c j)
+        (.seq (wChain aut m len (.test .one) c j)
+          (walkedExitPortE aut sol m len)) := by
+  intro c
+  induction c with
+  | zero =>
+      intro j _ _
+      exact EquivBA.symm
+        (EquivBA.base (Equiv.s4 (walkedExitPortE aut sol m len)))
+  | succ c ih =>
+      intro j hj hle
+      show EquivBA
+        (.seq (.wh (selfG aut m j) (selfB aut m j))
+          (.ite (nextG aut m len j)
+            (.seq (nextB aut m len j) (wChainE aut sol m len c (j + 1)))
+            (.test (aut.hlt (m j)))))
+        (.seq (.seq (.wh (selfG aut m j) (selfB aut m j))
+          (.ite (nextG aut m len j)
+            (.seq (nextB aut m len j)
+              (wChain aut m len (.test .one) c (j + 1)))
+            (.test (aut.hlt (m j)))))
+          (walkedExitPortE aut sol m len))
+      refine EquivBA.trans ?_ (seq_assoc' _ _ (walkedExitPortE aut sol m len))
+      refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+      refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+        (EquivBA.base (Equiv.u5 _ _ _ (walkedExitPortE aut sol m len)))
+      · refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (ih (j + 1) (by omega) (by omega))) ?_
+        exact seq_assoc' _ _ (walkedExitPortE aut sol m len)
+      · exact park_absorb_exits _ (hexcl j hj (by omega))
+          (hdisj j hj (by omega)) (himpc j hj (by omega))
+
+open Classical in
+/-- **THE EXIT-PORT WALKED CYCLE THEOREM** (cycle-local): the walked cycle
+    with an arbitrary port residual — exits and halt — is fully role-covered,
+    provided interior halts fall through the port's exit fold. -/
+theorem walked_exit_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) (hlen : 2 ≤ len)
+    (hsol_int : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = wChainE aut sol m len (len - j) j)
+    (hsol_port : sol (m 0) = walkedExitPortE aut sol m len)
+    (hint_nil : ∀ j, 1 ≤ j → j < len →
+      gOthers (nxtAt m len j) (restL aut m j) = [])
+    (himpc : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hdisj : ∀ j, 1 ≤ j → j < len →
+      ∀ e ∈ gOthers (nxtAt m len 0) (restL aut m 0),
+        GuardEmpty (.and (aut.hlt (m j)) e.1))
+    (hexcl : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j))
+        (.not (.or (selfG aut m 0) (nextG aut m len 0)))) :
+    ∀ j, j < len → StateRole aut sol (m j) := by
+  have hstep : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = .seq (.wh (selfG aut m j) (selfB aut m j))
+        (.ite (nextG aut m len j)
+          (.seq (nextB aut m len j) (sol (nxtAt m len j)))
+          (.test (aut.hlt (m j)))) := by
+    intro j hj hjlt
+    rw [hsol_int j hj hjlt]
+    show wChain aut m len (walkedExitPortE aut sol m len) (len - j) j = _
+    rw [show len - j = (len - (j + 1)) + 1 from by omega]
+    by_cases hj1 : j + 1 = len
+    · have hnx : sol (nxtAt m len j) = walkedExitPortE aut sol m len := by
+        unfold nxtAt
+        rw [if_pos hj1]
+        exact hsol_port
+      rw [hnx, show len - (j + 1) = 0 from by omega]
+      rfl
+    · have hnx : sol (nxtAt m len j)
+          = wChain aut m len (walkedExitPortE aut sol m len)
+            (len - (j + 1)) (j + 1) := by
+        unfold nxtAt
+        rw [if_neg hj1]
+        exact hsol_int (j + 1) (by omega) (by omega)
+      rw [hnx]
+      rfl
+  intro j hj
+  cases Nat.eq_zero_or_pos j with
+  | inl hzero =>
+      subst hzero
+      refine StateRole.salomaaE
+        (.or (selfG aut m 0) (nextG aut m len 0))
+        (.ite (selfG aut m 0) (selfB aut m 0)
+          (.seq (nextB aut m len 0)
+            (wChain aut m len (.test .one) (len - 1) 1)))
+        (foldTL sol (aut.hlt (m 0)) (gOthers (nxtAt m len 0) (restL aut m 0)))
+        hsol_port ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (double_gather sol (aut.hlt (m 0)) (m 0)
+        (nxtAt m len 0) (aut.trans (m 0))) ?_
+      have hx1 : sol (nxtAt m len 0) = wChainE aut sol m len (len - 1) 1 := by
+        unfold nxtAt
+        rw [if_neg (by omega : ¬ (0 + 1 = len))]
+        exact hsol_int 1 (Nat.le_refl 1) (by omega)
+      rw [hx1]
+      refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.ite_c
+          (EquivBA.trans
+            (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+              (wChainE_split aut sol m len himpc hdisj hexcl (len - 1) 1
+                (Nat.le_refl 1) (by omega)))
+            (seq_assoc' _ _ (walkedExitPortE aut sol m len)))
+          (EquivBA.base (Equiv.refl _)))) ?_
+      rw [← hsol_port]
+      exact arms_merge (selfG aut m 0) (nextG aut m len 0) (selfB aut m 0)
+        (.seq (nextB aut m len 0) (wChain aut m len (.test .one) (len - 1) 1))
+        (sol (m 0))
+        (foldTL sol (aut.hlt (m 0)) (gOthers (nxtAt m len 0) (restL aut m 0)))
+  | inr hpos =>
+      refine StateRole.salomaaE (selfG aut m j) (selfB aut m j)
+        (.ite (nextG aut m len j)
+          (.seq (nextB aut m len j) (sol (nxtAt m len j)))
+          (.test (aut.hlt (m j))))
+        (hstep j hpos hj) ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (double_gather sol (aut.hlt (m j)) (m j)
+        (nxtAt m len j) (aut.trans (m j))) ?_
+      rw [show gOthers (nxtAt m len j) (gOthers (m j) (aut.trans (m j))) = []
+        from hint_nil j hpos hj]
+      exact EquivBA.base (Equiv.refl _)
+
+#print axioms walked_exit_cycle_roles
+
 end GkatCycle

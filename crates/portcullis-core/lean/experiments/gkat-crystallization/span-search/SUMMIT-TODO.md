@@ -197,3 +197,13 @@ REMAINING (the true open residue):
   [propext, Classical.choice, Quot.sound]
 - Census (60k pairs, NA=4): 89.2% of ALL multi-state SCCs are walked-covered;
   open residue = 235 instances (exit ports ~185, non-subset halts/trees ~50).
+
+## Exit ports (2026-08-20, continuation 2)
+
+- fold_absorb + park_absorb_exits: a parked halt falls through the port exit
+  fold to the final halt (disjoint from exit guards, inside the port halt,
+  excluded from the loop guard)
+- walked_exit_cycle_roles: the walked cycle with an ARBITRARY port residual
+  (exits + halt).  [propext, Classical.choice, Quot.sound]
+- Census: 2127/2171 = 98.0% of multi-SCCs covered; 44 open instances in 60k
+  pairs (multi-member exits, non-subset halts, trees).

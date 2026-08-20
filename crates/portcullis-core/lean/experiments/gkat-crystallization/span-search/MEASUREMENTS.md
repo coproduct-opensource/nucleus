@@ -133,3 +133,13 @@ halt/step exclusivity — the walked_cycle_roles hypotheses):
 So proved-theorem coverage after walked_cycle_roles: all but 235 SCC
 instances in 60k pairs.  The open residue = multi-member exit ports +
 two-independent-halt cycles + genuine tree walks.
+
+## Exit-port coverage (2026-08-20, third refinement)
+
+walked_exit_cycle_roles added (port carries arbitrary residual: exits + halt;
+interior halts fall through the port exit fold — three bval-level conditions).
+Census classifier extended to exit-ports.  NA=4, 60k pairs:
+
+- multi-state SCCs: 2171; **walked-covered: 2127 (98.0%)**; OPEN: 44
+- open residue = 44 instances in 59947 pairs (0.07% of pairs): multi-member
+  exits, non-subset halts, tree shapes.
