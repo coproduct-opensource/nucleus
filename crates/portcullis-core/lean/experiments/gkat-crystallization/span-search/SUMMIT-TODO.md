@@ -25,10 +25,21 @@
               representatives, no quotient types)
             * stage C: start merge — canonical_quotient_merges_starts
               [propext, Classical.choice, Quot.sound]
-      - [ ] S0: the trim hypothesis — LiveSteps for the Thompson sum (silent-freeness
-            of Thompson automata of normalized programs + the dead-code bridge in
-            EquivBA for arbitrary programs)
-      - [ ] S2: role existence for the canonical quotient (the mathematical core)
+      - [~] S0: the trim hypothesis (NormalizationBridge) — OPENED, loop-free
+            stratum proved (GkatNormalizationProofs):
+            * outG: the input-guard-indexed output-guard interface algebra
+            * outG_emits: g?·e ≡ g?·(e·(outG g e)?) in the finite axioms
+            * prune + prune_equiv (+ _top): dead-branch elimination provable,
+              deadness propagates syntactically (prune = 0? on empty behaviours)
+            * NEXT: loop stratum (outG fixpoint for wh; unguarded loops via
+              w2/w3_ba: wh 1 e ≡ 0), then LiveTerm invariant, then Thompson
+              silent-freeness of pruned terms (the mountain), then wire into
+              NormalizationBridge
+      - [~] S2: role existence for the canonical quotient (the research core) —
+            OPENED, acyclic stratum proved (dag_roles: WellFounded StepRel ⟹ full
+            fold cover via dagSol well-founded recursion).  NEXT: single-SCC ring
+            stratum against the compositional ring API, then the general
+            SCC-decomposition assembly (walk-planner as the constructive skeleton)
 
 Status log:
 - (start) all three open.
