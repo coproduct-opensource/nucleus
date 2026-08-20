@@ -1868,3 +1868,33 @@ All six live classes are now paired and separated. Next: bisimRep
 computations (rep values at the 12 sum states from the pair/sep facts),
 the classifier cy, cleanList phantom-drop on the quotient arm lists,
 bundle discharge, `chordLoops_solvable`, `chordloops_complete`.
+
+## Iteration 67 — THE CLASS CENSUS + representative distinctness
+
+Read the quotient machinery precisely: `bisimQuotAut` keeps carrier S,
+states = map rep, trans retargeted by rep; `bisimRep` is a
+Classical.choose over bisimilarity — but the carrier is the concrete
+10-value sum type, so the rep is always one of the 10 values and the
+census classifies it.
+
+New in GkatThreeLoopProofs.lean:
+- `chordSum` / `chordRepR` / `chordRepP` / `chordRepX` — the
+  completeness-pair sum and its three class representatives.
+- **`chord_census`**: ∀ s (all 10 carrier values), rep s ∈ {R̂, P̂, X̂} —
+  a 10-way case split stitched from none_lang, yl_yr_lang, and the
+  cross-side pairings. This makes hbase VACUOUS-ready: every quotient
+  state is a cluster member.
+- **`chord_reps_distinct`**: R̂ ≠ P̂ ≠ X̂ via rep_lang + the separations
+  (defeq-ascription trick to convert chordRep* equalities into bisimRep
+  form for rewriting; aut₂ must be passed explicitly — inference can't
+  synthesize it from the refine hole).
+
+The classifier is now definable: cy s = if s = R̂ then (cluster, 0)
+else if s = P̂ then (cluster, 1) else if s = X̂ then (cluster, 2) else
+none — coherence from distinctness, totality-on-states from the census.
+
+Next: the quotient ARM computations — trimList of each port state's
+arm list, retarget by rep, cleanList phantom-drop → the port's cleaned
+quotient arms are exactly [(guard, p, P̂)]; same for P̂ (two arms) and
+X̂ (one arm); then the gathered-guard bundle facts, chordLoops_solvable,
+chordloops_complete.

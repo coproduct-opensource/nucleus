@@ -2855,4 +2855,200 @@ theorem chord_pair_y (b c : BExp T) (p x y : A)
 #print axioms chord_pair_x
 #print axioms chord_pair_y
 
+/-! ## The class census
+
+    Every carrier value of the chord sum represents one of THREE
+    classes: the port `R̂`, the branch `P̂`, or the mid `X̂`.  The
+    quotient is therefore exactly the chord cluster; the classifier and
+    bundle discharge build on these reps. -/
+
+/-- The chord sum automaton for a completeness pair. -/
+noncomputable def chordSum (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) :
+    GAut (Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))) A T :=
+  sumGAut (chordLoopAut b c p x y).toGAut (chordLoopAut b' c' p' x' y').toGAut
+
+/-- The port representative. -/
+noncomputable def chordRepR (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) :
+    Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit))) :=
+  bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+    (Sum.inl (some (Sum.inr (Sum.inr ()))))
+
+/-- The branch representative. -/
+noncomputable def chordRepP (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) :
+    Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit))) :=
+  bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+    (Sum.inl (some (Sum.inl ())))
+
+/-- The mid representative. -/
+noncomputable def chordRepX (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) :
+    Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit))) :=
+  bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+    (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+
+open Classical in
+/-- **THE CENSUS**: every carrier value represents the port, the
+    branch, or the mid class. -/
+theorem chord_census (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none))
+    (s : Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))) :
+    bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) s
+        = chordRepR b c p x y b' c' p' x' y'
+      ∨ bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) s
+          = chordRepP b c p x y b' c' p' x' y'
+      ∨ bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) s
+          = chordRepX b c p x y b' c' p' x' y' := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hpairy := chord_pair_y b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' hpairx.2
+  cases s with
+  | inl o =>
+      cases o with
+      | none =>
+          exact Or.inl (rep_lang_congr _
+            (chord_none_lang b c p x y _ hexitC hexitB))
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exact Or.inr (Or.inl rfl)
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exact Or.inr (Or.inr rfl)
+                  | inr v =>
+                      cases v
+                      exact Or.inl (rep_lang_congr _
+                        (chord_yl_yr_lang b c p x y _ hexitC hexitB))
+              | inr v =>
+                  cases v
+                  exact Or.inl rfl
+  | inr o =>
+      cases o with
+      | none =>
+          refine Or.inl (rep_lang_congr _ ?_)
+          exact (chord_none_lang_r b' c' p' x' y' _ hexitC' hexitB').trans
+            hport.symm
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exact Or.inr (Or.inl (rep_lang_congr _ hpair.2.symm))
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exact Or.inr (Or.inr
+                        (rep_lang_congr _ hpairx.2.symm))
+                  | inr v =>
+                      cases v
+                      refine Or.inl (rep_lang_congr _ ?_)
+                      exact ((chord_yl_yr_lang_r b' c' p' x' y' _
+                        hexitC' hexitB').trans hport.symm)
+              | inr v =>
+                  cases v
+                  exact Or.inl (rep_lang_congr _ hport.symm)
+
+open Classical in
+/-- The three representatives are pairwise distinct. -/
+theorem chord_reps_distinct (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    chordRepR b c p x y b' c' p' x' y'
+        ≠ chordRepP b c p x y b' c' p' x' y'
+      ∧ chordRepR b c p x y b' c' p' x' y'
+          ≠ chordRepX b c p x y b' c' p' x' y'
+      ∧ chordRepP b c p x y b' c' p' x' y'
+          ≠ chordRepX b c p x y b' c' p' x' y' := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro h
+    have h' : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inr ()))))
+      = bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inl ()))) := h
+    have hL : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inl ())))
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y'))
+          (Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+      rw [← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inl ()))),
+        ← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inr (Sum.inr ())))),
+        h']
+    exact chord_lang_ne_p_yr b c p x y
+      ((chordLoopAut b' c' p' x' y').toGAut) hexitB hL
+  · intro h
+    have h' : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inr ()))))
+      = bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) := h
+    have hL : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y'))
+          (Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+      rw [← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))),
+        ← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inr (Sum.inr ())))),
+        h']
+    exact chord_lang_ne_x_yr b c p x y
+      ((chordLoopAut b' c' p' x' y').toGAut) hexitB hL
+  · intro h
+    have h' : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inl ())))
+      = bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) := h
+    have hL : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inl ())))
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y'))
+          (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) := by
+      rw [← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inl ()))),
+        ← rep_lang (chordSum b c p x y b' c' p' x' y')
+          (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))),
+        h']
+    exact chord_lang_ne_p_x b c p x y
+      ((chordLoopAut b' c' p' x' y').toGAut) hentC hexitC hexitB hL
+
+#print axioms chord_census
+#print axioms chord_reps_distinct
+
 end GkatThreeLoop
