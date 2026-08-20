@@ -320,4 +320,130 @@ theorem twoLoop_trim_step_inr_self (b c : BExp T) (q r : A)
 #print axioms twoLoop_trim_step_inl_adv
 #print axioms twoLoop_trim_step_inr_feed
 
+/-! ## The orbit bundle facts
+
+    The port-based 2-orbit: parity of the swap walk, period two,
+    non-fixedness, the ε-word separation of the two classes (hence
+    non-degeneracy and a genuine 2-class quotient period), interior
+    silence, and descent-freeness via rank zero. -/
+
+theorem twoNxt_iter (s : Sum Unit Unit) :
+    ∀ j, nxtIter twoNxt j s = if j % 2 = 0 then s else twoNxt s := by
+  intro j
+  induction j with
+  | zero => rfl
+  | succ j ih =>
+      show twoNxt (nxtIter twoNxt j s) = _
+      rw [ih]
+      rcases Nat.mod_two_eq_zero_or_one j with h | h
+      · rw [if_pos h, if_neg (by omega)]
+      · rw [if_neg (by rw [h]; omega), twoNxt_period,
+          if_pos (by omega)]
+
+open Classical in
+/-- The two classes are ε-separated: the port accepts the empty word at
+    a `¬b`-atom, the inner state never does. -/
+theorem twoLoop_lang_ne (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some (Sum.inr ()))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+      (Sum.inl (some (Sum.inr ()))) αb [] := by
+    show bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+    rw [twoLoop_hlt_inr, hαb]
+    rfl
+  have hinner := hiff.mpr hport
+  have hinner' : bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inl ())) αb = true := hinner
+  rw [twoLoop_hlt_inl] at hinner'
+  exact nomatch hinner'
+
+open Classical in
+/-- Interior silence at the trimmed composite. -/
+theorem twoLoop_noeps_inl (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some (Sum.inl ()))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inl ())) α = true := h
+  rw [twoLoop_hlt_inl] at h'
+  exact nomatch h'
+
+open Classical in
+/-- The lifted successor on the left summand. -/
+def twoNxtL {S₂ : Type} (g₂ : S₂ → S₂) :
+    Sum (Option (Sum Unit Unit)) (Option S₂)
+      → Sum (Option (Sum Unit Unit)) (Option S₂) :=
+  Sum.elim (fun o => Sum.inl (o.map twoNxt))
+    (fun o => Sum.inr (o.map g₂))
+
+open Classical in
+/-- Period two at the lifted port. -/
+theorem twoLoop_hper {S₂ : Type} (g₂ : S₂ → S₂) :
+    nxtIter (twoNxtL (S₂ := S₂) g₂) 2
+        (Sum.inl (some (Sum.inr ())))
+      = Sum.inl (some (Sum.inr ())) := by
+  unfold twoNxtL
+  rw [nxtIter_lift_inl]
+  rw [twoNxt_iter]
+  rfl
+
+open Classical in
+/-- No fixed points below the period. -/
+theorem twoLoop_hnofix {S₂ : Type} (g₂ : S₂ → S₂) :
+    ∀ j, j < 2 →
+      twoNxtL (S₂ := S₂) g₂
+          (nxtIter (twoNxtL (S₂ := S₂) g₂) j
+            (Sum.inl (some (Sum.inr ()))))
+        ≠ nxtIter (twoNxtL (S₂ := S₂) g₂) j
+            (Sum.inl (some (Sum.inr ()))) := by
+  intro j hj hcontra
+  unfold twoNxtL at hcontra
+  rw [nxtIter_lift_inl] at hcontra
+  have h1 : twoNxt (nxtIter twoNxt j (Sum.inr ()))
+      = nxtIter twoNxt j (Sum.inr ()) :=
+    Option.some.inj (Sum.inl.inj hcontra)
+  exact twoNxt_nofix _ h1
+
+open Classical in
+/-- **NON-DEGENERACY**: adjacent orbit languages differ — the walk
+    alternates between the ε-separated classes. -/
+theorem twoLoop_hnontriv (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) (g₂ : S₂ → S₂)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ j : Nat,
+      autLang (genW T)
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (nxtIter (twoNxtL (S₂ := S₂) g₂) (j + 1)
+            (Sum.inl (some (Sum.inr ()))))
+        ≠ autLang (genW T)
+            (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+            (nxtIter (twoNxtL (S₂ := S₂) g₂) j
+              (Sum.inl (some (Sum.inr ())))) := by
+  intro j
+  unfold twoNxtL
+  rw [nxtIter_lift_inl, nxtIter_lift_inl, twoNxt_iter, twoNxt_iter]
+  rcases Nat.mod_two_eq_zero_or_one j with h | h
+  · rw [if_pos h, if_neg (by omega)]
+    exact twoLoop_lang_ne b c q r aut₂ hexitB
+  · rw [if_pos (by omega), if_neg (by omega)]
+    exact (twoLoop_lang_ne b c q r aut₂ hexitB).symm
+
+#print axioms twoNxt_iter
+#print axioms twoLoop_lang_ne
+#print axioms twoLoop_hnontriv
+
 end GkatTwoLoop

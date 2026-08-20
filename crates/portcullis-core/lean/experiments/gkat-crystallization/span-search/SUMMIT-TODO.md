@@ -1418,3 +1418,19 @@ All first pass.
 Remaining: parity lemma (nxtIter twoNxt alternates) -> hper/hnofix/
 hnontriv/qPeriod≥2 at Σ; hnodesc (minRank 0); init~port; cover; the
 walked-hos assembly; twoloops_complete.
+
+## TWO-LOOP ORBIT BUNDLE (iteration 50)
+
+- twoNxt_iter: the swap walk alternates by parity
+- twoLoop_lang_ne: THE ε-SEPARATION — the port accepts the empty word at
+  a ¬b-atom, the inner state never does; the two classes are distinct
+- twoLoop_noeps_inl: interior silence at the trimmed composite
+- twoNxtL + twoLoop_hper (period two, lifted) + twoLoop_hnofix
+- twoLoop_hnontriv: adjacent orbit languages differ — the walk
+  alternates between the ε-separated classes (parity case split; odd j
+  makes j+1 even — the mislabeled branch was the only fix needed).
+
+Remaining for twoloops_complete: qPeriod ≥ 2 (mirror of the chain
+argument over lang_ne), hnodesc via minRank 0, hstates, hfire (needs
+sat(b∧c) + the inr-side mirrors of liveness/steps), init~port, cover,
+walked-hos assembly, wrapper.
