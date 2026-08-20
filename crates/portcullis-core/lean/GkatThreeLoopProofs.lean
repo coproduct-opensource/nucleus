@@ -153,4 +153,73 @@ theorem threeLoop_hlt_r (b c : BExp T) (p q r : A) :
 #print axioms threeLoop_step_p_skip
 #print axioms threeLoop_hlt_p
 
+/-! ## THE CHORD-CYCLE ROLE
+
+    The elimination order dissolves the chord: the inner self-loop `Q`
+    solves locally (Salomaa), the branch state `P` is then a loop-free
+    dispatch into solved parts (fold), and the port `R` — whose closed
+    solution is ONE while-loop over the full lap body — satisfies its
+    equation by `w1`-unrolling plus distribution.  No axiom beyond the
+    finite system; `w3`'s one-unknown power carried by `salomaaE`. -/
+
+open Classical in
+/-- The lap prefix: everything from `P` back to the port. -/
+def chordPre (cG : BExp T) (qB rB : Exp A T) : Exp A T :=
+  .ite cG (.seq qB (.seq (.wh cG qB) rB)) rB
+
+open Classical in
+/-- **THE CHORD-CYCLE ROLES**: closed solutions built by reverse
+    elimination satisfy all three equations. -/
+theorem chord3_roles {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (P Q R : S) (bG cG : BExp T) (pB qB rB : Exp A T)
+    (hsolQ : sol Q = .seq (.wh cG qB) (.seq rB (sol R)))
+    (hsolP : sol P = .ite cG (.seq qB (sol Q)) (.seq rB (sol R)))
+    (hsolR : sol R
+      = .wh bG (.seq pB (chordPre cG qB rB)))
+    (hrhsQ : EquivBA (eqRHS aut sol Q)
+      (.ite cG (.seq qB (sol Q)) (.seq rB (sol R))))
+    (hrhsP : EquivBA (eqRHS aut sol P)
+      (.ite cG (.seq qB (sol Q)) (.seq rB (sol R))))
+    (hrhsR : EquivBA (eqRHS aut sol R)
+      (.ite bG (.seq pB (sol P)) (.test .one))) :
+    StateRole aut sol P ∧ StateRole aut sol Q
+      ∧ StateRole aut sol R := by
+  have hsolR' : EquivBA (sol R)
+      (.ite bG (.seq (.seq pB (chordPre cG qB rB)) (sol R))
+        (.test .one)) := by
+    rw [hsolR]
+    exact EquivBA.base (Equiv.w1 bG (.seq pB (chordPre cG qB rB)))
+  have hPfactor : EquivBA
+      (.seq (chordPre cG qB rB) (sol R)) (sol P) := by
+    show EquivBA
+      (.seq (.ite cG (.seq qB (.seq (.wh cG qB) rB)) rB) (sol R)) _
+    refine EquivBA.trans (EquivBA.symm
+      (EquivBA.base (Equiv.u5 cG (.seq qB (.seq (.wh cG qB) rB)) rB
+        (sol R)))) ?_
+    rw [hsolP]
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+    refine EquivBA.trans
+      (EquivBA.base (Equiv.s1 qB (.seq (.wh cG qB) rB) (sol R))) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl qB)) ?_
+    rw [hsolQ]
+    exact EquivBA.base (Equiv.s1 (.wh cG qB) rB (sol R))
+  refine ⟨?_, ?_, ?_⟩
+  · -- P: its solution IS its dispatch
+    refine StateRole.equivFold ?_
+    refine EquivBA.trans ?_ hrhsP.symm
+    rw [hsolP]
+    exact EquivBA.base (Equiv.refl _)
+  · -- Q: Salomaa
+    exact StateRole.salomaaE cG qB (.seq rB (sol R)) hsolQ hrhsQ
+  · -- R: unroll the lap
+    refine StateRole.equivFold ?_
+    refine EquivBA.trans ?_ hrhsR.symm
+    refine EquivBA.trans hsolR' ?_
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+    refine EquivBA.trans
+      (EquivBA.base (Equiv.s1 pB (chordPre cG qB rB) (sol R))) ?_
+    exact EquivBA.seq_c (EquivBA.base (Equiv.refl pB)) hPfactor
+
+#print axioms chord3_roles
+
 end GkatThreeLoop

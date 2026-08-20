@@ -1542,3 +1542,39 @@ two phantom feedback arms written out), and the halt structure
 Next: the chord-cycle role at the GkatCycle level (the w3 unrolling for
 the 3-cycle-with-chord), then the branching orbit layer (successor
 sets), then sixth theorem threeloops_complete, then generalize.
+
+## Iteration 57 — THE CHORD-CYCLE ROLE THEOREM (assembly half of the open problem)
+
+`chord3_roles` (GkatThreeLoopProofs.lean, axioms **[propext]** only): for any
+automaton and solution family with the chord-3 shape —
+
+- `sol Q = (wh c q); (r; sol R)`  (inner loop solved locally)
+- `sol P = ite c (q; sol Q) (r; sol R)`  (the branch dispatch)
+- `sol R = wh b (p; chordPre)` where `chordPre = ite c (q; ((wh c q); r)) r`
+  (ONE while-loop over the full lap body)
+
+and gathered-equation hypotheses `EquivBA (eqRHS s) (dispatch form)` for each
+state — **all three states get StateRoles**:
+
+- `Q` via `salomaaE` (w3's one-unknown power),
+- `P` via `equivFold` (its solution IS its dispatch — syntactic),
+- `R` via `equivFold` through the derivation chain:
+  `sol R ≡[w1] ite b ((p;chordPre); sol R) 1 ≡[s1] ite b (p; (chordPre; sol R)) 1`
+  and the **factoring lemma** `chordPre; sol R ≡ sol P` via `u5`
+  (seq-over-ite distribution) + `s1` associations.
+
+**This is the designed elimination order, machine-checked**: inner self-loops
+first (Salomaa, local), then the branch state (fold after substitution), then
+the port (Salomaa on the unrolled lap). The chord costs NO new axiom — the
+per-atom branching to two forward positions is dissolved by elimination
+before the port equation is formed, so w3 (n=1) suffices. No n-ary UA.
+
+Remaining for `threeloops_complete` (sixth theorem): the ORBIT half — the
+branching-successor discipline (successor SETS / cascade pinning) to show the
+canonical quotient of the trimmed Thompson sum has this shape, i.e. the
+analogue of `walked_rankNxt_quot_solvesBA` for chord automata; then cover +
+assembly as in the fifth theorem.
+
+Next bite: the branching orbit layer — define the chord discipline
+(self ∨ enter ∨ skip ∨ descent with enter/skip both forward) and prove the
+class-successor lemma for atom-indexed successor sets.
