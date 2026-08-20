@@ -479,4 +479,255 @@ theorem atomicloops_complete (e f : Exp A T)
 
 #print axioms atomicloops_complete
 
+/-! ## Guarded one-action loops: real WHILE loops
+
+    `wh b body` where the body carries AT MOST ONE action with arbitrary test
+    padding — `wh b (g?; p; h?)` and friends.  The structural key: a
+    zero-action body has an UNINHABITED Thompson carrier, and a one-action
+    body a SUBSINGLETON one — so every loop back-edge is a self-arm for
+    free. -/
+
+/-- Pure-test programs (no actions). -/
+inductive NoAct : Exp A T → Prop where
+  | test (b : BExp T) : NoAct (.test b)
+  | seq {e f : Exp A T} : NoAct e → NoAct f → NoAct (.seq e f)
+  | ite (b : BExp T) {e f : Exp A T} : NoAct e → NoAct f →
+      NoAct (.ite b e f)
+
+/-- Programs with exactly one action occurrence (test padding free). -/
+inductive OneAct : Exp A T → Prop where
+  | act (p : A) : OneAct (.act p)
+  | seqL {e f : Exp A T} : OneAct e → NoAct f → OneAct (.seq e f)
+  | seqR {e f : Exp A T} : NoAct e → OneAct f → OneAct (.seq e f)
+  | iteL (b : BExp T) {e f : Exp A T} : OneAct e → NoAct f →
+      OneAct (.ite b e f)
+  | iteR (b : BExp T) {e f : Exp A T} : NoAct e → OneAct f →
+      OneAct (.ite b e f)
+
+theorem noAct_empty {e : Exp A T} (h : NoAct e) :
+    (certifiedThompson A T e).State → False := by
+  induction h with
+  | test b => exact fun s => nomatch s
+  | seq _ _ ihe ihf =>
+      intro s
+      cases s with
+      | inl u => exact ihe u
+      | inr u => exact ihf u
+  | ite b _ _ ihe ihf =>
+      intro s
+      cases s with
+      | inl u => exact ihe u
+      | inr u => exact ihf u
+
+theorem oneAct_subsingleton {e : Exp A T} (h : OneAct e) :
+    ∀ x y : (certifiedThompson A T e).State, x = y := by
+  induction h with
+  | act p => intro x y; rfl
+  | seqL _ hf ihe =>
+      intro x y
+      cases x with
+      | inl u =>
+          cases y with
+          | inl v => exact congrArg Sum.inl (ihe u v)
+          | inr v => exact (noAct_empty hf v).elim
+      | inr u => exact (noAct_empty hf u).elim
+  | seqR he _ ihf =>
+      intro x y
+      cases x with
+      | inl u => exact (noAct_empty he u).elim
+      | inr u =>
+          cases y with
+          | inl v => exact (noAct_empty he v).elim
+          | inr v => exact congrArg Sum.inr (ihf u v)
+  | iteL b _ hf ihe =>
+      intro x y
+      cases x with
+      | inl u =>
+          cases y with
+          | inl v => exact congrArg Sum.inl (ihe u v)
+          | inr v => exact (noAct_empty hf v).elim
+      | inr u => exact (noAct_empty hf u).elim
+  | iteR b he _ ihf =>
+      intro x y
+      cases x with
+      | inl u => exact (noAct_empty he u).elim
+      | inr u =>
+          cases y with
+          | inl v => exact (noAct_empty he v).elim
+          | inr v => exact congrArg Sum.inr (ihf u v)
+
+/-- The guarded-loop fragment: loop-free structure plus loops whose bodies
+    carry at most one action, with arbitrary test padding. -/
+inductive GLoops : Exp A T → Prop where
+  | act (p : A) : GLoops (.act p)
+  | test (b : BExp T) : GLoops (.test b)
+  | seq {e f : Exp A T} : GLoops e → GLoops f → GLoops (.seq e f)
+  | ite (b : BExp T) {e f : Exp A T} : GLoops e → GLoops f →
+      GLoops (.ite b e f)
+  | whOne (b : BExp T) {body : Exp A T} (h : OneAct body) :
+      GLoops (.wh b body)
+  | whZero (b : BExp T) {body : Exp A T} (h : NoAct body) :
+      GLoops (.wh b body)
+
+/-- Guarded-loop Thompson automata are ranked modulo self-loops. -/
+theorem gLoops_initRankedSelf {e : Exp A T} (h : GLoops e) :
+    ∃ (r : (certifiedThompson A T e).State → Nat) (top : Nat),
+      InitRankedSelf (certifiedThompson A T e).aut r top := by
+  induction h with
+  | act p =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_cons.mp ht with heq | hmem
+        · subst heq; exact Nat.zero_lt_one
+        · exact nomatch hmem
+      · intro s t ht
+        exact nomatch ht
+      · intro _; exact Nat.zero_lt_one
+  | test b =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht; exact nomatch ht
+      · intro s; exact nomatch s
+      · intro s; exact nomatch s
+  | whOne b hbody =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        exact Nat.zero_lt_one
+      · intro s t ht
+        exact Or.inl (oneAct_subsingleton hbody t.2.2 s)
+      · intro _; exact Nat.zero_lt_one
+  | whZero b hbody =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        exact (noAct_empty hbody t.2.2).elim
+      · intro s
+        exact (noAct_empty hbody s).elim
+      · intro s
+        exact (noAct_empty hbody s).elim
+  | @seq e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim (fun s => r₁ s + t₂) r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 + t₂ < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          have := h₂.bound t₀.2.2
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            rcases List.mem_append.mp ht with hL | hR
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+              rcases h₁.core u t₀ ht₀ with hEq | hLt
+              · refine Or.inl ?_
+                rw [← heq]
+                show Sum.inl t₀.2.2 = Sum.inl u
+                rw [hEq]
+              · refine Or.inr ?_
+                rw [← heq]
+                show r₁ t₀.2.2 + t₂ < r₁ u + t₂
+                omega
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+              refine Or.inr ?_
+              rw [← heq]
+              have := h₂.init t₀ ht₀
+              show r₂ t₀.2.2 < r₁ u + t₂
+              omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₂.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inr t₀.2.2 = Sum.inr u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₂ t₀.2.2 < r₂ u
+              omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u + t₂ < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+  | @ite b e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim r₁ r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₁.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inl t₀.2.2 = Sum.inl u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₁ t₀.2.2 < r₁ u
+              omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rcases h₂.core u t₀ ht₀ with hEq | hLt
+            · refine Or.inl ?_
+              rw [← heq]
+              show Sum.inr t₀.2.2 = Sum.inr u
+              rw [hEq]
+            · refine Or.inr ?_
+              rw [← heq]
+              show r₂ t₀.2.2 < r₂ u
+              omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+
+open GkatSumQuotient in
+/-- **GUARDED-LOOP COMPLETENESS** — unconditional: the finite GKAT axioms
+    with the test Boolean algebra are complete for uniformly-language-
+    equivalent programs whose loop bodies carry at most one action with
+    arbitrary test padding — real WHILE loops `wh b (g?; p; h?)`.  Strictly
+    extends `atomicloops_complete` and `loopfree_complete`. -/
+theorem gloops_complete (e f : Exp A T)
+    (he : GLoops e) (hf : GLoops f)
+    (heq : UniformLanguageEquivalent e f) : EquivBA e f := by
+  obtain ⟨r₁, t₁, h₁⟩ := gLoops_initRankedSelf he
+  obtain ⟨r₂, t₂, h₂⟩ := gLoops_initRankedSelf hf
+  obtain ⟨qsol, hq⟩ := rankSelf_quot_solvesBA (SUMof A T e f)
+    (Sum.elim (optRank r₁ t₁) (optRank r₂ t₂))
+    (sumGAut_rankedSelf (toGAut_rankedSelf h₁) (toGAut_rankedSelf h₂))
+  exact equivBA_of_quot_solvesBA e f heq hq
+
+#print axioms gloops_complete
+
 end GkatAtomicLoop

@@ -255,3 +255,24 @@ needs the loopInitialized back-edge analysis for test-padded bodies);
 (b) nested atomic loops (wh over bodies containing atomic loops — back-edges
 into loop headers create 2-cycles: needs the walked-cycle shapes inside the
 engine, i.e. rank-modulo-COVERED-SCC engines); (c) the general case.
+
+## GUARDED-LOOP COMPLETENESS (loop iteration 1)
+
+gloops_complete: THE THIRD unconditional theorem — completeness for programs
+whose loop bodies carry at most one action with arbitrary test padding: real
+WHILE loops wh b (g?; p; h?).  [propext, Classical.choice, Quot.sound]
+
+The structural trick: NoAct bodies have UNINHABITED Thompson carriers
+(noAct_empty) and OneAct bodies SUBSINGLETON ones (oneAct_subsingleton), so
+every loopInitialized back-edge is a self-arm for free — the whole loop case
+of the rank induction closes by subsingleton/elim.
+
+Web-search note (Grabmayer LICS'22 crystallization): LLEE charts are NOT
+closed under bisimulation collapse; the fix is near-collapse with SCCs
+"collapsed or twin-crystal".  Our shape-library strategy is the exact GKAT
+analog; the twin-crystal notion is the model for characterizing our
+multi-port tail in the general attack.
+
+NEXT: multi-action loop bodies (2+ core states → back-edges create genuine
+in-body cycles: needs rank-modulo-COVERED-SCC — fold the walked-cycle shape
+library into the minimal-realizer descent engine); nested loops.
