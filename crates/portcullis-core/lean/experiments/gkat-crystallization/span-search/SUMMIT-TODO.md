@@ -1260,3 +1260,29 @@ machinery carries semantic invariants (WalkedDec survives collapse via
 the dichotomy) instead of syntactic nesting. Remaining mirror:
 walked quot_cycle_dichotomy + orbit_dichotomy + cy-bundle + glue, then
 the nested fragment + nestedloops_complete.
+
+## QUEUED CAMPAIGN: THE OPEN PROBLEM (user-directed 2026-08-20)
+
+After the nested-loop campaign closes (nestedloops_complete), the
+standing loop pivots to THE open problem itself: full GKAT completeness
+with the uniqueness axiom eliminated — discharging RoleCovered for ALL
+programs, not a fragment. The planned assault, building on everything
+now proved:
+
+1. GENERAL HIERARCHICAL DISCIPLINE: replace the single nxt with a
+   per-level successor family (rank-indexed), subsuming WalkedDec; the
+   dichotomy generalizes to "self ∨ some-level successor ∨ descend".
+   Thompson automata of ARBITRARY programs satisfy it by construction
+   (structural induction extending chain_shape to all of Exp).
+2. GENERAL hnontriv: the shortest-exit-word stratification for arbitrary
+   well-nested bodies; degenerate positions fold to base as established.
+3. THE COVER for arbitrary programs: every quotient class is on some
+   listed orbit or base — the minRank-realizer case split generalized
+   (the census's residual instances are the test set).
+4. Assembly: the walked/hierarchical rankNxt glue + wrapper =
+   FiniteAxiomsCompleteBA A T — the full theorem.
+5. Fallback checkpoints if blocked: publish the strata + the span
+   reduction (equivBA_of_quot_solvesBA means ANY role-existence advance
+   lifts); the decider artifacts stand regardless.
+
+Sequence: nested campaign -> THE OPEN PROBLEM. De-choice is DONE.
