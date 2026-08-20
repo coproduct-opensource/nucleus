@@ -1203,3 +1203,27 @@ THE CONSOLIDATED ARTIFACT LIST:
 THE REMAINING SUMMIT: nested loops (well-nestedness covariety per
 ICALP'21 remains open in the literature; our orbit layer is parametric
 in (rank, nxt) — the hierarchical-nxt generalization is the route).
+
+## ============================================================
+## THE NESTED-LOOP CAMPAIGN OPENS (iteration 42)
+## ============================================================
+
+New file GkatWalkedOrbitProofs.lean — the walked orbit layer:
+- WalkedDec: the THREE-WAY fired-arm discipline (self OR successor OR
+  descent) — the shape of states carrying inner loops
+- walked_min_fire: minimal-level firings land on self-or-successor
+- walked_class_succ_eq: the class successor is STILL well-defined at
+  non-degenerate positions — with self-arms admitted, the new self-case
+  (a realizer self-looping at the advance atom) would identify the class
+  with its successor, refuted by hnontriv (adjacent orbit classes
+  distinct, which qorb_injective supplies along genuine cycles).
+
+KEY DESIGN DISCOVERY (scoping): walked_exit_cycle_roles ALREADY tolerates
+member self-loops — the assembly is nested-ready; only the ORBIT layer
+needs the three-way generalization. The campaign map: walk the orbit
+layer's ~15 theorems through WalkedDec with hnontriv threaded at
+class-successor uses (available below qPeriod via injectivity);
+degenerate positions fold into the base branch. Then the fragment:
+Thompson of wh b (chain-with-atomic-inner-loops) satisfies WalkedDec.
+Target: NESTEDLOOPS_COMPLETE — the fifth theorem, covering the census's
+remaining 2%.
