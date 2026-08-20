@@ -1805,3 +1805,36 @@ silent → port separated by sat(¬b); P vs X: at a c-atom P fires x while
 X fires y — separation via action mismatch x ≠ y OR depth via sat(b∧c);
 choose hypotheses carefully), then cross-side pairings from ULE, then
 the classifier + bundle.
+
+## Iteration 65 — right mirrors + THE SEPARATIONS (both summands)
+
+22 more lemmas across two commits:
+
+Right mirrors (12, zero-error): chord_live_all_r, chord_targets_live_r
+(+none_r), seven trim steps _r, chord_yl_yr_lang_r, chord_none_lang_r.
+
+Separations (10): chord_noeps_p/x(+_r) — interior silence;
+chord_lang_ne_p_yr, chord_lang_ne_x_yr (+_r) — port separated from both
+interiors by the empty word at a ¬b-atom;
+**chord_lang_ne_p_x (+_r)** — the branch/mid separation via the
+one-step probe ⟨α_c, [(y, α_¬b)]⟩: X fires y into the detour port and
+halts; P's step at a c-atom is pinned to (x, X) by determinism, so
+accepting the probe forces the mid state to halt — it is silent. Works
+UNIFORMLY in x, y (no x ≠ y hypothesis: the some-injection yields the
+action equality for free). New nondegeneracy hypothesis: sat(c)
+(hentC) — necessary, since with c empty both ite arms collapse and
+P ~ X.
+
+Gotcha again: `obtain ⟨..⟩ := hexitB` CONSUMES hexitB → use `id hexitB`
+when the bundle is reused downstream.
+
+Nondegeneracy set for the sixth theorem now locked: sat(b), sat(¬b),
+sat(b∧c)?... — precise set: hentC = sat(c), hexitC = sat(¬c),
+hexitB = sat(¬b). (sat(b) not yet needed; the feed arms only matter
+inside lang facts guarded by b-atoms.)
+
+Next: cross-side pairings (lang Pl = lang Pr, lang Xl = lang Xr,
+lang portL = lang portR from the ULE start hypothesis — one-step
+determinism transfer, no induction: P-classes are the b∧c / b∧¬c
+derivatives of the start class, X-classes the c-derivative of P), then
+bisimRep computations, classifier, bundle.

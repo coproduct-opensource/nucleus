@@ -2412,4 +2412,241 @@ theorem chord_none_lang_r (b c : BExp T) (p x y : A)
 #print axioms chord_yl_yr_lang_r
 #print axioms chord_none_lang_r
 
+/-! ## The separations: port ≠ branch ≠ mid
+
+    The port is separated from both interior states by the empty word at
+    a `¬b`-atom.  The branch and the mid state are separated by the
+    one-step probe `⟨α_c, [(y, α_¬b)]⟩`: the mid state fires `y` into
+    the detour port and halts; the branch state's step at a `c`-atom is
+    pinned to `(x, X)`, so accepting the probe would force the mid state
+    to halt — it is silent.  `sat c` is NECESSARY: with `c` empty both
+    arms of the `ite` collapse and `P ~ X`. -/
+
+open Classical in
+/-- Interior silence: the branch state accepts no empty word. -/
+theorem chord_noeps_p (b c : BExp T) (p x y : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+          (Sum.inl (some (Sum.inl ()))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inl ())) α = true := h
+  rw [chord_hlt_p] at h'
+  exact nomatch h'
+
+open Classical in
+/-- Interior silence: the mid state accepts no empty word. -/
+theorem chord_noeps_x (b c : BExp T) (p x y : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+          (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt
+        (Sum.inr (Sum.inl (Sum.inl ())))) α = true := h
+  rw [chord_hlt_x] at h'
+  exact nomatch h'
+
+open Classical in
+/-- Branch ≠ port. -/
+theorem chord_lang_ne_p_yr (b c : BExp T) (p x y : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+          (Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+      (Sum.inl (some (Sum.inr (Sum.inr ())))) αb [] := by
+    show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [chord_hlt_yr, hαb]
+    rfl
+  exact chord_noeps_p b c p x y aut₂ αb (hiff.mpr hport)
+
+open Classical in
+/-- Mid ≠ port. -/
+theorem chord_lang_ne_x_yr (b c : BExp T) (p x y : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+          (Sum.inl (some (Sum.inr (Sum.inr ())))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+      (Sum.inl (some (Sum.inr (Sum.inr ())))) αb [] := by
+    show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [chord_hlt_yr, hαb]
+    rfl
+  exact chord_noeps_x b c p x y aut₂ αb (hiff.mpr hport)
+
+open Classical in
+/-- **BRANCH ≠ MID**: the one-step probe. -/
+theorem chord_lang_ne_p_x (b c : BExp T) (p x y : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+          (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) := by
+  obtain ⟨αc, hαc⟩ := hentC
+  obtain ⟨αb, hαb⟩ := id hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αc, [(y, αb)]))
+  have hX : autRun (genW T)
+      (trimAut (sumGAut (chordLoopAut b c p x y).toGAut aut₂))
+      (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))) αc [(y, αb)] := by
+    refine ⟨Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))), ?_, ?_⟩
+    · exact chord_trim_step_x b c p x y aut₂ hexitC hexitB αc
+    · show bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt
+          (Sum.inr (Sum.inl (Sum.inr ())))) αb = true
+      rw [chord_hlt_yl, hαb]
+      rfl
+  obtain ⟨s', hstep, hrest⟩ := hiff.mpr hX
+  rw [chord_trim_step_p_enter b c p x y aut₂ hexitC hexitB αc hαc]
+    at hstep
+  have hpair := Option.some.inj hstep
+  have hs' : Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))
+      = s' := congrArg Prod.snd hpair
+  rw [← hs'] at hrest
+  exact chord_noeps_x b c p x y aut₂ αb hrest
+
+open Classical in
+/-- Interior silence, right summand: the branch state. -/
+theorem chord_noeps_p_r (b c : BExp T) (p x y : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+          (Sum.inr (some (Sum.inl ()))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inl ())) α = true := h
+  rw [chord_hlt_p] at h'
+  exact nomatch h'
+
+open Classical in
+/-- Interior silence, right summand: the mid state. -/
+theorem chord_noeps_x_r (b c : BExp T) (p x y : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt
+        (Sum.inr (Sum.inl (Sum.inl ())))) α = true := h
+  rw [chord_hlt_x] at h'
+  exact nomatch h'
+
+open Classical in
+/-- Branch ≠ port, right summand. -/
+theorem chord_lang_ne_p_yr_r (b c : BExp T) (p x y : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+        (Sum.inr (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inr ())))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+      (Sum.inr (some (Sum.inr (Sum.inr ())))) αb [] := by
+    show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [chord_hlt_yr, hαb]
+    rfl
+  exact chord_noeps_p_r b c p x y aut₁ αb (hiff.mpr hport)
+
+open Classical in
+/-- Mid ≠ port, right summand. -/
+theorem chord_lang_ne_x_yr_r (b c : BExp T) (p x y : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+        (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inr ())))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αb, []))
+  have hport : autRun (genW T)
+      (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+      (Sum.inr (some (Sum.inr (Sum.inr ())))) αb [] := by
+    show bval (genW T)
+      ((chordLoopAut b c p x y).core.hlt (Sum.inr (Sum.inr ()))) αb = true
+    rw [chord_hlt_yr, hαb]
+    rfl
+  exact chord_noeps_x_r b c p x y aut₁ αb (hiff.mpr hport)
+
+open Classical in
+/-- Branch ≠ mid, right summand. -/
+theorem chord_lang_ne_p_x_r (b c : BExp T) (p x y : A)
+    {S₁ : Type} (aut₁ : GAut (Option S₁) A T)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+        (Sum.inr (some (Sum.inl ())))
+      ≠ autLang (genW T)
+          (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+          (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) := by
+  obtain ⟨αc, hαc⟩ := hentC
+  obtain ⟨αb, hαb⟩ := id hexitB
+  intro h
+  have hiff := iff_of_eq (congrFun h (αc, [(y, αb)]))
+  have hX : autRun (genW T)
+      (trimAut (sumGAut aut₁ (chordLoopAut b c p x y).toGAut))
+      (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) αc [(y, αb)] := by
+    refine ⟨Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ())))), ?_, ?_⟩
+    · exact chord_trim_step_x_r b c p x y aut₁ hexitC hexitB αc
+    · show bval (genW T)
+        ((chordLoopAut b c p x y).core.hlt
+          (Sum.inr (Sum.inl (Sum.inr ())))) αb = true
+      rw [chord_hlt_yl, hαb]
+      rfl
+  obtain ⟨s', hstep, hrest⟩ := hiff.mpr hX
+  rw [chord_trim_step_p_enter_r b c p x y aut₁ hexitC hexitB αc hαc]
+    at hstep
+  have hpair := Option.some.inj hstep
+  have hs' : Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))
+      = s' := congrArg Prod.snd hpair
+  rw [← hs'] at hrest
+  exact chord_noeps_x_r b c p x y aut₁ αb hrest
+
+#print axioms chord_lang_ne_p_yr
+#print axioms chord_lang_ne_x_yr
+#print axioms chord_lang_ne_p_x
+#print axioms chord_lang_ne_p_x_r
+
 end GkatThreeLoop
