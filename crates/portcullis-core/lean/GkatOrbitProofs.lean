@@ -1024,4 +1024,69 @@ theorem hint_nil_of_pinned (Q : GAut S A T) (m : Nat → S) (len j : Nat)
 #print axioms orbit_arms_pinned_nxtAt
 #print axioms hint_nil_of_pinned
 
+/-! ## Halt-guard side conditions from empty-word-freeness
+
+    Interior states of a chain loop never accept the empty word — the
+    guardedness of the loop body, semantically.  Since `trimAut`,
+    `bisimQuotAut`, and `cleanAut` all preserve `hlt` verbatim, an
+    empty-word-free orbit member forces its quotient class's halt guard to
+    be SEMANTICALLY EMPTY, and all three remaining walked-exit side
+    conditions (`himpc`, `hdisj`, `hexcl`) follow for free. -/
+
+theorem guardImplies_of_empty {b : BExp T} (h : GuardEmpty b) (c : BExp T) :
+    GuardImplies b c := by
+  intro X W x hb
+  rw [h X W x] at hb
+  exact nomatch hb
+
+theorem guardEmpty_and_left {b : BExp T} (h : GuardEmpty b) (c : BExp T) :
+    GuardEmpty (.and b c) := by
+  intro X W x
+  show (bval W b x && bval W c x) = false
+  rw [h X W x]
+  rfl
+
+open Classical in
+/-- **EMPTY-WORD-FREE ⟹ EMPTY HALT GUARD**: an orbit member that accepts no
+    empty word gives its quotient class a semantically empty halt guard —
+    at EVERY valuation, by `bval` naturality through the generic atom. -/
+theorem orbit_halt_empty (aut : GAut S A T) (nxt : S → S) {u₀ : S} (j : Nat)
+    (hnoeps : ∀ α : T → Bool,
+      ¬ autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α []) :
+    GuardEmpty ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀))) := by
+  intro X W x
+  rw [bval_gen W x]
+  cases hb : bval (genW T)
+      ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+      (fun t => W t x) with
+  | false => rfl
+  | true =>
+      have hrun : autRun (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+          (fun t => W t x) [] := hb
+      have htrans := (iff_of_eq (congrFun
+        (rep_lang aut (nxtIter nxt j u₀)) ((fun t => W t x), []))).mp hrun
+      exact absurd htrans (hnoeps _)
+
+open Classical in
+/-- **THE HALT-GUARD SIDE CONDITIONS**: a cycle position with a semantically
+    empty halt guard satisfies all three walked-exit halt conditions
+    (`himpc`, `hdisj`, `hexcl`) against ANY port. -/
+theorem cy_halt_conditions_of_empty (Q : GAut S A T) (m : Nat → S)
+    (len j : Nat) (h : GuardEmpty (Q.hlt (m j))) :
+    GuardImplies (Q.hlt (m j)) (Q.hlt (m 0))
+    ∧ (∀ e ∈ gOthers (nxtAt m len 0) (restL Q m 0),
+        GuardEmpty (.and (Q.hlt (m j)) e.1))
+    ∧ GuardImplies (Q.hlt (m j))
+        (.not (.or (selfG Q m 0) (nextG Q m len 0))) :=
+  ⟨guardImplies_of_empty h _,
+    fun e _ => guardEmpty_and_left h e.1,
+    guardImplies_of_empty h _⟩
+
+#print axioms orbit_halt_empty
+#print axioms cy_halt_conditions_of_empty
+
 end GkatOrbit
+

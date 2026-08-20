@@ -459,3 +459,24 @@ All [propext, Classical.choice, Quot.sound].
 The first cy-bundle side condition is discharged from pure semantics.
 Remaining: himpc/hdisj/hexcl (halt-guard conditions — need the fragment's
 halt structure), fragment rank, glue rankNxt_quot_solvesBA.
+
+## HALT-GUARD SIDE CONDITIONS (loop iteration 11)
+
+- guardImplies_of_empty / guardEmpty_and_left: empty guards imply anything
+  and annihilate conjunctions
+- orbit_halt_empty: EMPTY-WORD-FREE => EMPTY HALT GUARD. An orbit member
+  accepting no empty word gives its quotient class a halt guard that is
+  empty at EVERY valuation — bval_gen naturality reduces arbitrary (W, x)
+  to the generic atom, where the class halt = rep halt = trim halt is the
+  empty-word acceptance test, killed by rep_lang transfer. Uses the fact
+  that trimAut/bisimQuotAut/cleanAut ALL preserve hlt verbatim.
+- cy_halt_conditions_of_empty: an empty halt guard discharges himpc, hdisj,
+  AND hexcl against any port, any len.
+All [propext, Classical.choice, Quot.sound].
+
+ALL FOUR cy-bundle side conditions now derived semantically:
+  hint_nil  <- orbit_arms_pinned_nxtAt + hint_nil_of_pinned (iter 10)
+  himpc/hdisj/hexcl <- orbit_halt_empty + cy_halt_conditions_of_empty (iter 11)
+The fragment must supply: no-descent at interior classes + empty-word-
+freeness at interior orbit members — both TRUE for chain bodies by
+construction. Remaining: fragment rank, glue rankNxt_quot_solvesBA.
