@@ -1449,3 +1449,17 @@ walked-hos assembly, wrapper.
 
 Remaining: inr-side mirrors + hfire + init~port via lang_eq_of_step_hlt
 + cover + walked-hos assembly + wrapper => TWOLOOPS_COMPLETE.
+
+## TWO-LOOP INIT~PORT + LEFT COVER (iteration 52)
+
+- twoLoop_targets_live_none: init arms have live targets
+- twoLoop_none_lang: THE INIT-PORT IDENTIFICATION — steps agree by the
+  (b,c)-atom case split (feed/feed, skip/self, none/none) and halts are
+  both ¬b
+- twoLoop_cover_inl: every left class is on the port orbit — init via
+  rep_lang_congr over the identification (index 0), port at 0, inner at
+  1 (rfl-level iterate).
+
+Remaining for twoloops_complete: inr mirrors (live/targets/trim-steps/
+none_lang/cover — mechanical), hfire (sat(b∧c) hypothesis), the
+walked-hos assembly, wrapper. ONE OR TWO FIRINGS.

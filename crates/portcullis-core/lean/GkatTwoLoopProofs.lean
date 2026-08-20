@@ -612,4 +612,96 @@ theorem twoLoop_step_init_none (b c : BExp T) (q r : A)
 #print axioms twoLoop_hstates
 #print axioms twoLoop_qperiod2
 
+/-! ## Init–port identification and the cover -/
+
+open Classical in
+/-- All composite arms at the init pseudostate have live targets. -/
+theorem twoLoop_targets_live_none (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ e ∈ (sumGAut (twoLoopAut b c q r).toGAut aut₂).trans
+        (Sum.inl (none : Option (Sum Unit Unit))),
+      Live (sumGAut (twoLoopAut b c q r).toGAut aut₂) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inl (some t₀.2.2))
+  exact twoLoop_live_all b c q r aut₂ hexitC hexitB t₀.2.2
+
+open Classical in
+/-- **THE INIT–PORT IDENTIFICATION**: the initial pseudostate and the
+    port have the same language in the trimmed composite. -/
+theorem twoLoop_none_lang (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    autLang (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (none : Option (Sum Unit Unit)))
+      = autLang (genW T)
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some (Sum.inr ()))) := by
+  apply lang_eq_of_step_hlt
+  · intro α
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (twoLoop_targets_live_none b c q r aut₂ hexitC hexitB) α]
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (twoLoop_targets_live b c q r aut₂ hexitC hexitB
+        (Sum.inr ())) α]
+    rw [autStep_sumGAut_inl, autStep_sumGAut_inl]
+    rw [autStep_toGAut_none, autStep_toGAut_some]
+    cases hb : bval (genW T) b α with
+    | false =>
+        rw [twoLoop_step_init_none b c q r α hb,
+          twoLoop_step_inr_none b c q r α hb]
+    | true =>
+        cases hc : bval (genW T) c α with
+        | true =>
+            rw [twoLoop_step_init_feed b c q r α hb hc,
+              twoLoop_step_inr_feed b c q r α hb hc]
+        | false =>
+            rw [twoLoop_step_init_skip b c q r α hb hc,
+              twoLoop_step_inr_self b c q r α hb hc]
+  · intro α
+    show (!(bval (genW T) b α))
+      = bval (genW T)
+          ((twoLoopAut b c q r).core.hlt (Sum.inr ())) α
+    rw [twoLoop_hlt_inr]
+
+open Classical in
+/-- **THE COVER** (left summand): every left class is on the port
+    orbit. -/
+theorem twoLoop_cover_inl (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) (g₂ : S₂ → S₂)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (o : Option (Sum Unit Unit)) :
+    InOrbit (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (twoNxtL (S₂ := S₂) g₂)
+      (Sum.inl (some (Sum.inr ())))
+      (bisimRep (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl o)) := by
+  cases o with
+  | none =>
+      refine ⟨0, ?_⟩
+      exact (rep_lang_congr _
+        (twoLoop_none_lang b c q r aut₂ hexitC hexitB)).symm.symm
+  | some x =>
+      cases x with
+      | inr u =>
+          cases u
+          exact ⟨0, rfl⟩
+      | inl u =>
+          cases u
+          refine ⟨1, ?_⟩
+          have h1 : nxtIter (twoNxtL (S₂ := S₂) g₂) 1
+              (Sum.inl (some (Sum.inr ())))
+              = Sum.inl (some (Sum.inl ())) := rfl
+          rw [h1]
+
+#print axioms twoLoop_none_lang
+#print axioms twoLoop_cover_inl
+
 end GkatTwoLoop
