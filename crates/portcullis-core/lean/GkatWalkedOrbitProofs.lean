@@ -482,4 +482,208 @@ theorem walked_qorb_injective (aut : GAut S A T) (rank : S → Nat)
 #print axioms walked_orbit_lang_determined
 #print axioms walked_qorb_injective
 
+/-! ## The walked dichotomies
+
+    Under the three-way discipline the quotient dichotomy keeps its
+    SHAPE: self, descent, or the successor class.  The realizer's new
+    self-landing case folds into the existing self-refutation — a
+    self-landing at the firing atom makes the target's language the
+    class's own, contradicting the non-self assumption of that branch. -/
+
+open Classical in
+/-- Walked cycle dichotomy for cleaned quotient arms. -/
+theorem walked_quot_cycle_dichotomy (aut : GAut S A T)
+    (rank : S → Nat) (nxt : S → S) (hdec : WalkedDec aut rank nxt) :
+    ∀ c ∈ (bisimQuotAut (trimAut aut)).states,
+    ∃ u, rank u ≤ minRank (trimAut aut) rank c ∧
+      autLang (genW T) (trimAut aut) u
+        = autLang (genW T) (trimAut aut) c ∧
+      ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans c,
+        e.2.2 = c ∨
+        minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank c ∨
+        e.2.2 = bisimRep (trimAut aut) (nxt u) := by
+  have hdecT : ∀ s (α : T → Bool), ∀ e ∈ (trimAut aut).trans s,
+      bval (genW T) e.1 α = true →
+      e.2.2 = s ∨ e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
+    intro s α e he hb
+    obtain ⟨g₀, hg₀, himp⟩ := trimList_target_mem_fires aut
+      (aut.trans s) .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀ ⟨α, himp α hb⟩
+  intro c hc
+  obtain ⟨u, hule, huL⟩ := minRank_spec (trimAut aut) rank c
+  refine ⟨u, hule, huL, ?_⟩
+  intro e he
+  by_cases hself : e.2.2 = c
+  · exact Or.inl hself
+  · obtain ⟨α, -, hfm⟩ := cleanList_fires
+      (bisimQuotAut (trimAut aut))
+      ((bisimQuotAut (trimAut aut)).trans c) .zero e he
+    have hstepC : autStep (genW T)
+        (cleanAut (bisimQuotAut (trimAut aut))) c α
+        = some (e.2.1, e.2.2) := hfm
+    have hstepQ : autStep (genW T) (bisimQuotAut (trimAut aut)) c α
+        = some (e.2.1, e.2.2) := by
+      rw [← autStep_cleanAut (genW T)]
+      exact hstepC
+    have heQ : e ∈ (bisimQuotAut (trimAut aut)).trans c :=
+      cleanList_sub _ .zero e he
+    obtain ⟨v'', hv'', hrep⟩ : ∃ v'', v'' ∈ (trimAut aut).trans c ∧
+        bisimRep (trimAut aut) v''.2.2 = e.2.2 := by
+      obtain ⟨v'', hv'', heq⟩ := List.mem_map.mp heQ
+      exact ⟨v'', hv'', congrArg (fun z => z.2.2) heq⟩
+    have htfix : bisimRep (trimAut aut) e.2.2 = e.2.2 := by
+      rw [← hrep]
+      exact bisimRep_idem (trimAut aut) v''.2.2
+    have hcfix : bisimRep (trimAut aut) c = c := by
+      obtain ⟨w, -, hw⟩ := List.mem_map.mp hc
+      rw [← hw]
+      exact bisimRep_idem (trimAut aut) w
+    have hDT : ∀ (β : T → Bool) (w : List (A × (T → Bool))),
+        autRun (genW T) (trimAut aut) e.2.2 β w ↔
+          autRun (genW T) (trimAut aut) c α ((e.2.1, β) :: w) := by
+      intro β w
+      have h1 := step_derivative hstepQ β w
+      have h2 : autRun (genW T) (bisimQuotAut (trimAut aut)) e.2.2 β w
+          ↔ autRun (genW T) (trimAut aut) e.2.2 β w :=
+        iff_of_eq (congrFun (quot_lang_eq aut e.2.2) (β, w))
+      have h3 : autRun (genW T) (bisimQuotAut (trimAut aut)) c α
+            ((e.2.1, β) :: w)
+          ↔ autRun (genW T) (trimAut aut) c α ((e.2.1, β) :: w) :=
+        iff_of_eq (congrFun (quot_lang_eq aut c) (α, (e.2.1, β) :: w))
+      exact (h2.symm.trans h1).trans h3
+    have htlive : ∃ (β : T → Bool) (w : List (A × (T → Bool))),
+        autRun (genW T) (trimAut aut) e.2.2 β w := by
+      have hlv : Live aut v''.2.2 :=
+        trimList_target_live aut (aut.trans c) .zero v'' hv''
+      have hlvT : Live (trimAut aut) v''.2.2 := live_trimAut hlv
+      obtain ⟨β, w, hw⟩ := hlvT
+      have hle : autLang (genW T) (trimAut aut) v''.2.2
+          = autLang (genW T) (trimAut aut) e.2.2 := by
+        rw [← hrep]
+        exact autLang_eq_of_gautBisim (genBisimilar_bisim (trimAut aut))
+          (bisimRep_bisim (trimAut aut) v''.2.2)
+      exact ⟨β, w, (iff_of_eq (congrFun hle (β, w))).mp hw⟩
+    obtain ⟨β₀, w₀, hw₀⟩ := htlive
+    have hword : autRun (genW T) (trimAut aut) c α
+        ((e.2.1, β₀) :: w₀) := (hDT β₀ w₀).mp hw₀
+    have hwordU : autRun (genW T) (trimAut aut) u α
+        ((e.2.1, β₀) :: w₀) :=
+      (iff_of_eq (congrFun huL (α, (e.2.1, β₀) :: w₀))).mpr hword
+    obtain ⟨v, hstepU, -⟩ : ∃ v,
+        autStep (genW T) (trimAut aut) u α = some (e.2.1, v)
+        ∧ autRun (genW T) (trimAut aut) v β₀ w₀ := hwordU
+    have hvL : autLang (genW T) (trimAut aut) v
+        = autLang (genW T) (trimAut aut) e.2.2 := by
+      funext gs
+      obtain ⟨β, w⟩ := gs
+      apply propext
+      have hDU := step_derivative hstepU β w
+      have hDc := hDT β w
+      have hcu : autRun (genW T) (trimAut aut) u α ((e.2.1, β) :: w)
+          ↔ autRun (genW T) (trimAut aut) c α ((e.2.1, β) :: w) :=
+        iff_of_eq (congrFun huL (α, (e.2.1, β) :: w))
+      exact hDU.trans (hcu.trans hDc.symm)
+    obtain ⟨ea, hea, hbea, -, heat⟩ :=
+      firstMatch_mem_fires (genW T) hstepU
+    have heat' : ea.2.2 = v := heat
+    rcases hdecT u α ea hea hbea with hSelf | hEq | hLt
+    · exfalso
+      have hvu : v = u := heat'.symm.trans hSelf
+      have hLtc : autLang (genW T) (trimAut aut) e.2.2
+          = autLang (genW T) (trimAut aut) c := by
+        rw [← hvL, hvu, huL]
+      exact hself (trim_repfixed_lang_eq aut hcfix htfix hLtc)
+    · refine Or.inr (Or.inr ?_)
+      have hvn : v = nxt u := heat'.symm.trans hEq
+      have hLnxt : autLang (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxt u))
+          = autLang (genW T) (trimAut aut) e.2.2 := by
+        have h0 : autLang (genW T) (trimAut aut) (nxt u)
+            = autLang (genW T) (trimAut aut)
+              (bisimRep (trimAut aut) (nxt u)) :=
+          autLang_eq_of_gautBisim (genBisimilar_bisim (trimAut aut))
+            (bisimRep_bisim (trimAut aut) (nxt u))
+        rw [← h0, ← hvn]
+        exact hvL
+      exact (trim_repfixed_lang_eq aut htfix
+        (bisimRep_idem (trimAut aut) (nxt u)) hLnxt).symm
+    · refine Or.inr (Or.inl ?_)
+      have hvrank : rank v < rank u := by
+        rw [heat'] at hLt
+        exact hLt
+      have h1 : minRank (trimAut aut) rank e.2.2 ≤ rank v :=
+        minRank_le (trimAut aut) rank hvL
+      omega
+
+open Classical in
+/-- Walked orbit dichotomy: the abstract successor is the concrete next
+    orbit class. -/
+theorem walked_orbit_dichotomy (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    (j : Nat)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      e.2.2 = bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+      ∨ e.2.2 = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+  obtain ⟨u, hule, huL, harms⟩ :=
+    walked_quot_cycle_dichotomy aut rank nxt hdec _ hc
+  have hsucc : bisimRep (trimAut aut) (nxt u)
+      = bisimRep (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+    have hlvl := walked_cycle_level_all aut rank nxt hdec hnxt_rank
+      hfire hk hper hlive hnofix hmin j
+    have hrankJ : rank (nxtIter nxt j u₀) = rank u₀ :=
+      nxtIter_rank hnxt_rank u₀ j
+    have hL1 : autLang (genW T) (trimAut aut) (nxtIter nxt j u₀)
+        = autLang (genW T) (trimAut aut) u :=
+      (huL.trans (rep_lang aut _)).symm
+    have hranku : rank u = rank (nxtIter nxt j u₀) := by
+      rw [hlvl] at hule
+      have h2 : rank (nxtIter nxt j u₀) ≤ rank u :=
+        walked_shift_min aut rank nxt hdec hnxt_rank hfire hk hper
+          hlive hnofix hmin j u hL1.symm
+      omega
+    obtain ⟨α, a, hstep⟩ := hfire (nxtIter nxt j u₀)
+      (orbit_live_all aut rank nxt hfire hk hper hlive hnofix j)
+      (orbit_nofix_all hk hper hnofix j)
+    have hlnext : Live (trimAut aut) (nxt (nxtIter nxt j u₀)) :=
+      orbit_live_all aut rank nxt hfire hk hper hlive hnofix (j + 1)
+    have hmin₂ : ∀ w, autLang (genW T) (trimAut aut) w
+        = autLang (genW T) (trimAut aut) (nxt (nxtIter nxt j u₀)) →
+        rank (nxtIter nxt j u₀) ≤ rank w := by
+      intro w hw
+      have h3 := walked_shift_min aut rank nxt hdec hnxt_rank hfire hk
+        hper hlive hnofix hmin (j + 1) w hw
+      rw [nxtIter_rank hnxt_rank u₀ (j + 1)] at h3
+      rw [hrankJ]
+      exact h3
+    have hLsucc := walked_class_succ_eq aut rank nxt hdec hnxt_rank
+      hL1 hranku hstep (hnontriv j) hlnext hmin₂
+    exact rep_lang_congr aut hLsucc
+  intro e he
+  rcases harms e he with h | h | h
+  · exact Or.inl h
+  · exact Or.inr (Or.inl h)
+  · exact Or.inr (Or.inr (h.trans hsucc))
+
+#print axioms walked_quot_cycle_dichotomy
+#print axioms walked_orbit_dichotomy
+
 end GkatWalkedOrbit

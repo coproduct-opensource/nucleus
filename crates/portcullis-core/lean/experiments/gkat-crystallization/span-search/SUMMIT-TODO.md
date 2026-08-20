@@ -1286,3 +1286,22 @@ now proved:
    lifts); the decider artifacts stand regardless.
 
 Sequence: nested campaign -> THE OPEN PROBLEM. De-choice is DONE.
+
+## THE WALKED DICHOTOMIES (iteration 44)
+
+- walked_quot_cycle_dichotomy: the quotient dichotomy keeps its exact
+  SHAPE (self / descent / successor-class) under WalkedDec — the
+  realizer's new self-landing case folds into the existing
+  self-refutation (a self-landing makes the arm target's language the
+  class's own, contradicting the branch's non-self assumption)
+- walked_orbit_dichotomy: the abstract successor is the concrete next
+  orbit class, with hnontriv at the single class_succ_eq site.
+Both first pass.
+
+Walked mirror scoreboard: 12 of ~15 theorems done. Remaining: walked
+cy-bundle (rank-eq/port-descent/hint_nil/halt conditions — the halt and
+pinning layers are hdec-free or dichotomy-fed, mostly reusable), walked
+glue (walked rankNxt via orbCy — the orbCy architecture is nxt-generic),
+then the NESTED FRAGMENT (spines with inner self-loops: WalkedDec by
+construction, hnontriv by shortest-exit stratification) and
+nestedloops_complete.
