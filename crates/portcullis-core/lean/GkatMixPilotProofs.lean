@@ -1,5 +1,6 @@
 import GkatCertSupportBoolProofs
 import GkatRingSupportProofs
+import GkatRingPlanProofs
 import GkatDeadExitElimProofs
 
 /-! # GkatMixPilot: the mixed-halt frontier candidate, certified (emitted from Rust;
@@ -24,85 +25,45 @@ abbrev eAut := (certifiedThompson Act Tst eP).aut.toGAut
 abbrev fAut := (certifiedThompson Act Tst fP).aut.toGAut
 abbrev SUM := sumGAut eAut fAut
 
-/-! ## Subset-parking solutions -/
+/-! ## The ring plan (reflection: data + a finite check; ringPlan_solves does
+    the mathematics) -/
 
-def SLs : Exp Act Tst := .wh (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and bT1 bT2)) pA
-def PKs : Exp Act Tst := .ite (BExp.and (BExp.not bT1) bT2) pA (.test (BExp.and (BExp.not bT1) (BExp.not bT2)))
-def BODY : Exp Act Tst := .ite (BExp.and (BExp.not bT1) bT2) pA (.seq pA (.seq SLs PKs))
-def solH : Exp Act Tst := .seq (.wh (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2)) BODY) (.test (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2)))
-def solS : Exp Act Tst := .seq SLs (.seq PKs solH)
+open GkatRingPlan
 
-/-! ## Guard facts (four-valuation case analysis) -/
+def PLAN : RingPlan Act Tst where
+  hSelfG := (BExp.and (BExp.not bT1) bT2)
+  hSelfA := ()
+  hStepG := (BExp.and bT1 (BExp.not bT2))
+  hStepA := ()
+  exitG := (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2))
+  entries := [{ selfG := .or (BExp.and bT1 (BExp.not bT2)) (BExp.and bT1 bT2), selfA := (), stepG := (BExp.and (BExp.not bT1) bT2), stepA := (), hltG := (BExp.and (BExp.not bT1) (BExp.not bT2)) }]
 
-private theorem himp_step : GuardImplies (BExp.and bT1 (BExp.not bT2)) (.not (BExp.and (BExp.not bT1) bT2)) := by
-  intro X W x h
-  revert h
-  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
-private theorem himp_selfg : GuardImplies (BExp.and (BExp.not bT1) bT2) (BExp.and (BExp.not bT1) bT2) :=
-  fun _ _ _ h => h
-private theorem himp_park : GuardImplies (BExp.and (BExp.not bT1) (BExp.not bT2)) (.not (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2))) := by
-  intro X W x h
-  revert h
-  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
-
-private theorem hsub : ∀ (X : Type) (W : Tst → X → Bool) (x : X),
-    (bval W (BExp.and (BExp.not bT1) (BExp.not bT2)) x && bval W (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2)) x) = bval W (BExp.and (BExp.not bT1) (BExp.not bT2)) x := by
-  intro X W x
-  cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
-
-private theorem habs_sub : EquivBA (.seq (.test (BExp.and (BExp.not bT1) (BExp.not bT2))) solH) (.test (BExp.and (BExp.not bT1) (BExp.not bT2))) :=
-  test_header_absorb_sub (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2)) (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2)) BODY himp_park hsub
-
-/-! ## The two SolvesBA obligations -/
-
-theorem ring_EH : EquivBA solH
-    (.ite (BExp.and bT1 (BExp.not bT2)) (.seq pA solS) (.ite (BExp.and (BExp.not bT1) bT2) (.seq pA solH) (.test (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2))))) := by
-  refine EquivBA.trans (EquivBA.base (salomaa_solution_exists (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2)) BODY (.test (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2))))) ?_
-  refine EquivBA.trans (ite_or_split (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2) (.seq BODY solH) (.test (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2)))) ?_
-  have h_step : EquivBA (.seq (.test (BExp.and bT1 (BExp.not bT2))) (.seq BODY solH))
-      (.seq (.test (BExp.and bT1 (BExp.not bT2))) (.seq pA solS)) := by
-    have hstep : EquivBA (.seq (.test (BExp.and bT1 (BExp.not bT2))) BODY)
-        (.seq (.test (BExp.and bT1 (BExp.not bT2))) (.seq pA (.seq SLs PKs))) := by
-      refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
-        (EquivBA.base (Equiv.u2 (BExp.and (BExp.not bT1) bT2) pA (.seq pA (.seq SLs PKs))))) ?_
-      exact test_seq_ite_of_implies _ _ himp_step
-    refine EquivBA.trans (seq_under_guard solH hstep) ?_
-    refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
-    refine EquivBA.trans (EquivBA.base (Equiv.s1 pA (.seq SLs PKs) solH)) ?_
-    exact EquivBA.seq_c (EquivBA.base (Equiv.refl _))
-      (EquivBA.base (Equiv.s1 SLs PKs solH))
-  have h_self : EquivBA (.seq (.test (BExp.and (BExp.not bT1) bT2)) (.seq BODY solH))
-      (.seq (.test (BExp.and (BExp.not bT1) bT2)) (.seq pA solH)) := by
-    have hstep : EquivBA (.seq (.test (BExp.and (BExp.not bT1) bT2)) BODY) (.seq (.test (BExp.and (BExp.not bT1) bT2)) pA) :=
-      test_seq_ite_of_implies _ _ himp_selfg
-    exact seq_under_guard solH hstep
-  exact EquivBA.trans (ite_congr_under_guard h_step)
-    (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (ite_congr_under_guard h_self))
-
-theorem ring_ES : EquivBA solS
-    (.ite (BExp.and bT1 (BExp.not bT2)) (.seq pA solS) (.ite (BExp.and bT1 bT2) (.seq pA solS)
-      (.ite (BExp.and (BExp.not bT1) bT2) (.seq pA solH) (.test (BExp.and (BExp.not bT1) (BExp.not bT2)))))) := by
-  refine EquivBA.trans (EquivBA.base (salomaa_solution_exists (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and bT1 bT2)) pA
-    (.seq PKs solH))) ?_
-  refine EquivBA.trans (ite_or_split (BExp.and bT1 (BExp.not bT2)) (BExp.and bT1 bT2) (.seq pA solS) (.seq PKs solH)) ?_
-  refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_
-  refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_
-  refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u5 (BExp.and (BExp.not bT1) bT2) pA (.test (BExp.and (BExp.not bT1) (BExp.not bT2))) solH))) ?_
-  exact EquivBA.ite_c (EquivBA.base (Equiv.refl _)) habs_sub
+theorem wf : WellFormedRing PLAN where
+  nonempty := by simp [PLAN]
+  hdr_disj := by
+    intro X W x
+    show (bval W (BExp.and bT1 (BExp.not bT2)) x && bval W (BExp.and (BExp.not bT1) bT2) x) = false
+    cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
+  interior_dead := by
+    intro e he
+    simp [PLAN] at he
+  last_off := by
+    intro e he X W x h
+    simp [PLAN] at he
+    subst he
+    revert h
+    show bval W (BExp.and (BExp.not bT1) (BExp.not bT2)) x = true → bval W (.not (.or (BExp.and bT1 (BExp.not bT2)) (BExp.and (BExp.not bT1) bT2))) x = true
+    cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
+  last_sub := by
+    intro e he X W x
+    simp [PLAN] at he
+    subst he
+    show (bval W (BExp.and (BExp.not bT1) (BExp.not bT2)) x && bval W (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2)) x) = bval W (BExp.and (BExp.not bT1) (BExp.not bT2)) x
+    cases hb1 : W true x <;> cases hb2 : W false x <;> simp [bval, bT1, bT2, hb1, hb2]
 
 /-! ## Quotient, map, bisimulation -/
 
-def QAut : GAut Nat Act Tst where
-  states := [0, 1]
-  hlt
-    | 0 => (BExp.or (BExp.and (BExp.not bT1) (BExp.not bT2)) (BExp.and bT1 bT2))
-    | 1 => (BExp.and (BExp.not bT1) (BExp.not bT2))
-    | _ => BExp.zero
-  trans
-    | 0 => [((BExp.and bT1 (BExp.not bT2)), (), 1), ((BExp.and (BExp.not bT1) bT2), (), 0)]
-    | 1 => [((BExp.and bT1 (BExp.not bT2)), (), 1), ((BExp.and bT1 bT2), (), 1), ((BExp.and (BExp.not bT1) bT2), (), 0)]
-    | _ => []
-  start := 0
+def QAut : GAut Nat Act Tst := planAut PLAN
 
 def qmap : Sum (Option (certifiedThompson Act Tst eP).State)
              (Option (certifiedThompson Act Tst fP).State) → Nat
@@ -911,19 +872,11 @@ def qquot : UniformBehavioralGAutQuotient SUM QAut where
     | 1, _ => exact ⟨(Sum.inl (some (Sum.inr (Sum.inr (Sum.inr ()))))), (List.mem_append.mpr (Or.inl (List.mem_map_of_mem (List.Mem.tail _ (List.mem_map_of_mem (GkatTotalization.thompson_states_complete eP (Sum.inr (Sum.inr (Sum.inr ()))))))))), rfl⟩
   bisim_graph := fun _ W => qmap_bisim W
 
-def qsol : Nat → Exp Act Tst
-  | 0 => solH
-  | 1 => solS
-  | _ => Exp.test BExp.zero
-
-theorem qsol_solves : SolvesBA QAut qsol := by
-  intro st hst
-  match st, hst with
-  | 0, _ => exact ring_EH
-  | 1, _ => exact ring_ES
+theorem qsol_solves : SolvesBA QAut (planSol PLAN) :=
+  ringPlan_solves PLAN wf
 
 theorem cert : EquivBA eP fP :=
-  certifiedThompson_uniform_solved_quotient qquot qsol qsol_solves rfl
+  certifiedThompson_uniform_solved_quotient qquot (planSol PLAN) qsol_solves rfl
 
 #print axioms cert
 

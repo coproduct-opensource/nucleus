@@ -119,8 +119,6 @@ structure WellFormedRing (P : RingPlan A T) : Prop where
   nonempty : P.entries ≠ []
   /-- Header continue-guards are disjoint (determinism at the header). -/
   hdr_disj : GuardDisjoint P.hStepG P.hSelfG
-  /-- Each entry's step guard is disjoint from its self guard. -/
-  entry_disj : ∀ e ∈ P.entries, GuardDisjoint e.stepG e.selfG
   /-- Interior halts are semantically empty (parks only at the final entry). -/
   interior_dead : ∀ e ∈ P.entries.dropLast, GuardEmpty e.hltG
   /-- The final halt is off the header's loop guard... -/
