@@ -285,4 +285,175 @@ theorem liveWithin_live (aut : GAut S A T) :
 #print axioms effList_fires
 #print axioms liveWithin_live
 
+/-! ## The chain correspondence
+
+    Bounded liveness is a step chain: a nonempty list of states linked by
+    satisfiable effective arms, ending in acceptance.  Runs of any length
+    give chains; chains of length `k+1` give `liveWithin k`.  The next
+    phase dedups chains against a closed pool to cap the bound. -/
+
+theorem liveWithin_of_acc (aut : GAut S A T) (s : S)
+    (h : ∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true) :
+    ∀ n : Nat, liveWithin aut n s
+  | 0 => h
+  | _ + 1 => Or.inl h
+
+theorem liveWithin_mono (aut : GAut S A T) :
+    ∀ (n m : Nat), n ≤ m → ∀ s, liveWithin aut n s → liveWithin aut m s := by
+  intro n
+  induction n with
+  | zero =>
+      intro m _ s h
+      exact liveWithin_of_acc aut s h m
+  | succ n ih =>
+      intro m hm s h
+      rw [liveWithin_succ] at h
+      rcases h with hacc | ⟨e, he, hsat, hlw⟩
+      · exact liveWithin_of_acc aut s hacc m
+      · cases m with
+        | zero => exact absurd hm (by omega)
+        | succ m =>
+            rw [liveWithin_succ]
+            exact Or.inr ⟨e, he, hsat, ih m (by omega) e.2.2 hlw⟩
+
+/-- Converse of `effList_fires`: a first match is a firing effective
+    arm. -/
+theorem effList_of_firstMatch {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      bval V D x = false →
+      ∀ {o : A × S}, firstMatch V x L = some o →
+        ∃ e ∈ effList L D, bval V e.1 x = true
+          ∧ e.2.1 = o.1 ∧ e.2.2 = o.2 := by
+  intro L
+  induction L with
+  | nil => intro D _ o h; exact nomatch h
+  | cons hd rest ih =>
+      intro D hD o h
+      obtain ⟨g, a, t⟩ := hd
+      rw [effList_cons]
+      by_cases hg : bval V g x = true
+      · rw [show firstMatch V x ((g, a, t) :: rest)
+            = if bval V g x = true then some (a, t)
+              else firstMatch V x rest from rfl, if_pos hg] at h
+        have hinj := Option.some.inj h
+        refine ⟨(.and g (.not D), a, t), List.mem_cons_self .., ?_, ?_, ?_⟩
+        · show (bval V g x && !(bval V D x)) = true
+          rw [hg, hD]
+          rfl
+        · show a = o.1
+          rw [← hinj]
+        · show t = o.2
+          rw [← hinj]
+      · rw [show firstMatch V x ((g, a, t) :: rest)
+            = if bval V g x = true then some (a, t)
+              else firstMatch V x rest from rfl, if_neg hg] at h
+        have hg' : bval V g x = false := by
+          cases hgv : bval V g x with
+          | false => rfl
+          | true => exact absurd hgv hg
+        have hDg : (bval V D x || bval V g x) = false := by
+          rw [hD, hg']
+          rfl
+        obtain ⟨e, he, h1, h2, h3⟩ := ih (.or D g) hDg h
+        exact ⟨e, List.mem_cons_of_mem _ he, h1, h2, h3⟩
+
+/-- A step chain: states linked by satisfiable effective arms, ending in
+    acceptance. -/
+def StepChain (aut : GAut S A T) : List S → Prop
+  | [] => False
+  | [s] => ∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true
+  | s :: t :: rest =>
+      (∃ e ∈ effList (aut.trans s) .zero,
+        (∃ α : T → Bool, bval (genW T) e.1 α = true) ∧ e.2.2 = t)
+      ∧ StepChain aut (t :: rest)
+
+private theorem stepChain_one (aut : GAut S A T) (s : S) :
+    StepChain aut [s]
+      = ∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true := rfl
+
+private theorem stepChain_cons (aut : GAut S A T) (s t : S)
+    (rest : List S) :
+    StepChain aut (s :: t :: rest)
+      = ((∃ e ∈ effList (aut.trans s) .zero,
+          (∃ α : T → Bool, bval (genW T) e.1 α = true) ∧ e.2.2 = t)
+        ∧ StepChain aut (t :: rest)) := rfl
+
+/-- Bounded liveness yields a short chain. -/
+theorem liveWithin_chain (aut : GAut S A T) :
+    ∀ (n : Nat) (s : S), liveWithin aut n s →
+      ∃ ch : List S, StepChain aut ch ∧ ch.head? = some s
+        ∧ ch.length ≤ n + 1 := by
+  intro n
+  induction n with
+  | zero =>
+      intro s h
+      exact ⟨[s], h, rfl, by simp⟩
+  | succ n ih =>
+      intro s h
+      rw [liveWithin_succ] at h
+      rcases h with hacc | ⟨e, he, hsat, hlw⟩
+      · exact ⟨[s], hacc, rfl, by simp⟩
+      · obtain ⟨ch, hch, hhead, hlen⟩ := ih e.2.2 hlw
+        cases ch with
+        | nil => exact nomatch hhead
+        | cons t ch' =>
+            have ht : t = e.2.2 := Option.some.inj hhead
+            subst ht
+            refine ⟨s :: e.2.2 :: ch', ?_, rfl, ?_⟩
+            · rw [stepChain_cons]
+              exact ⟨⟨e, he, hsat, rfl⟩, hch⟩
+            · simp only [List.length_cons] at hlen ⊢
+              omega
+
+/-- A chain of `k+1` states is liveness within `k` steps. -/
+theorem chain_liveWithin (aut : GAut S A T) :
+    ∀ (ch : List S) (s : S), StepChain aut ch → ch.head? = some s →
+      liveWithin aut (ch.length - 1) s := by
+  intro ch
+  induction ch with
+  | nil => intro s _ hh; exact nomatch hh
+  | cons x ch' ih =>
+      intro s hch hh
+      have hx : x = s := Option.some.inj hh
+      subst hx
+      cases ch' with
+      | nil => exact hch
+      | cons y rest =>
+          rw [stepChain_cons] at hch
+          obtain ⟨⟨e, he, hsat, het⟩, hrest⟩ := hch
+          show liveWithin aut (rest.length + 1) x
+          rw [liveWithin_succ]
+          refine Or.inr ⟨e, he, hsat, ?_⟩
+          rw [het]
+          have := ih y hrest rfl
+          simp only [List.length_cons, Nat.add_sub_cancel] at this
+          exact this
+
+/-- Any run gives bounded liveness at its own length. -/
+theorem run_liveWithin_len (aut : GAut S A T) :
+    ∀ (w : List (A × (T → Bool))) (s : S) (α : T → Bool),
+      autRun (genW T) aut s α w → liveWithin aut w.length s := by
+  intro w
+  induction w with
+  | nil =>
+      intro s α h
+      exact ⟨α, h⟩
+  | cons qa w' ih =>
+      intro s α h
+      obtain ⟨q, β⟩ := qa
+      obtain ⟨s', hstep, hrun⟩ := h
+      show liveWithin aut (w'.length + 1) s
+      rw [liveWithin_succ]
+      refine Or.inr ?_
+      obtain ⟨e, he, hb, -, he2⟩ := effList_of_firstMatch (genW T) α
+        (aut.trans s) .zero rfl hstep
+      refine ⟨e, he, ⟨α, hb⟩, ?_⟩
+      rw [he2]
+      exact ih s' β hrun
+
+#print axioms liveWithin_chain
+#print axioms chain_liveWithin
+#print axioms run_liveWithin_len
+
 end GkatGuardDecide

@@ -984,3 +984,20 @@ the classical dites.
 Remaining for phase 2: the completeness direction (Live -> liveWithin
 |pool| under target-closure) via run splicing at a repeated state — the
 pigeonhole/pumping argument; then trimListD := computable trim.
+
+## DE-CHOICE PHASE 2b-1: THE CHAIN CORRESPONDENCE (iteration 31)
+
+- liveWithin_of_acc / liveWithin_mono: acceptance lives at every bound;
+  bounds are monotone
+- effList_of_firstMatch: converse decomposition — a first match IS a
+  firing effective arm
+- StepChain: states linked by satisfiable effective arms, ending in
+  acceptance
+- liveWithin_chain / chain_liveWithin: bounded liveness ⟷ chains
+  (length k+1 states = liveWithin k)
+- run_liveWithin_len: any run gives bounded liveness at its own length —
+  ZERO axioms.
+
+Remaining for phase 2: chain dedup against a closed pool ([DecidableEq S]:
+not_nodup_split extraction, splice preserves StepChain, Nodup+subset =>
+length <= pool) => live_iff_liveWithin => computable trim.
