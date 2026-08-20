@@ -1785,3 +1785,23 @@ proceeds on chordLoop. Next: liveness + trim transparency for the
 chordLoop sum, then Yl~Yr~init~port language identifications, then
 separations (port ≠ P ≠ X) under sat(¬b), sat(b∧c), and cross-side
 pairings.
+
+## Iteration 64 — chordLoop fragment, left side (16 lemmas, zero errors)
+
+GkatThreeLoopProofs.lean:
+- `chord_live_yr/yl/x/p/all` — liveness (x needs only sat(¬b): fire `y`
+  at the exit atom itself, then halt).
+- `chord_targets_live(+_none)` — composite arm targets live.
+- Seven `chord_trim_step_*` — trimmed sum steps verbatim (p_enter,
+  p_skip, x, yl_feed, yl_none, yr_feed, yr_none).
+- **`chord_yl_yr_lang`** — detour port ~ skip port (the two post-`y`
+  states), by `lang_eq_of_step_hlt`.
+- **`chord_none_lang`** — init ~ skip port.
+
+So the port class {init, Yl, Yr} is language-identified on the left
+summand. Quotient picture locked: three classes port/P/X. Next: right
+mirrors, then the SEPARATIONS (port ≠ P ≠ X: port halts at ¬b, P and X
+silent → port separated by sat(¬b); P vs X: at a c-atom P fires x while
+X fires y — separation via action mismatch x ≠ y OR depth via sat(b∧c);
+choose hypotheses carefully), then cross-side pairings from ULE, then
+the classifier + bundle.
