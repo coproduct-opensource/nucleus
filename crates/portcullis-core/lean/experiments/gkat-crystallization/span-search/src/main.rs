@@ -5578,7 +5578,11 @@ pullback: {ok} / {}", res.len());
                         let mut rnd3 = move || { rng3 ^= rng3 << 13; rng3 ^= rng3 >> 7; rng3 ^= rng3 << 17; rng3 };
                         let mut shown = 0;
                         let mut t2 = 0usize;
-                        while shown < 2 && t2 < 4000000 {
+                        // At NA=2 the hunt finds its unsound accepts within thousands of
+                        // tries; at NA>2 llee has produced none, and grinding 4M random
+                        // automata through llee (all memo misses) costs hours.
+                        let t2cap = if NA > 2 { 100_000 } else { 4_000_000 };
+                        while shown < 2 && t2 < t2cap {
                             t2 += 1;
                             let kk = 4 + (rnd3() % 5) as usize;
                             let mut st = [[0u8; NA]; MAXK];
