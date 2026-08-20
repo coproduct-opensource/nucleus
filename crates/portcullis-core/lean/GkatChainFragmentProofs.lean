@@ -1081,4 +1081,142 @@ theorem autRun_toGAut_some {S' Atom : Type} (V : T → Atom → Bool)
 #print axioms autRun_sumGAut_inl
 #print axioms autRun_toGAut_some
 
+/-! ## Deterministic steps and spine liveness
+
+    The loop's interior steps deterministically at EVERY atom; the port
+    feeds back under `b`.  With the exit satisfiable, every spine state
+    runs forward to the port and exits — liveness, lifted through the
+    embeddings to the composite sum automaton. -/
+
+open Classical in
+/-- A firing arm with all firing arms agreeing pins `firstMatch`. -/
+theorem firstMatch_some_target {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) :
+    ∀ (L : List (BExp T × A × S)) (v : S),
+      (∃ t ∈ L, bval V t.1 x = true) →
+      (∀ t ∈ L, bval V t.1 x = true → t.2.2 = v) →
+      ∃ a, firstMatch V x L = some (a, v) := by
+  intro L
+  induction L with
+  | nil =>
+      intro v hex _
+      obtain ⟨t, ht, -⟩ := hex
+      exact nomatch ht
+  | cons hd rest ih =>
+      intro v hex hall
+      obtain ⟨g, a, t⟩ := hd
+      by_cases hb : bval V g x = true
+      · refine ⟨a, ?_⟩
+        rw [fm_cons₄, if_pos hb]
+        have htv : t = v := hall (g, a, t) (List.mem_cons_self ..) hb
+        rw [htv]
+      · obtain ⟨t', ht', hbt'⟩ := hex
+        rcases List.mem_cons.mp ht' with heq | hmem
+        · exfalso
+          rw [heq] at hbt'
+          exact hb hbt'
+        · obtain ⟨a', hfm⟩ := ih v ⟨t', hmem, hbt'⟩
+            (fun t'' ht'' hb'' =>
+              hall t'' (List.mem_cons_of_mem _ ht'') hb'')
+          refine ⟨a', ?_⟩
+          rw [fm_cons₄, if_neg hb]
+          exact hfm
+
+open Classical in
+/-- **DETERMINISTIC INTERIOR STEP**: at every atom, the loop steps from
+    the `j`-th spine state to the `j+1`-st. -/
+theorem loop_step_interior {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool, ∃ a : A,
+      firstMatch (genW T) α
+          ((loopInitialized b B).core.trans (l[j]'(by omega)))
+        = some (a, l[j + 1]'h1) := by
+  intro α
+  obtain ⟨t, ht, htg, htt⟩ := loop_real_interior b hsp j h1
+  exact firstMatch_some_target (genW T) α _ _
+    ⟨t, ht, htg α⟩
+    (fun t' ht' hb' => loop_arms_interior b hsp j h1 t' ht' α hb')
+
+open Classical in
+/-- **PORT STEP UNDER `b`**: the loop feeds back to the head. -/
+theorem loop_step_port {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hin : ChainInit B first) (h0 : 0 < l.length)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    ∃ a : A,
+      firstMatch (genW T) α
+          ((loopInitialized b B).core.trans (l[l.length - 1]'(by omega)))
+        = some (a, first) := by
+  obtain ⟨t, ht, htg, htt⟩ := loop_real_port b hsp hin h0
+  refine firstMatch_some_target (genW T) α _ _ ⟨t, ht, ?_⟩
+    (fun t' ht' hb' => loop_arms_port b hsp hin h0 t' ht' α hb')
+  rw [htg α]
+  exact hb
+
+open Classical in
+/-- **SPINE LIVENESS** (core level): with the exit satisfiable, every
+    spine state accepts a word — run forward to the port and exit. -/
+theorem spine_live_core {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) (first : S')
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ k j (hjk : j + k + 1 = l.length),
+      ∃ (β : T → Bool) (w : List (A × (T → Bool))),
+        autRun (genW T) (coreAut (loopInitialized b B) first)
+          (l[j]'(by omega)) β w := by
+  intro k
+  induction k with
+  | zero =>
+      intro j hjk
+      obtain ⟨αe, hαe⟩ := hexit
+      refine ⟨αe, [], ?_⟩
+      show bval (genW T)
+        ((loopInitialized b B).core.hlt (l[j]'(by omega))) αe = true
+      have hj : j = l.length - 1 := by omega
+      subst hj
+      rw [loop_hlt_port b hsp (by omega) αe, hαe]
+      rfl
+  | succ k ih =>
+      intro j hjk
+      obtain ⟨β, w, hrun⟩ := ih (j + 1) (by omega)
+      obtain ⟨a, hstep⟩ := loop_step_interior b hsp j (by omega) β
+      refine ⟨β, (a, β) :: w, ?_⟩
+      exact ⟨l[j + 1]'(by omega), hstep, hrun⟩
+
+open Classical in
+/-- **SPINE LIVENESS IN THE COMPOSITE** (left summand). -/
+theorem spine_live_sum_inl {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ j (hj : j < l.length),
+      Live (sumGAut (loopInitialized b B).toGAut aut₂)
+        (Sum.inl (some (l[j]'hj))) := by
+  intro j hj
+  obtain ⟨β, w, hrun⟩ := spine_live_core b hsp first hexit
+    (l.length - 1 - j) j (by omega)
+  refine ⟨β, w, ?_⟩
+  rw [autRun_sumGAut_inl, autRun_toGAut_some (start := first)]
+  exact hrun
+
+open Classical in
+/-- **SPINE LIVENESS IN THE COMPOSITE** (right summand). -/
+theorem spine_live_sum_inr {S₁ S₂ : Type} {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) (first : S₂)
+    (aut₁ : GAut (Option S₁) A T)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ j (hj : j < l.length),
+      Live (sumGAut aut₁ (loopInitialized b B).toGAut)
+        (Sum.inr (some (l[j]'hj))) := by
+  intro j hj
+  obtain ⟨β, w, hrun⟩ := spine_live_core b hsp first hexit
+    (l.length - 1 - j) j (by omega)
+  refine ⟨β, w, ?_⟩
+  rw [autRun_sumGAut_inr, autRun_toGAut_some (start := first)]
+  exact hrun
+
+#print axioms loop_step_interior
+#print axioms loop_step_port
+#print axioms spine_live_sum_inl
+
 end GkatChainFragment

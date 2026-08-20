@@ -724,3 +724,25 @@ Run embeddings need only [propext].
 Remaining: spine liveness (exit-satisfiable => every spine state live in
 the composite via the embeddings), hfire/hstep_uniq assembly through
 autStep_trimAut_all_live, hnoeps transport, none~last, os/cover, wrapper.
+
+## DETERMINISTIC STEPS + SPINE LIVENESS (loop iteration 22)
+
+- firstMatch_some_target: a firing arm with all firing arms agreeing pins
+  firstMatch to the common target
+- loop_step_interior: at EVERY atom, the loop steps j -> j+1 (this is
+  hstep_uniq's core content)
+- loop_step_port: under b, the port feeds back to the head (hfire's core
+  content at the port)
+- spine_live_core: exit satisfiable => every spine state runs forward to
+  the port and exits (induction on distance-to-port; the word is built
+  from the actual firstMatch letters)
+- spine_live_sum_inl/inr: liveness lifted through toGAut + sumGAut into
+  the composite — the hlive/hstates-side obligations.
+All [propext, Quot.sound] — choice-free.
+
+The obligations of rankNxt_quot_solvesBA now discharged for chain-loop
+composites: hdec, hnxt_rank, core-level hfire/hstep_uniq, liveness.
+Remaining: assemble hfire at trim level (targets-live plumbing via
+certificate InitTargetsListed/CoreStructural + autStep_trimAut_all_live),
+hnoeps transport (hlt passes through verbatim), none~last, qPeriod >= 2,
+os/cover assembly, wrapper.
