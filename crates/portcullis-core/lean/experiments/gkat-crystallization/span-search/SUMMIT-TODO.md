@@ -480,3 +480,21 @@ ALL FOUR cy-bundle side conditions now derived semantically:
 The fragment must supply: no-descent at interior classes + empty-word-
 freeness at interior orbit members — both TRUE for chain bodies by
 construction. Remaining: fragment rank, glue rankNxt_quot_solvesBA.
+
+## THE ORBIT CY-BUNDLE (loop iteration 12)
+
+- orbit_rank_eq: every orbit class sits at minRank level rank u0
+  (cycle_level_all twice)
+- orbit_port_descent: the port's non-self non-next arms strictly descend —
+  double gOthers_sub peel + orbit_dichotomy at j=0, next-branch excluded
+  because nxtAt wraps only at len and 2 <= qPeriod
+- orbit_cy_bundle: the COMPLETE per-orbit hypothesis package of
+  walked_assembly_roles — rank equality, port descent, hint_nil, himpc,
+  hdisj, hexcl — for m j := qm j at len := qPeriod. Fragment supplies just:
+  interior descent-freeness + interior empty-word-freeness (+ 2 <= qPeriod,
+  states membership).
+All [propext, Classical.choice, Quot.sound].
+
+Remaining for chainloops_complete: the global cy function (assign each
+quotient state its orbit data; position via qorb_injective, well-definedness
+via basepoint_shift), fragment definition + rank, glue.

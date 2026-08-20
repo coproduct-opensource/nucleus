@@ -1088,5 +1088,185 @@ theorem cy_halt_conditions_of_empty (Q : GAut S A T) (m : Nat → S)
 #print axioms orbit_halt_empty
 #print axioms cy_halt_conditions_of_empty
 
+/-! ## THE ORBIT CY-BUNDLE
+
+    Everything `walked_assembly_roles`' cycle hypothesis demands — rank
+    equality along the cycle, port descent, interior pinning, and the three
+    halt conditions — derived for the canonical orbit cycle
+    `m j := ⟦nxtIter j u₀⟧` at length `qPeriod`.  Only the global
+    cy-coherence (position assignment) remains for the final glue. -/
+
+open Classical in
+/-- Rank equality along the orbit cycle: every class sits at level
+    `rank u₀`. -/
+theorem orbit_rank_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w) :
+    ∀ j i : Nat,
+      minRank (trimAut aut) rank (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+        = minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt i u₀)) := by
+  intro j i
+  rw [cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper hlive hnofix
+        hmin j,
+      cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper hlive hnofix
+        hmin i]
+
+open Classical in
+/-- **PORT DESCENT**: the port's non-self, non-next arms all strictly
+    descend in minimal-realizer rank. -/
+theorem orbit_port_descent (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hlen2 : 2 ≤ qPeriod aut nxt u₀ k)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt 0 u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states) :
+    ∀ e ∈ gOthers
+        (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) 0)
+        (restL (cleanAut (bisimQuotAut (trimAut aut)))
+          (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+      minRank (trimAut aut) rank e.2.2
+        < minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)) := by
+  intro e he
+  obtain ⟨heL1, hne1⟩ := gOthers_sub _ _ e he
+  obtain ⟨heL2, hne2⟩ := gOthers_sub _ _ e heL1
+  rcases orbit_dichotomy aut rank nxt hdec hnxt_rank hfire hk hper hlive
+    hnofix hmin 0 hc e heL2 with h | h | h
+  · exact absurd h hne2
+  · exact h
+  · exfalso
+    apply hne1
+    show e.2.2 = nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) 0
+    unfold nxtAt
+    rw [if_neg (by omega : ¬ (0 + 1 = qPeriod aut nxt u₀ k))]
+    exact h
+
+open Classical in
+/-- **THE ORBIT CY-BUNDLE**: the complete per-orbit hypothesis package of
+    `walked_assembly_roles` — rank equality, port descent, interior pinning
+    (`hint_nil`), and the three halt conditions — for the canonical cycle
+    map `m j := ⟦nxtIter j u₀⟧` at length `qPeriod`.  The fragment supplies
+    only interior descent-freeness and interior empty-word-freeness. -/
+theorem orbit_cy_bundle (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hlen2 : 2 ≤ qPeriod aut nxt u₀ k)
+    (hstates : ∀ j, bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states)
+    (hNoDescInt : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+        ¬ minRank (trimAut aut) rank e.2.2
+            < minRank (trimAut aut) rank
+                (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+    (hnoeps : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      ∀ α : T → Bool,
+        ¬ autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α []) :
+    (∀ j, j < qPeriod aut nxt u₀ k →
+      minRank (trimAut aut) rank (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+        = minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)))
+    ∧ (∀ e ∈ gOthers
+        (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) 0)
+        (restL (cleanAut (bisimQuotAut (trimAut aut)))
+          (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+        minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        gOthers
+          (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+            (qPeriod aut nxt u₀ k) j)
+          (restL (cleanAut (bisimQuotAut (trimAut aut)))
+            (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) j) = [])
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀))))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        ∀ e ∈ gOthers
+          (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+            (qPeriod aut nxt u₀ k) 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut)))
+            (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+          GuardEmpty (.and
+            ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))) e.1))
+    ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+            (bisimRep (trimAut aut) (nxtIter nxt j u₀)))
+          (.not (.or
+            (selfG (cleanAut (bisimQuotAut (trimAut aut)))
+              (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0)
+            (nextG (cleanAut (bisimQuotAut (trimAut aut)))
+              (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+              (qPeriod aut nxt u₀ k) 0)))) := by
+  have hEmpty : ∀ j, 1 ≤ j → j < qPeriod aut nxt u₀ k →
+      GuardEmpty ((cleanAut (bisimQuotAut (trimAut aut))).hlt
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀))) := by
+    intro j hj hjlt
+    exact orbit_halt_empty aut nxt j (hnoeps j hj hjlt)
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro j _
+    exact orbit_rank_eq aut rank nxt hdec hnxt_rank hfire hk hper hlive
+      hnofix hmin j 0
+  · exact orbit_port_descent aut rank nxt hdec hnxt_rank hfire hk hper
+      hlive hnofix hmin hlen2 (hstates 0)
+  · intro j hj hjlt
+    exact hint_nil_of_pinned (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j
+      (orbit_arms_pinned_nxtAt aut rank nxt hdec hnxt_rank hfire hk hper
+        hlive hnofix hmin j (hstates j) (hNoDescInt j hj hjlt))
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).1
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).2.1
+  · intro j hj hjlt
+    exact (cy_halt_conditions_of_empty
+      (cleanAut (bisimQuotAut (trimAut aut)))
+      (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) j (hEmpty j hj hjlt)).2.2
+
+#print axioms orbit_cy_bundle
+
 end GkatOrbit
+
 
