@@ -783,6 +783,9 @@ lean_lib «GkatCertSupportBoolProofs» where
 lean_lib «GkatMixPilotProofs» where
   roots := #[`GkatMixPilotProofs]
 
+lean_lib «GkatRingPlanProofs» where
+  roots := #[`GkatRingPlanProofs]
+
 lean_lib «GkatCertR1» where
   roots := #[`GkatCertR1]
 

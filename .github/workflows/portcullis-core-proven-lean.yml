@@ -233,6 +233,7 @@ jobs:
             GkatRingSupportProofs \
             GkatCertSupportBoolProofs \
             GkatMixPilotProofs \
+            GkatRingPlanProofs \
             GkatResidueFamilyProofs \
             GkatNormalProofs \
             GkatTotalizationProofs \
