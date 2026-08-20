@@ -1924,3 +1924,33 @@ Expected: port states → [(bᵢ-guard, p, P̂)]; branch states →
 [(c-guard, x, X̂), (¬c-guard, y, R̂)]; mid states → [(⊤-guard, y, R̂)].
 Then the gathered-guard facts are tiny-list computations, the bundle
 discharges, and chordLoops_solvable + chordloops_complete close.
+
+## Iteration 69 — FIRST QUOTIENT ARM COMPUTATION (the pipeline validates)
+
+`chord_qarms_x`: the mid state's cleaned quotient arm list is literally
+`[((1∧1)∧¬0, y, R̂)]`. The full pipeline, now proven workable:
+
+1. `show` unfolds cleanAut/bisimQuotAut/trimAut projections (all rfl).
+2. `trimList_all_live` (targets-live hypothesis ASCRIBED to chordSum
+   form — the lemma otherwise instantiates at sumGAut form and the rw
+   misses) turns trimming into guard decoration `g∧¬0`.
+3. A second `show` states the decorated+retargeted literal; phantom
+   targets that are rfl-reps (P, X, Yr) written directly as chordRep
+   wrappers; only rep(Yl) needs a rewrite (`hrepYl` via yl_yr_lang).
+4. `cleanList_consC` (local re-declaration; the original is private) ×5
+   with `if_neg h1` (real arm: refute GuardEmpty by evaluating at
+   `Unit, fun _ _ => false` — nomatch) and `if_pos h2..h5` (phantoms:
+   the ∧0 conjunct is LEFTMOST so `bval` reduces to false and the
+   GuardEmpty proofs are literally `fun X W v => rfl`).
+5. Final `rfl`.
+
+Key discoveries: (a) phantom emptiness is rfl — no case analysis on
+b/c needed; (b) the GuardEmpty conditions must be stated as explicit
+`have`s with the exact accumulated-D terms (an inline lambda can't
+infer the condition; T must be annotated when the guard has no free
+tests); (c) hrepYl rewrites BOTH Yl-targets at once.
+
+Remaining: the same computation for the other 9 states (branch states:
+2 kept arms with sat(c)/sat(¬c) refutation witnesses; port states:
+1 kept arm with sat(b); right side with primes), then the bundle facts
+(gOthers/gGuard on 1–2 element literals), the classifier, and assembly.

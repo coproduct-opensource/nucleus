@@ -3383,4 +3383,122 @@ theorem chord_repR_cases (b c : BExp T) (p x y : A)
 
 #print axioms chord_repR_cases
 
+/-! ## Quotient arm computation
+
+    For each carrier state, the cleaned quotient arm list is computed
+    concretely: `trimList` decorates (all targets live), the quotient
+    retargets onto the three representatives, and `cleanList` drops the
+    phantom arms (their guards carry `∧0` conjuncts).  The mid state
+    first — one real unconditional arm to the port. -/
+
+open Classical in
+private theorem cleanList_consC {S : Type} (g : BExp T) (a : A) (t : S)
+    (rest : List (BExp T × A × S)) (D : BExp T) :
+    cleanList ((g, a, t) :: rest) D
+      = if GuardEmpty (.and g (.not D)) then cleanList rest (.or D g)
+        else (g, a, t) :: cleanList rest (.or D g) := rfl
+
+open Classical in
+/-- The mid state's cleaned quotient arms: one unconditional `y` to the
+    port. -/
+theorem chord_qarms_x (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      = [(.and (.and .one .one) (.not .zero), y,
+          chordRepR b c p x y b' c' p' x' y')] := by
+  have hrepYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+      (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))
+    = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ (chord_yl_yr_lang b c p x y _ hexitC hexitB)
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ())))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inl (some (Sum.inr (Sum.inl (Sum.inl ()))))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live b c p x y _ hexitC hexitB
+      (Sum.inr (Sum.inl (Sum.inl ())))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [(.and (.and .one .one) (.not .zero), y,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))),
+        (.and (.and (.and .one .zero) (.and b .one)) (.not .zero), p,
+          chordRepP b c p x y b' c' p' x' y'),
+        (.and (.and (.and .one .zero)
+            (.and b (.and .zero (.and c .one)))) (.not .zero), x,
+          chordRepX b c p x y b' c' p' x' y'),
+        (.and (.and (.and .one .zero)
+            (.and b (.and .zero (.and c (.and .zero .one))))) (.not .zero),
+          y, bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))),
+        (.and (.and (.and .one .zero)
+            (.and b (.and .zero (.and (.not c) .one)))) (.not .zero), y,
+          chordRepR b c p x y b' c' p' x' y')]
+      .zero = _
+  rw [hrepYl]
+  have h1 : ¬ GuardEmpty (T := T) (BExp.and
+      (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))
+      (BExp.not BExp.zero)) :=
+    fun hE => nomatch (hE Unit (fun _ _ => false) ())
+  have h2 : GuardEmpty (BExp.and
+      (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+        (BExp.and b BExp.one)) (BExp.not BExp.zero))
+      (BExp.not (BExp.or BExp.zero
+        (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))))) :=
+    fun X W v => rfl
+  have h3 : GuardEmpty (BExp.and
+      (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+        (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))))
+        (BExp.not BExp.zero))
+      (BExp.not (BExp.or (BExp.or BExp.zero
+        (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b BExp.one)) (BExp.not BExp.zero))))) :=
+    fun X W v => rfl
+  have h4 : GuardEmpty (BExp.and
+      (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+        (BExp.and b (BExp.and BExp.zero
+          (BExp.and c (BExp.and BExp.zero BExp.one)))))
+        (BExp.not BExp.zero))
+      (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero
+        (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b BExp.one)) (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))))
+          (BExp.not BExp.zero))))) :=
+    fun X W v => rfl
+  have h5 : GuardEmpty (BExp.and
+      (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+        (BExp.and b (BExp.and BExp.zero
+          (BExp.and (BExp.not c) BExp.one))))
+        (BExp.not BExp.zero))
+      (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero
+        (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b BExp.one)) (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))))
+          (BExp.not BExp.zero)))
+        (BExp.and (BExp.and (BExp.and BExp.one BExp.zero)
+          (BExp.and b (BExp.and BExp.zero
+            (BExp.and c (BExp.and BExp.zero BExp.one)))))
+          (BExp.not BExp.zero))))) :=
+    fun X W v => rfl
+  rw [cleanList_consC, if_neg h1, cleanList_consC, if_pos h2,
+    cleanList_consC, if_pos h3, cleanList_consC, if_pos h4,
+    cleanList_consC, if_pos h5]
+  rfl
+
+#print axioms chord_qarms_x
+
 end GkatThreeLoop
