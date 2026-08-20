@@ -873,3 +873,32 @@ This is the existence half of the fourth theorem. Remaining:
    sumGAut (toGAut (certifiedThompson e).aut) ... — check SUMof def.
 3. Degenerate branches (b unsat / not-b unsat / len 1) via
    prune/atomic-loop routes.
+
+## ============================================================
+## THE FOURTH UNCONDITIONAL COMPLETENESS THEOREM (loop iteration 27)
+## ============================================================
+
+chainloops_complete: UNIFORMLY EQUIVALENT WHILE LOOPS OVER MULTI-ACTION
+CHAIN BODIES WITH NONDEGENERATE GUARDS ARE PROVABLY EQUAL FROM THE FINITE
+GKAT AXIOMS ALONE. No uniqueness axiom. [propext, Classical.choice,
+Quot.sound], no sorries.
+
+  theorem chainloops_complete (b1 b2) (hc1 : Chain2 body1)
+    (hc2 : Chain2 body2) (guards nondegenerate)
+    (heq : UniformLanguageEquivalent (wh b1 body1) (wh b2 body2)) :
+    EquivBA (wh b1 body1) (wh b2 body2)
+
+This is the head-position Salomaa frontier with genuinely multi-action
+bodies — the stratum atomicloops_complete could not reach, the case the
+literature's "UA seems necessary in both known completeness proofs"
+referred to. The wrapper: chain_shape + chain_loops_solvable +
+equivBA_of_quot_solvesBA, with SUMof defeq to the sumGAut/toGAut/
+loopInitialized composite.
+
+THE LADDER: loopfree_complete -> atomicloops_complete -> gloops_complete
+-> CHAINLOOPS_COMPLETE. Four unconditional strata, zero uses of UA.
+
+Remaining polish: degenerate guards (b unsat via descending-rank base;
+not-b unsat via dead/trim; single-action bodies via atomicloops route) to
+drop the nondegeneracy hypotheses. Then per the user-approved queue: the
+DE-CHOICE campaign.

@@ -2475,4 +2475,110 @@ theorem chain_loops_solvable {S₁ S₂ : Type}
 
 #print axioms chain_loops_solvable
 
+/-! ## THE FOURTH UNCONDITIONAL COMPLETENESS THEOREM
+
+    Two while loops over multi-action chain bodies, with nondegenerate
+    guards, are provably equivalent from the FINITE axioms whenever they
+    are uniformly language equivalent.  No uniqueness axiom.  This is the
+    head-position Salomaa frontier with genuinely multi-action bodies —
+    the stratum beyond `atomicloops_complete`. -/
+
+open Classical in
+private theorem chainSpine_ne_nil {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (h : ChainSpine B l) : 0 < l.length := by
+  cases l with
+  | nil => exact h.elim
+  | cons x t => simp
+
+open Classical in
+/-- Multi-action chains: at least one sequential composition. -/
+inductive Chain2 : Exp A T → Prop where
+  | seq {e f : Exp A T} : Chain e → Chain f → Chain2 (.seq e f)
+
+open Classical in
+private theorem chain_states_pos {body : Exp A T} (h : Chain body) :
+    0 < (certifiedThompson A T body).aut.core.states.length := by
+  obtain ⟨l, f, hhead, hsp, hin, hst⟩ := chain_shape h
+  rw [hst]
+  exact chainSpine_ne_nil hsp
+
+open Classical in
+private theorem chain2_states_two {body : Exp A T} (h : Chain2 body) :
+    2 ≤ (certifiedThompson A T body).aut.core.states.length := by
+  obtain ⟨he, hf⟩ := h
+  show 2 ≤ ((certifiedThompson A T _).aut.core.states.map Sum.inl
+    ++ (certifiedThompson A T _).aut.core.states.map Sum.inr).length
+  rw [List.length_append, List.length_map, List.length_map]
+  have h1 := chain_states_pos he
+  have h2 := chain_states_pos hf
+  omega
+
+open Classical in
+private theorem chain2_chain {body : Exp A T} (h : Chain2 body) :
+    Chain body := by
+  obtain ⟨he, hf⟩ := h
+  exact Chain.seq he hf
+
+open Classical in
+/-- **CHAIN-LOOP COMPLETENESS (pair form)**: uniformly equivalent while
+    loops over chain bodies with nondegenerate guards are provably equal
+    from the finite axioms — no uniqueness axiom. -/
+theorem chainloops_complete_pair (b₁ b₂ : BExp T) {body₁ body₂ : Exp A T}
+    (hc₁ : Chain body₁) (hc₂ : Chain body₂)
+    (hlen2₁ : 2 ≤ (certifiedThompson A T body₁).aut.core.states.length)
+    (hlen2₂ : 2 ≤ (certifiedThompson A T body₂).aut.core.states.length)
+    (hexit₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hexit₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbsat₁ : ∃ α : T → Bool, bval (genW T) b₁ α = true)
+    (hbsat₂ : ∃ α : T → Bool, bval (genW T) b₂ α = true)
+    (heq : UniformLanguageEquivalent (.wh b₁ body₁) (.wh b₂ body₂)) :
+    EquivBA (.wh b₁ body₁) (.wh b₂ body₂) := by
+  obtain ⟨l₁, f₁, hhead₁, hsp₁, hin₁, hst₁⟩ := chain_shape hc₁
+  obtain ⟨l₂, f₂, hhead₂, hsp₂, hin₂, hst₂⟩ := chain_shape hc₂
+  rw [hst₁] at hlen2₁
+  rw [hst₂] at hlen2₂
+  have hexh₁ : ∀ x, x ∈ l₁ := by
+    intro x
+    rw [← hst₁]
+    exact chain_exhaustive hc₁ x
+  have hexh₂ : ∀ x, x ∈ l₂ := by
+    intro x
+    rw [← hst₂]
+    exact chain_exhaustive hc₂ x
+  have hfl₁ : l₁[0]'(by omega) = f₁ := by
+    cases l₁ with
+    | nil => exact nomatch hhead₁
+    | cons x t => exact Option.some.inj hhead₁
+  have hfl₂ : l₂[0]'(by omega) = f₂ := by
+    cases l₂ with
+    | nil => exact nomatch hhead₂
+    | cons x t => exact Option.some.inj hhead₂
+  obtain ⟨qsol, hq⟩ := chain_loops_solvable b₁ b₂ hsp₁ hsp₂ hin₁ hin₂
+    (certifiedThompson A T body₁).structural.targets
+    (certifiedThompson A T body₁).certificate.initTargets
+    (certifiedThompson A T body₂).structural.targets
+    (certifiedThompson A T body₂).certificate.initTargets
+    hst₁ hst₂ hexh₁ hexh₂ hexit₁ hexit₂ hbsat₁ hbsat₂
+    hlen2₁ hlen2₂ hfl₁ hfl₂
+  exact equivBA_of_quot_solvesBA (.wh b₁ body₁) (.wh b₂ body₂) heq hq
+
+open Classical in
+/-- **THE FOURTH UNCONDITIONAL COMPLETENESS THEOREM**: uniformly
+    equivalent while loops over MULTI-ACTION chain bodies with
+    nondegenerate guards are provably equal from the finite GKAT axioms
+    alone — the uniqueness axiom is eliminable on this stratum. -/
+theorem chainloops_complete (b₁ b₂ : BExp T) {body₁ body₂ : Exp A T}
+    (hc₁ : Chain2 body₁) (hc₂ : Chain2 body₂)
+    (hexit₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hexit₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbsat₁ : ∃ α : T → Bool, bval (genW T) b₁ α = true)
+    (hbsat₂ : ∃ α : T → Bool, bval (genW T) b₂ α = true)
+    (heq : UniformLanguageEquivalent (.wh b₁ body₁) (.wh b₂ body₂)) :
+    EquivBA (.wh b₁ body₁) (.wh b₂ body₂) :=
+  chainloops_complete_pair b₁ b₂ (chain2_chain hc₁) (chain2_chain hc₂)
+    (chain2_states_two hc₁) (chain2_states_two hc₂)
+    hexit₁ hexit₂ hbsat₁ hbsat₂ heq
+
+#print axioms chainloops_complete
+
 end GkatChainFragment
