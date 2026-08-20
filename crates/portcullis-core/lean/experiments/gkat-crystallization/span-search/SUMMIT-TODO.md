@@ -1635,3 +1635,38 @@ threeLoop quotient (cover, liveness, guard facts — the twoLoop playbook).
 Lit check: cyclic proof systems for GKAT (2405.07505) and GKAT automata
 learning both work modulo the standard UA-based completeness; nothing
 touching UA-free nested/chord fragments.
+
+## Iteration 60 — THE CHORD ASSEMBLY THEOREM (the assembly half is DONE)
+
+`chord_assembly_roles` (GkatThreeLoopProofs.lean, axioms
+[propext, Classical.choice, Quot.sound] — same profile as
+`walked_assembly_roles`), **built first try**: an automaton whose every
+state is base (arms self or strictly descending) or a member of a
+designated chord-3 cluster — port with descent exits, covering branch
+dispatch, covering inner loop, empty interior halts — is fully
+role-covered.
+
+The machinery: closed forms `chordPortE` / `chordBranchE` / `chordInnerE`
+over gathered arm data (`gGuard`/`gBody`/`gOthers`), the WF-recursion
+solution `asmSolC` keyed by a classifier
+`cy : S → Option ((S × S × S) × Nat)` (positions 0=port, 1=branch,
+2=inner), congruence lemmas discharging the rank guards, and the cluster
+bundle: coherence, rank equality, port descent, interior `gOthers = []`,
+guard covers (`GuardImplies (¬enter) exit`), empty interior halts.
+Per-cluster roles via `eqRHS_foldTL` → `double_gather` /
+`multi_gather` → `chord_else_collapse` → `chord3_roles_split`.
+
+Local re-declaration needed: `foldTL_congr'` is private in
+GkatCycleProofs → `foldTL_congrC`.
+
+**Status of the open problem**: the ASSEMBLY half is complete and general.
+Remaining is the FRAGMENT/ORBIT half: exhibit the classifier and discharge
+the bundle facts for the canonical quotient of the trimmed Thompson sum of
+two threeLoop programs — the twoLoop playbook (concrete steps → liveness →
+trim transparency → quotient cover → the bundle) but with the branching
+cluster in place of the walked cycle. Then `threeloops_complete` closes.
+
+Next bite: start the threeLoop fragment facts — sum-automaton step lemmas
+(Σ-lifts of the six step lemmas), liveness of the three states, and the
+language-distinctness facts (`hnontriv` analogues: lang P ≠ lang Q ≠
+lang R under guard-nondegeneracy sat hypotheses).

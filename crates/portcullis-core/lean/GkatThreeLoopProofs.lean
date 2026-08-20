@@ -395,4 +395,277 @@ theorem chord3_roles_split {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms chord3_roles_split
 
+/-! ## The chord assembly
+
+    The engine-facing assembly: a classifier `cy` designates chord-3
+    clusters `(port, branch, inner)`; every other state is base (arms self
+    or strictly descending).  Closed forms are built from gathered arm
+    data, with descent references rank-guarded — the chord analogue of
+    `asmSolW`/`walked_assembly_roles`. -/
+
+open Classical in
+private theorem foldTL_congrC {S : Type} {sol₁ sol₂ : S → Exp A T}
+    (h : BExp T) :
+    ∀ L : List (BExp T × A × S), (∀ e ∈ L, sol₁ e.2.2 = sol₂ e.2.2) →
+    foldTL sol₁ h L = foldTL sol₂ h L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons a L ih =>
+      intro hL
+      show Exp.ite a.1 (.seq (.act a.2.1) (sol₁ a.2.2)) (foldTL sol₁ h L)
+        = Exp.ite a.1 (.seq (.act a.2.1) (sol₂ a.2.2)) (foldTL sol₂ h L)
+      rw [hL a (by exact List.mem_cons_self ..),
+        ih (fun e he => hL e (List.mem_cons_of_mem a he))]
+
+open Classical in
+/-- The port's closed form: the tailed lap while-loop over gathered data. -/
+noncomputable def chordPortE {S : Type} (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .seq (.wh (gGuard Ps (aut.trans Rs))
+      (.seq (gBody Ps (aut.trans Rs))
+        (chordPreS (gGuard Qs (aut.trans Ps)) (gGuard Qs (aut.trans Qs))
+          (gBody Qs (aut.trans Ps)) (gBody Qs (aut.trans Qs))
+          (gBody Rs (gOthers Qs (aut.trans Qs)))
+          (gBody Rs (gOthers Qs (aut.trans Ps))))))
+    (foldTL dsol (aut.hlt Rs) (gOthers Ps (aut.trans Rs)))
+
+open Classical in
+/-- The inner state's closed form: its own loop, then exit to the port. -/
+noncomputable def chordInnerE {S : Type} (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .seq (.wh (gGuard Qs (aut.trans Qs)) (gBody Qs (aut.trans Qs)))
+    (.seq (gBody Rs (gOthers Qs (aut.trans Qs)))
+      (chordPortE aut dsol Rs Ps Qs))
+
+open Classical in
+/-- The branch state's closed form: the two-way dispatch. -/
+noncomputable def chordBranchE {S : Type} (aut : GAut S A T)
+    (dsol : S → Exp A T) (Rs Ps Qs : S) : Exp A T :=
+  .ite (gGuard Qs (aut.trans Ps))
+    (.seq (gBody Qs (aut.trans Ps)) (chordInnerE aut dsol Rs Ps Qs))
+    (.seq (gBody Rs (gOthers Qs (aut.trans Ps)))
+      (chordPortE aut dsol Rs Ps Qs))
+
+open Classical in
+private theorem chordPortE_congr {S : Type} (aut : GAut S A T)
+    (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthers Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordPortE aut sol₁ Rs Ps Qs = chordPortE aut sol₂ Rs Ps Qs := by
+  unfold chordPortE
+  rw [foldTL_congrC (aut.hlt Rs) (gOthers Ps (aut.trans Rs)) h]
+
+open Classical in
+private theorem chordInnerE_congr {S : Type} (aut : GAut S A T)
+    (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthers Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordInnerE aut sol₁ Rs Ps Qs = chordInnerE aut sol₂ Rs Ps Qs := by
+  unfold chordInnerE
+  rw [chordPortE_congr aut Rs Ps Qs h]
+
+open Classical in
+private theorem chordBranchE_congr {S : Type} (aut : GAut S A T)
+    (Rs Ps Qs : S) {sol₁ sol₂ : S → Exp A T}
+    (h : ∀ e ∈ gOthers Ps (aut.trans Rs), sol₁ e.2.2 = sol₂ e.2.2) :
+    chordBranchE aut sol₁ Rs Ps Qs = chordBranchE aut sol₂ Rs Ps Qs := by
+  unfold chordBranchE
+  rw [chordInnerE_congr aut Rs Ps Qs h, chordPortE_congr aut Rs Ps Qs h]
+
+open Classical in
+/-- The chord assembly solution. -/
+noncomputable def asmSolC {S : Type} (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option ((S × S × S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some ((Rs, Ps, Qs), i) =>
+        if i = 0 then
+          chordPortE aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs
+        else if i = 1 then
+          chordBranchE aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs
+        else
+          chordInnerE aut
+            (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            Rs Ps Qs)
+
+open Classical in
+theorem asmSolC_eq {S : Type} (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option ((S × S × S) × Nat)) (s : S) :
+    asmSolC aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSolC aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some ((Rs, Ps, Qs), i) =>
+            if i = 0 then
+              chordPortE aut
+                (fun t => if _ : rank t < rank s then asmSolC aut rank cy t
+                  else .test .zero) Rs Ps Qs
+            else if i = 1 then
+              chordBranchE aut
+                (fun t => if _ : rank t < rank s then asmSolC aut rank cy t
+                  else .test .zero) Rs Ps Qs
+            else
+              chordInnerE aut
+                (fun t => if _ : rank t < rank s then asmSolC aut rank cy t
+                  else .test .zero) Rs Ps Qs) := by
+  unfold asmSolC
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE CHORD ASSEMBLY THEOREM**: an automaton whose every state is base
+    (arms self or strictly descending) or a member of a designated chord-3
+    cluster — port with descent exits, covering branch dispatch, covering
+    inner loop, empty interior halts — is fully role-covered. -/
+theorem chord_assembly_roles {S : Type} (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option ((S × S × S) × Nat))
+    (hcy : ∀ s Rs Ps Qs i, cy s = some ((Rs, Ps, Qs), i) →
+      ((i = 0 ∧ s = Rs) ∨ (i = 1 ∧ s = Ps) ∨ (i = 2 ∧ s = Qs))
+      ∧ cy Rs = some ((Rs, Ps, Qs), 0)
+      ∧ cy Ps = some ((Rs, Ps, Qs), 1)
+      ∧ cy Qs = some ((Rs, Ps, Qs), 2)
+      ∧ rank Ps = rank Rs ∧ rank Qs = rank Rs
+      ∧ (∀ e ∈ gOthers Ps (aut.trans Rs), rank e.2.2 < rank Rs)
+      ∧ gOthers Rs (gOthers Qs (aut.trans Ps)) = []
+      ∧ gOthers Rs (gOthers Qs (aut.trans Qs)) = []
+      ∧ GuardImplies (.not (gGuard Qs (aut.trans Ps)))
+          (gGuard Rs (gOthers Qs (aut.trans Ps)))
+      ∧ GuardImplies (.not (gGuard Qs (aut.trans Qs)))
+          (gGuard Rs (gOthers Qs (aut.trans Qs)))
+      ∧ GuardEmpty (aut.hlt Ps) ∧ GuardEmpty (aut.hlt Qs))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSolC aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      have hsol : asmSolC aut rank cy s
+          = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (asmSolC aut rank cy) (aut.hlt s)
+                (gOthers s (aut.trans s))) := by
+        rw [asmSolC_eq, hcys]
+        exact congrArg _ (foldTL_congrC (aut.hlt s) (gOthers s (aut.trans s))
+          (fun e he => dif_pos (hlow e he)))
+      refine StateRole.salomaaE (gGuard s (aut.trans s))
+        (gBody s (aut.trans s))
+        (foldTL (asmSolC aut rank cy) (aut.hlt s) (gOthers s (aut.trans s)))
+        hsol ?_
+      rw [eqRHS_foldTL]
+      exact multi_gather (asmSolC aut rank cy) (aut.hlt s) s (aut.trans s)
+  | some q =>
+      obtain ⟨⟨Rs, Ps, Qs⟩, i⟩ := q
+      obtain ⟨hpos, hcyR, hcyP, hcyQ, hrkP, hrkQ, hport_lo, hnilP, hnilQ,
+        himpP, himpQ, hempP, hempQ⟩ := hcy s Rs Ps Qs i hcys
+      have hlowR : ∀ e ∈ gOthers Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Rs then asmSolC aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolC aut rank cy e.2.2 :=
+        fun e he => dif_pos (hport_lo e he)
+      have hlowP : ∀ e ∈ gOthers Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Ps then asmSolC aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolC aut rank cy e.2.2 :=
+        fun e he => dif_pos (by rw [hrkP]; exact hport_lo e he)
+      have hlowQ : ∀ e ∈ gOthers Ps (aut.trans Rs),
+          (if _ : rank e.2.2 < rank Qs then asmSolC aut rank cy e.2.2
+            else Exp.test BExp.zero) = asmSolC aut rank cy e.2.2 :=
+        fun e he => dif_pos (by rw [hrkQ]; exact hport_lo e he)
+      have hsolR_eq : asmSolC aut rank cy Rs
+          = chordPortE aut (asmSolC aut rank cy) Rs Ps Qs := by
+        rw [asmSolC_eq, hcyR]
+        show (if (0 : Nat) = 0 then _ else _) = _
+        rw [if_pos rfl]
+        exact chordPortE_congr aut Rs Ps Qs hlowR
+      have hsolP_eq : asmSolC aut rank cy Ps
+          = chordBranchE aut (asmSolC aut rank cy) Rs Ps Qs := by
+        rw [asmSolC_eq, hcyP]
+        show (if (1 : Nat) = 0 then _ else if (1 : Nat) = 1 then _ else _) = _
+        rw [if_neg (by omega : ¬ (1 : Nat) = 0), if_pos rfl]
+        exact chordBranchE_congr aut Rs Ps Qs hlowP
+      have hsolQ_eq : asmSolC aut rank cy Qs
+          = chordInnerE aut (asmSolC aut rank cy) Rs Ps Qs := by
+        rw [asmSolC_eq, hcyQ]
+        show (if (2 : Nat) = 0 then _ else if (2 : Nat) = 1 then _ else _) = _
+        rw [if_neg (by omega : ¬ (2 : Nat) = 0),
+          if_neg (by omega : ¬ (2 : Nat) = 1)]
+        exact chordInnerE_congr aut Rs Ps Qs hlowQ
+      have hsolQ' : asmSolC aut rank cy Qs
+          = .seq (.wh (gGuard Qs (aut.trans Qs)) (gBody Qs (aut.trans Qs)))
+              (.seq (gBody Rs (gOthers Qs (aut.trans Qs)))
+                (asmSolC aut rank cy Rs)) := by
+        rw [hsolQ_eq]
+        show chordInnerE aut (asmSolC aut rank cy) Rs Ps Qs
+          = .seq (.wh (gGuard Qs (aut.trans Qs)) (gBody Qs (aut.trans Qs)))
+              (.seq (gBody Rs (gOthers Qs (aut.trans Qs)))
+                (asmSolC aut rank cy Rs))
+        rw [hsolR_eq]
+        rfl
+      have hsolP' : asmSolC aut rank cy Ps
+          = .ite (gGuard Qs (aut.trans Ps))
+              (.seq (gBody Qs (aut.trans Ps)) (asmSolC aut rank cy Qs))
+              (.seq (gBody Rs (gOthers Qs (aut.trans Ps)))
+                (asmSolC aut rank cy Rs)) := by
+        rw [hsolP_eq]
+        show chordBranchE aut (asmSolC aut rank cy) Rs Ps Qs = _
+        rw [hsolR_eq, hsolQ_eq]
+        rfl
+      have hsolR' : asmSolC aut rank cy Rs
+          = .seq (.wh (gGuard Ps (aut.trans Rs))
+              (.seq (gBody Ps (aut.trans Rs))
+                (chordPreS (gGuard Qs (aut.trans Ps))
+                  (gGuard Qs (aut.trans Qs)) (gBody Qs (aut.trans Ps))
+                  (gBody Qs (aut.trans Qs))
+                  (gBody Rs (gOthers Qs (aut.trans Qs)))
+                  (gBody Rs (gOthers Qs (aut.trans Ps))))))
+              (foldTL (asmSolC aut rank cy) (aut.hlt Rs)
+                (gOthers Ps (aut.trans Rs))) := by
+        rw [hsolR_eq]
+        rfl
+      have hroles := chord3_roles_split aut (asmSolC aut rank cy) Ps Qs Rs
+        (gGuard Ps (aut.trans Rs)) (gGuard Qs (aut.trans Ps))
+        (gGuard Qs (aut.trans Qs)) (gBody Ps (aut.trans Rs))
+        (gBody Qs (aut.trans Ps)) (gBody Qs (aut.trans Qs))
+        (gBody Rs (gOthers Qs (aut.trans Qs)))
+        (gBody Rs (gOthers Qs (aut.trans Ps)))
+        (foldTL (asmSolC aut rank cy) (aut.hlt Rs)
+          (gOthers Ps (aut.trans Rs)))
+        hsolQ' hsolP' hsolR'
+        (by
+          rw [eqRHS_foldTL]
+          refine EquivBA.trans (double_gather (asmSolC aut rank cy)
+            (aut.hlt Qs) Qs Rs (aut.trans Qs)) ?_
+          rw [hnilQ]
+          exact chord_else_collapse himpQ hempQ _ _)
+        (by
+          rw [eqRHS_foldTL]
+          refine EquivBA.trans (double_gather (asmSolC aut rank cy)
+            (aut.hlt Ps) Qs Rs (aut.trans Ps)) ?_
+          rw [hnilP]
+          exact chord_else_collapse himpP hempP _ _)
+        (by
+          rw [eqRHS_foldTL]
+          exact multi_gather (asmSolC aut rank cy) (aut.hlt Rs) Ps
+            (aut.trans Rs))
+      obtain ⟨hroleP, hroleQ, hroleR⟩ := hroles
+      rcases hpos with ⟨-, hsR⟩ | ⟨-, hsP⟩ | ⟨-, hsQ⟩
+      · rw [hsR]; exact hroleR
+      · rw [hsP]; exact hroleP
+      · rw [hsQ]; exact hroleQ
+
+#print axioms chord_assembly_roles
+
 end GkatThreeLoop
