@@ -57,6 +57,11 @@ here is machine-measured; kernel-checked claims say so explicitly.
   depth<=6 k 3..8: 1999/2000 covered by elimination; ONE residue candidate at k=4
   (mixed-halt sum, two-atom halts; verdict survives full oracle budgets) —
   runs/forge_na4_full.txt.  The first object to survive the witness kit anywhere.
+- **GAUNTLET RESULT (runs/forge_na4_gauntlet.txt): candidate independently verified
+  equivalent (product-BFS bisim) and then FELL to SUBSET PARKING — interior halt
+  guards need only be subsets of the header's exit guard.  Classifier v3: candidate
+  reclassifies ring-only, NA=4 forge neither=0 all strata, k=6 80/80 unchanged.
+  Paper + classifier verified; Lean certification awaits the T=2 support layer.**
 - **Union conjunct at NA=4 K=2: 214,635 / 214,635 (100.0%), residue ZERO**
   (runs/na4k2j.txt).  only-elimination 3,104; only-Thompson 0 — elimination at some
   merged-start congruence covers the entire space by itself.  Need-a-KA-step: 0 (no
