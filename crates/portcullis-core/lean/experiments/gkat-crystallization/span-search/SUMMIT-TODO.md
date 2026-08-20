@@ -1727,3 +1727,26 @@ New block in GkatThreeLoopProofs.lean (12 lemmas, twoLoop playbook):
 Next: the right-side (_r) mirrors, then the language facts (ε-separation
 `lang P ≠ lang Q ≠ lang R` under nondegeneracy sats + cross-side
 pairings), then bisimRep computations and the classifier.
+
+## Iteration 62 — right-summand mirrors + init–port identification
+
+16 more fragment lemmas in GkatThreeLoopProofs.lean, all first-try:
+
+- `threeLoop_targets_live_none(+_r)`, `threeLoop_live_all_r`,
+  `threeLoop_targets_live_r` — right-summand liveness mirrors.
+- Six `threeLoop_trim_step_*_r` — trimmed right-side steps verbatim.
+- `threeLoop_step_init_enter/none` — the init pseudostate arm list is
+  [(b∧1, p, pState), 2 phantoms with .zero guards] (discovered via
+  #reduce); at `b`-atoms init enters the lap doing `p`, exactly like the
+  port.
+- **`threeLoop_none_lang(+_r)`** — init ~ port: the start class IS the
+  port class in the trimmed sum (`lang_eq_of_step_hlt`, no induction).
+
+The port-basepoint picture from twoLoop carries over unchanged: the
+quotient cluster is (R̂ = start class, P̂, Q̂). Remaining for the sixth
+theorem: language-separation facts (P̂/Q̂/R̂ pairwise distinct under
+nondegeneracy sats: need sat(b∧c), sat(b∧¬c) style witnesses), cross-side
+pairings (lang Pl = lang Pr etc. from the ULE hypothesis via word
+analysis), bisimRep computations, the concrete classifier + bundle
+discharge (cleanList phantom-drop), and assembly into
+`threeLoops_solvable` + `threeloops_complete`.
