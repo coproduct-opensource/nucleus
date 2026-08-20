@@ -1244,3 +1244,19 @@ qPeriod machinery (nxt-generic — check direct reuse), qorb_injective
 (walked bundle), dichotomy + cy-bundle + glue (walked rankNxt), then the
 nested fragment (WalkedDec by construction + hnontriv via shortest-exit
 words) and nestedloops_complete.
+
+## WALKED TRACKING + INJECTIVITY (iteration 43)
+
+- walked_shift_min: rank minimality transports along walked orbits
+- walked_orbit_lang_determined: shifted-orbit tracking, hnontriv at each
+  successor site
+- walked_qorb_injective: distinct classes below the first-return period
+  (the qPeriod machinery — findFrom, qPeriod_spec, qorb_periodic, the
+  nxtIter arithmetic — reused VERBATIM from GkatOrbit: it is nxt-generic).
+
+Confirmed from the ICALP'21 record this iteration: well-nestedness is NOT
+a covariety (quotients can break it) — which is exactly why this
+machinery carries semantic invariants (WalkedDec survives collapse via
+the dichotomy) instead of syntactic nesting. Remaining mirror:
+walked quot_cycle_dichotomy + orbit_dichotomy + cy-bundle + glue, then
+the nested fragment + nestedloops_complete.
