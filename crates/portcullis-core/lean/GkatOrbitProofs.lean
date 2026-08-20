@@ -1652,7 +1652,179 @@ theorem qpos_qm (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 #print axioms inOrbit_track
 #print axioms qpos_qm
 
+/-! ## THE ORBIT GLUE: `rankNxt_quot_solvesBA`
+
+    The canonical quotient of a rank-modulo-simple-cycle automaton is
+    solvable, given a list of orbit representatives covering the non-base
+    classes.  `orbCy` assigns cycle data by first-match search over the
+    list; coherence holds because every class of one quotient cycle finds
+    the SAME representative (`inOrbit_track` + `firstMem_congr_mem`) and
+    positions are canonical (`qpos_qm`).  The walked assembly does the
+    rest. -/
+
+open Classical in
+/-- The global cycle assignment: search the orbit list, store the period,
+    the canonical enumeration, and the canonical position. -/
+noncomputable def orbCy (aut : GAut S A T) (nxt : S → S)
+    (os : List (S × Nat)) (c : S) : Option (Nat × (Nat → S) × Nat) :=
+  match firstMem (fun p => InOrbit aut nxt p.1 c) os with
+  | none => none
+  | some p => some (qPeriod aut nxt p.1 p.2,
+      fun t => bisimRep (trimAut aut) (nxtIter nxt t p.1),
+      qpos aut nxt p.1 p.2 c)
+
+open Classical in
+private theorem orbCy_none (aut : GAut S A T) (nxt : S → S)
+    (os : List (S × Nat)) {c : S}
+    (h : firstMem (fun p => InOrbit aut nxt p.1 c) os = none) :
+    orbCy aut nxt os c = none := by
+  unfold orbCy
+  rw [h]
+
+open Classical in
+private theorem orbCy_some (aut : GAut S A T) (nxt : S → S)
+    (os : List (S × Nat)) {c : S} {p : S × Nat}
+    (h : firstMem (fun p => InOrbit aut nxt p.1 c) os = some p) :
+    orbCy aut nxt os c = some (qPeriod aut nxt p.1 p.2,
+      fun t => bisimRep (trimAut aut) (nxtIter nxt t p.1),
+      qpos aut nxt p.1 p.2 c) := by
+  unfold orbCy
+  rw [h]
+
+open Classical in
+/-- **THE ORBIT GLUE**: a rank-modulo-simple-cycle automaton with a
+    covering orbit list has a solvable canonical quotient. -/
+theorem rankNxt_quot_solvesBA (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    (os : List (S × Nat))
+    (hos : ∀ p ∈ os,
+      1 ≤ p.2 ∧ nxtIter nxt p.2 p.1 = p.1 ∧ Live (trimAut aut) p.1
+      ∧ (∀ j, j < p.2 →
+          nxt (nxtIter nxt j p.1) ≠ nxtIter nxt j p.1)
+      ∧ (∀ w, autLang (genW T) (trimAut aut) w
+          = autLang (genW T) (trimAut aut) p.1 → rank p.1 ≤ rank w)
+      ∧ 2 ≤ qPeriod aut nxt p.1 p.2
+      ∧ (∀ j, bisimRep (trimAut aut) (nxtIter nxt j p.1)
+          ∈ (bisimQuotAut (trimAut aut)).states)
+      ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt p.1 p.2 →
+          ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+              (bisimRep (trimAut aut) (nxtIter nxt j p.1)),
+            ¬ minRank (trimAut aut) rank e.2.2
+                < minRank (trimAut aut) rank
+                    (bisimRep (trimAut aut) (nxtIter nxt j p.1)))
+      ∧ (∀ j, 1 ≤ j → j < qPeriod aut nxt p.1 p.2 →
+          ∀ α : T → Bool,
+            ¬ autRun (genW T) (trimAut aut) (nxtIter nxt j p.1) α []))
+    (hcover : ∀ c ∈ (cleanAut (bisimQuotAut (trimAut aut))).states,
+      (∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans c,
+        e.2.2 = c ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank c)
+      ∨ ∃ p ∈ os, InOrbit aut nxt p.1 c) :
+    ∃ qsol : S → Exp A T,
+      SolvesBA (bisimQuotAut (trimAut aut)) qsol := by
+  have hcy : ∀ s len m i, orbCy aut nxt os s = some (len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → orbCy aut nxt os (m j) = some (len, m, j)) ∧
+      (∀ j, j < len →
+        minRank (trimAut aut) rank (m j)
+          = minRank (trimAut aut) rank (m 0)) ∧
+      (∀ e ∈ gOthers (nxtAt m len 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m 0),
+        minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank (m 0)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        gOthers (nxtAt m len j)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m j) = []) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j))
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m 0))) ∧
+      (∀ j, 1 ≤ j → j < len →
+        ∀ e ∈ gOthers (nxtAt m len 0)
+          (restL (cleanAut (bisimQuotAut (trimAut aut))) m 0),
+          GuardEmpty (.and
+            ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j)) e.1)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies
+          ((cleanAut (bisimQuotAut (trimAut aut))).hlt (m j))
+          (.not (.or
+            (selfG (cleanAut (bisimQuotAut (trimAut aut))) m 0)
+            (nextG (cleanAut (bisimQuotAut (trimAut aut))) m len 0)))) := by
+    intro s len m i hcys
+    cases hfm : firstMem (fun p => InOrbit aut nxt p.1 s) os with
+    | none =>
+        rw [orbCy_none aut nxt os hfm] at hcys
+        exact nomatch hcys
+    | some p =>
+        rw [orbCy_some aut nxt os hfm] at hcys
+        have hinj := Option.some.inj hcys
+        rw [Prod.mk.injEq, Prod.mk.injEq] at hinj
+        obtain ⟨hlenE, hmE, hiE⟩ := hinj
+        subst hlenE
+        subst hmE
+        subst hiE
+        obtain ⟨hpmem, hio⟩ := firstMem_mem hfm
+        obtain ⟨hk, hper, hlive, hnofix, hmin, hlen2, hstates, hnodesc,
+          hnoeps⟩ := hos p hpmem
+        obtain ⟨hc3, hposlt⟩ := qpos_spec aut rank nxt hdec hnxt_rank hfire
+          hk hper hlive hnofix hmin hio
+        obtain ⟨hB1, hB2, hB3, hB4, hB5, hB6⟩ := orbit_cy_bundle aut rank
+          nxt hdec hnxt_rank hfire hk hper hlive hnofix hmin hlen2 hstates
+          hnodesc hnoeps
+        refine ⟨hposlt, hlen2, hc3, ?_, hB1, hB2, hB3, hB4, hB5, hB6⟩
+        intro j hj
+        have hcongr : firstMem (fun p' => InOrbit aut nxt p'.1
+            (bisimRep (trimAut aut) (nxtIter nxt j p.1))) os
+            = firstMem (fun p' => InOrbit aut nxt p'.1 s) os := by
+          apply firstMem_congr_mem
+          intro p' hp'
+          obtain ⟨hk', hper', hlive', hnofix', hmin', -, -, -, -⟩ :=
+            hos p' hp'
+          constructor
+          · intro hin
+            have h2 := inOrbit_track aut rank nxt hdec hnxt_rank hfire
+              hk hper hlive hnofix hmin hk' hper' hlive' hnofix' hmin'
+              (t := j) (t' := qpos aut nxt p.1 p.2 s) hin
+            rw [hc3] at h2
+            exact h2
+          · intro hin
+            have hin' : InOrbit aut nxt p'.1 (bisimRep (trimAut aut)
+                (nxtIter nxt (qpos aut nxt p.1 p.2 s) p.1)) := by
+              rw [hc3]
+              exact hin
+            exact inOrbit_track aut rank nxt hdec hnxt_rank hfire
+              hk hper hlive hnofix hmin hk' hper' hlive' hnofix' hmin'
+              (t := qpos aut nxt p.1 p.2 s) (t' := j) hin'
+        rw [orbCy_some aut nxt os (hcongr.trans hfm)]
+        rw [qpos_qm aut rank nxt hdec hnxt_rank hfire hk hper hlive
+          hnofix hmin hj]
+  have hbase : ∀ s ∈ (cleanAut (bisimQuotAut (trimAut aut))).states,
+      orbCy aut nxt os s = none →
+      ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans s,
+        e.2.2 = s ∨ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank s := by
+    intro s hs hnone e he
+    rcases hcover s hs with hbase' | ⟨p, hp, hio⟩
+    · exact hbase' e he
+    · obtain ⟨y, hy⟩ := firstMem_isSome
+        (P := fun p => InOrbit aut nxt p.1 s) hp hio
+      rw [orbCy_some aut nxt os hy] at hnone
+      exact nomatch hnone
+  obtain ⟨qsol, hroles⟩ := walked_assembly_roles
+    (cleanAut (bisimQuotAut (trimAut aut)))
+    (fun c => minRank (trimAut aut) rank c)
+    (orbCy aut nxt os) hcy hbase
+  exact ⟨qsol, solvesBA_unclean _ (decomp_solves _ _ hroles)⟩
+
+#print axioms rankNxt_quot_solvesBA
+
 end GkatOrbit
+
 
 
 

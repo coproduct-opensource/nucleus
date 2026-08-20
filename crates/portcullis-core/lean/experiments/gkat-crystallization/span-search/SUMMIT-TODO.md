@@ -539,3 +539,25 @@ Everything the global cy assignment consumes now exists. Next: define orbCy
 by firstMem over the orbit list, discharge hcy (coherence via inOrbit_track
 + firstMem_congr_mem + qpos_qm, bundle via orbit_cy_bundle), apply
 walked_assembly_roles -> rankNxt_quot_solvesBA.
+
+## THE ORBIT GLUE: rankNxt_quot_solvesBA (loop iteration 15)
+
+- orbCy: the global cycle assignment — first-match search over the orbit
+  list; stores (qPeriod, canonical enumeration from the found rep, qpos).
+- rankNxt_quot_solvesBA: THE CANONICAL QUOTIENT OF A RANK-MODULO-SIMPLE-
+  CYCLE AUTOMATON IS SOLVABLE, given an orbit list covering all non-base
+  classes. hcy discharge: destructure the stored triple (Option/Prod
+  injEq + subst), coherence = every class of one cycle finds the SAME rep
+  (inOrbit_track both ways + firstMem_congr_mem) with canonical positions
+  (qpos_qm), bundle components 5-10 = orbit_cy_bundle verbatim. hbase from
+  the cover (firstMem_isSome kills the none case). walked_assembly_roles +
+  decomp_solves + solvesBA_unclean close it.
+[propext, Classical.choice, Quot.sound] — FIRST PASS.
+
+THE ORBIT LAYER IS COMPLETE. The generalization ladder now reads:
+  singleton_scc_roles -> rankSelf_quot_solvesBA (self-loops)      [done]
+  orbit machinery     -> rankNxt_quot_solvesBA (simple cycles)    [DONE]
+Remaining for chainloops_complete: the ChainLoops fragment — Thompson
+automata of wh b (p1;...;pn) chains are rank-mod-nxt with a covering orbit
+list (hos/hcover discharge by construction), then the completeness wrapper
+(equivBA_of_quot_solvesBA pattern from atomicloops_complete).
