@@ -492,4 +492,227 @@ theorem spine_distinct {S' : Type} {B : InitializedGAut S' A T} :
 #print axioms spine_period
 #print axioms spine_distinct
 
+/-! ## Positional spine facts and the loop automaton's arm classification
+
+    Extract the recursive `ChainSpine` facts positionally, then classify
+    every arm and halt guard of `loopInitialized b B`: interior states are
+    silent and step (only) to their spine successor; the port halts exactly
+    at `¬b` and its fired arms feed back exactly to the head, with a real
+    feedback arm firing precisely with `b`. -/
+
+private theorem getElem_last_cons {S' : Type} (x y : S') (t' : List S') :
+    (x :: y :: t')[(x :: y :: t').length - 1]'(by
+      simp only [List.length_cons]; omega)
+      = (y :: t')[(y :: t').length - 1]'(by
+        simp only [List.length_cons]; omega) := by
+  have h2 : (x :: y :: t').length - 1 = ((y :: t').length - 1) + 1 := by
+    simp only [List.length_cons]
+    omega
+  simp only [h2, List.getElem_cons_succ]
+
+open Classical in
+theorem spine_hlt_int_at {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ j (h1 : j + 1 < l.length),
+      ∀ α : T → Bool,
+        bval (genW T) (B.core.hlt (l[j]'(by omega))) α = false := by
+  intro l
+  induction l with
+  | nil => intro _ j h1; exact absurd h1 (by simp)
+  | cons x t ih =>
+      intro hsp j h1
+      cases t with
+      | nil =>
+          exact absurd h1 (by
+            simp only [List.length_cons, List.length_nil]
+            omega)
+      | cons y t' =>
+          cases j with
+          | zero => exact hsp.1
+          | succ j =>
+              exact ih (chainSpine_tail hsp) j (by
+                simp only [List.length_cons] at h1 ⊢
+                omega)
+
+open Classical in
+theorem spine_fired_at {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ j (h1 : j + 1 < l.length),
+      ∀ t ∈ B.core.trans (l[j]'(by omega)), ∀ α : T → Bool,
+        bval (genW T) t.1 α = true → t.2.2 = l[j + 1]'h1 := by
+  intro l
+  induction l with
+  | nil => intro _ j h1; exact absurd h1 (by simp)
+  | cons x t ih =>
+      intro hsp j h1
+      cases t with
+      | nil =>
+          exact absurd h1 (by
+            simp only [List.length_cons, List.length_nil]
+            omega)
+      | cons y t' =>
+          cases j with
+          | zero => exact hsp.2.2.1
+          | succ j =>
+              exact ih (chainSpine_tail hsp) j (by
+                simp only [List.length_cons] at h1 ⊢
+                omega)
+
+open Classical in
+theorem spine_real_at {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ j (h1 : j + 1 < l.length),
+      ∃ t ∈ B.core.trans (l[j]'(by omega)),
+        (∀ α : T → Bool, bval (genW T) t.1 α = true)
+        ∧ t.2.2 = l[j + 1]'h1 := by
+  intro l
+  induction l with
+  | nil => intro _ j h1; exact absurd h1 (by simp)
+  | cons x t ih =>
+      intro hsp j h1
+      cases t with
+      | nil =>
+          exact absurd h1 (by
+            simp only [List.length_cons, List.length_nil]
+            omega)
+      | cons y t' =>
+          cases j with
+          | zero => exact hsp.2.1
+          | succ j =>
+              exact ih (chainSpine_tail hsp) j (by
+                simp only [List.length_cons] at h1 ⊢
+                omega)
+
+open Classical in
+theorem spine_last_nil {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ (h : 0 < l.length),
+      B.core.trans (l[l.length - 1]'(by omega)) = [] := by
+  intro l
+  induction l with
+  | nil => intro _ h; exact absurd h (by simp)
+  | cons x t ih =>
+      intro hsp h
+      cases t with
+      | nil => exact hsp.1
+      | cons y t' =>
+          rw [getElem_last_cons]
+          exact ih (chainSpine_tail hsp) (by
+            simp only [List.length_cons]
+            omega)
+
+open Classical in
+theorem spine_hlt_last {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ (h : 0 < l.length),
+      ∀ α : T → Bool,
+        bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+          = true := by
+  intro l
+  induction l with
+  | nil => intro _ h; exact absurd h (by simp)
+  | cons x t ih =>
+      intro hsp h
+      cases t with
+      | nil => exact hsp.2
+      | cons y t' =>
+          rw [getElem_last_cons]
+          exact ih (chainSpine_tail hsp) (by
+            simp only [List.length_cons]
+            omega)
+
+open Classical in
+/-- Interior loop states are silent. -/
+theorem loop_hlt_int {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((loopInitialized b B).core.hlt (l[j]'(by omega))) α = false := by
+  intro α
+  show (bval (genW T) (B.core.hlt (l[j]'(by omega))) α
+    && !(bval (genW T) b α)) = false
+  rw [spine_hlt_int_at l hsp j h1 α]
+  rfl
+
+open Classical in
+/-- The port halts exactly at `¬b`. -/
+theorem loop_hlt_port {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l)
+    (h0 : 0 < l.length) :
+    ∀ α : T → Bool,
+      bval (genW T)
+        ((loopInitialized b B).core.hlt (l[l.length - 1]'(by omega))) α
+        = !(bval (genW T) b α) := by
+  intro α
+  show (bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+    && !(bval (genW T) b α)) = !(bval (genW T) b α)
+  rw [spine_hlt_last l hsp h0 α]
+  exact Bool.true_and _
+
+open Classical in
+/-- Fired arms at interior loop states go to the spine successor. -/
+theorem loop_arms_interior {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ t ∈ (loopInitialized b B).core.trans (l[j]'(by omega)),
+      ∀ α : T → Bool, bval (genW T) t.1 α = true →
+        t.2.2 = l[j + 1]'h1 := by
+  intro t ht α hb
+  rcases List.mem_append.mp ht with hB | hF
+  · exact spine_fired_at l hsp j h1 t hB α hb
+  · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hF
+    rw [← heq] at hb
+    have hb' : (bval (genW T) (B.core.hlt (l[j]'(by omega))) α
+        && bval (genW T) (.and b t₀.1) α) = true := hb
+    rw [spine_hlt_int_at l hsp j h1 α] at hb'
+    exact nomatch hb'
+
+open Classical in
+/-- Fired arms at the port feed back to the head. -/
+theorem loop_arms_port {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hin : ChainInit B first) (h0 : 0 < l.length) :
+    ∀ t ∈ (loopInitialized b B).core.trans (l[l.length - 1]'(by omega)),
+      ∀ α : T → Bool, bval (genW T) t.1 α = true → t.2.2 = first := by
+  intro t ht α hb
+  rcases List.mem_append.mp ht with hB | hF
+  · rw [spine_last_nil l hsp h0] at hB
+    exact nomatch hB
+  · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hF
+    rw [← heq] at hb ⊢
+    show t₀.2.2 = first
+    have hb' : (bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+        && (bval (genW T) b α && bval (genW T) t₀.1 α)) = true := hb
+    rw [Bool.and_eq_true, Bool.and_eq_true] at hb'
+    exact hin.fired t₀ ht₀ α hb'.2.2
+
+open Classical in
+/-- Interior real arm: fires everywhere, to the spine successor. -/
+theorem loop_real_interior {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∃ t ∈ (loopInitialized b B).core.trans (l[j]'(by omega)),
+      (∀ α : T → Bool, bval (genW T) t.1 α = true)
+      ∧ t.2.2 = l[j + 1]'h1 := by
+  obtain ⟨t₀, ht₀, htg, htt⟩ := spine_real_at l hsp j h1
+  exact ⟨t₀, List.mem_append.mpr (Or.inl ht₀), htg, htt⟩
+
+open Classical in
+/-- Port real feedback arm: fires exactly with `b`, to the head. -/
+theorem loop_real_port {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hin : ChainInit B first) (h0 : 0 < l.length) :
+    ∃ t ∈ (loopInitialized b B).core.trans (l[l.length - 1]'(by omega)),
+      (∀ α : T → Bool, bval (genW T) t.1 α = bval (genW T) b α)
+      ∧ t.2.2 = first := by
+  obtain ⟨t₀, ht₀, htg, htt⟩ := hin.real
+  refine ⟨(.and (B.core.hlt (l[l.length - 1]'(by omega)))
+    (.and b t₀.1), t₀.2), ?_, ?_, htt⟩
+  · exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨t₀, ht₀, rfl⟩))
+  · intro α
+    show (bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+      && (bval (genW T) b α && bval (genW T) t₀.1 α))
+      = bval (genW T) b α
+    rw [spine_hlt_last l hsp h0 α, htg α, Bool.true_and, Bool.and_true]
+
+#print axioms loop_arms_interior
+#print axioms loop_arms_port
+#print axioms loop_real_port
+
 end GkatChainFragment

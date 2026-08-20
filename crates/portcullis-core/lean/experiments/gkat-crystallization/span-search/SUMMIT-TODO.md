@@ -664,3 +664,23 @@ of a spine: fired-arm classification with the three-way b case split
 constant rank + orbit with port basepoint l[len-1])), the none~last
 language identification for the init class, toGAut/sumGAut transport, os
 construction, wrapper.
+
+## THE LOOP ARM CLASSIFICATION (loop iteration 20)
+
+Positional extraction of ChainSpine (spine_hlt_int_at / spine_fired_at /
+spine_real_at / spine_last_nil / spine_hlt_last), then the complete
+classification of loopInitialized b B over a spine — FIRST PASS, zero
+errors:
+- loop_hlt_int: interior loop states are silent (body-hlt zero kills the
+  ∧ ¬b)
+- loop_hlt_port: the port halts EXACTLY at ¬b
+- loop_arms_interior: fired interior arms go only to the spine successor
+  (feedback arms die on the silent interior halt conjunct)
+- loop_arms_port: fired port arms feed back exactly to the head
+  (body arms vanish — trans last = []; ChainInit.fired pins the target)
+- loop_real_interior: an everywhere-firing arm to the successor
+- loop_real_port: a feedback arm firing EXACTLY with b, to the head.
+
+These are precisely hdec/hfire/hstep_uniq/hnoeps shaped, pre-trim.
+Remaining: three-way b case split + toGAut/sumGAut transport + trim-level
+step lemmas + none~last identification + os/cover assembly + wrapper.
