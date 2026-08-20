@@ -396,4 +396,48 @@ theorem wh_emits_exit {b : BExp T} {e : Exp A T}
 
 #print axioms wh_emits_exit
 
+/-! ## Test-bodied loops collapse — the first unguarded-loop elimination -/
+
+/-- **All pure-test loop bodies collapse**: `wh b (c?) ≡ (¬b)?`, for EVERY `c` —
+    including the divergent `wh 1 (1?) ≡ 0?` at `b = 1`.  `w2` first identifies
+    all test bodies with each other (`c? ≡ ite c 1? 1? / c?·1?` both ways), and
+    `w3_ba` then eliminates the `0?`-bodied loop, whose body is vacuously
+    productive.  No UA. -/
+theorem wh_test_collapse (b c : BExp T) :
+    EquivBA (.wh b (.test c) : Exp A T) (.test (.not b)) := by
+  -- wh b (c?) ≡ wh b (1?)
+  have h1 : EquivBA (.wh b (.test c) : Exp A T) (.wh b (.test .one)) := by
+    refine EquivBA.trans (EquivBA.wh_c (EquivBA.symm
+      (EquivBA.base (Equiv.s5 (.test c))))) ?_
+    refine EquivBA.trans (EquivBA.symm
+      (EquivBA.base (Equiv.w2 b c (.test .one)))) ?_
+    exact EquivBA.wh_c (EquivBA.base (Equiv.u1 c (.test .one)))
+  -- wh b (1?) ≡ wh b (0?)
+  have h2 : EquivBA (.wh b (.test .one) : Exp A T) (.wh b (.test .zero)) := by
+    refine EquivBA.trans (EquivBA.wh_c (EquivBA.symm
+      (EquivBA.base (Equiv.u1 .zero (.test .one))))) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.w2 b .zero (.test .one))) ?_
+    exact EquivBA.wh_c (EquivBA.base (Equiv.s5 (.test .zero)))
+  -- (¬b)? solves the 0?-bodied equation …
+  have h3 : EquivBA (.test (.not b) : Exp A T)
+      (.ite b (.seq (.test .zero) (.test (.not b))) (.test .one)) := by
+    refine EquivBA.symm ?_
+    refine EquivBA.trans (EquivBA.ite_c
+      (EquivBA.base (Equiv.s2 (.test (.not b))))
+      (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.u2 b (.test .zero) (.test .one))) ?_
+    refine EquivBA.trans (EquivBA.symm
+      (test_seq_as_ite (.not b) (.test .one))) ?_
+    exact EquivBA.base (Equiv.s5 (.test (.not b)))
+  -- … so w3_ba folds it: (¬b)? ≡ (wh b 0?)·1?
+  have h4 : EquivBA (.test (.not b) : Exp A T)
+      (.seq (.wh b (.test .zero)) (.test .one)) :=
+    EquivBA.w3_ba (EquivBA.base (Equiv.refl _)) h3
+  refine EquivBA.trans h1 (EquivBA.trans h2 ?_)
+  refine EquivBA.trans (EquivBA.symm
+    (EquivBA.base (Equiv.s5 (.wh b (.test .zero))))) ?_
+  exact EquivBA.symm h4
+
+#print axioms wh_test_collapse
+
 end GkatNormalization

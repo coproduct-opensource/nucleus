@@ -35,6 +35,10 @@
               (outG wh = 1 via s5; prune keeps bodies), LoopFree dropped
             * wh_emits_exit: PRODUCTIVE loops provably emit their exit guard ¬b
               (w1 + else_guard_test + w3_ba) — axiom-free, no UA
+            * wh_test_collapse: ALL pure-test loop bodies collapse,
+              wh b (c?) ≡ (¬b)? — includes the divergent wh 1 (1?) ≡ 0?, the
+              first unguarded-loop elimination (w2 identifies test bodies,
+              w3_ba kills the 0?-bodied loop) — axiom-free, no UA
             * NEXT: tight loop stratum (body descent needs wh b e ≡ wh b (b?·e),
               which needs productivity, which needs the w2 guardedness
               normalization — that unlocks wh 1 e ≡ 0 too), then Thompson
