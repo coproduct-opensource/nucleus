@@ -446,4 +446,170 @@ theorem twoLoop_hnontriv (b c : BExp T) (q r : A)
 #print axioms twoLoop_lang_ne
 #print axioms twoLoop_hnontriv
 
+/-! ## Quotient period, descent-freeness, membership, and the init–port
+    identification -/
+
+open Classical in
+/-- The rank on the composite: 1 at the two init pseudostates, 0 at all
+    core states. -/
+def twoRank {S₂ : Type} :
+    Sum (Option (Sum Unit Unit)) (Option S₂) → Nat :=
+  Sum.elim (fun o => if o.isSome then 0 else 1)
+    (fun o => if o.isSome then 0 else 1)
+
+open Classical in
+/-- Core-class minimal ranks vanish. -/
+theorem twoLoop_minRank_zero (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (x : Sum Unit Unit) :
+    minRank (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (twoRank (S₂ := S₂))
+        (bisimRep (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some x))) = 0 := by
+  have h1 : autLang (genW T)
+      (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+      (Sum.inl (some x))
+      = autLang (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (bisimRep (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some x))) :=
+    (rep_lang (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (Sum.inl (some x))).symm
+  have h2 := minRank_le
+    (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+    (twoRank (S₂ := S₂)) h1
+  have h3 : twoRank (S₂ := S₂) (Sum.inl (some x)) = 0 := rfl
+  omega
+
+open Classical in
+/-- **DESCENT-FREENESS IS FREE**: no cleaned arm descends below rank
+    zero. -/
+theorem twoLoop_hnodesc (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) (x : Sum Unit Unit) :
+    ∀ e ∈ (cleanAut (bisimQuotAut
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂)))).trans
+        (bisimRep (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some x))),
+      ¬ minRank (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (twoRank (S₂ := S₂)) e.2.2
+        < minRank (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+            (twoRank (S₂ := S₂))
+            (bisimRep (trimAut
+              (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+              (Sum.inl (some x))) := by
+  intro e _ hcontra
+  rw [twoLoop_minRank_zero] at hcontra
+  exact Nat.not_lt_zero _ hcontra
+
+open Classical in
+/-- Core classes are quotient states. -/
+theorem twoLoop_hstates (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) (x : Sum Unit Unit) :
+    bisimRep (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some x))
+      ∈ (bisimQuotAut
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))).states := by
+  refine List.mem_map.mpr ⟨Sum.inl (some x), ?_, rfl⟩
+  refine List.mem_append.mpr (Or.inl (List.mem_map.mpr
+    ⟨some x, ?_, rfl⟩))
+  refine List.mem_cons.mpr (Or.inr (List.mem_map.mpr ⟨x, ?_, rfl⟩))
+  show x ∈ (certifiedThompson A T (twoLoopBody c q r)).aut.core.states
+  cases x with
+  | inl u =>
+      cases u
+      exact List.mem_cons_self ..
+  | inr u =>
+      cases u
+      exact List.mem_cons_of_mem _ (List.mem_cons_self ..)
+
+open Classical in
+/-- **QUOTIENT PERIOD TWO**: the two ε-separated classes make a genuine
+    2-cycle. -/
+theorem twoLoop_qperiod2 (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T) (g₂ : S₂ → S₂)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    2 ≤ qPeriod (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+        (twoNxtL (S₂ := S₂) g₂)
+        (Sum.inl (some (Sum.inr ()))) 2 := by
+  obtain ⟨h1, h2, h3, h4⟩ := qPeriod_spec
+    (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+    (twoNxtL (S₂ := S₂) g₂)
+    (Sum.inl (some (Sum.inr ()))) 2 (by omega)
+    (twoLoop_hper (S₂ := S₂) g₂)
+  generalize hqgen : qPeriod (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (twoNxtL (S₂ := S₂) g₂)
+      (Sum.inl (some (Sum.inr ()))) 2 = qp at h1 h2 h3 h4 ⊢
+  rcases Nat.lt_or_ge qp 2 with hlt | hge
+  · exfalso
+    have hqp1 : qp = 1 := by omega
+    rw [hqp1] at h1
+    have hn : nxtIter (twoNxtL (S₂ := S₂) g₂) 1
+        (Sum.inl (some (Sum.inr ())))
+        = Sum.inl (some (Sum.inl ())) := by
+      show twoNxtL (S₂ := S₂) g₂ (Sum.inl (some (Sum.inr ()))) = _
+      rfl
+    rw [hn] at h1
+    have hL : autLang (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ())))
+        = autLang (genW T)
+          (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+          (Sum.inl (some (Sum.inr ()))) := by
+      rw [← rep_lang (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+        (Sum.inl (some (Sum.inl ()))), h1,
+        rep_lang (sumGAut (twoLoopAut b c q r).toGAut aut₂)]
+    exact twoLoop_lang_ne b c q r aut₂ hexitB hL
+  · exact hge
+
+open Classical in
+/-- Init step at a `b ∧ c`-atom: enter the inner loop. -/
+theorem twoLoop_step_init_feed (b c : BExp T) (q r : A)
+    (α : T → Bool) (hb : bval (genW T) b α = true)
+    (hc : bval (genW T) c α = true) :
+    firstMatch (genW T) α ((twoLoopAut b c q r).initTrans)
+      = some (q, Sum.inl ()) := by
+  show (if (bval (genW T) b α
+      && (bval (genW T) c α && true)) = true
+    then some (q, Sum.inl ())
+    else _) = some (q, Sum.inl ())
+  rw [hb, hc]
+  rfl
+
+open Classical in
+/-- Init step at a `b ∧ ¬c`-atom: skip straight to the port. -/
+theorem twoLoop_step_init_skip (b c : BExp T) (q r : A)
+    (α : T → Bool) (hb : bval (genW T) b α = true)
+    (hc : bval (genW T) c α = false) :
+    firstMatch (genW T) α ((twoLoopAut b c q r).initTrans)
+      = some (r, Sum.inr ()) := by
+  show (if (bval (genW T) b α
+      && (bval (genW T) c α && true)) = true
+    then some (q, Sum.inl ())
+    else if (bval (genW T) b α
+        && (!(bval (genW T) c α) && true)) = true
+      then some (r, Sum.inr ())
+      else _) = some (r, Sum.inr ())
+  rw [hb, hc]
+  rfl
+
+open Classical in
+/-- Init rest at a `¬b`-atom. -/
+theorem twoLoop_step_init_none (b c : BExp T) (q r : A)
+    (α : T → Bool) (hb : bval (genW T) b α = false) :
+    firstMatch (genW T) α ((twoLoopAut b c q r).initTrans)
+      = none := by
+  show (if (bval (genW T) b α
+      && (bval (genW T) c α && true)) = true
+    then some (q, Sum.inl ())
+    else if (bval (genW T) b α
+        && (!(bval (genW T) c α) && true)) = true
+      then some (r, Sum.inr ())
+      else none) = none
+  rw [hb]
+  cases bval (genW T) c α <;> rfl
+
+#print axioms twoLoop_hnodesc
+#print axioms twoLoop_hstates
+#print axioms twoLoop_qperiod2
+
 end GkatTwoLoop

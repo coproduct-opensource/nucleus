@@ -1434,3 +1434,18 @@ Remaining for twoloops_complete: qPeriod ≥ 2 (mirror of the chain
 argument over lang_ne), hnodesc via minRank 0, hstates, hfire (needs
 sat(b∧c) + the inr-side mirrors of liveness/steps), init~port, cover,
 walked-hos assembly, wrapper.
+
+## TWO-LOOP PERIOD, DESCENT, MEMBERSHIP, INIT (iteration 51)
+
+- twoRank (init 1, core 0) + twoLoop_minRank_zero + twoLoop_hnodesc:
+  descent-freeness is FREE — nothing descends below rank zero
+- twoLoop_hstates: concrete quotient membership for both core states
+- twoLoop_qperiod2: the ε-separated classes make a genuine 2-cycle
+  (period-1 collapse refuted by twoLoop_lang_ne through the rep-lang
+  sandwich)
+- twoLoop_step_init_feed/skip/none: the three init-state step facts
+  (enter inner at b∧c, SKIP TO PORT at b∧¬c, rest at ¬b) — the init
+  behaves exactly as the port does, setting up init~port.
+
+Remaining: inr-side mirrors + hfire + init~port via lang_eq_of_step_hlt
++ cover + walked-hos assembly + wrapper => TWOLOOPS_COMPLETE.
