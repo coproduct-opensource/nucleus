@@ -1098,4 +1098,269 @@ theorem twoLoop_noeps_inl_r (b c : BExp T) (q r : A)
 #print axioms twoLoop_qperiod2_r
 #print axioms twoLoop_hnodesc_r
 
+/-! ## THE FIFTH THEOREM
+
+    The sum of two two-loop programs has a solvable canonical quotient,
+    and uniformly equivalent two-loop programs are provably equal from
+    the finite axioms — the first completeness theorem for genuinely
+    nested cycles, no uniqueness axiom. -/
+
+open Classical in
+/-- Iterates of the port orbit normalize by parity (left). -/
+private theorem twoLoop_iter_norm_l (j : Nat) :
+    nxtIter (twoNxtL (S₂ := Sum Unit Unit) twoNxt) j
+        (Sum.inl (some (Sum.inr ())))
+      = Sum.inl (some (if j % 2 = 0 then Sum.inr () else Sum.inl ())) := by
+  unfold twoNxtL
+  rw [nxtIter_lift_inl, twoNxt_iter]
+  rcases Nat.mod_two_eq_zero_or_one j with h | h
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg (by omega), if_neg (by omega)]
+    rfl
+
+open Classical in
+/-- Iterates of the port orbit normalize by parity (right). -/
+private theorem twoLoop_iter_norm_r (j : Nat) :
+    nxtIter (twoNxtR (S₁ := Sum Unit Unit) twoNxt) j
+        (Sum.inr (some (Sum.inr ())))
+      = Sum.inr (some (if j % 2 = 0 then Sum.inr () else Sum.inl ())) := by
+  unfold twoNxtR
+  rw [nxtIter_lift_inr, twoNxt_iter]
+  rcases Nat.mod_two_eq_zero_or_one j with h | h
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg (by omega), if_neg (by omega)]
+    rfl
+
+open Classical in
+private theorem twoLoop_iter_norm_r' (j : Nat) :
+    nxtIter (twoNxtL (S₂ := Sum Unit Unit) twoNxt) j
+        ((Sum.inr (some (Sum.inr ()))
+          : Sum (Option (Sum Unit Unit)) (Option (Sum Unit Unit))))
+      = Sum.inr (some (if j % 2 = 0 then Sum.inr ()
+          else Sum.inl ())) :=
+  twoLoop_iter_norm_r j
+
+open Classical in
+/-- **SUMS OF TWO-LOOP PROGRAMS ARE SOLVABLE.** -/
+theorem twoLoops_solvable (b₁ c₁ b₂ c₂ : BExp T) (q₁ r₁ q₂ r₂ : A)
+    (hexitC₁ : ∃ α : T → Bool, bval (genW T) c₁ α = false)
+    (hexitB₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hbc₁ : ∃ α : T → Bool,
+      bval (genW T) b₁ α = true ∧ bval (genW T) c₁ α = true)
+    (hexitC₂ : ∃ α : T → Bool, bval (genW T) c₂ α = false)
+    (hexitB₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbc₂ : ∃ α : T → Bool,
+      bval (genW T) b₂ α = true ∧ bval (genW T) c₂ α = true) :
+    ∃ qsol : Sum (Option (Sum Unit Unit)) (Option (Sum Unit Unit))
+        → Exp A T,
+      SolvesBA (bisimQuotAut (trimAut
+        (sumGAut (twoLoopAut b₁ c₁ q₁ r₁).toGAut
+          (twoLoopAut b₂ c₂ q₂ r₂).toGAut))) qsol := by
+  refine walked_rankNxt_quot_solvesBA
+    (sumGAut (twoLoopAut b₁ c₁ q₁ r₁).toGAut
+      (twoLoopAut b₂ c₂ q₂ r₂).toGAut)
+    (twoRank (S₂ := Sum Unit Unit))
+    (twoNxtL (S₂ := Sum Unit Unit) twoNxt)
+    ?_ ?_ ?_
+    [((Sum.inl (some (Sum.inr ()))
+        : Sum (Option (Sum Unit Unit)) (Option (Sum Unit Unit))), 2),
+      (Sum.inr (some (Sum.inr ())), 2)]
+    ?_ ?_
+  · -- WalkedDec
+    intro s e he _
+    cases s with
+    | inl o =>
+        obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+        cases o with
+        | none =>
+            obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+            refine Or.inr (Or.inr ?_)
+            rw [← heq₁, ← heq₀]
+            show twoRank (S₂ := Sum Unit Unit)
+              (Sum.inl (some t₀.2.2)) < twoRank (S₂ := Sum Unit Unit)
+                (Sum.inl none)
+            show (0 : Nat) < 1
+            omega
+        | some x =>
+            obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+            rw [← heq₁, ← heq₀]
+            rcases two_state_dec x t₀.2.2 with h | h
+            · exact Or.inl (by rw [h])
+            · refine Or.inr (Or.inl ?_)
+              show Sum.inl (some t₀.2.2)
+                = Sum.inl (some (twoNxt x))
+              rw [h]
+    | inr o =>
+        obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+        cases o with
+        | none =>
+            obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+            refine Or.inr (Or.inr ?_)
+            rw [← heq₁, ← heq₀]
+            show (0 : Nat) < 1
+            omega
+        | some x =>
+            obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+            rw [← heq₁, ← heq₀]
+            rcases two_state_dec x t₀.2.2 with h | h
+            · exact Or.inl (by rw [h])
+            · refine Or.inr (Or.inl ?_)
+              show Sum.inr (some t₀.2.2)
+                = Sum.inr (some (twoNxt x))
+              rw [h]
+  · -- rank preserved
+    intro s
+    cases s with
+    | inl o => cases o <;> rfl
+    | inr o => cases o <;> rfl
+  · -- hfire
+    intro s _ hne
+    cases s with
+    | inl o =>
+        cases o with
+        | none => exact absurd rfl hne
+        | some x =>
+            cases x with
+            | inl u =>
+                cases u
+                obtain ⟨αc, hαc⟩ := id hexitC₁
+                exact ⟨αc, r₁, twoLoop_trim_step_inl_adv b₁ c₁ q₁ r₁ _
+                  hexitC₁ hexitB₁ αc hαc⟩
+            | inr u =>
+                cases u
+                obtain ⟨α, hb, hc⟩ := id hbc₁
+                exact ⟨α, q₁, twoLoop_trim_step_inr_feed b₁ c₁ q₁ r₁ _
+                  hexitC₁ hexitB₁ α hb hc⟩
+    | inr o =>
+        cases o with
+        | none => exact absurd rfl hne
+        | some x =>
+            cases x with
+            | inl u =>
+                cases u
+                obtain ⟨αc, hαc⟩ := id hexitC₂
+                exact ⟨αc, r₂, twoLoop_trim_step_inl_adv_r b₂ c₂ q₂ r₂ _
+                  hexitC₂ hexitB₂ αc hαc⟩
+            | inr u =>
+                cases u
+                obtain ⟨α, hb, hc⟩ := id hbc₂
+                exact ⟨α, q₂, twoLoop_trim_step_inr_feed_r b₂ c₂ q₂ r₂ _
+                  hexitC₂ hexitB₂ α hb hc⟩
+  · -- hos
+    intro p hp
+    rcases List.mem_cons.mp hp with hp1 | hp'
+    · subst hp1
+      refine ⟨by omega, twoLoop_hper (S₂ := Sum Unit Unit) twoNxt,
+        live_trimAut (twoLoop_live_inr b₁ c₁ q₁ r₁ _ hexitB₁),
+        twoLoop_hnofix (S₂ := Sum Unit Unit) twoNxt,
+        fun w _ => Nat.zero_le _,
+        twoLoop_hnontriv b₁ c₁ q₁ r₁ _ twoNxt hexitB₁,
+        twoLoop_qperiod2 b₁ c₁ q₁ r₁ _ twoNxt hexitB₁,
+        ?_, ?_, ?_⟩
+      · intro j
+        rw [twoLoop_iter_norm_l]
+        rcases Nat.mod_two_eq_zero_or_one j with h | h
+        · rw [if_pos h]
+          exact twoLoop_hstates b₁ c₁ q₁ r₁ _ (Sum.inr ())
+        · rw [if_neg (by omega)]
+          exact twoLoop_hstates b₁ c₁ q₁ r₁ _ (Sum.inl ())
+      · intro j hj1 hjq
+        rw [twoLoop_iter_norm_l]
+        rcases Nat.mod_two_eq_zero_or_one j with h | h
+        · rw [if_pos h]
+          exact twoLoop_hnodesc b₁ c₁ q₁ r₁ _ (Sum.inr ())
+        · rw [if_neg (by omega)]
+          exact twoLoop_hnodesc b₁ c₁ q₁ r₁ _ (Sum.inl ())
+      · intro j hj1 hjq α
+        have hq2 := (qPeriod_spec
+          (sumGAut (twoLoopAut b₁ c₁ q₁ r₁).toGAut
+            (twoLoopAut b₂ c₂ q₂ r₂).toGAut)
+          (twoNxtL (S₂ := Sum Unit Unit) twoNxt)
+          (Sum.inl (some (Sum.inr ()))) 2 (by omega)
+          (twoLoop_hper (S₂ := Sum Unit Unit) twoNxt)).2.2.1
+        have hjlt : j < 2 := Nat.lt_of_lt_of_le hjq hq2
+        have hj2 : j = 1 := by omega
+        subst hj2
+        rw [show (1 : Nat) = 1 from rfl]
+        have hn := twoLoop_iter_norm_l 1
+        rw [hn]
+        rw [if_neg (by omega)]
+        exact twoLoop_noeps_inl b₁ c₁ q₁ r₁ _ α
+    · rcases List.mem_cons.mp hp' with hp2 | hnil
+      · subst hp2
+        refine ⟨by omega, twoLoop_hper_r (S₁ := Sum Unit Unit) twoNxt,
+          live_trimAut (twoLoop_live_all_r b₂ c₂ q₂ r₂ _ hexitC₂
+            hexitB₂ (Sum.inr ())),
+          twoLoop_hnofix_r (S₁ := Sum Unit Unit) twoNxt,
+          fun w _ => Nat.zero_le _,
+          twoLoop_hnontriv_r b₂ c₂ q₂ r₂ _ twoNxt hexitB₂,
+          twoLoop_qperiod2_r b₂ c₂ q₂ r₂ _ twoNxt hexitB₂,
+          ?_, ?_, ?_⟩
+        · intro j
+          rw [twoLoop_iter_norm_r' j]
+          rcases Nat.mod_two_eq_zero_or_one j with h | h
+          · rw [if_pos h]
+            exact twoLoop_hstates_r b₂ c₂ q₂ r₂ _ (Sum.inr ())
+          · rw [if_neg (by omega)]
+            exact twoLoop_hstates_r b₂ c₂ q₂ r₂ _ (Sum.inl ())
+        · intro j hj1 hjq
+          rw [twoLoop_iter_norm_r' j]
+          rcases Nat.mod_two_eq_zero_or_one j with h | h
+          · rw [if_pos h]
+            exact twoLoop_hnodesc_r b₂ c₂ q₂ r₂ _ (Sum.inr ())
+          · rw [if_neg (by omega)]
+            exact twoLoop_hnodesc_r b₂ c₂ q₂ r₂ _ (Sum.inl ())
+        · intro j hj1 hjq α
+          have hq2 := (qPeriod_spec
+            (sumGAut (twoLoopAut b₁ c₁ q₁ r₁).toGAut
+              (twoLoopAut b₂ c₂ q₂ r₂).toGAut)
+            (twoNxtL (S₂ := Sum Unit Unit) twoNxt)
+            (Sum.inr (some (Sum.inr ()))) 2 (by omega)
+            (twoLoop_hper_r (S₁ := Sum Unit Unit) twoNxt)).2.2.1
+          have hjlt : j < 2 := Nat.lt_of_lt_of_le hjq hq2
+          have hj2 : j = 1 := by omega
+          subst hj2
+          rw [twoLoop_iter_norm_r' 1]
+          rw [if_neg (by omega)]
+          exact twoLoop_noeps_inl_r b₂ c₂ q₂ r₂ _ α
+      · exact nomatch hnil
+  · -- cover
+    intro cc hcc
+    obtain ⟨x, hx, hrep⟩ := List.mem_map.mp hcc
+    rcases List.mem_append.mp hx with hL | hR
+    · obtain ⟨o, ho, hoeq⟩ := List.mem_map.mp hL
+      refine Or.inr ⟨_, List.mem_cons_self .., ?_⟩
+      rw [← hrep, ← hoeq]
+      exact twoLoop_cover_inl b₁ c₁ q₁ r₁ _ twoNxt hexitC₁ hexitB₁ o
+    · obtain ⟨o, ho, hoeq⟩ := List.mem_map.mp hR
+      refine Or.inr ⟨_, List.mem_cons.mpr
+        (Or.inr (List.mem_cons_self ..)), ?_⟩
+      rw [← hrep, ← hoeq]
+      exact twoLoop_cover_inr b₂ c₂ q₂ r₂ _ twoNxt hexitC₂ hexitB₂ o
+
+open Classical in
+/-- **THE FIFTH UNCONDITIONAL COMPLETENESS THEOREM**: uniformly
+    equivalent two-loop programs — genuinely NESTED cycles — are
+    provably equal from the finite GKAT axioms alone.  No uniqueness
+    axiom. -/
+theorem twoloops_complete (b₁ c₁ b₂ c₂ : BExp T) (q₁ r₁ q₂ r₂ : A)
+    (hexitC₁ : ∃ α : T → Bool, bval (genW T) c₁ α = false)
+    (hexitB₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hbc₁ : ∃ α : T → Bool,
+      bval (genW T) b₁ α = true ∧ bval (genW T) c₁ α = true)
+    (hexitC₂ : ∃ α : T → Bool, bval (genW T) c₂ α = false)
+    (hexitB₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbc₂ : ∃ α : T → Bool,
+      bval (genW T) b₂ α = true ∧ bval (genW T) c₂ α = true)
+    (heq : UniformLanguageEquivalent
+      (twoLoop b₁ c₁ q₁ r₁) (twoLoop b₂ c₂ q₂ r₂)) :
+    EquivBA (twoLoop b₁ c₁ q₁ r₁) (twoLoop b₂ c₂ q₂ r₂) := by
+  obtain ⟨qsol, hq⟩ := twoLoops_solvable b₁ c₁ b₂ c₂ q₁ r₁ q₂ r₂
+    hexitC₁ hexitB₁ hbc₁ hexitC₂ hexitB₂ hbc₂
+  exact equivBA_of_quot_solvesBA
+    (twoLoop b₁ c₁ q₁ r₁) (twoLoop b₂ c₂ q₂ r₂) heq hq
+
+#print axioms twoLoops_solvable
+#print axioms twoloops_complete
+
 end GkatTwoLoop

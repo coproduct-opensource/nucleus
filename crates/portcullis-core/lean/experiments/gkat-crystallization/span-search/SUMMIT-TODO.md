@@ -1485,3 +1485,35 @@ EVERY component of both hos tuples now exists. NEXT FIRING: the
 assembly (twoLoops_solvable via walked_rankNxt_quot_solvesBA — note
 twoNxtL twoNxt = twoNxtR twoNxt definitionally, so one nxt serves both
 sides) + the wrapper = TWOLOOPS_COMPLETE.
+
+## ============================================================
+## THE FIFTH UNCONDITIONAL COMPLETENESS THEOREM (iteration 55)
+## ============================================================
+
+twoloops_complete: UNIFORMLY EQUIVALENT TWO-LOOP PROGRAMS — GENUINELY
+NESTED CYCLES — ARE PROVABLY EQUAL FROM THE FINITE GKAT AXIOMS ALONE.
+No uniqueness axiom. [propext, Classical.choice, Quot.sound], no
+sorries.
+
+  theorem twoloops_complete :
+    (guard nondegeneracies: sat(¬c), sat(¬b), sat(b∧c) each side) ->
+    ULE (wh b1 ((wh c1 q1); r1)) (wh b2 ((wh c2 q2); r2)) ->
+    EquivBA (wh b1 ((wh c1 q1); r1)) (wh b2 ((wh c2 q2); r2))
+
+This is the FIRST completeness result for programs whose Thompson
+automata have genuinely interlocking cycles — the shape the literature
+flagged as "unlikely" reachable via well-nested methods (non-closure
+under homomorphisms), reached here precisely BECAUSE the invariants are
+semantic and quotient-stable. The walked orbit layer (24 theorems, zero
+redesigns) carried it.
+
+THE LADDER: loopfree -> atomicloops -> gloops -> chainloops(free) ->
+TWOLOOPS. Five unconditional strata, zero uses of UA.
+
+Assembly lessons: obtain CONSUMES hypotheses (use id-copies);
+twoNxtL twoNxt = twoNxtR twoNxt needs a defeq bridge lemma for rw;
+pair-projection beta-noise from subst blocks rewrites.
+
+NEXT per user queue: the OPEN PROBLEM campaign (branching-successor
+discipline for skippable inner loops — the located obstacle), then
+STEELMAN HARDENING.
