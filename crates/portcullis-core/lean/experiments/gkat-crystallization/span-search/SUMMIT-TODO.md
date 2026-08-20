@@ -1305,3 +1305,18 @@ glue (walked rankNxt via orbCy — the orbCy architecture is nxt-generic),
 then the NESTED FRAGMENT (spines with inner self-loops: WalkedDec by
 construction, hnontriv by shortest-exit stratification) and
 nestedloops_complete.
+
+## THE WALKED CY-BUNDLE COMPONENTS (iteration 45)
+
+- walked_orbit_rank_eq / walked_orbit_arms_pinned_nxtAt /
+  walked_orbit_port_descent: rank equality, self-or-next pinning through
+  the qPeriod wrap, and port descent under WalkedDec. All first pass.
+  The halt layer (orbit_halt_empty, cy_halt_conditions_of_empty,
+  hint_nil_of_pinned, qm_wrap) reuses verbatim — discipline-free.
+
+Remaining: walked orbit_cy_bundle packaging + walked qorb_qmod/qpos/
+inOrbit_track mirrors + walked glue (orbCy is nxt-generic), then the
+NESTED FRAGMENT: spines-with-inner-self-loops (WalkedDec by
+construction; hnontriv by shortest-exit stratification; the walked
+interior-no-descent via per-atom self-or-next stepping) and
+nestedloops_complete — the fifth theorem.

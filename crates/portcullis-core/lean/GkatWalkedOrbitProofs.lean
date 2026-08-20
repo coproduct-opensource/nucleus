@@ -686,4 +686,122 @@ theorem walked_orbit_dichotomy (aut : GAut S A T) (rank : S → Nat)
 #print axioms walked_quot_cycle_dichotomy
 #print axioms walked_orbit_dichotomy
 
+/-! ## The walked cy-bundle
+
+    Rank equality, arm pinning, and port descent under the three-way
+    discipline; the halt-condition layer (`orbit_halt_empty`,
+    `cy_halt_conditions_of_empty`, `hint_nil_of_pinned`) is
+    discipline-free and reused verbatim. -/
+
+open Classical in
+theorem walked_orbit_rank_eq (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w) :
+    ∀ j i : Nat,
+      minRank (trimAut aut) rank
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+        = minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt i u₀)) := by
+  intro j i
+  rw [walked_cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper
+        hlive hnofix hmin j,
+      walked_cycle_level_all aut rank nxt hdec hnxt_rank hfire hk hper
+        hlive hnofix hmin i]
+
+open Classical in
+theorem walked_orbit_arms_pinned_nxtAt (aut : GAut S A T)
+    (rank : S → Nat) (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    (j : Nat)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states)
+    (hNoDesc : ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      ¬ minRank (trimAut aut) rank e.2.2
+          < minRank (trimAut aut) rank
+              (bisimRep (trimAut aut) (nxtIter nxt j u₀))) :
+    ∀ e ∈ (cleanAut (bisimQuotAut (trimAut aut))).trans
+        (bisimRep (trimAut aut) (nxtIter nxt j u₀)),
+      e.2.2 = bisimRep (trimAut aut) (nxtIter nxt j u₀)
+      ∨ e.2.2 = nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) j := by
+  intro e he
+  rcases walked_orbit_dichotomy aut rank nxt hdec hnxt_rank hfire hk
+    hper hlive hnofix hmin hnontriv j hc e he with h | h | h
+  · exact Or.inl h
+  · exact absurd h (hNoDesc e he)
+  · refine Or.inr ?_
+    unfold nxtAt
+    rcases Classical.em (j + 1 = qPeriod aut nxt u₀ k) with hlen | hlen
+    · rw [if_pos hlen]
+      show e.2.2 = bisimRep (trimAut aut) (nxtIter nxt 0 u₀)
+      rw [h, hlen]
+      exact qm_wrap aut nxt u₀ k hk hper
+    · rw [if_neg hlen]
+      exact h
+
+open Classical in
+theorem walked_orbit_port_descent (aut : GAut S A T) (rank : S → Nat)
+    (nxt : S → S) (hdec : WalkedDec aut rank nxt)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (hnontriv : ∀ j : Nat,
+      autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀)
+        ≠ autLang (genW T) (trimAut aut) (nxtIter nxt j u₀))
+    (hlen2 : 2 ≤ qPeriod aut nxt u₀ k)
+    (hc : bisimRep (trimAut aut) (nxtIter nxt 0 u₀)
+      ∈ (bisimQuotAut (trimAut aut)).states) :
+    ∀ e ∈ gOthers
+        (nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+          (qPeriod aut nxt u₀ k) 0)
+        (restL (cleanAut (bisimQuotAut (trimAut aut)))
+          (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀)) 0),
+      minRank (trimAut aut) rank e.2.2
+        < minRank (trimAut aut) rank
+            (bisimRep (trimAut aut) (nxtIter nxt 0 u₀)) := by
+  intro e he
+  obtain ⟨heL1, hne1⟩ := gOthers_sub _ _ e he
+  obtain ⟨heL2, hne2⟩ := gOthers_sub _ _ e heL1
+  rcases walked_orbit_dichotomy aut rank nxt hdec hnxt_rank hfire hk
+    hper hlive hnofix hmin hnontriv 0 hc e heL2 with h | h | h
+  · exact absurd h hne2
+  · exact h
+  · exfalso
+    apply hne1
+    show e.2.2 = nxtAt (fun i => bisimRep (trimAut aut) (nxtIter nxt i u₀))
+      (qPeriod aut nxt u₀ k) 0
+    unfold nxtAt
+    rw [if_neg (by omega : ¬ (0 + 1 = qPeriod aut nxt u₀ k))]
+    exact h
+
+#print axioms walked_orbit_rank_eq
+#print axioms walked_orbit_arms_pinned_nxtAt
+#print axioms walked_orbit_port_descent
+
 end GkatWalkedOrbit
