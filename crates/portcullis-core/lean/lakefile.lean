@@ -792,6 +792,246 @@ lean_lib «GkatCertR4» where
 lean_lib «GkatCertR6» where
   roots := #[`GkatCertR6]
 
+lean_lib «GkatK6R01» where
+  roots := #[`GkatK6R01]
+
+lean_lib «GkatK6R02» where
+  roots := #[`GkatK6R02]
+
+lean_lib «GkatK6R03» where
+  roots := #[`GkatK6R03]
+
+lean_lib «GkatK6R04» where
+  roots := #[`GkatK6R04]
+
+lean_lib «GkatK6R05» where
+  roots := #[`GkatK6R05]
+
+lean_lib «GkatK6R06» where
+  roots := #[`GkatK6R06]
+
+lean_lib «GkatK6R07» where
+  roots := #[`GkatK6R07]
+
+lean_lib «GkatK6R08» where
+  roots := #[`GkatK6R08]
+
+lean_lib «GkatK6R09» where
+  roots := #[`GkatK6R09]
+
+lean_lib «GkatK6R10» where
+  roots := #[`GkatK6R10]
+
+lean_lib «GkatK6R11» where
+  roots := #[`GkatK6R11]
+
+lean_lib «GkatK6R12» where
+  roots := #[`GkatK6R12]
+
+lean_lib «GkatK6R13» where
+  roots := #[`GkatK6R13]
+
+lean_lib «GkatK6R14» where
+  roots := #[`GkatK6R14]
+
+lean_lib «GkatK6R15» where
+  roots := #[`GkatK6R15]
+
+lean_lib «GkatK6R16» where
+  roots := #[`GkatK6R16]
+
+lean_lib «GkatK6R17» where
+  roots := #[`GkatK6R17]
+
+lean_lib «GkatK6R18» where
+  roots := #[`GkatK6R18]
+
+lean_lib «GkatK6R19» where
+  roots := #[`GkatK6R19]
+
+lean_lib «GkatK6R20» where
+  roots := #[`GkatK6R20]
+
+lean_lib «GkatK6R21» where
+  roots := #[`GkatK6R21]
+
+lean_lib «GkatK6R22» where
+  roots := #[`GkatK6R22]
+
+lean_lib «GkatK6R23» where
+  roots := #[`GkatK6R23]
+
+lean_lib «GkatK6R24» where
+  roots := #[`GkatK6R24]
+
+lean_lib «GkatK6R25» where
+  roots := #[`GkatK6R25]
+
+lean_lib «GkatK6R26» where
+  roots := #[`GkatK6R26]
+
+lean_lib «GkatK6R27» where
+  roots := #[`GkatK6R27]
+
+lean_lib «GkatK6R28» where
+  roots := #[`GkatK6R28]
+
+lean_lib «GkatK6R29» where
+  roots := #[`GkatK6R29]
+
+lean_lib «GkatK6R30» where
+  roots := #[`GkatK6R30]
+
+lean_lib «GkatK6R31» where
+  roots := #[`GkatK6R31]
+
+lean_lib «GkatK6R32» where
+  roots := #[`GkatK6R32]
+
+lean_lib «GkatK6R33» where
+  roots := #[`GkatK6R33]
+
+lean_lib «GkatK6R34» where
+  roots := #[`GkatK6R34]
+
+lean_lib «GkatK6R35» where
+  roots := #[`GkatK6R35]
+
+lean_lib «GkatK6R36» where
+  roots := #[`GkatK6R36]
+
+lean_lib «GkatK6R37» where
+  roots := #[`GkatK6R37]
+
+lean_lib «GkatK6R38» where
+  roots := #[`GkatK6R38]
+
+lean_lib «GkatK6R39» where
+  roots := #[`GkatK6R39]
+
+lean_lib «GkatK6R40» where
+  roots := #[`GkatK6R40]
+
+lean_lib «GkatK6R41» where
+  roots := #[`GkatK6R41]
+
+lean_lib «GkatK6R42» where
+  roots := #[`GkatK6R42]
+
+lean_lib «GkatK6R43» where
+  roots := #[`GkatK6R43]
+
+lean_lib «GkatK6R44» where
+  roots := #[`GkatK6R44]
+
+lean_lib «GkatK6R45» where
+  roots := #[`GkatK6R45]
+
+lean_lib «GkatK6R46» where
+  roots := #[`GkatK6R46]
+
+lean_lib «GkatK6R47» where
+  roots := #[`GkatK6R47]
+
+lean_lib «GkatK6R48» where
+  roots := #[`GkatK6R48]
+
+lean_lib «GkatK6R49» where
+  roots := #[`GkatK6R49]
+
+lean_lib «GkatK6R50» where
+  roots := #[`GkatK6R50]
+
+lean_lib «GkatK6R51» where
+  roots := #[`GkatK6R51]
+
+lean_lib «GkatK6R52» where
+  roots := #[`GkatK6R52]
+
+lean_lib «GkatK6R53» where
+  roots := #[`GkatK6R53]
+
+lean_lib «GkatK6R54» where
+  roots := #[`GkatK6R54]
+
+lean_lib «GkatK6R55» where
+  roots := #[`GkatK6R55]
+
+lean_lib «GkatK6R56» where
+  roots := #[`GkatK6R56]
+
+lean_lib «GkatK6R57» where
+  roots := #[`GkatK6R57]
+
+lean_lib «GkatK6R58» where
+  roots := #[`GkatK6R58]
+
+lean_lib «GkatK6R59» where
+  roots := #[`GkatK6R59]
+
+lean_lib «GkatK6R60» where
+  roots := #[`GkatK6R60]
+
+lean_lib «GkatK6R61» where
+  roots := #[`GkatK6R61]
+
+lean_lib «GkatK6R62» where
+  roots := #[`GkatK6R62]
+
+lean_lib «GkatK6R63» where
+  roots := #[`GkatK6R63]
+
+lean_lib «GkatK6R64» where
+  roots := #[`GkatK6R64]
+
+lean_lib «GkatK6R65» where
+  roots := #[`GkatK6R65]
+
+lean_lib «GkatK6R66» where
+  roots := #[`GkatK6R66]
+
+lean_lib «GkatK6R67» where
+  roots := #[`GkatK6R67]
+
+lean_lib «GkatK6R68» where
+  roots := #[`GkatK6R68]
+
+lean_lib «GkatK6R69» where
+  roots := #[`GkatK6R69]
+
+lean_lib «GkatK6R70» where
+  roots := #[`GkatK6R70]
+
+lean_lib «GkatK6R71» where
+  roots := #[`GkatK6R71]
+
+lean_lib «GkatK6R72» where
+  roots := #[`GkatK6R72]
+
+lean_lib «GkatK6R73» where
+  roots := #[`GkatK6R73]
+
+lean_lib «GkatK6R74» where
+  roots := #[`GkatK6R74]
+
+lean_lib «GkatK6R75» where
+  roots := #[`GkatK6R75]
+
+lean_lib «GkatK6R76» where
+  roots := #[`GkatK6R76]
+
+lean_lib «GkatK6R77» where
+  roots := #[`GkatK6R77]
+
+lean_lib «GkatK6R78» where
+  roots := #[`GkatK6R78]
+
+lean_lib «GkatK6R79» where
+  roots := #[`GkatK6R79]
+
+lean_lib «GkatK6R80» where
+  roots := #[`GkatK6R80]
+
 -- Normal form: non-vacuity, and which constructor destroys which half.
 lean_lib «GkatNormalProofs» where
   roots := #[`GkatNormalProofs]
