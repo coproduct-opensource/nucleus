@@ -684,3 +684,25 @@ errors:
 These are precisely hdec/hfire/hstep_uniq/hnoeps shaped, pre-trim.
 Remaining: three-way b case split + toGAut/sumGAut transport + trim-level
 step lemmas + none~last identification + os/cover assembly + wrapper.
+
+## THE SUM-LEVEL DICHOTOMY (loop iteration 20b, "Continue")
+
+- chain_exhaustive: every value of a chain state type is on the spine
+  (Unit/Sum structural induction)
+- loop_arms_all: CONSOLIDATED loop dichotomy — every fired arm of
+  loopInitialized follows spineNext (position case split via
+  getElem_of_mem: interior -> spineNext_at, port -> spineNext_last)
+- toGAut_chain_arms: the init state's fired arms enter the head (double
+  map unwrap + ChainInit.fired); core states follow spineNext
+- sum_chain_hdec: THE Σ-LEVEL FIRED DICHOTOMY — for the sum of two chain
+  loops with rank (init=1, core=0), every fired arm follows the Sum-lifted
+  Option.map spine successor or strictly descends. This IS the weakened
+  hdec hypothesis of rankNxt_quot_solvesBA, discharged for the actual
+  SUMof-shaped automaton.
+- sum_chain_nxt_rank: the lifted successor preserves the 0/1 rank (hnxt_rank).
+ALL FIRST PASS, zero errors.
+
+hdec + hnxt_rank for the composite are now DONE. Remaining: trim-level
+hfire/hstep_uniq/hnoeps transport (autStep_sumGAut_inl/inr + a toGAut
+autStep lemma + trim step preservation), liveness facts, none~last
+identification, os/cover assembly, wrapper.

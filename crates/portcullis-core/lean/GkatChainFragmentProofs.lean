@@ -715,4 +715,158 @@ theorem loop_real_port {S' : Type} {B : InitializedGAut S' A T}
 #print axioms loop_arms_port
 #print axioms loop_real_port
 
+/-! ## Consolidation and the Sum-level dichotomy
+
+    Every value of a chain's state type is on the spine, so the positional
+    arm facts consolidate into a single `spineNext` dichotomy, which lifts
+    through `toGAut` (init state descends into the head) and `sumGAut`
+    (tags ride along) to the fired-arm hypothesis of the orbit glue. -/
+
+open Classical in
+/-- Every value of a chain's state type lies on the state list. -/
+theorem chain_exhaustive {body : Exp A T} (h : Chain body) :
+    ∀ x : (certifiedThompson A T body).State,
+      x ∈ (certifiedThompson A T body).aut.core.states := by
+  induction h with
+  | act p =>
+      intro x
+      show x ∈ [()]
+      cases x
+      exact List.mem_cons_self ..
+  | @seq e f he hf ihe ihf =>
+      intro x
+      show x ∈ (certifiedThompson A T e).aut.core.states.map Sum.inl
+        ++ (certifiedThompson A T f).aut.core.states.map Sum.inr
+      cases x with
+      | inl a =>
+          exact List.mem_append.mpr
+            (Or.inl (List.mem_map.mpr ⟨a, ihe a, rfl⟩))
+      | inr a =>
+          exact List.mem_append.mpr
+            (Or.inr (List.mem_map.mpr ⟨a, ihf a, rfl⟩))
+
+open Classical in
+/-- **CONSOLIDATED LOOP DICHOTOMY**: every fired arm of the loop automaton
+    follows `spineNext`. -/
+theorem loop_arms_all {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hin : ChainInit B first) (hexh : ∀ x : S', x ∈ l) :
+    ∀ s : S', ∀ t ∈ (loopInitialized b B).core.trans s,
+      ∀ α : T → Bool, bval (genW T) t.1 α = true →
+        t.2.2 = spineNext first l s := by
+  intro s t ht α hb
+  obtain ⟨j, hj, hjs⟩ := List.getElem_of_mem (hexh s)
+  rcases Nat.lt_or_ge (j + 1) l.length with hint | hport
+  · rw [← hjs] at ht ⊢
+    rw [spineNext_at first l hsp j hint]
+    exact loop_arms_interior b hsp j hint t ht α hb
+  · have hj' : j = l.length - 1 := by omega
+    subst hj'
+    rw [← hjs] at ht ⊢
+    rw [spineNext_last first l hsp (by omega)]
+    exact loop_arms_port b hsp hin (by omega) t ht α hb
+
+open Classical in
+/-- Fired arms of the initialized loop automaton: the init state enters the
+    head; core states follow `spineNext`. -/
+theorem toGAut_chain_arms {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hin : ChainInit B first) (hexh : ∀ x : S', x ∈ l) :
+    ∀ s : Option S', ∀ t ∈ (loopInitialized b B).toGAut.trans s,
+      ∀ α : T → Bool, bval (genW T) t.1 α = true →
+        (s = none ∧ t.2.2 = some first)
+        ∨ (∃ u, s = some u ∧ t.2.2 = some (spineNext first l u)) := by
+  intro s t ht α hb
+  cases s with
+  | none =>
+      refine Or.inl ⟨rfl, ?_⟩
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+      obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp ht₀
+      rw [← heq] at hb ⊢
+      show some t₀.2.2 = some first
+      rw [← heq₁] at hb ⊢
+      show some t₁.2.2 = some first
+      have hb' : (bval (genW T) b α && bval (genW T) t₁.1 α) = true := hb
+      rw [Bool.and_eq_true] at hb'
+      rw [hin.fired t₁ ht₁ α hb'.2]
+  | some u =>
+      refine Or.inr ⟨u, rfl, ?_⟩
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+      rw [← heq] at hb ⊢
+      show some t₀.2.2 = some (spineNext first l u)
+      rw [loop_arms_all b hsp hin hexh u t₀ ht₀ α hb]
+
+open Classical in
+/-- **THE Σ-LEVEL FIRED DICHOTOMY** for a pair of chain loops: with rank 1
+    on the two init states and 0 elsewhere, every fired arm follows the
+    Sum-lifted spine successor or strictly descends. -/
+theorem sum_chain_hdec {S₁ S₂ : Type}
+    {B₁ : InitializedGAut S₁ A T} {B₂ : InitializedGAut S₂ A T}
+    (b₁ b₂ : BExp T) {l₁ : List S₁} {l₂ : List S₂}
+    (hsp₁ : ChainSpine B₁ l₁) (hsp₂ : ChainSpine B₂ l₂)
+    {f₁ : S₁} {f₂ : S₂} (hin₁ : ChainInit B₁ f₁)
+    (hin₂ : ChainInit B₂ f₂)
+    (hexh₁ : ∀ x : S₁, x ∈ l₁) (hexh₂ : ∀ x : S₂, x ∈ l₂) :
+    ∀ s, ∀ t ∈ (sumGAut (loopInitialized b₁ B₁).toGAut
+        (loopInitialized b₂ B₂).toGAut).trans s,
+      (∃ α : T → Bool, bval (genW T) t.1 α = true) →
+      t.2.2 = Sum.elim
+          (fun o => Sum.inl (o.map (spineNext f₁ l₁)))
+          (fun o => Sum.inr (o.map (spineNext f₂ l₂))) s
+      ∨ Sum.elim (fun o => if o.isSome then 0 else 1)
+            (fun o => if o.isSome then 0 else 1) t.2.2
+          < Sum.elim (fun o => if o.isSome then 0 else 1)
+            (fun o => if o.isSome then 0 else 1) s := by
+  intro s t ht hex
+  obtain ⟨α, hb⟩ := hex
+  cases s with
+  | inl o =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+      rw [← heq] at hb ⊢
+      rcases toGAut_chain_arms b₁ hsp₁ hin₁ hexh₁ o t₀ ht₀ α hb with
+        ⟨ho, htt⟩ | ⟨u, ho, htt⟩
+      · subst ho
+        refine Or.inr ?_
+        rw [htt]
+        show (0 : Nat) < 1
+        omega
+      · subst ho
+        refine Or.inl ?_
+        rw [htt]
+        rfl
+  | inr o =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+      rw [← heq] at hb ⊢
+      rcases toGAut_chain_arms b₂ hsp₂ hin₂ hexh₂ o t₀ ht₀ α hb with
+        ⟨ho, htt⟩ | ⟨u, ho, htt⟩
+      · subst ho
+        refine Or.inr ?_
+        rw [htt]
+        show (0 : Nat) < 1
+        omega
+      · subst ho
+        refine Or.inl ?_
+        rw [htt]
+        rfl
+
+open Classical in
+/-- The Sum-lifted spine successor preserves the 0/1 rank. -/
+theorem sum_chain_nxt_rank {S₁ S₂ : Type}
+    (g₁ : S₁ → S₁) (g₂ : S₂ → S₂) :
+    ∀ s : Sum (Option S₁) (Option S₂),
+      Sum.elim (fun o => if o.isSome then 0 else 1)
+        (fun o => if o.isSome then 0 else 1)
+        (Sum.elim (fun o => Sum.inl (o.map g₁))
+          (fun o => Sum.inr (o.map g₂)) s)
+      = Sum.elim (fun o => if o.isSome then 0 else 1)
+          (fun o => if o.isSome then 0 else 1) s := by
+  intro s
+  cases s with
+  | inl o => cases o <;> rfl
+  | inr o => cases o <;> rfl
+
+#print axioms chain_exhaustive
+#print axioms sum_chain_hdec
+#print axioms sum_chain_nxt_rank
+
 end GkatChainFragment
