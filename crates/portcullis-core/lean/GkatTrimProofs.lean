@@ -669,15 +669,15 @@ def RoleCovered (A T : Type) : Prop :=
         StateRole (bisimQuotAut (trimAut (SUMof A T e f))) qsol s
 
 open GkatSumQuotient in
-/-- **THE REWIRED CONDITIONAL SUMMIT**: role existence for canonical quotients
-    of trimmed Thompson sums implies UA-free completeness of GKAT over the free
-    Boolean algebra. -/
-theorem completeness_of_roleCovered {A T : Type} (h : RoleCovered A T) :
-    FiniteAxiomsCompleteBA A T := by
-  intro e f heq
-  obtain ⟨qsol, hroles⟩ := h e f heq
-  have hq : SolvesBA (bisimQuotAut (trimAut (SUMof A T e f))) qsol :=
-    decomp_solves _ _ hroles
+/-- **The per-pair core of the rewired summit**: any provable solution of the
+    canonical quotient of the trimmed Thompson sum yields the pair's provable
+    equivalence. -/
+theorem equivBA_of_quot_solvesBA {A T : Type} (e f : Exp A T)
+    (heq : UniformLanguageEquivalent e f)
+    {qsol : ((Option (certifiedThompson A T e).State)
+        ⊕ (Option (certifiedThompson A T f).State)) → Exp A T}
+    (hq : SolvesBA (bisimQuotAut (trimAut (SUMof A T e f))) qsol) :
+    EquivBA e f := by
   have htrim : SolvesBA (trimAut (SUMof A T e f))
       (fun s => qsol (bisimRep (trimAut (SUMof A T e f)) s)) :=
     (canonicalQuotient (trimAut (SUMof A T e f))).lift_solvesBA hq
@@ -722,6 +722,16 @@ theorem completeness_of_roleCovered {A T : Type} (h : RoleCovered A T) :
   refine EquivBA.trans (EquivBA.symm he') ?_
   rw [hmerge]
   exact hf'
+
+open GkatSumQuotient in
+/-- **THE REWIRED CONDITIONAL SUMMIT**: role existence for canonical quotients
+    of trimmed Thompson sums implies UA-free completeness of GKAT over the free
+    Boolean algebra. -/
+theorem completeness_of_roleCovered {A T : Type} (h : RoleCovered A T) :
+    FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨qsol, hroles⟩ := h e f heq
+  exact equivBA_of_quot_solvesBA e f heq (decomp_solves _ _ hroles)
 
 #print axioms completeness_of_roleCovered
 

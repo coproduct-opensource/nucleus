@@ -810,6 +810,9 @@ lean_lib «GkatTrimProofs» where
 lean_lib «GkatCycleProofs» where
   roots := #[`GkatCycleProofs]
 
+lean_lib «GkatLoopFreeProofs» where
+  roots := #[`GkatLoopFreeProofs]
+
 lean_lib «GkatCertR1» where
   roots := #[`GkatCertR1]
 
