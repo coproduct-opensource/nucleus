@@ -643,3 +643,24 @@ Also queued this iteration (user-approved): the DE-CHOICE campaign after
 chainloops_complete. Next: the loop case — loopInitialized of a spine is
 rank-mod-nxt with the orbit bundle facts (hstep_uniq/hnoeps/hfire/hdec),
 then toGAut/sumGAut transport, os construction, wrapper.
+
+## THE SPINE WALK (loop iteration 19)
+
+- spineNext: the successor along a list, wrapping at the end — THE nxt
+  function the orbit layer will consume for chain loops
+- spineNext_at: successor of the j-th element is the j+1-st (first-
+  occurrence hit justified by head-not-in-tail)
+- spineNext_last: the last element wraps
+- spine_iter: j steps from the head land on the j-th element
+- spine_period: the walk closes after length steps (stated successor-form
+  n+1 to avoid subtraction-motive rewrites)
+- spine_distinct: positional pairwise distinctness (feeds hnofix)
+(spineNext uses classical decEq — will become derived DecidableEq in the
+de-choice pass; spine_distinct itself is already choice-free.)
+
+Remaining for chainloops_complete: the W-level fact bundle (loopInitialized
+of a spine: fired-arm classification with the three-way b case split
+(b unsat -> descending ranks/no orbit; not-b unsat -> dead/base; both sat ->
+constant rank + orbit with port basepoint l[len-1])), the none~last
+language identification for the init class, toGAut/sumGAut transport, os
+construction, wrapper.

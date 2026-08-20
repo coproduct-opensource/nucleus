@@ -288,4 +288,208 @@ theorem chain_shape {body : Exp A T} (h : Chain body) :
 
 #print axioms chain_shape
 
+/-! ## The spine successor and its walk
+
+    `spineNext wrap l` follows the spine and wraps at the end — the `nxt`
+    function the orbit layer consumes.  Its walk is characterized
+    positionally: stepping the `j`-th element yields the `j+1`-st, the last
+    wraps, and iteration from the head or the port traverses the spine with
+    period `l.length`. -/
+
+open Classical in
+/-- The successor along a list, wrapping to `wrap` at the end. -/
+noncomputable def spineNext {S' : Type} (wrap : S') : List S' → S' → S'
+  | [], s => s
+  | [x], s => if s = x then wrap else s
+  | x :: y :: t, s => if s = x then y else spineNext wrap (y :: t) s
+
+open Classical in
+private theorem spineNext_sing {S' : Type} (wrap x s : S') :
+    spineNext wrap [x] s = if s = x then wrap else s := rfl
+
+open Classical in
+private theorem spineNext_cc {S' : Type} (wrap x y : S') (t : List S')
+    (s : S') :
+    spineNext wrap (x :: y :: t) s
+      = if s = x then y else spineNext wrap (y :: t) s := rfl
+
+open Classical in
+/-- Head of a `ChainSpine` never recurs in its tail. -/
+private theorem chainSpine_head_notin {S' : Type}
+    {B : InitializedGAut S' A T} {x : S'} {t : List S'}
+    (h : ChainSpine B (x :: t)) : x ∉ t := by
+  cases t with
+  | nil => intro hx; exact nomatch hx
+  | cons y t' => exact h.2.2.2.1
+
+open Classical in
+/-- Tail of a nontrivial `ChainSpine` is a `ChainSpine`. -/
+private theorem chainSpine_tail {S' : Type}
+    {B : InitializedGAut S' A T} {x y : S'} {t : List S'}
+    (h : ChainSpine B (x :: y :: t)) : ChainSpine B (y :: t) :=
+  h.2.2.2.2
+
+open Classical in
+/-- **STEP CHARACTERIZATION**: the successor of the `j`-th spine element is
+    the `j+1`-st. -/
+theorem spineNext_at {S' : Type} {B : InitializedGAut S' A T}
+    (wrap : S') :
+    ∀ l : List S', ChainSpine B l → ∀ j (h1 : j + 1 < l.length),
+      spineNext wrap l (l[j]'(by omega)) = l[j + 1]'h1 := by
+  intro l
+  induction l with
+  | nil => intro _ j h1; exact nomatch h1
+  | cons x t ih =>
+      intro h j h1
+      cases t with
+      | nil =>
+          exfalso
+          have : j + 1 < 1 := h1
+          omega
+      | cons y t' =>
+          cases j with
+          | zero =>
+              show spineNext wrap (x :: y :: t') x = y
+              rw [spineNext_cc, if_pos rfl]
+          | succ j =>
+              have hmem : (y :: t')[j]'(by
+                  have := h1
+                  simp only [List.length_cons] at this ⊢
+                  omega) ∈ y :: t' := List.getElem_mem _
+              have hne : (y :: t')[j]'(by
+                  have := h1
+                  simp only [List.length_cons] at this ⊢
+                  omega) ≠ x := by
+                intro hcontra
+                exact chainSpine_head_notin h (hcontra ▸ hmem)
+              show spineNext wrap (x :: y :: t')
+                  ((y :: t')[j]'(by
+                    have := h1
+                    simp only [List.length_cons] at this ⊢
+                    omega)) = (y :: t')[j + 1]'(by
+                    have := h1
+                    simp only [List.length_cons] at this ⊢
+                    omega)
+              rw [spineNext_cc, if_neg hne]
+              exact ih (chainSpine_tail h) j (by
+                have := h1
+                simp only [List.length_cons] at this ⊢
+                omega)
+
+open Classical in
+/-- **WRAP CHARACTERIZATION**: the successor of the last spine element is
+    `wrap`. -/
+theorem spineNext_last {S' : Type} {B : InitializedGAut S' A T}
+    (wrap : S') :
+    ∀ l : List S', ChainSpine B l → ∀ (h : 0 < l.length),
+      spineNext wrap l (l[l.length - 1]'(by omega)) = wrap := by
+  intro l
+  induction l with
+  | nil => intro _ h; exact nomatch h
+  | cons x t ih =>
+      intro hsp h
+      cases t with
+      | nil =>
+          show spineNext wrap [x] x = wrap
+          rw [spineNext_sing, if_pos rfl]
+      | cons y t' =>
+          have hlen : (x :: y :: t').length - 1 = (y :: t').length := by
+            simp only [List.length_cons]
+            omega
+          have hmem : (y :: t')[(y :: t').length - 1]'(by
+              simp only [List.length_cons]; omega) ∈ y :: t' :=
+            List.getElem_mem _
+          have hne : (y :: t')[(y :: t').length - 1]'(by
+              simp only [List.length_cons]; omega) ≠ x := by
+            intro hcontra
+            exact chainSpine_head_notin hsp (hcontra ▸ hmem)
+          show spineNext wrap (x :: y :: t')
+              ((x :: y :: t')[(x :: y :: t').length - 1]'(by omega)) = wrap
+          have hidx : (x :: y :: t')[(x :: y :: t').length - 1]'(by
+                omega)
+              = (y :: t')[(y :: t').length - 1]'(by
+                simp only [List.length_cons]; omega) := by
+            have h2 : (x :: y :: t').length - 1
+                = ((y :: t').length - 1) + 1 := by
+              simp only [List.length_cons]
+              omega
+            simp only [h2, List.getElem_cons_succ]
+          rw [hidx, spineNext_cc, if_neg hne]
+          exact ih (chainSpine_tail hsp) (by simp only [List.length_cons]; omega)
+
+open Classical in
+/-- **ITERATION FROM THE HEAD**: `j` steps from the head land on the `j`-th
+    element. -/
+theorem spine_iter {S' : Type} {B : InitializedGAut S' A T}
+    (wrap : S') {l : List S'} (hsp : ChainSpine B l) :
+    ∀ j (h : j < l.length) (h0 : 0 < l.length),
+      nxtIter (spineNext wrap l) j (l[0]'h0) = l[j]'h := by
+  intro j
+  induction j with
+  | zero => intro h h0; rfl
+  | succ j ih =>
+      intro h h0
+      show spineNext wrap l (nxtIter (spineNext wrap l) j (l[0]'h0))
+        = l[j + 1]'h
+      rw [ih (by omega) h0]
+      exact spineNext_at wrap l hsp j h
+
+open Classical in
+/-- **PERIODICITY FROM THE HEAD**: the walk closes after `l.length`
+    steps. -/
+theorem spine_period {S' : Type} {B : InitializedGAut S' A T}
+    (wrap : S') {l : List S'} (hsp : ChainSpine B l)
+    (n : Nat) (hn : l.length = n + 1) :
+    nxtIter (spineNext wrap l) (n + 1) (l[0]'(by omega))
+      = spineNext wrap l (l[n]'(by omega)) := by
+  show spineNext wrap l
+      (nxtIter (spineNext wrap l) n (l[0]'(by omega))) = _
+  rw [spine_iter wrap hsp n (by omega) (by omega)]
+
+open Classical in
+/-- **POSITIONAL DISTINCTNESS**: spine elements at distinct positions are
+    distinct. -/
+theorem spine_distinct {S' : Type} {B : InitializedGAut S' A T} :
+    ∀ l : List S', ChainSpine B l → ∀ i j (hi : i < l.length)
+      (hj : j < l.length), i < j → l[i]'hi ≠ l[j]'hj := by
+  intro l
+  induction l with
+  | nil => intro _ i j hi; exact nomatch hi
+  | cons x t ih =>
+      intro hsp i j hi hj hij
+      cases i with
+      | zero =>
+          cases j with
+          | zero => omega
+          | succ j =>
+              show x ≠ t[j]'(by
+                have := hj
+                simp only [List.length_cons] at this
+                omega)
+              intro hcontra
+              exact chainSpine_head_notin hsp
+                (hcontra ▸ List.getElem_mem _)
+      | succ i =>
+          cases j with
+          | zero => omega
+          | succ j =>
+              cases t with
+              | nil =>
+                  exfalso
+                  have := hi
+                  simp only [List.length_cons, List.length_nil] at this
+                  omega
+              | cons y t' =>
+                  exact ih (chainSpine_tail hsp) i j (by
+                      have := hi
+                      simp only [List.length_cons] at this ⊢
+                      omega) (by
+                      have := hj
+                      simp only [List.length_cons] at this ⊢
+                      omega) (by omega)
+
+#print axioms spine_iter
+#print axioms spine_period
+#print axioms spine_distinct
+
 end GkatChainFragment
