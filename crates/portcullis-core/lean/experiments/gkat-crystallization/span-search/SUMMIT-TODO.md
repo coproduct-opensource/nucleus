@@ -1954,3 +1954,28 @@ Remaining: the same computation for the other 9 states (branch states:
 2 kept arms with sat(c)/sat(¬c) refutation witnesses; port states:
 1 kept arm with sat(b); right side with primes), then the bundle facts
 (gOthers/gGuard on 1–2 element literals), the classifier, and assembly.
+
+## Iteration 70 — ALL TEN QUOTIENT ARM LISTS COMPUTED
+
+The nine remaining arm computations were PROGRAM-GENERATED from the
+validated chord_qarms_x pattern (a Python emitter producing guard terms,
+accumulated-D conditions, unfolded bval expressions, and witness
+refutations) and built with ZERO errors on the second run. One
+generator fix was needed: dropped-arm GuardEmpty proofs must `show` the
+UNFOLDED Bool expression over the generic valuation W (not `show _ =
+false`) so that `cases bval W c u` finds its occurrences.
+
+The complete cleaned quotient picture (all [propext, Classical.choice,
+Quot.sound]):
+- `chord_qarms_x/x_r`: mid → [(⊤-dec, y/y', R̂)]
+- `chord_qarms_p/p_r`: branch → [(c-dec, x, X̂), (¬c-dec, y, R̂)] (and
+  primed) — THE TWO-ARM DISPATCH, phantom-free
+- `chord_qarms_yl/yr/yl_r/yr_r`: ports → [(b-dec, p, P̂)] (and primed)
+- `chord_qarms_none/none_r`: inits → [((b∧1)-dec, p, P̂)] (and primed)
+
+Every possible rep identity now has a computed literal arm list. The
+bundle facts are next: gOthers/gGuard on these 1–2 element literals
+(pure computation), GuardImplies covers (c-dec vs ¬c-dec: semantic,
+two-case), GuardEmpty halts (silent states), then the classifier +
+chord_assembly_roles application → chordLoops_solvable →
+chordloops_complete.

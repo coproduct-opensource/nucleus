@@ -3501,4 +3501,838 @@ theorem chord_qarms_x (b c : BExp T) (p x y : A)
 
 #print axioms chord_qarms_x
 
+open Classical in
+theorem chord_qarms_x_r (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ())))))
+      = [((BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)), y',
+          chordRepR b c p x y b' c' p' x' y')] := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hrP : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inl ()))) = chordRepP b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpair.2.symm
+  have hrX : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) = chordRepX b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpairx.2.symm
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ ((chord_yl_yr_lang_r b' c' p' x' y' _
+      hexitC' hexitB').trans hport.symm)
+  have hrYr : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inr ())))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hport.symm
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ())))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_r b' c' p' x' y' _ hexitC' hexitB'
+      (Sum.inr (Sum.inl (Sum.inl ())))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' BExp.one)) (BExp.not BExp.zero)),
+          p', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inl ()))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))))]
+      .zero = _
+  rw [hrP, hrX, hrYl, hrYr]
+  have h1 : ¬ GuardEmpty (T := T) (BExp.and (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero)) (BExp.not BExp.zero)) :=
+    fun hE => nomatch (hE Unit (fun _ _ => false) ())
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' BExp.one)) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && false) && ((bval W b' u) && true)) && (!false)) && (!(false || ((true && true) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && false) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false)) && (!((false || ((true && true) && (!false))) || (((true && false) && ((bval W b' u) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && false) && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false)) && (!(((false || ((true && true) && (!false))) || (((true && false) && ((bval W b' u) && true)) && (!false))) || (((true && false) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h5 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one BExp.zero) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && false) && ((bval W b' u) && (false && ((!(bval W c' u)) && true)))) && (!false)) && (!((((false || ((true && true) && (!false))) || (((true && false) && ((bval W b' u) && true)) && (!false))) || (((true && false) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))) || (((true && false) && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4,
+    cleanList_consC,
+    if_pos h5]
+  rfl
+
+open Classical in
+theorem chord_qarms_p (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inl (some (Sum.inl ())))
+      = [((BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero)), x,
+          chordRepX b c p x y b' c' p' x' y'),
+        ((BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero)), y,
+          chordRepR b c p x y b' c' p' x' y')] := by
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ (chord_yl_yr_lang b c p x y _ hexitC hexitB)
+  obtain ⟨αC, hαC1, hαC2⟩ := id hentC
+  obtain ⟨αc, hαc⟩ := id hexitC
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inl (some (Sum.inl ())))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inl (some (Sum.inl ()))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live b c p x y _ hexitC hexitB (Sum.inl ())
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero)),
+          x, (chordRepX b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero)),
+          y, (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero)),
+          y, (chordRepR b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b BExp.one)) (BExp.not BExp.zero)),
+          p, (chordRepP b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)),
+          x, (chordRepX b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y, (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)),
+          y, (chordRepR b c p x y b' c' p' x' y'))]
+      .zero = _
+  rw [hrYl]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) c αC) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αC
+    rw [hαC1] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W c u) && (false && true))) && (!false)) && (!(false || ((true && ((bval W c u) && true)) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h3 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))))) := by
+    intro hE
+    have hx : (((true && ((!(bval (genW T) c αc)) && true)) && (!false)) && (!((false || ((true && ((bval (genW T) c αc) && true)) && (!false))) || ((true && ((bval (genW T) c αc) && (false && true))) && (!false))))) = false :=
+      hE (T → Bool) (genW T) αc
+    rw [hαc] at hx
+    exact nomatch hx
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b BExp.one)) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && true)) && (!false)) && (!(((false || ((true && ((bval W c u) && true)) && (!false))) || ((true && ((bval W c u) && (false && true))) && (!false))) || ((true && ((!(bval W c u)) && true)) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h5 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false)) && (!((((false || ((true && ((bval W c u) && true)) && (!false))) || ((true && ((bval W c u) && (false && true))) && (!false))) || ((true && ((!(bval W c u)) && true)) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && true)) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h6 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false)) && (!(((((false || ((true && ((bval W c u) && true)) && (!false))) || ((true && ((bval W c u) && (false && true))) && (!false))) || ((true && ((!(bval W c u)) && true)) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && true)) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h7 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c) BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c) BExp.zero))) (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((!(bval W c u)) && true)))) && (!false)) && (!((((((false || ((true && ((bval W c u) && true)) && (!false))) || ((true && ((bval W c u) && (false && true))) && (!false))) || ((true && ((!(bval W c u)) && true)) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && true)) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))) || (((true && (((bval W c u) && (false && false)) || ((!(bval W c u)) && false))) && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_neg h3,
+    cleanList_consC,
+    if_pos h4,
+    cleanList_consC,
+    if_pos h5,
+    cleanList_consC,
+    if_pos h6,
+    cleanList_consC,
+    if_pos h7]
+  rfl
+
+open Classical in
+theorem chord_qarms_p_r (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inr (some (Sum.inl ())))
+      = [((BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero)), x',
+          chordRepX b c p x y b' c' p' x' y'),
+        ((BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero)), y',
+          chordRepR b c p x y b' c' p' x' y')] := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hrP : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inl ()))) = chordRepP b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpair.2.symm
+  have hrX : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) = chordRepX b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpairx.2.symm
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ ((chord_yl_yr_lang_r b' c' p' x' y' _
+      hexitC' hexitB').trans hport.symm)
+  have hrYr : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inr ())))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hport.symm
+  obtain ⟨αC, hαC1, hαC2⟩ := id hentC
+  obtain ⟨αd, hαd⟩ := id hexitC'
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inr (some (Sum.inl ())))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inr (some (Sum.inl ()))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_r b' c' p' x' y' _ hexitC' hexitB' (Sum.inl ())
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ())))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' BExp.one)) (BExp.not BExp.zero)),
+          p', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inl ()))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))))]
+      .zero = _
+  rw [hrP, hrX, hrYl, hrYr]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) c' αC) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αC
+    rw [hαC2] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W c' u) && (false && true))) && (!false)) && (!(false || ((true && ((bval W c' u) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h3 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))))) := by
+    intro hE
+    have hx : (((true && ((!(bval (genW T) c' αd)) && true)) && (!false)) && (!((false || ((true && ((bval (genW T) c' αd) && true)) && (!false))) || ((true && ((bval (genW T) c' αd) && (false && true))) && (!false))))) = false :=
+      hE (T → Bool) (genW T) αd
+    rw [hαd] at hx
+    exact nomatch hx
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' BExp.one)) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && true)) && (!false)) && (!(((false || ((true && ((bval W c' u) && true)) && (!false))) || ((true && ((bval W c' u) && (false && true))) && (!false))) || ((true && ((!(bval W c' u)) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h5 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false)) && (!((((false || ((true && ((bval W c' u) && true)) && (!false))) || ((true && ((bval W c' u) && (false && true))) && (!false))) || ((true && ((!(bval W c' u)) && true)) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h6 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false)) && (!(((((false || ((true && ((bval W c' u) && true)) && (!false))) || ((true && ((bval W c' u) && (false && true))) && (!false))) || ((true && ((!(bval W c' u)) && true)) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && true)) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h7 : GuardEmpty (BExp.and (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and c' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and c' (BExp.and BExp.zero BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and (BExp.not c') BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and (BExp.and BExp.one (BExp.or (BExp.and c' (BExp.and BExp.zero BExp.zero)) (BExp.and (BExp.not c') BExp.zero))) (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((!(bval W c' u)) && true)))) && (!false)) && (!((((((false || ((true && ((bval W c' u) && true)) && (!false))) || ((true && ((bval W c' u) && (false && true))) && (!false))) || ((true && ((!(bval W c' u)) && true)) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && true)) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))) || (((true && (((bval W c' u) && (false && false)) || ((!(bval W c' u)) && false))) && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_neg h3,
+    cleanList_consC,
+    if_pos h4,
+    cleanList_consC,
+    if_pos h5,
+    cleanList_consC,
+    if_pos h6,
+    cleanList_consC,
+    if_pos h7]
+  rfl
+
+open Classical in
+theorem chord_qarms_yl (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))
+      = [((BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)), p,
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ (chord_yl_yr_lang b c p x y _ hexitC hexitB)
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ())))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live b c p x y _ hexitC hexitB
+      (Sum.inr (Sum.inl (Sum.inr ())))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)),
+          p, (chordRepP b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)),
+          x, (chordRepX b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y, (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)),
+          y, (chordRepR b c p x y b' c' p' x' y'))]
+      .zero = _
+  rw [hrYl]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) b αB) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB1] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false)) && (!(false || ((true && ((bval W b u) && true)) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false)) && (!((false || ((true && ((bval W b u) && true)) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((!(bval W c u)) && true)))) && (!false)) && (!(((false || ((true && ((bval W b u) && true)) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+open Classical in
+theorem chord_qarms_yr (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inl (some (Sum.inr (Sum.inr ()))))
+      = [((BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)), p,
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ (chord_yl_yr_lang b c p x y _ hexitC hexitB)
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inl (some (Sum.inr (Sum.inr ()))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inl (some (Sum.inr (Sum.inr ())))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live b c p x y _ hexitC hexitB (Sum.inr (Sum.inr ()))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)),
+          p, (chordRepP b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)),
+          x, (chordRepX b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y, (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)),
+          y, (chordRepR b c p x y b' c' p' x' y'))]
+      .zero = _
+  rw [hrYl]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) b αB) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB1] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false)) && (!(false || ((true && ((bval W b u) && true)) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false)) && (!((false || ((true && ((bval W b u) && true)) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b u) && (false && ((!(bval W c u)) && true)))) && (!false)) && (!(((false || ((true && ((bval W b u) && true)) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && true)))) && (!false))) || ((true && ((bval W b u) && (false && ((bval W c u) && (false && true))))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+open Classical in
+theorem chord_qarms_yl_r (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ())))))
+      = [((BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)), p',
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hrP : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inl ()))) = chordRepP b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpair.2.symm
+  have hrX : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) = chordRepX b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpairx.2.symm
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ ((chord_yl_yr_lang_r b' c' p' x' y' _
+      hexitC' hexitB').trans hport.symm)
+  have hrYr : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inr ())))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hport.symm
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ())))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_r b' c' p' x' y' _ hexitC' hexitB'
+      (Sum.inr (Sum.inl (Sum.inr ())))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)),
+          p', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inl ()))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))))]
+      .zero = _
+  rw [hrP, hrX, hrYl, hrYr]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) b' αB) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB2] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false)) && (!(false || ((true && ((bval W b' u) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false)) && (!((false || ((true && ((bval W b' u) && true)) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((!(bval W c' u)) && true)))) && (!false)) && (!(((false || ((true && ((bval W b' u) && true)) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+open Classical in
+theorem chord_qarms_yr_r (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inr (some (Sum.inr (Sum.inr ()))))
+      = [((BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)), p',
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hrP : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inl ()))) = chordRepP b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpair.2.symm
+  have hrX : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) = chordRepX b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpairx.2.symm
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ ((chord_yl_yr_lang_r b' c' p' x' y' _
+      hexitC' hexitB').trans hport.symm)
+  have hrYr : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inr ())))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hport.symm
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inr (some (Sum.inr (Sum.inr ())))),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_r b' c' p' x' y' _ hexitC' hexitB' (Sum.inr (Sum.inr ()))
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)),
+          p', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inl ()))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))))]
+      .zero = _
+  rw [hrP, hrX, hrYl, hrYr]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : (((true && ((bval (genW T) b' αB) && true)) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB2] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false)) && (!(false || ((true && ((bval W b' u) && true)) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false)) && (!((false || ((true && ((bval W b' u) && true)) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and BExp.one (BExp.and b' BExp.one)) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one)))) (BExp.not BExp.zero))) (BExp.and (BExp.and BExp.one (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one))))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show (((true && ((bval W b' u) && (false && ((!(bval W c' u)) && true)))) && (!false)) && (!(((false || ((true && ((bval W b' u) && true)) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && true)))) && (!false))) || ((true && ((bval W b' u) && (false && ((bval W c' u) && (false && true))))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+open Classical in
+theorem chord_qarms_none (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inl none)
+      = [((BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero)), p,
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ (chord_yl_yr_lang b c p x y _ hexitC hexitB)
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inl none)) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inl none),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_none b c p x y _ hexitC hexitB
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero)),
+          p, (chordRepP b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))) (BExp.not BExp.zero)),
+          x, (chordRepX b c p x y b' c' p' x' y')),
+        ((BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero)),
+          y, (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one))) (BExp.not BExp.zero)),
+          y, (chordRepR b c p x y b' c' p' x' y'))]
+      .zero = _
+  rw [hrYl]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : ((((bval (genW T) b αB) && true) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB1] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b u) && (false && ((bval W c u) && true))) && (!false)) && (!(false || (((bval W b u) && true) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b u) && (false && ((bval W c u) && (false && true)))) && (!false)) && (!((false || (((bval W b u) && true) && (!false))) || (((bval W b u) && (false && ((bval W c u) && true))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and (BExp.not c) BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and b BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and b (BExp.and BExp.zero (BExp.and c (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b u) && (false && ((!(bval W c u)) && true))) && (!false)) && (!(((false || (((bval W b u) && true) && (!false))) || (((bval W b u) && (false && ((bval W c u) && true))) && (!false))) || (((bval W b u) && (false && ((bval W c u) && (false && true)))) && (!false))))) = false
+    cases bval W c u <;> cases bval W b u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+open Classical in
+theorem chord_qarms_none_r (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    (cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (Sum.inr none)
+      = [((BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero)), p',
+          chordRepP b c p x y b' c' p' x' y')] := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hrP : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inl ()))) = chordRepP b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpair.2.symm
+  have hrX : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))) = chordRepX b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hpairx.2.symm
+  have hrYl : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ ((chord_yl_yr_lang_r b' c' p' x' y' _
+      hexitC' hexitB').trans hport.symm)
+  have hrYr : bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr (some (Sum.inr (Sum.inr ())))) = chordRepR b c p x y b' c' p' x' y' :=
+    rep_lang_congr _ hport.symm
+  obtain ⟨αB, hαB1, hαB2⟩ := id hentB
+  show cleanList
+      (((trimList (chordSum b c p x y b' c' p' x' y')
+          ((chordSum b c p x y b' c' p' x' y').trans
+            (Sum.inr none)) .zero)).map
+        (fun e => (e.1, e.2.1,
+          bisimRep (trimAut (chordSum b c p x y b' c' p' x' y')) e.2.2)))
+      .zero = _
+  have htl : ∀ e ∈ (chordSum b c p x y b' c' p' x' y').trans
+      (Sum.inr none),
+      Live (chordSum b c p x y b' c' p' x' y') e.2.2 :=
+    chord_targets_live_none_r b' c' p' x' y' _ hexitC' hexitB'
+  rw [trimList_all_live (chordSum b c p x y b' c' p' x' y') _ .zero htl]
+  show cleanList
+      [((BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero)),
+          p', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inl ()))))),
+        ((BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one))) (BExp.not BExp.zero)),
+          x', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inl ()))))))),
+        ((BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))))),
+        ((BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one))) (BExp.not BExp.zero)),
+          y', (bisimRep (trimAut (chordSum b c p x y b' c' p' x' y'))
+            (Sum.inr (some (Sum.inr (Sum.inr ()))))))]
+      .zero = _
+  rw [hrP, hrX, hrYl, hrYr]
+  have h1 : ¬ GuardEmpty (BExp.and (BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero)) (BExp.not BExp.zero)) := by
+    intro hE
+    have hx : ((((bval (genW T) b' αB) && true) && (!false)) && (!false)) = false :=
+      hE (T → Bool) (genW T) αB
+    rw [hαB2] at hx
+    exact nomatch hx
+  have h2 : GuardEmpty (BExp.and (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or BExp.zero (BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b' u) && (false && ((bval W c' u) && true))) && (!false)) && (!(false || (((bval W b' u) && true) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h3 : GuardEmpty (BExp.and (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b' u) && (false && ((bval W c' u) && (false && true)))) && (!false)) && (!((false || (((bval W b' u) && true) && (!false))) || (((bval W b' u) && (false && ((bval W c' u) && true))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  have h4 : GuardEmpty (BExp.and (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and (BExp.not c') BExp.one))) (BExp.not BExp.zero)) (BExp.not (BExp.or (BExp.or (BExp.or BExp.zero (BExp.and (BExp.and b' BExp.one) (BExp.not BExp.zero))) (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' BExp.one))) (BExp.not BExp.zero))) (BExp.and (BExp.and b' (BExp.and BExp.zero (BExp.and c' (BExp.and BExp.zero BExp.one)))) (BExp.not BExp.zero))))) := by
+    intro Z W u
+    show ((((bval W b' u) && (false && ((!(bval W c' u)) && true))) && (!false)) && (!(((false || (((bval W b' u) && true) && (!false))) || (((bval W b' u) && (false && ((bval W c' u) && true))) && (!false))) || (((bval W b' u) && (false && ((bval W c' u) && (false && true)))) && (!false))))) = false
+    cases bval W c' u <;> cases bval W b' u <;> rfl
+  rw [cleanList_consC,
+    if_neg h1,
+    cleanList_consC,
+    if_pos h2,
+    cleanList_consC,
+    if_pos h3,
+    cleanList_consC,
+    if_pos h4]
+  rfl
+
+#print axioms chord_qarms_x_r
+#print axioms chord_qarms_p
+#print axioms chord_qarms_p_r
+#print axioms chord_qarms_yl
+#print axioms chord_qarms_yr
+#print axioms chord_qarms_yl_r
+#print axioms chord_qarms_yr_r
+#print axioms chord_qarms_none
+#print axioms chord_qarms_none_r
+
 end GkatThreeLoop
