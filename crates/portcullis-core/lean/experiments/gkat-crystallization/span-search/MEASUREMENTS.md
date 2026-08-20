@@ -31,6 +31,9 @@ here is machine-measured; kernel-checked claims say so explicitly.
   RETIRED.  Step census across the 80 plans: Act 64, Park 59, SelfLoop 30, Inline 21,
   DeadGuard 17, Sub 8, Branch 6 — all seven kinds covered by the kernel-checked
   recipes in GkatCertR1-R6.  The ring-mode generator needs NO new construction.
+- **CERTIFIED (commit 69d8a9b1): GkatK6R01..80 — all 80 residue pairs have
+  machine-generated kernel-checked UA-free EquivBA proofs (emit_ring.py), standard
+  axioms only, 80/80 pass.**  The k=6/NA=2 union conjunct is witnessed end-to-end.
 
 ## Uniformity / mixed-halt (the invariant hunt)
 
