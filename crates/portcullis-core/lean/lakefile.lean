@@ -792,6 +792,9 @@ lean_lib «GkatRingPlan2Proofs» where
 lean_lib «GkatRingDecompProofs» where
   roots := #[`GkatRingDecompProofs]
 
+lean_lib «GkatDecompPilotProofs» where
+  roots := #[`GkatDecompPilotProofs]
+
 lean_lib «GkatCertR1» where
   roots := #[`GkatCertR1]
 
