@@ -74,10 +74,14 @@ theorem decomp_solves (aut : GAut S A T) (sol : S → Exp A T)
 /-! ## The summit, conditionally: the open problem reduced to plan existence -/
 
 open GkatSumQuotient in
-/-- **The plan-existence hypothesis.**  Every uniformly-equivalent pair has a
-    behavioural quotient of its Thompson sum, identifying the two starts, whose states
-    all carry decomposition roles.  This is the single remaining span of the
-    completeness programme: everything below it is proved. -/
+/-- **The plan-existence hypothesis — REFUTED as stated.**
+    `GkatPlanExistence.decompCovered_false` proves `¬ DecompCovered Unit Unit`:
+    merged starts force the starts bisimilar, and `a·0` vs `0` are language-equal
+    with non-bisimilar starts (a silent transition).  The live formulation is
+    `GkatPlanExistence.DecompCoveredTrim` (trim as a hypothesis) together with
+    `NormalizationBridge`; see `completeness_of_decompCoveredTrim`.  Kept for the
+    record and because `completeness_of_decompCovered` below is still a true
+    (now vacuous-hypothesis) conditional. -/
 def DecompCovered (A T : Type) : Prop :=
   ∀ e f : Exp A T, UniformLanguageEquivalent e f →
     ∃ (Q : Type) (quot : GAut Q A T)

@@ -39,3 +39,10 @@ Status log:
 - S1b DONE (modulo S0): the canonical quotient exists for EVERY automaton, and merges
   the starts of any trimmed Thompson sum of uniformly equivalent programs.  The open
   problem is now S0 (trim, engineering-mathematics) + S2 (roles, the research core).
+- REFUTATION + CORRECTION: DecompCovered as stated is FALSE (decompCovered_false —
+  the pair (a·0, 0): language-equal, non-bisimilar starts, so no behavioural quotient
+  merges them).  The summit is restated as completeness_of_decompCoveredTrim:
+  DecompCoveredTrim (trim as hypothesis) + NormalizationBridge (S0: every program
+  provably equivalent to one with a trimmed Thompson automaton, using s3 = early
+  termination) ⟹ FiniteAxiomsCompleteBA.  sum_liveSteps glues summand trimmedness.
+  All on [propext, Classical.choice, Quot.sound]; full lake build green.

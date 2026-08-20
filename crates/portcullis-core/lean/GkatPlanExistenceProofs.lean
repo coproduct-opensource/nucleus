@@ -35,7 +35,7 @@ namespace GkatPlanExistence
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatSumQuotient
 open GkatDecomp
 
-variable {A T : Type}
+variable {S A T : Type}
 
 /-- **S1a.  The starts are language-equal.**  Uniform language equivalence of the
     programs transfers along the Thompson start-language theorem and the coproduct
@@ -475,5 +475,155 @@ theorem canonical_quotient_merges_starts (e f : Exp A T)
   exact sum_starts_language_equal e f heq W
 
 #print axioms canonical_quotient_merges_starts
+
+/-! ## The refutation: `DecompCovered` as stated is FALSE
+
+    The quotient in `DecompCovered` is bisim-presented, and merged starts force the
+    two starts bisimilar (compose the graph bisimulation with its converse).  But
+    language equality does not imply bisimilarity in the presence of silent
+    transitions: `a·0` and `0` are language-equal (both empty), yet Thompson(`a·0`)'s
+    start steps at every atom while Thompson(`0`)'s start is stuck, so NO behavioural
+    quotient of their sum can merge the starts.  The corrected reduction
+    (`DecompCoveredTrim` below) adds the trim hypothesis; the normalization bridge
+    (S0) restores full completeness from it. -/
+
+section Refutation
+
+private def eDead : Exp Unit Unit := .seq (.act ()) (.test .zero)
+private def fDead : Exp Unit Unit := .test .zero
+
+private theorem eDead_empty {X : Type} (W : Unit → X → Bool) (gs : GS Unit X) :
+    ¬ den W eDead gs := by
+  intro h
+  obtain ⟨l1, l2, _, _, hf⟩ := h
+  exact Bool.noConfusion hf.1
+
+private theorem fDead_empty {X : Type} (W : Unit → X → Bool) (gs : GS Unit X) :
+    ¬ den W fDead gs := fun h => Bool.noConfusion h.1
+
+/-- **The hypothesis of the conditional summit, refuted.**  `DecompCovered Unit Unit`
+    is false: the pair `(a·0, 0)` is uniformly language-equivalent but its Thompson
+    sum admits no start-merging behavioural quotient. -/
+theorem decompCovered_false : ¬ DecompCovered Unit Unit := by
+  intro h
+  obtain ⟨Q, quot, π, qsol, _, hstart⟩ := h eDead fDead
+    (fun X W gs => ⟨fun he => absurd he (eDead_empty W gs),
+                    fun hf => absurd hf (fDead_empty W gs)⟩)
+  have hstepL : autStep (fun (_ : Unit) (_ : Unit) => true)
+      (sumGAut (certifiedThompson Unit Unit eDead).aut.toGAut
+               (certifiedThompson Unit Unit fDead).aut.toGAut)
+      (Sum.inl none) ()
+      = some ((), Sum.inl (some (Sum.inl ()))) := rfl
+  have hstepR : autStep (fun (_ : Unit) (_ : Unit) => true)
+      (sumGAut (certifiedThompson Unit Unit eDead).aut.toGAut
+               (certifiedThompson Unit Unit fDead).aut.toGAut)
+      (Sum.inr none) ()
+      = none := rfl
+  have hbisim := π.bisim_graph Unit (fun _ _ => true)
+  obtain ⟨q', hq, _⟩ :=
+    (hbisim (Sum.inl none) (π.mapState (Sum.inl none)) rfl).2.1 () ()
+      (Sum.inl (some (Sum.inl ()))) hstepL
+  obtain ⟨s', hs, _⟩ :=
+    (hbisim (Sum.inr none) (π.mapState (Sum.inl none)) hstart.symm).2.2 () () q' hq
+  rw [hstepR] at hs
+  exact nomatch hs
+
+end Refutation
+
+/-! ## The corrected reduction: trim as a hypothesis, normalization as the bridge -/
+
+open GkatSumQuotient in
+/-- **The corrected plan-existence hypothesis**: `DecompCovered`, restricted to
+    pairs whose Thompson sum is trimmed.  This is the version all the measured
+    evidence actually supports (the harness trims/canonizes before everything). -/
+def DecompCoveredTrim (A T : Type) : Prop :=
+  ∀ e f : Exp A T, UniformLanguageEquivalent e f →
+    LiveSteps (sumGAut (certifiedThompson A T e).aut.toGAut
+                       (certifiedThompson A T f).aut.toGAut) →
+    ∃ (Q : Type) (quot : GAut Q A T)
+      (π : UniformBehavioralGAutQuotient
+            (sumGAut (certifiedThompson A T e).aut.toGAut
+                     (certifiedThompson A T f).aut.toGAut) quot)
+      (qsol : Q → Exp A T),
+      (∀ s ∈ quot.states, StateRole quot qsol s) ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none)
+
+/-- **S0, named**: every program is provably equivalent, in the finite axioms, to
+    one whose Thompson automaton is trimmed (no silent transitions). -/
+def NormalizationBridge (A T : Type) : Prop :=
+  ∀ e : Exp A T, ∃ e' : Exp A T, EquivBA e e' ∧
+    LiveSteps (certifiedThompson A T e').aut.toGAut
+
+/-- Liveness transfers into the left summand. -/
+theorem live_sum_inl {S₁ S₂ : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    {s : S₁} (h : Live aut₁ s) : Live (sumGAut aut₁ aut₂) (Sum.inl s) := by
+  have hlang : autLang (genW T) aut₁ s
+      = autLang (genW T) (sumGAut aut₁ aut₂) (Sum.inl s) :=
+    autLang_eq_of_gautBisim (gAutHom_bisim (GAutHom.inl aut₁ aut₂) (genW T)) rfl
+  obtain ⟨α, l, hr⟩ := h
+  exact ⟨α, l, (iff_of_eq (congrFun hlang (α, l))).mp hr⟩
+
+/-- Liveness transfers into the right summand. -/
+theorem live_sum_inr {S₁ S₂ : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    {s : S₂} (h : Live aut₂ s) : Live (sumGAut aut₁ aut₂) (Sum.inr s) := by
+  have hlang : autLang (genW T) aut₂ s
+      = autLang (genW T) (sumGAut aut₁ aut₂) (Sum.inr s) :=
+    autLang_eq_of_gautBisim (gAutHom_bisim (GAutHom.inr aut₁ aut₂) (genW T)) rfl
+  obtain ⟨α, l, hr⟩ := h
+  exact ⟨α, l, (iff_of_eq (congrFun hlang (α, l))).mp hr⟩
+
+/-- Trimmedness of the summands gives trimmedness of the sum. -/
+theorem sum_liveSteps {S₁ S₂ : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    (h₁ : LiveSteps aut₁) (h₂ : LiveSteps aut₂) :
+    LiveSteps (sumGAut aut₁ aut₂) := by
+  intro s α q s' hs
+  cases s with
+  | inl u =>
+      rw [autStep_sumGAut_inl] at hs
+      cases hu : autStep (genW T) aut₁ u α with
+      | none => rw [hu] at hs; exact nomatch hs
+      | some y =>
+          obtain ⟨q1, u'⟩ := y
+          rw [hu] at hs
+          have hp : ((q1 : A), (Sum.inl u' : S₁ ⊕ S₂)) = (q, s') :=
+            Option.some.inj hs
+          have ht : (Sum.inl u' : S₁ ⊕ S₂) = s' := congrArg Prod.snd hp
+          subst ht
+          exact live_sum_inl (h₁ u α q1 u' hu)
+  | inr u =>
+      rw [autStep_sumGAut_inr] at hs
+      cases hu : autStep (genW T) aut₂ u α with
+      | none => rw [hu] at hs; exact nomatch hs
+      | some y =>
+          obtain ⟨q1, u'⟩ := y
+          rw [hu] at hs
+          have hp : ((q1 : A), (Sum.inr u' : S₁ ⊕ S₂)) = (q, s') :=
+            Option.some.inj hs
+          have ht : (Sum.inr u' : S₁ ⊕ S₂) = s' := congrArg Prod.snd hp
+          subst ht
+          exact live_sum_inr (h₂ u α q1 u' hu)
+
+open GkatSumQuotient in
+/-- **THE CORRECTED CONDITIONAL SUMMIT**: trimmed plan existence plus the
+    normalization bridge give UA-free completeness of GKAT over the free Boolean
+    algebra.  This replaces `completeness_of_decompCovered`, whose hypothesis is
+    refuted above. -/
+theorem completeness_of_decompCoveredTrim {A T : Type}
+    (h : DecompCoveredTrim A T) (hn : NormalizationBridge A T) :
+    FiniteAxiomsCompleteBA A T := by
+  intro e f heq
+  obtain ⟨e', hee', hle⟩ := hn e
+  obtain ⟨f', hff', hlf⟩ := hn f
+  have heq' : UniformLanguageEquivalent e' f' := by
+    intro X W gs
+    exact ((sound_BA W hee' gs).symm.trans (heq X W gs)).trans (sound_BA W hff' gs)
+  obtain ⟨Q, quot, π, qsol, hroles, hstart⟩ := h e' f' heq' (sum_liveSteps hle hlf)
+  have hef' : EquivBA e' f' :=
+    certifiedThompson_uniform_solved_quotient π qsol
+      (decomp_solves quot qsol hroles) hstart
+  exact EquivBA.trans hee' (EquivBA.trans hef' (EquivBA.symm hff'))
+
+#print axioms decompCovered_false
+#print axioms completeness_of_decompCoveredTrim
 
 end GkatPlanExistence
