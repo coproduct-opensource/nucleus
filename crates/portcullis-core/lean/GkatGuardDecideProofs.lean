@@ -853,4 +853,267 @@ theorem stepEquivWithin_antitone (aut : GAut S A T) :
 #print axioms genBisimilar_iff_stepEquiv
 #print axioms stepEquivWithin_antitone
 
+/-! ## Deciding each level
+
+    A level's `∀ α` factors through finitely many guards: halting
+    agreement is decidable guard equality, and the step condition is a
+    finite conjunction over effective-arm pairs — co-satisfiable arms
+    must agree in letter and drop a level, and no arm may fire where the
+    other side has nothing. -/
+
+/-- Hand-rolled decidable bounded universal over a list. -/
+def decideAllMem {γ : Type} {P : γ → Prop}
+    (dec : ∀ e : γ, Decidable (P e)) :
+    (L : List γ) → Decidable (∀ e ∈ L, P e)
+  | [] => isTrue (by intro e he; exact nomatch he)
+  | x :: xs =>
+      match dec x with
+      | isFalse hx =>
+          isFalse (fun h => hx (h x (List.mem_cons_self ..)))
+      | isTrue hx =>
+          match decideAllMem dec xs with
+          | isTrue hxs =>
+              isTrue (by
+                intro e he
+                rcases List.mem_cons.mp he with heq | hm
+                · exact heq ▸ hx
+                · exact hxs e hm)
+          | isFalse hxs =>
+              isFalse (fun h => hxs
+                (fun e he => h e (List.mem_cons_of_mem _ he)))
+
+/-- Decidable guard equality at generic atoms. -/
+def guardEqDecidable [DecidableEq T] (g₁ g₂ : BExp T) :
+    Decidable (∀ α : T → Bool,
+      bval (genW T) g₁ α = bval (genW T) g₂ α) :=
+  decidable_of_iff
+    (∀ β ∈ enumAtoms (testsOf g₁ ++ testsOf g₂),
+      bval (genW T) g₁ β = bval (genW T) g₂ β)
+    (by
+      constructor
+      · intro h α
+        obtain ⟨β, hmem, hagree⟩ :=
+          enumAtoms_complete (testsOf g₁ ++ testsOf g₂) α
+        calc bval (genW T) g₁ α
+            = bval (genW T) g₁ β := (bval_testsOf (fun t ht =>
+              hagree t (List.mem_append.mpr (Or.inl ht)))).symm
+          _ = bval (genW T) g₂ β := h β hmem
+          _ = bval (genW T) g₂ α := bval_testsOf (fun t ht =>
+              hagree t (List.mem_append.mpr (Or.inr ht)))
+      · intro h β _
+        exact h β)
+
+/-- The disjunction of a list's guards. -/
+def armsOr : List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | e :: rest => .or e.1 (armsOr rest)
+
+private theorem fm_cons₆ {Atom : Type} (V : T → Atom → Bool) (x : Atom)
+    (g : BExp T) (a : A) (t : S) (rest : List (BExp T × A × S)) :
+    firstMatch V x ((g, a, t) :: rest)
+      = if bval V g x = true then some (a, t)
+        else firstMatch V x rest := rfl
+
+/-- `firstMatch` fails exactly where no guard fires. -/
+theorem firstMatch_none_iff {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) :
+    ∀ L : List (BExp T × A × S),
+      firstMatch V x L = none ↔ bval V (armsOr L) x = false := by
+  intro L
+  induction L with
+  | nil => exact ⟨fun _ => rfl, fun _ => rfl⟩
+  | cons hd rest ih =>
+      obtain ⟨g, a, t⟩ := hd
+      rw [fm_cons₆]
+      constructor
+      · intro h
+        by_cases hg : bval V g x = true
+        · rw [if_pos hg] at h
+          exact nomatch h
+        · rw [if_neg hg] at h
+          have hg' : bval V g x = false := by
+            cases hgv : bval V g x with
+            | false => rfl
+            | true => exact absurd hgv hg
+          show (bval V g x || bval V (armsOr rest) x) = false
+          rw [hg', ih.mp h]
+          rfl
+      · intro h
+        have h' : (bval V g x || bval V (armsOr rest) x) = false := h
+        cases hgv : bval V g x with
+        | true =>
+            rw [hgv] at h'
+            exact nomatch h'
+        | false =>
+            rw [if_neg (by exact Bool.false_ne_true)]
+            refine ih.mpr ?_
+            rw [hgv] at h'
+            exact h'
+
+/-- **THE STEP CONDITION IS FINITE**: the `∀ α` step clause is a finite
+    conjunction over effective-arm pairs. -/
+theorem forall_optStepRel_iff (aut : GAut S A T) (P : S → S → Prop)
+    (s t : S) :
+    (∀ α : T → Bool, optStepRel P
+        (autStep (genW T) aut s α) (autStep (genW T) aut t α))
+    ↔ ((∀ e ∈ effList (aut.trans s) .zero,
+          ∀ e' ∈ effList (aut.trans t) .zero,
+          (∃ α : T → Bool, bval (genW T) (.and e.1 e'.1) α = true) →
+            e.2.1 = e'.2.1 ∧ P e.2.2 e'.2.2)
+      ∧ (∀ e ∈ effList (aut.trans s) .zero,
+          ¬ ∃ α : T → Bool, bval (genW T)
+            (.and e.1 (.not (armsOr (aut.trans t)))) α = true)
+      ∧ (∀ e' ∈ effList (aut.trans t) .zero,
+          ¬ ∃ α : T → Bool, bval (genW T)
+            (.and (.not (armsOr (aut.trans s))) e'.1) α = true)) := by
+  constructor
+  · intro h
+    refine ⟨?_, ?_, ?_⟩
+    · intro e he e' he' ⟨α, hα⟩
+      have hα' : (bval (genW T) e.1 α && bval (genW T) e'.1 α)
+          = true := hα
+      rw [Bool.and_eq_true] at hα'
+      have hs := effList_fires (genW T) α (aut.trans s) .zero rfl
+        e he hα'.1
+      have ht := effList_fires (genW T) α (aut.trans t) .zero rfl
+        e' he' hα'.2
+      have h2 := h α
+      show e.2.1 = e'.2.1 ∧ P e.2.2 e'.2.2
+      rw [show autStep (genW T) aut s α
+          = some (e.2.1, e.2.2) from hs,
+        show autStep (genW T) aut t α
+          = some (e'.2.1, e'.2.2) from ht] at h2
+      exact h2
+    · rintro e he ⟨α, hα⟩
+      have hα' : (bval (genW T) e.1 α
+          && !(bval (genW T) (armsOr (aut.trans t)) α)) = true := hα
+      rw [Bool.and_eq_true] at hα'
+      have hs := effList_fires (genW T) α (aut.trans s) .zero rfl
+        e he hα'.1
+      have htnone : firstMatch (genW T) α (aut.trans t) = none := by
+        refine (firstMatch_none_iff (genW T) α (aut.trans t)).mpr ?_
+        cases hb : bval (genW T) (armsOr (aut.trans t)) α with
+        | false => rfl
+        | true =>
+            rw [hb] at hα'
+            exact nomatch hα'.2
+      have h2 := h α
+      rw [show autStep (genW T) aut s α
+          = some (e.2.1, e.2.2) from hs,
+        show autStep (genW T) aut t α = none from htnone] at h2
+      exact h2
+    · rintro e' he' ⟨α, hα⟩
+      have hα' : (!(bval (genW T) (armsOr (aut.trans s)) α)
+          && bval (genW T) e'.1 α) = true := hα
+      rw [Bool.and_eq_true] at hα'
+      have ht := effList_fires (genW T) α (aut.trans t) .zero rfl
+        e' he' hα'.2
+      have hsnone : firstMatch (genW T) α (aut.trans s) = none := by
+        refine (firstMatch_none_iff (genW T) α (aut.trans s)).mpr ?_
+        cases hb : bval (genW T) (armsOr (aut.trans s)) α with
+        | false => rfl
+        | true =>
+            rw [hb] at hα'
+            exact nomatch hα'.1
+      have h2 := h α
+      rw [show autStep (genW T) aut s α = none from hsnone,
+        show autStep (genW T) aut t α
+          = some (e'.2.1, e'.2.2) from ht] at h2
+      exact h2
+  · rintro ⟨hpair, hsnone, htnone⟩ α
+    cases hs : autStep (genW T) aut s α with
+    | none =>
+        cases ht : autStep (genW T) aut t α with
+        | none => exact trivial
+        | some o =>
+            obtain ⟨e', he', hb', -, -⟩ :=
+              effList_of_firstMatch (genW T) α (aut.trans t) .zero
+                rfl ht
+            exfalso
+            refine htnone e' he' ⟨α, ?_⟩
+            show (!(bval (genW T) (armsOr (aut.trans s)) α)
+              && bval (genW T) e'.1 α) = true
+            rw [(firstMatch_none_iff (genW T) α (aut.trans s)).mp hs,
+              hb']
+            rfl
+    | some o =>
+        obtain ⟨e, he, hb, he1, he2⟩ :=
+          effList_of_firstMatch (genW T) α (aut.trans s) .zero rfl hs
+        cases ht : autStep (genW T) aut t α with
+        | none =>
+            exfalso
+            refine hsnone e he ⟨α, ?_⟩
+            show (bval (genW T) e.1 α
+              && !(bval (genW T) (armsOr (aut.trans t)) α)) = true
+            rw [(firstMatch_none_iff (genW T) α (aut.trans t)).mp ht,
+              hb]
+            rfl
+        | some o' =>
+            obtain ⟨e', he', hb', he1', he2'⟩ :=
+              effList_of_firstMatch (genW T) α (aut.trans t) .zero
+                rfl ht
+            have := hpair e he e' he' ⟨α, by
+              show (bval (genW T) e.1 α && bval (genW T) e'.1 α)
+                = true
+              rw [hb, hb']
+              rfl⟩
+            show o.1 = o'.1 ∧ P o.2 o'.2
+            rw [← he1, ← he2, ← he1', ← he2']
+            exact this
+
+/-- Decidable implication from decidable parts. -/
+def decImp {p q : Prop} (dp : Decidable p) (dq : Decidable q) :
+    Decidable (p → q) :=
+  match dp with
+  | isFalse hp => isTrue (fun h => absurd h hp)
+  | isTrue hp =>
+      match dq with
+      | isTrue hq => isTrue (fun _ => hq)
+      | isFalse hq => isFalse (fun h => hq (h hp))
+
+/-- Decidable conjunction from decidable parts. -/
+def decAnd {p q : Prop} (dp : Decidable p) (dq : Decidable q) :
+    Decidable (p ∧ q) :=
+  match dp with
+  | isFalse hp => isFalse (fun h => hp h.1)
+  | isTrue hp =>
+      match dq with
+      | isTrue hq => isTrue ⟨hp, hq⟩
+      | isFalse hq => isFalse (fun h => hq h.2)
+
+/-- Decidable negation. -/
+def decNot {p : Prop} (dp : Decidable p) : Decidable (¬ p) :=
+  match dp with
+  | isTrue hp => isFalse (fun h => h hp)
+  | isFalse hp => isTrue hp
+
+/-- **DECIDABLE LEVELS** — computable, choice-free. -/
+def stepEquivWithinDec [DecidableEq T] [DecidableEq A]
+    (aut : GAut S A T) :
+    (n : Nat) → (s t : S) → Decidable (stepEquivWithin aut n s t)
+  | 0, _, _ => isTrue trivial
+  | n + 1, s, t =>
+      decAnd (guardEqDecidable (aut.hlt s) (aut.hlt t))
+        (@decidable_of_iff _ _
+          (forall_optStepRel_iff aut (stepEquivWithin aut n) s t).symm
+          (decAnd
+            (decideAllMem (fun e =>
+              decideAllMem (fun e' =>
+                decImp (guardSatDecidable _)
+                  (decAnd (decEq e.2.1 e'.2.1)
+                    (stepEquivWithinDec aut n e.2.2 e'.2.2)))
+                (effList (aut.trans t) .zero))
+              (effList (aut.trans s) .zero))
+            (decAnd
+              (decideAllMem (fun e =>
+                decNot (guardSatDecidable _))
+                (effList (aut.trans s) .zero))
+              (decideAllMem (fun e' =>
+                decNot (guardSatDecidable _))
+                (effList (aut.trans t) .zero)))))
+
+#print axioms guardEqDecidable
+#print axioms forall_optStepRel_iff
+#print axioms stepEquivWithinDec
+
 end GkatGuardDecide

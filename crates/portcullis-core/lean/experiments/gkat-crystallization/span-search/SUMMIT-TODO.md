@@ -1062,3 +1062,22 @@ bisimRepD := first-in-list + the quotient transport.
 
 Lean lesson: `cases h : term` rewrites term in the goal — subsequent
 rw [h] finds nothing; check the goal, not the plan.
+
+## DE-CHOICE PHASE 3b: EVERY LEVEL DECIDES (iteration 35)
+
+- decideAllMem / decImp / decAnd / decNot: hand-rolled decidability
+  combinators (instance-resolution-proof)
+- guardEqDecidable: decidable guard equality at generic atoms (enum over
+  the union support)
+- armsOr + firstMatch_none_iff: stepping fails exactly where no guard
+  fires
+- forall_optStepRel_iff: THE STEP CONDITION IS FINITE — the forall-atom
+  step clause is a finite conjunction over effective-arm pairs:
+  co-satisfiable arms agree in letter and drop a level; no arm fires
+  against the other side's none-region ([propext] only)
+- stepEquivWithinDec: THE LEVEL DECISION PROCEDURE — structural recursion
+  over [DecidableEq T] + [DecidableEq A], at [propext, Quot.sound].
+
+Remaining phase 3: count-based stabilization (filter-length measure over
+the pair list, strict drop per refinement, hence a fixpoint by |pool|^2)
+=> genBisimilar decidable => bisimRepD := first-equivalent-in-list.
