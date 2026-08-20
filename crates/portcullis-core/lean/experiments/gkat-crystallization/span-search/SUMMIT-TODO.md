@@ -423,3 +423,21 @@ The quotient cycle is now a genuine finite cycle: well-defined successor,
 period, pairwise-distinct members m j := rep (nxtIter j u₀) for j < qPeriod.
 Remaining for chainloops_complete: canonical basepoint (port detection),
 the cy-bundle side conditions, fragment rank, glue.
+
+## ORBIT ROTATION + CANONICAL BASEPOINT (loop iteration 9)
+
+- shift_per / shift_nofix / shift_min: the FULL hypothesis bundle transports
+  to any shifted basepoint nxtIter i u0 (periodicity, non-fixedness, and rank
+  minimality via cycle_level_all + minRank_le)
+- InOrbit + inOrbit_shift: ORBIT ROTATION — orbit membership is basepoint-
+  independent (forward: index shift; backward: explicit div/mod decomposition
+  i = k*q + r, witness (k-r) + j%k wraps through the source period)
+- firstMem (hand-rolled List.find, Classical) + congr/mem/isSome specs
+- basepoint + basepoint_shift: every orbit member selects the SAME canonical
+  basepoint (firstMem_congr over the rotated predicate)
+- basepoint_isSome: the basepoint exists whenever ⟦u0⟧ is in the state list,
+  and is itself an in-list orbit member.
+All [propext, Classical.choice, Quot.sound].
+
+Remaining for chainloops_complete: cy-bundle side conditions (port detection,
+interior-class arm targeting from the dichotomy), fragment rank, glue.
