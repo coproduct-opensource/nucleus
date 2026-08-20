@@ -45,7 +45,19 @@ here is machine-measured; kernel-checked claims say so explicitly.
 
 - equivalent pairs 232,052; **crux 214,635** (runs/na4k2b.txt, dry run without
   PAD_ORACLE — union conjunct requires PAD_ORACLE=1).
-- Union conjunct at NA=4: **PENDING** (runs/na4k2c.txt in flight).
+- **Union conjunct at NA=4 K=2: 214,635 / 214,635 (100.0%), residue ZERO**
+  (runs/na4k2j.txt).  only-elimination 3,104; only-Thompson 0 — elimination at some
+  merged-start congruence covers the entire space by itself.  Need-a-KA-step: 0 (no
+  unguarded-union obstruction at all).  NON-VACUOUS: covered-population profile has
+  two-halt 0.710, halt-in-cycle 0.997; 85% of pullbacks carry two-halt 2-cycles; the
+  start-merging congruence is Thompson AND start-identifying for 98.6%.  Measured
+  under HANDICAPPED oracles (PAD_ELIM_BUDGET=100k = 20x cut, PAD_LLEE_BUDGET=20k =
+  10x cut) — 100% with weakened witnesses is the strong direction.
+- Memo telemetry vindicated both hypotheses in one run: random-population diagnostics
+  hit 0-2.5% (no reuse — those bands were capped/gated, commits 1113d9c6..b9e0253f),
+  while the live sweep climbed 52.8% -> 87.4% over 1.9M calls (massive quotient reuse).
+- Six NA=2-calibrated diagnostic bands were the entire runtime cost at NA=4; the live
+  computation was never the bottleneck.
 
 ## Operational
 
