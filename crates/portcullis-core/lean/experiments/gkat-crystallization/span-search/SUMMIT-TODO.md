@@ -1227,3 +1227,20 @@ degenerate positions fold into the base branch. Then the fragment:
 Thompson of wh b (chain-with-atomic-inner-loops) satisfies WalkedDec.
 Target: NESTEDLOOPS_COMPLETE — the fifth theorem, covering the census's
 remaining 2%.
+
+## WALKED PROPAGATION + TRACKING (iteration 42b, "Proceed")
+
+- walked_realizer_propagate: the three-way case adds a TRIVIAL branch —
+  a self-landing realizer keeps its own rank (rank v = rank w)
+- walked_cycle_level_min / walked_cycle_level_all: unchanged arguments
+  over the walked propagate
+- walked_qsucc_well_defined / walked_qsucc_iter: quotient-successor
+  tracking with hnontriv (fragment-supplied adjacent-language
+  distinctness) threaded to each walked_class_succ_eq site.
+
+The walked orbit layer now has: min_fire, class_succ_eq, propagate,
+cycle levels, qsucc tracking. Remaining to mirror: orbit_lang_determined,
+qPeriod machinery (nxt-generic — check direct reuse), qorb_injective
+(walked bundle), dichotomy + cy-bundle + glue (walked rankNxt), then the
+nested fragment (WalkedDec by construction + hnontriv via shortest-exit
+words) and nestedloops_complete.
