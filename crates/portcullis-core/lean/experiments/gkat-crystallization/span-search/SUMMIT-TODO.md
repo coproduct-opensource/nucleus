@@ -207,3 +207,29 @@ REMAINING (the true open residue):
   (exits + halt).  [propext, Classical.choice, Quot.sound]
 - Census: 2127/2171 = 98.0% of multi-SCCs covered; 44 open instances in 60k
   pairs (multi-member exits, non-subset halts, trees).
+
+## THE GIANT STEP (2026-08-20): LOOP-FREE COMPLETENESS — UNCONDITIONAL
+
+loopfree_complete (GkatLoopFreeProofs):
+  LoopFree e → LoopFree f → UniformLanguageEquivalent e f → EquivBA e f
+on [propext, Classical.choice, Quot.sound].  NO other hypotheses.  The
+pipeline's FIRST CLOSED THEOREM: the finite GKAT axioms + test BA are
+complete for the loop-free fragment, no uniqueness axiom.
+
+Route (every layer of the rewired pipeline exercised end-to-end):
+- loopFree_initRanked: loop-free Thompson automata carry structural ranks
+  (InitRanked: init arms under top, core arms descend); optRank/sumGAut_ranked
+  lift to the closed sum
+- bounded_quot_solvesBA (THE ACYCLICITY ENGINE): the canonical quotient of a
+  ranked automaton is provably solvable — trim_quot_bisim/quot_lang_eq make
+  quotient languages equal trim languages at EVERY carrier element, cleanAut
+  drops never-firing arms, and a firing arm strictly decreases the exact
+  maximum accepted length (maxlenB + witness + prepend-pump), so the cleaned
+  quotient is singleton-SCC-shaped
+- equivBA_of_quot_solvesBA closes the pair (trim, descent, untrim, component
+  restriction, Thompson uniqueness, start merge).
+
+The engine is fragment-agnostic: ANY class of programs whose Thompson sums
+can be ranked (or whose quotients can otherwise be shown acyclic) inherits
+completeness the same way.  The general case reduces to: canonical quotients
+of (possibly looping) Thompson sums decompose into the proved shape library.

@@ -620,4 +620,184 @@ theorem bounded_quot_solvesBA (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms bounded_quot_solvesBA
 
+/-! ## Structural ranks for loop-free Thompson automata -/
+
+/-- The loop-free fragment. -/
+inductive LoopFree : Exp A T → Prop where
+  | act (p : A) : LoopFree (.act p)
+  | test (b : BExp T) : LoopFree (.test b)
+  | seq {e f : Exp A T} : LoopFree e → LoopFree f → LoopFree (.seq e f)
+  | ite (b : BExp T) {e f : Exp A T} :
+      LoopFree e → LoopFree f → LoopFree (.ite b e f)
+
+/-- A ranked initialized automaton: initial arms land under `top`, core arms
+    strictly descend, and all states sit under `top`. -/
+structure InitRanked {S' : Type} (aut : InitializedGAut S' A T)
+    (r : S' → Nat) (top : Nat) : Prop where
+  init : ∀ t ∈ aut.initTrans, r t.2.2 < top
+  core : ∀ s, ∀ t ∈ aut.core.trans s, r t.2.2 < r s
+  bound : ∀ s, r s < top
+
+/-- Loop-free Thompson automata are ranked. -/
+theorem loopFree_initRanked {e : Exp A T} (h : LoopFree e) :
+    ∃ (r : (certifiedThompson A T e).State → Nat) (top : Nat),
+      InitRanked (certifiedThompson A T e).aut r top := by
+  induction h with
+  | act p =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_cons.mp ht with heq | hmem
+        · subst heq; exact Nat.zero_lt_one
+        · exact nomatch hmem
+      · intro s t ht
+        exact nomatch ht
+      · intro _; exact Nat.zero_lt_one
+  | test b =>
+      refine ⟨fun _ => 0, 1, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht; exact nomatch ht
+      · intro s; exact nomatch s
+      · intro s; exact nomatch s
+  | @seq e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim (fun s => r₁ s + t₂) r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 + t₂ < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          have := h₂.bound t₀.2.2
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            rcases List.mem_append.mp ht with hL | hR
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+              rw [← heq]
+              have := h₁.core u t₀ ht₀
+              show r₁ t₀.2.2 + t₂ < r₁ u + t₂
+              omega
+            · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+              rw [← heq]
+              have := h₂.init t₀ ht₀
+              show r₂ t₀.2.2 < r₁ u + t₂
+              omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rw [← heq]
+            have := h₂.core u t₀ ht₀
+            show r₂ t₀.2.2 < r₂ u
+            omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u + t₂ < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+  | @ite b e f _ _ ihe ihf =>
+      obtain ⟨r₁, t₁, h₁⟩ := ihe
+      obtain ⟨r₂, t₂, h₂⟩ := ihf
+      refine ⟨Sum.elim r₁ r₂, t₁ + t₂, ⟨?_, ?_, ?_⟩⟩
+      · intro t ht
+        rcases List.mem_append.mp ht with hL | hR
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hL
+          rw [← heq]
+          have := h₁.init t₀ ht₀
+          show r₁ t₀.2.2 < t₁ + t₂
+          omega
+        · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hR
+          rw [← heq]
+          have := h₂.init t₀ ht₀
+          show r₂ t₀.2.2 < t₁ + t₂
+          omega
+      · intro s t ht
+        cases s with
+        | inl u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rw [← heq]
+            have := h₁.core u t₀ ht₀
+            show r₁ t₀.2.2 < r₁ u
+            omega
+        | inr u =>
+            obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp ht
+            rw [← heq]
+            have := h₂.core u t₀ ht₀
+            show r₂ t₀.2.2 < r₂ u
+            omega
+      · intro s
+        cases s with
+        | inl u =>
+            have := h₁.bound u
+            show r₁ u < t₁ + t₂
+            omega
+        | inr u =>
+            have := h₂.bound u
+            show r₂ u < t₁ + t₂
+            omega
+
+/-- Lift a ranked initialized automaton to its closed form. -/
+def optRank {S' : Type} (r : S' → Nat) (top : Nat) : Option S' → Nat
+  | none => top
+  | some s => r s
+
+theorem toGAut_ranked {S' : Type} {aut : InitializedGAut S' A T}
+    {r : S' → Nat} {top : Nat} (h : InitRanked aut r top) :
+    ∀ s, ∀ e ∈ aut.toGAut.trans s,
+      optRank r top e.2.2 < optRank r top s := by
+  intro s e he
+  cases s with
+  | none =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rw [← heq]
+      exact h.init t₀ ht₀
+  | some u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rw [← heq]
+      exact h.core u t₀ ht₀
+
+theorem sumGAut_ranked {S₁ S₂ : Type} {aut₁ : GAut S₁ A T}
+    {aut₂ : GAut S₂ A T} {rk₁ : S₁ → Nat} {rk₂ : S₂ → Nat}
+    (h₁ : ∀ s, ∀ e ∈ aut₁.trans s, rk₁ e.2.2 < rk₁ s)
+    (h₂ : ∀ s, ∀ e ∈ aut₂.trans s, rk₂ e.2.2 < rk₂ s) :
+    ∀ s, ∀ e ∈ (sumGAut aut₁ aut₂).trans s,
+      Sum.elim rk₁ rk₂ e.2.2 < Sum.elim rk₁ rk₂ s := by
+  intro s e he
+  cases s with
+  | inl u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rw [← heq]
+      exact h₁ u t₀ ht₀
+  | inr u =>
+      obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp he
+      rw [← heq]
+      exact h₂ u t₀ ht₀
+
+open GkatSumQuotient in
+/-- **LOOP-FREE COMPLETENESS** — the pipeline's first closed theorem: the
+    finite GKAT axioms with the test Boolean algebra are complete for
+    uniformly-language-equivalent LOOP-FREE programs.  No uniqueness axiom, no
+    hypotheses: the trimmed sum is ranked, its canonical quotient is therefore
+    acyclic, `singleton_scc_roles` covers it, and the rewired summit chain
+    closes the pair. -/
+theorem loopfree_complete (e f : Exp A T) (he : LoopFree e) (hf : LoopFree f)
+    (heq : UniformLanguageEquivalent e f) : EquivBA e f := by
+  obtain ⟨r₁, t₁, h₁⟩ := loopFree_initRanked he
+  obtain ⟨r₂, t₂, h₂⟩ := loopFree_initRanked hf
+  obtain ⟨qsol, hq⟩ := bounded_quot_solvesBA (SUMof A T e f)
+    (Sum.elim (optRank r₁ t₁) (optRank r₂ t₂))
+    (sumGAut_ranked (toGAut_ranked h₁) (toGAut_ranked h₂))
+  exact equivBA_of_quot_solvesBA e f heq hq
+
+#print axioms loopfree_complete
+
 end GkatLoopFree
