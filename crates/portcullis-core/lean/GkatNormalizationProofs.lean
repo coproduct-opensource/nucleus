@@ -1,4 +1,5 @@
 import GkatPlanExistenceProofs
+import GkatDeadExitElimProofs
 
 /-! # S0: the normalization bridge — the interface algebra
 
@@ -439,5 +440,169 @@ theorem wh_test_collapse (b c : BExp T) :
   exact EquivBA.symm h4
 
 #print axioms wh_test_collapse
+
+/-! ## The guardedness keystone: the fundamental theorem + productive loops
+
+    POPL'20 (Smolka et al.) Theorem 3.7 / Lemma 3.9, made GUARD-STRUCTURAL: the
+    paper's `D(e)` is an atom-indexed guarded sum; here it is a plain expression
+    built by recursion, so no atom-enumeration machinery is needed.  The loop
+    case of `dPart` bakes the productive body in, which dissolves the paper's
+    tightening identity `¬E(e)·D(e) ≡ D(e)` entirely.  The FT induction's loop
+    case uses Productive Loop FOR THE BODY (the induction hypothesis), so the
+    mutual dependency is stratified, not circular. -/
+
+/-- The structural productive part: `e` minus its empty-string behaviour. -/
+def dPart : Exp A T → Exp A T
+  | .test _ => .test .zero
+  | .act p => .act p
+  | .ite c e f => .ite c (dPart e) (dPart f)
+  | .seq e f => .ite (E e) (dPart f) (.seq (dPart e) f)
+  | .wh c e => .seq (.seq (.test (.not (E e))) (dPart e))
+      (.wh c (.seq (.test (.not (E e))) (dPart e)))
+
+/-- The productive part is strictly productive. -/
+theorem dPart_E_empty (e : Exp A T) : GuardEmpty (E (dPart e)) := by
+  induction e with
+  | act p => intro X W x; rfl
+  | test b => intro X W x; rfl
+  | seq e f ihe ihf =>
+      intro X W x
+      show (bval W (E e) x && bval W (E (dPart f)) x
+        || !bval W (E e) x && (bval W (E (dPart e)) x && bval W (E f) x)) = false
+      rw [ihe X W x, ihf X W x]
+      cases bval W (E e) x <;> rfl
+  | ite c e f ihe ihf =>
+      intro X W x
+      show (bval W c x && bval W (E (dPart e)) x
+        || !bval W c x && bval W (E (dPart f)) x) = false
+      rw [ihe X W x, ihf X W x]
+      cases bval W c x <;> rfl
+  | wh c e ihe =>
+      intro X W x
+      show ((!bval W (E e) x && bval W (E (dPart e)) x) && !bval W c x) = false
+      rw [ihe X W x]
+      cases bval W (E e) x <;> rfl
+
+/-- **THE FUNDAMENTAL THEOREM of GKAT** (structural form): every program is its
+    termination test guarding `1?`, else its strictly productive part. -/
+theorem fundamental (e : Exp A T) :
+    EquivBA e (.ite (E e) (.test .one) (dPart e)) := by
+  induction e with
+  | test b =>
+      show EquivBA (.test b) (.ite b (.test .one) (.test .zero))
+      refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.s5 (.test b)))) ?_
+      exact test_seq_as_ite b (.test .one)
+  | act p =>
+      show EquivBA (.act p) (.ite .zero (.test .one) (.act p))
+      exact EquivBA.symm
+        (GkatDeadExitElim.ite_zero_guard _ _ (fun X W x => rfl))
+  | seq e f ihe ihf =>
+      show EquivBA (.seq e f)
+        (.ite (.and (E e) (E f)) (.test .one)
+          (.ite (E e) (dPart f) (.seq (dPart e) f)))
+      refine EquivBA.trans (EquivBA.seq_c ihe (EquivBA.base (Equiv.refl f))) ?_
+      refine EquivBA.trans (EquivBA.symm (EquivBA.base
+        (Equiv.u5 (E e) (.test .one) (dPart e) f))) ?_
+      refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.s4 f))
+        (EquivBA.base (Equiv.refl _))) ?_
+      refine EquivBA.trans (EquivBA.ite_c ihf (EquivBA.base (Equiv.refl _))) ?_
+      refine EquivBA.trans (EquivBA.base
+        (Equiv.u3 (E f) (E e) (.test .one) (dPart f) (.seq (dPart e) f))) ?_
+      exact EquivBA.ite_guard (fun X W x => by
+        show (bval W (E f) x && bval W (E e) x)
+          = (bval W (E e) x && bval W (E f) x)
+        cases bval W (E f) x <;> cases bval W (E e) x <;> rfl)
+  | ite c e f ihe ihf =>
+      show EquivBA (.ite c e f)
+        (.ite (.or (.and c (E e)) (.and (.not c) (E f))) (.test .one)
+          (.ite c (dPart e) (dPart f)))
+      refine EquivBA.trans (EquivBA.ite_c ihe ihf) ?_
+      refine EquivBA.trans (EquivBA.base
+        (Equiv.u3 (E e) c (.test .one) (dPart e)
+          (.ite (E f) (.test .one) (dPart f)))) ?_
+      have hinner : EquivBA
+          (.ite c (dPart e) (.ite (E f) (.test .one) (dPart f)))
+          (.ite (.and (E f) (.not c)) (.test .one)
+            (.ite c (dPart e) (dPart f))) := by
+        refine EquivBA.trans (EquivBA.base (Equiv.u2 c (dPart e) _)) ?_
+        refine EquivBA.trans (EquivBA.base
+          (Equiv.u3 (E f) (.not c) (.test .one) (dPart f) (dPart e))) ?_
+        exact EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+          (EquivBA.symm (EquivBA.base (Equiv.u2 c (dPart e) (dPart f))))
+      refine EquivBA.trans
+        (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) hinner) ?_
+      refine EquivBA.trans (EquivBA.symm (ite_or_split (.and (E e) c)
+        (.and (E f) (.not c)) (.test .one) (.ite c (dPart e) (dPart f)))) ?_
+      exact EquivBA.ite_guard (fun X W x => by
+        show (bval W (E e) x && bval W c x || bval W (E f) x && !bval W c x)
+          = (bval W c x && bval W (E e) x || !bval W c x && bval W (E f) x)
+        cases bval W c x <;> cases bval W (E e) x <;> cases bval W (E f) x <;> rfl)
+  | wh c e ihe =>
+      show EquivBA (.wh c e)
+        (.ite (.not c) (.test .one)
+          (.seq (.seq (.test (.not (E e))) (dPart e))
+            (.wh c (.seq (.test (.not (E e))) (dPart e)))))
+      have hpl : EquivBA (.wh c e)
+          (.wh c (.seq (.test (.not (E e))) (dPart e))) := by
+        refine EquivBA.trans (EquivBA.wh_c ihe) ?_
+        refine EquivBA.trans (EquivBA.wh_c (EquivBA.base
+          (Equiv.u2 (E e) (.test .one) (dPart e)))) ?_
+        exact EquivBA.base (Equiv.w2 c (.not (E e)) (dPart e))
+      refine EquivBA.trans hpl ?_
+      refine EquivBA.trans (EquivBA.base (Equiv.w1 c _)) ?_
+      exact EquivBA.base (Equiv.u2 c _ (.test .one))
+
+#print axioms fundamental
+
+/-- **PRODUCTIVE LOOP** (POPL'20 Lemma 3.9): every loop is provably a loop with
+    a strictly productive body — `w2` strips the termination part exposed by the
+    fundamental theorem. -/
+theorem productive_loop (c : BExp T) (e : Exp A T) :
+    EquivBA (.wh c e) (.wh c (.seq (.test (.not (E e))) (dPart e))) := by
+  refine EquivBA.trans (EquivBA.wh_c (fundamental e)) ?_
+  refine EquivBA.trans (EquivBA.wh_c (EquivBA.base
+    (Equiv.u2 (E e) (.test .one) (dPart e)))) ?_
+  exact EquivBA.base (Equiv.w2 c (.not (E e)) (dPart e))
+
+/-- The replacement body really is strictly productive. -/
+theorem productive_body_empty (e : Exp A T) :
+    GuardEmpty (E (.seq (.test (.not (E e))) (dPart e) : Exp A T)) := by
+  intro X W x
+  show (!bval W (E e) x && bval W (E (dPart e)) x) = false
+  rw [dPart_E_empty e X W x]
+  cases bval W (E e) x <;> rfl
+
+/-- **THE GUARDEDNESS NORMALIZATION**: every loop body is provably replaceable
+    by a strictly productive one — the keystone the loop stratum was queued
+    behind. -/
+theorem guardedness_normalization (c : BExp T) (e : Exp A T) :
+    ∃ ê : Exp A T, EquivBA (.wh c e) (.wh c ê) ∧ GuardEmpty (E ê) :=
+  ⟨_, productive_loop c e, productive_body_empty e⟩
+
+#print axioms guardedness_normalization
+
+/-! ## Unlocked corollaries -/
+
+/-- Exit emission with NO productivity hypothesis: every loop provably ends in
+    its exit guard. -/
+theorem wh_emits_exit_all (b : BExp T) (e : Exp A T) :
+    EquivBA (.wh b e) (.seq (.wh b e) (.test (.not b))) := by
+  refine EquivBA.trans (productive_loop b e) ?_
+  refine EquivBA.trans
+    (wh_emits_exit (guard_zero_test (productive_body_empty e))) ?_
+  exact EquivBA.seq_c (EquivBA.symm (productive_loop b e))
+    (EquivBA.base (Equiv.refl _))
+
+/-- **The unguarded divergent loop is `0`** — for EVERY body, no side
+    conditions: `wh 1 e ≡ 0?`. -/
+theorem wh_one_zero (e : Exp A T) :
+    EquivBA (.wh .one e) (.test .zero) := by
+  refine EquivBA.trans (wh_emits_exit_all .one e) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+    (EquivBA.baTest (b := .not .one) (c := .zero) (fun X W x => rfl))) ?_
+  exact EquivBA.base (Equiv.s3 _)
+
+#print axioms wh_emits_exit_all
+#print axioms wh_one_zero
 
 end GkatNormalization

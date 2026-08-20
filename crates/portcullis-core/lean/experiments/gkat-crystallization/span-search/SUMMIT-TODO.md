@@ -39,11 +39,17 @@
               wh b (c?) ≡ (¬b)? — includes the divergent wh 1 (1?) ≡ 0?, the
               first unguarded-loop elimination (w2 identifies test bodies,
               w3_ba kills the 0?-bodied loop) — axiom-free, no UA
-            * NEXT: tight loop stratum (body descent needs wh b e ≡ wh b (b?·e),
-              which needs productivity, which needs the w2 guardedness
-              normalization — that unlocks wh 1 e ≡ 0 too), then Thompson
-              silent-freeness of pruned terms (the mountain), then wire into
-              NormalizationBridge
+            * KEYSTONE DONE (all axiom-free): dPart (structural productive part
+              — POPL'20 D(e) without atom-indexed sums; the wh case bakes the
+              productive body in, dissolving the ¬E·D ≡ D tightening lemma);
+              fundamental (FT: e ≡ ite (E e) 1? (dPart e)); productive_loop +
+              guardedness_normalization (every loop body provably replaceable by
+              a strictly productive one, via w2); wh_emits_exit_all (every loop
+              ends in ¬b, no hypotheses); wh_one_zero (wh 1 e ≡ 0?, every body)
+            * NEXT: tight prune through loop bodies (wh b e ≡ wh b (b?·e) now
+              derivable for productive bodies via w3_ba), tight loop outG, then
+              Thompson silent-freeness of pruned terms (the mountain), then wire
+              into NormalizationBridge
       - [~] S2: role existence for the canonical quotient (the research core) —
             OPENED, acyclic stratum proved (dag_roles: WellFounded StepRel ⟹ full
             fold cover via dagSol well-founded recursion).  NEXT: single-SCC ring
