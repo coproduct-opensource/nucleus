@@ -1157,3 +1157,28 @@ computable and choice-free. Remaining: phase 4 (minRank over the pool)
 PHASE 4 COMPLETE. Remaining: phase 5 — the sweep + end-to-end assembly
 of the computable witness (run the existence pipeline over
 trimAutD/bisimQuotAutD/minRankD for chain-loop composites).
+
+## ============================================================
+## THE CERTIFIED DECISION PROCEDURE (iteration 40, "Continue")
+## ============================================================
+
+New file GkatDecideProofs.lean:
+- thompsonDecEq / thompson_exhaustive / sumof_exhaustive: Thompson state
+  types have decidable equality and enumerate — structurally, for ALL
+  programs (Empty/Unit/Sum recursion)
+- autLang_sum_inl/inr: languages through the sum embeddings
+- ule_iff_start_bisim: PROGRAM EQUIVALENCE IS START-STATE BISIMILARITY
+  in the trimmed Thompson sum (certifiedThompson_start_language +
+  genericity + the LiveSteps capstone)
+- uleDec: THE EQUIVALENCE DECIDER — UniformLanguageEquivalent is
+  Decidable for ALL GKAT programs over decidable alphabets. Computes on
+  trimAutD, transported along trimAutD_eq_trimAut. COMPILES COMPUTABLY.
+- chainloops_equivBA_dec: THE CERTIFIED DECISION PROCEDURE — provable
+  equivalence (EquivBA, finite axioms, NO UA) of chain-loop programs is
+  Decidable: completeness (chainloops_complete_free) one way, soundness
+  (sound_BA) the other, decision by uleDec.
+
+Axiom prints carry Classical.choice only in ERASED proof positions (the
+transport iffs mention classical trimAut); the computational content is
+choice-free and executable. The de-choice campaign's goal — a certified,
+computable decision path for the fourth theorem — is DELIVERED.
