@@ -517,3 +517,25 @@ The quotient cycle data (len, m) is now provably CANONICAL: independent of
 which orbit member computes it and which source witness it uses. This is
 everything the global cy function needs for well-definedness. Remaining:
 assemble cy + positions (qorb_injective), fragment definition, glue.
+
+## CY-ASSEMBLY SUPPORT LAYER (loop iteration 14)
+
+- qorb_period_all / qorb_qmod: the class sequence is qPeriod-periodic;
+  every orbit index reduces mod the first-return period (mul-induction +
+  div_add_mod)
+- orbit_track_from: CROSS-WITNESS TRACKING — orbits of different witnesses
+  (different source cycles, own periods) that meet in one class track
+  together forever (rank equality via the two cycle_level_all's, then
+  orbit_m_eq)
+- inOrbit_track: ORBIT-CLOSURE — a witness containing one class of an orbit
+  contains them all (track + source-period index surgery)
+- firstMem_congr_mem: list-relative firstMem congruence
+- qpos + qpos_spec + qpos_qm: the canonical position function — choose the
+  InOrbit index, reduce mod qPeriod; position of the j-th class IS j
+  (trichotomy + qorb_injective both ways).
+All [propext, Classical.choice, Quot.sound].
+
+Everything the global cy assignment consumes now exists. Next: define orbCy
+by firstMem over the orbit list, discharge hcy (coherence via inOrbit_track
++ firstMem_congr_mem + qpos_qm, bundle via orbit_cy_bundle), apply
+walked_assembly_roles -> rankNxt_quot_solvesBA.
