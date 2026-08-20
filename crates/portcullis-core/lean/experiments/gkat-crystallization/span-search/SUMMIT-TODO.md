@@ -276,3 +276,25 @@ multi-port tail in the general attack.
 NEXT: multi-action loop bodies (2+ core states → back-edges create genuine
 in-body cycles: needs rank-modulo-COVERED-SCC — fold the walked-cycle shape
 library into the minimal-realizer descent engine); nested loops.
+
+## THE CYCLE DICHOTOMY (loop iteration 2)
+
+quot_cycle_dichotomy (GkatChainLoopProofs): for a RANK-MODULO-SIMPLE-CYCLE
+source (successor function nxt; every arm targets nxt s or strictly
+descends — subsumes mod-self via nxt = id), each state of the cleaned
+canonical quotient carries a minimal realizer u such that EVERY cleaned arm
+is (i) a self-arm, (ii) strictly descending in minimal-realizer rank, or
+(iii) exactly the class of nxt u — a UNIQUE quotient cycle-successor.
+
+I.e. the rank-modulo-simple-cycle class is CLOSED under canonical
+quotients (quotient-side nxt' c := ⟦nxt u_c⟧).  The GKAT analog of
+Grabmayer's LLEE-preservation-under-near-collapse and the coequation
+paper's minimization-preserves-nesting.  [propext, Classical.choice,
+Quot.sound]
+
+NEXT (iterations 3+): (a) orbit/period machinery — qnxt-orbits in the
+finite states list are cycles (pigeonhole or minUpTo-style first-return);
+(b) instantiate full_assembly_roles/walked_exit on the quotient cycles
+(single-port condition from chain-body halt structure); (c) ChainLoops
+fragment rank (wh over multi-action chains) → the fourth unconditional
+completeness theorem.
