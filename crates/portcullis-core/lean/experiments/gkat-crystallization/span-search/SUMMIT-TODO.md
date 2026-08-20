@@ -343,3 +343,23 @@ follows the derivatives — needs the min-level argument: at the orbit minimum
 the firing target must be the nxt-successor), then the cy-bundle assembly
 (m, len := source period, positions, hint_nil/himpc/hdisj/hexcl from
 chain-shape hypotheses) → rankNxt_quot_solvesBA → chainloops_complete.
+
+## CYCLE LEVEL MINIMALITY (loop iteration 5)
+
+- realizer_propagate: a realizer of an orbit language walks forward around
+  the cycle WITHOUT rank increase — its firing target at each cycle atom
+  realizes the next orbit language (derivative matching through the shared
+  word), and the mod-nxt arm dichotomy plus rank(nxt s) = rank s cap the
+  rank at every step.
+- cycle_level_min: on a periodic source orbit whose basepoint is a minimal
+  realizer of its own language, EVERY orbit class sits at exactly the
+  basepoint's rank — a better realizer anywhere on the cycle would propagate
+  around to beat the basepoint at its own language.
+Both [propext, Classical.choice, Quot.sound].
+
+The analytical core of the orbit machinery is now complete.  Remaining for
+chainloops_complete: (a) the minimal QUOTIENT period (positions injective —
+least p ≥ 1 with rep(nxtIter p u0) = rep u0, via minUpTo on p ≤ k) and the
+cy-bundle construction discharging walked_assembly_roles' coherence
+(hint_nil/himpc/hdisj/hexcl from chain-shape source hypotheses, level
+equality from cycle_level_min); (b) ChainLoops fragment rank; (c) glue.

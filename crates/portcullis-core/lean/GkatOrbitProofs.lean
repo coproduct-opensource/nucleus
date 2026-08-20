@@ -112,4 +112,141 @@ theorem orbit_track (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 
 #print axioms orbit_track
 
+/-- Ranks are constant along the successor orbit. -/
+theorem nxtIter_rank {rank : S → Nat} {nxt : S → S}
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s) (u₀ : S) :
+    ∀ j, rank (nxtIter nxt j u₀) = rank u₀ := by
+  intro j
+  induction j with
+  | zero => rfl
+  | succ j ih =>
+      show rank (nxt (nxtIter nxt j u₀)) = rank u₀
+      rw [hnxt_rank]
+      exact ih
+
+open Classical in
+/-- Representatives carry their state's language. -/
+theorem rep_lang (aut : GAut S A T) (x : S) :
+    autLang (genW T) (trimAut aut) (bisimRep (trimAut aut) x)
+      = autLang (genW T) (trimAut aut) x :=
+  (autLang_eq_of_gautBisim (genBisimilar_bisim (trimAut aut))
+    (bisimRep_bisim (trimAut aut) x)).symm
+
+open Classical in
+/-- **REALIZER PROPAGATION**: a realizer of an orbit language walks forward
+    around the cycle without rank increase — at each cycle atom its firing
+    target realizes the next orbit language at the same or lower rank. -/
+theorem realizer_propagate (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    (u₀ : S) (hlive : Live (trimAut aut) u₀) (k : Nat)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀) :
+    ∀ steps j, j + steps ≤ k →
+    ∀ w, autLang (genW T) (trimAut aut) w
+        = autLang (genW T) (trimAut aut) (nxtIter nxt j u₀) →
+    ∃ w', autLang (genW T) (trimAut aut) w'
+        = autLang (genW T) (trimAut aut) (nxtIter nxt (j + steps) u₀)
+      ∧ rank w' ≤ rank w := by
+  have hdecT : ∀ s, ∀ e ∈ (trimAut aut).trans s,
+      e.2.2 = nxt s ∨ rank e.2.2 < rank s := by
+    intro s e he
+    obtain ⟨g₀, hg₀⟩ := trimList_target_mem aut (aut.trans s) .zero e he
+    exact hdec s (g₀, e.2.1, e.2.2) hg₀
+  intro steps
+  induction steps with
+  | zero =>
+      intro j hjk w hw
+      exact ⟨w, by rw [Nat.add_zero]; exact hw, Nat.le_refl _⟩
+  | succ steps ih =>
+      intro j hjk w hw
+      have hlj : Live (trimAut aut) (nxtIter nxt j u₀) :=
+        orbit_track aut rank nxt hfire u₀ hlive j
+          (fun i hi => hnofix i (by omega))
+      obtain ⟨α, a, hstepS⟩ := hfire (nxtIter nxt j u₀) hlj
+        (hnofix j (by omega))
+      have hlnext : Live (trimAut aut) (nxtIter nxt (j + 1) u₀) :=
+        orbit_track aut rank nxt hfire u₀ hlive (j + 1)
+          (fun i hi => hnofix i (by omega))
+      obtain ⟨β, ws, hwits⟩ := hlnext
+      have hword_s : autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+          ((a, β) :: ws) := ⟨nxtIter nxt (j + 1) u₀, hstepS, hwits⟩
+      have hword_w : autRun (genW T) (trimAut aut) w α ((a, β) :: ws) :=
+        (iff_of_eq (congrFun hw (α, (a, β) :: ws))).mpr hword_s
+      obtain ⟨v, hstepW, -⟩ : ∃ v,
+          autStep (genW T) (trimAut aut) w α = some (a, v)
+          ∧ autRun (genW T) (trimAut aut) v β ws := hword_w
+      have hvL : autLang (genW T) (trimAut aut) v
+          = autLang (genW T) (trimAut aut) (nxtIter nxt (j + 1) u₀) := by
+        funext gs
+        obtain ⟨γ, l⟩ := gs
+        apply propext
+        have h1 := step_derivative hstepW γ l
+        have h2 := step_derivative hstepS γ l
+        have h3 : autRun (genW T) (trimAut aut) w α ((a, γ) :: l)
+            ↔ autRun (genW T) (trimAut aut) (nxtIter nxt j u₀) α
+              ((a, γ) :: l) :=
+          iff_of_eq (congrFun hw (α, (a, γ) :: l))
+        exact h1.trans (h3.trans h2.symm)
+      obtain ⟨ea, hea, -, heat⟩ := firstMatch_mem (genW T) hstepW
+      have heat' : ea.2.2 = v := heat
+      have hvrank : rank v ≤ rank w := by
+        rcases hdecT w ea hea with hEq | hLt
+        · rw [← heat', hEq, hnxt_rank]
+          exact Nat.le_refl _
+        · rw [heat'] at hLt
+          omega
+      obtain ⟨w', hw'L, hw'r⟩ := ih (j + 1) (by omega) v hvL
+      refine ⟨w', ?_, Nat.le_trans hw'r hvrank⟩
+      rw [show j + (steps + 1) = (j + 1) + steps from by omega]
+      exact hw'L
+
+open Classical in
+/-- **CYCLE LEVEL MINIMALITY**: on a periodic source orbit whose basepoint is
+    a minimal realizer of its own language, every orbit class sits at exactly
+    the basepoint's rank. -/
+theorem cycle_level_min (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    (u₀ : S) (k : Nat) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w) :
+    ∀ j, j ≤ k →
+      minRank (trimAut aut) rank (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+        = rank u₀ := by
+  intro j hj
+  refine Nat.le_antisymm ?_ ?_
+  · -- ≤ : the orbit point itself realizes, at the basepoint rank
+    have h1 : autLang (genW T) (trimAut aut) (nxtIter nxt j u₀)
+        = autLang (genW T) (trimAut aut)
+          (bisimRep (trimAut aut) (nxtIter nxt j u₀)) :=
+      (rep_lang aut (nxtIter nxt j u₀)).symm
+    have h2 := minRank_le (trimAut aut) rank h1
+    rw [nxtIter_rank hnxt_rank u₀ j] at h2
+    exact h2
+  · -- ≥ : any better realizer would propagate around to beat the basepoint
+    obtain ⟨w, hwle, hwL⟩ := minRank_spec (trimAut aut) rank
+      (bisimRep (trimAut aut) (nxtIter nxt j u₀))
+    have hwL' : autLang (genW T) (trimAut aut) w
+        = autLang (genW T) (trimAut aut) (nxtIter nxt j u₀) := by
+      rw [hwL]
+      exact rep_lang aut (nxtIter nxt j u₀)
+    obtain ⟨w', hw'L, hw'r⟩ := realizer_propagate aut rank nxt hdec hnxt_rank
+      hfire u₀ hlive k hnofix (k - j) j (by omega) w hwL'
+    have hw'u : autLang (genW T) (trimAut aut) w'
+        = autLang (genW T) (trimAut aut) u₀ := by
+      rw [show j + (k - j) = k from by omega, hper] at hw'L
+      exact hw'L
+    have := hmin w' hw'u
+    omega
+
+#print axioms cycle_level_min
+
 end GkatOrbit
