@@ -767,3 +767,25 @@ obligations of rankNxt_quot_solvesBA, discharged at the exact automaton
 the wrapper uses. Remaining: periodicity/hnofix packaging (spine_iter +
 spine_distinct through the Sum/Option lift), qPeriod >= 2 + none~last,
 os/cover assembly, the wrapper.
+
+## COMPOSITE hfire + PORT WALK (loop iteration 24)
+
+- nxtIter_lift_inl/inr: iteration commutes with the Sum/Option lift
+- spine_iter_port / spine_period_port / spine_nofix_port: the PORT-based
+  walk — iteration from the port traverses the spine, closes after length
+  steps, never fixes below the period (needs 2 <= length; the length-1
+  wrap-to-self case is exactly where hne is refuted instead)
+- sum_targets_live_inr + sum_chain_step_interior_inr/port_inr: right-
+  summand mirrors of the trim-level steps
+- sum_chain_hfire: THE COMPOSITE hfire — every state of the trimmed sum
+  with a moving lifted successor fires to it at some atom: init states
+  are successor-fixed (vacuous), interiors fire at every atom, ports fire
+  at a b-satisfying atom, and the length-1 port refutes the moving
+  hypothesis.
+
+The FULL orbit-bundle obligations of rankNxt_quot_solvesBA are now
+discharged for chain-loop composites (both-satisfiable case):
+  hdec, hnxt_rank, hfire GLOBAL, hper/hnofix (port walk + lift),
+  hlive, hmin (rank 0 trivial), hstep_uniq, hnoeps.
+Remaining: qPeriod >= 2 + none~last + hstates (quotient membership) +
+os/cover assembly + the wrapper + degenerate-guard branches.

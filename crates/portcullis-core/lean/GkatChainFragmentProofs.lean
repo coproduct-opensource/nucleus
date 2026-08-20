@@ -1356,4 +1356,296 @@ theorem sum_chain_noeps {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
 #print axioms sum_chain_step_port
 #print axioms sum_chain_noeps
 
+/-! ## Port-based walks, lifts, and the composite `hfire`
+
+    The orbit bundle is based at the PORT.  Iteration from the port walks
+    the spine (`spine_iter_port`), closes after `length` steps, and never
+    fixes below the period.  `nxtIter` commutes with the `Sum`/`Option`
+    lift, and every composite state with a moving successor fires to it —
+    the global `hfire` of `rankNxt_quot_solvesBA`. -/
+
+open Classical in
+theorem nxtIter_lift_inl {S₁ S₂ : Type} (g₁ : S₁ → S₁) (g₂ : S₂ → S₂) :
+    ∀ (k : Nat) (x : S₁),
+      nxtIter (Sum.elim (fun o : Option S₁ => Sum.inl (o.map g₁))
+        (fun o : Option S₂ => Sum.inr (o.map g₂))) k (Sum.inl (some x))
+        = Sum.inl (some (nxtIter g₁ k x)) := by
+  intro k
+  induction k with
+  | zero => intro x; rfl
+  | succ k ih =>
+      intro x
+      have h : nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map g₁))
+          (fun o : Option S₂ => Sum.inr (o.map g₂))) (k + 1)
+          (Sum.inl (some x))
+          = Sum.elim (fun o : Option S₁ => Sum.inl (o.map g₁))
+            (fun o : Option S₂ => Sum.inr (o.map g₂))
+            (nxtIter (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map g₁))
+              (fun o : Option S₂ => Sum.inr (o.map g₂))) k
+              (Sum.inl (some x))) := rfl
+      rw [h, ih x]
+      rfl
+
+open Classical in
+theorem nxtIter_lift_inr {S₁ S₂ : Type} (g₁ : S₁ → S₁) (g₂ : S₂ → S₂) :
+    ∀ (k : Nat) (x : S₂),
+      nxtIter (Sum.elim (fun o : Option S₁ => Sum.inl (o.map g₁))
+        (fun o : Option S₂ => Sum.inr (o.map g₂))) k (Sum.inr (some x))
+        = Sum.inr (some (nxtIter g₂ k x)) := by
+  intro k
+  induction k with
+  | zero => intro x; rfl
+  | succ k ih =>
+      intro x
+      have h : nxtIter (Sum.elim
+          (fun o : Option S₁ => Sum.inl (o.map g₁))
+          (fun o : Option S₂ => Sum.inr (o.map g₂))) (k + 1)
+          (Sum.inr (some x))
+          = Sum.elim (fun o : Option S₁ => Sum.inl (o.map g₁))
+            (fun o : Option S₂ => Sum.inr (o.map g₂))
+            (nxtIter (Sum.elim
+              (fun o : Option S₁ => Sum.inl (o.map g₁))
+              (fun o : Option S₂ => Sum.inr (o.map g₂))) k
+              (Sum.inr (some x))) := rfl
+      rw [h, ih x]
+      rfl
+
+open Classical in
+/-- Iteration from the port walks the spine. -/
+theorem spine_iter_port {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (h0 : 0 < l.length) (hfl : l[0]'h0 = first) :
+    ∀ j (hj : j < l.length),
+      nxtIter (spineNext first l) (j + 1) (l[l.length - 1]'(by omega))
+        = l[j]'hj := by
+  intro j hj
+  rw [show j + 1 = 1 + j from by omega, nxtIter_add]
+  have h1 : nxtIter (spineNext first l) 1 (l[l.length - 1]'(by omega))
+      = first := by
+    show spineNext first l (l[l.length - 1]'(by omega)) = first
+    exact spineNext_last first l hsp h0
+  have h2 := spine_iter first hsp j hj h0
+  rw [hfl] at h2
+  rw [h1]
+  exact h2
+
+open Classical in
+/-- The port's walk closes after `length` steps. -/
+theorem spine_period_port {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (h0 : 0 < l.length) (hfl : l[0]'h0 = first) :
+    nxtIter (spineNext first l) l.length (l[l.length - 1]'(by omega))
+      = l[l.length - 1]'(by omega) := by
+  have h := spine_iter_port hsp h0 hfl (l.length - 1) (by omega)
+  rw [show l.length - 1 + 1 = l.length from by omega] at h
+  exact h
+
+open Classical in
+/-- Below the period, the port's walk never fixes. -/
+theorem spine_nofix_port {S' : Type} {B : InitializedGAut S' A T}
+    {l : List S'} (hsp : ChainSpine B l) {first : S'}
+    (hlen2 : 2 ≤ l.length) (hfl : l[0]'(by omega) = first) :
+    ∀ j, j < l.length →
+      spineNext first l
+          (nxtIter (spineNext first l) j (l[l.length - 1]'(by omega)))
+        ≠ nxtIter (spineNext first l) j (l[l.length - 1]'(by omega)) := by
+  intro j hj
+  cases j with
+  | zero =>
+      show spineNext first l (l[l.length - 1]'(by omega))
+        ≠ l[l.length - 1]'(by omega)
+      rw [spineNext_last first l hsp (by omega), ← hfl]
+      exact spine_distinct l hsp 0 (l.length - 1)
+        (by omega) (by omega) (by omega)
+  | succ j =>
+      have hj1 : j + 1 < l.length := hj
+      rw [spine_iter_port hsp (by omega) hfl j (by omega)]
+      rw [spineNext_at first l hsp j hj1]
+      exact (spine_distinct l hsp j (j + 1) (by omega) hj1
+        (by omega)).symm
+
+open Classical in
+/-- Right-summand mirror: all composite arm targets at a loop state are
+    live. -/
+theorem sum_targets_live_inr {S₁ S₂ : Type} {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) (first : S₂)
+    (aut₁ : GAut (Option S₁) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₂, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) (x : S₂) :
+    ∀ e ∈ (sumGAut aut₁ (loopInitialized b B).toGAut).trans
+        (Sum.inr (some x)),
+      Live (sumGAut aut₁ (loopInitialized b B).toGAut) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inr (some t₀.2.2))
+  have hmem := loop_targets_spine b hct hit hstates hexh x t₀ ht₀
+  obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem hmem
+  rw [← hjx]
+  exact spine_live_sum_inr b hsp first aut₁ hexit j hj
+
+open Classical in
+/-- Right-summand mirror of the trim-level interior step. -/
+theorem sum_chain_step_interior_inr {S₁ S₂ : Type}
+    {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) (first : S₂)
+    (aut₁ : GAut (Option S₁) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₂, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool, ∃ a : A,
+      autStep (genW T)
+          (trimAut (sumGAut aut₁ (loopInitialized b B).toGAut))
+          (Sum.inr (some (l[j]'(by omega)))) α
+        = some (a, Sum.inr (some (l[j + 1]'h1))) := by
+  intro α
+  obtain ⟨a, hstep⟩ := loop_step_interior b hsp j h1 α
+  refine ⟨a, ?_⟩
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (sum_targets_live_inr b hsp first aut₁ hct hit hstates hexh hexit
+      (l[j]'(by omega))) α]
+  rw [autStep_sumGAut_inr, autStep_toGAut_some]
+  rw [show firstMatch (genW T) α
+      ((loopInitialized b B).core.trans (l[j]'(by omega)))
+    = some (a, l[j + 1]'h1) from hstep]
+  rfl
+
+open Classical in
+/-- Right-summand mirror of the trim-level port step. -/
+theorem sum_chain_step_port_inr {S₁ S₂ : Type}
+    {B : InitializedGAut S₂ A T}
+    (b : BExp T) {l : List S₂} (hsp : ChainSpine B l) {first : S₂}
+    (hin : ChainInit B first)
+    (aut₁ : GAut (Option S₁) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₂, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (h0 : 0 < l.length)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    ∃ a : A,
+      autStep (genW T)
+          (trimAut (sumGAut aut₁ (loopInitialized b B).toGAut))
+          (Sum.inr (some (l[l.length - 1]'(by omega)))) α
+        = some (a, Sum.inr (some first)) := by
+  obtain ⟨a, hstep⟩ := loop_step_port b hsp hin h0 α hb
+  refine ⟨a, ?_⟩
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (sum_targets_live_inr b hsp first aut₁ hct hit hstates hexh hexit
+      (l[l.length - 1]'(by omega))) α]
+  rw [autStep_sumGAut_inr, autStep_toGAut_some]
+  rw [show firstMatch (genW T) α
+      ((loopInitialized b B).core.trans (l[l.length - 1]'(by omega)))
+    = some (a, first) from hstep]
+  rfl
+
+open Classical in
+/-- **THE COMPOSITE hfire**: every state with a moving lifted successor
+    fires to it at some atom, in the trimmed composite. -/
+theorem sum_chain_hfire {S₁ S₂ : Type}
+    {B₁ : InitializedGAut S₁ A T} {B₂ : InitializedGAut S₂ A T}
+    (b₁ b₂ : BExp T) {l₁ : List S₁} {l₂ : List S₂}
+    (hsp₁ : ChainSpine B₁ l₁) (hsp₂ : ChainSpine B₂ l₂)
+    {f₁ : S₁} {f₂ : S₂} (hin₁ : ChainInit B₁ f₁)
+    (hin₂ : ChainInit B₂ f₂)
+    (hct₁ : CoreTargetsListed B₁) (hit₁ : InitTargetsListed B₁)
+    (hct₂ : CoreTargetsListed B₂) (hit₂ : InitTargetsListed B₂)
+    (hstates₁ : B₁.core.states = l₁) (hstates₂ : B₂.core.states = l₂)
+    (hexh₁ : ∀ x : S₁, x ∈ l₁) (hexh₂ : ∀ x : S₂, x ∈ l₂)
+    (hexit₁ : ∃ α : T → Bool, bval (genW T) b₁ α = false)
+    (hexit₂ : ∃ α : T → Bool, bval (genW T) b₂ α = false)
+    (hbsat₁ : ∃ α : T → Bool, bval (genW T) b₁ α = true)
+    (hbsat₂ : ∃ α : T → Bool, bval (genW T) b₂ α = true)
+    (hfl₁ : ∀ (h : 0 < l₁.length), l₁[0]'h = f₁)
+    (hfl₂ : ∀ (h : 0 < l₂.length), l₂[0]'h = f₂) :
+    ∀ s, Live (trimAut (sumGAut (loopInitialized b₁ B₁).toGAut
+        (loopInitialized b₂ B₂).toGAut)) s →
+      Sum.elim (fun o => Sum.inl (o.map (spineNext f₁ l₁)))
+        (fun o => Sum.inr (o.map (spineNext f₂ l₂))) s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T)
+            (trimAut (sumGAut (loopInitialized b₁ B₁).toGAut
+              (loopInitialized b₂ B₂).toGAut)) s α
+          = some (a, Sum.elim
+              (fun o => Sum.inl (o.map (spineNext f₁ l₁)))
+              (fun o => Sum.inr (o.map (spineNext f₂ l₂))) s) := by
+  intro s hlive hne
+  cases s with
+  | inl o =>
+      cases o with
+      | none => exact absurd rfl hne
+      | some x =>
+          obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem (hexh₁ x)
+          subst hjx
+          rcases Nat.lt_or_ge (j + 1) l₁.length with hint | hport
+          · obtain ⟨a, hstep⟩ := sum_chain_step_interior b₁ hsp₁ f₁ _
+              hct₁ hit₁ hstates₁ hexh₁ hexit₁ j hint (fun _ => true)
+            refine ⟨fun _ => true, a, ?_⟩
+            show _ = some (a, Sum.inl (some (spineNext f₁ l₁
+              (l₁[j]'hj))))
+            rw [spineNext_at f₁ l₁ hsp₁ j hint]
+            exact hstep
+          · have hj' : j = l₁.length - 1 := by omega
+            subst hj'
+            rcases Nat.lt_or_ge 1 l₁.length with hlen2 | hlen1
+            · obtain ⟨α, hα⟩ := hbsat₁
+              obtain ⟨a, hstep⟩ := sum_chain_step_port b₁ hsp₁ hin₁ _
+                hct₁ hit₁ hstates₁ hexh₁ hexit₁ (by omega) α hα
+              refine ⟨α, a, ?_⟩
+              show _ = some (a, Sum.inl (some (spineNext f₁ l₁
+                (l₁[l₁.length - 1]'hj))))
+              rw [spineNext_last f₁ l₁ hsp₁ (by omega)]
+              exact hstep
+            · exfalso
+              apply hne
+              show Sum.inl (some (spineNext f₁ l₁
+                (l₁[l₁.length - 1]'hj)))
+                = Sum.inl (some (l₁[l₁.length - 1]'hj))
+              rw [spineNext_last f₁ l₁ hsp₁ (by omega),
+                ← hfl₁ (by omega)]
+              have hidx : l₁.length - 1 = 0 := by omega
+              simp only [hidx]
+  | inr o =>
+      cases o with
+      | none => exact absurd rfl hne
+      | some x =>
+          obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem (hexh₂ x)
+          subst hjx
+          rcases Nat.lt_or_ge (j + 1) l₂.length with hint | hport
+          · obtain ⟨a, hstep⟩ := sum_chain_step_interior_inr b₂ hsp₂ f₂ _
+              hct₂ hit₂ hstates₂ hexh₂ hexit₂ j hint (fun _ => true)
+            refine ⟨fun _ => true, a, ?_⟩
+            show _ = some (a, Sum.inr (some (spineNext f₂ l₂
+              (l₂[j]'hj))))
+            rw [spineNext_at f₂ l₂ hsp₂ j hint]
+            exact hstep
+          · have hj' : j = l₂.length - 1 := by omega
+            subst hj'
+            rcases Nat.lt_or_ge 1 l₂.length with hlen2 | hlen1
+            · obtain ⟨α, hα⟩ := hbsat₂
+              obtain ⟨a, hstep⟩ := sum_chain_step_port_inr b₂ hsp₂ hin₂ _
+                hct₂ hit₂ hstates₂ hexh₂ hexit₂ (by omega) α hα
+              refine ⟨α, a, ?_⟩
+              show _ = some (a, Sum.inr (some (spineNext f₂ l₂
+                (l₂[l₂.length - 1]'hj))))
+              rw [spineNext_last f₂ l₂ hsp₂ (by omega)]
+              exact hstep
+            · exfalso
+              apply hne
+              show Sum.inr (some (spineNext f₂ l₂
+                (l₂[l₂.length - 1]'hj)))
+                = Sum.inr (some (l₂[l₂.length - 1]'hj))
+              rw [spineNext_last f₂ l₂ hsp₂ (by omega),
+                ← hfl₂ (by omega)]
+              have hidx : l₂.length - 1 = 0 := by omega
+              simp only [hidx]
+
+#print axioms spine_iter_port
+#print axioms spine_nofix_port
+#print axioms sum_chain_hfire
+
 end GkatChainFragment
