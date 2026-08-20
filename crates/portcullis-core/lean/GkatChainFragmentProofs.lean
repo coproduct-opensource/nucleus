@@ -1219,4 +1219,141 @@ theorem spine_live_sum_inr {S₁ S₂ : Type} {B : InitializedGAut S₂ A T}
 #print axioms loop_step_port
 #print axioms spine_live_sum_inl
 
+/-! ## Trim-level steps in the composite
+
+    All loop-arm targets stay on the spine (certificate structural facts),
+    all spine states are live, so trimming is transparent at every loop
+    state of the composite — the deterministic steps and the silent
+    interiors reach the trimmed sum automaton, which is exactly where
+    `rankNxt_quot_solvesBA`'s `hfire`, `hstep_uniq` (`interior_no_desc`),
+    and `hnoeps` live. -/
+
+open Classical in
+/-- Loop-arm targets stay on the spine. -/
+theorem loop_targets_spine {S' : Type} {B : InitializedGAut S' A T}
+    (b : BExp T) {l : List S'}
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S', x ∈ l) :
+    ∀ x : S', ∀ t ∈ (loopInitialized b B).core.trans x, t.2.2 ∈ l := by
+  intro x t ht
+  rcases List.mem_append.mp ht with hB | hF
+  · have := hct x (by rw [hstates]; exact hexh x) t hB
+    rw [hstates] at this
+    exact this
+  · obtain ⟨t₀, ht₀, heq⟩ := List.mem_map.mp hF
+    have := hit t₀ ht₀
+    rw [hstates] at this
+    rw [← heq]
+    exact this
+
+open Classical in
+/-- Any spine member is live in the composite (left summand). -/
+theorem spine_mem_live_inl {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    {x : S₁} (hx : x ∈ l) :
+    Live (sumGAut (loopInitialized b B).toGAut aut₂)
+      (Sum.inl (some x)) := by
+  obtain ⟨j, hj, hjx⟩ := List.getElem_of_mem hx
+  rw [← hjx]
+  exact spine_live_sum_inl b hsp first aut₂ hexit j hj
+
+open Classical in
+/-- All composite arms at a loop state have live targets. -/
+theorem sum_targets_live_inl {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₁, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) (x : S₁) :
+    ∀ e ∈ (sumGAut (loopInitialized b B).toGAut aut₂).trans
+        (Sum.inl (some x)),
+      Live (sumGAut (loopInitialized b B).toGAut aut₂) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inl (some t₀.2.2))
+  exact spine_mem_live_inl b hsp first aut₂ hexit
+    (loop_targets_spine b hct hit hstates hexh x t₀ ht₀)
+
+open Classical in
+/-- **TRIM-LEVEL INTERIOR STEP**: in the trimmed composite, interior loop
+    states step deterministically to their successor at every atom. -/
+theorem sum_chain_step_interior {S₁ S₂ : Type}
+    {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₁, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool, ∃ a : A,
+      autStep (genW T)
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+          (Sum.inl (some (l[j]'(by omega)))) α
+        = some (a, Sum.inl (some (l[j + 1]'h1))) := by
+  intro α
+  obtain ⟨a, hstep⟩ := loop_step_interior b hsp j h1 α
+  refine ⟨a, ?_⟩
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (sum_targets_live_inl b hsp first aut₂ hct hit hstates hexh hexit
+      (l[j]'(by omega))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [show firstMatch (genW T) α
+      ((loopInitialized b B).core.trans (l[j]'(by omega)))
+    = some (a, l[j + 1]'h1) from hstep]
+  rfl
+
+open Classical in
+/-- **TRIM-LEVEL PORT STEP**: under `b`, the trimmed composite feeds the
+    port back to the head. -/
+theorem sum_chain_step_port {S₁ S₂ : Type}
+    {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) {first : S₁}
+    (hin : ChainInit B first)
+    (aut₂ : GAut (Option S₂) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₁, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (h0 : 0 < l.length)
+    (α : T → Bool) (hb : bval (genW T) b α = true) :
+    ∃ a : A,
+      autStep (genW T)
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+          (Sum.inl (some (l[l.length - 1]'(by omega)))) α
+        = some (a, Sum.inl (some first)) := by
+  obtain ⟨a, hstep⟩ := loop_step_port b hsp hin h0 α hb
+  refine ⟨a, ?_⟩
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (sum_targets_live_inl b hsp first aut₂ hct hit hstates hexh hexit
+      (l[l.length - 1]'(by omega))) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [show firstMatch (genW T) α
+      ((loopInitialized b B).core.trans (l[l.length - 1]'(by omega)))
+    = some (a, first) from hstep]
+  rfl
+
+open Classical in
+/-- **TRIM-LEVEL INTERIOR SILENCE**: interior loop states accept no empty
+    word in the trimmed composite. -/
+theorem sum_chain_noeps {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l)
+    (aut₂ : GAut (Option S₂) A T)
+    (j : Nat) (h1 : j + 1 < l.length) :
+    ∀ α : T → Bool,
+      ¬ autRun (genW T)
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+          (Sum.inl (some (l[j]'(by omega)))) α [] := by
+  intro α h
+  have h' : bval (genW T)
+      ((loopInitialized b B).core.hlt (l[j]'(by omega))) α = true := h
+  rw [loop_hlt_int b hsp j h1 α] at h'
+  exact nomatch h'
+
+#print axioms sum_chain_step_interior
+#print axioms sum_chain_step_port
+#print axioms sum_chain_noeps
+
 end GkatChainFragment

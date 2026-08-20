@@ -746,3 +746,24 @@ Remaining: assemble hfire at trim level (targets-live plumbing via
 certificate InitTargetsListed/CoreStructural + autStep_trimAut_all_live),
 hnoeps transport (hlt passes through verbatim), none~last, qPeriod >= 2,
 os/cover assembly, wrapper.
+
+## TRIM-LEVEL COMPOSITE STEPS (loop iteration 23)
+
+- loop_targets_spine: all loop arms (body + feedback) target the spine —
+  certificate CoreTargetsListed + InitTargetsListed + exhaustiveness
+- spine_mem_live_inl / sum_targets_live_inl: every composite arm at a loop
+  state has a live target
+- sum_chain_step_interior: IN THE TRIMMED COMPOSITE, interior loop states
+  step deterministically to their successor at EVERY atom
+  (trim transparency + sum/toGAut step lemmas + loop_step_interior)
+- sum_chain_step_port: under b, the trimmed composite feeds the port back
+  to the head
+- sum_chain_noeps: interior silence survives to the trimmed composite
+  (hlt passes through every layer verbatim).
+ZERO ERRORS FIRST PASS.
+
+These ARE the hfire, hstep_uniq (interior_no_desc input), and hnoeps
+obligations of rankNxt_quot_solvesBA, discharged at the exact automaton
+the wrapper uses. Remaining: periodicity/hnofix packaging (spine_iter +
+spine_distinct through the Sum/Option lift), qPeriod >= 2 + none~last,
+os/cover assembly, the wrapper.
