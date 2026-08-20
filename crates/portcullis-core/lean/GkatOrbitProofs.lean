@@ -1267,6 +1267,157 @@ theorem orbit_cy_bundle (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
 
 #print axioms orbit_cy_bundle
 
+/-! ## Rotation and witness invariance: the quotient cycle is canonical
+
+    The global `cy` assignment must give every orbit member the SAME cycle
+    data.  Different members supply different witnesses `(u₀, k)` — rotated
+    on the same source orbit, or on an entirely different bisimilar source
+    orbit.  Here: the first-return period is invariant under rotation
+    (`qPeriod_shift`) and under change of witness (`qPeriod_congr`), and the
+    enumerations agree pointwise (`orbit_m_eq`). -/
+
+open Classical in
+/-- **ROTATION INVARIANCE OF THE PERIOD**: every shifted basepoint sees the
+    same first-return period. -/
+theorem qPeriod_shift (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    (i : Nat) :
+    qPeriod aut nxt (nxtIter nxt i u₀) k = qPeriod aut nxt u₀ k := by
+  rw [nxtIter_mod hk hper i]
+  have hik : i % k < k := Nat.mod_lt i (by omega)
+  generalize hgen : i % k = i' at hik ⊢
+  obtain ⟨hA1, hA2, hA3, hA4⟩ := qPeriod_spec aut nxt u₀ k hk hper
+  obtain ⟨hS1, hS2, hS3, hS4⟩ := qPeriod_spec aut nxt (nxtIter nxt i' u₀) k
+    hk (shift_per hper i')
+  -- the base return transports to the shifted orbit
+  have hretS : bisimRep (trimAut aut)
+      (nxtIter nxt (qPeriod aut nxt u₀ k) (nxtIter nxt i' u₀))
+      = bisimRep (trimAut aut) (nxtIter nxt i' u₀) := by
+    have h0 := qsucc_iter aut rank nxt hdec hnxt_rank hfire hk hper hlive
+      hnofix hmin (i := qPeriod aut nxt u₀ k) (j := 0) hA1 i'
+    rw [Nat.add_comm (qPeriod aut nxt u₀ k) i', Nat.zero_add i'] at h0
+    rw [nxtIter_add] at h0
+    exact h0
+  -- the shifted return transports back to the base orbit
+  have hretB : bisimRep (trimAut aut)
+      (nxtIter nxt (qPeriod aut nxt (nxtIter nxt i' u₀) k) u₀)
+      = bisimRep (trimAut aut) u₀ := by
+    have hS1' : bisimRep (trimAut aut)
+        (nxtIter nxt (i' + qPeriod aut nxt (nxtIter nxt i' u₀) k) u₀)
+        = bisimRep (trimAut aut) (nxtIter nxt i' u₀) := by
+      rw [nxtIter_add]
+      exact hS1
+    have h1 := qsucc_iter aut rank nxt hdec hnxt_rank hfire hk hper hlive
+      hnofix hmin
+      (i := i' + qPeriod aut nxt (nxtIter nxt i' u₀) k) (j := i')
+      hS1' (k - i')
+    rw [show i' + qPeriod aut nxt (nxtIter nxt i' u₀) k + (k - i')
+          = qPeriod aut nxt (nxtIter nxt i' u₀) k + k from by omega,
+        show i' + (k - i') = k from by omega] at h1
+    rw [qorb_periodic aut nxt u₀ k hper] at h1
+    rw [hper] at h1
+    exact h1
+  refine Nat.le_antisymm ?_ ?_
+  · rcases Nat.lt_or_ge (qPeriod aut nxt u₀ k)
+      (qPeriod aut nxt (nxtIter nxt i' u₀) k) with hlt | hge
+    · exact absurd hretS (hS4 _ hA2 hlt)
+    · exact hge
+  · rcases Nat.lt_or_ge (qPeriod aut nxt (nxtIter nxt i' u₀) k)
+      (qPeriod aut nxt u₀ k) with hlt | hge
+    · exact absurd hretB (hA4 _ hS2 hlt)
+    · exact hge
+
+open Classical in
+/-- **WITNESS INVARIANCE OF THE ENUMERATION**: any same-rank realizer of an
+    orbit language enumerates the SAME classes, shifted. -/
+theorem orbit_m_eq (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {i : Nat} {u₁ : S}
+    (hL : autLang (genW T) (trimAut aut) u₁
+      = autLang (genW T) (trimAut aut) (nxtIter nxt i u₀))
+    (hr : rank u₁ = rank u₀) :
+    ∀ j, bisimRep (trimAut aut) (nxtIter nxt j u₁)
+      = bisimRep (trimAut aut) (nxtIter nxt (i + j) u₀) := by
+  intro j
+  exact rep_lang_congr aut (orbit_lang_determined aut rank nxt hdec
+    hnxt_rank hfire hk hper hlive hnofix hmin hL hr j)
+
+open Classical in
+/-- **WITNESS INVARIANCE OF THE PERIOD**: any periodic same-rank realizer of
+    an orbit language has the SAME first-return period — regardless of its
+    own source period `k₁`. -/
+theorem qPeriod_congr (aut : GAut S A T) (rank : S → Nat) (nxt : S → S)
+    (hdec : ∀ s, ∀ e ∈ aut.trans s, e.2.2 = nxt s ∨ rank e.2.2 < rank s)
+    (hnxt_rank : ∀ s, rank (nxt s) = rank s)
+    (hfire : ∀ s, Live (trimAut aut) s → nxt s ≠ s →
+      ∃ (α : T → Bool) (a : A),
+        autStep (genW T) (trimAut aut) s α = some (a, nxt s))
+    {u₀ : S} {k : Nat} (hk : 1 ≤ k) (hper : nxtIter nxt k u₀ = u₀)
+    (hlive : Live (trimAut aut) u₀)
+    (hnofix : ∀ j, j < k → nxt (nxtIter nxt j u₀) ≠ nxtIter nxt j u₀)
+    (hmin : ∀ w, autLang (genW T) (trimAut aut) w
+      = autLang (genW T) (trimAut aut) u₀ → rank u₀ ≤ rank w)
+    {u₁ : S} {k₁ : Nat} (hk₁ : 1 ≤ k₁) (hper₁ : nxtIter nxt k₁ u₁ = u₁)
+    {i : Nat}
+    (hL : autLang (genW T) (trimAut aut) u₁
+      = autLang (genW T) (trimAut aut) (nxtIter nxt i u₀))
+    (hr : rank u₁ = rank u₀) :
+    qPeriod aut nxt u₁ k₁ = qPeriod aut nxt u₀ k := by
+  have hpt : ∀ t, bisimRep (trimAut aut) (nxtIter nxt t u₁)
+      = bisimRep (trimAut aut) (nxtIter nxt t (nxtIter nxt i u₀)) := by
+    intro t
+    rw [← nxtIter_add]
+    exact orbit_m_eq aut rank nxt hdec hnxt_rank hfire hk hper hlive
+      hnofix hmin hL hr t
+  have hept : bisimRep (trimAut aut) u₁
+      = bisimRep (trimAut aut) (nxtIter nxt i u₀) := hpt 0
+  obtain ⟨hB1, hB2, hB3, hB4⟩ := qPeriod_spec aut nxt u₁ k₁ hk₁ hper₁
+  obtain ⟨hS1, hS2, hS3, hS4⟩ := qPeriod_spec aut nxt (nxtIter nxt i u₀) k
+    hk (shift_per hper i)
+  have hretS : bisimRep (trimAut aut)
+      (nxtIter nxt (qPeriod aut nxt (nxtIter nxt i u₀) k) u₁)
+      = bisimRep (trimAut aut) u₁ :=
+    (hpt _).trans (hS1.trans hept.symm)
+  have hretB : bisimRep (trimAut aut)
+      (nxtIter nxt (qPeriod aut nxt u₁ k₁) (nxtIter nxt i u₀))
+      = bisimRep (trimAut aut) (nxtIter nxt i u₀) :=
+    (hpt _).symm.trans (hB1.trans hept)
+  have hmain : qPeriod aut nxt u₁ k₁
+      = qPeriod aut nxt (nxtIter nxt i u₀) k := by
+    refine Nat.le_antisymm ?_ ?_
+    · rcases Nat.lt_or_ge (qPeriod aut nxt (nxtIter nxt i u₀) k)
+        (qPeriod aut nxt u₁ k₁) with hlt | hge
+      · exact absurd hretS (hB4 _ hS2 hlt)
+      · exact hge
+    · rcases Nat.lt_or_ge (qPeriod aut nxt u₁ k₁)
+        (qPeriod aut nxt (nxtIter nxt i u₀) k) with hlt | hge
+      · exact absurd hretB (hS4 _ hB2 hlt)
+      · exact hge
+  exact hmain.trans (qPeriod_shift aut rank nxt hdec hnxt_rank hfire hk
+    hper hlive hnofix hmin i)
+
+#print axioms qPeriod_shift
+#print axioms qPeriod_congr
+
 end GkatOrbit
+
 
 

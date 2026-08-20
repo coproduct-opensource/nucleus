@@ -498,3 +498,22 @@ All [propext, Classical.choice, Quot.sound].
 Remaining for chainloops_complete: the global cy function (assign each
 quotient state its orbit data; position via qorb_injective, well-definedness
 via basepoint_shift), fragment definition + rank, glue.
+
+## ROTATION + WITNESS INVARIANCE (loop iteration 13)
+
+- qPeriod_shift: the first-return period is ROTATION-INVARIANT. Mod-reduce
+  the shift, transport the base return outward by qsucc_iter, transport the
+  shifted return back by the (k - i') basepoint shift (the qorb_injective
+  pattern), antisymmetry through the two minimality specs.
+- orbit_m_eq: any same-rank realizer of an orbit language enumerates the
+  SAME classes, shifted (orbit_lang_determined + rep_lang_congr).
+- qPeriod_congr: WITNESS INVARIANCE — any periodic same-rank realizer u1
+  (own period k1, possibly a different source orbit entirely) has the same
+  first-return period: pointwise sequence equality via orbit_m_eq, then
+  antisymmetry of the two first-return specs, then qPeriod_shift.
+All [propext, Classical.choice, Quot.sound].
+
+The quotient cycle data (len, m) is now provably CANONICAL: independent of
+which orbit member computes it and which source witness it uses. This is
+everything the global cy function needs for well-definedness. Remaining:
+assemble cy + positions (qorb_injective), fragment definition, glue.
