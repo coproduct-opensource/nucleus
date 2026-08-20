@@ -681,4 +681,108 @@ theorem dag_roles (aut : GAut S A T) (hwf : WellFounded (StepRel aut)) :
 
 #print axioms dag_roles
 
+/-! ## S2, the self-loop stratum
+
+    One rung up from acyclic: every cycle is a head-position self-loop.  The
+    solution is defined by well-founded recursion on a rank; self-loop states
+    take the Salomaa closed form `(wh g p)·rest` and close by the `selfLoop`
+    role (no side conditions), everything else folds. -/
+
+/-- The Salomaa fold over a transition list (definitionally `eqRHS`). -/
+def foldTL (sol : S → Exp A T) (h : BExp T)
+    (L : List (BExp T × A × S)) : Exp A T :=
+  L.foldr (fun t acc => Exp.ite t.1 (.seq (.act t.2.1) (sol t.2.2)) acc)
+    (.test h)
+
+theorem eqRHS_foldTL (aut : GAut S A T) (sol : S → Exp A T) (s : S) :
+    eqRHS aut sol s = foldTL sol (aut.hlt s) (aut.trans s) := rfl
+
+private theorem foldTL_congr {sol₁ sol₂ : S → Exp A T} (h : BExp T) :
+    ∀ L : List (BExp T × A × S), (∀ e ∈ L, sol₁ e.2.2 = sol₂ e.2.2) →
+    foldTL sol₁ h L = foldTL sol₂ h L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons hd tl ih =>
+      intro hL
+      show Exp.ite hd.1 (.seq (.act hd.2.1) (sol₁ hd.2.2)) (foldTL sol₁ h tl)
+        = Exp.ite hd.1 (.seq (.act hd.2.1) (sol₂ hd.2.2)) (foldTL sol₂ h tl)
+      rw [hL hd (by simp), ih (fun e he => hL e (by simp [he]))]
+
+open Classical in
+/-- The recursion body: Salomaa closed form at a head self-arm, fold
+    otherwise. -/
+noncomputable def slBody (hlt : BExp T) (self : S) (solAt : S → Exp A T) :
+    List (BExp T × A × S) → Exp A T
+  | [] => .test hlt
+  | (g, p, t) :: rest =>
+      if t = self then .seq (.wh g (.act p)) (foldTL solAt hlt rest)
+      else foldTL solAt hlt ((g, p, t) :: rest)
+
+open Classical in
+private theorem slBody_cons (hlt : BExp T) (self : S) (solAt : S → Exp A T)
+    (g : BExp T) (p : A) (t : S) (rest : List (BExp T × A × S)) :
+    slBody hlt self solAt ((g, p, t) :: rest)
+      = if t = self then .seq (.wh g (.act p)) (foldTL solAt hlt rest)
+        else foldTL solAt hlt ((g, p, t) :: rest) := rfl
+
+open Classical in
+/-- The self-loop-stratum solution, by well-founded recursion on the rank. -/
+noncomputable def slSol (aut : GAut S A T) (rank : S → Nat) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    slBody (aut.hlt s) s (fun t =>
+      if h : rank t < rank s then rec t h else .test .zero) (aut.trans s))
+
+open Classical in
+theorem slSol_eq (aut : GAut S A T) (rank : S → Nat) (s : S) :
+    slSol aut rank s = slBody (aut.hlt s) s (fun t =>
+      if _ : rank t < rank s then slSol aut rank t else .test .zero)
+      (aut.trans s) := by
+  unfold slSol
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **The self-loop stratum of S2**: if every state's dispatch either descends
+    strictly in rank or begins with a self-arm and then descends, the automaton
+    is fully role-covered. -/
+theorem selfloop_dag_roles (aut : GAut S A T) (rank : S → Nat)
+    (hshape : ∀ s ∈ aut.states,
+      (∀ e ∈ aut.trans s, rank e.2.2 < rank s) ∨
+      (∃ g p rest, aut.trans s = (g, p, s) :: rest ∧
+        ∀ e ∈ rest, rank e.2.2 < rank s)) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨slSol aut rank, fun s hs => ?_⟩
+  rcases hshape s hs with hlow | ⟨g, p, rest, htr, hlow⟩
+  · -- fold role
+    refine StateRole.fold ?_
+    rw [slSol_eq, eqRHS_foldTL]
+    cases htr : aut.trans s with
+    | nil => rfl
+    | cons hd tl =>
+        obtain ⟨g, p, t⟩ := hd
+        have hts : ¬ (t = s) := by
+          intro hteq
+          have hlt := hlow (g, p, t) (by rw [htr]; simp)
+          rw [hteq] at hlt
+          exact Nat.lt_irrefl _ hlt
+        rw [slBody_cons, if_neg hts]
+        refine foldTL_congr (aut.hlt s) ((g, p, t) :: tl) ?_
+        intro e he
+        rw [dif_pos (hlow e (by rw [htr]; exact he))]
+  · -- self-loop role
+    have hsol : slSol aut rank s
+        = .seq (.wh g (.act p))
+            (foldTL (slSol aut rank) (aut.hlt s) rest) := by
+      rw [slSol_eq, htr, slBody_cons, if_pos rfl]
+      refine congrArg (Exp.seq (.wh g (.act p))) ?_
+      refine foldTL_congr (aut.hlt s) rest ?_
+      intro e he
+      rw [dif_pos (hlow e he)]
+    refine StateRole.selfLoop g p
+      (foldTL (slSol aut rank) (aut.hlt s) rest) hsol ?_
+    rw [eqRHS_foldTL, htr]
+    rfl
+
+#print axioms selfloop_dag_roles
+
 end GkatPlanExistence

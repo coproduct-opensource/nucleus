@@ -34,6 +34,11 @@ inductive StateRole (aut : GAut S A T) (sol : S → Exp A T) (s : S) : Prop wher
             (exitFold n.exits
               (.ite n.stepG (.seq (.act n.stepA) next) (.test n.hltG))))
       (hdead : ∀ g ∈ n.loopW, GuardEmpty g.hltG)
+  /-- A Salomaa self-loop state: a single self-arm at the head of its dispatch.
+      Closes by `salomaa_solution_exists` alone — no side conditions. -/
+  | selfLoop (g : BExp T) (p : A) (rest : Exp A T)
+      (hsol : sol s = .seq (.wh g (.act p)) rest)
+      (hrhs : eqRHS aut sol s = .ite g (.seq (.act p) (sol s)) rest)
   /-- A ring header: `extHeaderSol`-shaped solution, with the ring's side
       conditions — guard disjointness, member-halt subset parking, and exit
       absorption. -/
@@ -65,6 +70,9 @@ theorem decomp_solves (aut : GAut S A T) (sol : S → Exp A T)
   | member n next hsol hrhs hdead =>
       rw [hsol, hrhs]
       exact extSol_solves n next hdead
+  | selfLoop g p rest hsol hrhs =>
+      rw [hrhs, hsol]
+      exact EquivBA.base (salomaa_solution_exists g (.act p) rest)
   | header R n0 r hns hsol hrhs hdisj habs habsx hdeadH =>
       rw [hsol, hrhs]
       exact extHeaderSol_solves R hdisj n0 r hns habs habsx hdeadH
