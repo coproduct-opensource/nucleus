@@ -1123,3 +1123,20 @@ computable function. Remaining phase 3: bisimQuotAutD (quotient over
 bisimRepDT) + transport of quot_lang_eq/canonicalQuotient facts; then
 phase 4 (minRank as bounded search over the pool — MOSTLY DONE ALREADY
 via minUpTo once realizers restrict to states), phase 5 sweep.
+
+## DE-CHOICE PHASE 3e: THE COMPUTABLE QUOTIENT (iteration 38)
+
+- bisimQuotAutD: the canonical quotient over bisimRepDT — computable
+- bisimQuotAutD_step: same one-step retargeting correspondence
+  (firstMatch_retarget, unchanged)
+- bisimQuotD_bisim_gen: the computable representative graph restricted
+  to the pool is a bisimulation — the classical proof transplants
+  verbatim, with autStep_target_pool discharging the membership
+  obligations that bisimRepDT_coherent adds
+- quotD_lang_eq: quotient classes carry their states' languages.
+ALL FIRST PASS, [propext, Quot.sound].
+
+PHASE 3 COMPLETE: satisfiability, liveness, trim, bisimilarity,
+representative, quotient — the entire canonical-quotient pipeline is
+computable and choice-free. Remaining: phase 4 (minRank over the pool)
++ phase 5 (sweep + assemble the computable witness end-to-end).

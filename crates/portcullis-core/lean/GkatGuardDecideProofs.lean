@@ -1531,4 +1531,93 @@ theorem bisimRepDT_idem [DecidableEq T] [DecidableEq A] [DecidableEq S]
 #print axioms bisimRepDT_coherent
 #print axioms bisimRepDT_idem
 
+/-! ## The computable quotient
+
+    The canonical quotient rebuilt over the computable representative:
+    same construction, same step correspondence, and the representative
+    graph (restricted to the pool) is a bisimulation — so quotient
+    classes carry their states' languages, computably. -/
+
+def bisimQuotAutD [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    GAut S A T where
+  states := aut.states.map (bisimRepDT aut pool hclosed)
+  hlt := aut.hlt
+  trans := fun s => (aut.trans s).map
+    (fun e => (e.1, e.2.1, bisimRepDT aut pool hclosed e.2.2))
+  start := bisimRepDT aut pool hclosed aut.start
+
+theorem bisimQuotAutD_step {Atom : Type} [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (V : T → Atom → Bool) (r : S) (a : Atom) :
+    autStep V (bisimQuotAutD aut pool hclosed) r a
+      = (autStep V aut r a).map
+          (fun y => (y.1, bisimRepDT aut pool hclosed y.2)) :=
+  firstMatch_retarget V a (bisimRepDT aut pool hclosed) (aut.trans r)
+
+/-- The computable representative graph is a bisimulation on the
+    pool. -/
+theorem bisimQuotD_bisim_gen [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool) :
+    GAutBisim (genW T) aut (bisimQuotAutD aut pool hclosed)
+      (fun s q => s ∈ pool
+        ∧ bisimRepDT aut pool hclosed s = q) := by
+  intro s q hq
+  obtain ⟨hs, hq⟩ := hq
+  subst hq
+  obtain ⟨h1, h2, h3⟩ := genBisimilar_bisim aut s
+    (bisimRepDT aut pool hclosed s) (bisimRepDT_bisim aut pool hclosed hs)
+  refine ⟨h1, ?_, ?_⟩
+  · intro a q0 s' hstep
+    obtain ⟨t', ht, hb⟩ := h2 a q0 s' hstep
+    have hs' : s' ∈ pool := autStep_target_pool aut pool hclosed hs hstep
+    have ht' : t' ∈ pool := autStep_target_pool aut pool hclosed
+      (bisimRepDT_mem aut pool hclosed hs) ht
+    refine ⟨bisimRepDT aut pool hclosed t', ?_,
+      hs', bisimRepDT_coherent aut pool hclosed hs' ht' hb⟩
+    rw [bisimQuotAutD_step, ht]
+    rfl
+  · intro a q0 u hu
+    rw [bisimQuotAutD_step] at hu
+    cases hstep : autStep (genW T) aut
+        (bisimRepDT aut pool hclosed s) a with
+    | none =>
+        rw [hstep] at hu
+        exact nomatch hu
+    | some y =>
+        obtain ⟨q1, t'⟩ := y
+        rw [hstep] at hu
+        have hp : (q1, bisimRepDT aut pool hclosed t') = (q0, u) :=
+          Option.some.inj hu
+        obtain ⟨s', hstep', hb⟩ := h3 a q1 t' hstep
+        have hq1 : q1 = q0 := congrArg Prod.fst hp
+        have hu' : bisimRepDT aut pool hclosed t' = u :=
+          congrArg Prod.snd hp
+        subst hq1
+        subst hu'
+        have hs' : s' ∈ pool :=
+          autStep_target_pool aut pool hclosed hs hstep'
+        have ht' : t' ∈ pool := autStep_target_pool aut pool hclosed
+          (bisimRepDT_mem aut pool hclosed hs) hstep
+        exact ⟨s', hstep',
+          hs', bisimRepDT_coherent aut pool hclosed hs' ht' hb⟩
+
+/-- **QUOTIENT CLASSES CARRY THEIR LANGUAGES** — computably. -/
+theorem quotD_lang_eq [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    {s : S} (hs : s ∈ pool) :
+    autLang (genW T) (bisimQuotAutD aut pool hclosed)
+        (bisimRepDT aut pool hclosed s)
+      = autLang (genW T) aut s :=
+  (autLang_eq_of_gautBisim
+    (bisimQuotD_bisim_gen aut pool hclosed) ⟨hs, rfl⟩).symm
+
+#print axioms bisimQuotAutD_step
+#print axioms bisimQuotD_bisim_gen
+#print axioms quotD_lang_eq
+
 end GkatGuardDecide
