@@ -1578,3 +1578,30 @@ assembly as in the fifth theorem.
 Next bite: the branching orbit layer — define the chord discipline
 (self ∨ enter ∨ skip ∨ descent with enter/skip both forward) and prove the
 class-successor lemma for atom-indexed successor sets.
+
+## Iteration 58 — the TAILED chord role (assembly-ready) + literature check
+
+Web check: the skip-free GKAT line (Kappe et al., arXiv 2301.11301) and
+Weighted GKAT (2504.20385) still frame UA as necessary in both known
+general completeness proofs; skip-free is the only published UA-free
+fragment. Our five theorems + the chord program are beyond that line.
+
+`chord3_roles_tail` (GkatThreeLoopProofs.lean, axioms **[propext]**):
+the port now carries a continuation `tail` — its gathered descent arms and
+halt — so the theorem applies to real quotient ports (exits below cycle
+rank), exactly what `walked_assembly_roles`-style assembly feeds. Same lap
+derivation; the tail rides along by `u5` right-distribution + `s4`
+skip-left. Gotcha: `u5` is oriented distributed→factored, so the unroll
+uses `EquivBA.symm` around it.
+
+Assembly design (read `walked_assembly_roles` + `asmSolW` this iteration):
+the chord analogue keys a classifier `cy : S → Option (chord cluster × pos)`
+with closed forms per position (port = tailed wh-lap, branch = the c-dispatch,
+inner = (wh c qB);(rB; port-form)) and derives the `hrhs` equations via
+`eqRHS_foldTL` + `double_gather` (u := inner, v := port targets) + guard
+domination — `double_gather` already gathers ANY two distinguished targets,
+so the branch state needs no new gathering machinery.
+
+Next bite: `chord_assembly_roles` — the classifier-keyed WF-recursion
+solution (asmSolC) + the per-cluster role theorem consuming gathered-arm
+bundle facts, mirroring `walked_assembly_roles`.

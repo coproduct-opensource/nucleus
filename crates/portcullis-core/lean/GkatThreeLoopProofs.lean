@@ -222,4 +222,68 @@ theorem chord3_roles {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms chord3_roles
 
+open Classical in
+/-- **THE TAILED CHORD-CYCLE ROLES**: the assembly-ready form — the port
+    carries a continuation `tail` (its gathered descent arms and halt), so
+    the theorem applies to quotient ports with exits below the cycle rank.
+    The derivation is the same lap-unrolling; the tail rides along by
+    right-distribution (`u5`) and skip-left (`s4`). -/
+theorem chord3_roles_tail {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (P Q R : S) (bG cG : BExp T) (pB qB rB tail : Exp A T)
+    (hsolQ : sol Q = .seq (.wh cG qB) (.seq rB (sol R)))
+    (hsolP : sol P = .ite cG (.seq qB (sol Q)) (.seq rB (sol R)))
+    (hsolR : sol R
+      = .seq (.wh bG (.seq pB (chordPre cG qB rB))) tail)
+    (hrhsQ : EquivBA (eqRHS aut sol Q)
+      (.ite cG (.seq qB (sol Q)) (.seq rB (sol R))))
+    (hrhsP : EquivBA (eqRHS aut sol P)
+      (.ite cG (.seq qB (sol Q)) (.seq rB (sol R))))
+    (hrhsR : EquivBA (eqRHS aut sol R)
+      (.ite bG (.seq pB (sol P)) tail)) :
+    StateRole aut sol P ∧ StateRole aut sol Q
+      ∧ StateRole aut sol R := by
+  have hPfactor : EquivBA
+      (.seq (chordPre cG qB rB) (sol R)) (sol P) := by
+    show EquivBA
+      (.seq (.ite cG (.seq qB (.seq (.wh cG qB) rB)) rB) (sol R)) _
+    refine EquivBA.trans (EquivBA.symm
+      (EquivBA.base (Equiv.u5 cG (.seq qB (.seq (.wh cG qB) rB)) rB
+        (sol R)))) ?_
+    rw [hsolP]
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+    refine EquivBA.trans
+      (EquivBA.base (Equiv.s1 qB (.seq (.wh cG qB) rB) (sol R))) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl qB)) ?_
+    rw [hsolQ]
+    exact EquivBA.base (Equiv.s1 (.wh cG qB) rB (sol R))
+  have hunroll : EquivBA (sol R)
+      (.ite bG (.seq pB (sol P)) tail) := by
+    conv => lhs; rw [hsolR]
+    refine EquivBA.trans (EquivBA.seq_c
+      (EquivBA.base (Equiv.w1 bG (.seq pB (chordPre cG qB rB))))
+      (EquivBA.base (Equiv.refl tail))) ?_
+    refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u5 bG
+      (.seq (.seq pB (chordPre cG qB rB))
+        (.wh bG (.seq pB (chordPre cG qB rB))))
+      (.test .one) tail))) ?_
+    refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.s4 tail))
+    refine EquivBA.trans (EquivBA.base (Equiv.s1
+      (.seq pB (chordPre cG qB rB))
+      (.wh bG (.seq pB (chordPre cG qB rB))) tail)) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.s1 pB (chordPre cG qB rB)
+      (.seq (.wh bG (.seq pB (chordPre cG qB rB))) tail))) ?_
+    refine EquivBA.seq_c (EquivBA.base (Equiv.refl pB)) ?_
+    rw [← hsolR]
+    exact hPfactor
+  refine ⟨?_, ?_, ?_⟩
+  · refine StateRole.equivFold ?_
+    refine EquivBA.trans ?_ hrhsP.symm
+    rw [hsolP]
+    exact EquivBA.base (Equiv.refl _)
+  · exact StateRole.salomaaE cG qB (.seq rB (sol R)) hsolQ hrhsQ
+  · refine StateRole.equivFold ?_
+    exact EquivBA.trans hunroll hrhsR.symm
+
+#print axioms chord3_roles_tail
+
 end GkatThreeLoop
