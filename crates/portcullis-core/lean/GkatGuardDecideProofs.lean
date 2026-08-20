@@ -1,4 +1,4 @@
-import GkatTrimProofs
+import GkatAtomicLoopProofs
 import GkatListPigeonProofs
 
 /-! # Decidable guard satisfiability — the de-choice keystone
@@ -13,6 +13,7 @@ import GkatListPigeonProofs
 namespace GkatGuardDecide
 
 open GkatSyntax GkatGS GkatPlanExistence GkatListPigeon GkatTrim
+open GkatLoopFree GkatAtomicLoop
 
 variable {S A T : Type}
 
@@ -1619,5 +1620,234 @@ theorem quotD_lang_eq [DecidableEq T] [DecidableEq A] [DecidableEq S]
 #print axioms bisimQuotAutD_step
 #print axioms bisimQuotD_bisim_gen
 #print axioms quotD_lang_eq
+
+/-! ## Phase 4: the computable minimal rank
+
+    Bounded minimization of a monotone decidable predicate, applied to
+    "some pool state of rank ≤ n is bisimilar to c".  Under trimmedness
+    (language equality = bisimilarity) and pool exhaustiveness, this IS
+    the classical `minRank` — by spec antisymmetry, no unfolding. -/
+
+/-- Bounded minimization: least `n ≤ b` satisfying monotone `p`, else
+    `b`. -/
+def leastB (p : Nat → Bool) : Nat → Nat
+  | 0 => 0
+  | b + 1 => if p (leastB p b) = true then leastB p b else b + 1
+
+private theorem leastB_succ (p : Nat → Bool) (b : Nat) :
+    leastB p (b + 1)
+      = if p (leastB p b) = true then leastB p b else b + 1 := rfl
+
+theorem leastB_le (p : Nat → Bool) : ∀ b, leastB p b ≤ b := by
+  intro b
+  induction b with
+  | zero => exact Nat.le_refl _
+  | succ b ih =>
+      rw [leastB_succ]
+      by_cases h : p (leastB p b) = true
+      · rw [if_pos h]
+        omega
+      · rw [if_neg h]
+        omega
+
+/-- Combined correctness: hit or all-below-fails, plus minimality. -/
+theorem leastB_correct (p : Nat → Bool)
+    (hmono : ∀ i j, i ≤ j → p i = true → p j = true) :
+    ∀ b, (p (leastB p b) = true ∨ ∀ m, m ≤ b → p m = false)
+      ∧ (∀ n, n ≤ b → p n = true → leastB p b ≤ n) := by
+  intro b
+  induction b with
+  | zero =>
+      constructor
+      · by_cases h : p 0 = true
+        · exact Or.inl h
+        · refine Or.inr ?_
+          intro m hm
+          have hm0 : m = 0 := by omega
+          subst hm0
+          cases hp : p 0 with
+          | false => rfl
+          | true => exact absurd hp h
+      · intro n _ _
+        exact Nat.zero_le n
+  | succ b ih =>
+      obtain ⟨ih1, ih2⟩ := ih
+      rw [leastB_succ]
+      by_cases h : p (leastB p b) = true
+      · rw [if_pos h]
+        refine ⟨Or.inl h, ?_⟩
+        intro n hn hpn
+        rcases Nat.lt_or_ge n (b + 1) with hlt | hge
+        · exact ih2 n (by omega) hpn
+        · have := leastB_le p b
+          omega
+      · rw [if_neg h]
+        have hallb : ∀ m, m ≤ b → p m = false := by
+          rcases ih1 with hhit | hfail
+          · exact absurd hhit h
+          · exact hfail
+        constructor
+        · by_cases hb1 : p (b + 1) = true
+          · exact Or.inl hb1
+          · refine Or.inr ?_
+            intro m hm
+            rcases Nat.lt_or_ge m (b + 1) with hlt | hge
+            · exact hallb m (by omega)
+            · have hm1 : m = b + 1 := by omega
+              rw [hm1]
+              cases hp : p (b + 1) with
+              | false => rfl
+              | true => exact absurd hp hb1
+        · intro n hn hpn
+          rcases Nat.lt_or_ge n (b + 1) with hlt | hge
+          · rw [hallb n (by omega)] at hpn
+            exact nomatch hpn
+          · omega
+
+/-- Decidable pool-realizer search. -/
+def existsRealizer [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) (n : Nat) :
+    (cands : List S) → (∀ x ∈ cands, x ∈ pool) → Bool
+  | [], _ => false
+  | u :: us, hu =>
+      (decide (rank u ≤ n)
+        && @decide (GenBisimilar aut u c)
+          (genBisimilarDec aut pool hclosed
+            (hu u (List.mem_cons_self ..)) hc))
+      || existsRealizer aut pool hclosed rank hc n us
+        (fun x hx => hu x (List.mem_cons_of_mem _ hx))
+
+private theorem existsRealizer_cons [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) (n : Nat)
+    (u : S) (us : List S) (hu : ∀ x ∈ u :: us, x ∈ pool) :
+    existsRealizer aut pool hclosed rank hc n (u :: us) hu
+      = ((decide (rank u ≤ n)
+          && @decide (GenBisimilar aut u c)
+            (genBisimilarDec aut pool hclosed
+              (hu u (List.mem_cons_self ..)) hc))
+        || existsRealizer aut pool hclosed rank hc n us
+          (fun x hx => hu x (List.mem_cons_of_mem _ hx))) := rfl
+
+theorem existsRealizer_iff [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) (n : Nat) :
+    ∀ (cands : List S) (hcands : ∀ x ∈ cands, x ∈ pool),
+      existsRealizer aut pool hclosed rank hc n cands hcands = true
+        ↔ ∃ u ∈ cands, rank u ≤ n ∧ GenBisimilar aut u c := by
+  intro cands
+  induction cands with
+  | nil =>
+      intro hcands
+      constructor
+      · intro h; exact nomatch h
+      · rintro ⟨u, hu, -⟩; exact nomatch hu
+  | cons u us ih =>
+      intro hcands
+      rw [existsRealizer_cons, Bool.or_eq_true, Bool.and_eq_true]
+      constructor
+      · rintro (⟨h1, h2⟩ | h)
+        · exact ⟨u, List.mem_cons_self ..,
+            of_decide_eq_true h1,
+            @of_decide_eq_true _
+              (genBisimilarDec aut pool hclosed
+                (hcands u (List.mem_cons_self ..)) hc) h2⟩
+        · obtain ⟨v, hv, hr, hb⟩ := (ih _).mp h
+          exact ⟨v, List.mem_cons_of_mem _ hv, hr, hb⟩
+      · rintro ⟨v, hv, hr, hb⟩
+        rcases List.mem_cons.mp hv with heq | hm
+        · subst heq
+          exact Or.inl ⟨decide_eq_true hr,
+            @decide_eq_true _
+              (genBisimilarDec aut pool hclosed
+                (hcands v (List.mem_cons_self ..)) hc) hb⟩
+        · exact Or.inr ((ih _).mpr ⟨v, hm, hr, hb⟩)
+
+/-- **THE COMPUTABLE MINIMAL RANK** over a pool. -/
+def minRankD [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) : Nat :=
+  leastB (fun n => existsRealizer aut pool hclosed rank hc n pool
+    (fun _ hx => hx)) (rank c)
+
+private theorem existsRealizer_mono [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) :
+    ∀ i j, i ≤ j →
+      existsRealizer aut pool hclosed rank hc i pool
+        (fun _ hx => hx) = true →
+      existsRealizer aut pool hclosed rank hc j pool
+        (fun _ hx => hx) = true := by
+  intro i j hij h
+  obtain ⟨u, hu, hr, hb⟩ :=
+    (existsRealizer_iff aut pool hclosed rank hc i pool _).mp h
+  exact (existsRealizer_iff aut pool hclosed rank hc j pool _).mpr
+    ⟨u, hu, by omega, hb⟩
+
+theorem minRankD_spec [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) :
+    ∃ u ∈ pool, rank u ≤ minRankD aut pool hclosed rank hc
+      ∧ GenBisimilar aut u c := by
+  have hcself : existsRealizer aut pool hclosed rank hc (rank c) pool
+      (fun _ hx => hx) = true :=
+    (existsRealizer_iff aut pool hclosed rank hc (rank c) pool _).mpr
+      ⟨c, hc, Nat.le_refl _, GenBisimilar.refl aut c⟩
+  obtain ⟨hcor, -⟩ := leastB_correct _
+    (existsRealizer_mono aut pool hclosed rank hc) (rank c)
+  rcases hcor with hhit | hfail
+  · exact (existsRealizer_iff aut pool hclosed rank hc _ pool _).mp hhit
+  · exact absurd hcself
+      (by rw [hfail (rank c) (Nat.le_refl _)]; exact Bool.false_ne_true)
+
+theorem minRankD_le [DecidableEq T] [DecidableEq A] [DecidableEq S]
+    (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool, ∀ e ∈ aut.trans s, e.2.2 ∈ pool)
+    (rank : S → Nat) {c u : S} (hc : c ∈ pool) (hu : u ∈ pool)
+    (hb : GenBisimilar aut u c) :
+    minRankD aut pool hclosed rank hc ≤ rank u := by
+  obtain ⟨-, hmin⟩ := leastB_correct _
+    (existsRealizer_mono aut pool hclosed rank hc) (rank c)
+  rcases Nat.lt_or_ge (rank c) (rank u) with hlt | hge
+  · exact Nat.le_trans (leastB_le _ _) (by omega)
+  · exact hmin (rank u) hge
+      ((existsRealizer_iff aut pool hclosed rank hc _ pool _).mpr
+        ⟨u, hu, Nat.le_refl _, hb⟩)
+
+/-- **THE BRIDGE**: on a trimmed automaton with an exhaustive pool, the
+    computable minimal rank IS the classical one. -/
+theorem minRankD_eq_minRank [DecidableEq T] [DecidableEq A]
+    [DecidableEq S] (aut : GAut S A T) (pool : List S)
+    (hclosed : ∀ s ∈ pool,
+      ∀ e ∈ (trimAut aut).trans s, e.2.2 ∈ pool)
+    (hexh : ∀ x : S, x ∈ pool)
+    (rank : S → Nat) {c : S} (hc : c ∈ pool) :
+    minRankD (trimAut aut) pool hclosed rank hc
+      = minRank (trimAut aut) rank c := by
+  refine Nat.le_antisymm ?_ ?_
+  · obtain ⟨u, hule, huL⟩ := minRank_spec (trimAut aut) rank c
+    have hb : GenBisimilar (trimAut aut) u c :=
+      genBisimilar_of_uniformStateEquiv (liveSteps_trimAut aut)
+        (uniformStateEquiv_of_gen huL)
+    exact Nat.le_trans
+      (minRankD_le (trimAut aut) pool hclosed rank hc (hexh u) hb)
+      hule
+  · obtain ⟨u, hu, hule, hb⟩ :=
+      minRankD_spec (trimAut aut) pool hclosed rank hc
+    have huL : autLang (genW T) (trimAut aut) u
+        = autLang (genW T) (trimAut aut) c :=
+      autLang_eq_of_gautBisim (genBisimilar_bisim (trimAut aut)) hb
+    exact Nat.le_trans (minRank_le (trimAut aut) rank huL) hule
+
+#print axioms minRankD_spec
+#print axioms minRankD_le
+#print axioms minRankD_eq_minRank
 
 end GkatGuardDecide

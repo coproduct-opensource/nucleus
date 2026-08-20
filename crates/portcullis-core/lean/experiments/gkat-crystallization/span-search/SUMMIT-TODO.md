@@ -1140,3 +1140,20 @@ PHASE 3 COMPLETE: satisfiability, liveness, trim, bisimilarity,
 representative, quotient — the entire canonical-quotient pipeline is
 computable and choice-free. Remaining: phase 4 (minRank over the pool)
 + phase 5 (sweep + assemble the computable witness end-to-end).
+
+## DE-CHOICE PHASE 4: THE COMPUTABLE MINIMAL RANK (iteration 39)
+
+- leastB + leastB_correct: bounded minimization of a monotone Bool
+  predicate — hit-or-all-fail plus minimality, one induction
+- existsRealizer + existsRealizer_iff: decidable pool-realizer search
+  (rank <= n AND bisimilar-to-c, via genBisimilarDec with explicit
+  @decide instances)
+- minRankD + minRankD_spec + minRankD_le: the computable minimal rank
+  over a pool, with the classical spec shape — [propext, Quot.sound]
+- minRankD_eq_minRank: THE BRIDGE — on a trimmed automaton with an
+  exhaustive pool, minRankD IS minRank, by spec antisymmetry (language
+  equality <-> bisimilarity under LiveSteps closes both directions).
+
+PHASE 4 COMPLETE. Remaining: phase 5 — the sweep + end-to-end assembly
+of the computable witness (run the existence pipeline over
+trimAutD/bisimQuotAutD/minRankD for chain-loop composites).
