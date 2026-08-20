@@ -23,9 +23,14 @@ here is machine-measured; kernel-checked claims say so explicitly.
   `EquivBA` proofs** (`GkatCertR1..R6`, commits 4a51c979, f0b04abe) via ring/parking.
 - Ring classifier: 6/6 failure quotients ring-uniform (every listed quotient);
   walk-planner 6/6 structurally identical to the hand proofs (commits acdce0fe, cdcdac02).
-- The k=6 re-run printing all 80 failures (cap raised to 80) has NOT yet completed
-  (two attempts lost: tmp wipe, then kernel panics).  The 74 unprinted failures remain
-  the open sample-bias risk on the "residue = rings" claim.
+- **The k=6 re-run completed (runs/na2k6_full.txt): all 80 failures printed, every
+  headline number reproduced exactly** (265,136/265,216; sizes 2/26/54; union conjunct
+  265,134; only-elim 39,066; only-Thompson 1,920) — validating the memoization, gates,
+  and caps end-to-end.  **Classifier + planner over all 80 (runs/attack80.txt):
+  80/80 ring-uniform, 80/80 walk-planned, zero unplannable.**  Sample-bias risk
+  RETIRED.  Step census across the 80 plans: Act 64, Park 59, SelfLoop 30, Inline 21,
+  DeadGuard 17, Sub 8, Branch 6 — all seven kinds covered by the kernel-checked
+  recipes in GkatCertR1-R6.  The ring-mode generator needs NO new construction.
 
 ## Uniformity / mixed-halt (the invariant hunt)
 
@@ -45,6 +50,10 @@ here is machine-measured; kernel-checked claims say so explicitly.
 
 - equivalent pairs 232,052; **crux 214,635** (runs/na4k2b.txt, dry run without
   PAD_ORACLE — union conjunct requires PAD_ORACLE=1).
+- FORGE (sampled crux, pool-free witnesses; validated 1500/1500 at NA=2): at NA=4
+  depth<=6 k 3..8: 1999/2000 covered by elimination; ONE residue candidate at k=4
+  (mixed-halt sum, two-atom halts; verdict survives full oracle budgets) —
+  runs/forge_na4_full.txt.  The first object to survive the witness kit anywhere.
 - **Union conjunct at NA=4 K=2: 214,635 / 214,635 (100.0%), residue ZERO**
   (runs/na4k2j.txt).  only-elimination 3,104; only-Thompson 0 — elimination at some
   merged-start congruence covers the entire space by itself.  Need-a-KA-step: 0 (no
