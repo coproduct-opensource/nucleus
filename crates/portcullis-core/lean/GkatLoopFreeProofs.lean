@@ -477,7 +477,7 @@ theorem maxlenB_witness (aut : GAut S A T) (s : S)
 /-! ## The acyclicity engine -/
 
 open Classical in
-private theorem cleanList_sub :
+theorem cleanList_sub :
     ∀ (L : List (BExp T × A × S)) (D : BExp T), ∀ e ∈ cleanList L D,
       e ∈ L := by
   intro L
