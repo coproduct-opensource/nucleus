@@ -13,7 +13,7 @@ namespace GkatGuardDecide
 
 open GkatSyntax GkatGS GkatPlanExistence
 
-variable {A T : Type}
+variable {S A T : Type}
 
 /-- The primitive tests occurring in a guard. -/
 def testsOf : BExp T → List T
