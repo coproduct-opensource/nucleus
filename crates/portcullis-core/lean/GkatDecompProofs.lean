@@ -39,6 +39,14 @@ inductive StateRole (aut : GAut S A T) (sol : S → Exp A T) (s : S) : Prop wher
   | selfLoop (g : BExp T) (p : A) (rest : Exp A T)
       (hsol : sol s = .seq (.wh g (.act p)) rest)
       (hrhs : eqRHS aut sol s = .ite g (.seq (.act p) (sol s)) rest)
+  /-- A Salomaa state up to provable equation massage: the dispatch is
+      EquivBA-equal to a single guarded self-call.  Subsumes `selfLoop`; the
+      gathering algebra (arm commutation) produces these for self-arms in any
+      position. -/
+  | salomaaE (G : BExp T) (BODY rest : Exp A T)
+      (hsol : sol s = .seq (.wh G BODY) rest)
+      (hrhs : EquivBA (eqRHS aut sol s)
+        (.ite G (.seq BODY (sol s)) rest))
   /-- A ring header: `extHeaderSol`-shaped solution, with the ring's side
       conditions — guard disjointness, member-halt subset parking, and exit
       absorption. -/
@@ -73,6 +81,10 @@ theorem decomp_solves (aut : GAut S A T) (sol : S → Exp A T)
   | selfLoop g p rest hsol hrhs =>
       rw [hrhs, hsol]
       exact EquivBA.base (salomaa_solution_exists g (.act p) rest)
+  | salomaaE G BODY rest hsol hrhs =>
+      refine EquivBA.trans ?_ (EquivBA.symm hrhs)
+      rw [hsol]
+      exact EquivBA.base (salomaa_solution_exists G BODY rest)
   | header R n0 r hns hsol hrhs hdisj habs habsx hdeadH =>
       rw [hsol, hrhs]
       exact extHeaderSol_solves R hdisj n0 r hns habs habsx hdeadH

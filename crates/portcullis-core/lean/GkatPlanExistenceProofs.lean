@@ -1,4 +1,5 @@
 import GkatDecompProofs
+import GkatDeadExitElimProofs
 
 /-! # Toward plan existence: the attack on `DecompCovered`
 
@@ -784,5 +785,423 @@ theorem selfloop_dag_roles (aut : GAut S A T) (rank : S → Nat)
     rfl
 
 #print axioms selfloop_dag_roles
+
+/-! ## S2, the gathering stratum: self-arms in ANY position
+
+    The commutation law `ite g₁ A (ite g₂ B C) ≡ ite (g₂∧¬g₁) B (ite g₁ A C)`
+    (three axiom applications) walks a self-arm to the head, conjoining the
+    negations of the guards it crosses.  With it, a state whose dispatch holds
+    ONE self-arm anywhere is a `salomaaE` state. -/
+
+/-- **Arm commutation**: a later arm may jump an earlier one at the price of
+    conjoining the earlier guard's negation.  `u2`, `u3`, `u2`, `dneg`. -/
+theorem arm_commute (g₁ g₂ : BExp T) (A₁ B C : Exp A T) :
+    EquivBA (.ite g₁ A₁ (.ite g₂ B C))
+      (.ite (.and g₂ (.not g₁)) B (.ite g₁ A₁ C)) := by
+  refine EquivBA.trans (EquivBA.base (Equiv.u2 g₁ A₁ (.ite g₂ B C))) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.u3 g₂ (.not g₁) B C A₁)) ?_
+  refine EquivBA.ite_c (EquivBA.base (Equiv.refl B)) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.u2 (.not g₁) C A₁)) ?_
+  exact EquivBA.ite_guard (GkatRingSupport.dneg_bval g₁)
+
+/-- The running disjunction of a prefix's guards. -/
+def orGuards : List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | e :: rest => .or e.1 (orGuards rest)
+
+/-- **Self-arm gathering**: a marked arm walks to the head of the fold, its
+    guard conjoined with the negations of everything it crossed. -/
+theorem self_arm_gather (sol : S → Exp A T) (h : BExp T) (gs : BExp T) (a : A)
+    (t : S) : ∀ (pre post : List (BExp T × A × S)),
+    EquivBA (foldTL sol h (pre ++ (gs, a, t) :: post))
+      (.ite (.and gs (.not (orGuards pre))) (.seq (.act a) (sol t))
+        (foldTL sol h (pre ++ post))) := by
+  intro pre
+  induction pre with
+  | nil =>
+      intro post
+      show EquivBA (.ite gs (.seq (.act a) (sol t)) (foldTL sol h post)) _
+      refine EquivBA.symm (EquivBA.ite_guard ?_)
+      intro X W x
+      show (bval W gs x && !false) = bval W gs x
+      cases bval W gs x <;> rfl
+  | cons e₁ pre' ih =>
+      intro post
+      show EquivBA
+        (.ite e₁.1 (.seq (.act e₁.2.1) (sol e₁.2.2))
+          (foldTL sol h (pre' ++ (gs, a, t) :: post)))
+        (.ite (.and gs (.not (.or e₁.1 (orGuards pre'))))
+          (.seq (.act a) (sol t))
+          (.ite e₁.1 (.seq (.act e₁.2.1) (sol e₁.2.2))
+            (foldTL sol h (pre' ++ post))))
+      refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+        (ih post)) ?_
+      refine EquivBA.trans (arm_commute e₁.1 (.and gs (.not (orGuards pre')))
+        (.seq (.act e₁.2.1) (sol e₁.2.2)) (.seq (.act a) (sol t))
+        (foldTL sol h (pre' ++ post))) ?_
+      refine EquivBA.ite_guard ?_
+      intro X W x
+      show ((bval W gs x && !bval W (orGuards pre') x) && !bval W e₁.1 x)
+        = (bval W gs x && !(bval W e₁.1 x || bval W (orGuards pre') x))
+      cases bval W gs x <;> cases bval W (orGuards pre') x <;>
+        cases bval W e₁.1 x <;> rfl
+
+open Classical in
+/-- Find the first self-arm of a dispatch list. -/
+noncomputable def splitSelf (self : S) :
+    List (BExp T × A × S) →
+      Option (List (BExp T × A × S) × BExp T × A × List (BExp T × A × S))
+  | [] => none
+  | (g, a, t) :: rest =>
+      if t = self then some ([], g, a, rest)
+      else (splitSelf self rest).map
+        (fun q => ((g, a, t) :: q.1, q.2.1, q.2.2.1, q.2.2.2))
+
+open Classical in
+private theorem splitSelf_cons (self : S) (g : BExp T) (a : A) (t : S)
+    (rest : List (BExp T × A × S)) :
+    splitSelf self ((g, a, t) :: rest)
+      = if t = self then some ([], g, a, rest)
+        else (splitSelf self rest).map
+          (fun q => ((g, a, t) :: q.1, q.2.1, q.2.2.1, q.2.2.2)) := rfl
+
+open Classical in
+/-- `splitSelf` is faithful: it returns the decomposition around the FIRST
+    self-arm. -/
+theorem splitSelf_spec (self : S) :
+    ∀ (L pre : List (BExp T × A × S)) (g : BExp T) (a : A)
+      (post : List (BExp T × A × S)),
+    splitSelf self L = some (pre, g, a, post) →
+    L = pre ++ (g, a, self) :: post := by
+  intro L
+  induction L with
+  | nil => intro pre g a post h; exact nomatch h
+  | cons hd rest ih =>
+      intro pre g a post h
+      obtain ⟨g₁, a₁, t₁⟩ := hd
+      rw [splitSelf_cons] at h
+      by_cases ht : t₁ = self
+      · rw [if_pos ht] at h
+        have hp := Option.some.inj h
+        rw [show pre = [] from (congrArg (fun q => q.1) hp).symm,
+            show g₁ = g from congrArg (fun q => q.2.1) hp,
+            show rest = post from congrArg (fun q => q.2.2.2) hp,
+            show a₁ = a from congrArg (fun q => q.2.2.1) hp, ht]
+        rfl
+      · rw [if_neg ht] at h
+        cases hs : splitSelf self rest with
+        | none => rw [hs] at h; exact nomatch h
+        | some q =>
+            obtain ⟨pre', g', a', post'⟩ := q
+            rw [hs] at h
+            have hp := Option.some.inj h
+            have hpre : (g₁, a₁, t₁) :: pre' = pre :=
+              congrArg (fun q => q.1) hp
+            have hg : g' = g := congrArg (fun q => q.2.1) hp
+            have ha : a' = a := congrArg (fun q => q.2.2.1) hp
+            have hpost : post' = post := congrArg (fun q => q.2.2.2) hp
+            rw [← hpre, ← hg, ← ha, ← hpost]
+            show (g₁, a₁, t₁) :: rest = (g₁, a₁, t₁) :: (pre' ++ (g', a', self) :: post')
+            rw [ih pre' g' a' post' hs]
+  -- (the FIRST-arm property is not needed downstream; faithfulness suffices)
+
+open Classical in
+/-- If the list really decomposes around a self-arm whose complement never
+    targets `self`, `splitSelf` finds exactly that decomposition. -/
+theorem splitSelf_complete (self : S) :
+    ∀ (pre : List (BExp T × A × S)) (g : BExp T) (a : A)
+      (post : List (BExp T × A × S)),
+    (∀ e ∈ pre, e.2.2 ≠ self) →
+    splitSelf self (pre ++ (g, a, self) :: post) = some (pre, g, a, post) := by
+  intro pre
+  induction pre with
+  | nil =>
+      intro g a post _
+      show splitSelf self ((g, a, self) :: post) = _
+      rw [splitSelf_cons, if_pos rfl]
+  | cons hd pre' ih =>
+      intro g a post hne
+      obtain ⟨g₁, a₁, t₁⟩ := hd
+      show splitSelf self ((g₁, a₁, t₁) :: (pre' ++ (g, a, self) :: post)) = _
+      rw [splitSelf_cons, if_neg (hne (g₁, a₁, t₁) (by simp)),
+          ih g a post (fun e he => hne e (by simp [he]))]
+      rfl
+
+open Classical in
+/-- The single-self-arm-anywhere solution: the gathered Salomaa closed form when
+    a self-arm exists, the fold otherwise. -/
+noncomputable def saSol (aut : GAut S A T) (rank : S → Nat) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    let solAt : S → Exp A T := fun t =>
+      if h : rank t < rank s then rec t h else .test .zero
+    match splitSelf s (aut.trans s) with
+    | none => foldTL solAt (aut.hlt s) (aut.trans s)
+    | some (pre, g, a, post) =>
+        .seq (.wh (.and g (.not (orGuards pre))) (.act a))
+          (foldTL solAt (aut.hlt s) (pre ++ post)))
+
+open Classical in
+theorem saSol_eq (aut : GAut S A T) (rank : S → Nat) (s : S) :
+    saSol aut rank s
+      = (match splitSelf s (aut.trans s) with
+        | none => foldTL (fun t =>
+            if _ : rank t < rank s then saSol aut rank t else .test .zero)
+            (aut.hlt s) (aut.trans s)
+        | some (pre, g, a, post) =>
+            .seq (.wh (.and g (.not (orGuards pre))) (.act a))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then saSol aut rank t else .test .zero)
+                (aut.hlt s) (pre ++ post))) := by
+  unfold saSol
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **The gathering stratum of S2**: one self-arm ANYWHERE in the dispatch,
+    everything else descending, is fully role-covered — the arm walks to the
+    head by commutation and closes as a `salomaaE` state. -/
+theorem selfarm_roles (aut : GAut S A T) (rank : S → Nat)
+    (hshape : ∀ s ∈ aut.states,
+      (∀ e ∈ aut.trans s, rank e.2.2 < rank s) ∨
+      (∃ pre g a post, aut.trans s = pre ++ (g, a, s) :: post ∧
+        (∀ e ∈ pre, rank e.2.2 < rank s) ∧
+        (∀ e ∈ post, rank e.2.2 < rank s))) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨saSol aut rank, fun s hs => ?_⟩
+  rcases hshape s hs with hlow | ⟨pre, g, a, post, htr, hpre, hpost⟩
+  · -- no self-arm can exist: every target descends, so target ≠ s
+    have hnone : splitSelf s (aut.trans s) = none := by
+      cases hsp : splitSelf s (aut.trans s) with
+      | none => rfl
+      | some q =>
+          obtain ⟨pre, g, a, post⟩ := q
+          exfalso
+          have hL := splitSelf_spec s (aut.trans s) pre g a post hsp
+          have hmem : (g, a, s) ∈ aut.trans s := by
+            rw [hL]; simp
+          have := hlow (g, a, s) hmem
+          exact Nat.lt_irrefl _ this
+    refine StateRole.fold ?_
+    rw [saSol_eq, hnone, eqRHS_foldTL]
+    refine foldTL_congr (aut.hlt s) (aut.trans s) ?_
+    intro e he
+    rw [dif_pos (hlow e he)]
+  · -- gathered Salomaa
+    have hne : ∀ e ∈ pre, e.2.2 ≠ s := by
+      intro e he heq
+      have := hpre e he
+      rw [heq] at this
+      exact Nat.lt_irrefl _ this
+    have hsplit : splitSelf s (aut.trans s) = some (pre, g, a, post) := by
+      rw [htr]
+      exact splitSelf_complete s pre g a post hne
+    have hRESTc : foldTL (fun t =>
+          if _ : rank t < rank s then saSol aut rank t else .test .zero)
+        (aut.hlt s) (pre ++ post)
+        = foldTL (saSol aut rank) (aut.hlt s) (pre ++ post) := by
+      refine foldTL_congr (aut.hlt s) (pre ++ post) ?_
+      intro e he
+      rcases List.mem_append.mp he with h1 | h2
+      · rw [dif_pos (hpre e h1)]
+      · rw [dif_pos (hpost e h2)]
+    have hsol : saSol aut rank s
+        = .seq (.wh (.and g (.not (orGuards pre))) (.act a))
+            (foldTL (saSol aut rank) (aut.hlt s) (pre ++ post)) := by
+      rw [saSol_eq, hsplit]
+      exact congrArg _ hRESTc
+    refine StateRole.salomaaE (.and g (.not (orGuards pre))) (.act a)
+      (foldTL (saSol aut rank) (aut.hlt s) (pre ++ post)) hsol ?_
+    rw [eqRHS_foldTL, htr]
+    exact self_arm_gather (saSol aut rank) (aut.hlt s) g a s pre post
+
+#print axioms selfarm_roles
+
+/-! ## S2, the singleton-SCC theorem: arbitrary self-loops
+
+    Arms merge as well as commute: `ite G₁ (A·X) (ite G₂ (B·X) R) ≡
+    ite (G₁∨G₂) ((ite G₁ A B)·X) R`.  Recursing over the dispatch with the
+    commutation and merge laws gathers ALL self-arms into a single guarded
+    body, so every state whose cycles are self-loops — any number of self-arms,
+    any positions — is a `salomaaE` state.  This subsumes `dag_roles`,
+    `selfloop_dag_roles`, and `selfarm_roles`. -/
+
+/-- **Arm merging**: two self-call arms fuse into one guarded body. -/
+theorem arms_merge (G₁ G₂ : BExp T) (A₁ B X R : Exp A T) :
+    EquivBA (.ite G₁ (.seq A₁ X) (.ite G₂ (.seq B X) R))
+      (.ite (.or G₁ G₂) (.seq (.ite G₁ A₁ B) X) R) := by
+  have harm1 : EquivBA (.seq (.test G₁) (.seq (.ite G₁ A₁ B) X))
+      (.seq (.test G₁) (.seq A₁ X)) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc' (.test G₁)
+      (.ite G₁ A₁ B) X) ?_
+    refine EquivBA.trans (EquivBA.seq_c
+      (GkatGuardedAlgebra.test_seq_ite_of_implies A₁ B
+        (GkatRingSupport.himp_self G₁))
+      (EquivBA.base (Equiv.refl X))) ?_
+    exact EquivBA.base (Equiv.s1 (.test G₁) A₁ X)
+  have hinner : EquivBA (.seq (.test (.and (.not G₁) G₂)) (.ite G₁ A₁ B))
+      (.seq (.test (.and (.not G₁) G₂)) B) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite
+      (.and (.not G₁) G₂) G₁ A₁ B) ?_
+    exact GkatDeadExitElim.ite_zero_guard _ _ (fun Y W x => by
+      show ((!bval W G₁ x && bval W G₂ x) && bval W G₁ x) = false
+      cases bval W G₁ x <;> cases bval W G₂ x <;> rfl)
+  have harm2 : EquivBA
+      (.seq (.test (.and (.not G₁) G₂)) (.seq (.ite G₁ A₁ B) X))
+      (.seq (.test (.and (.not G₁) G₂)) (.seq B X)) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc' _ _ X) ?_
+    refine EquivBA.trans (EquivBA.seq_c hinner (EquivBA.base (Equiv.refl X))) ?_
+    exact EquivBA.base (Equiv.s1 _ B X)
+  have helse : EquivBA
+      (.seq (.test (.not G₁)) (.ite G₂ (.seq (.ite G₁ A₁ B) X) R))
+      (.seq (.test (.not G₁)) (.ite G₂ (.seq B X) R)) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite (.not G₁) G₂ _ R) ?_
+    refine EquivBA.trans (GkatResidue.ite_congr_under_guard harm2) ?_
+    exact EquivBA.symm (GkatGuardedAlgebra.test_seq_ite (.not G₁) G₂
+      (.seq B X) R)
+  refine EquivBA.symm ?_
+  refine EquivBA.trans (GkatRingSupport.ite_or_split G₁ G₂
+    (.seq (.ite G₁ A₁ B) X) R) ?_
+  refine EquivBA.trans (GkatResidue.ite_congr_under_guard harm1) ?_
+  exact GkatRingSupport.ite_congr_under_else helse
+
+open Classical in
+/-- The gathered self-guard of a dispatch (with priority bookkeeping). -/
+noncomputable def gGuard (t : S) : List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | (g, _, u) :: rest =>
+      if u = t then .or g (gGuard t rest)
+      else .and (gGuard t rest) (.not g)
+
+open Classical in
+/-- The gathered self-body of a dispatch. -/
+noncomputable def gBody (t : S) : List (BExp T × A × S) → Exp A T
+  | [] => .test .zero
+  | (g, a, u) :: rest =>
+      if u = t then .ite g (.act a) (gBody t rest)
+      else gBody t rest
+
+open Classical in
+/-- The non-self remainder of a dispatch. -/
+noncomputable def gOthers (t : S) :
+    List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, a, u) :: rest =>
+      if u = t then gOthers t rest
+      else (g, a, u) :: gOthers t rest
+
+open Classical in
+private theorem gGuard_cons (t : S) (g : BExp T) (a : A) (u : S)
+    (rest : List (BExp T × A × S)) :
+    gGuard t ((g, a, u) :: rest)
+      = if u = t then .or g (gGuard t rest)
+        else .and (gGuard t rest) (.not g) := rfl
+
+open Classical in
+private theorem gBody_cons (t : S) (g : BExp T) (a : A) (u : S)
+    (rest : List (BExp T × A × S)) :
+    gBody t ((g, a, u) :: rest)
+      = if u = t then .ite g (.act a) (gBody t rest) else gBody t rest := rfl
+
+open Classical in
+private theorem gOthers_cons (t : S) (g : BExp T) (a : A) (u : S)
+    (rest : List (BExp T × A × S)) :
+    gOthers t ((g, a, u) :: rest)
+      = if u = t then gOthers t rest
+        else (g, a, u) :: gOthers t rest := rfl
+
+open Classical in
+theorem gOthers_sub (t : S) :
+    ∀ L : List (BExp T × A × S), ∀ e ∈ gOthers t L,
+      e ∈ L ∧ e.2.2 ≠ t := by
+  intro L
+  induction L with
+  | nil => intro e he; exact nomatch he
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      intro e he
+      rw [gOthers_cons] at he
+      by_cases hu : u = t
+      · rw [if_pos hu] at he
+        obtain ⟨h1, h2⟩ := ih e he
+        exact ⟨by simp [h1], h2⟩
+      · rw [if_neg hu] at he
+        rcases List.mem_cons.mp he with heq | hmem
+        · subst heq
+          exact ⟨by simp, hu⟩
+        · obtain ⟨h1, h2⟩ := ih e hmem
+          exact ⟨by simp [h1], h2⟩
+
+open Classical in
+/-- **THE GATHERING THEOREM**: every dispatch is provably a single guarded
+    self-call over its non-self remainder. -/
+theorem multi_gather (sol : S → Exp A T) (h : BExp T) (t : S) :
+    ∀ L : List (BExp T × A × S),
+    EquivBA (foldTL sol h L)
+      (.ite (gGuard t L) (.seq (gBody t L) (sol t))
+        (foldTL sol h (gOthers t L))) := by
+  intro L
+  induction L with
+  | nil =>
+      exact EquivBA.symm (GkatDeadExitElim.ite_zero_guard _ _
+        (fun X W x => rfl))
+  | cons hd rest ih =>
+      obtain ⟨g, a, u⟩ := hd
+      rw [gGuard_cons, gBody_cons, gOthers_cons]
+      by_cases hu : u = t
+      · subst hu
+        rw [if_pos rfl, if_pos rfl, if_pos rfl]
+        show EquivBA (.ite g (.seq (.act a) (sol u)) (foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih) ?_
+        exact arms_merge g (gGuard u rest) (.act a) (gBody u rest) (sol u)
+          (foldTL sol h (gOthers u rest))
+      · rw [if_neg hu, if_neg hu, if_neg hu]
+        show EquivBA (.ite g (.seq (.act a) (sol u)) (foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih) ?_
+        exact arm_commute g (gGuard t rest) (.seq (.act a) (sol u))
+          (.seq (gBody t rest) (sol t)) (foldTL sol h (gOthers t rest))
+
+open Classical in
+/-- The singleton-SCC solution: the gathered Salomaa closed form, everywhere. -/
+noncomputable def ssSol (aut : GAut S A T) (rank : S → Nat) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+      (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+        (aut.hlt s) (gOthers s (aut.trans s))))
+
+open Classical in
+theorem ssSol_eq (aut : GAut S A T) (rank : S → Nat) (s : S) :
+    ssSol aut rank s
+      = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t =>
+              if _ : rank t < rank s then ssSol aut rank t else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s))) := by
+  unfold ssSol
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE SINGLETON-SCC THEOREM** (S2, complete 1-cycle stratum): an automaton
+    whose every cycle is a self-loop — any number of self-arms, any positions —
+    is fully role-covered.  Subsumes the acyclic, head-self-loop, and
+    single-self-arm strata. -/
+theorem singleton_scc_roles (aut : GAut S A T) (rank : S → Nat)
+    (hshape : ∀ s ∈ aut.states, ∀ e ∈ aut.trans s,
+      e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨ssSol aut rank, fun s hs => ?_⟩
+  have hsol : ssSol aut rank s
+      = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (ssSol aut rank) (aut.hlt s) (gOthers s (aut.trans s))) := by
+    rw [ssSol_eq]
+    refine congrArg _ (foldTL_congr (aut.hlt s) (gOthers s (aut.trans s)) ?_)
+    intro e he
+    obtain ⟨heL, hene⟩ := gOthers_sub s (aut.trans s) e he
+    rcases hshape s hs e heL with h1 | h2
+    · exact absurd h1 hene
+    · rw [dif_pos h2]
+  refine StateRole.salomaaE (gGuard s (aut.trans s)) (gBody s (aut.trans s))
+    (foldTL (ssSol aut rank) (aut.hlt s) (gOthers s (aut.trans s))) hsol ?_
+  rw [eqRHS_foldTL]
+  exact multi_gather (ssSol aut rank) (aut.hlt s) s (aut.trans s)
+
+#print axioms singleton_scc_roles
 
 end GkatPlanExistence
