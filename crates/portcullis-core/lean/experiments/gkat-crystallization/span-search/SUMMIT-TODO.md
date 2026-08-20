@@ -968,3 +968,19 @@ instances. Next phases: decidable liveness (bounded reachability),
 decidable bisimilarity at genW over mentioned tests (partition
 refinement, bisimRep := first-in-list), minRank as list-min, then sweep
 the classical dites.
+
+## DE-CHOICE PHASE 2a: DECIDABLE BOUNDED LIVENESS (iteration 30)
+
+- effList: arms with DISJOINT effective first-match guards (each conjoined
+  with the negation of the accumulated earlier guards)
+- effList_guard_refutes / effList_fires: a firing effective arm IS the
+  first match — firstMatch fully decomposed into guard satisfiability
+- liveWithin n s: acceptance within n steps; equation lemmas
+- decideExMem: hand-rolled decidable bounded existential (no Mathlib)
+- liveWithinDec: DECIDABLE bounded liveness — computable structural
+  recursion over guardSatDecidable, [DecidableEq T] only
+- liveWithin_live: bounded liveness IS liveness ([propext] only).
+
+Remaining for phase 2: the completeness direction (Live -> liveWithin
+|pool| under target-closure) via run splicing at a repeated state — the
+pigeonhole/pumping argument; then trimListD := computable trim.

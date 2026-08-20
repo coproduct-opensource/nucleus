@@ -127,4 +127,162 @@ instance guardRefDecidable [DecidableEq T] (g : BExp T) :
 #print axioms guardSatDecidable
 #print axioms guardRefDecidable
 
+/-! ## Bounded liveness, decidably
+
+    `firstMatch` decomposes into DISJOINT effective guards (each arm's
+    guard conjoined with the negation of all earlier ones), so "some atom
+    steps here" is guard satisfiability.  `liveWithin n` — acceptance
+    reachable within `n` steps — is then decidable by structural
+    recursion, and implies `Live`. -/
+
+open GkatKleene
+
+/-- Arms with their effective (first-match) guards: each guard conjoined
+    with the negation of the accumulated earlier guards. -/
+def effList : List (BExp T × A × S) → BExp T → List (BExp T × A × S)
+  | [], _ => []
+  | (g, a, t) :: rest, D =>
+      (.and g (.not D), a, t) :: effList rest (.or D g)
+
+private theorem effList_cons (g : BExp T) (a : A) (t : S)
+    (rest : List (BExp T × A × S)) (D : BExp T) :
+    effList ((g, a, t) :: rest) D
+      = (.and g (.not D), a, t) :: effList rest (.or D g) := rfl
+
+/-- A firing effective guard refutes its accumulated prefix. -/
+theorem effList_guard_refutes {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      ∀ e ∈ effList L D, bval V e.1 x = true → bval V D x = false := by
+  intro L
+  induction L with
+  | nil => intro D e he; exact nomatch he
+  | cons hd rest ih =>
+      intro D e he hb
+      obtain ⟨g, a, t⟩ := hd
+      rw [effList_cons] at he
+      rcases List.mem_cons.mp he with heq | hmem
+      · subst heq
+        have hb' : (bval V g x && !(bval V D x)) = true := hb
+        rw [Bool.and_eq_true] at hb'
+        cases hD : bval V D x with
+        | false => rfl
+        | true =>
+            rw [hD] at hb'
+            exact nomatch hb'.2
+      · have := ih (.or D g) e hmem hb
+        have hor : (bval V D x || bval V g x) = false := this
+        cases hD : bval V D x with
+        | false => rfl
+        | true =>
+            rw [hD] at hor
+            exact nomatch hor
+
+/-- A firing effective arm IS the first match. -/
+theorem effList_fires {Atom : Type} (V : T → Atom → Bool) (x : Atom) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      bval V D x = false →
+      ∀ e ∈ effList L D, bval V e.1 x = true →
+        firstMatch V x L = some (e.2.1, e.2.2) := by
+  intro L
+  induction L with
+  | nil => intro D _ e he; exact nomatch he
+  | cons hd rest ih =>
+      intro D hD e he hb
+      obtain ⟨g, a, t⟩ := hd
+      rw [effList_cons] at he
+      rcases List.mem_cons.mp he with heq | hmem
+      · subst heq
+        have hb' : (bval V g x && !(bval V D x)) = true := hb
+        rw [Bool.and_eq_true] at hb'
+        show (if bval V g x = true then some (a, t)
+          else firstMatch V x rest) = some (a, t)
+        rw [if_pos hb'.1]
+      · have hDg : (bval V D x || bval V g x) = false :=
+          effList_guard_refutes V x rest (.or D g) e hmem hb
+        have hg : bval V g x = false := by
+          cases hg : bval V g x with
+          | false => rfl
+          | true =>
+              rw [hg, hD] at hDg
+              exact nomatch hDg
+        show (if bval V g x = true then some (a, t)
+          else firstMatch V x rest) = some (e.2.1, e.2.2)
+        rw [if_neg (by rw [hg]; exact Bool.false_ne_true)]
+        exact ih (.or D g) hDg e hmem hb
+
+/-- Acceptance reachable within `n` steps. -/
+def liveWithin (aut : GAut S A T) : Nat → S → Prop
+  | 0, s => ∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true
+  | n + 1, s =>
+      (∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true)
+      ∨ ∃ e ∈ effList (aut.trans s) .zero,
+          (∃ α : T → Bool, bval (genW T) e.1 α = true)
+          ∧ liveWithin aut n e.2.2
+
+private theorem liveWithin_zero (aut : GAut S A T) (s : S) :
+    liveWithin aut 0 s
+      = ∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true := rfl
+
+private theorem liveWithin_succ (aut : GAut S A T) (n : Nat) (s : S) :
+    liveWithin aut (n + 1) s
+      = ((∃ α : T → Bool, bval (genW T) (aut.hlt s) α = true)
+        ∨ ∃ e ∈ effList (aut.trans s) .zero,
+            (∃ α : T → Bool, bval (genW T) e.1 α = true)
+            ∧ liveWithin aut n e.2.2) := rfl
+
+/-- Hand-rolled decidable bounded existential over a list. -/
+def decideExMem {γ : Type} {P : γ → Prop}
+    (dec : ∀ e : γ, Decidable (P e)) :
+    (L : List γ) → Decidable (∃ e ∈ L, P e)
+  | [] => isFalse (by rintro ⟨e, he, -⟩; exact nomatch he)
+  | x :: xs =>
+      match dec x with
+      | isTrue h => isTrue ⟨x, List.mem_cons_self .., h⟩
+      | isFalse hx =>
+          match decideExMem dec xs with
+          | isTrue h =>
+              isTrue (by
+                obtain ⟨e, he, hp⟩ := h
+                exact ⟨e, List.mem_cons_of_mem _ he, hp⟩)
+          | isFalse hxs =>
+              isFalse (by
+                rintro ⟨e, he, hp⟩
+                rcases List.mem_cons.mp he with heq | hm
+                · exact hx (heq ▸ hp)
+                · exact hxs ⟨e, hm, hp⟩)
+
+/-- **DECIDABLE BOUNDED LIVENESS** — computable, no choice. -/
+def liveWithinDec [DecidableEq T] (aut : GAut S A T) :
+    (n : Nat) → (s : S) → Decidable (liveWithin aut n s)
+  | 0, s => guardSatDecidable (aut.hlt s)
+  | n + 1, s =>
+      @instDecidableOr _ _ (guardSatDecidable (aut.hlt s))
+        (decideExMem (fun e =>
+          @instDecidableAnd _ _ (guardSatDecidable e.1)
+            (liveWithinDec aut n e.2.2)) (effList (aut.trans s) .zero))
+
+/-- Bounded liveness is liveness. -/
+theorem liveWithin_live (aut : GAut S A T) :
+    ∀ (n : Nat) (s : S), liveWithin aut n s → Live aut s := by
+  intro n
+  induction n with
+  | zero =>
+      intro s h
+      obtain ⟨α, hα⟩ := h
+      exact ⟨α, [], hα⟩
+  | succ n ih =>
+      intro s h
+      rw [liveWithin_succ] at h
+      rcases h with hacc | ⟨e, he, ⟨α, hα⟩, hlw⟩
+      · obtain ⟨α, hα⟩ := hacc
+        exact ⟨α, [], hα⟩
+      · obtain ⟨β, w, hrun⟩ := ih e.2.2 hlw
+        refine ⟨α, (e.2.1, β) :: w, e.2.2, ?_, hrun⟩
+        show firstMatch (genW T) α (aut.trans s) = some (e.2.1, e.2.2)
+        exact effList_fires (genW T) α (aut.trans s) .zero rfl e he hα
+
+#print axioms effList_fires
+#print axioms liveWithin_live
+
 end GkatGuardDecide
