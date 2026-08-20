@@ -1403,3 +1403,18 @@ steelman objections (analysis on record in session):
    language-model completeness; decidability-not-efficiency.
 
 FULL QUEUE: two-loop/nested -> OPEN PROBLEM -> STEELMAN HARDENING.
+
+## TWO-LOOP LIVENESS + TRIM STEPS (iteration 49)
+
+- twoLoop_live_inl/inr/all: both states live given sat(¬c) + sat(¬b)
+  (inner advances at a ¬c-atom then exits; port exits immediately) —
+  liveness words of length ≤ 1, through the run embeddings
+- twoLoop_targets_live: every composite arm target is one of the two
+  live states (no list reasoning — totality of Sum Unit Unit)
+- twoLoop_trim_step_inl_self/adv + inr_feed/self: the four trim-level
+  composite steps at (c), (¬c), (b∧c), (b∧¬c) atoms.
+All first pass.
+
+Remaining: parity lemma (nxtIter twoNxt alternates) -> hper/hnofix/
+hnontriv/qPeriod≥2 at Σ; hnodesc (minRank 0); init~port; cover; the
+walked-hos assembly; twoloops_complete.

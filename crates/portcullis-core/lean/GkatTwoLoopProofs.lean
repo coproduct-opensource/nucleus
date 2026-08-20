@@ -164,4 +164,160 @@ theorem twoLoop_step_inr_none (b c : BExp T) (q r : A)
 #print axioms twoLoop_step_inl_adv
 #print axioms twoLoop_step_inr_self
 
+/-! ## Liveness and trim-level steps in the composite
+
+    With `¬c` and `¬b` satisfiable, both states are live (inner advances
+    at a `¬c`-atom, port exits at a `¬b`-atom); every arm target — being
+    one of the two states — is live, so trimming is transparent and the
+    concrete steps reach the trimmed sum. -/
+
+open Classical in
+/-- The port is live: exit at a `¬b`-atom. -/
+theorem twoLoop_live_inr (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    Live (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (Sum.inl (some (Sum.inr ()))) := by
+  obtain ⟨αb, hαb⟩ := hexitB
+  refine ⟨αb, [], ?_⟩
+  rw [autRun_sumGAut_inl,
+    autRun_toGAut_some (start := Sum.inr ())]
+  show bval (genW T)
+    ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+  rw [twoLoop_hlt_inr, hαb]
+  rfl
+
+open Classical in
+/-- The inner state is live: advance at `¬c`, exit at `¬b`. -/
+theorem twoLoop_live_inl (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false) :
+    Live (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (Sum.inl (some (Sum.inl ()))) := by
+  obtain ⟨αc, hαc⟩ := hexitC
+  obtain ⟨αb, hαb⟩ := hexitB
+  refine ⟨αc, [(r, αb)], ?_⟩
+  rw [autRun_sumGAut_inl,
+    autRun_toGAut_some (start := Sum.inr ())]
+  refine ⟨Sum.inr (), ?_, ?_⟩
+  · show firstMatch (genW T) αc
+      ((twoLoopAut b c q r).core.trans (Sum.inl ()))
+      = some (r, Sum.inr ())
+    exact twoLoop_step_inl_adv b c q r αc hαc
+  · show bval (genW T)
+      ((twoLoopAut b c q r).core.hlt (Sum.inr ())) αb = true
+    rw [twoLoop_hlt_inr, hαb]
+    rfl
+
+open Classical in
+/-- Every state of the two-loop core is live (given the exits). -/
+theorem twoLoop_live_all (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit Unit) :
+    Live (sumGAut (twoLoopAut b c q r).toGAut aut₂)
+      (Sum.inl (some s)) := by
+  cases s with
+  | inl u =>
+      cases u
+      exact twoLoop_live_inl b c q r aut₂ hexitC hexitB
+  | inr u =>
+      cases u
+      exact twoLoop_live_inr b c q r aut₂ hexitB
+
+open Classical in
+/-- All composite arms at a two-loop core state have live targets. -/
+theorem twoLoop_targets_live (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (s : Sum Unit Unit) :
+    ∀ e ∈ (sumGAut (twoLoopAut b c q r).toGAut aut₂).trans
+        (Sum.inl (some s)),
+      Live (sumGAut (twoLoopAut b c q r).toGAut aut₂) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  rw [← heq₁, ← heq₀]
+  show Live _ (Sum.inl (some t₀.2.2))
+  exact twoLoop_live_all b c q r aut₂ hexitC hexitB t₀.2.2
+
+open Classical in
+/-- Trim-level step at the inner state, `c`-atom: self. -/
+theorem twoLoop_trim_step_inl_self (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ()))) α
+      = some (q, Sum.inl (some (Sum.inl ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live b c q r aut₂ hexitC hexitB (Sum.inl ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [twoLoop_step_inl_self b c q r α hc]
+  rfl
+
+open Classical in
+/-- Trim-level step at the inner state, `¬c`-atom: advance to the
+    port. -/
+theorem twoLoop_trim_step_inl_adv (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hc : bval (genW T) c α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inl ()))) α
+      = some (r, Sum.inl (some (Sum.inr ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live b c q r aut₂ hexitC hexitB (Sum.inl ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [twoLoop_step_inl_adv b c q r α hc]
+  rfl
+
+open Classical in
+/-- Trim-level step at the port, `b ∧ c`-atom: feed the inner loop. -/
+theorem twoLoop_trim_step_inr_feed (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hb : bval (genW T) b α = true)
+    (hc : bval (genW T) c α = true) :
+    autStep (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr ()))) α
+      = some (q, Sum.inl (some (Sum.inl ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live b c q r aut₂ hexitC hexitB (Sum.inr ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [twoLoop_step_inr_feed b c q r α hb hc]
+  rfl
+
+open Classical in
+/-- Trim-level step at the port, `b ∧ ¬c`-atom: the skip lands on the
+    port itself. -/
+theorem twoLoop_trim_step_inr_self (b c : BExp T) (q r : A)
+    {S₂ : Type} (aut₂ : GAut (Option S₂) A T)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (α : T → Bool) (hb : bval (genW T) b α = true)
+    (hc : bval (genW T) c α = false) :
+    autStep (genW T)
+        (trimAut (sumGAut (twoLoopAut b c q r).toGAut aut₂))
+        (Sum.inl (some (Sum.inr ()))) α
+      = some (r, Sum.inl (some (Sum.inr ()))) := by
+  rw [autStep_trimAut_all_live (genW T) _ _
+    (twoLoop_targets_live b c q r aut₂ hexitC hexitB (Sum.inr ())) α]
+  rw [autStep_sumGAut_inl, autStep_toGAut_some]
+  rw [twoLoop_step_inr_self b c q r α hb hc]
+  rfl
+
+#print axioms twoLoop_live_all
+#print axioms twoLoop_trim_step_inl_adv
+#print axioms twoLoop_trim_step_inr_feed
+
 end GkatTwoLoop
