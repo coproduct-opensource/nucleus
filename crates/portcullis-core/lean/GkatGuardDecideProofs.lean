@@ -712,4 +712,145 @@ theorem trimAutD_eq_trimAut [DecidableEq T] [DecidableEq S]
 #print axioms trimListD_eq_trimList
 #print axioms trimAutD_eq_trimAut
 
+/-! ## The step-equivalence ladder
+
+    Generic bisimilarity is the intersection of finite step-equivalence
+    levels — with an EXPLICIT bisimulation witness, so both directions
+    are choice-free.  Stabilization then makes one level decide all. -/
+
+/-- Lift a relation through one deterministic step. -/
+def optStepRel (P : S → S → Prop) :
+    Option (A × S) → Option (A × S) → Prop
+  | none, none => True
+  | some o₁, some o₂ => o₁.1 = o₂.1 ∧ P o₁.2 o₂.2
+  | some _, none => False
+  | none, some _ => False
+
+/-- `n`-step equivalence at the generic valuation. -/
+def stepEquivWithin (aut : GAut S A T) : Nat → S → S → Prop
+  | 0, _, _ => True
+  | n + 1, s, t =>
+      (∀ α : T → Bool,
+        bval (genW T) (aut.hlt s) α = bval (genW T) (aut.hlt t) α)
+      ∧ ∀ α : T → Bool,
+          optStepRel (stepEquivWithin aut n)
+            (autStep (genW T) aut s α) (autStep (genW T) aut t α)
+
+private theorem stepEquivWithin_succ (aut : GAut S A T) (n : Nat)
+    (s t : S) :
+    stepEquivWithin aut (n + 1) s t
+      = ((∀ α : T → Bool,
+          bval (genW T) (aut.hlt s) α = bval (genW T) (aut.hlt t) α)
+        ∧ ∀ α : T → Bool,
+            optStepRel (stepEquivWithin aut n)
+              (autStep (genW T) aut s α)
+              (autStep (genW T) aut t α)) := rfl
+
+/-- **DOWNWARD**: bisimilar states are step-equivalent at every level. -/
+theorem genBisimilar_stepEquiv (aut : GAut S A T) {s t : S}
+    (h : GenBisimilar aut s t) :
+    ∀ n : Nat, stepEquivWithin aut n s t := by
+  obtain ⟨R, hR, hRst⟩ := h
+  intro n
+  induction n generalizing s t with
+  | zero => exact trivial
+  | succ n ih =>
+      rw [stepEquivWithin_succ]
+      obtain ⟨hhlt, hfwd, hbwd⟩ := hR s t hRst
+      refine ⟨hhlt, ?_⟩
+      intro α
+      cases hs : autStep (genW T) aut s α with
+      | none =>
+          cases ht : autStep (genW T) aut t α with
+          | none => exact trivial
+          | some o =>
+              obtain ⟨s', hs', -⟩ := hbwd α o.1 o.2 (by
+                rw [ht])
+              rw [hs] at hs'
+              exact nomatch hs'
+      | some o =>
+          obtain ⟨t', ht', hR'⟩ := hfwd α o.1 o.2 (by rw [hs])
+          rw [ht']
+          exact ⟨rfl, ih hR'⟩
+
+/-- **UPWARD**: all-level step equivalence is bisimilarity, witnessed by
+    the all-level relation itself — no choice. -/
+theorem stepEquiv_all_bisim (aut : GAut S A T) {s t : S}
+    (h : ∀ n : Nat, stepEquivWithin aut n s t) :
+    GenBisimilar aut s t := by
+  refine ⟨fun x y => ∀ n : Nat, stepEquivWithin aut n x y, ?_, h⟩
+  intro x y hxy
+  refine ⟨(hxy 1).1, ?_, ?_⟩
+  · intro α q x' hx
+    cases hy : autStep (genW T) aut y α with
+    | none =>
+        have h1 := (hxy 1).2 α
+        rw [hx, hy] at h1
+        exact absurd h1 (by intro hc; exact hc)
+    | some o =>
+        have h1 := (hxy 1).2 α
+        rw [hx, hy] at h1
+        obtain ⟨hq, -⟩ := h1
+        refine ⟨o.2, ?_, ?_⟩
+        · have hq' : q = o.1 := hq
+          rw [hq']
+        · intro n
+          have hn := (hxy (n + 1)).2 α
+          rw [hx, hy] at hn
+          exact hn.2
+  · intro α q y' hy
+    cases hx : autStep (genW T) aut x α with
+    | none =>
+        have h1 := (hxy 1).2 α
+        rw [hx, hy] at h1
+        exact absurd h1 (by intro hc; exact hc)
+    | some o =>
+        have h1 := (hxy 1).2 α
+        rw [hx, hy] at h1
+        obtain ⟨hq, -⟩ := h1
+        refine ⟨o.2, ?_, ?_⟩
+        · have hq' : o.1 = q := hq
+          rw [← hq']
+        · intro n
+          have hn := (hxy (n + 1)).2 α
+          rw [hx, hy] at hn
+          exact hn.2
+
+/-- **THE LADDER CHARACTERIZATION** — choice-free in both directions. -/
+theorem genBisimilar_iff_stepEquiv (aut : GAut S A T) (s t : S) :
+    GenBisimilar aut s t ↔ ∀ n : Nat, stepEquivWithin aut n s t :=
+  ⟨genBisimilar_stepEquiv aut, stepEquiv_all_bisim aut⟩
+
+/-- Levels are antitone. -/
+theorem stepEquivWithin_antitone (aut : GAut S A T) :
+    ∀ (n : Nat) (s t : S), stepEquivWithin aut (n + 1) s t →
+      stepEquivWithin aut n s t := by
+  intro n
+  induction n with
+  | zero => intro s t _; exact trivial
+  | succ n ih =>
+      intro s t h
+      rw [stepEquivWithin_succ] at h ⊢
+      refine ⟨h.1, ?_⟩
+      intro α
+      have h2 := h.2 α
+      cases hs : autStep (genW T) aut s α with
+      | none =>
+          cases ht : autStep (genW T) aut t α with
+          | none => exact trivial
+          | some o =>
+              rw [hs, ht] at h2
+              exact h2.elim
+      | some o =>
+          cases ht : autStep (genW T) aut t α with
+          | none =>
+              rw [hs, ht] at h2
+              exact h2.elim
+          | some o' =>
+              rw [hs, ht] at h2
+              exact ⟨h2.1, ih o.2 o'.2 h2.2⟩
+
+#print axioms genBisimilar_iff_stepEquiv
+#print axioms stepEquivWithin_antitone
+
 end GkatGuardDecide

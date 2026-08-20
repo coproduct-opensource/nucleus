@@ -1039,3 +1039,26 @@ PHASE 2 COMPLETE. Every theorem about trimAut transports to trimAutD by
 rewriting along trimAutD_eq_trimAut. Next: phase 3 — decidable
 bisimilarity at genW (the big one: de-chooses bisimRep and every
 quotient theorem), then minRank as list-min, then the sweep.
+
+## DE-CHOICE PHASE 3a: THE STEP-EQUIVALENCE LADDER (iteration 34)
+
+- optStepRel + stepEquivWithin: n-step equivalence at the generic
+  valuation (halting agreement at every level, deterministic steps
+  matched with related successors)
+- genBisimilar_stepEquiv: bisimilar => every level (induction, the
+  backward clause refutes asymmetric steps)
+- stepEquiv_all_bisim: ALL levels => bisimilar — witnessed by the
+  all-level relation ITSELF, explicitly, so no choice; determinism of
+  autStep makes the matching successor unique across levels
+- genBisimilar_iff_stepEquiv: THE LADDER CHARACTERIZATION — generic
+  bisimilarity IS the intersection of the finite levels. Depends on NO
+  AXIOMS AT ALL.
+- stepEquivWithin_antitone (also axiom-free).
+
+Remaining phase 3: stabilization (pair-pigeonhole: level N = level N+1 at
+N = |pool|^2 forces all levels — the partition refinement bound), then
+per-level decidability (finite support over pool tests), then
+bisimRepD := first-in-list + the quotient transport.
+
+Lean lesson: `cases h : term` rewrites term in the goal — subsequent
+rw [h] finds nothing; check the goal, not the plan.
