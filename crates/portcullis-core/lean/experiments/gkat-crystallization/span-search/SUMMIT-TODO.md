@@ -116,3 +116,18 @@ everything).  Remaining mathematics: S2 (roles) — acyclic stratum proved
       flatten to composite-body self-loops by s1); (c) the general ring
       existence theory against extHeaderSol/extSol (walk-planner as the
       constructive skeleton, absorption via the outG emission theory).
+
+## Cycle stratum (GkatCycleProofs, 2026-08-20)
+
+- StateRole gains equivFold (the fully general escape hatch — witnesses are
+  whole EquivBA derivations); decomp_solves still [propext]
+- single_port_cycle_roles: THE SINGLE-PORT CYCLE THEOREM (cycle-local) — for a
+  simple cycle whose interiors are halt-free with all arms to their single
+  successor, and whose solution takes the chain closed forms, every member has
+  a StateRole: the port is a salomaaE state whose body is the composed cycle
+  (chain_expand + prod_assoc + multi_gather), interiors are equivFolds via the
+  straight-line collapse (ite G Z 0? ≡ G?·Z).  NO parking, NO side conditions.
+  [propext, Classical.choice, Quot.sound]
+- This covers the census-dominant multi-SCC shape (~82% at NA=4).  Remaining:
+  the ambient ASSEMBLY (define the solution by WF recursion mixing strata) and
+  the multi-port tail (parking — rare: 3 in 20k pairs).

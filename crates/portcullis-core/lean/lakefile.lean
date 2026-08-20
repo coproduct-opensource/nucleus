@@ -807,6 +807,9 @@ lean_lib «GkatNormalizationProofs» where
 lean_lib «GkatTrimProofs» where
   roots := #[`GkatTrimProofs]
 
+lean_lib «GkatCycleProofs» where
+  roots := #[`GkatCycleProofs]
+
 lean_lib «GkatCertR1» where
   roots := #[`GkatCertR1]
 

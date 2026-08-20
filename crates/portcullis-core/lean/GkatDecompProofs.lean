@@ -25,6 +25,10 @@ variable {S A T : Type}
 inductive StateRole (aut : GAut S A T) (sol : S → Exp A T) (s : S) : Prop where
   /-- A fold state: its solution is literally its equation. -/
   | fold (h : sol s = eqRHS aut sol s)
+  /-- The fully general escape hatch: the solution provably satisfies its
+      equation.  Witnesses are whole `EquivBA` derivations (e.g. the cycle
+      strata's chain collapses). -/
+  | equivFold (h : EquivBA (sol s) (eqRHS aut sol s))
   /-- A ring member (also covers inner nodes and level states): `extSol`-shaped
       solution, equation in the corresponding dispatch form. -/
   | member (n : ExtNode A T) (next : Exp A T)
@@ -75,6 +79,7 @@ theorem decomp_solves (aut : GAut S A T) (sol : S → Exp A T)
   | fold hf =>
       rw [hf]
       exact EquivBA.base (Equiv.refl _)
+  | equivFold hf => exact hf
   | member n next hsol hrhs hdead =>
       rw [hsol, hrhs]
       exact extSol_solves n next hdead
