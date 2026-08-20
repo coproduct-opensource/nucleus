@@ -1182,3 +1182,24 @@ Axiom prints carry Classical.choice only in ERASED proof positions (the
 transport iffs mention classical trimAut); the computational content is
 choice-free and executable. The de-choice campaign's goal — a certified,
 computable decision path for the fourth theorem — is DELIVERED.
+
+## THE WHOLE LADDER DECIDES (iteration 41)
+
+- loopfree_equivBA_dec / atomicloops_equivBA_dec / gloops_equivBA_dec:
+  the certified decision procedure extends to every stratum of the
+  ladder by the same three-line pattern (completeness + soundness +
+  uleDec). All computable.
+
+THE CONSOLIDATED ARTIFACT LIST:
+  Four unconditional completeness theorems (no UA):
+    loopfree_complete, atomicloops_complete, gloops_complete,
+    chainloops_complete_free
+  One universal equivalence decider: uleDec (all GKAT programs)
+  Four certified provable-equivalence deciders (one per stratum)
+  A complete choice-free semantic pipeline (guards, liveness, trim,
+    bisimilarity, representatives, quotient, minRank)
+  The orbit layer (rankNxt_quot_solvesBA) for future strata.
+
+THE REMAINING SUMMIT: nested loops (well-nestedness covariety per
+ICALP'21 remains open in the literature; our orbit layer is parametric
+in (rank, nxt) — the hierarchical-nxt generalization is the route).

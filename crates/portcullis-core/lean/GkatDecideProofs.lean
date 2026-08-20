@@ -186,4 +186,40 @@ def chainloops_equivBA_dec [DecidableEq T] [DecidableEq A]
 #print axioms uleDec
 #print axioms chainloops_equivBA_dec
 
+/-! ## The whole ladder decides
+
+    Every stratum with a completeness theorem inherits a certified
+    decision procedure for provable equivalence — the same three-line
+    pattern: completeness one way, soundness the other, `uleDec` in the
+    middle. -/
+
+/-- Loop-free provable equivalence is decidable. -/
+def loopfree_equivBA_dec [DecidableEq T] [DecidableEq A]
+    {e f : Exp A T} (he : LoopFree e) (hf : LoopFree f) :
+    Decidable (EquivBA e f) :=
+  @decidable_of_iff _ _
+    ⟨loopfree_complete e f he hf, fun h X W gs => sound_BA (V := W) h gs⟩
+    (uleDec e f)
+
+/-- Atomic-loop provable equivalence is decidable. -/
+def atomicloops_equivBA_dec [DecidableEq T] [DecidableEq A]
+    {e f : Exp A T} (he : AtomicLoops e) (hf : AtomicLoops f) :
+    Decidable (EquivBA e f) :=
+  @decidable_of_iff _ _
+    ⟨atomicloops_complete e f he hf,
+      fun h X W gs => sound_BA (V := W) h gs⟩
+    (uleDec e f)
+
+/-- Guarded-one-action-loop provable equivalence is decidable. -/
+def gloops_equivBA_dec [DecidableEq T] [DecidableEq A]
+    {e f : Exp A T} (he : GLoops e) (hf : GLoops f) :
+    Decidable (EquivBA e f) :=
+  @decidable_of_iff _ _
+    ⟨gloops_complete e f he hf, fun h X W gs => sound_BA (V := W) h gs⟩
+    (uleDec e f)
+
+#print axioms loopfree_equivBA_dec
+#print axioms atomicloops_equivBA_dec
+#print axioms gloops_equivBA_dec
+
 end GkatDecide
