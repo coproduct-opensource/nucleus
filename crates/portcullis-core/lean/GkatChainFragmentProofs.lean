@@ -869,4 +869,216 @@ theorem sum_chain_nxt_rank {S₁ S₂ : Type}
 #print axioms sum_chain_hdec
 #print axioms sum_chain_nxt_rank
 
+/-! ## Trim transparency and run embeddings
+
+    At a state whose arm targets are all live, trimming is invisible: no
+    arm is dropped, the accumulated dead guard stays `0`, and the trimmed
+    guards `g ∧ ¬0` fire exactly as `g`.  Runs embed across `sumGAut` and
+    `toGAut` step by step — the transport that carries spine liveness and
+    firing up to the composite the orbit glue works on. -/
+
+open Classical in
+private theorem trimList_cons₄ (aut : GAut S A T) (g : BExp T) (a : A)
+    (t : S) (rest : List (BExp T × A × S)) (D : BExp T) :
+    trimList aut ((g, a, t) :: rest) D
+      = if Live aut t then (.and g (.not D), a, t) :: trimList aut rest D
+        else trimList aut rest (.or D g) := rfl
+
+open Classical in
+private theorem fm_cons₄ {Atom : Type} (V : T → Atom → Bool) (x : Atom)
+    (g : BExp T) (a : A) (t : S) (rest : List (BExp T × A × S)) :
+    firstMatch V x ((g, a, t) :: rest)
+      = if bval V g x = true then some (a, t)
+        else firstMatch V x rest := rfl
+
+open Classical in
+/-- All-live trimming is an explicit guard conjunction. -/
+theorem trimList_all_live (aut : GAut S A T) :
+    ∀ (L : List (BExp T × A × S)) (D : BExp T),
+      (∀ e ∈ L, Live aut e.2.2) →
+      trimList aut L D
+        = L.map (fun e => (.and e.1 (.not D), e.2.1, e.2.2)) := by
+  intro L
+  induction L with
+  | nil => intro D _; rfl
+  | cons hd rest ih =>
+      intro D hall
+      obtain ⟨g, a, t⟩ := hd
+      rw [trimList_cons₄,
+          if_pos (hall (g, a, t) (List.mem_cons_self ..)),
+          ih D (fun e he => hall e (List.mem_cons_of_mem _ he))]
+      rfl
+
+open Classical in
+/-- Conjoining `¬0` changes no firing. -/
+theorem firstMatch_guard_conj_notzero {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) :
+    ∀ L : List (BExp T × A × S),
+      firstMatch V x
+          (L.map (fun e => ((.and e.1 (.not .zero) : BExp T),
+            e.2.1, e.2.2)))
+        = firstMatch V x L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd rest ih =>
+      obtain ⟨g, a, t⟩ := hd
+      rw [List.map_cons, fm_cons₄, fm_cons₄]
+      have hg : bval V (.and g (.not .zero)) x = bval V g x := by
+        show (bval V g x && !(false : Bool)) = bval V g x
+        cases bval V g x <;> rfl
+      rw [hg, ih]
+
+open Classical in
+/-- **TRIM TRANSPARENCY**: at a state whose arm targets are all live, the
+    trimmed automaton steps exactly as the raw automaton — at every
+    valuation. -/
+theorem autStep_trimAut_all_live {Atom : Type} (V : T → Atom → Bool)
+    (aut : GAut S A T) (s : S)
+    (hall : ∀ e ∈ aut.trans s, Live aut e.2.2) (x : Atom) :
+    autStep V (trimAut aut) s x = autStep V aut s x := by
+  show firstMatch V x (trimList aut (aut.trans s) .zero)
+    = firstMatch V x (aut.trans s)
+  rw [trimList_all_live aut (aut.trans s) .zero hall]
+  exact firstMatch_guard_conj_notzero V x (aut.trans s)
+
+open Classical in
+/-- One-step behavior through `toGAut` at internal states. -/
+theorem autStep_toGAut_some {S' Atom : Type} (V : T → Atom → Bool)
+    (W : InitializedGAut S' A T) (u : S') (x : Atom) :
+    autStep V W.toGAut (some u) x
+      = (firstMatch V x (W.core.trans u)).map
+          (fun o => (o.1, some o.2)) := by
+  show firstMatch V x ((W.core.trans u).map
+    (fun t => (t.1, t.2.1, some t.2.2))) = _
+  exact firstMatch_map_target_to V x some (W.core.trans u)
+
+open Classical in
+/-- A left-summand run is a sum run. -/
+theorem autRun_sumGAut_inl {S₁ S₂ Atom : Type} (V : T → Atom → Bool)
+    (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) :
+    ∀ (w : List (A × Atom)) (s : S₁) (x : Atom),
+      autRun V (sumGAut aut₁ aut₂) (Sum.inl s) x w
+        ↔ autRun V aut₁ s x w := by
+  intro w
+  induction w with
+  | nil => intro s x; exact Iff.rfl
+  | cons qa w' ih =>
+      intro s x
+      obtain ⟨q, x'⟩ := qa
+      constructor
+      · rintro ⟨s', hstep, hrun⟩
+        rw [autStep_sumGAut_inl] at hstep
+        cases h1 : autStep V aut₁ s x with
+        | none =>
+            rw [h1] at hstep
+            exact nomatch hstep
+        | some o =>
+            obtain ⟨a₀, t₀⟩ := o
+            rw [h1] at hstep
+            have hinj := Option.some.inj hstep
+            rw [Prod.mk.injEq] at hinj
+            obtain ⟨hq, hs'⟩ := hinj
+            refine ⟨t₀, ?_, ?_⟩
+            · have hq' : a₀ = q := hq
+              rw [h1, hq']
+            · rw [← hs'] at hrun
+              exact (ih t₀ x').mp hrun
+      · rintro ⟨t₀, hstep, hrun⟩
+        refine ⟨Sum.inl t₀, ?_, ?_⟩
+        · rw [autStep_sumGAut_inl, hstep]
+          rfl
+        · exact (ih t₀ x').mpr hrun
+
+open Classical in
+/-- A right-summand run is a sum run. -/
+theorem autRun_sumGAut_inr {S₁ S₂ Atom : Type} (V : T → Atom → Bool)
+    (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) :
+    ∀ (w : List (A × Atom)) (s : S₂) (x : Atom),
+      autRun V (sumGAut aut₁ aut₂) (Sum.inr s) x w
+        ↔ autRun V aut₂ s x w := by
+  intro w
+  induction w with
+  | nil => intro s x; exact Iff.rfl
+  | cons qa w' ih =>
+      intro s x
+      obtain ⟨q, x'⟩ := qa
+      constructor
+      · rintro ⟨s', hstep, hrun⟩
+        rw [autStep_sumGAut_inr] at hstep
+        cases h1 : autStep V aut₂ s x with
+        | none =>
+            rw [h1] at hstep
+            exact nomatch hstep
+        | some o =>
+            obtain ⟨a₀, t₀⟩ := o
+            rw [h1] at hstep
+            have hinj := Option.some.inj hstep
+            rw [Prod.mk.injEq] at hinj
+            obtain ⟨hq, hs'⟩ := hinj
+            refine ⟨t₀, ?_, ?_⟩
+            · have hq' : a₀ = q := hq
+              rw [h1, hq']
+            · rw [← hs'] at hrun
+              exact (ih t₀ x').mp hrun
+      · rintro ⟨t₀, hstep, hrun⟩
+        refine ⟨Sum.inr t₀, ?_, ?_⟩
+        · rw [autStep_sumGAut_inr, hstep]
+          rfl
+        · exact (ih t₀ x').mpr hrun
+
+open Classical in
+/-- The core of an initialized automaton as a pointed automaton. -/
+noncomputable def coreAut {S' : Type} (W : InitializedGAut S' A T)
+    (start : S') : GAut S' A T where
+  states := W.core.states
+  hlt := W.core.hlt
+  trans := W.core.trans
+  start := start
+
+open Classical in
+/-- An internal run through `toGAut` is a core run. -/
+theorem autRun_toGAut_some {S' Atom : Type} (V : T → Atom → Bool)
+    (W : InitializedGAut S' A T) (start : S') :
+    ∀ (w : List (A × Atom)) (u : S') (x : Atom),
+      autRun V W.toGAut (some u) x w
+        ↔ autRun V (coreAut W start) u x w := by
+  intro w
+  induction w with
+  | nil => intro u x; exact Iff.rfl
+  | cons qa w' ih =>
+      intro u x
+      obtain ⟨q, x'⟩ := qa
+      constructor
+      · rintro ⟨s', hstep, hrun⟩
+        rw [autStep_toGAut_some] at hstep
+        cases h1 : firstMatch V x (W.core.trans u) with
+        | none =>
+            rw [h1] at hstep
+            exact nomatch hstep
+        | some o =>
+            obtain ⟨a₀, t₀⟩ := o
+            rw [h1] at hstep
+            have hinj := Option.some.inj hstep
+            rw [Prod.mk.injEq] at hinj
+            obtain ⟨hq, hs'⟩ := hinj
+            refine ⟨t₀, ?_, ?_⟩
+            · show firstMatch V x (W.core.trans u) = some (q, t₀)
+              have hq' : a₀ = q := hq
+              rw [h1, hq']
+            · rw [← hs'] at hrun
+              exact (ih t₀ x').mp hrun
+      · rintro ⟨t₀, hstep, hrun⟩
+        refine ⟨some t₀, ?_, ?_⟩
+        · rw [autStep_toGAut_some]
+          have hstep' : firstMatch V x (W.core.trans u) = some (q, t₀) :=
+            hstep
+          rw [hstep']
+          rfl
+        · exact (ih t₀ x').mpr hrun
+
+#print axioms autStep_trimAut_all_live
+#print axioms autRun_sumGAut_inl
+#print axioms autRun_toGAut_some
+
 end GkatChainFragment

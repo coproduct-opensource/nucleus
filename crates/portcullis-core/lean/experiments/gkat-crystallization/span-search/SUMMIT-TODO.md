@@ -706,3 +706,21 @@ hdec + hnxt_rank for the composite are now DONE. Remaining: trim-level
 hfire/hstep_uniq/hnoeps transport (autStep_sumGAut_inl/inr + a toGAut
 autStep lemma + trim step preservation), liveness facts, none~last
 identification, os/cover assembly, wrapper.
+
+## TRIM TRANSPARENCY + RUN EMBEDDINGS (loop iteration 21)
+
+- trimList_all_live: when all arm targets are live, trimming is an
+  explicit guard conjunction with ¬0 — nothing is dropped, D never grows
+- firstMatch_guard_conj_notzero: conjoining ¬0 changes no firing
+- autStep_trimAut_all_live: TRIM TRANSPARENCY — at an all-live-targets
+  state, the trimmed automaton steps exactly as the raw one, at EVERY
+  valuation (the bridge from raw arm facts to trim-level hfire/hstep_uniq)
+- autStep_toGAut_some + coreAut + autRun_toGAut_some: internal runs
+  through the initialization wrapper are core runs
+- autRun_sumGAut_inl/inr: summand runs are sum runs (word induction over
+  the existing step lemmas).
+Run embeddings need only [propext].
+
+Remaining: spine liveness (exit-satisfiable => every spine state live in
+the composite via the embeddings), hfire/hstep_uniq assembly through
+autStep_trimAut_all_live, hnoeps transport, none~last, os/cover, wrapper.
