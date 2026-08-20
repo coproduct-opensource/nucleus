@@ -143,7 +143,7 @@ theorem autStep_trimAut {Atom : Type} (V : T → Atom → Bool) (aut : GAut S A 
   firstMatch_trimList V aut (aut.trans s) .zero x rfl
 
 open Classical in
-private theorem bind_live_some {aut : GAut S A T} {o : Option (A × S)} {q : A}
+theorem bind_live_some {aut : GAut S A T} {o : Option (A × S)} {q : A}
     {s' : S}
     (h : (o.bind fun y => if Live aut y.2 then some y else none)
       = some (q, s')) :
@@ -164,7 +164,7 @@ private theorem bind_live_some {aut : GAut S A T} {o : Option (A × S)} {q : A}
         exact nomatch h2
 
 open Classical in
-private theorem bind_live_of {aut : GAut S A T} {o : Option (A × S)} {q : A}
+theorem bind_live_of {aut : GAut S A T} {o : Option (A × S)} {q : A}
     {s' : S} (h : o = some (q, s')) (hl : Live aut s') :
     (o.bind fun y => if Live aut y.2 then some y else none) = some (q, s') := by
   subst h

@@ -321,3 +321,25 @@ REMAINING for the fourth unconditional theorem (multi-action loop bodies):
    chains (nxt follows the chain, wraps at the back-edge).
 3. Glue: rankNxt_quot_solvesBA := dichotomy + orbits + walked_assembly +
    solvesBA_unclean; then chainloops_complete.
+
+## THE ORBIT CORE (loop iteration 4)
+
+GkatOrbitProofs — the bridge from the dichotomy to the walked-exit assembly,
+built on the DIRECT-ORBIT design: the quotient orbit of a cycle class c0 is
+m j := rep (nxt^[j] u0) for the canonical minimal realizer u0 — closure is
+then a two-liner (rep (nxt^k u0) = rep u0 = c0 by source periodicity +
+rep-fixedness + repfixed-lang-eq), no pigeonhole needed.
+
+- uc: canonical realizer via choose(minRank_spec); uc_rank: it sits EXACTLY
+  at minRank (le_antisymm of the spec bound and minimality)
+- live_trim_iff: trim liveness = source liveness (from autRun_trimAut)
+- orbit_step: a realizer's firing target carries the class derivative
+- nxtIter + orbit_track: source orbits stay trim-live under the firing
+  hypothesis (trim steps land live)
+All [propext, Classical.choice, Quot.sound].
+
+NEXT (iteration 5+): the language-tracking strengthening (L(rep(nxt^j u0))
+follows the derivatives — needs the min-level argument: at the orbit minimum
+the firing target must be the nxt-successor), then the cy-bundle assembly
+(m, len := source period, positions, hint_nil/himpc/hdisj/hexcl from
+chain-shape hypotheses) → rankNxt_quot_solvesBA → chainloops_complete.
