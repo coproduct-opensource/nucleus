@@ -2581,4 +2581,61 @@ theorem chainloops_complete (b₁ b₂ : BExp T) {body₁ body₂ : Exp A T}
 
 #print axioms chainloops_complete
 
+/-! ## Degenerate guards collapse
+
+    A loop whose guard is semantically false is `skip`; one whose guard is
+    semantically true is `abort`.  The `bval_gen` naturality upgrades
+    generic-atom degeneracy to every valuation, where `wh_guard` swaps the
+    guard for the literal and the S0 collapses finish. -/
+
+open Classical in
+/-- A guarded choice with literal-false guard is its else arm. -/
+theorem ite_false (e f : Exp A T) :
+    EquivBA (.ite .zero e f : Exp A T) f :=
+  EquivBA.trans (EquivBA.base (Equiv.u4 .zero e f))
+    (EquivBA.trans
+      (EquivBA.ite_c (EquivBA.base (Equiv.s2 e))
+        (EquivBA.base (Equiv.refl f)))
+      (EquivBA.trans (ite_zero_then .zero f)
+        (EquivBA.trans
+          (EquivBA.seq_c
+            (EquivBA.baTest (b := .not .zero) (c := .one)
+              (fun X W x => rfl))
+            (EquivBA.base (Equiv.refl f)))
+          (EquivBA.base (Equiv.s4 f)))))
+
+open Classical in
+/-- A loop with literal-false guard is `skip`. -/
+theorem wh_zero_skip (e : Exp A T) :
+    EquivBA (.wh .zero e : Exp A T) (.test .one) :=
+  EquivBA.trans (EquivBA.base (Equiv.w1 .zero e))
+    (ite_false _ _)
+
+open Classical in
+/-- **SEMANTICALLY-TRUE GUARD ⟹ ABORT**: a loop whose guard holds at every
+    generic atom is `assert false`. -/
+theorem wh_guard_semantic_one {b : BExp T} (e : Exp A T)
+    (h : ∀ α : T → Bool, bval (genW T) b α = true) :
+    EquivBA (.wh b e : Exp A T) (.test .zero) :=
+  EquivBA.trans
+    (EquivBA.wh_guard (c := .one) (fun X W x => by
+      rw [bval_gen W x b, h (fun t => W t x)]
+      rfl))
+    (wh_one_zero e)
+
+open Classical in
+/-- **SEMANTICALLY-FALSE GUARD ⟹ SKIP**: a loop whose guard fails at every
+    generic atom is `skip`. -/
+theorem wh_guard_semantic_zero {b : BExp T} (e : Exp A T)
+    (h : ∀ α : T → Bool, bval (genW T) b α = false) :
+    EquivBA (.wh b e : Exp A T) (.test .one) :=
+  EquivBA.trans
+    (EquivBA.wh_guard (c := .zero) (fun X W x => by
+      rw [bval_gen W x b, h (fun t => W t x)]
+      rfl))
+    (wh_zero_skip e)
+
+#print axioms wh_guard_semantic_one
+#print axioms wh_guard_semantic_zero
+
 end GkatChainFragment

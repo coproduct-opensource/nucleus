@@ -902,3 +902,22 @@ Remaining polish: degenerate guards (b unsat via descending-rank base;
 not-b unsat via dead/trim; single-action bodies via atomicloops route) to
 drop the nondegeneracy hypotheses. Then per the user-approved queue: the
 DE-CHOICE campaign.
+
+## DEGENERATE GUARDS COLLAPSE (loop iteration 28)
+
+- ite_false: ite 0 e f ≡ f — u4 inserts test-of-guard, s2 kills the then
+  arm, ite_zero_then converts, s4 finishes
+- wh_zero_skip: wh 0 e ≡ skip (w1 unroll + ite_false)
+- wh_guard_semantic_one: guard true at every GENERIC atom => the loop is
+  assert-false (bval_gen upgrades to all valuations, wh_guard swaps to
+  the literal, S0's wh_one_zero finishes)
+- wh_guard_semantic_zero: guard false at every generic atom => skip.
+BOTH DEPEND ON NO AXIOMS — pure finite-axiom syntactic derivations.
+
+For the hypothesis-free chainloops closure, remaining case analysis:
+degenerate side collapses to test 0/test 1; then test-vs-test via
+soundness-transported heq + baTest; test-vs-live-loop refuted by a
+constructed loop word (needs den-level or automaton-level word
+construction + soundness transport EquivBA -> ULE). Also mixed
+single-action-vs-multi (needs a one-sided-orbit assembly variant or the
+atomic route). NEXT per queue after closure: DE-CHOICE campaign.
