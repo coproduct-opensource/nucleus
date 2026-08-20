@@ -1979,3 +1979,33 @@ bundle facts are next: gOthers/gGuard on these 1–2 element literals
 two-case), GuardEmpty halts (silent states), then the classifier +
 chord_assembly_roles application → chordLoops_solvable →
 chordloops_complete.
+
+## Iteration 71 — CHORD QUOTIENT SOLVABILITY (the bundle discharges)
+
+Two blocks, both first-try after generation fixes:
+
+1. **Packaged bundle facts** (rep-independent, existentially quantified
+   so the rep identity never leaks): `chord_portarms` (∃ g a, trans R̂ =
+   [(g,a,P̂)] — 6-way rcases over repR_cases feeding the qarms lemmas),
+   `chord_brancharms` (∃ g₁ g₂ a₁ a₂, trans P̂ = the dispatch ∧
+   GuardImplies (¬g₁) g₂ — the cover proved per-side by cases on
+   c/c′-value), `chord_midarms` (+ ⊤-ness of the mid guard),
+   `chord_hlts_empty` (interior halts empty for every rep identity).
+   Local re-declarations gOthers_consK/gGuard_consK (originals private).
+
+2. **`chordLoops_solvable`**: classifier `chordCy` (three equality
+   tests against the reps), the 13-conjunct hcy bundle assembled from
+   shared haves (coherence via distinctness; gOthers computations on
+   the 1–2 element literals; GuardImplies covers via the packaged
+   implications; rank facts rfl at constant rank), hbase VACUOUS via
+   the census (map-membership + census → cy ≠ none), then
+   `chord_assembly_roles` → `decomp_solves` → `solvesBA_unclean`.
+
+**The orbit half of the open problem is DONE for the chord witness**:
+`∃ qsol, SolvesBA (bisimQuotAut (trimAut (chordSum ...))) qsol` with
+only sat-nondegeneracy + start-language-equality hypotheses.
+
+Remaining for the SIXTH THEOREM `chordloops_complete`: the final bridge
+— relate chordSum to SUMof A T (chordLoop b c p x y) (chordLoop ...)
+(the certifiedThompson sum equivBA_of_quot_solvesBA expects) and derive
+heq from the ULE hypothesis; mirror the twoloops_complete endgame.

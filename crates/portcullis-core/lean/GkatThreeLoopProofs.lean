@@ -4335,4 +4335,399 @@ theorem chord_qarms_none_r (b c : BExp T) (p x y : A)
 #print axioms chord_qarms_none
 #print axioms chord_qarms_none_r
 
+
+/-! ## The packaged bundle facts
+
+    Rep-independent statements of the cleaned cluster structure —
+    existentially quantified over the guards/actions so that the
+    representative identity never leaks into the bundle discharge. -/
+
+open Classical in
+private theorem gOthers_consK {S : Type} (t : S) (g : BExp T) (a : A)
+    (u : S) (rest : List (BExp T × A × S)) :
+    gOthers t ((g, a, u) :: rest)
+      = if u = t then gOthers t rest
+        else (g, a, u) :: gOthers t rest := rfl
+
+open Classical in
+private theorem gGuard_consK {S : Type} (t : S) (g : BExp T) (a : A)
+    (u : S) (rest : List (BExp T × A × S)) :
+    gGuard t ((g, a, u) :: rest)
+      = if u = t then .or g (gGuard t rest)
+        else .and (gGuard t rest) (.not g) := rfl
+
+open Classical in
+/-- The port's cleaned quotient arms: one arm to the branch. -/
+theorem chord_portarms (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    ∃ (g : BExp T) (a₀ : A),
+      (cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepR b c p x y b' c' p' x' y')
+        = [(g, a₀, chordRepP b c p x y b' c' p' x' y')] := by
+  rcases chord_repR_cases b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq with h|h|h|h|h|h
+  · rw [h]
+    exact ⟨_, _, chord_qarms_none b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_yl b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_yr b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_none_r b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_yl_r b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_yr_r b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq⟩
+
+open Classical in
+/-- The branch's cleaned quotient arms: the covering two-way dispatch. -/
+theorem chord_brancharms (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    ∃ (g₁ g₂ : BExp T) (a₁ a₂ : A),
+      (cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepP b c p x y b' c' p' x' y')
+        = [(g₁, a₁, chordRepX b c p x y b' c' p' x' y'),
+            (g₂, a₂, chordRepR b c p x y b' c' p' x' y')]
+      ∧ GuardImplies (.not g₁) g₂ := by
+  rcases chord_repP_cases b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq with h|h
+  · rw [h]
+    refine ⟨_, _, _, _, chord_qarms_p b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq, ?_⟩
+    intro Z W v hv
+    show ((true && ((!(bval W c v)) && true)) && !false) = true
+    cases hc : bval W c v
+    · rfl
+    · exfalso
+      rw [show bval W (BExp.not (BExp.and
+          (BExp.and BExp.one (BExp.and c BExp.one))
+          (BExp.not BExp.zero))) v
+        = !((true && ((bval W c v) && true)) && !false) from rfl, hc]
+        at hv
+      exact nomatch hv
+  · rw [h]
+    refine ⟨_, _, _, _, chord_qarms_p_r b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq, ?_⟩
+    intro Z W v hv
+    show ((true && ((!(bval W c' v)) && true)) && !false) = true
+    cases hc : bval W c' v
+    · rfl
+    · exfalso
+      rw [show bval W (BExp.not (BExp.and
+          (BExp.and BExp.one (BExp.and c' BExp.one))
+          (BExp.not BExp.zero))) v
+        = !((true && ((bval W c' v) && true)) && !false) from rfl, hc]
+        at hv
+      exact nomatch hv
+
+open Classical in
+/-- The mid's cleaned quotient arms: one full-guard arm to the port. -/
+theorem chord_midarms (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    ∃ (g : BExp T) (a₀ : A),
+      (cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepX b c p x y b' c' p' x' y')
+        = [(g, a₀, chordRepR b c p x y b' c' p' x' y')]
+      ∧ ∀ (Z : Type) (W : T → Z → Bool) (v : Z), bval W g v = true := by
+  rcases chord_repX_cases b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq with h|h
+  · rw [h]
+    exact ⟨_, _, chord_qarms_x b c p x y b' c' p' x' y' hexitC hexitB,
+      fun Z W v => rfl⟩
+  · rw [h]
+    exact ⟨_, _, chord_qarms_x_r b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq, fun Z W v => rfl⟩
+
+open Classical in
+/-- The interior halts are empty. -/
+theorem chord_hlts_empty (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    GuardEmpty ((cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).hlt
+        (chordRepP b c p x y b' c' p' x' y'))
+    ∧ GuardEmpty ((cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).hlt
+        (chordRepX b c p x y b' c' p' x' y')) := by
+  constructor
+  · rcases chord_repP_cases b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq with h|h
+    · rw [h]
+      intro Z W v
+      show ((true && (((bval W c v) && (false && false))
+          || ((!(bval W c v)) && false))) && !(bval W b v)) = false
+      cases bval W c v <;> rfl
+    · rw [h]
+      intro Z W v
+      show ((true && (((bval W c' v) && (false && false))
+          || ((!(bval W c' v)) && false))) && !(bval W b' v)) = false
+      cases bval W c' v <;> rfl
+  · rcases chord_repX_cases b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq with h|h
+    · rw [h]
+      intro Z W v
+      show ((true && false) && !(bval W b v)) = false
+      rfl
+    · rw [h]
+      intro Z W v
+      show ((true && false) && !(bval W b' v)) = false
+      rfl
+
+#print axioms chord_portarms
+#print axioms chord_brancharms
+#print axioms chord_midarms
+#print axioms chord_hlts_empty
+
+/-! ## The classifier and quotient solvability -/
+
+open Classical in
+/-- The chord classifier: the three representatives form the cluster. -/
+noncomputable def chordCy (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) :
+    Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+    → Option ((Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+        (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      × Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+        (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      × Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+        (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))) × Nat) :=
+  fun s =>
+    if s = chordRepR b c p x y b' c' p' x' y' then
+      some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+        chordRepX b c p x y b' c' p' x' y'), 0)
+    else if s = chordRepP b c p x y b' c' p' x' y' then
+      some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+        chordRepX b c p x y b' c' p' x' y'), 1)
+    else if s = chordRepX b c p x y b' c' p' x' y' then
+      some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+        chordRepX b c p x y b' c' p' x' y'), 2)
+    else none
+
+open Classical in
+private theorem chordCy_def (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A) (s : Sum (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))
+      (Option (Sum Unit (Sum (Sum Unit Unit) Unit)))) :
+    chordCy b c p x y b' c' p' x' y' s
+      = if s = chordRepR b c p x y b' c' p' x' y' then
+          some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+            chordRepX b c p x y b' c' p' x' y'), 0)
+        else if s = chordRepP b c p x y b' c' p' x' y' then
+          some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+            chordRepX b c p x y b' c' p' x' y'), 1)
+        else if s = chordRepX b c p x y b' c' p' x' y' then
+          some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+            chordRepX b c p x y b' c' p' x' y'), 2)
+        else none := rfl
+
+open Classical in
+/-- **CHORD QUOTIENT SOLVABILITY**: the canonical quotient of the
+    trimmed chord sum is solvable with the finite axioms. -/
+theorem chordLoops_solvable (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    ∃ qsol, SolvesBA (bisimQuotAut (trimAut
+      (chordSum b c p x y b' c' p' x' y'))) qsol := by
+  have hdist := chord_reps_distinct b c p x y b' c' p' x' y'
+    (⟨Classical.choose hentC, (Classical.choose_spec hentC).1⟩)
+    hexitC hexitB
+  obtain ⟨gR, aR, harmR⟩ := chord_portarms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq
+  obtain ⟨g₁, g₂, a₁, a₂, harmP, himpP⟩ := chord_brancharms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq
+  obtain ⟨gX, aX, harmX, htopX⟩ := chord_midarms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq
+  obtain ⟨hhP, hhX⟩ := chord_hlts_empty b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq
+  have hcy0 : chordCy b c p x y b' c' p' x' y' (chordRepR b c p x y b' c' p' x' y')
+      = some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+          chordRepX b c p x y b' c' p' x' y'), 0) := by
+    rw [chordCy_def, if_pos rfl]
+  have hcy1 : chordCy b c p x y b' c' p' x' y' (chordRepP b c p x y b' c' p' x' y')
+      = some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+          chordRepX b c p x y b' c' p' x' y'), 1) := by
+    rw [chordCy_def, if_neg (fun h => hdist.1 h.symm), if_pos rfl]
+  have hcy2 : chordCy b c p x y b' c' p' x' y' (chordRepX b c p x y b' c' p' x' y')
+      = some ((chordRepR b c p x y b' c' p' x' y', chordRepP b c p x y b' c' p' x' y',
+          chordRepX b c p x y b' c' p' x' y'), 2) := by
+    rw [chordCy_def, if_neg (fun h => hdist.2.1 h.symm),
+      if_neg (fun h => hdist.2.2 h.symm), if_pos rfl]
+  have hoX : gOthers (chordRepX b c p x y b' c' p' x' y')
+      ((cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (chordRepP b c p x y b' c' p' x' y'))
+      = [(g₂, a₂, chordRepR b c p x y b' c' p' x' y')] := by
+    rw [harmP, gOthers_consK, if_pos rfl, gOthers_consK,
+      if_neg hdist.2.1]
+    rfl
+  have hoXX : gOthers (chordRepX b c p x y b' c' p' x' y')
+      ((cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (chordRepX b c p x y b' c' p' x' y'))
+      = [(gX, aX, chordRepR b c p x y b' c' p' x' y')] := by
+    rw [harmX, gOthers_consK, if_neg hdist.2.1]
+    rfl
+  have hF1 : ∀ e ∈ gOthers (chordRepP b c p x y b' c' p' x' y')
+      ((cleanAut (bisimQuotAut (trimAut
+        (chordSum b c p x y b' c' p' x' y')))).trans
+        (chordRepR b c p x y b' c' p' x' y')),
+      (0 : Nat) < 0 := by
+    rw [harmR, gOthers_consK, if_pos rfl]
+    intro e he
+    exact nomatch he
+  have hF2 : gOthers (chordRepR b c p x y b' c' p' x' y')
+      (gOthers (chordRepX b c p x y b' c' p' x' y')
+        ((cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepP b c p x y b' c' p' x' y'))) = [] := by
+    rw [hoX, gOthers_consK, if_pos rfl]
+    rfl
+  have hF3 : gOthers (chordRepR b c p x y b' c' p' x' y')
+      (gOthers (chordRepX b c p x y b' c' p' x' y')
+        ((cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepX b c p x y b' c' p' x' y'))) = [] := by
+    rw [hoXX, gOthers_consK, if_pos rfl]
+    rfl
+  have hF4 : GuardImplies
+      (.not (gGuard (chordRepX b c p x y b' c' p' x' y')
+        ((cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepP b c p x y b' c' p' x' y'))))
+      (gGuard (chordRepR b c p x y b' c' p' x' y')
+        (gOthers (chordRepX b c p x y b' c' p' x' y')
+          ((cleanAut (bisimQuotAut (trimAut
+            (chordSum b c p x y b' c' p' x' y')))).trans
+            (chordRepP b c p x y b' c' p' x' y')))) := by
+    rw [hoX, harmP, gGuard_consK, if_pos rfl, gGuard_consK,
+      if_neg hdist.2.1, gGuard_consK, if_pos rfl]
+    intro Z W v h
+    have h' : (!((bval W g₁ v)
+        || ((bval W (gGuard (chordRepX b c p x y b' c' p' x' y')
+            ([] : List (BExp T × A × _))) v) && (!(bval W g₂ v)))))
+        = true := h
+    cases hg1 : bval W g₁ v
+    · have hg2 := himpP Z W v (by
+        show (!(bval W g₁ v)) = true
+        rw [hg1]
+        rfl)
+      show ((bval W g₂ v) || _) = true
+      rw [hg2]
+      rfl
+    · rw [hg1] at h'
+      exact nomatch h'
+  have hF5 : GuardImplies
+      (.not (gGuard (chordRepX b c p x y b' c' p' x' y')
+        ((cleanAut (bisimQuotAut (trimAut
+          (chordSum b c p x y b' c' p' x' y')))).trans
+          (chordRepX b c p x y b' c' p' x' y'))))
+      (gGuard (chordRepR b c p x y b' c' p' x' y')
+        (gOthers (chordRepX b c p x y b' c' p' x' y')
+          ((cleanAut (bisimQuotAut (trimAut
+            (chordSum b c p x y b' c' p' x' y')))).trans
+            (chordRepX b c p x y b' c' p' x' y')))) := by
+    rw [hoXX, harmX, gGuard_consK, if_neg hdist.2.1, gGuard_consK,
+      if_pos rfl]
+    intro Z W v _
+    show ((bval W gX v) || _) = true
+    rw [htopX Z W v]
+    rfl
+  obtain ⟨qsol, hroles⟩ := chord_assembly_roles
+    (cleanAut (bisimQuotAut (trimAut (chordSum b c p x y b' c' p' x' y'))))
+    (fun _ => 0) (chordCy b c p x y b' c' p' x' y')
+    (by
+      intro s Rs Ps Qs i hcys
+      rw [chordCy_def] at hcys
+      by_cases hR : s = chordRepR b c p x y b' c' p' x' y'
+      · rw [if_pos hR] at hcys
+        have hinj := Option.some.inj hcys
+        rw [Prod.mk.injEq, Prod.mk.injEq, Prod.mk.injEq] at hinj
+        obtain ⟨⟨hRs, hPs, hQs⟩, hi⟩ := hinj
+        subst hRs; subst hPs; subst hQs
+        exact ⟨Or.inl ⟨hi.symm, hR⟩, hcy0, hcy1, hcy2, rfl, rfl,
+          hF1, hF2, hF3, hF4, hF5, hhP, hhX⟩
+      · rw [if_neg hR] at hcys
+        by_cases hP : s = chordRepP b c p x y b' c' p' x' y'
+        · rw [if_pos hP] at hcys
+          have hinj := Option.some.inj hcys
+          rw [Prod.mk.injEq, Prod.mk.injEq, Prod.mk.injEq] at hinj
+          obtain ⟨⟨hRs, hPs, hQs⟩, hi⟩ := hinj
+          subst hRs; subst hPs; subst hQs
+          exact ⟨Or.inr (Or.inl ⟨hi.symm, hP⟩), hcy0, hcy1, hcy2,
+            rfl, rfl, hF1, hF2, hF3, hF4, hF5, hhP, hhX⟩
+        · rw [if_neg hP] at hcys
+          by_cases hX : s = chordRepX b c p x y b' c' p' x' y'
+          · rw [if_pos hX] at hcys
+            have hinj := Option.some.inj hcys
+            rw [Prod.mk.injEq, Prod.mk.injEq, Prod.mk.injEq] at hinj
+            obtain ⟨⟨hRs, hPs, hQs⟩, hi⟩ := hinj
+            subst hRs; subst hPs; subst hQs
+            exact ⟨Or.inr (Or.inr ⟨hi.symm, hX⟩), hcy0, hcy1, hcy2,
+              rfl, rfl, hF1, hF2, hF3, hF4, hF5, hhP, hhX⟩
+          · rw [if_neg hX] at hcys
+            exact nomatch hcys)
+    (by
+      intro s hs hnone e he
+      exfalso
+      obtain ⟨t, ht, hrep⟩ := List.mem_map.mp hs
+      rcases chord_census b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' heq t with h|h|h
+      · rw [← hrep, h, hcy0] at hnone
+        exact nomatch hnone
+      · rw [← hrep, h, hcy1] at hnone
+        exact nomatch hnone
+      · rw [← hrep, h, hcy2] at hnone
+        exact nomatch hnone)
+  exact ⟨qsol, solvesBA_unclean _ (decomp_solves _ _ hroles)⟩
+
+#print axioms chordLoops_solvable
+
 end GkatThreeLoop
