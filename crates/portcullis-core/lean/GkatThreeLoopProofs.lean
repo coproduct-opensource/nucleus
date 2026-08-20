@@ -3290,4 +3290,97 @@ theorem chord_repX_cases (b c : BExp T) (p x y : A)
 #print axioms chord_repP_cases
 #print axioms chord_repX_cases
 
+open Classical in
+/-- The port representative is one of the six port-class states. -/
+theorem chord_repR_cases (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+      = autLang (genW T)
+          (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none)) :
+    chordRepR b c p x y b' c' p' x' y' = Sum.inl none
+      ∨ chordRepR b c p x y b' c' p' x' y'
+          = Sum.inl (some (Sum.inr (Sum.inl (Sum.inr ()))))
+      ∨ chordRepR b c p x y b' c' p' x' y'
+          = Sum.inl (some (Sum.inr (Sum.inr ())))
+      ∨ chordRepR b c p x y b' c' p' x' y' = Sum.inr none
+      ∨ chordRepR b c p x y b' c' p' x' y'
+          = Sum.inr (some (Sum.inr (Sum.inl (Sum.inr ()))))
+      ∨ chordRepR b c p x y b' c' p' x' y'
+          = Sum.inr (some (Sum.inr (Sum.inr ()))) := by
+  have hport := chord_pair_port b c p x y b' c' p' x' y'
+    hexitC hexitB hexitC' hexitB' heq
+  have hpair := chord_pair_p b c p x y b' c' p' x' y' hentB
+    hexitC hexitB hexitC' hexitB' hport
+  have hpairx := chord_pair_x b c p x y b' c' p' x' y' hentC
+    hexitC hexitB hexitC' hexitB' hpair.2
+  have hlangR : autLang (genW T)
+      (trimAut (chordSum b c p x y b' c' p' x' y'))
+      (chordRepR b c p x y b' c' p' x' y')
+    = autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y'))
+        (Sum.inl (some (Sum.inr (Sum.inr ())))) :=
+    rep_lang (chordSum b c p x y b' c' p' x' y') _
+  cases hval : chordRepR b c p x y b' c' p' x' y' with
+  | inl o =>
+      rw [hval] at hlangR
+      cases o with
+      | none => exact Or.inl rfl
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exfalso
+              exact chord_lang_ne_p_yr b c p x y _ hexitB hlangR
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_x_yr b c p x y _ hexitB hlangR
+                  | inr v =>
+                      cases v
+                      exact Or.inr (Or.inl rfl)
+              | inr v =>
+                  cases v
+                  exact Or.inr (Or.inr (Or.inl rfl))
+  | inr o =>
+      rw [hval] at hlangR
+      cases o with
+      | none => exact Or.inr (Or.inr (Or.inr (Or.inl rfl)))
+      | some u =>
+          cases u with
+          | inl v =>
+              cases v
+              exfalso
+              exact chord_lang_ne_p_yr b c p x y _ hexitB
+                (hpair.2.trans hlangR)
+          | inr w =>
+              cases w with
+              | inl z =>
+                  cases z with
+                  | inl v =>
+                      cases v
+                      exfalso
+                      exact chord_lang_ne_x_yr b c p x y _ hexitB
+                        (hpairx.2.trans hlangR)
+                  | inr v =>
+                      cases v
+                      exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl rfl))))
+              | inr v =>
+                  cases v
+                  exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr rfl))))
+
+#print axioms chord_repR_cases
+
 end GkatThreeLoop

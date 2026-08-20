@@ -1898,3 +1898,29 @@ arm list, retarget by rep, cleanList phantom-drop → the port's cleaned
 quotient arms are exactly [(guard, p, P̂)]; same for P̂ (two arms) and
 X̂ (one arm); then the gathered-guard bundle facts, chordLoops_solvable,
 chordloops_complete.
+
+## Iteration 68 — representative membership, all three classes
+
+`chord_repP_cases` (P̂ ∈ {inl P, inr P}), `chord_repX_cases`
+(X̂ ∈ {inl X, inr X}), `chord_repR_cases` (R̂ ∈ the six port values) —
+each by a 10-way carrier case split: the rep has the class language
+(`rep_lang`), and the separations + pairings kill every value outside
+the class. repR was first-try; repP/repX needed two mechanical fixes
+(hlang ascribed in wrapper form so `rw [hval]` finds the pattern;
+`aut₂` passed explicitly to the `refine`d separation lemmas — plus a
+replace-script indentation bite).
+
+With census + distinctness + membership, the classifier data is
+complete. The LAST block before assembly: quotient arm computations —
+for each of the 10 concrete states, compute
+`cleanList (map retarget (trimList arms))`:
+- trimList via `trimList_all_live` (targets all live, D stays .zero;
+  guards decorated g∧¬0);
+- retarget by rep: real targets → P̂/X̂/R̂ (rfl or pairing-congr),
+  phantom targets also map into cluster reps — which is why cleanList
+  matters: phantom guards contain ∧0 conjuncts → GuardEmpty → DROPPED;
+- kept arms need ¬GuardEmpty witnesses (sat(b)/sat(c)/sat(¬c) at genW).
+Expected: port states → [(bᵢ-guard, p, P̂)]; branch states →
+[(c-guard, x, X̂), (¬c-guard, y, R̂)]; mid states → [(⊤-guard, y, R̂)].
+Then the gathered-guard facts are tiny-list computations, the bundle
+discharges, and chordLoops_solvable + chordloops_complete close.
