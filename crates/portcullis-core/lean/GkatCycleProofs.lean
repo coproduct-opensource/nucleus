@@ -526,4 +526,177 @@ theorem parked_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms parked_cycle_roles
 
+/-! ## The full assembly: all proved strata under one recursion
+
+    Base states, single-port cycles, and parked cycles dispatched by one
+    WF-recursive solution.  Parked closed forms reference no other solutions at
+    all (their port REST is a bare halt test), so they impose no rank
+    conditions. -/
+
+open Classical in
+/-- The three-way assembled solution.  Payload tag: `false` = single-port
+    cycle (chain/port closed forms), `true` = parked cycle. -/
+noncomputable def asmSol2 (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Bool × Nat × (Nat → S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some (false, len, m, i) =>
+        cycSolOf aut m len i
+          (fun t => if h : rank t < rank s then rec t h else .test .zero)
+    | some (true, len, m, i) =>
+        if i = 0 then parkedPortE aut m len
+        else pChain aut m len (parkedPortE aut m len) (len - i) i)
+
+open Classical in
+theorem asmSol2_eq (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Bool × Nat × (Nat → S) × Nat)) (s : S) :
+    asmSol2 aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSol2 aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some (false, len, m, i) =>
+            cycSolOf aut m len i
+              (fun t =>
+                if _ : rank t < rank s then asmSol2 aut rank cy t
+                else .test .zero)
+        | some (true, len, m, i) =>
+            if i = 0 then parkedPortE aut m len
+            else pChain aut m len (parkedPortE aut m len) (len - i) i) := by
+  unfold asmSol2
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE FULL ASSEMBLY THEOREM**: an automaton whose every state is base
+    (self-or-descending), a member of a designated single-port simple cycle, or
+    a member of a designated parked cycle, is fully role-covered. -/
+theorem full_assembly_roles (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Bool × Nat × (Nat → S) × Nat))
+    (hcyF : ∀ s len m i, cy s = some (false, len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (false, len, m, j)) ∧
+      (∀ j, j < len → rank (m j) = rank (m 0)) ∧
+      (∀ j, 1 ≤ j → j < len →
+        (∀ e ∈ aut.trans (m j),
+          e.2.2 = (if j + 1 = len then m 0 else m (j + 1)))
+        ∧ GuardEmpty (aut.hlt (m j))) ∧
+      (∀ e ∈ aut.trans (m 0), e.2.2 = m 1 ∨ rank e.2.2 < rank (m 0)))
+    (hcyT : ∀ s len m i, cy s = some (true, len, m, i) →
+      i < len ∧ 2 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (true, len, m, j)) ∧
+      (∀ j, 1 ≤ j → j < len → ∀ e ∈ aut.trans (m j),
+        e.2.2 = nxtAt m len j) ∧
+      (∀ e ∈ aut.trans (m 0), e.2.2 = m 1) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies (aut.hlt (m j)) (aut.hlt (m 0))) ∧
+      GuardImplies (aut.hlt (m 0))
+        (.not (gGuard (m 1) (aut.trans (m 0)))))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSol2 aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      have hsol : asmSol2 aut rank cy s
+          = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (asmSol2 aut rank cy) (aut.hlt s)
+                (gOthers s (aut.trans s))) := by
+        rw [asmSol2_eq, hcys]
+        exact congrArg _ (foldTL_congr' (aut.hlt s) (gOthers s (aut.trans s))
+          (fun e he => dif_pos (hlow e he)))
+      refine StateRole.salomaaE (gGuard s (aut.trans s))
+        (gBody s (aut.trans s))
+        (foldTL (asmSol2 aut rank cy) (aut.hlt s) (gOthers s (aut.trans s)))
+        hsol ?_
+      rw [eqRHS_foldTL]
+      exact multi_gather (asmSol2 aut rank cy) (aut.hlt s) s (aut.trans s)
+  | some q =>
+      obtain ⟨tag, len, m, i⟩ := q
+      cases tag with
+      | false =>
+          obtain ⟨hilt, hlen, hmi, hcoh, hrank, hint, hport⟩ :=
+            hcyF s len m i hcys
+          have hlowAt : ∀ j, j < len →
+              ∀ e ∈ gOthers (m 1) (aut.trans (m 0)),
+                rank e.2.2 < rank (m j) := by
+            intro j hj e he
+            obtain ⟨heL, hne⟩ := gOthers_sub (m 1) (aut.trans (m 0)) e he
+            rcases hport e heL with h1 | h2
+            · exact absurd h1 hne
+            · rw [hrank j hj]; exact h2
+          have hcycsol : ∀ j, j < len →
+              asmSol2 aut rank cy (m j)
+                = cycSolOf aut m len j (asmSol2 aut rank cy) := by
+            intro j hj
+            rw [asmSol2_eq, hcoh j hj]
+            exact cycSolOf_congr aut m len j
+              (fun e he => dif_pos (hlowAt j hj e he))
+          have hsol_port : asmSol2 aut rank cy (m 0)
+              = portExprOf aut m len (asmSol2 aut rank cy) := by
+            rw [hcycsol 0 (by omega)]
+            unfold cycSolOf
+            rw [if_pos rfl]
+          have hsol_int : ∀ j, 1 ≤ j → j < len →
+              asmSol2 aut rank cy (m j)
+                = .seq (factorAt aut m len j)
+                  (asmSol2 aut rank cy
+                    (if j + 1 = len then m 0 else m (j + 1))) := by
+            intro j hj hjlt
+            rw [hcycsol j hjlt]
+            unfold cycSolOf
+            rw [if_neg (by omega : ¬ (j = 0)),
+                show len - j = (len - (j + 1)) + 1 from by omega]
+            by_cases hj1 : j + 1 = len
+            · rw [if_pos hj1, hsol_port,
+                  show len - (j + 1) = 0 from by omega]
+              rfl
+            · rw [if_neg hj1, hcycsol (j + 1) (by omega)]
+              unfold cycSolOf
+              rw [if_neg (by omega : ¬ (j + 1 = 0))]
+              rfl
+          have hroles := single_port_cycle_roles aut (asmSol2 aut rank cy)
+            m len hlen hsol_int
+            (by rw [hsol_port]; rfl)
+            (fun j hj hjlt => (hint j hj hjlt).1)
+            (fun j hj hjlt => (hint j hj hjlt).2)
+          rw [← hmi]
+          exact hroles i hilt
+      | true =>
+          obtain ⟨hilt, hlen, hmi, hcoh, hint, hport, himp, hexcl⟩ :=
+            hcyT s len m i hcys
+          have hsol_port : asmSol2 aut rank cy (m 0)
+              = parkedPortE aut m len := by
+            rw [asmSol2_eq, hcoh 0 (by omega)]
+            show (if (0 : Nat) = 0 then parkedPortE aut m len
+              else pChain aut m len (parkedPortE aut m len) (len - 0) 0)
+              = parkedPortE aut m len
+            rw [if_pos rfl]
+          have hsol_int : ∀ j, 1 ≤ j → j < len →
+              asmSol2 aut rank cy (m j)
+                = pChain aut m len (parkedPortE aut m len) (len - j) j := by
+            intro j hj hjlt
+            rw [asmSol2_eq, hcoh j hjlt]
+            show (if j = 0 then parkedPortE aut m len
+              else pChain aut m len (parkedPortE aut m len) (len - j) j) = _
+            rw [if_neg (by omega : ¬ (j = 0))]
+          have hroles := parked_cycle_roles aut (asmSol2 aut rank cy)
+            m len hlen hsol_int hsol_port hint hport himp hexcl
+          rw [← hmi]
+          exact hroles i hilt
+
+#print axioms full_assembly_roles
+
 end GkatCycle

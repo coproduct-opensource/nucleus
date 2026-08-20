@@ -151,3 +151,36 @@ Remaining observed-but-unproved shapes: branchy multi-state SCCs (interior
 with ≥2 distinct in-SCC successors — needs the tree-walk machinery,
 GkatRingPlan2 Sub/Branch style) and multi-member exit ports; both rare.
 Also: assembly extension to dispatch parked cycles (mechanical).
+
+## CLOSE-OUT (2026-08-20)
+
+full_assembly_roles: the complete three-way assembly — base states,
+single-port cycles, and parked cycles under one WF-recursive solution.
+Parked closed forms reference no other solutions (their port REST is a bare
+halt test), so parked cycles impose no rank conditions at all.
+[propext, Classical.choice, Quot.sound]; full lake build green.
+
+### State of the programme at close-out
+
+THE SUMMIT: completeness_of_roleCovered (GkatTrimProofs) — the open problem is
+ONE hypothesis: RoleCovered (roles for canonical quotients of trimmed Thompson
+sums).  Everything else is a theorem on standard axioms.
+
+ROLE-EXISTENCE COVERAGE (toward RoleCovered), proved:
+- singleton_scc_roles — all 1-cycle automata (any self-arms, any positions)
+- single_port_cycle_roles + parked_cycle_roles — simple cycles with one port,
+  and multi-halt cycles under subset parking (census: every observed
+  halt-flavored multi-port instance satisfies it)
+- full_assembly_roles — all of the above mixed under one recursion
+Census: fold+salomaaE alone already covers 96.4–99.3% of pairs; the cycle
+theorems cover the dominant multi-SCC shapes.
+
+REMAINING (the true open residue):
+1. Branchy multi-state SCCs (interior with ≥2 in-SCC successors): needs tree
+   walks (GkatRingPlan2 Sub/Branch style) — rare in census.
+2. Multi-member exit ports (exits on different cycle members): the two-exit
+   obstruction territory — rarest.
+3. The final step from shape-coverage theorems to RoleCovered itself: prove
+   canonical trimmed quotients ALWAYS decompose into the covered shapes (or
+   extend the shape library until they do).  This is the research core that
+   remains genuinely open.
