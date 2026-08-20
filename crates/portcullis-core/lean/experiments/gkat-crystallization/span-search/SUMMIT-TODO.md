@@ -72,3 +72,25 @@ Status log:
   provably equivalent to one with a trimmed Thompson automaton, using s3 = early
   termination) ⟹ FiniteAxiomsCompleteBA.  sum_liveSteps glues summand trimmedness.
   All on [propext, Classical.choice, Quot.sound]; full lake build green.
+
+## THE REWIRE (GkatTrimProofs) — the mountain bypass
+
+The syntactic route (NormalizationBridge / Thompson silent-freeness) is
+SUPERSEDED on the critical path by the automaton-level trim:
+
+- trimAut: drop dead-target transitions, conjoin surviving guards with the
+  negation of prior dead guards (firstMatch priority preserved exactly)
+- autLang_trimAut: per-state languages unchanged at every carrier/valuation
+- liveSteps_trimAut: LiveSteps by construction → START MERGE UNCONDITIONAL
+- trim_dead_sol: dead states have provably-zero solutions in the trimmed system
+- trim_fold_equiv + solvesBA_untrim: solutions of the trimmed system provably
+  solve the original (dead arms die by s3; under-guard ite algebra)
+- completeness_of_roleCovered: **THE REWIRED SUMMIT** — the open problem is now
+  ONE hypothesis, RoleCovered: the canonical quotient of the trimmed Thompson
+  sum of every ULE pair is role-covered.  Everything else (quotient existence,
+  start merge, descent, untrim, component restriction, Thompson uniqueness) is
+  a theorem.  [propext, Classical.choice, Quot.sound]
+
+RoleCovered is exactly the object the harness measures (trim + canonize before
+everything).  Remaining mathematics: S2 (roles) — acyclic stratum proved
+(dag_roles); next: single-SCC rings, then SCC-DAG assembly.
