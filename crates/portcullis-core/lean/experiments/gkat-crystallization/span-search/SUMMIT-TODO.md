@@ -789,3 +789,21 @@ discharged for chain-loop composites (both-satisfiable case):
   hlive, hmin (rank 0 trivial), hstep_uniq, hnoeps.
 Remaining: qPeriod >= 2 + none~last + hstates (quotient membership) +
 os/cover assembly + the wrapper + degenerate-guard branches.
+
+## THE INIT-PORT IDENTIFICATION (loop iteration 25)
+
+- lang_eq_of_step_hlt: two states stepping and halting identically have
+  the same language — NO induction needed (successors literally equal)
+- autStep_toGAut_none: the init pseudostate's step is the init-arm match
+- firstMatch_map_guard_congr: firstMatch only sees guard VALUES
+- sum_targets_live_none_inl: init arms have live targets
+- sum_chain_none_lang: THE INIT-PORT IDENTIFICATION — in the trimmed
+  composite, ⟦inl none⟧'s language = ⟦port⟧'s language: both halt exactly
+  at ¬b (initHlt = ¬b vs hlt_port ∧ ¬b with hlt_port ≡ 1), and both step
+  identically (the port's body arms vanish, its feedback guards are the
+  init guards under an always-true halt conjunct — firstMatch congruence).
+
+The cover's last semantic ingredient. ⟦inl none⟧ = ⟦port⟧ via
+rep_lang_congr => the init class IS on the orbit (position 0).
+Remaining: qPeriod >= 2, hstates/spineNext_mem closure, os/cover
+assembly, wrapper, degenerate branches.

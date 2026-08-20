@@ -1648,4 +1648,152 @@ theorem sum_chain_hfire {S₁ S₂ : Type}
 #print axioms spine_nofix_port
 #print axioms sum_chain_hfire
 
+/-! ## The init state IS the port
+
+    The loop's initial pseudostate and its port agree on halting (`¬b`)
+    and step identically at every atom (the port's body arms vanish, its
+    feedback guards are the init guards under an always-true halt), so
+    they have the same language — the identification the cover needs. -/
+
+open Classical in
+/-- Two states stepping and halting identically have the same language. -/
+theorem lang_eq_of_step_hlt (aut : GAut S A T) {s t : S}
+    (hstep : ∀ α : T → Bool,
+      autStep (genW T) aut s α = autStep (genW T) aut t α)
+    (hhlt : ∀ α : T → Bool,
+      bval (genW T) (aut.hlt s) α = bval (genW T) (aut.hlt t) α) :
+    autLang (genW T) aut s = autLang (genW T) aut t := by
+  funext gs
+  obtain ⟨α, w⟩ := gs
+  apply propext
+  cases w with
+  | nil =>
+      show (bval (genW T) (aut.hlt s) α = true)
+        ↔ (bval (genW T) (aut.hlt t) α = true)
+      rw [hhlt α]
+  | cons qa w' =>
+      obtain ⟨q, β⟩ := qa
+      show (∃ s', autStep (genW T) aut s α = some (q, s')
+          ∧ autRun (genW T) aut s' β w')
+        ↔ (∃ s', autStep (genW T) aut t α = some (q, s')
+          ∧ autRun (genW T) aut s' β w')
+      rw [hstep α]
+
+open Classical in
+/-- One-step behavior through `toGAut` at the initial pseudostate. -/
+theorem autStep_toGAut_none {S' Atom : Type} (V : T → Atom → Bool)
+    (W : InitializedGAut S' A T) (x : Atom) :
+    autStep V W.toGAut none x
+      = (firstMatch V x W.initTrans).map (fun o => (o.1, some o.2)) := by
+  show firstMatch V x (W.initTrans.map
+    (fun t => (t.1, t.2.1, some t.2.2))) = _
+  exact firstMatch_map_target_to V x some W.initTrans
+
+open Classical in
+/-- `firstMatch` only sees guard values: mapped lists with pointwise
+    `bval`-equal guards match identically. -/
+theorem firstMatch_map_guard_congr {Atom R : Type} (V : T → Atom → Bool)
+    (x : Atom) (f g : (BExp T × A × R) → BExp T) :
+    ∀ L : List (BExp T × A × R),
+      (∀ t ∈ L, bval V (f t) x = bval V (g t) x) →
+      firstMatch V x (L.map (fun t => (f t, t.2)))
+        = firstMatch V x (L.map (fun t => (g t, t.2))) := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons hd rest ih =>
+      intro h
+      obtain ⟨gd, a, t⟩ := hd
+      show (if bval V (f (gd, a, t)) x = true then some (a, t)
+          else firstMatch V x (rest.map (fun t => (f t, t.2))))
+        = (if bval V (g (gd, a, t)) x = true then some (a, t)
+          else firstMatch V x (rest.map (fun t => (g t, t.2))))
+      rw [h (gd, a, t) (List.mem_cons_self ..),
+          ih (fun t' ht' => h t' (List.mem_cons_of_mem _ ht'))]
+
+open Classical in
+/-- All composite arms at the initial pseudostate have live targets. -/
+theorem sum_targets_live_none_inl {S₁ S₂ : Type}
+    {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hit : InitTargetsListed B)
+    (hstates : B.core.states = l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false) :
+    ∀ e ∈ (sumGAut (loopInitialized b B).toGAut aut₂).trans
+        (Sum.inl (none : Option S₁)),
+      Live (sumGAut (loopInitialized b B).toGAut aut₂) e.2.2 := by
+  intro e he
+  obtain ⟨t₁, ht₁, heq₁⟩ := List.mem_map.mp he
+  obtain ⟨t₀, ht₀, heq₀⟩ := List.mem_map.mp ht₁
+  obtain ⟨tB, htB, heqB⟩ := List.mem_map.mp ht₀
+  rw [← heq₁, ← heq₀, ← heqB]
+  show Live _ (Sum.inl (some tB.2.2))
+  have hmem : tB.2.2 ∈ l := by
+    have := hit tB htB
+    rw [hstates] at this
+    exact this
+  exact spine_mem_live_inl b hsp first aut₂ hexit hmem
+
+open Classical in
+/-- **THE INIT–PORT IDENTIFICATION**: in the trimmed composite, the loop's
+    initial pseudostate and its port have the same language. -/
+theorem sum_chain_none_lang {S₁ S₂ : Type} {B : InitializedGAut S₁ A T}
+    (b : BExp T) {l : List S₁} (hsp : ChainSpine B l) (first : S₁)
+    (aut₂ : GAut (Option S₂) A T)
+    (hct : CoreTargetsListed B) (hit : InitTargetsListed B)
+    (hstates : B.core.states = l) (hexh : ∀ x : S₁, x ∈ l)
+    (hexit : ∃ α : T → Bool, bval (genW T) b α = false)
+    (h0 : 0 < l.length) :
+    autLang (genW T)
+        (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+        (Sum.inl (none : Option S₁))
+      = autLang (genW T)
+          (trimAut (sumGAut (loopInitialized b B).toGAut aut₂))
+          (Sum.inl (some (l[l.length - 1]'(by omega)))) := by
+  apply lang_eq_of_step_hlt
+  · intro α
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (sum_targets_live_none_inl b hsp first aut₂ hit hstates hexit) α]
+    rw [autStep_trimAut_all_live (genW T) _ _
+      (sum_targets_live_inl b hsp first aut₂ hct hit hstates hexh hexit
+        (l[l.length - 1]'(by omega))) α]
+    rw [autStep_sumGAut_inl, autStep_sumGAut_inl]
+    rw [autStep_toGAut_none, autStep_toGAut_some]
+    have hfm : firstMatch (genW T) α (loopInitialized b B).initTrans
+        = firstMatch (genW T) α
+          ((loopInitialized b B).core.trans
+            (l[l.length - 1]'(by omega))) := by
+      show firstMatch (genW T) α
+          (B.initTrans.map (fun t => (.and b t.1, t.2)))
+        = firstMatch (genW T) α
+          (B.core.trans (l[l.length - 1]'(by omega))
+            ++ B.initTrans.map (fun t =>
+              (.and (B.core.hlt (l[l.length - 1]'(by omega)))
+                (.and b t.1), t.2)))
+      rw [spine_last_nil l hsp h0]
+      show firstMatch (genW T) α
+          (B.initTrans.map (fun t => ((.and b t.1 : BExp T), t.2)))
+        = firstMatch (genW T) α
+          (B.initTrans.map (fun t =>
+            ((.and (B.core.hlt (l[l.length - 1]'(by omega)))
+              (.and b t.1) : BExp T), t.2)))
+      apply firstMatch_map_guard_congr
+      intro t _
+      show bval (genW T) (.and b t.1) α
+        = (bval (genW T) (B.core.hlt (l[l.length - 1]'(by omega))) α
+          && bval (genW T) (.and b t.1) α)
+      rw [spine_hlt_last l hsp h0 α]
+      rfl
+    rw [hfm]
+  · intro α
+    show (!(bval (genW T) b α))
+      = bval (genW T)
+          ((loopInitialized b B).core.hlt
+            (l[l.length - 1]'(by omega))) α
+    rw [loop_hlt_port b hsp h0 α]
+
+#print axioms lang_eq_of_step_hlt
+#print axioms sum_chain_none_lang
+
 end GkatChainFragment
