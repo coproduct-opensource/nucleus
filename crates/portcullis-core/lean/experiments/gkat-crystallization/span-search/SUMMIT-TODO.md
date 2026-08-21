@@ -10312,3 +10312,56 @@ parametric IH).
 **Next.**  Check the termination mismatch: does LLEE's "no successful
 termination mid-loop" have a guarded analogue that GKAT's Thompson charts
 satisfy?  Measure it on Thompson automata before writing any Lean.
+
+---
+
+## 225 — REDUCIBILITY IS NOT THE CHARACTERIZATION.  And a filter audit that came out safe.
+
+**The termination mismatch 224 flagged, resolved on paper.**  Milner's LLEE
+requires no successful termination mid-loop — you exit only at the head.  GKAT's
+Thompson construction INLINES the head into the body's exit points:
+`loop_core_hlt`, proved `rfl` at 220, says the loop's halts are exactly
+`hlt_body ∧ ¬b`.  So termination inside a GKAT loop body happens precisely where
+the body completes AND the guard says stop — "termination only at the head",
+distributed over the body's completion points rather than concentrated in one
+state.  The condition survives translation; it is not the obstacle.
+
+**So which structure IS solvability?**  The exhaustive runs give a
+characterization by ALGORITHM (the six rules solve exactly the solvable
+automata at k<=4/NA=2).  LLEE promises one by STRUCTURE.  The cheapest
+LLEE-adjacent candidate already in the harness is T1/T2 reducibility — single
+dominating loop entry, the entry-side half of "loops are never mutually
+nested".  Cross-tabulated over every minimised automaton:
+
+    NA=2 k=2   reducible&solvable   32 | reducible&UNsolvable   4 | irred&solvable 0
+    NA=2 k=3   reducible&solvable 1540 | reducible&UNsolvable 972 | irred&solvable 8
+
+**972 reducible-but-unsolvable at k=3: reducibility is NOT sufficient.**  That is
+the expected shape rather than a surprise — LLEE is strictly more than a single
+dominating entry, and the parts I did not implement (the layering, the
+termination condition) are exactly what the 972 must be violating.  The cheap
+proxy fails, and it fails informatively: the missing content of LLEE is the
+layering, not the entry condition.
+
+**A filter audit, prompted by the `irred&solvable 8` cell.**  `synth_lookup`
+tests STATE 0 only, not system-solvability — an automaton can have an
+expressible start state while some other state's behaviour is not expressible.
+That makes those 8 cells unreliable and I am not drawing a conclusion from them.
+
+But it matters more for the exhaustive result, so I checked the direction: the
+counterexample filter is "solvable AND calculus fails", and requiring ALL states
+solvable is STRICTLY STRONGER, so it admits FEWER automata.  A stricter filter
+can only lower a count that is already 0.  **The k<=4 exhaustive zero is
+conservative in the safe direction and stands**; tightening the filter would
+only strengthen it.
+
+**Odds: 79%, held.**  A cheap proxy for LLEE was tested and failed, which costs
+nothing because it was never the plan — the plan is LLEE itself, and this says
+what LLEE's content is beyond the obvious part.  The filter audit is a small
+positive: a weakness found in the instrument that happens to point the safe way,
+verified rather than assumed.
+
+**Next.**  Implement LLEE properly — the loop-elimination procedure with its
+layering condition — and test the chain: do Thompson automata satisfy it, is it
+preserved by collapse, and does it coincide with calculus-solvability?  That
+last equivalence, if it holds, is the characterization.

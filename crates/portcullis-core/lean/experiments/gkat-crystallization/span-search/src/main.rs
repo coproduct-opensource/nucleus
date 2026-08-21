@@ -6537,6 +6537,69 @@ fn collapse_breaks<const NA: usize>(nguards: u8) {
         collapse strictly shrank {shrank}; SOLVED-THEN-BROKEN {broke}");
 }
 
+/// **WHICH STRUCTURAL PREDICATE IS SOLVABILITY?** (iteration 225.)
+///
+/// The exhaustive runs establish, at k<=4 / NA=2 over 1 695 497 minimised
+/// automata, that the six-rule calculus solves exactly the solvable ones.  That
+/// is a characterization by an ALGORITHM.  LLEE says there should be one by a
+/// STRUCTURE, and the cheapest LLEE-adjacent candidate already in this harness
+/// is T1/T2 reducibility — loops with a single dominating entry, which is what
+/// "loops are never mutually nested" amounts to on the entry side.
+///
+/// Cross-tabulate, over every minimised automaton: is every SCC reducible, and
+/// is the automaton solvable (verified witness)?  Four cells; the interesting
+/// ones are the disagreements.
+fn char2<const NA: usize>() {
+    let kmax: usize = std::env::var("PAD_EXH_K").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(3);
+    let table = synth_table::<NA>(synth_size(), seq_len(NA));
+    println!("  synth table: {} behaviours", table.len());
+    for k in 2..=kmax {
+        let choices = k + 2;
+        let cells = k * NA;
+        let total: u64 = (choices as u64).pow(cells as u32);
+        // (reducible, solvable) -> count
+        let counts: [u64; 4] = (0..total).into_par_iter().map(|code| {
+            let mut acc = [0u64; 4];
+            let mut a = Aut::<NA>::blank();
+            a.k = k as u8;
+            let mut c = code;
+            for s in 0..k {
+                for y in 0..NA {
+                    let d = (c % choices as u64) as usize;
+                    c /= choices as u64;
+                    if d == 0 { a.hl[s] |= 1 << y; }
+                    else if d != 1 { a.st[s][y] = (d - 1) as u8; }
+                }
+            }
+            let mut seen = vec![false; k];
+            let mut stack = vec![0usize];
+            seen[0] = true;
+            while let Some(x) = stack.pop() {
+                for y in 0..NA {
+                    let t = a.st[x][y];
+                    if t == 0 { continue; }
+                    let t = (t - 1) as usize;
+                    if !seen[t] { seen[t] = true; stack.push(t); }
+                }
+            }
+            if !seen.iter().all(|&b| b) { return acc; }
+            let a = match bisim_blocks(&a) { (blk, nb) =>
+                match quotient_by(&a, &blk, nb) { Some(q) => q, None => return acc } };
+            let sccs = sccs_of(&a);
+            if !sccs.iter().any(|c| c.len() >= 2) { return acc; }
+            let red = sccs.iter().all(|c| c.len() < 2 || t1t2_reducible(&a, c));
+            let sol = synth_lookup(&table, &a, 0, seq_len(NA)).is_some();
+            acc[(red as usize) * 2 + (sol as usize)] += 1;
+            acc
+        }).reduce(|| [0u64; 4], |mut x, y| { for i in 0..4 { x[i] += y[i]; } x });
+        println!("  char2 NA={NA} k={k}: \
+            reducible&solvable {} | reducible&UNsolvable {} | \
+            IRreducible&solvable {} | irreducible&unsolvable {}",
+            counts[3], counts[2], counts[1], counts[0]);
+    }
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -7565,6 +7628,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_CHAR2").is_ok() {
+        char2::<NA>();
         return;
     }
     if std::env::var("PAD_COLLAPSE_BREAKS").is_ok() {
