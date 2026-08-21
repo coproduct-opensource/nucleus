@@ -5973,10 +5973,24 @@ the neighbouring setting. -/
     labels, which is same-side unification, which is the thing being proved.
     Grabmayer's answer is not to transport the solution but to RE-DERIVE it from
     a certificate that survives the collapse.  Stated here so the obligation is
-    a single named property rather than a shape spread over three cases. -/
+    a single named property rather than a shape spread over three cases.
+
+    **The minimality hypothesis is not decoration — iteration 227 measured that
+    without it the property is FALSE.**  Over 61 937 behavioural quotients of
+    solvable Thompson automata, 4 failed, and every one was NON-MINIMAL: the
+    failing quotient had four pairwise-bisimilar states left unmerged, which the
+    solver treats as distinct opaque oracles.  `SumQuotientSolvable` needs only
+    SOME quotient and the natural one is the full collapse, so quantifying over
+    all behavioural quotients — including deliberately un-collapsed ones — was
+    strictly stronger than anything the theorem needs.  Restricted to minimal
+    quotients the measurement is 0 failures in 131 714 automata (iteration
+    223). -/
 def QuotientClosure (A T : Type) : Prop :=
   ∀ {S Q : Type} (aut : GkatKleene.GAut S A T) (quot : GkatKleene.GAut Q A T),
     GkatKleene.UniformBehavioralGAutQuotient aut quot →
+    -- the quotient is bisimulation-MINIMAL: no two distinct states are
+    -- bisimilar.  Without this the property is refuted; see above.
+    (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) →
     ∀ sol : S → Exp A T, GkatKleene.SolvesBA aut sol →
       ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol
 
@@ -5994,12 +6008,13 @@ theorem sumQuotientSolvable_of_closure
       ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
         (π : GkatKleene.UniformBehavioralGAutQuotient
               (GkatTrim.SUMof A T e f) quot),
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) ∧
         π.mapState (Sum.inl none) = π.mapState (Sum.inr none))
     (hclose : QuotientClosure A T) :
     GkatSumQuotient.SumQuotientSolvable A T := by
   intro e f hef
-  obtain ⟨Q, quot, π, hπ⟩ := hstart e f hef
-  obtain ⟨qsol, hqsol⟩ := hclose _ _ π (stdSum e f) (sum_solves_std e f)
+  obtain ⟨Q, quot, π, hmin, hπ⟩ := hstart e f hef
+  obtain ⟨qsol, hqsol⟩ := hclose _ _ π hmin (stdSum e f) (sum_solves_std e f)
   exact ⟨Q, quot, π, qsol, hqsol, hπ⟩
 
 #print axioms sumQuotientSolvable_of_closure

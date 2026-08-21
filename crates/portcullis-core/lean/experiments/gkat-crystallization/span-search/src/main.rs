@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_CLOSURE").is_ok() {
+        closure_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_CHAR2").is_ok() {
         char2::<NA>();
         return;
@@ -11427,4 +11431,53 @@ fn main() {
         4 => run::<4>(maxk, pairk),
         _ => panic!("atoms must be 2, 3 or 4"),
     }
+}
+
+/// **TESTING `QuotientClosure` DIRECTLY** (iteration 227).
+///
+/// 226 reduced the entire remainder to one property: a solvable automaton has a
+/// solvable behavioural quotient.  223 tested only the FULL collapse; the
+/// property quantifies over EVERY behavioural quotient, so test the whole
+/// congruence lattice.  A Thompson automaton of a random expression is solvable
+/// by construction, so every quotient of it must be solvable if the property
+/// holds — and a single failure refutes the route cheaply, which is the point of
+/// running this before writing any Lean.
+fn closure_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x5150_ABCD_9876_4321;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut auts, mut quots, mut bad) = (0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..20_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        let solve = |q: &Aut<NA>| -> bool {
+            let sing = singleton_states(q);
+            sccs_of(q).iter().all(|c| c.len() < 2
+                || calculus_solves(q, c, 6)
+                || calculus_solves(q, &scc_with_context(q, c, &sing), 6))
+        };
+        if !solve(&a) { continue; }          // only test genuinely solvable ones
+        auts += 1;
+        for (blk, nb) in lattice_congruences(&a) {
+            let q = match quotient_by(&a, &blk, nb) { Some(q) => q, None => continue };
+            quots += 1;
+            if !solve(&q) {
+                bad += 1;
+                if shown < 3 {
+                    shown += 1;
+                    println!("    CLOSURE FAILS: {} states -> {} states", a.k, nb);
+                    for s in 0..(q.k as usize) {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = q.st[s][i];
+                            if t == 0 { "-".to_string() } else { format!("c{}", t - 1) }
+                        }).collect();
+                        println!("      c{s}: hl={:03b} st=[{}]", q.hl[s], row.join(","));
+                    }
+                }
+            }
+        }
+    }
+    println!("  closure_test NA={NA}: {auts} solvable Thompson automata; \
+        {quots} behavioural quotients checked; QuotientClosure FAILURES: {bad}");
 }

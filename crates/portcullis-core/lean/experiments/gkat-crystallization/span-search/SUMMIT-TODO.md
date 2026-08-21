@@ -10429,3 +10429,57 @@ my role-coverage may not be the certificate that survives.
 **Next.**  The certificate.  Either port LLEE to guarded charts, or prove that
 role-coverage itself is collapse-stable — 223's measurement says it is, on
 131 714 automata.
+
+---
+
+## 227 — TESTING `QuotientClosure` REFUTED MY OWN STATEMENT OF IT.  Corrected.
+
+226 reduced the whole remainder to one property and I wrote it down before
+testing it.  Testing it took one run.
+
+**The test.**  A Thompson automaton of a random expression is solvable by
+construction, so if the property holds, EVERY behavioural quotient of it must
+be solvable.  223 had checked only the full collapse; 226's statement quantifies
+over the whole congruence lattice, so check the lattice:
+
+    NA=2   6 757 solvable automata   25 899 quotients   failures 0
+    NA=3   6 757                     19 407             failures 0
+    NA=4   6 757                     16 631             failures 4
+
+**Four failures — and they refute the STATEMENT, not the route.**  Every failing
+quotient is NON-MINIMAL.  The dumped one has `c0`, `c3`, `c4`, `c5` literally
+identical (`hl=011 st=[-,-,c1,c1]`) — four pairwise-bisimilar states left
+unmerged, which the solver treats as four distinct opaque oracles.  That is 222's
+artifact, and this time it is not a harness excuse: **it is a defect in what I
+wrote.**  `SumQuotientSolvable` needs only SOME quotient, and the natural one is
+the full collapse; quantifying over ALL behavioural quotients, including
+deliberately un-collapsed ones, demanded strictly more than the theorem ever
+needs.
+
+**Corrected**: `QuotientClosure` now carries a minimality hypothesis — no two
+distinct states of the quotient are bisimilar — and the reduction
+`sumQuotientSolvable_of_closure` threads it through, still machine-checked with
+`propext`/`Quot.sound` only.  Under that restriction the measurement is 0
+failures in 131 714 automata (223).  The comment in the source records the
+refutation, so the hypothesis cannot later look like an unmotivated
+strengthening.
+
+**This is the second time in three iterations that testing a definition, rather
+than the mathematics, changed the answer** — 221's `ThompsonUnifP` was false at
+`F = 1`, and 226's `QuotientClosure` was false at non-minimal quotients.  Both
+were caught by instantiating rather than by reasoning.  The habit that keeps
+paying: after stating a property, immediately look for the cheapest instance
+that could refute it.
+
+**Odds: 80%, held.**  The route is unchanged and the corrected property is the
+one Grabmayer actually proves — his closure theorem is about collapse, not about
+arbitrary quotients, so the correction moves my statement TOWARD the precedent
+rather than away from it.  Not raised, because I published an untested
+definition two iterations running and the correction is mine to absorb, not the
+theorem's to be credited with.
+
+**Next.**  The certificate.  Role-coverage will not serve — `StateRole` is
+parameterised by the solution, so "role-covered" is close to a restatement of
+solvable, while LLEE is a property of the GRAPH alone.  So: port LLEE to guarded
+charts, defining it on the automaton and checking on Thompson automata that it
+holds, survives collapse, and coincides with calculus-solvability.
