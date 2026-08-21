@@ -11413,3 +11413,48 @@ need — which is a different situation from any point in the 228-246 stretch.
 Only +1: `hsum` is one of three obligations and the other two are untouched.
 
 **Next.**  `layered_seq` and `layered_ite` by componentwise rank, then `hsum`.
+
+---
+
+## 248 — `IsLayer` NEEDED RELATIVISING, AND A LAYER NOW LIFTS INTO A SUM.
+
+Attempting `layered_seq`/`layered_ite` immediately exposed a defect in 246's
+`IsLayer`: `hlt_eq` demanded `sys.hlt s = base.hlt s ∧ ¬b` at EVERY state.  In a
+sum, a layer living in the left component leaves right states untouched, so the
+uniform equation fails there and **a component's layer is not a layer of the
+whole automaton** — the seq/ite cases could not even be STATED.
+
+**Relativised**: `IsLayer sys base b dom` now carries the set of states the layer
+touches, requiring the guard equations only ON `dom` and requiring `sys` and
+`base` to AGREE off it.  For `wh` the domain is everything (the whole body is the
+loop), so `wh_isLayer`, `layered_wh`, `layered_test` and `layered_act` all still
+hold unchanged.
+
+That is the right shape independently of the sum problem: a loop layer touches a
+loop BODY, not an entire automaton.  246 got away with uniformity only because
+`wh` happens to be the case where the body is everything.
+
+**`sum_isLayer_left`** — a layer in the left component IS a layer of
+`sumGSystem L R`, with domain carried into the left and empty on the right.
+Proved: transitions map through the append (`List.map_append`), guards are
+unchanged by the injection, and `outside` discharges the entire right half.
+
+**Where `hsum` stands:**
+
+    layered_test / layered_act    base cases                  PROVED  (247)
+    layered_wh                    the loop case               PROVED  (247)
+    IsLayer relativised           layers touch a body          done   (248)
+    sum_isLayer_left              a layer lifts into a sum    PROVED  (248)
+    sum_isLayer_right             symmetric                    open
+    layered_sum / layered_seq     double induction on the two
+                                  Layered derivations          open
+    hsum                          assemble over the expression open
+
+**Odds: 81%, held.**  A necessary correction and one lemma.  The correction is
+the kind that would have blocked the seq/ite cases entirely, so finding it by
+attempting them rather than by inspection is the process working — but a fixed
+definition and a lifting lemma are not `hsum`.
+
+**Next.**  `sum_isLayer_right`, then `layered_sum` by induction on both
+derivations: acyclic/acyclic gives a componentwise rank via 241's closure
+lemmas, and a layer on either side lifts by the two lemmas above.

@@ -6277,12 +6277,18 @@ theorem wh_layer_separates (b : BExp T) (e : Exp A T)
     picked out of the transition relation; it is a DIFFERENCE between two
     automata, and that is why no amount of graph search recovered it. -/
 structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
-    (b : BExp T) : Prop where
-  /-- transitions: `base`'s, then back edges, all inside the guard -/
-  trans_split : ∀ s, ∃ extra, sys.trans s = base.trans s ++ extra ∧
+    (b : BExp T) (dom : S → Prop) : Prop where
+  /-- ON THE LAYER: transitions are `base`.s then back edges inside the guard -/
+  trans_split : ∀ s, dom s → ∃ extra, sys.trans s = base.trans s ++ extra ∧
     ∀ tr ∈ extra, GuardImplies tr.1 b
-  /-- halts: `base`'s, restricted to outside the guard -/
-  hlt_eq : ∀ s, sys.hlt s = .and (base.hlt s) (.not b)
+  /-- ON THE LAYER: halts are `base`.s, restricted to outside the guard -/
+  hlt_eq : ∀ s, dom s → sys.hlt s = .and (base.hlt s) (.not b)
+  /-- OFF THE LAYER: `sys` and `base` agree.  Iteration 248 relativised the
+      layer to the states it touches — without this a layer living in one
+      component of a `Sum` is not a layer of the whole automaton, since the
+      other component.s halts do not satisfy the guard equation, and
+      `layered_seq`/`layered_ite` cannot be stated at all. -/
+  outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
 
 /-- **`wh b e`'s automaton is exactly ONE LAYER over `e`'s.**
 
@@ -6293,10 +6299,11 @@ structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
     since iteration 220, plus 245's guard characterisation. -/
 theorem wh_isLayer (b : BExp T) (e : Exp A T) :
     IsLayer (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
-      (GkatThompson.certifiedThompson A T e).aut.core b where
-  trans_split s := ⟨_, loop_core_trans b e s,
+      (GkatThompson.certifiedThompson A T e).aut.core b (fun _ => True) where
+  trans_split s _ := ⟨_, loop_core_trans b e s,
     fun tr h => wh_backedge_guard_implies b e s tr h⟩
-  hlt_eq s := loop_core_hlt b e s
+  hlt_eq s _ := loop_core_hlt b e s
+  outside s h := absurd trivial h
 
 #print axioms wh_isLayer
 
@@ -6314,8 +6321,8 @@ inductive Layered {S : Type} : GkatThompson.GSystem S A T → Prop where
   | acyclic {sys : GkatThompson.GSystem S A T} :
       (∃ rank : S → Nat, ∀ s tr, tr ∈ sys.trans s → rank tr.2.2 < rank s) →
       Layered sys
-  | layer {sys base : GkatThompson.GSystem S A T} {b : BExp T} :
-      IsLayer sys base b → Layered base → Layered sys
+  | layer {sys base : GkatThompson.GSystem S A T} {b : BExp T} {dom : S → Prop} :
+      IsLayer sys base b dom → Layered base → Layered sys
 
 /-- **`wh` PRESERVES THE CERTIFICATE — the `wh` case of `hsum`, discharged.**
 
@@ -6345,5 +6352,37 @@ theorem layered_act (a : A) :
 
 #print axioms layered_test
 #print axioms layered_act
+
+/-- **A LAYER IN ONE COMPONENT IS A LAYER OF THE SUM.**  This is what 248's
+    relativisation buys: the layer's domain is carried into the left component
+    and is empty on the right, so the right half is untouched and `outside`
+    discharges it. -/
+theorem sum_isLayer_left {S₁ S₂ : Type}
+    (L L' : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    {b : BExp T} {dom : S₁ → Prop} (h : IsLayer L L' b dom) :
+    IsLayer (GkatThompson.sumGSystem L R) (GkatThompson.sumGSystem L' R) b
+      (fun x => match x with | .inl s => dom s | .inr _ => False) where
+  trans_split
+    | .inl s, hs => by
+        obtain ⟨extra, he, hg⟩ := h.trans_split s hs
+        refine ⟨extra.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)), ?_, ?_⟩
+        · show (L.trans s).map _ = (L'.trans s).map _ ++ _
+          rw [he, List.map_append]
+        · intro tr htr
+          simp only [List.mem_map] at htr
+          obtain ⟨t, ht, rfl⟩ := htr
+          exact hg t ht
+    | .inr _, hs => absurd hs (by simp)
+  hlt_eq
+    | .inl s, hs => h.hlt_eq s hs
+    | .inr _, hs => absurd hs (by simp)
+  outside
+    | .inl s, hs => by
+        obtain ⟨ht, hh⟩ := h.outside s hs
+        exact ⟨by simp only [GkatThompson.sumGSystem, ht], by
+          simp only [GkatThompson.sumGSystem, hh]⟩
+    | .inr _, _ => ⟨rfl, rfl⟩
+
+#print axioms sum_isLayer_left
 
 end GkatCensus
