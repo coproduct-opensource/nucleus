@@ -11695,3 +11695,44 @@ cost more, because every theorem above it would still typecheck against the old
 shape while the new one was unproved.
 
 **Next.**  Land the shape across all three lemmas in one go, then `layered_seq`.
+
+---
+
+## 254 — THE SHAPE LANDED.  `IsLayer` now covers `wh` and `seq` alike.
+
+253 designed the shape and reverted rather than commit a half-migration.  This
+lands it across every affected lemma in one pass:
+
+    base.trans s = pre ++ post
+    sys.trans s  = pre ++ extra ++ post.map (fun tr => (¬b ∧ tr.1, tr.2))
+                   with every guard in `extra` implying `b`
+
+    wh_isLayer         post = [], two `simp` steps
+    sum_isLayer_left   pre/extra/post each mapped through `inl`; the new
+                       obligation is
+                       (post.map restrict).map inl = (post.map inl).map restrict,
+                       which `List.map_map` on both sides closes by `rfl`
+    sum_isLayer_right  symmetric
+
+**Zero errors, no `sorryAx`, and all nine theorems still proved** —
+`wh_isLayer`, `layered_wh`, `layered_test`, `layered_act`,
+`sum_isLayer_left/right`, `layered_sum`, `layered_ite`,
+`layered_seq_acyclic`.  The rank proofs survived untouched, which was the whole
+reason for keeping the definition syntactic rather than moving to `firstMatch`
+(252's first instinct).
+
+**What this unblocks.**  `layered_seq`'s LAYER case is now statable for the first
+time: 251 found it blocked because a `seq` layer inserts back edges in the middle
+AND restricts the trailing block's guards, and the shape now expresses exactly
+that.
+
+    layered_test / act / wh / sum / ite   PROVED  (247, 250)
+    layered_seq  acyclic case             PROVED  (251)
+    layered_seq  layer case               now STATABLE, open
+    hsum         assembly                 open
+
+**Odds: 81%, held.**  A definition migration is plumbing, however necessary.  The
+number should move when `hsum` closes, not when its prerequisites do.
+
+**Next.**  `layered_seq`'s layer case with the new shape, then `hsum` by
+induction on the expression.

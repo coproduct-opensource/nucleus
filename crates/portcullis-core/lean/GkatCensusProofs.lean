@@ -6278,16 +6278,26 @@ theorem wh_layer_separates (b : BExp T) (e : Exp A T)
     automata, and that is why no amount of graph search recovered it. -/
 structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
     (b : BExp T) (dom : S → Prop) : Prop where
-  /-- ON THE LAYER: transitions are `base`.s then back edges inside the guard -/
-  trans_split : ∀ s, dom s → ∃ extra, sys.trans s = base.trans s ++ extra ∧
+  /-- **ON THE LAYER** (iteration 254's shape).  A layer splits a state's
+      transition list into a `pre` block it leaves alone, its own BACK EDGES
+      (guards implying `b`), and a `post` block whose guards are RESTRICTED to
+      `¬b`.
+
+      252 established why both parts are needed.  For `wh` the post block is
+      EMPTY — `CoreHaltDisjoint` keeps the back edges from colliding with
+      anything, so appending is faithful and 246's shape sufficed.  For `seq`
+      the post block is the right half's ENTRY transitions, guarded by `hlt`,
+      which is exactly where the back edges live; they must be separated by `b`
+      and `¬b`, which is a RESTRICTION rather than an insertion. -/
+  split : ∀ s, dom s → ∃ pre extra post,
+    base.trans s = pre ++ post ∧
+    sys.trans s = pre ++ extra ++
+      post.map (fun tr => (BExp.and (BExp.not b) tr.1, tr.2)) ∧
     ∀ tr ∈ extra, GuardImplies tr.1 b
-  /-- ON THE LAYER: halts are `base`.s, restricted to outside the guard -/
+  /-- ON THE LAYER: halts are `base`'s, restricted to outside the guard -/
   hlt_eq : ∀ s, dom s → sys.hlt s = .and (base.hlt s) (.not b)
-  /-- OFF THE LAYER: `sys` and `base` agree.  Iteration 248 relativised the
-      layer to the states it touches — without this a layer living in one
-      component of a `Sum` is not a layer of the whole automaton, since the
-      other component.s halts do not satisfy the guard equation, and
-      `layered_seq`/`layered_ite` cannot be stated at all. -/
+  /-- OFF THE LAYER: `sys` and `base` agree (248 — without this a layer in one
+      component of a `Sum` is not a layer of the whole automaton). -/
   outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
 
 /-- **`wh b e`'s automaton is exactly ONE LAYER over `e`'s.**
@@ -6300,8 +6310,15 @@ structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
 theorem wh_isLayer (b : BExp T) (e : Exp A T) :
     IsLayer (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
       (GkatThompson.certifiedThompson A T e).aut.core b (fun _ => True) where
-  trans_split s _ := ⟨_, loop_core_trans b e s,
-    fun tr h => wh_backedge_guard_implies b e s tr h⟩
+  split s _ :=
+    ⟨(GkatThompson.certifiedThompson A T e).aut.core.trans s,
+     (GkatThompson.certifiedThompson A T e).aut.initTrans.map
+       (fun tr => (BExp.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
+         (BExp.and b tr.1), tr.2)),
+     [],
+     by simp,
+     by simpa using loop_core_trans b e s,
+     fun tr h => wh_backedge_guard_implies b e s tr h⟩
   hlt_eq s _ := loop_core_hlt b e s
   outside s h := absurd trivial h
 
@@ -6362,12 +6379,17 @@ theorem sum_isLayer_left {S₁ S₂ : Type}
     {b : BExp T} {dom : S₁ → Prop} (h : IsLayer L L' b dom) :
     IsLayer (GkatThompson.sumGSystem L R) (GkatThompson.sumGSystem L' R) b
       (fun x => match x with | .inl s => dom s | .inr _ => False) where
-  trans_split
+  split
     | .inl s, hs => by
-        obtain ⟨extra, he, hg⟩ := h.trans_split s hs
-        refine ⟨extra.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)), ?_, ?_⟩
-        · show (L.trans s).map _ = (L'.trans s).map _ ++ _
-          rw [he, List.map_append]
+        obtain ⟨pre, extra, post, hbase, hsys, hg⟩ := h.split s hs
+        refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
+                extra.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
+                post.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)), ?_, ?_, ?_⟩
+        · show (L'.trans s).map _ = _
+          rw [hbase, List.map_append]
+        · show (L.trans s).map _ = _
+          rw [hsys, List.map_append, List.map_append, List.map_map, List.map_map]
+          rfl
         · intro tr htr
           simp only [List.mem_map] at htr
           obtain ⟨t, ht, rfl⟩ := htr
@@ -6389,13 +6411,18 @@ theorem sum_isLayer_right {S₁ S₂ : Type}
     {b : BExp T} {dom : S₂ → Prop} (h : IsLayer R R' b dom) :
     IsLayer (GkatThompson.sumGSystem L R) (GkatThompson.sumGSystem L R') b
       (fun x => match x with | .inl _ => False | .inr s => dom s) where
-  trans_split
+  split
     | .inl _, hs => absurd hs (by simp)
     | .inr s, hs => by
-        obtain ⟨extra, he, hg⟩ := h.trans_split s hs
-        refine ⟨extra.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_⟩
-        · show (R.trans s).map _ = (R'.trans s).map _ ++ _
-          rw [he, List.map_append]
+        obtain ⟨pre, extra, post, hbase, hsys, hg⟩ := h.split s hs
+        refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                extra.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                post.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_, ?_⟩
+        · show (R'.trans s).map _ = _
+          rw [hbase, List.map_append]
+        · show (R.trans s).map _ = _
+          rw [hsys, List.map_append, List.map_append, List.map_map, List.map_map]
+          rfl
         · intro tr htr
           simp only [List.mem_map] at htr
           obtain ⟨t, ht, rfl⟩ := htr
