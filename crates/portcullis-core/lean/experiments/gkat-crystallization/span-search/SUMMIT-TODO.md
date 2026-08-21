@@ -6129,3 +6129,70 @@ nothing beyond BA.
 either prove BA completeness for the free algebra on `T` in-repo, or
 cite it explicitly at the definition site.  It is the one place where a
 claim about what the axioms ARE rests on an unstated mathematical fact.
+
+### Iteration 153 addendum — the axioms check out verbatim; one question survives, one is resolved
+
+Compared the repo's `Equiv` against Figure 1 of the POPL'20 paper,
+transcribed from the arXiv **LaTeX source of v4** rather than from
+prose.  Result:
+
+**★ ALL THIRTEEN AXIOMS MATCH EXACTLY. ★**
+
+| | paper | repo |
+|---|---|---|
+| U1 | `e +_b e ≡ e` | `ite b e e ≈ e` ✓ |
+| U2 | `e +_b f ≡ f +_b̄ e` | `ite b e f ≈ ite ¬b f e` ✓ |
+| U3 | `(e +_b f) +_c g ≡ e +_{bc} (f +_c g)` | `ite c (ite b e f) g ≈ ite (b∧c) e (ite c f g)` ✓ |
+| U4 | `e +_b f ≡ be +_b f` | `ite b e f ≈ ite b (b?·e) f` ✓ |
+| U5 | `eg +_b fg ≡ (e +_b f)·g` | `ite b (e·g) (f·g) ≈ (ite b e f)·g` ✓ |
+| S1–S5 | assoc, `0e=0`, `e0=0`, `1e=e`, `e1=e` | identical ✓ |
+| W1 | `e^{(b)} ≡ e e^{(b)} +_b 1` | identical ✓ |
+| W2 | `(e +_c 1)^{(b)} ≡ (ce)^{(b)}` | identical ✓ |
+| W3 | `g ≡ eg +_b f ⟹ g ≡ e^{(b)}f`, if `E(e) ≡ 0` | identical ✓ |
+
+Including the details that would be easy to get wrong: **U3's left
+guard on the right-hand side is the PRODUCT `bc`**, and **U5 is stated
+with the products on the left** — both as in the repo.  `E` matches on
+all five clauses.
+
+**And no Figure-2 fact is taken as an axiom.**  The paper's Figure 2
+lists twelve DERIVABLE facts (U3′, U4′, U5′ left-distributivity, U6–U8,
+W4–W7).  A formalization that assumed any of them would be strictly
+stronger than the paper.  The repo's `Equiv` has exactly U1–U5, S1–S5,
+W1–W3 and nothing else — checked constructor by constructor.
+
+**Iteration 153's concern is RESOLVED by the source.**  I flagged that
+the repo states the Boolean layer semantically while the paper says
+"laws of Boolean algebra", and that the coincidence was assumed.  The
+paper itself supplies it: `Bexp/≡_BA` is the free Boolean algebra on
+`T`, and **`≡_BA` is complete for the truth-assignment semantics**.  So
+the repo's `∀ X W x, bval W b x = bval W c x` IS `≡_BA`, on the paper's
+own statement.  Citable, not assumed.
+
+**One question survives, and it is the real one.**  The paper defines
+`≡` as the smallest congruence *with respect to all operators*
+satisfying Figure 1 and subsuming `≡_BA` **in the sense that
+`b ≡_BA c` implies `b ≡ c`** — that is, subsumption stated at the TEST
+level.  The repo additionally has `ite_guard` and `wh_guard`, which
+transport Boolean equality through GUARD POSITIONS (`b ≡ c ⟹
+e +_b f ≡ e +_c f`).  Whether that follows from "congruence with
+respect to all operators" — treating the guard as an argument of `+_·`
+— or is an addition beyond the paper is **not settled here**, and it
+matters: if it is an addition, `EquivBA` is stronger than GKAT + BA and
+the phrase "from the finite axioms" is off by exactly that.
+
+**One representation note.**  `s6` (`b?·c? ≡ (b∧c)?`) has no counterpart
+in Figure 1 because the paper does not need one: there `Bexp ⊆ Exp` and
+Boolean `·` IS sequencing, the same symbol.  This repo keeps `BExp` and
+`Exp` as separate types, so `s6` is the bridge that identification
+requires.  Sound (it is inside the proved `sound_BA`), and forced by the
+representation rather than added to the theory — but worth stating as
+such.
+
+**And the campaign's framing is confirmed verbatim.**  The paper's UA
+is: any Salomaa system of left-affine equations has AT MOST one solution
+— existence explicitly NOT assumed, citing Kozen–Tseng.  For `n = 1`,
+W1 gives existence and W3 gives uniqueness.  **"UA is precisely the
+multi-variable generalization of W3"** — which is exactly what this
+programme has been claiming to eliminate, stated in the source's own
+terms.
