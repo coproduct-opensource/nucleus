@@ -651,7 +651,10 @@ def SchedOk {S : Type} [DecidableEq S] (sys : S → RTree S A T) :
           ∧ C = .pre (.wh G (factorE tl)) tr)
         ∨ (∀ sol : S → Exp A T,
             EquivBA (resolveT sol (stepSubst closedPre (sys u)))
-              (resolveT sol C)))
+              (resolveT sol C))
+        ∨ (∀ sol : S → Exp A T, sol u = resolveT sol C →
+            EquivBA (resolveT sol C)
+              (resolveT sol (stepSubst closedPre (sys u)))))
       ∧ SchedOk sys (closedPre ++ [(u, C)]) rest
 
 /-- **SCHEDULE SOUNDNESS** (positioned form). -/
@@ -687,6 +690,7 @@ theorem sched_solves_from {S : Type} [DecidableEq S]
         have hstep := resolve_stepSubst (backSol ext full) pre
           hpresolved (sys u)
         rcases hclose with ⟨G, tl, tr, hsplit, hall, hCform⟩ | hCfold
+          | hCself
         · have hsol : backSol ext full u
               = .seq (.wh G (factorE tl))
                 (resolveT (backSol ext full) tr) := by
@@ -702,6 +706,12 @@ theorem sched_solves_from {S : Type} [DecidableEq S]
               (resolveT (backSol ext full) (stepSubst pre (sys u))) := by
             rw [hsolu]
             exact EquivBA.symm (hCfold (backSol ext full))
+          rw [hstep] at hchain
+          exact hchain
+        · have hchain : EquivBA (backSol ext full u)
+              (resolveT (backSol ext full) (stepSubst pre (sys u))) := by
+            rw [hsolu]
+            exact hCself (backSol ext full) hsolu
           rw [hstep] at hchain
           exact hchain
       · refine ih (pre ++ [(u, C)]) ?_ hrestok p hpr
@@ -1331,13 +1341,13 @@ theorem chord_three_sched {S : Type} [DecidableEq S]
     | 0 =>
         refine ⟨?_, ?_, ?_, True.intro⟩
         · -- mid: fold
-          refine Or.inr ?_
+          refine Or.inr (Or.inl ?_)
           intro sol
           show EquivBA (resolveT sol (treeOf aut x)) (resolveT sol Cx)
           rw [htreex]
           exact EquivBA.base (Equiv.refl _)
         · -- branch: fold over the cascade
-          refine Or.inr ?_
+          refine Or.inr (Or.inl ?_)
           intro sol
           show EquivBA (resolveT sol
             (stepSubst [(x, Cx)] (treeOf aut p))) (resolveT sol Cp)
@@ -3505,15 +3515,19 @@ theorem SchedOk_disjoint_prefix {S : Type} [DecidableEq S]
         rw [stepSubst_noop pre (sys u)
           (hdisj (u, C) (List.mem_cons_self ..))]
       refine ⟨?_, ?_⟩
-      · rcases hclause with ⟨G, tl, tr, hre, hall, hCf⟩ | hfold
+      · rcases hclause with ⟨G, tl, tr, hre, hall, hCf⟩ | hfold | hself
         · refine Or.inl ⟨G, tl, tr, ?_, hall, hCf⟩
           intro sol
           rw [hnoop]
           exact hre sol
-        · refine Or.inr ?_
+        · refine Or.inr (Or.inl ?_)
           intro sol
           rw [hnoop]
           exact hfold sol
+        · refine Or.inr (Or.inr ?_)
+          intro sol hu
+          rw [hnoop]
+          exact hself sol hu
       · have hres := ih (done ++ [(u, C)])
           (fun p hp => hdisj p (List.mem_cons_of_mem _ hp)) hrest
         show SchedOk sys ((pre ++ done) ++ [(u, C)]) rest

@@ -2756,3 +2756,36 @@ The formal route to the census facts:
 Steps 1 and 2 are the remaining work — multi-iteration but now fully
 specified; no scheduling mathematics remains, only Thompson structure
 and rep-class bookkeeping.
+
+## Iteration 96 — SINGLE-EXIT REFUTED; THE SELF-CLOSE CLAUSE ABSORBS IT
+
+**The conjecture falls**: reading `loopInitialized` — EVERY body state
+with nonzero halt gets feedback arms and a live residual halt. So
+`wh b (ite c (p; test d) q)` yields an SCC whose two states (post-p,
+post-q) BOTH halt (d∧¬b and ¬b) — a genuine two-exit mutual cycle in
+a canonical quotient, realized by a six-symbol program. The danger
+shape from the odds analysis is REAL.
+
+**And it doesn't matter**: manual verification shows the class
+solutions are the syntactic residuals (sol Q = wh b BODY,
+sol P = (test d); sol Q — mid-halt states are TEST-PREFIXED calls to
+the port), and the port verifies by W1-UNROLLING + guard algebra — no
+w3, no factoring, no single-target requirement. The schedule framework
+absorbs this via a THIRD SchedOk clause, the **self-close**:
+
+  ∀ sol, sol u = resolveT sol C →
+    EquivBA (resolveT sol C) (resolveT sol (cascaded equation))
+
+Soundness extension: at the step, solved-as-closed supplies exactly
+the hypothesis; the chain closes as before (three-line patch).
+Subsumes fold (refl) and split (elim_close); transported through
+SchedOk_disjoint_prefix; instances patched (Or.inr → Or.inr ∘ Or.inl).
+All axiom profiles unchanged.
+
+**Strategic consequence**: the census's closed forms for ports need
+not be Salomaa-manufactured — they can be the STANDARD THOMPSON
+SOLUTIONS (certifiedThompson's `standard` field), verified through the
+ThompsonCertificateBA machinery, with mid-halt states as test-prefixed
+calls. The syntactic structure theorem should compile e's certificate
+into schedule clauses directly — reusing the mountain of Thompson
+uniqueness work instead of re-deriving lap structure.
