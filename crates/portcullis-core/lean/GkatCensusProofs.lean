@@ -10,7 +10,7 @@ import GkatElimProofs
 
 namespace GkatCensus
 
-open GkatSyntax GkatKleene GkatElim
+open GkatSyntax GkatKleene GkatElim GkatGuardDecide
 
 variable {A T : Type}
 
@@ -148,9 +148,30 @@ theorem reachRank_hdesc {S : Type} (aut : GAut S A T) :
   intro s _ e he
   exact reachRank_le aut ⟨e, he, rfl⟩
 
+open Classical in
+/-- **SCC DETECTION**: reachability plus equal rank forces mutual
+    reachability — rank classes are unions of SCCs, and rank-preserving
+    reachability never leaves an SCC.  (The source must be listed.) -/
+theorem reach_back_of_rank_eq {S : Type} (aut : GAut S A T) {s t : S}
+    (hst : Reach aut s t) (hrk : reachRank aut s = reachRank aut t)
+    (hs : s ∈ aut.states) :
+    Reach aut t s := by
+  have hsub : ∀ u ∈ aut.states,
+      decide (Reach aut t u) = true → decide (Reach aut s u) = true := by
+    intro u _ hu
+    exact decide_eq_true (Reach.trans hst (of_decide_eq_true hu))
+  have hback := filter_eq_of_length_eq
+    (fun u => decide (Reach aut t u)) (fun u => decide (Reach aut s u))
+    aut.states hsub (by
+      show (reachSet aut s).length = (reachSet aut t).length
+      exact hrk)
+    s hs (decide_eq_true (Reach.refl s))
+  exact of_decide_eq_true hback
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
 #print axioms reachRank_hdesc
+#print axioms reach_back_of_rank_eq
 
 end GkatCensus

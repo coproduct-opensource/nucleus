@@ -2656,3 +2656,18 @@ reachable ⟹ mutually reachable — needed to know rank classes are
 SCC-unions); (2) the per-class enumeration + single-exit facts for
 quotients of Thompson sums (THE risk locus); (3) plumbing into
 forest/port constructors.
+
+## Iteration 92b — SCC DETECTION
+
+**`reach_back_of_rank_eq`**: reachability + equal reachRank forces
+MUTUAL reachability (via filter_eq_of_length_eq from the DE-CHOICE
+toolkit — subset filters with equal length are pointwise equal, so the
+source, reachable from itself, is reachable from the target). 
+
+Consequences for the census: rank classes are unions of SCCs;
+rank-preserving arms never leave an SCC; an arm is intra-SCC iff it
+preserves reachRank (reachRank_lt gives the converse). The SCC
+structure is now fully characterized by ONE Nat-valued function with
+four lemmas — the enumeration construction can work rank class by
+rank class, splitting classes into SCCs by mutual-reachability, with
+no additional graph machinery.
