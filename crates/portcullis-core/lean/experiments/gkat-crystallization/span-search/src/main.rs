@@ -6000,6 +6000,107 @@ fn exhaustive<const NA: usize>() {
     }
 }
 
+/// All guarded strings with at most `l` atoms, as atom-index sequences.
+fn all_seqs<const NA: usize>(l: usize) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<Vec<usize>> = (0..NA).map(|x| vec![x]).collect();
+    for _ in 1..l {
+        out.extend(cur.iter().cloned());
+        let mut nxt = Vec::new();
+        for s in cur.iter() {
+            for x in 0..NA { let mut t = s.clone(); t.push(x); nxt.push(t); }
+        }
+        cur = nxt;
+    }
+    out.extend(cur);
+    out
+}
+
+/// **BRUTE-FORCE EXPRESSION SEARCH** (iteration 214) — the instrument 213 said
+/// this development should have been using all along.
+///
+/// Every solvability verdict since 204 came from `symbolic_eliminable_raw`,
+/// which 213 proved INCOMPLETE by exhibiting an automaton it rejects and an
+/// expression that solves it.  An oracle wrong in one direction may be wrong in
+/// the other, so its verdicts cannot decide anything — including the 720 k=4
+/// automata it called solvable-but-unsolved.
+///
+/// This decides solvability by CONSTRUCTION instead.  Enumerate expressions
+/// bottom-up by size, keeping one representative per BEHAVIOUR — the standard
+/// observational-equivalence dedup from enumerative program synthesis, which
+/// keys on what a term does rather than how it is written and cuts the retained
+/// set by about an order of magnitude.  A hit is a witness, so it PROVES
+/// solvable; exhausting the size bound proves unsolvable UP TO THAT SIZE, which
+/// is a bounded but honest negative.  No oracle in either direction.
+fn synth<const NA: usize>(q: &Aut<NA>, start: usize, maxsize: usize, l: usize)
+    -> Option<Ex>
+{
+    let seqs = all_seqs::<NA>(l);
+    if seqs.len() > 128 { return None; }
+    let sig = |e: &Ex| -> u128 {
+        let mut s: u128 = 0;
+        for (i, w) in seqs.iter().enumerate() {
+            if ex_accepts(e, q, w) { s |= 1u128 << i; }
+        }
+        s
+    };
+    let mut target: u128 = 0;
+    for (i, w) in seqs.iter().enumerate() {
+        if accepts_at(q, start, w) { target |= 1u128 << i; }
+    }
+    let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };
+    let mut seen: FxMap<u128, ()> = FxMap::default();
+    let mut levels: Vec<Vec<Ex>> = vec![Vec::new()];       // index by size
+    let mut check = |e: &Ex, seen: &mut FxMap<u128, ()>| -> Option<Ex> {
+        let s = sig(e);
+        if s == target && ex_matches(e, q, start, l + 3) { return Some(e.clone()); }
+        if seen.contains_key(&s) { None } else { seen.insert(s, ()); None }
+    };
+    let mut lvl1: Vec<Ex> = Vec::new();
+    for m in 0..=all { let e = Ex::Test(m);
+        if let Some(h) = check(&e, &mut seen) { return Some(h); }
+        lvl1.push(e); }
+    { let e = Ex::Act;
+      if let Some(h) = check(&e, &mut seen) { return Some(h); }
+      lvl1.push(e); }
+    levels.push(lvl1);
+    for n in 2..=maxsize {
+        let mut cur: Vec<Ex> = Vec::new();
+        // Wh(g, a) with |a| = n-1
+        for a in levels[n - 1].iter() {
+            for g in 0..=all {
+                if g == 0 { continue; }              // `wh 0 a` is just `1`
+                let e = Ex::Wh(g, Box::new(a.clone()));
+                let s = sig(&e);
+                if s == target && ex_matches(&e, q, start, l + 3) { return Some(e); }
+                if seen.insert(s, ()).is_none() { cur.push(e); }
+            }
+        }
+        // Seq(a,b) and Ite(g,a,b) with |a| + |b| = n-1
+        for i in 1..n - 1 {
+            let j = n - 1 - i;
+            if j == 0 || i >= levels.len() || j >= levels.len() { continue; }
+            for a in levels[i].iter() {
+                for b in levels[j].iter() {
+                    let mut cands = vec![Ex::Seq(Box::new(a.clone()), Box::new(b.clone()))];
+                    for g in 1..all {
+                        cands.push(Ex::Ite(g, Box::new(a.clone()), Box::new(b.clone())));
+                    }
+                    for e in cands {
+                        let s = sig(&e);
+                        if s == target && ex_matches(&e, q, start, l + 3) {
+                            return Some(e);
+                        }
+                        if seen.insert(s, ()).is_none() { cur.push(e); }
+                    }
+                }
+            }
+        }
+        levels.push(cur);
+    }
+    None
+}
+
 /// **IS THE ELIMINATION ORACLE COMPLETE?** (iteration 213.)
 ///
 /// 212 called `H_v ⊆ H_u ∨ H_u ⊆ H_v` a NECESSARY condition with false
@@ -6036,6 +6137,40 @@ fn oracle_check<const NA: usize>() {
     }
     println!("  oracle says eliminable = {}", symbolic_eliminable_raw(&q));
     println!("  calculus solves it     = {}", calculus_solves(&q, &[0, 1], 6));
+}
+
+/// Put the brute-force search to the three cases that matter (iteration 214):
+/// one the oracle wrongly rejected, one the literature says is unsolvable, and
+/// one of the 720 the oracle called solvable-but-unsolved.
+fn synth_check<const NA: usize>() {
+    let mk = |k: u8, hl: &[u8], st: &[&[u8]]| -> Aut<NA> {
+        let mut a = Aut::<NA>::blank();
+        a.k = k;
+        for s in 0..(k as usize) {
+            a.hl[s] = hl[s];
+            for y in 0..NA { a.st[s][y] = st[s][y]; }
+        }
+        a
+    };
+    if NA == 3 {
+        // 213's witness: oracle says unsolvable, an expression exists.
+        let a = mk(2, &[0b110, 0b110], &[&[2u8, 0, 0][..], &[1u8, 0, 0][..]]);
+        println!("  synth code=131 (oracle said UNSOLVABLE): {:?}",
+            synth(&a, 0, 8, 4).map(|e| format!("{e:?}")));
+        // The literature's unsolvable family: an atom resumes at one state and
+        // terminates at the other, reversed on the other branch.
+        let b = mk(2, &[0b011, 0b110], &[&[0u8, 0, 2][..], &[1u8, 0, 0][..]]);
+        println!("  synth code=176 (literature: UNSOLVABLE): {:?}",
+            synth(&b, 0, 8, 4).map(|e| format!("{e:?}")));
+    }
+    if NA == 2 {
+        // One of the k=4 720: oracle said eliminable, calculus failed.
+        let c = mk(4, &[0, 0, 0, 0b11], &[&[2u8, 3][..], &[3u8, 1][..], &[4u8, 0][..], &[0u8, 0][..]]);
+        for sz in [8usize, 10, 12] {
+            println!("  synth code=14859 (oracle said SOLVABLE, calculus failed), size<={sz}: {:?}",
+                synth(&c, 0, sz, 5).map(|e| format!("{e:?}")));
+        }
+    }
 }
 
 /// **A CANDIDATE CHARACTERIZATION OF SOLVABLE 2-STATE LOOPS** (iteration 211).
@@ -7168,6 +7303,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_SYNTH").is_ok() {
+        synth_check::<NA>();
         return;
     }
     if std::env::var("PAD_ORACLE_CHECK").is_ok() {

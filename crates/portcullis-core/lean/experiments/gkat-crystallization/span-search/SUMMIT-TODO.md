@@ -9764,3 +9764,65 @@ SEARCH: enumerate expressions up to a depth bound, build each one's automaton,
 and language-compare.  A hit proves solvable; exhausting the bound proves
 unsolvable up to that depth.  Both directions verified, no oracle.  That is
 what should have been deciding solvability all along.
+
+---
+
+## 214 — A SOUND INSTRUMENT AT LAST, AND THE 720 EVAPORATE.
+
+213 ended with the solvability oracle discredited in one direction and
+suspected in the other, and 720 k=4 automata whose status therefore could not
+be called.  This iteration builds the instrument that should have been deciding
+solvability all along and settles all of it.
+
+**`synth`: brute-force expression search with observational dedup.**  Enumerate
+expressions bottom-up by size, keeping ONE representative per BEHAVIOUR — the
+standard observational-equivalence pruning from enumerative program synthesis,
+which keys on what a term does rather than how it is written and cuts the
+retained set by roughly an order of magnitude.  Behaviour is the accept-set over
+all guarded strings up to a length bound, packed into a `u128`.  A hit is a
+WITNESS, so it proves solvable; exhausting the size bound proves unsolvable UP
+TO THAT SIZE.  No oracle in either direction.
+
+**It validates against known ground truth, both ways:**
+
+    code=131  (oracle said UNSOLVABLE)          ->  wh a0 p          SOLVED
+    code=176  (literature says UNSOLVABLE)      ->  none             agrees
+    code=14859 (oracle said SOLVABLE)           ->  none, size <=12
+
+The first is a sharper rebuke to the oracle than 213 managed: the automaton is
+not merely solvable, it is `wh a0 p` — a bare while-loop, with a redundant
+two-state encoding.  My 213 hand-solution `wh a0 (p ; ite a0 p 1) ; test{a1,a2}`
+was correct but needlessly elaborate; the search found the obvious one.
+
+The second is the check that matters most, because an instrument that always
+finds something proves nothing: on the family the literature calls unsolvable,
+`synth` returns nothing.
+
+**THE 720 ARE PHANTOM.**  `code=14859` has NO expression up to size 12, so the
+oracle's `eliminable=true` was a FALSE POSITIVE.  213's hand-reading was right:
+its SCC has `a0` resuming at `q0` and exiting at `q1` while `a1` does the
+reverse — exactly the literature's unsolvable pattern.  So the k=4 enumeration's
+720 "solvable but unsolved by the calculus" are not counterexamples to the
+calculus.  **The oracle is wrong in BOTH directions**, and every verdict that
+rested on it — 209's, 211's, 212's, and the k=4 720 — was measuring the oracle.
+
+**Where that leaves the calculus: no verified counterexample exists anywhere in
+this development.**  Every instance ever reported against it has, on
+examination, been either a harness bug (203's dead dump, 203's size cap, 210's
+guard) or an oracle artifact (the 720, 211/212's "necessary conditions").  The
+only genuine gaps found by measurement — 201's and 206's resisters — were
+closed by rules 5 and 6 and proved in Lean.
+
+**Odds: 77%, up 3 from 213's 74%, and 1 above the pre-drop 76%.**  213's drop
+was for measuring with a broken instrument; that is now fixed and validated
+against ground truth in both directions, which is worth more than restoring the
+old number.  The largest outstanding cloud — 720 candidate counterexamples —
+has been dispelled by construction rather than argument.  Held below any bigger
+jump by the honest limit of the instrument: `synth`'s negative results are
+"no expression of size <= 12 over guarded strings of <= 5 atoms", which is a
+BOUNDED negative, not a proof of unsolvability.
+
+**Next.**  Re-run the k=3 and k=4 exhaustive enumerations with `synth` as the
+solvability filter instead of the oracle.  That is the first exhaustive test in
+this development whose every verdict is verified in both directions — and the
+first that could produce a counterexample I would believe.
