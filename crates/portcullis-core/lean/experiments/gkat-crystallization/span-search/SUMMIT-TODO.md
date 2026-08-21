@@ -2819,3 +2819,25 @@ the generalized-aux + foldTL-folded `show` forms, or `rw [ih]` misses.)
 Next: the compilation skeleton — per-program schedule data (the
 prefix-call trees from the syntax tree) and the wh-case verification
 clause via canonicity.
+
+## Iteration 98 — PAIR GATHERING (dispatch extensionality, step one)
+
+The transport problem precisely stated: quotient SCC classes' reps
+alternate SIDES (bisimRep chooses arbitrarily), so class equations mix
+left- and right-syntax — neither side's canonicity applies directly.
+THE FIX: dispatch extensionality — bisimilar states' equations are
+EquivBA-equal under class-constant solutions — letting every class
+verify against its LEFT member's syntax (every class HAS a left
+member: reachable class sets of the two starts coincide under ULE).
+
+Step one landed: **`pair_gather`** (ZERO axioms): equations normalize
+per (target, action) pair — `foldTL ≡ ite (gGuardPA t a L)
+((act a); sol t) (foldTL (gOthersPA t a L))` — after which the
+gathered body is a SINGLE ACTION and two bisimilar dispatches differ
+only by pointwise-equal guards. Proof mirrors multi_gather; the
+matched-pair case needs an extra u1-collapse (arms_merge with equal
+bodies). Namespace note: EquivBA lives in GkatFaithful.
+
+Next: iterate to the full pair-normal form (gatherChain over a pair
+list), then extensionality proper (pointwise-equal gathered guards ⟹
+EquivBA via ite_guard chains), then the left-member census.

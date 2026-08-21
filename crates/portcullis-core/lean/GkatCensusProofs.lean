@@ -10,7 +10,7 @@ import GkatElimProofs
 
 namespace GkatCensus
 
-open GkatSyntax GkatKleene GkatElim GkatGuardDecide
+open GkatSyntax GkatKleene GkatElim GkatGuardDecide GkatFaithful
 
 variable {A T : Type}
 
@@ -231,6 +231,91 @@ theorem eqRHS_quot {S : Type} (aut : GkatKleene.GAut S A T)
         rw [ih]
   exact haux (aut.trans s)
 
+/-! ## Pair gathering
+
+    Dispatch extensionality needs equations normalized per
+    (target, action) pair: the gathered guard of a pair is
+    atom-determined by the step function, and the gathered body is a
+    single action — after which two bisimilar dispatches differ only
+    by pointwise-equal guards.  The gather step mirrors
+    `multi_gather` with single-action bodies. -/
+
+open Classical in
+/-- The gathered guard of a (target, action) pair. -/
+noncomputable def gGuardPA {S : Type} [DecidableEq S] [DecidableEq A]
+    (t : S) (a : A) : List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | (g, b, u) :: rest =>
+      if u = t ∧ b = a then .or g (gGuardPA t a rest)
+      else .and (gGuardPA t a rest) (.not g)
+
+open Classical in
+/-- The remainder after removing a (target, action) pair. -/
+noncomputable def gOthersPA {S : Type} [DecidableEq S] [DecidableEq A]
+    (t : S) (a : A) :
+    List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, b, u) :: rest =>
+      if u = t ∧ b = a then gOthersPA t a rest
+      else (g, b, u) :: gOthersPA t a rest
+
+open Classical in
+/-- **THE PAIR GATHER STEP**: one (target, action) pair collects into
+    a single-action Salomaa arm. -/
+theorem pair_gather {S : Type} [DecidableEq S] [DecidableEq A]
+    (sol : S → Exp A T) (h : BExp T) (t : S) (a : A) :
+    ∀ L : List (BExp T × A × S),
+      EquivBA (GkatPlanExistence.foldTL sol h L)
+        (.ite (gGuardPA t a L) (.seq (.act a) (sol t))
+          (GkatPlanExistence.foldTL sol h (gOthersPA t a L))) := by
+  intro L
+  induction L with
+  | nil =>
+      exact EquivBA.symm (GkatDeadExitElim.ite_zero_guard _ _
+        (fun X W x => rfl))
+  | cons hd rest ih =>
+      obtain ⟨g, b, u⟩ := hd
+      by_cases hu : u = t ∧ b = a
+      · have hgu : gGuardPA t a ((g, b, u) :: rest)
+            = .or g (gGuardPA t a rest) := by
+          show (if u = t ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        have hot : gOthersPA t a ((g, b, u) :: rest)
+            = gOthersPA t a rest := by
+          show (if u = t ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        rw [hgu, hot]
+        obtain ⟨hu1, hu2⟩ := hu
+        subst hu1
+        subst hu2
+        show EquivBA (.ite g (.seq (.act b) (sol u))
+          (GkatPlanExistence.foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c
+          (EquivBA.base (Equiv.refl _)) ih) ?_
+        have := GkatPlanExistence.arms_merge g (gGuardPA u b rest)
+          (.act b) (.act b) (sol u)
+          (GkatPlanExistence.foldTL sol h (gOthersPA u b rest))
+        refine EquivBA.trans this ?_
+        refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+        refine EquivBA.seq_c ?_ (EquivBA.base (Equiv.refl _))
+        exact EquivBA.base (Equiv.u1 g (.act b))
+      · have hgu : gGuardPA t a ((g, b, u) :: rest)
+            = .and (gGuardPA t a rest) (.not g) := by
+          show (if u = t ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        have hot : gOthersPA t a ((g, b, u) :: rest)
+            = (g, b, u) :: gOthersPA t a rest := by
+          show (if u = t ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        rw [hgu, hot]
+        show EquivBA (.ite g (.seq (.act b) (sol u))
+          (GkatPlanExistence.foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c
+          (EquivBA.base (Equiv.refl _)) ih) ?_
+        exact GkatPlanExistence.arm_commute g (gGuardPA t a rest)
+          (.seq (.act b) (sol u)) (.seq (.act a) (sol t))
+          (GkatPlanExistence.foldTL sol h (gOthersPA t a rest))
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
@@ -239,5 +324,6 @@ theorem eqRHS_quot {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms same_rank_arm_mutual
 #print axioms bisim_hlt_invariant
 #print axioms eqRHS_quot
+#print axioms pair_gather
 
 end GkatCensus
