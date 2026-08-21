@@ -8183,3 +8183,62 @@ and the reason it dissolved is a general mechanism now in Lean rather than
 an accident of this instance.  I am not going higher: one instance is one
 instance, the general existence question is untouched, and the field's
 prior that this problem does not close still stands.
+
+---
+
+## Iteration 187 — AT SCALE: 23 resistant pairs, and the new move covers 18 of them
+
+186 solved one resistant instance and moved the odds on it.  Today ran the
+census four times larger to find out whether that instance was
+representative.  **It was mostly, not entirely.**
+
+**THE SCALED MEASUREMENT** (NA=4, depth<=7, **240000 pairs**):
+
+    pairs analysed                                    239967
+    multi-state SCCs: walked 10504, chorded 115, OPEN    269
+    of the 269 open pairs, LATTICE-SOLVABLE               246
+    LATTICE-RESISTANT                                      23   (~1 in 10 400)
+
+**The 1-in-60000 rate from 184 was a small-sample figure** — the true rate
+is about six times higher.  Recording that because I quoted 184's number
+as if it were the rate.
+
+**IS THE NEW MOVE APPLICABLE?**  For each of the 23, take the full collapse
+and look for two states of its multi-state SCC differing on a PROPER subset
+of atoms — the precondition of `gated_unknown_identification`:
+
+    applicable, states differ at 1 atom       12
+    applicable, states differ at 2 atoms       6
+    NOT APPLICABLE — no pair agrees anywhere    5
+
+**18 of 23**, and the twelve one-atom cases are exactly the shape 186
+solved by hand.  So the move is real and general enough to matter, and it
+is NOT universal.
+
+**THE FIVE THAT RESIST IT** all have a TWO-state SCC whose states differ at
+EVERY atom.  Representative:
+
+    q0: hl=1100 st=[q1,q1,-,-]      q1: hl=0000 st=[q0,q2,q0,q0]
+    q2: hl=1000 st=[q2,q2,q2,-]
+
+`q2` closes by `w3`; the SCC `{q0,q1}` then gives
+
+    X0 = ite (a0∨a1) (p ; ite a1 (p;X2) (p;X0)) (test (a2∨a3))
+
+— **a loop whose body has an EARLY EXIT**, and the two exits do different
+things: leave at the top when the atom is outside `a0∨a1` and accept, or
+leave mid-body when the atom after the first `p` is `a1` and run `X2`.  No
+two states agree on any atom, so no region licenses the gated rewrite.
+
+**Odds: 52% → 50%.**  186's bump was priced on ONE instance; a sample
+twenty-three times larger shows the mechanism covers most of them and not
+all.  Nudging back, not retreating: there is still no known-unsolvable
+instance anywhere in 240000 pairs, and "the move does not apply" is not
+"no solution exists" — exactly the distinction 185 drew and 186 vindicated.
+Pricing that distinction correctly is the whole discipline here.
+
+**NEXT OBJECT, named precisely: the five early-exit loops.**  Two states,
+differing everywhere, one loop with an exit in the middle of its body.
+Either they are solvable by a further move — and then that move is the next
+general mechanism — or one of them is the counterexample this campaign has
+been unable to produce for 187 iterations.
