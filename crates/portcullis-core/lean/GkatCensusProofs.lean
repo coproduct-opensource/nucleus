@@ -3204,4 +3204,38 @@ theorem twoLoop_no_overlap {b c : BExp T} (q r : A)
 #print axioms twoLoop_b_unsat
 #print axioms twoLoop_no_overlap
 
+open Classical in
+/-- An outer guard that always holds makes the two-loop divergent, hence
+    `0` — `wh_one_zero` needs no side condition at all. -/
+theorem twoLoop_b_valid (c : BExp T) (q r : A) {b : BExp T}
+    (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) b α = true) :
+    EquivBA (GkatTwoLoop.twoLoop b c q r) (.test .zero) := by
+  refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
+  · intro X W x
+    rw [GkatPlanExistence.bval_gen W x b, h (fun t => W t x)]
+    rfl
+  · exact GkatNormalization.wh_one_zero _
+
+open Classical in
+/-- An inner guard that always holds makes the INNER loop divergent, so
+    the body is `0` and the whole two-loop is the test `¬b`. -/
+theorem twoLoop_c_valid (b : BExp T) (q r : A) {c : BExp T}
+    (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) c α = true) :
+    EquivBA (GkatTwoLoop.twoLoop b c q r) (.test (.not b)) := by
+  have hinner : EquivBA (.wh c (.act q) : Exp A T) (.test .zero) := by
+    refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
+    · intro X W x
+      rw [GkatPlanExistence.bval_gen W x c, h (fun t => W t x)]
+      rfl
+    · exact GkatNormalization.wh_one_zero _
+  have hbody : EquivBA
+      (.seq (.wh c (.act q)) (.act r) : Exp A T) (.test .zero) :=
+    EquivBA.trans (EquivBA.seq_c hinner (EquivBA.base (Equiv.refl _)))
+      (EquivBA.base (Equiv.s2 (.act r)))
+  exact EquivBA.trans (EquivBA.wh_c hbody)
+    (GkatNormalization.wh_test_collapse b .zero)
+
+#print axioms twoLoop_b_valid
+#print axioms twoLoop_c_valid
+
 end GkatCensus

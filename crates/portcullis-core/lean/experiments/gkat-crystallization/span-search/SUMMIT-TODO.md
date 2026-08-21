@@ -5401,3 +5401,44 @@ underlying theorems are not weaker than they looked.
 for `chordloops`.  Each collapse lands in an earlier stratum, so the
 assembly is a case split over already-proved results rather than new
 mathematics.
+
+## Iteration 140 — ★ THE TWO-LOOP DEGENERACY TOOLKIT IS COMPLETE ★ (all four, zero axioms)
+
+`twoloops_complete`'s six hypotheses are three conditions per side.
+Each has exactly one negation, and every negation now has a collapse
+lemma — **all four at ZERO AXIOMS**:
+
+| failing hypothesis | what the two-loop becomes |
+|---|---|
+| `b` unsatisfiable | `twoLoop_b_unsat` → `1` (skip) |
+| `b` valid (never exits) | **`twoLoop_b_valid` → `0`** |
+| `c` valid (inner never exits) | **`twoLoop_c_valid` → `¬b?`** |
+| `b ∧ c` unsatisfiable | `twoLoop_no_overlap` → `wh b (act r)` |
+
+Today's two: an always-true outer guard makes the loop divergent, so
+`wh_one_zero` — which the repo proves for EVERY body with NO side
+condition — sends it straight to `0`.  An always-true INNER guard makes
+the inner loop divergent, so the body is `0` by `s2`, and
+`wh_test_collapse` turns the test-bodied outer loop into the plain test
+`¬b`.
+
+**Every degenerate case lands on a TEST or in an EARLIER STRATUM.**
+Three of the four become pure Boolean assertions; the fourth becomes an
+atomic loop, already covered by `atomicloops_complete`.  Nothing lands
+anywhere new.  That is the structural reason the satisfiability
+hypotheses are removable, now demonstrated case by case rather than
+asserted.
+
+**What remains for `twoloops_complete_free`** is the assembly: a case
+split where the two sides may degenerate differently.  The mixed cases
+need a SEPARATION argument — a live two-loop cannot be language-equal
+to a test, because its language contains a string with an action while
+a test's contains only single atoms.  `chainloops_complete_free`
+already contains exactly this move ("a test never equals a live loop,
+which denotes a word with an action"), so the pattern exists in-repo
+and needs instantiating rather than inventing.
+
+**Hardening tally so far**: two audits clean (`sorry`, axiom profiles),
+two overclaims found and fixed (`uleDec`'s algorithm-vs-proof
+conflation; "unconditional"), and the fix for the second is now four
+collapse lemmas deep with only the assembly left.
