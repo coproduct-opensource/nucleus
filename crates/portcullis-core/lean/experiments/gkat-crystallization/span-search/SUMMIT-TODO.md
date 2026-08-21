@@ -5540,3 +5540,40 @@ found at 137–138 remain correctly diagnosed; what was wrong was my
 estimate of the REPAIR cost, which is the third estimate this campaign
 has had to revise downward on contact.  The collapse lemmas of
 iterations 139–140 all stand and are all still needed.
+
+### Iteration 141 addendum — the pitfall is named, and the two repair options are the ones identified
+
+The cross-fragment search confirms 141's finding and names the
+machinery:
+
+* **Fragment completeness genuinely does not compose.**  "Complete for
+  A" quantifies only over pairs INSIDE A; a mixed pair is in the scope
+  of neither theorem, and the derivation "may need axioms/normal forms
+  present in neither system".  So the atomic-vs-two-loop pair really is
+  outside everything proved here — not an oversight in how the strata
+  were stated.
+* **The recognized notion is CONSERVATIVITY**: an axiomatic conservative
+  extension is one where any equality between A-terms derivable from
+  A ∪ B is already derivable in A.  That is the property that licenses
+  reasoning across a fragment boundary, and **it must be proved, not
+  assumed**.  Skip-free GKAT is the canonical worked instance — a
+  fragment axiomatized on its own and then RELATED BACK to full GKAT,
+  rather than assumed to embed for free.
+* **Two repairs, exactly the two 141 identified**: (a) prove
+  completeness for the closure/union with a single normal form covering
+  both, or (b) prove the degenerate case FORCES the other side to
+  degenerate too, collapsing the mixed pair into a same-fragment pair.
+  "(b) is much cheaper when it holds; if it doesn't, you're on the hook
+  for (a)."
+
+**So the concrete question for `twoloops_complete_free` is (b)**: does
+`b₁ ∧ c₁` unsatisfiable, together with language equivalence, force
+`b₂ ∧ c₂` unsatisfiable?  If yes, the mixed case disappears and the
+assembly closes.  If no, removing `hbc` requires a genuine
+atomic-vs-two-loop completeness result — option (a).
+
+That is a sharp, decidable-looking question about two-loop languages,
+and it is the right next thing to settle.  Note it is a question about
+the WITNESS PROGRAMS, not about the general open problem: whichever way
+it goes, it affects only how `twoloops_complete`'s hypotheses are
+stated, never whether the theorem holds.
