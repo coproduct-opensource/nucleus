@@ -6473,6 +6473,70 @@ fn wh_residual<const NA: usize>(nguards: u8) {
         loop partition strictly coarser in {coarser}");
 }
 
+/// **DOES BISIMULATION COLLAPSE BREAK SOLVABILITY?** (iteration 223.)
+///
+/// Grabmayer–Fokkink's obstacle, in their setting: process graphs satisfying
+/// the LLEE property (layered loop existence and elimination — a STRUCTURAL
+/// certificate of solvability, since "every prechart with the LLEE-property
+/// admits a unique solution", and "every chart interpretation of a star
+/// expression has the LLEE-property") are **not closed under bisimulation
+/// collapse**.  Their fix is a LLEE-preserving CRYSTALLIZATION producing
+/// near-collapsed graphs whose SCCs are collapsed or of twin-crystal shape.
+///
+/// If the same holds here, it explains a fact this census found independently —
+/// that the full collapse sometimes resists while a finer quotient does not —
+/// and it says the Lean proof should target a CRYSTALLIZED quotient rather than
+/// the full collapse or the canonical one.
+///
+/// The measurement: a Thompson automaton of a random expression is solvable by
+/// construction, so the calculus should handle it.  Collapse it and ask again.
+/// Any case where the calculus succeeds BEFORE and fails AFTER is the GKAT
+/// analogue of LLEE not surviving collapse.
+fn collapse_breaks<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xC0FFEE_1234_5678;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut pre_ok, mut post_ok, mut broke, mut shrank) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..200_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        let solve = |q: &Aut<NA>| -> bool {
+            let sing = singleton_states(q);
+            sccs_of(q).iter().all(|c| c.len() < 2
+                || calculus_solves(q, c, 6)
+                || calculus_solves(q, &scc_with_context(q, c, &sing), 6))
+        };
+        let before = solve(&a);
+        let (blk, nb) = bisim_blocks(&a);
+        let q = match quotient_by(&a, &blk, nb) { Some(q) => q, None => continue };
+        n += 1;
+        if nb < a.k as usize { shrank += 1; }
+        let after = solve(&q);
+        if before { pre_ok += 1; }
+        if after { post_ok += 1; }
+        if before && !after {
+            broke += 1;
+            if shown < 3 {
+                shown += 1;
+                println!("    COLLAPSE BROKE IT: k {} -> {}", a.k, nb);
+                for s in 0..(q.k as usize) {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = q.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("c{}", t - 1) }
+                    }).collect();
+                    println!("      collapsed c{s}: hl={:03b} st=[{}]", q.hl[s],
+                        row.join(","));
+                }
+            }
+        }
+    }
+    println!("  collapse_breaks NA={NA}: {n} Thompson automata; \
+        calculus solves BEFORE collapse {pre_ok}, AFTER {post_ok}; \
+        collapse strictly shrank {shrank}; SOLVED-THEN-BROKEN {broke}");
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -7501,6 +7565,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_COLLAPSE_BREAKS").is_ok() {
+        collapse_breaks::<NA>(nguards as u8);
         return;
     }
     if std::env::var("PAD_WH_RESIDUAL").is_ok() {

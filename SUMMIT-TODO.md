@@ -63,3 +63,67 @@ insufficient — is real and is the part worth keeping.
 bare SCC first since it is cheaper and usually succeeds; cap the context
 extension by SCC size rather than the global cap).  Then run the enlarged
 sample and find out whether the trend breaks.
+
+---
+
+## 223 — TWO CLEAN RESULTS: k=4 EXHAUSTIVE AT ZERO, AND THE CRYSTALLIZATION OBSTACLE DOES NOT APPLY.
+
+**1. The k=4 exhaustive enumeration, minimised, returns 0.**
+
+    NA=2 k=2:       256 automata   solvable-but-unsolved: 0
+    NA=2 k=3:    15 625            0
+    NA=2 k=4: 1 679 616            0
+
+222's 132 were entirely non-minimality artifacts, as the hand-check predicted.
+**This is now an exhaustive result over EVERY NA=2 automaton with at most four
+states — 1 695 497 of them — with every verdict verified in both directions**
+(solvable by exhibited expression, unsolved by language-checked search).  No
+oracle anywhere in it.
+
+**2. Grabmayer's obstacle — the one crystallization exists to solve — does not
+apply to GKAT, and that is measurable.**
+
+Grabmayer–Fokkink: LLEE (layered loop existence and elimination) is a
+STRUCTURAL certificate of solvability — "every prechart with the LLEE-property
+admits a unique solution", and "every chart interpretation of a star expression
+has the LLEE-property".  Their difficulty, and mine as measured back at 196:
+graphs satisfying LLEE are **not closed under bisimulation collapse**, so the
+collapse of a solvable graph can lose its certificate.  Their fix is a
+LLEE-preserving CRYSTALLIZATION yielding near-collapsed graphs whose SCCs are
+collapsed or of twin-crystal shape.  This repo's directory has been named
+`gkat-crystallization` since long before I understood why.
+
+Measured here (`PAD_COLLAPSE_BREAKS`) — Thompson automata of random expressions,
+solvable by construction; solve, collapse, solve again:
+
+    NA=2   65 857 automata   solved before 65 857, after 65 857   BROKEN: 0
+    NA=3   65 857            before 65 856, after 65 857          BROKEN: 0
+                             collapse strictly shrank ~60% of them
+
+**Zero breakages**, with the collapse genuinely doing work in three cases out of
+five.  (One NA=3 automaton went the OTHER way — unsolved before collapse,
+solved after — which is the SCC-oracle-opacity artifact from 207 again.)
+
+**And the reason is in the parenthetical of their own statement:** it is graphs
+with EMPTY-STEP transitions that fail to be closed under collapse, "unlike
+process graphs with LLEE that only have PROPER-STEP transitions".  Every GKAT
+transition carries an action.  **GKAT is the proper-step case**, so the
+certificate survives collapse and no crystallization is needed — the full
+collapse, and 204's canonical quotient, are sound targets after all.
+
+**Caveat, stated because it matters:** the proper-step reading is my inference
+from a search summary of the parenthetical, not from reading the paper's
+definitions.  The 0/131 714 measurement is the evidence I actually have; the
+explanation is a hypothesis that fits it.
+
+**Odds: 78%, up 2.**  Two independent positives.  The exhaustive result is the
+strongest evidence this development has produced — every four-state NA=2
+automaton, verified both ways, no counterexample — and it is a different KIND of
+evidence from a sampling rate.  Separately, a structural worry imported from the
+literature, which would have forced a crystallization construction into the Lean
+proof, is measured absent and has a principled reason to be absent.  Held below
+a larger jump because both are still k<=4 and NA=2, and because the
+proper-step explanation is unverified against the source.
+
+**Next.**  NA=3 exhaustive at k<=3 with the minimised filter, and verify the
+proper-step claim against the actual Grabmayer definitions rather than a summary.
