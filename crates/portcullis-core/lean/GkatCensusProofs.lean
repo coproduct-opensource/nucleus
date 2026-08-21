@@ -6106,4 +6106,50 @@ theorem quotientClosure_of_certificate
 
 #print axioms quotientClosure_of_certificate
 
+/-- **(L3) HOLDS FOR THE LOOP A `wh` INTRODUCES.**
+
+    LLEE's third condition — immediate termination only at the loop's start —
+    becomes, in the guarded setting, that no body state terminates INSIDE the
+    loop's guard.  Iterations 228-236 spent nine attempts guessing at the guard
+    before 237 read (L1)-(L3) from the source; this is the one piece of the
+    certificate that is settled outright rather than measured, and it falls
+    straight out of `loop_core_hlt`.
+
+    In `wh b e`, every body state's halt is `hlt_body s ∧ ¬b`, so conjoining `b`
+    gives `0` at every valuation — for EVERY state, EVERY expression, EVERY
+    guard.  This is `hsum`'s `wh` case for condition (L3), proved rather than
+    sampled. -/
+theorem wh_loop_L3 (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State)
+    (X : Type) (W : T → X → Bool) (x : X) :
+    GkatGS.bval W
+      (.and ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt s) b)
+      x = false := by
+  show GkatGS.bval W
+    (.and (.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
+      (.not b)) b) x = false
+  simp only [GkatGS.bval]
+  cases GkatGS.bval W b x <;>
+    cases GkatGS.bval W ((GkatThompson.certifiedThompson A T e).aut.core.hlt s) x <;>
+    rfl
+
+#print axioms wh_loop_L3
+
+/-- The same fact stated as the certificate uses it: the loop's halt guard and
+    its loop guard are disjoint, so `GuardImplies (hlt s) (.not b)` — a body
+    state can only terminate where the loop is already leaving. -/
+theorem wh_loop_halt_implies (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State) :
+    GuardImplies ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt s)
+      (.not b) := by
+  intro X W x h
+  show (!GkatGS.bval W b x) = true
+  have := wh_loop_L3 b e s X W x
+  simp only [GkatGS.bval] at this ⊢
+  cases hb : GkatGS.bval W b x
+  · rfl
+  · rw [hb] at this; rw [h] at this; exact absurd this (by simp)
+
+#print axioms wh_loop_halt_implies
+
 end GkatCensus

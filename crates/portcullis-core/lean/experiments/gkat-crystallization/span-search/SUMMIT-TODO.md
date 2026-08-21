@@ -11015,3 +11015,51 @@ proof: `hsum`, by structural induction on the expression — every Thompson
 automaton carries the certificate — which is where `loop_state_eq`,
 `loop_core_hlt` and `loop_core_trans` (all `rfl`, from 218 and 220) should
 finally pay off, since they describe exactly the loop a `wh` introduces.
+
+---
+
+## 240 — THE FIRST PIECE OF THE CERTIFICATE, PROVED RATHER THAN MEASURED.
+
+239 put the architecture in Lean with three unproved obligations.  This proves a
+piece of the first one.
+
+**`wh_loop_L3`** — LLEE's condition (L3), "immediate termination only at the
+loop's start", in its guarded form: no body state terminates INSIDE the loop's
+guard.  For `wh b e` every body state's halt is `hlt_body s ∧ ¬b`, so conjoining
+`b` gives `0` at every valuation — for every state, every expression, every
+guard.  Proved, `propext`/`Quot.sound` only.  **`wh_loop_halt_implies`** restates
+it as `GuardImplies (hlt s) (¬b)`: a body state can only terminate where the loop
+is already leaving.
+
+**This is the payoff for `loop_core_hlt`** (`rfl`, iteration 220).  Nine
+iterations, 228 through 236, were spent GUESSING what LLEE's termination
+condition becomes under guards — five formulations, two soundness breaks, a
+peak of 99.84%.  237 read the condition from the source; this iteration shows
+the `wh` case of it is not merely 100% on 26 000 samples but true outright, and
+the proof is four lines because the construction already said so.
+
+**What is proved, precisely, and what is not.**  This is condition (L3) for the
+loop that a single `wh` introduces.  `hsum` needs all three conditions
+(L1/L2/L3) for every loop of every Thompson automaton, which additionally
+requires:
+
+  * (L1)/(L2) for the `wh` loop — L2 being "the head cuts every cycle in the
+    body", the condition 237 identified as the one never implemented;
+  * that `seq` and `ite` introduce no NEW loops, so the certificate is inherited
+    from the sub-expressions.
+
+The second should be straightforward — neither constructor adds a back edge —
+and is the natural next target.
+
+**A failed run, reported:** 238's confirming check at synth size <= 14 timed out
+at 900s and produced nothing.  It was never load-bearing: 238's argument that the
+missing witness is a size-bound artifact is a proof, not a conjecture — every
+state of a Thompson automaton is expressible by construction, and collapse
+preserves behaviour.  The run would have been a redundant confirmation of
+something already settled.  NA=4 for `hsum`/`hcollapse` is still running.
+
+**Odds: 81%, held.**  One condition, for one constructor, of the first of three
+obligations.  Real — it is the first part of the certificate that is proved
+rather than sampled — but far too small to move the estimate.
+
+**Next.**  `seq` and `ite` introduce no new loops; then (L1)/(L2) for `wh`.
