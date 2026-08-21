@@ -5943,4 +5943,65 @@ theorem thompsonUnif_wh_of_param (b : BExp T) (e : Exp A T)
 #print axioms loop_core_trans
 #print axioms thompsonUnif_wh_of_param
 
+/-! ## The remainder as ONE closure property
+
+Iterations 224-225 read Grabmayer's completeness proof for Milner's system.  Its
+architecture is not an induction that survives quotienting; it is a STRUCTURAL
+CERTIFICATE (LLEE) that is (i) present on every chart of an expression, (ii)
+sufficient for a solution to exist, and (iii) CLOSED UNDER BISIMULATION COLLAPSE
+for proper-step charts.  GKAT's transitions all carry actions, so GKAT is the
+proper-step case — the one where closure holds.
+
+Reading this development against that architecture, (i) and (ii) are ALREADY
+DONE here:
+
+  * `sum_solves_std` — the Thompson SUM of `e` and `f` is solvable, outright;
+  * `completeness_of_sumQuotientSolvable` — quotient-solvability gives
+    completeness;
+  * `decomp_solves` — role-coverage gives `SolvesBA`.
+
+So the entire remainder is (iii): **that a solvable automaton has a solvable
+behavioural quotient.**  Not an induction over expressions with three open
+steps, as 217 framed it — ONE closure property, and the one Grabmayer proves in
+the neighbouring setting. -/
+
+/-- **THE WHOLE REMAINDER, AS A CLOSURE PROPERTY.**  If a `SolvesBA` labelling
+    exists upstairs, one exists downstairs.
+
+    The naive transport — label each block by a representative's label — is
+    exactly what fails: it needs bisimilar states to carry provably equal
+    labels, which is same-side unification, which is the thing being proved.
+    Grabmayer's answer is not to transport the solution but to RE-DERIVE it from
+    a certificate that survives the collapse.  Stated here so the obligation is
+    a single named property rather than a shape spread over three cases. -/
+def QuotientClosure (A T : Type) : Prop :=
+  ∀ {S Q : Type} (aut : GkatKleene.GAut S A T) (quot : GkatKleene.GAut Q A T),
+    GkatKleene.UniformBehavioralGAutQuotient aut quot →
+    ∀ sol : S → Exp A T, GkatKleene.SolvesBA aut sol →
+      ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol
+
+/-- **The reduction: closure plus a start-identifying quotient gives
+    `SumQuotientSolvable`** — hence, through
+    `completeness_of_sumQuotientSolvable`, completeness itself.
+
+    The second hypothesis is not the hard one: the two start pseudostates of a
+    language-equivalent pair ARE bisimilar, so the full bisimulation collapse
+    identifies them.  It is carried as a hypothesis only because building that
+    collapse as a `UniformBehavioralGAutQuotient` is construction work, not
+    mathematics.  The content is `QuotientClosure`. -/
+theorem sumQuotientSolvable_of_closure
+    (hstart : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient
+              (GkatTrim.SUMof A T e f) quot),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none))
+    (hclose : QuotientClosure A T) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  intro e f hef
+  obtain ⟨Q, quot, π, hπ⟩ := hstart e f hef
+  obtain ⟨qsol, hqsol⟩ := hclose _ _ π (stdSum e f) (sum_solves_std e f)
+  exact ⟨Q, quot, π, qsol, hqsol, hπ⟩
+
+#print axioms sumQuotientSolvable_of_closure
+
 end GkatCensus

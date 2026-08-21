@@ -10365,3 +10365,67 @@ verified rather than assumed.
 layering condition — and test the chain: do Thompson automata satisfy it, is it
 preserved by collapse, and does it coincide with calculus-solvability?  That
 last equivalence, if it holds, is the characterization.
+
+---
+
+## 226 — THE REMAINDER IS ONE CLOSURE PROPERTY.
+
+Reading this development against Grabmayer's architecture rather than my own
+changes what the open part IS.  His proof is not an induction that survives
+quotienting; it is a STRUCTURAL CERTIFICATE that is (i) present on every chart
+of an expression, (ii) sufficient for a solution to exist, and (iii) CLOSED
+UNDER BISIMULATION COLLAPSE for proper-step charts — GKAT's case.
+
+**(i) and (ii) are already done in this repo**, and have been for some time:
+
+    sum_solves_std                        the Thompson SUM is solvable, outright
+    decomp_solves                         role-coverage gives SolvesBA
+    completeness_of_sumQuotientSolvable   quotient-solvability gives completeness
+
+**So the entire remainder is (iii).**  Stated and machine-checked
+(`propext`/`Quot.sound` only):
+
+    QuotientClosure A T :=
+      a solvable automaton has a solvable behavioural quotient
+
+    sumQuotientSolvable_of_closure :
+      QuotientClosure + a start-identifying quotient  ⟹  SumQuotientSolvable
+
+and `completeness_of_sumQuotientSolvable` carries that to completeness.  The
+second hypothesis is bookkeeping — the two start pseudostates of a
+language-equivalent pair ARE bisimilar, so the full collapse identifies them;
+it is a hypothesis only because building that collapse as a
+`UniformBehavioralGAutQuotient` is construction work.  The content is
+`QuotientClosure`.
+
+**What this replaces.**  217 framed the remainder as an induction on
+expressions with three open steps, and 219-221 spent three iterations
+establishing that its `wh` step is genuinely hard and that the obvious
+strengthening is false.  That framing is superseded: ONE property, not three
+steps, and a property that someone has proved in the neighbouring setting.
+
+**Why the naive proof of it fails, recorded so it is not re-attempted.**
+Transporting the solution — label each block by a representative's label —
+requires bisimilar states to carry PROVABLY equal labels, which is same-side
+unification, which is what is being proved.  Grabmayer's move is not to
+transport the solution but to RE-DERIVE it from a certificate that survives the
+collapse.  That is why a certificate is needed at all.
+
+**Three independent supports for the same statement, which is why this moves
+the number:**
+  * proved in the neighbouring setting, for exactly GKAT's case (proper-step),
+    confirmed verbatim from the paper at 224;
+  * measured here at 223 — 0 breakages in 131 714 Thompson automata, with the
+    collapse strictly shrinking ~60% of them;
+  * the reduction to it is now machine-checked.
+
+**Odds: 80%, up 1.**  A restatement does not make a theorem truer — but this
+one aligns the remainder with a PROVED architecture instead of an invented one,
+which is a different thing from 217's restatement, and it is the first time the
+open part has been a single named property with a precedent.  Only +1 because
+the precedent's proof runs through LLEE, which I have not defined for GKAT, and
+my role-coverage may not be the certificate that survives.
+
+**Next.**  The certificate.  Either port LLEE to guarded charts, or prove that
+role-coverage itself is collapse-stable — 223's measurement says it is, on
+131 714 automata.
