@@ -10138,3 +10138,52 @@ is not yet established.
 **Next.**  Redo the base cases and `of_steps` parametrically — `test` should
 still be vacuous and `act` still a one-state reflexivity — then the parametric
 `seq` and `ite` steps, and the double-redirection `wh` case.
+
+---
+
+## 221 — RETRACTING 220.  `ThompsonUnifP` IS FALSE; 219 WAS RIGHT.
+
+220 claimed the `wh` residual was "an artifact of the wrong induction
+hypothesis" and discharged the step in one line from a parametric predicate.
+**The predicate is false, so the discharge is vacuous.**  Checking it took one
+instantiation.
+
+**The refutation.**  `ThompsonUnifP` quantifies over an ARBITRARY trailing `F`.
+Take `F = test 1`: the conclusion collapses to `std u ≡ std v`.  But the
+hypothesis only asks for bisimilarity in the REDIRECTED body — and 219 measured
+that 3-6% of loops contain states that are redirect-bisimilar while NOT
+body-bisimilar.  Not body-bisimilar means their body behaviours DIFFER, so
+`std u ≡ std v` is refuted by soundness.  219's own smallest example is a
+witness: guard `a1`, body `q0 : hl={a0}, a1 → q0` and `q2 : hl={a0,a1}` — loop
+block equal, body blocks 0 and 2.
+
+**And the obvious repair destroys the content.**  Tying `F` to the redirection
+(`F := wh c e`) makes the predicate true, but it then reads
+`∀ c, ThompsonUnif (.wh c e)` — the `wh` step becomes its own hypothesis.  The
+parametric route, at least in this form, buys nothing.
+
+**So 219 stands and 220 does not.**  The residual is real, it is 3-6% of loops,
+and the `wh` step needs genuine mathematics.  `thompsonUnif_wh_of_param` stays
+in the file, marked VACUOUS with the refutation written above it, rather than
+deleted — the record of which of two contradictory claims was right matters
+more than a tidy file.
+
+**What I should have done.**  219 handed me a measurement that said the residual
+is real; 220 proposed a shortcut and I did not test the shortcut against that
+same measurement before publishing it.  One instantiation — `F = 1` — was all
+it took, and I had the counterexample already sitting in 219's output.  The
+rule this session keeps re-teaching, now in a new place: a hypothesis is an
+instrument too, and it must be checked for vacuity before results are built on
+it.  Three of those were harness bugs; this one was a definition.
+
+**Odds: 76%, DOWN 1 — withdrawing 220's increase.**  Back to 219's position
+exactly.  The theorem's truth is unchanged by my having been wrong about it: the
+`wh` residual was real before 220 and is real after.  I am not deducting further
+for the error itself, because the error cost an iteration rather than corrupting
+a result — the retraction is complete and the file says so.
+
+**Next.**  The residual, honestly this time.  The states in a residual pair
+differ in the body exactly where the body halts and the guard holds, and there
+BOTH restart the loop.  That is a statement about the body's halt region, not
+about arbitrary continuations — so the right strengthening quantifies over
+REDIRECTIONS, with the continuation DETERMINED by the redirection, not free.

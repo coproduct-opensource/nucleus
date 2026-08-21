@@ -5901,14 +5901,34 @@ theorem loop_core_trans (b : BExp T) (e : Exp A T)
     reason (`ParamSolvesBA sys sol finish`, and uniqueness quantified over
     `finish`).  The induction hypothesis has to be parametric too: unification
     for the body under ANY loop-redirection, with an ARBITRARY trailing
-    continuation. -/
+    continuation.
+
+    **⚠ REFUTED AT ITERATION 221.  THIS PREDICATE IS FALSE, and everything
+    below it is therefore VACUOUS.**  Quantifying over an ARBITRARY `F`
+    includes `F = test 1`, at which the conclusion collapses to
+    `std u ≡ std v`.  But the hypothesis only asks for bisimilarity in the
+    REDIRECTED body, and iteration 219 measured 3-6% of loops containing states
+    that are redirect-bisimilar while NOT body-bisimilar — their body
+    behaviours differ, so `std u ≡ std v` is refuted by soundness.  Concretely,
+    at guard `a1` with body `q0 : hl={a0}, a1 → q0` and `q2 : hl={a0,a1}`.
+
+    Tying `F` to the redirection instead (`F := wh c e`) repairs the truth but
+    destroys the content: the predicate becomes `∀ c, ThompsonUnif (.wh c e)`,
+    so the `wh` step it was meant to discharge becomes its own hypothesis.
+
+    Kept in the file, marked, rather than deleted: 219's measurement was RIGHT
+    and this was the shortcut that ignored it. -/
 def ThompsonUnifP (e : Exp A T) : Prop :=
   ∀ (c : BExp T) (F : Exp A T) s₀ u v,
     GkatPlanExistence.GenBisimilar (coreGAut (.wh c e) s₀) u v →
       EquivBA (.seq ((GkatThompson.certifiedThompson A T e).standard u) F)
         (.seq ((GkatThompson.certifiedThompson A T e).standard v) F)
 
-/-- **The `wh` step, from the parametric hypothesis — no residual left.**
+/-- **VACUOUS — see the refutation on `ThompsonUnifP` above.**  The implication
+    is true and machine-checked, but its hypothesis is unsatisfiable, so it
+    proves nothing about the `wh` step.  219 stands: the residual is real.
+
+    Original note, kept for the record:
     Instantiate the redirection at the loop's own guard and the continuation at
     the loop itself.  `loop_state_eq` and `loop_standard_eq` make both sides
     definitionally the right thing, so this is a direct application: the
