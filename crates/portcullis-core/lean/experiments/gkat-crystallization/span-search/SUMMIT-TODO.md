@@ -4686,3 +4686,71 @@ is bounded and the shape is now known.
    remaining content is bisimilarity transfer, whose needed direction is
    now known to be the cheap one, with the halt-rewrite wrinkle named.
 3. The size induction — interface and descent step both exist.
+
+## Iteration 128 — ★ THE LOOP TRANSFER LEMMA IS FALSE — caught by counterexample before writing Lean ★
+
+Iteration 127's addendum recorded, on the strength of a literature
+answer, that the direction the size induction needs — **loop-bisimilar
+⟹ body-bisimilar** — holds "by restriction, since body transitions are
+contained in loop transitions and the extra arms only add constraints".
+Before writing it, constructed the argument concretely.  **It is false,
+and the wrinkle 127 itself recorded is exactly why.**
+
+**The counterexample.**  `loopInitialized` does not merely add arms; it
+REWRITES the halt: `loop.hlt s = body.hlt s ∧ ¬guard`.  Take an atom α
+with `guard α` true, and a body with
+
+    body.initTrans : at α, action a → u
+    s : body.hlt s = α,  body.trans s = []        (halts at α, no arms)
+    t : body.hlt t = 0,  body.trans t = [(α, a, u)]  (steps a → u at α)
+
+In the LOOP at α: `guard` holds, so `loop.hlt s = α ∧ ¬guard = false`
+and `loop.hlt t = false` — both non-halting.  For `s`, halt-disjointness
+means no body arm fires, so the FEEDBACK arm fires
+(`body.hlt s ∧ guard ∧ tr.1` = true) giving `a → u`.  For `t`, the body
+arm fires giving `a → u`.  **Identical observable behaviour: s and t are
+LOOP-bisimilar.**  In the BODY at α, `s` halts and `t` does not — **NOT
+body-bisimilar.**
+
+So the composite's acceptance rewrite lets "halts, then re-enters via
+init" be indistinguishable from "steps directly", and the two are only
+merged INSIDE the loop.  The body is not a subcoalgebra, so reflection
+genuinely fails; 127's citation described the transitions-only case.
+
+**And the campaign does not need the lemma anyway — which the same
+counterexample shows.**  What the induction actually needs is
+`std_loop s ≈ std_loop t`, i.e. `bodyStd s · W ≈ bodyStd t · W` with
+`W = wh g b`.  In the counterexample `bodyStd s ≉ bodyStd t` (one
+accepts at α, the other does not) — yet the COMPOSITES are equal:
+`bodyStd s · W` at α is `test α · W ≈ W`, which unrolls (`w1`, `guard`
+true) to `initBody · W ≈ a · uStd · W`; and `bodyStd t · W` at α is
+`a · uStd · W`.  **Equal.**  Composition with the loop merges precisely
+what the loop-bisimulation merged.
+
+**So `wh_same_side_step` (iteration 127) is TRUE but its hypothesis is
+not always available**, and the loop case of same-side UNIF must not be
+routed through body-label agreement.  The correct tool is the one
+iterations 121-122 already built: `loop_solution_canonical` /
+`loop_solutions_agree_of_finish`, which compare two solutions of the
+SAME loop given agreeing continuations, and which work at the COMPOSITE
+level where the merge actually happens.
+
+**Process note.**  This is the fourth proposed next-step to dissolve
+(112, 114, 120, 127) — but the first caught by CONSTRUCTING AN EXPLICIT
+COUNTEREXAMPLE before writing any Lean, and the first where a literature
+answer, not my own reasoning, was the thing that misled.  The citation
+was about transitions-only constructions; this repo's loop rewrites
+acceptance.  Lesson to carry: **a literature result must be checked
+against THIS repo's actual definitions, not against the shape the
+question was asked in.**
+
+**Route status, corrected:**
+1. S0 / `NormalizationBridge` — algebra done; pruned ⟹ `LiveSteps`
+   remaining.  Bounded.  UNCHANGED.
+2. Same-side UNIF — `ite`/sum case is genuinely trivial (summands ARE
+   subcoalgebras).  `seq` and `wh` must go through composite-level
+   canonicity, NOT through subprogram bisimilarity.  The 121-122
+   machinery is the right tool and is already built; what is missing is
+   the argument that the continuations agree.
+3. The size induction — the descent (`ite_same_side_cross_step`) still
+   holds; the `wh` rung needs re-planning around (2).
