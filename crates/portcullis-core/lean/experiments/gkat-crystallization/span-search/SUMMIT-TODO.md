@@ -8600,3 +8600,54 @@ is itself worth something.
 2. **Prove sufficiency**: every behavioural quotient of a Thompson sum is
    solved by these three rules.  That is the last statement standing between
    this development and `SumQuotientSolvable`, hence completeness.
+
+---
+
+## Iteration 194 — THE GATED REWRITE IS IN LEAN, in the form the solver uses
+
+193 named the remainder in two lines: formalize the calculus, then prove
+sufficiency.  This is the first line's hardest piece.
+
+**`GkatCensus.gated_rewrite`** — sorry-free, `[propext, Classical.choice,
+Quot.sound]`:
+
+    sol u  ≡  ite d (sol u) (sol v)
+
+given that `u` and `v` select EquivBA-equal expressions off `d`.  Not the
+SEMANTIC statement of iteration 186, the EQUATIONAL one: an unknown may be
+replaced by another INSIDE THE ELSE ARM of the region where they differ,
+because the else arm is only ever observed there.  `u1` duplicates,
+`ite_else_swap` rewrites the else arm, and the hypothesis is
+`gated_unknown_identification` at `¬d`.  **Three lines, and it is the whole
+rule.**
+
+**`GkatCensus.gated_rewrite_reject`** — the case that closed the last three
+measured instances:
+
+    sol u  ≡  ite d 0 (sol v)        when `u` rejects throughout `d`
+
+The rewritten equation is then CLOSED — the self-reference is gone — which
+is precisely what let `w3` finish.  `u4` asserts `d` in the then arm and the
+rejection hypothesis collapses it.
+
+**ALL THREE RULES ARE NOW IN LEAN:**
+
+    elimination        self_gather_role / StateRole.salomaaE   (w3)
+    exit absorption    exit_absorb                             (zero axioms)
+    gated rewrite      gated_rewrite, gated_rewrite_reject
+
+Each is a theorem about a solved system, provable from the finite axioms,
+with no uniqueness axiom anywhere.
+
+**WHAT IS STILL MISSING, precisely.**  The rules are sound INDIVIDUALLY.
+What is not formalized is the LOOP: that iterating them terminates with a
+labelling that solves the whole system.  In the Rust solver that is a search
+with a budget; as a theorem it needs a measure that decreases — the obvious
+candidate is the number of unknowns, since SUBST and LOOPIFY each eliminate
+one, but GATED eliminates none and must therefore be bounded separately (the
+solver bounds it by forbidding a second rewrite of the same unknown, which
+is a hint at the right measure rather than a proof).
+
+**Odds: 66%, held.**  A formalization step that adds no new mathematics — the
+rule was already understood and measured; today it is machine-checked.  The
+number moves when the loop or the sufficiency proof lands, not before.

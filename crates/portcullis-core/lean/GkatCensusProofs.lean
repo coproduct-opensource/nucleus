@@ -5307,4 +5307,71 @@ theorem ite_else_swap {g : BExp T} {u v v' : Exp A T}
 #print axioms gated_unknown_identification
 #print axioms ite_else_swap
 
+/-! ### THE GATED REWRITE, as the calculus uses it
+
+    Iterations 186–193 built a three-rule calculus and measured it: over six
+    populations and about 1.44 million program pairs, every lattice-resistant
+    SCC is solved, and every solution is a constructed expression checked
+    against the quotient's language.  The rules are elimination (`w3`,
+    already `self_gather_role`), exit absorption (`exit_absorb`), and the
+    GATED REWRITE.
+
+    This is the gated rewrite in the form the solver applies it.  Not the
+    semantic statement of iteration 186 — the EQUATIONAL one: an unknown may
+    be replaced by another INSIDE THE ELSE ARM of the region where they
+    differ, because the else arm is only ever observed there.
+
+        sol u  ≡  ite d (sol u) (sol v)
+
+    `u1` duplicates, `ite_else_swap` rewrites the else arm, and the
+    hypothesis is `gated_unknown_identification` at `¬d`.  Three lines, and
+    it is the whole rule.
+
+    `gated_rewrite_reject` is the special case that closed the last three
+    measured instances: when `u` merely REJECTS throughout `d`, its own arm
+    collapses to `0` and the equation becomes CLOSED — no self-reference —
+    which is exactly what let `w3` finish. -/
+
+/-- **THE GATED REWRITE.**  Two states agreeing off a region `d` are
+    interchangeable in the else arm of `d`. -/
+theorem gated_rewrite {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (u v : S) (d : BExp T)
+    (hsol : ∀ s, EquivBA (sol s) (eqRHS aut sol s))
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.not d) x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v)))) :
+    EquivBA (sol u) (.ite d (sol u) (sol v)) :=
+  EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u1 d (sol u))))
+    (ite_else_swap (gated_unknown_identification aut sol u v (.not d) hsol h))
+
+/-- **THE REJECTING CASE.**  If `u` rejects throughout `d`, the rewrite makes
+    its equation CLOSED — the self-reference is gone and `w3` can finish.
+
+    This is the shape that resisted the solver until iteration 193: two
+    states with identical transitions whose halt masks differ at one atom,
+    one accepting there and the other rejecting.  The rewritten equation has
+    no branches at all, and everything is in the fallback. -/
+theorem gated_rewrite_reject {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (u v : S) (d : BExp T)
+    (hsol : ∀ s, EquivBA (sol s) (eqRHS aut sol s))
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.not d) x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v))))
+    (hzero : EquivBA (.seq (.test d) (sol u)) (.test .zero)) :
+    EquivBA (sol u) (.ite d (.test .zero) (sol v)) :=
+  EquivBA.trans (gated_rewrite aut sol u v d hsol h)
+    (EquivBA.trans (EquivBA.base (Equiv.u4 d (sol u) (sol v)))
+      (EquivBA.ite_c hzero (EquivBA.base (Equiv.refl _))))
+
+#print axioms gated_rewrite
+#print axioms gated_rewrite_reject
+
 end GkatCensus
