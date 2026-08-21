@@ -5385,6 +5385,51 @@ fn len_inl(_t: &str) -> usize { "(Sum.inl (some ".len() }
 /// get a shape histogram feeding the ring-stratum design.
 /// Env: PAD_CENSUS_N (pairs, default 20000), PAD_CENSUS_DEPTH (default 6),
 /// PAD_CENSUS_KMIN/KMAX (default 3/10).
+/// **CHECK ONE CANDIDATE.**  Iteration 197 turned up the first SCC neither the
+/// lattice nor the calculus handles:
+///
+///     q0: hl={a3} st=[q1,q1,-,-]        q1: hl={a0} st=[-,-,q0,-]
+///
+/// Two exits, and neither absorbs under either rotation.  The hand derivation
+/// says a THIRD move works — PRE-GUARD the loop and ASSERT at the end of its
+/// body, so that one trailing test can serve both exits:
+///
+///     X1 = test{a0,a2} ; wh {a2} (p ; ite a3 1 (test{a0,a1} ; p ; test{a0,a2}))
+///          ; test{a0,a3}
+///     X0 = ite {a0,a1} (p ; X1) (test{a3})
+///
+/// The pre-guard kills the initial entry at `a1`/`a3` where `q1` rejects; the
+/// body's trailing assertion kills the RE-entries at `a1`/`a3`; and the `a3`
+/// escape from `q0` returns to the head unasserted, where the guard fails and
+/// the trailing test accepts it.  Checked here rather than argued.
+fn check_candidate<const NA: usize>() {
+    if NA != 4 { println!("check_candidate: needs NA=4"); return; }
+    let mut q = Aut::<NA>::blank();
+    q.k = 2;
+    q.hl[0] = 1 << 3;                 // q0 halts on a3
+    for (i, &t) in [2u8, 2, 0, 0].iter().enumerate() { q.st[0][i] = t; }  // a0,a1 -> q1
+    q.hl[1] = 1 << 0;                 // q1 halts on a0
+    for (i, &t) in [0u8, 0, 1, 0].iter().enumerate() { q.st[1][i] = t; }  // a2 -> q0
+    let m = |bits: &[usize]| -> u8 { bits.iter().fold(0u8, |acc, &b| acc | 1 << b) };
+    let p = Ex::Act;
+    let body = Ex::Seq(Box::new(p.clone()), Box::new(Ex::Ite(m(&[3]),
+        Box::new(Ex::Test(m(&[0, 1, 2, 3]))),
+        Box::new(Ex::Seq(Box::new(Ex::Test(m(&[0, 1]))),
+            Box::new(Ex::Seq(Box::new(p.clone()),
+                Box::new(Ex::Test(m(&[0, 2]))))))))));
+    let x1 = Ex::Seq(Box::new(Ex::Test(m(&[0, 2]))),
+        Box::new(Ex::Seq(Box::new(Ex::Wh(m(&[2]), Box::new(body))),
+            Box::new(Ex::Test(m(&[0, 3]))))));
+    let x0 = Ex::Ite(m(&[0, 1]),
+        Box::new(Ex::Seq(Box::new(p), Box::new(x1.clone()))),
+        Box::new(Ex::Test(m(&[3]))));
+    for n in [4usize, 6, 8] {
+        println!("  candidate at depth {n}: X0 {} ; X1 {}",
+            if ex_matches(&x0, &q, 0, n) { "MATCHES" } else { "differs" },
+            if ex_matches(&x1, &q, 1, n) { "MATCHES" } else { "differs" });
+    }
+}
+
 fn scc_census<const NA: usize>(nguards: u8) {
     let npairs: usize = std::env::var("PAD_CENSUS_N").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(20_000);
@@ -6204,6 +6249,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_FORGE").is_ok() {
         forge::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_CHECK_CAND").is_ok() {
+        check_candidate::<NA>();
         return;
     }
     if std::env::var("PAD_SCC_CENSUS").is_ok() {

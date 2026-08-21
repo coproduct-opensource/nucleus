@@ -8820,3 +8820,63 @@ one candidate — 185 produced one and it turned out solvable.
 **NEXT: settle it**, exactly as 185/186 settled the last one.  Either a fourth
 move handles it — and the two-exit analysis above says what that move must do
 — or it is the counterexample.
+
+---
+
+## Iteration 198 — THE NEW RESISTER IS SOLVABLE: entry restriction, the third move
+
+197 produced the first instance neither the lattice nor the calculus handles
+and called it a candidate on 185's terms.  **It is solvable**, and the move
+that solves it is new.
+
+    q0: hl={a3} st=[q1,q1,-,-]        q1: hl={a0} st=[-,-,q0,-]
+
+    X1 = test{a0,a2} ; wh {a2} (p ; ite a3 1 (test{a0,a1} ; p ; test{a0,a2}))
+         ; test{a0,a3}
+    X0 = ite {a0,a1} (p ; X1) (test{a3})
+
+**Checked, not argued** (`PAD_CHECK_CAND`, Rust, in the census binary): exact
+guarded-string language equality with the automaton at depths 4, 6 and 8, for
+both states.
+
+**THE MOVE: PRE-GUARD THE LOOP AND ASSERT AT THE END OF ITS BODY.**  Exit
+absorption (188) needs the escaping exit's atom to be OUTSIDE the loop guard
+AND INSIDE the trailing test.  Here no rotation gives both: head at `q0` and
+its guard `{a0,a1}` contains `q1`'s accept atom `a0`; head at `q1` and the
+guard `{a2}` excludes `q0`'s accept atom `a3`, but the trailing test is then
+`{a0}`, which rejects `a3`.
+
+The repair is to WIDEN the trailing test to `{a0,a3}` and make that safe by
+controlling which atoms can reach the loop head:
+
+* the PRE-GUARD `test{a0,a2}` kills the initial entry at `a1`/`a3`, where
+  `q1` rejects;
+* the body's TRAILING ASSERTION `test{a0,a2}` kills the RE-entries at
+  `a1`/`a3`;
+* the `a3` escape from `q0` returns to the head unasserted, the guard fails,
+  and the widened trailing test accepts it.
+
+So the loop head is only ever reached on atoms where the wider test is
+correct, and the two exits collapse into one.
+
+**This GENERALIZES exit absorption** rather than sitting beside it.
+Absorption asks the automaton to be shaped so one trailing test already
+serves both exits; entry restriction MAKES that true by restricting the
+entry and re-entry regions.  188's rule is the case where the restriction is
+vacuous.
+
+**THE GENERAL LEMMA, stated for the next iteration to prove:**
+
+    if the body always terminates inside a region R, and the loop is entered
+    inside R, then the trailing test is only ever evaluated on R ∧ ¬g — so any
+    two trailing tests agreeing there are interchangeable.
+
+That is provable with `w3_ba`: both sides solve the same Salomaa equation
+once `R` is carried through the body.  It is the fourth rule, and the first
+one whose Lean form is not already sitting in the corpus.
+
+**Odds: 62% -> 66%.**  Back where 196 left it, and for the same reason 186
+moved it: a concrete candidate counterexample was produced, examined, and
+dissolved by a mechanism that generalizes rather than a trick that fits.
+Twice now the candidate has fallen; that is a pattern worth noticing and not
+yet worth trusting.
