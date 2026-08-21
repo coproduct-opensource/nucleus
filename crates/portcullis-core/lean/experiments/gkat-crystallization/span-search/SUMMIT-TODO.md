@@ -3787,3 +3787,58 @@ the campaign's first genuine negative result and would concretely
 explain the field's pessimism.  Both outcomes are valuable and the
 experiment is cheap.  Note also the measured sizes are 2 and 3 only,
 so a full case analysis at k=2 and k=3 may settle it outright.
+
+### Iteration 117 addendum 2 — the mechanism is right, the ATTRIBUTION was wrong, and the real published obstruction DOES NOT APPLY HERE
+
+The left-affine search corrected 117 on a point that matters, and the
+correction is good news.
+
+**(a) The definition.**  Schmid-Kappé-Kozen-Silva, ICALP 2021, Def 7.1:
+a left-affine system is `xᵢ = eᵢ₁·x₁ +_{bᵢ₁} ⋯ +_{bᵢₙ} cᵢ` with the
+`bᵢⱼ` pairwise disjoint, `cᵢ` Boolean and disjoint from them.
+Guards-at-the-head is baked into the SHAPE, not an extra side
+condition.  The extra condition for uniqueness is exactly this repo's
+productivity: "productive coefficients, i.e. `E(eᵢⱼ) ≡ 0`".
+
+**(b) My mechanism is CORRECT but is NOT the published reason.**  GKAT
+has only RIGHT distributivity (G8) `(x +_b y)z = xz +_b yz`; left
+distributivity `a(x +_b y) = ax +_b ay` is absent AND UNSOUND, because
+`a` may change `b`'s truth.  That is precisely 117's "a guard pulls
+left past tests but never past actions", independently confirmed.  So
+it is a correct SUFFICIENT obstruction to the naive elimination.  But
+Kappé-Schmid-Silva's Remark 2.6 cites **[31] = Kozen & Tseng, "The
+Böhm-Jacopini theorem is false, propositionally" (MPC 2008)** — so the
+obstruction they actually mean is **EXPRESSIVENESS**: the solution of a
+left-affine system need not be a while program AT ALL.  That is much
+deeper than a shape problem, and 117 wrongly implied the literature
+gave the shape reason.  Corrected here.
+
+**(c) AND THAT OBSTRUCTION DOES NOT APPLY TO THIS CAMPAIGN'S SYSTEMS.**
+This is the substantive point.  Böhm-Jacopini-falsity says a GENERAL
+left-affine system may have no GKAT-expression solution — the target
+does not exist in the syntax, so no elimination could ever produce it.
+But the systems here are not general: they come from Thompson automata
+of actual programs, and **`sum_solves_std` (iteration 114) PROVES a
+solution exists and exhibits it** — the canonical labelling.  Rigidity
+(`sum_solution_rigid`) then pins every solution to that one class.  So
+for every instance this campaign must solve, the solution is known to
+be expressible and is already in hand as syntax; the only open question
+is whether it satisfies the QUOTIENT's equations (= UNIF).  The
+deepest published obstruction is inapplicable to these instances by a
+theorem this repo already has.
+
+**(d) Skip-free, corrected.**  Skip-free does NOT make the
+guard-after-action problem disappear — left distributivity is still
+absent there.  It BYPASSES systems entirely, reducing to
+Grabmayer-Fokkink one-free star expressions modulo bisimulation and
+then to language semantics by dead-branch pruning.  Its payoff is that
+(UA) goes AND the guardedness proviso drops (RSP with no side
+condition).  So it is not a template to imitate here.
+
+**Net calibration.**  Two of the three barriers the field cites are now
+accounted for: substitution-unsoundness is answered by
+`equivBA_substA` (productive case, proven, zero axioms), and
+expressiveness-of-solutions is inapplicable by `sum_solves_std`.  What
+remains is the one this repo can still see clearly: the shape problem
+of 117 — and the measured data says it bites in ~1.8% of multi-state
+SCCs, all of size 2-3.  That is the whole remaining target.
