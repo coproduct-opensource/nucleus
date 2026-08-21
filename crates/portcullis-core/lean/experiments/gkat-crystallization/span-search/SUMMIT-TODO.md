@@ -11458,3 +11458,56 @@ definition and a lifting lemma are not `hsum`.
 **Next.**  `sum_isLayer_right`, then `layered_sum` by induction on both
 derivations: acyclic/acyclic gives a componentwise rank via 241's closure
 lemmas, and a layer on either side lifts by the two lemmas above.
+
+---
+
+## 249 — 492 CALCULUS GAPS AT NA=3 k=3, AND THE SYMMETRIC LIFTING LEMMA.
+
+**The long-running NA=3 exhaustive enumeration finished**: 1 953 125 automata at
+k=3, minimised, filtered by verified `synth` witness — **492 solvable-but-unsolved
+by the six-rule calculus.**  First instance:
+
+    q0: hl={a0} st=[-,q2,q1]     q1: dead     q2: hl={a2} st=[q0,-,-]
+
+A two-state loop `q0 ↔ q2` with `H(q0) = {a0}` and `H(q2) = {a2}` — neither
+halt-set contains the other, which is exactly the condition iteration 212
+measured as necessary for a 2-state loop to be solvable by these rules.
+
+**Stated carefully, because it is easy to over- or under-read.**
+
+  * These are CANDIDATE gaps, not confirmed: `synth_lookup` checks STATE 0 only,
+    so an automaton can pass the filter while some other state of the failing
+    SCC is not expressible.  225's audit showed this direction is conservative
+    for a count of zero; it is NOT conservative for a count of 492.
+  * **It does not bear on the LLEE route.**  239's architecture needs `hsolve` —
+    that a CERTIFICATE implies a solution exists — not that my six rules find
+    one.  The calculus is an instrument for measuring, not a component of the
+    proof.
+  * **It does retire a claim I made at 223**: "on that population the six-rule
+    calculus IS the solvability characterization, exactly".  That was NA=2 with
+    k <= 4, where it held over 1 695 497 automata.  At NA=3 with k=3 it fails
+    492 times in 1 953 125.  The claim was scoped correctly when made; recording
+    the boundary now that it is known.
+
+**Also proved: `sum_isLayer_right`**, the mirror of 248 — a layer in the right
+component is a layer of the sum, domain empty on the left.  Both lifting lemmas
+are now in hand, which is what `layered_sum`'s inductive step needs.
+
+    layered_test / layered_act    PROVED (247)
+    layered_wh                    PROVED (247)
+    sum_isLayer_left / _right     PROVED (248, 249)
+    layered_sum                   double induction              open
+    layered_seq                   `seqGSystem` is not `sumGSystem`  open
+    hsum                          assembly                      open
+
+**A caution for `layered_seq` worth writing down before attempting it:**
+`seqGSystem` is NOT `sumGSystem` — a left state's transitions include the RIGHT
+half's entry transitions, guarded by `left.hlt s` (241's `seq_inr_closed` only
+says the right half is closed, not that the left is).  So the seq case needs its
+own argument, and the rank must account for the one-way crossing.
+
+**Odds: 81%, held.**  A mirror lemma, and a measurement that costs the calculus
+a claim while leaving the route untouched.  Neither moves the estimate.
+
+**Next.**  `layered_sum` by induction on both derivations; then `layered_seq`
+with the one-way crossing handled.

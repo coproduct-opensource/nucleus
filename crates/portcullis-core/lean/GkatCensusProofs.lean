@@ -6383,6 +6383,34 @@ theorem sum_isLayer_left {S₁ S₂ : Type}
           simp only [GkatThompson.sumGSystem, hh]⟩
     | .inr _, _ => ⟨rfl, rfl⟩
 
+/-- Symmetric: a layer in the RIGHT component is a layer of the sum. -/
+theorem sum_isLayer_right {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R R' : GkatThompson.GSystem S₂ A T)
+    {b : BExp T} {dom : S₂ → Prop} (h : IsLayer R R' b dom) :
+    IsLayer (GkatThompson.sumGSystem L R) (GkatThompson.sumGSystem L R') b
+      (fun x => match x with | .inl _ => False | .inr s => dom s) where
+  trans_split
+    | .inl _, hs => absurd hs (by simp)
+    | .inr s, hs => by
+        obtain ⟨extra, he, hg⟩ := h.trans_split s hs
+        refine ⟨extra.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_⟩
+        · show (R.trans s).map _ = (R'.trans s).map _ ++ _
+          rw [he, List.map_append]
+        · intro tr htr
+          simp only [List.mem_map] at htr
+          obtain ⟨t, ht, rfl⟩ := htr
+          exact hg t ht
+  hlt_eq
+    | .inl _, hs => absurd hs (by simp)
+    | .inr s, hs => h.hlt_eq s hs
+  outside
+    | .inl _, _ => ⟨rfl, rfl⟩
+    | .inr s, hs => by
+        obtain ⟨ht, hh⟩ := h.outside s hs
+        exact ⟨by simp only [GkatThompson.sumGSystem, ht], by
+          simp only [GkatThompson.sumGSystem, hh]⟩
+
 #print axioms sum_isLayer_left
+#print axioms sum_isLayer_right
 
 end GkatCensus
