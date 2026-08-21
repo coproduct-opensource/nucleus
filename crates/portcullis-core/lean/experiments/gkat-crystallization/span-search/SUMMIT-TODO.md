@@ -8302,3 +8302,56 @@ elimination, plus gated identification, plus exit absorption, solves every
 behavioural quotient of a Thompson sum.  That is a statement about a
 three-rule calculus rather than about shapes, and it is the first time the
 remainder has had that form.
+
+---
+
+## Iteration 189 — CROSS-VALIDATED: 69/69 across four populations, and both moves are needed
+
+188 accounted for all 23 resistant instances in one population and priced
+the odds cautiously because it was one generator's output.  Today: three
+more populations, chosen to differ in the parameters that matter.
+
+`check_moves.py` (in the repo) decides, per resistant instance, which move
+applies — gated identification if two SCC states differ on a PROPER subset
+of atoms, exit absorption if the escape continuation's halt atoms lie
+outside the head's step guard and inside its halt mask.
+
+    population                       resistant   gated   absorption   covered
+    NA=4, depth<=7,  240000 pairs         23        18        5        23/23
+    NA=3, depth<=7,  240000 pairs         21        13        8        21/21
+    NA=2, depth<=7,  240000 pairs          4         0        4         4/4
+    NA=4, depth<=10, 240000 pairs         21        18        3        21/21
+    ---------------------------------------------------------------------
+    TOTAL                                 69                          69/69
+
+**Three atom counts, two expression depths, about 960 000 pairs, and every
+lattice-resistant instance is covered.**
+
+**BOTH MOVES ARE INDEPENDENTLY NECESSARY.**  At NA=2 the split is 0 gated /
+4 absorption; at NA=4 it is 18 gated / 3–5 absorption.  Neither move
+subsumes the other, and the mix shifts with the atom count — which is what
+you would want to see if they are two genuine mechanisms rather than one
+mechanism observed twice.
+
+**THE PROXY, STATED HONESTLY.**  `check_moves.py` tests APPLICABILITY —
+the move's precondition — not that the resulting system is solved.  Full
+solutions were constructed and language-verified for exactly TWO
+instances: 186's gated case (12863/14592/15488 strings, exact) and 188's
+absorption case (8116/9322/9841, exact).  For the other 67 the
+precondition is checked and the construction is not.  **69/69 is a
+precondition rate, and I am not quoting it as a solution rate.**
+
+**Odds: 58% → 60%.**  A small bump for a large increase in breadth,
+deliberately small because the strengthened evidence is about
+preconditions.  What would justify a real move is either the automated
+construct-and-verify over all 69, or the sufficiency theorem.
+
+**NEXT, in order:**
+
+1. **Automate construct-and-verify** for the absorption cases — the
+   construction there is fixed (`wh guard (step ; escape-dispatch) ; test
+   trail`), so all 20 can be built and language-checked mechanically.
+   That converts a precondition rate into a solution rate for those.
+2. **The sufficiency theorem**: elimination + gated identification + exit
+   absorption solves every behavioural quotient of a Thompson sum.  Still
+   the target, and still the only thing that would close this.
