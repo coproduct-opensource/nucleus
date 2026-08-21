@@ -6708,3 +6708,36 @@ the natural next experiment.
 **Honest reading**: a negative datum, recorded because it removes a
 hoped-for shortcut rather than because it advances the proof.  The
 dichotomy stands; its cheap branch is empirically empty.
+
+## Iteration 165 — full-cluster regression check after the audit edits
+
+The 153–163 audit touched files that ~40 others depend on:
+`GkatFaithfulnessProofs` (the `EquivBA` docstring — the definition
+itself untouched), `GkatChainFragmentProofs` (both loop wrappers
+rewritten transport-free), `GkatDecideProofs` (the `uleDec` docstring),
+`GkatCensusProofs` (extensively), and the lakefile (one new library).
+Every check so far had been per-library.
+
+**Built all 191 Gkat libraries explicitly** — the cluster has no default
+target, so `lake build` alone is a no-op, which is exactly the trap that
+makes a "clean build" easy to believe without having one.
+
+    385 jobs — Build completed successfully
+
+No errors, no `sorryAx`, no `declaration uses sorry` warnings anywhere in
+the cluster.
+
+**Two things worth recording from the mechanics**, both of which would
+have produced a false all-clear:
+
+* `lake build` with no argument reports success having done NOTHING
+  ("0 jobs").  A regression check that reads only the exit status would
+  pass on a broken tree.
+* In `zsh`, an unquoted `$LIBS` is NOT word-split, so
+  `lake build $LIBS` passes all 191 names as ONE target and fails with
+  "unknown target" — which at least fails loudly.  `xargs` is the fix.
+
+The pattern is the same one this campaign keeps meeting from a different
+direction: a check that appears to pass because it never ran.  Same
+family as an axiom profile nobody printed, or a use-count repeated
+rather than grepped.
