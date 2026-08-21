@@ -4492,7 +4492,7 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
             None => { let v = ex_matches(&sol, q, s, n); memo.insert(key, v); v }
         };
         let verdict = if ok { "ok" } else { "lang" };
-        if std::env::var("PAD_CALC_TRACE").is_ok() {
+        if calc_trace() {
             println!("      [calc] depth={depth} left={left} {kind}(X{s}) -> {verdict}");
         }
         if verdict != "ok" { continue; }
@@ -4526,7 +4526,7 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
             if ndiff >= NA { continue; }
             let ui = match scc.iter().position(|&x| x == u) { Some(i) => i, None => continue };
             if gated >> ui & 1 == 1 { continue; }
-            if std::env::var("PAD_CALC_TRACE").is_ok() {
+            if calc_trace() {
                 println!("      [calc] depth={depth} left={left} GATED(X{u} <- X{v}, r={r:04b})");
             }
             let (br0, _) = eq_of(q, scc, u);
@@ -4567,7 +4567,22 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
 /// SCC size, so this trades runtime for coverage — but a skipped SCC must be
 /// reported as skipped, not as a failure.
 fn calc_max_scc() -> usize {
-    std::env::var("PAD_CALC_MAXSCC").ok().and_then(|v| v.parse().ok()).unwrap_or(7)
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PAD_CALC_MAXSCC").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(7))
+}
+
+/// Hot-path env lookups, resolved once.  `std::env::var` allocates and locks
+/// the environment on every call; `PAD_CALC_TRACE` in particular sat inside
+/// `calc_search`'s candidate loop, so it ran per proposal.
+fn calc_trace() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PAD_CALC_TRACE").is_ok())
+}
+
+fn no_calc() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PAD_NO_CALC").is_ok())
 }
 
 /// Whether the calculus will even try this SCC — the caller's guard, so that
@@ -6244,10 +6259,17 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     // `scc_with_context`): rule 6 cannot match a shared suffix
                     // through an opaque oracle.  Fall back to the bare SCC if
                     // the extension gained nothing.
-                    let ctx = scc_with_context(&q, scc, &singles);
-                    let calc_ok = std::env::var("PAD_NO_CALC").is_ok()
-                        || calculus_solves(&q, &ctx, 5)
-                        || calculus_solves(&q, scc, 5);
+                    // CHEAPEST FIRST.  `calc_search` is exponential in the
+                    // state-list length, so try the bare SCC before the
+                    // context-extended list: the bare call succeeds on all but
+                    // a handful of SCCs, and 207 paid for the expensive search
+                    // on every one of them.  Ordering it this way keeps the
+                    // completeness the context buys while paying for it only
+                    // where it is actually needed.
+                    let calc_ok = no_calc()
+                        || calculus_solves(&q, scc, 5)
+                        || calculus_solves(&q,
+                            &scc_with_context(&q, scc, &singles), 5);
                     t_calc += t0.elapsed();
                     if calc_ok {
                         n_open_calc_ok += 1;
@@ -6432,10 +6454,12 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         if sc.iter().any(|c| c.len() >= 2 && !calculus_attempted(c)) {
                             n_canon_skipped += 1;
                         } else if { let csg = singleton_states(&cq);
+                            // Cheapest first here too, and `singleton_states`
+                            // hoisted out of the per-SCC closure.
                             sc.iter().all(|c| c.len() < 2
+                                || calculus_solves(&cq, c, 5)
                                 || calculus_solves(&cq,
-                                    &scc_with_context(&cq, c, &csg), 5)
-                                || calculus_solves(&cq, c, 5)) } {
+                                    &scc_with_context(&cq, c, &csg), 5)) } {
                             n_canon_ok += 1;
                         } else {
                             // Separate "my calculus is incomplete here" from

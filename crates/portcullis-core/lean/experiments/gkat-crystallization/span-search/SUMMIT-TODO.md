@@ -9404,3 +9404,57 @@ new rule.  That has not happened yet.
 
 **Next.**  Teach the solver rule 6, then enlarge the sample and see whether the
 pattern finally breaks.
+
+---
+
+## 208 — THE REGRESSION FIXED, AND THE PRE-REGISTERED TEST FINALLY RUNS.
+
+**The fix was cheapest-first**, which is what the constraint-search literature
+calls the ordering heuristic and what 207 got backwards.  `calc_search` is
+exponential in state-list length; the bare SCC succeeds on all but a handful of
+SCCs; 207 paid for the context-extended search on EVERY one of them.  Reversing
+the order keeps the completeness the context buys and pays for it only where it
+is needed.  Two further hot-path fixes, found by looking rather than guessing:
+`std::env::var` was being called PER CANDIDATE inside `calc_search`
+(`PAD_CALC_TRACE`) and per SCC for `PAD_CALC_MAXSCC` / `PAD_NO_CALC` — all
+three now resolve once through a `OnceLock`.
+
+    same sample as 207:  NA=2 4.9s, NA=4 7.4s, results identical (0 failures)
+
+**The test I pre-registered at 206 has now run.**  I wrote there that what
+would move the odds is "a sample enlargement producing NO new rule".  Enlarging
+along expression DEPTH (7 → 9 and 11) and automaton bound (`kmax` 10 → 12):
+
+    NA=4  depth 9,  240k   open 241   failures 0   canonical 241/241
+    NA=4  depth 11, 240k   open 236   failures 0   canonical 236/236
+    NA=3  depth 9,  120k   open 166   failures 0   canonical 166/166
+    NA=2  depth 11, 120k   open  32   failures 0   canonical  32/32
+    NA=2  depth 11,  60k   open  17   failures 0   canonical  17/17
+
+692 open SCCs at greater depth, zero failures, zero unattempted, both ends of
+the lattice, every verdict language-checked.  **This is the first sample
+enlargement in this program that did not produce a new rule.**
+
+**The honest qualification, because it weakens the test.**  The enlargement is
+along DEPTH and `kmax`, not along the count of hard instances: the open-SCC
+counts (241, 236, 166, 32, 17) are COMPARABLE TO OR LOWER THAN the depth-7
+runs' (250, 190, 104).  Deeper expressions do not mean proportionally more hard
+SCCs — the census generates more folds instead.  So this tests the calculus
+against structurally LARGER instances, which is what I wanted, but not against
+MORE of them, which is the other axis and the one that produced rules 5 and 6.
+NA=2 at depth 9 and depth 11 at 240k still time out, so the largest NA=2
+enlargement did not run.
+
+**Odds: 73%, up 2.**  A pre-registered falsification test was met, and that
+should count for more than another incremental measurement — it is the first
+evidence in six iterations that the rule-per-sample pattern is not endless.  I
+am not taking the full step I would for a clean pass, because the enlargement
+was along the weaker of the two axes and the largest NA=2 configuration did not
+complete.  Rules 5 and 6 both came from the SAME structural family — mid-body
+exits — and rule 6 closed the general case of it, which is a better reason to
+expect convergence than the count alone suggests.  Still no theorem, and the
+field's prior that this problem does not close still stands.
+
+**Next.**  Enlarge along the OTHER axis: more pairs at depth 7-9 until the open
+SCC count is several times 250, and see whether the pattern holds there too.
+The NA=2 timeouts at 240k/depth 9+ are the immediate obstacle.
