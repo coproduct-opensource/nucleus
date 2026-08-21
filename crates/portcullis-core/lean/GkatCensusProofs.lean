@@ -1008,4 +1008,258 @@ theorem firstMatch_gOthersPC {S : Type} [DecidableEq A]
 
 #print axioms firstMatch_gOthersPC
 
+/-! ## The equation transport theorem
+
+    Bisimilar states have `EquivBA`-equal equations under any
+    class-consistent solution — the unification route's workhorse.
+    The certificate is built with entries for every arm of both
+    states; coverage empties the residuals; the halts bridge by halt
+    invariance. -/
+
+open Classical in
+/-- Class membership, Boolean form. -/
+noncomputable def classB {S : Type} (aut : GkatKleene.GAut S A T)
+    (t : S) : S → Bool :=
+  fun u => decide (GkatPlanExistence.GenBisimilar aut t u)
+
+open Classical in
+/-- Residual arms come from the list, unmatched. -/
+theorem gOthersPC_mem {S : Type} [DecidableEq A]
+    (P : S → Bool) (a : A) :
+    ∀ L : List (BExp T × A × S), ∀ q ∈ gOthersPC P a L,
+      q ∈ L ∧ ¬(P q.2.2 = true ∧ q.2.1 = a) := by
+  intro L
+  induction L with
+  | nil => intro q hq; exact nomatch hq
+  | cons hd rest ih =>
+      intro q hq
+      obtain ⟨g, b, u⟩ := hd
+      by_cases hu : P u = true ∧ b = a
+      · have hot : gOthersPC P a ((g, b, u) :: rest)
+            = gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        rw [hot] at hq
+        obtain ⟨h1, h2⟩ := ih q hq
+        exact ⟨List.mem_cons_of_mem _ h1, h2⟩
+      · have hot : gOthersPC P a ((g, b, u) :: rest)
+            = (g, b, u) :: gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        rw [hot] at hq
+        rcases List.mem_cons.mp hq with h1 | h2
+        · rw [h1]
+          exact ⟨List.mem_cons_self .., hu⟩
+        · obtain ⟨h1, h2⟩ := ih q h2
+          exact ⟨List.mem_cons_of_mem _ h1, h2⟩
+
+open Classical in
+/-- **EQUATION TRANSPORT**: bisimilar states' equations are
+    equivalent under class-consistent solutions. -/
+theorem equation_transport {S : Type} [DecidableEq A]
+    (aut : GkatKleene.GAut S A T) {s₁ s₂ : S}
+    (hbis : GkatPlanExistence.GenBisimilar aut s₁ s₂)
+    (sol : S → Exp A T)
+    (hsol : ∀ u u', GkatPlanExistence.GenBisimilar aut u u' →
+      EquivBA (sol u) (sol u')) :
+    EquivBA (GkatKleene.eqRHS aut sol s₁)
+      (GkatKleene.eqRHS aut sol s₂) := by
+  have haux : ∀ (entries : List ((S → Bool) × (S → Bool) × A × Exp A T))
+      (C : BExp T)
+      (R₁ R₂ : List (BExp T × A × S)),
+      (∀ e ∈ entries, ∃ t a,
+        e = (classB aut t, classB aut t, a, sol t)) →
+      (∀ α : T → Bool,
+        GkatGS.bval (GkatPlanExistence.genW T) C α = true →
+        GkatKleene.firstMatch (GkatPlanExistence.genW T) α R₁
+            = GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+              (aut.trans s₁)
+          ∧ GkatKleene.firstMatch (GkatPlanExistence.genW T) α R₂
+            = GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+              (aut.trans s₂)) →
+      (∀ q ∈ R₁, ∃ e ∈ entries,
+        e.1 q.2.2 = true ∧ q.2.1 = e.2.2.1) →
+      (∀ q ∈ R₂, ∃ e ∈ entries,
+        e.2.1 q.2.2 = true ∧ q.2.1 = e.2.2.1) →
+      CtxOk sol sol (aut.hlt s₁) (aut.hlt s₂) C entries R₁ R₂ := by
+    intro entries
+    induction entries with
+    | nil =>
+        intro C R₁ R₂ _ _ hC₁ hC₂
+        have hR₁ : R₁ = [] := by
+          cases hR : R₁ with
+          | nil => rfl
+          | cons q rest =>
+              obtain ⟨e, he, -⟩ := hC₁ q (hR ▸ List.mem_cons_self ..)
+              exact nomatch he
+        have hR₂ : R₂ = [] := by
+          cases hR : R₂ with
+          | nil => rfl
+          | cons q rest =>
+              obtain ⟨e, he, -⟩ := hC₂ q (hR ▸ List.mem_cons_self ..)
+              exact nomatch he
+        rw [hR₁, hR₂]
+        show EquivBA (.seq (.test C) (.test (aut.hlt s₁)))
+          (.seq (.test C) (.test (aut.hlt s₂)))
+        refine EquivBA.trans (EquivBA.s6 C (aut.hlt s₁)) ?_
+        refine EquivBA.trans (EquivBA.baTest
+          (b := .and C (aut.hlt s₁)) (c := .and C (aut.hlt s₂)) ?_) ?_
+        · refine pointwise_of_genW ?_
+          intro α
+          show (GkatGS.bval (GkatPlanExistence.genW T) C α
+              && GkatGS.bval (GkatPlanExistence.genW T)
+                (aut.hlt s₁) α)
+            = (GkatGS.bval (GkatPlanExistence.genW T) C α
+              && GkatGS.bval (GkatPlanExistence.genW T)
+                (aut.hlt s₂) α)
+          rw [bisim_hlt_invariant aut hbis α]
+        · exact EquivBA.symm (EquivBA.s6 C (aut.hlt s₂))
+    | cons e₀ rest ih =>
+        intro C R₁ R₂ hE hA hC₁ hC₂
+        obtain ⟨t₀, a₀, he₀⟩ := hE e₀ (List.mem_cons_self ..)
+        subst he₀
+        have hgen : ∀ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) C α = true →
+            GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₁) α
+              = GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₂) α := by
+          intro α hCα
+          obtain ⟨hA₁, hA₂⟩ := hA α hCα
+          have hiff : (GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₁) α = true)
+              ↔ (GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₂) α = true) := by
+            rw [gGuardPC_firstMatch, gGuardPC_firstMatch, hA₁, hA₂]
+            obtain ⟨-, h2, h3⟩ :=
+              GkatPlanExistence.genBisimilar_bisim aut s₁ s₂ hbis
+            constructor
+            · rintro ⟨u, hu, hcls⟩
+              obtain ⟨u', hu', hbu⟩ := h2 α a₀ u hu
+              refine ⟨u', hu', ?_⟩
+              have ht₀u : GkatPlanExistence.GenBisimilar aut t₀ u :=
+                of_decide_eq_true hcls
+              exact decide_eq_true (ht₀u.trans hbu)
+            · rintro ⟨u', hu', hcls⟩
+              obtain ⟨u, hu, hbu⟩ := h3 α a₀ u' hu'
+              refine ⟨u, hu, ?_⟩
+              have ht₀u' : GkatPlanExistence.GenBisimilar aut t₀ u' :=
+                of_decide_eq_true hcls
+              exact decide_eq_true (ht₀u'.trans hbu.symm)
+          cases hb₁ : GkatGS.bval (GkatPlanExistence.genW T)
+              (gGuardPC (classB aut t₀) a₀ R₁) α
+          · cases hb₂ : GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₂) α
+            · rfl
+            · have := hiff.mpr hb₂
+              rw [hb₁] at this
+              exact nomatch this
+          · rw [hiff.mp hb₁]
+        refine ⟨⟨?_, ?_, ?_⟩, ?_⟩
+        · -- hguard, all valuations under C
+          have hpw := pointwise_of_genW
+            (b := .and C (gGuardPC (classB aut t₀) a₀ R₁))
+            (c := .and C (gGuardPC (classB aut t₀) a₀ R₂))
+            (fun α => by
+              show (GkatGS.bval (GkatPlanExistence.genW T) C α && _)
+                = (GkatGS.bval (GkatPlanExistence.genW T) C α && _)
+              cases hCα : GkatGS.bval (GkatPlanExistence.genW T) C α
+              · rfl
+              · rw [hgen α hCα])
+          intro X W x hCx
+          have h' : (GkatGS.bval W C x
+              && GkatGS.bval W (gGuardPC (classB aut t₀) a₀ R₁) x)
+            = (GkatGS.bval W C x
+              && GkatGS.bval W (gGuardPC (classB aut t₀) a₀ R₂) x) :=
+            hpw X W x
+          rw [hCx] at h'
+          exact h'
+        · intro q _ hcls hact
+          exact hsol q.2.2 t₀ (of_decide_eq_true hcls).symm
+        · intro q _ hcls hact
+          exact hsol q.2.2 t₀ (of_decide_eq_true hcls).symm
+        · refine ih (.and C (.not (gGuardPC (classB aut t₀) a₀ R₁)))
+            (gOthersPC (classB aut t₀) a₀ R₁)
+            (gOthersPC (classB aut t₀) a₀ R₂)
+            (fun e he => hE e (List.mem_cons_of_mem _ he))
+            ?_ ?_ ?_
+          · intro α hCα'
+            have hsplit : (GkatGS.bval (GkatPlanExistence.genW T) C α
+                && !(GkatGS.bval (GkatPlanExistence.genW T)
+                  (gGuardPC (classB aut t₀) a₀ R₁) α)) = true := hCα'
+            rw [Bool.and_eq_true_iff] at hsplit
+            have hCα : GkatGS.bval (GkatPlanExistence.genW T) C α
+                = true := hsplit.1
+            have hG₁ : GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₁) α = false := by
+              have := hsplit.2
+              cases hb : GkatGS.bval (GkatPlanExistence.genW T)
+                  (gGuardPC (classB aut t₀) a₀ R₁) α
+              · rfl
+              · rw [hb] at this
+                exact nomatch this
+            have hG₂ : GkatGS.bval (GkatPlanExistence.genW T)
+                (gGuardPC (classB aut t₀) a₀ R₂) α = false := by
+              rw [← hgen α hCα]
+              exact hG₁
+            obtain ⟨hA₁, hA₂⟩ := hA α hCα
+            constructor
+            · rw [firstMatch_gOthersPC (GkatPlanExistence.genW T) α
+                (classB aut t₀) a₀ R₁ hG₁]
+              exact hA₁
+            · rw [firstMatch_gOthersPC (GkatPlanExistence.genW T) α
+                (classB aut t₀) a₀ R₂ hG₂]
+              exact hA₂
+          · intro q hq
+            obtain ⟨hqL, hqnm⟩ := gOthersPC_mem _ _ R₁ q hq
+            obtain ⟨e, he, hcov⟩ := hC₁ q hqL
+            rcases List.mem_cons.mp he with h1 | h2
+            · exfalso
+              rw [h1] at hcov
+              exact hqnm ⟨hcov.1, hcov.2⟩
+            · exact ⟨e, h2, hcov⟩
+          · intro q hq
+            obtain ⟨hqL, hqnm⟩ := gOthersPC_mem _ _ R₂ q hq
+            obtain ⟨e, he, hcov⟩ := hC₂ q hqL
+            rcases List.mem_cons.mp he with h1 | h2
+            · exfalso
+              rw [h1] at hcov
+              exact hqnm ⟨hcov.1, hcov.2⟩
+            · exact ⟨e, h2, hcov⟩
+  have hctx := haux
+    ((aut.trans s₁).map (fun q =>
+        (classB aut q.2.2, classB aut q.2.2, q.2.1, sol q.2.2))
+      ++ (aut.trans s₂).map (fun q =>
+        (classB aut q.2.2, classB aut q.2.2, q.2.1, sol q.2.2)))
+    .one (aut.trans s₁) (aut.trans s₂)
+    (by
+      intro e he
+      rcases List.mem_append.mp he with h1 | h1
+      all_goals
+        obtain ⟨q, hqL, hqe⟩ := List.mem_map.mp h1
+        exact ⟨q.2.2, q.2.1, hqe.symm⟩)
+    (fun α _ => ⟨rfl, rfl⟩)
+    (by
+      intro q hq
+      refine ⟨(classB aut q.2.2, classB aut q.2.2, q.2.1, sol q.2.2),
+        List.mem_append.mpr (Or.inl (List.mem_map.mpr ⟨q, hq, rfl⟩)),
+        ?_, rfl⟩
+      exact decide_eq_true (GkatPlanExistence.GenBisimilar.refl aut _)
+      )
+    (by
+      intro q hq
+      refine ⟨(classB aut q.2.2, classB aut q.2.2, q.2.1, sol q.2.2),
+        List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨q, hq, rfl⟩)),
+        ?_, rfl⟩
+      exact decide_eq_true (GkatPlanExistence.GenBisimilar.refl aut _)
+      )
+  have hext := dispatch_ext_ctx sol sol (aut.hlt s₁) (aut.hlt s₂)
+    _ .one (aut.trans s₁) (aut.trans s₂) hctx
+  rw [GkatPlanExistence.eqRHS_foldTL, GkatPlanExistence.eqRHS_foldTL]
+  refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.s4 _))) ?_
+  refine EquivBA.trans hext ?_
+  exact EquivBA.base (Equiv.s4 _)
+
+#print axioms equation_transport
+
 end GkatCensus

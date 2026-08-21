@@ -3063,3 +3063,31 @@ bisim_hlt_invariant + s6/baTest, then strip the test-1 prefix) —
 yielding THE EQUATION TRANSPORT THEOREM: bisimilar states' equations
 are EquivBA-equal under class-consistent solutions. Then the
 subsystem lemma and the rank induction.
+
+## Iteration 107 — ★ THE EQUATION TRANSPORT THEOREM ★
+
+**`equation_transport`**: bisimilar states' equations are
+EquivBA-equal under ANY class-consistent solution family —
+
+  GenBisimilar aut s₁ s₂ →
+  (∀ u u′, GenBisimilar u u′ → EquivBA (sol u) (sol u′)) →
+  EquivBA (eqRHS aut sol s₁) (eqRHS aut sol s₂)
+
+— proved in one build modulo a single pinned baTest. The certificate
+construction: entries = every arm of BOTH states as (class-of-target,
+action, sol-of-target); the aux induction carries three invariants —
+entry well-formedness, stripping-invisibility under the context
+(re-established each stage via firstMatch_gOthersPC on both sides,
+side 2 through the guard agreement), and residual COVERAGE (remaining
+entries cover remaining arms — at nil this forces empty residuals; the
+recursion is self-maintaining since a surviving arm's coverer cannot
+be the stripped entry). Halts bridge by bisim_hlt_invariant through
+s6/baTest/pointwise_of_genW; the test-1 prefix strips by s4.
+
+THE EXTENSIONALITY CHAPTER IS CLOSED. The unification route now
+reads: rank induction where the IH gives class-consistency of the
+candidate family at lower ranks + within-rank via the enclosing
+loop's canonicity, with equation_transport converting bisimilarity
+into the equation-equality that ParamSolvesBA needs. Remaining: the
+subsystem lemma (ambient loop-state equations = parametric equations),
+the dead-region decomposition, and the induction assembly.
