@@ -2841,3 +2841,40 @@ bodies). Namespace note: EquivBA lives in GkatFaithful.
 Next: iterate to the full pair-normal form (gatherChain over a pair
 list), then extensionality proper (pointwise-equal gathered guards ⟹
 EquivBA via ite_guard chains), then the left-member census.
+
+## Iteration 99 — ★ DISPATCH EXTENSIONALITY ★ + THE UNIFICATION ROUTE
+
+**`dispatch_ext`** (ZERO axioms): matched dispatches over DIFFERENT
+state spaces are EquivBA-equal — a positional certificate `PairsOk`
+(each matched (t₁,t₂,action) triple: pointwise-equal gathered guards
+on the CURRENT residuals + equivalent continuations) zipped down by
+`pair_gather` on both sides with `ite_guard` at each step, plus a
+residual bridge. (Design lesson: the certificate must be positional —
+guard agreements are about stripped residuals, not the originals.)
+
+**THE UNIFICATION ROUTE** (the answer to "biggest step against the
+census"): completeness WITHOUT quotient-solving, by strong induction
+on reachRank —
+
+  claim: all members of every class have EquivBA-equal standard
+  solutions.
+
+  At rank r: a class member m lives in some syntactic loop scope; the
+  rank-r SCC subsystem = that loop's certified wrapped automaton with
+  lower-rank continuations as the parametric finish (IH-unified).
+  Any other member m′ (other side) induces, via DISPATCH EXTENSIONALITY
+  along the bisimulation, a second solution of THE SAME parametric
+  subsystem; **ParametricCanonicalBA of the enclosing loop's
+  certificate** forces both ≡ standard·finish — UNIFIED. At the start
+  classes, ULE gives e ≡ f. No schedules, no quotient SolvesBA, no
+  gather/prune pipeline on the critical path — those remain as the
+  independent general-automata theory.
+
+Remaining for the route: (1) loop-scope ↔ SCC correspondence
+(syntactic structure facts); (2) standard-solution compositionality
+(standards factor through loop scopes — likely already how `standard`
+is defined); (3) the bisim-partner plumbing (classes have members
+both sides; matched pairs from the step function); (4) the rank
+induction assembly. All four are bookkeeping-flavored; the
+mathematical content is now fully covered by certificates +
+dispatch_ext.

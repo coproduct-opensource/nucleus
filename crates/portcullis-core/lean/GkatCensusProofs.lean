@@ -316,6 +316,70 @@ theorem pair_gather {S : Type} [DecidableEq S] [DecidableEq A]
           (.seq (.act b) (sol u)) (.seq (.act a) (sol t))
           (GkatPlanExistence.foldTL sol h (gOthersPA t a rest))
 
+/-! ## Dispatch extensionality
+
+    Two dispatches over DIFFERENT state spaces, matched pair-by-pair —
+    pointwise-equal gathered guards, `EquivBA`-related continuations —
+    are `EquivBA`-equal.  The zip runs down a list of matched
+    (target₁, target₂, action) triples via `pair_gather` on both
+    sides; the caller discharges the residual.  This is the lemma that
+    lets a quotient class verify against ANY of its members' syntax:
+    bisimilar states have matched dispatches. -/
+
+open Classical in
+/-- The positional pair certificate: each matched triple's gathered
+    guards agree pointwise on the CURRENT residuals, its continuations
+    are equivalent, and the rest certifies the stripped residuals. -/
+def PairsOk {S₁ S₂ : Type} [DecidableEq S₁] [DecidableEq S₂]
+    [DecidableEq A] (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T) :
+    List (S₁ × S₂ × A) → List (BExp T × A × S₁)
+    → List (BExp T × A × S₂) → Prop
+  | [], _, _ => True
+  | p :: rest, L₁, L₂ =>
+      ((∀ (X : Type) (W : T → X → Bool) (x : X),
+          GkatGS.bval W (gGuardPA p.1 p.2.2 L₁) x
+            = GkatGS.bval W (gGuardPA p.2.1 p.2.2 L₂) x)
+        ∧ EquivBA (sol₁ p.1) (sol₂ p.2.1))
+      ∧ PairsOk sol₁ sol₂ rest
+          (gOthersPA p.1 p.2.2 L₁) (gOthersPA p.2.1 p.2.2 L₂)
+
+open Classical in
+/-- **DISPATCH EXTENSIONALITY**: matched dispatches over different
+    state spaces are equivalent — pointwise-equal gathered guards,
+    equivalent continuations, and a residual bridge. -/
+theorem dispatch_ext {S₁ S₂ : Type} [DecidableEq S₁] [DecidableEq S₂]
+    [DecidableEq A]
+    (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T)
+    (h₁ h₂ : BExp T) :
+    ∀ (pairs : List (S₁ × S₂ × A))
+      (L₁ : List (BExp T × A × S₁)) (L₂ : List (BExp T × A × S₂)),
+      PairsOk sol₁ sol₂ pairs L₁ L₂ →
+      EquivBA
+        (GkatPlanExistence.foldTL sol₁ h₁
+          (pairs.foldl (fun L p => gOthersPA p.1 p.2.2 L) L₁))
+        (GkatPlanExistence.foldTL sol₂ h₂
+          (pairs.foldl (fun L p => gOthersPA p.2.1 p.2.2 L) L₂)) →
+      EquivBA (GkatPlanExistence.foldTL sol₁ h₁ L₁)
+        (GkatPlanExistence.foldTL sol₂ h₂ L₂) := by
+  intro pairs
+  induction pairs with
+  | nil =>
+      intro L₁ L₂ _ hres
+      exact hres
+  | cons p rest ih =>
+      intro L₁ L₂ hall hres
+      obtain ⟨t₁, t₂, a⟩ := p
+      obtain ⟨hp, hrest⟩ := hall
+      refine EquivBA.trans (pair_gather sol₁ h₁ t₁ a L₁) ?_
+      refine EquivBA.trans ?_
+        (EquivBA.symm (pair_gather sol₂ h₂ t₂ a L₂))
+      refine EquivBA.trans (EquivBA.ite_guard
+        (b := gGuardPA t₁ a L₁) (c := gGuardPA t₂ a L₂)
+        (fun X W x => hp.1 X W x)) ?_
+      refine EquivBA.ite_c
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hp.2) ?_
+      exact ih (gOthersPA t₁ a L₁) (gOthersPA t₂ a L₂) hrest hres
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
@@ -325,5 +389,6 @@ theorem pair_gather {S : Type} [DecidableEq S] [DecidableEq A]
 #print axioms bisim_hlt_invariant
 #print axioms eqRHS_quot
 #print axioms pair_gather
+#print axioms dispatch_ext
 
 end GkatCensus
