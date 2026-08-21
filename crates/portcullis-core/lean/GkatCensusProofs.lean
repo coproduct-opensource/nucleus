@@ -3282,4 +3282,109 @@ theorem wh_guards_agree_of_ule {b₁ b₂ : BExp T} {e₁ e₂ : Exp A T}
 #print axioms wh_den_nil
 #print axioms wh_guards_agree_of_ule
 
+/-! ## Step 3: the structural core of the vacuity argument
+
+    Iteration 142's step 3 said side 2 "cannot halt mid-body".  Stated
+    positively and without reference to any comparison: **at an atom
+    where BOTH guards hold, a two-loop's accepted strings carry at
+    least TWO actions.**  The inner loop must fire at least once
+    (`wh_den_nil`, contrapositive) and the body's tail `act r` always
+    fires exactly once, so the first outer iteration alone already owes
+    two.
+
+    That is what makes the mixed case impossible: an atomic loop emits
+    ONE action per iteration and can halt straight after, so it accepts
+    one-action strings the two-loop cannot. -/
+
+open Classical in
+/-- **A two-loop entered with both guards true owes at least two
+    actions.** -/
+theorem twoLoop_two_actions {Atom : Type} (V : T → Atom → Bool)
+    (b c : BExp T) (q r : A) (a : Atom)
+    (hb : GkatGS.bval V b a = true) (hc : GkatGS.bval V c a = true)
+    (l : List (A × Atom))
+    (h : GkatGS.den V (GkatTwoLoop.twoLoop b c q r) (a, l)) :
+    2 ≤ l.length := by
+  have h' : GkatGS.InLoop V b
+      (GkatGS.den V (GkatTwoLoop.twoLoopBody c q r)) (a, l) := h
+  cases h' with
+  | exit a hexit => rw [hexit] at hb; exact nomatch hb
+  | step a l1 rest _ hbody _ =>
+      obtain ⟨m1, m2, hsplit, hinner, htail⟩ := hbody
+      -- the tail action fires exactly once
+      obtain ⟨a2, b2, htail'⟩ := htail
+      have hm2 : m2 = [(r, b2)] := congrArg Prod.snd htail'
+      -- the inner loop cannot be silent, since `c` holds here
+      have hm1 : m1 ≠ [] := by
+        intro hnil
+        have := (wh_den_nil V c (.act q) a).mp (by rw [← hnil]; exact hinner)
+        rw [this] at hc
+        exact nomatch hc
+      have hlen1 : 1 ≤ m1.length := by
+        cases m1 with
+        | nil => exact absurd rfl hm1
+        | cons _ _ => exact Nat.succ_le_succ (Nat.zero_le _)
+      have hsplit' : l1 = m1 ++ m2 := hsplit
+      have hl1 : 2 ≤ l1.length := by
+        rw [hsplit', List.length_append, hm2]
+        exact Nat.succ_le_succ hlen1
+      rw [List.length_append]
+      exact Nat.le_trans hl1 (Nat.le_add_right _ _)
+
+#print axioms twoLoop_two_actions
+
+open Classical in
+/-- **An atomic loop emits exactly ONE action and can stop.**  The other
+    half of the contradiction: where the guard holds now and fails next,
+    a one-action string is accepted. -/
+theorem atomicLoop_one_action {Atom : Type} (V : T → Atom → Bool)
+    (b : BExp T) (r : A) (a a₁ : Atom)
+    (hb : GkatGS.bval V b a = true) (hb₁ : GkatGS.bval V b a₁ = false) :
+    GkatGS.den V (.wh b (.act r)) (a, [(r, a₁)]) := by
+  have hstep : GkatGS.InLoop V b (GkatGS.den V (.act r : Exp A T))
+      (a, [(r, a₁)] ++ []) :=
+    GkatGS.InLoop.step a [(r, a₁)] [] hb ⟨a, a₁, rfl⟩
+      (GkatGS.InLoop.exit a₁ hb₁)
+  exact hstep
+
+open Classical in
+/-- **★ THE MIXED CASE IS VACUOUS ★** — iteration 142's four-step
+    argument, assembled.  A no-overlap two-loop (an atomic loop) cannot
+    be language-equivalent to a LIVE two-loop.
+
+    Guards agree by `wh_guards_agree_of_ule`; at the both-guards witness
+    the live side owes two actions while the atomic side emits one and
+    stops; the exit atom needed to stop is supplied by the live side's
+    own exit hypothesis, transported across the agreed guards. -/
+theorem no_overlap_vs_live_absurd
+    {b₁ b₂ c₂ : BExp T} {r₁ q₂ r₂ : A}
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (.wh b₁ (.act r₁)) (GkatTwoLoop.twoLoop b₂ c₂ q₂ r₂))
+    (hbc₂ : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b₂ α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c₂ α = true)
+    (hexitB₂ : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b₂ α = false) :
+    False := by
+  -- step 1: the guards coincide
+  have hguards := wh_guards_agree_of_ule hule (T → Bool)
+    (GkatPlanExistence.genW T)
+  obtain ⟨α, hb₂, hc₂⟩ := hbc₂
+  obtain ⟨α₁, hx₂⟩ := hexitB₂
+  have hb₁ : GkatGS.bval (GkatPlanExistence.genW T) b₁ α = true := by
+    rw [hguards α]; exact hb₂
+  have hx₁ : GkatGS.bval (GkatPlanExistence.genW T) b₁ α₁ = false := by
+    rw [hguards α₁]; exact hx₂
+  -- the atomic side accepts a ONE-action string
+  have hone := atomicLoop_one_action (GkatPlanExistence.genW T)
+    b₁ r₁ α α₁ hb₁ hx₁
+  -- so the live side must too — but it owes two
+  have htwo := twoLoop_two_actions (GkatPlanExistence.genW T)
+    b₂ c₂ q₂ r₂ α hb₂ hc₂ [(r₁, α₁)]
+    ((hule (T → Bool) (GkatPlanExistence.genW T) (α, [(r₁, α₁)])).mp hone)
+  exact nomatch htwo
+
+#print axioms atomicLoop_one_action
+#print axioms no_overlap_vs_live_absurd
+
 end GkatCensus

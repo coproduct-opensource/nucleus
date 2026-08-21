@@ -5676,3 +5676,49 @@ formalized and generalized.  Nothing about it has required new
 mathematics, which is now a claim backed by two proved lemmas and a
 worked argument rather than by an estimate — the correction that
 iterations 139-141 kept having to make.
+
+## Iteration 144 — ★ THE VACUITY THEOREM IS PROVED — and it is SHORTER than the hand argument ★
+
+Iteration 142 derived the mixed case's impossibility by hand in FOUR
+steps.  Formalizing it needed only TWO.
+
+* **`twoLoop_two_actions`** [propext] — **a two-loop entered with both
+  guards true owes at least TWO actions.**  The inner loop cannot be
+  silent there (`wh_den_nil`'s contrapositive) and the body's tail
+  `act r` always fires exactly once, so the first outer iteration alone
+  already owes two.
+* **`atomicLoop_one_action`** (ZERO axioms) — an atomic loop emits
+  exactly ONE action and can stop, wherever its guard holds now and
+  fails next.
+* **`no_overlap_vs_live_absurd`** [propext] — **a no-overlap two-loop
+  cannot be language-equivalent to a live one.**  Guards agree by
+  iteration 143's `wh_guards_agree_of_ule`; the atomic side accepts a
+  one-action string at the both-guards witness; language equivalence
+  forces the live side to accept it; `twoLoop_two_actions` says it owes
+  two.  Contradiction.
+
+**Two of the hand argument's four steps turned out to be unnecessary.**
+Step 2 (`r₁ = q₂`) is not needed at all — the one-action string is built
+with `r₁`, and the two-loop owes two actions REGARDLESS of which action
+is involved, so no matching of action letters is required.  Step 4 is
+absorbed: the exit atom that lets the atomic side stop comes straight
+from the live side's own `hexitB₂`, transported across the agreed
+guards.  The hand derivation reasoned about matching first actions and
+then about divergence, and neither was load-bearing.
+
+Worth recording as a methodological point, since this campaign's errors
+have run the other way: **the hand argument was over-complicated, not
+wrong.**  Formalizing simplified it, which is the opposite of the usual
+direction and a reason to formalize earlier rather than later.
+
+**Status of `twoloops_complete_free`**: four collapse lemmas (zero
+axioms) + the vacuity theorem (proved today) + the assembly case split.
+Every ingredient the repair needs now exists as a checked theorem.  The
+remaining assembly is the case analysis itself — three test-collapses
+against `chainloops_complete_free`'s template, the fourth against
+`no_overlap_vs_live_absurd`, and both-live against
+`twoloops_complete`.
+
+**Hardening tally**: two audits clean; two overclaims found and fixed;
+the repair for the second is now seven proved lemmas deep with only
+mechanical assembly left.
