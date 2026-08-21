@@ -6401,3 +6401,50 @@ Boolean layer's every clause with proved provenance and NO remaining
 interpretive dependency; soundness proved; ULE proved to be the paper's
 semantics; the decider executed on ten cases including negative
 controls.
+
+## Iteration 158 — the admissibility gap is narrower than it looked: `wh_guard` is barely used, and its main use needs nothing
+
+Iteration 157 proved `ite_guard` admissible unconditionally and
+`wh_guard` admissible for PRODUCTIVE bodies.  That left a gap — general
+loop-guard transport — whose closure would need porting the productive-
+loop normalization (`dPart`, `fundamental`) into the standalone file, a
+substantial job.  **Checking where `wh_guard` is actually used shrinks
+the gap to almost nothing.**
+
+**`EquivBA.wh_guard` is used in exactly TWO places in the entire
+development**, both wrappers in `GkatChainFragmentProofs`:
+`wh_guard_semantic_zero` (swap the guard to `0`) and
+`wh_guard_semantic_one` (swap it to `1`).  Nothing else in ~40 files
+touches it.
+
+**The `0` case needs no loop-guard transport at all.**  Three new
+theorems in the standalone weakened relation, all `[propext]`:
+
+* `ite_one` — `e +_1 f ≡ e`, from U8 and S4.
+* **`u7`** — `e +_0 f ≡ f`, via U2, the derived `ite_guard`, and
+  `ite_one`.
+* **`wh_zero_free`** — **a loop with a semantically-false guard is
+  `skip`, with NO transport on the LOOP.**  W1 moves the guard into an
+  `ite`, where the now-derived `ite_guard` applies, and U7 finishes.
+
+So the wrapper the development leans on most is derivable without
+`wh_guard` entirely.  The trick generalizes the point of 157: **W1 turns
+a loop-guard question into a conditional-guard question**, and
+conditional guards are settled.
+
+**What is left of the gap.**  Only `wh_guard_semantic_one`, and only
+because its composite target (`wh b e ≡ 0` for a valid guard) routes
+through exit emission rather than unrolling: `wh_emits_exit_all` gives
+`wh b e ≡ (wh b e)·(¬b)?`, and with `b ≡_BA 1` that is `·0?`, hence `0`
+by S3.  That derivation also uses no `wh_guard` — but it lives on
+`productive_loop`, which has not been ported to the standalone setting,
+so it is verified in the repo rather than in the deliberately weakened
+relation.
+
+**Honest status of the admissibility claim.**  `ite_guard`: proved
+admissible outright.  `wh_guard`: proved admissible for productive
+bodies; its two actual uses are one case proved transport-free and one
+case whose repo derivation is transport-free but not yet reproduced in
+the weakened relation.  **No claim anywhere in the development depends
+on an unproved reading** — which is the property iteration 154 wrongly
+asserted was unavailable, and 157–158 have now actually established.

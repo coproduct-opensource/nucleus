@@ -209,6 +209,36 @@ theorem wh_guard_productive {b c : BExp T} (h : BAeq b c) (e : Exp A T)
     Eqv.trans (Eqv.w1 c e) (ite_guard (fun W => (h W).symm) _ _)
   Eqv.trans (Eqv.w3 hp unroll) (Eqv.s5 (.wh b e))
 
+/-! ## Consequence: the repo's only `wh_guard` uses do not need it
+
+    In the main development `EquivBA.wh_guard` is used in exactly two
+    places, both wrappers that swap a guard to `0` or to `1`
+    (`wh_guard_semantic_zero`, `wh_guard_semantic_one`).  The `0` case
+    needs no guard transport on the LOOP at all — unrolling by W1 moves
+    the guard into an `ite`, where the now-proved `ite_guard` applies. -/
+
+/-- `e +_1 f ≡ e` — from U8 and S4. -/
+theorem ite_one (e f : Exp A T) : Eqv (.ite .one e f) e :=
+  Eqv.trans (Eqv.symm (Eqv.s4 (.ite .one e f)))
+    (Eqv.trans (u8 .one e f) (Eqv.s4 e))
+
+/-- **U7.** `e +_0 f ≡ f`. -/
+theorem u7 (e f : Exp A T) : Eqv (.ite .zero e f) f :=
+  Eqv.trans (Eqv.u2 .zero e f)
+    (Eqv.trans (ite_guard (by intro W; simp [bval]) f e) (ite_one f e))
+
+/-- **A loop with a semantically-false guard is `skip`, with NO loop
+    guard transport.**  W1 moves the guard into an `ite`, where the
+    derived `ite_guard` applies, and U7 finishes. -/
+theorem wh_zero_free {b : BExp T} (h : BAeq b .zero) (e : Exp A T) :
+    Eqv (.wh b e) (.test .one) :=
+  Eqv.trans (Eqv.w1 b e)
+    (Eqv.trans (ite_guard h (.seq e (.wh b e)) (.test .one))
+      (u7 (.seq e (.wh b e)) (.test .one)))
+
+#print axioms ite_one
+#print axioms u7
+#print axioms wh_zero_free
 #print axioms ite_guard
 #print axioms wh_guard_productive
 
