@@ -3436,3 +3436,70 @@ shape, not a straight implication) plus the subsystem lemmas for
 factoring labels of nested states. The coinductive character is now
 explicit and unavoidable: UNIF is self-referential in precisely the
 way UA would have discharged, which is why the axiom was there.
+
+## Iteration 115 — ★ THE ACYCLIC HALF OF UNIF, PROVEN ★ (fixpoint confined to cycles)
+
+Iteration 114 ended by calling UNIF "self-referential in precisely the
+way UA would have discharged".  That was right but INCOMPLETE: the
+self-reference is real, and it is CONFINED TO CYCLES.  Six new
+theorems, all type-checked sorry-free:
+
+* `foldr_congr_equivBA`, `eqRHS_congr_equivBA` (ZERO axioms) —
+  equations respect `EquivBA` at the arm targets.
+* `bisimRep_idem` — representatives are idempotent
+  (`bisimRep_coherent ∘ bisimRep_bisim`).
+* **`unif_of_wf`** [propext, Classical.choice, Quot.sound] — if every
+  arm strictly descends a rank ON CLASSES, then every state's label is
+  provably equal to its class representative's label.
+* `unif_bisim_of_wf` — hence bisimilar states carry provably-equal
+  labels.
+* `unif_sum_of_wf` — the Thompson-sum instance, discharging the
+  solving hypothesis by `sum_solves_std` + `sumof_exhaustive`.
+
+**THE MOVE THAT BREAKS THE CIRCULARITY (in the acyclic case).**  The
+obstruction was: `equation_transport` needs a CLASS-CONSISTENT family,
+and `stdSum` being class-consistent IS UNIF.  The escape: do not use
+`sol`; use **`sol' := sol ∘ bisimRep`** — "the label of my class
+representative".  `sol'` is class-consistent BY CONSTRUCTION and for
+free, because bisimilar states have LITERALLY EQUAL representatives
+(`bisimRep_coherent`), so the values are equal, not merely `EquivBA`.
+No UNIF is needed to know that.  Then
+
+    sol x  ≈  eqRHS sol x           (sol solves)
+           ≈  eqRHS sol' x          (arm-target UNIF, from the IH)
+           ≈  eqRHS sol' (rep x)    (equation_transport — sol' is OK!)
+           ≈  eqRHS sol (rep x)     (arm-target UNIF, from the IH)
+           ≈  sol (rep x)           (sol solves)
+
+The two outer steps are free.  The transport step is free.  The two
+inner conversions need UNIF ONLY AT THE ARM TARGETS — so along a
+strictly descending rank the induction closes.  `bisimRep_idem` is
+what lets the second conversion reuse `hdesc` at `rep x`.
+
+**WHAT IS AND IS NOT SETTLED.**  Settled: UNIF is a theorem on any
+well-founded class graph, with no uniqueness axiom, no schedules, no
+role witnesses, no trimming.  Not settled, and this is the whole
+residue: a class that can reach ITSELF.  There the arm targets do not
+descend, the IH is unavailable, and the chain's two inner conversions
+are exactly the statement being proved.  This is precisely where the
+n-ary UA does its work, and it is precisely the six strata's content
+(loopfree/atomic/gloops/chain/two/chord were each a cyclic case
+cracked by hand).  So iteration 115 does NOT shrink the hard core —
+it proves that everything OUTSIDE the hard core is now free, and
+states the hard core as sharply as it can be stated:
+
+    for a class C that reaches itself, and s, t ∈ C on opposite sides
+    of the sum, prove EquivBA (stdSum s) (stdSum t)
+
+with `sum_solves_std` (both are solutions), `sum_solution_rigid` (the
+solution space is one class), the subsystem lemmas, and per-loop
+`ParametricCanonicalBA` all available as leverage, and with the
+acyclic surroundings already unified by `unif_of_wf`.
+
+Note the shape this leaves: the induction may now be run on a rank
+that is only required to descend ACROSS classes, with cyclic classes
+as the base cases.  That is exactly the `scc_block_schedP` /
+`scc_rank_sched` interface built in iterations 83-96 — the schedule
+calculus is NOT dead after all; iteration 114 retired it from the
+critical path for the ACYCLIC part, and this iteration shows the
+cyclic part is where it was always meant to apply.

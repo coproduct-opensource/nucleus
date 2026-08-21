@@ -1788,4 +1788,157 @@ theorem equivBA_of_unif (e f : Exp A T)
 #print axioms sum_solves_std
 #print axioms equivBA_of_unif
 
+/-! ## UNIF holds wherever the class graph is well-founded
+
+    The fixpoint obstruction identified in iteration 114 is REAL but it
+    is CONFINED.  Write `sol' := sol ∘ bisimRep` — the "label of my
+    class representative" family.  It is class-consistent by
+    construction (bisimilar states have EQUAL representatives, so the
+    values are literally equal), which is exactly what
+    `equation_transport` needs and what `sol` itself does not have.
+    That gives a four-step chain
+
+      sol x ≈ eqRHS sol x ≈ eqRHS sol' x ≈ eqRHS sol' (rep x)
+            ≈ eqRHS sol (rep x) ≈ sol (rep x)
+
+    whose two outer `≈`s are "sol solves" and whose two inner
+    `eqRHS sol ↔ eqRHS sol'` conversions need UNIF only AT THE ARM
+    TARGETS.  So along a strictly descending rank the induction closes
+    and UNIF is a THEOREM — no uniqueness axiom, no schedules.  The
+    residue is precisely the cyclic case: a class that can reach
+    itself, where the arm targets do not descend. -/
+
+/-- Arm-wise `EquivBA` congruence for equations. -/
+theorem foldr_congr_equivBA {S : Type} (hlt : BExp T)
+    {sol₁ sol₂ : S → Exp A T} :
+    ∀ L : List (BExp T × A × S),
+      (∀ e ∈ L, EquivBA (sol₁ e.2.2) (sol₂ e.2.2)) →
+      EquivBA
+        (L.foldr (fun t acc =>
+          Exp.ite t.1 (Exp.seq (.act t.2.1) (sol₁ t.2.2)) acc) (.test hlt))
+        (L.foldr (fun t acc =>
+          Exp.ite t.1 (Exp.seq (.act t.2.1) (sol₂ t.2.2)) acc) (.test hlt)) := by
+  intro L
+  induction L with
+  | nil => intro _; exact EquivBA.base (Equiv.refl _)
+  | cons hd tl ih =>
+      intro hL
+      exact EquivBA.ite_c
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (hL hd (List.mem_cons_self ..)))
+        (ih (fun e he => hL e (List.mem_cons_of_mem _ he)))
+
+/-- Equations respect `EquivBA` at the arm targets. -/
+theorem eqRHS_congr_equivBA {S : Type} (aut : GkatKleene.GAut S A T)
+    {sol₁ sol₂ : S → Exp A T} (s : S)
+    (h : ∀ e ∈ aut.trans s, EquivBA (sol₁ e.2.2) (sol₂ e.2.2)) :
+    EquivBA (GkatKleene.eqRHS aut sol₁ s) (GkatKleene.eqRHS aut sol₂ s) :=
+  foldr_congr_equivBA (aut.hlt s) (aut.trans s) h
+
+/-- Representatives are idempotent. -/
+theorem bisimRep_idem {S : Type} (aut : GkatKleene.GAut S A T) (s : S) :
+    GkatPlanExistence.bisimRep aut (GkatPlanExistence.bisimRep aut s)
+      = GkatPlanExistence.bisimRep aut s :=
+  (GkatPlanExistence.bisimRep_coherent aut
+    (GkatPlanExistence.bisimRep_bisim aut s)).symm
+
+open Classical in
+/-- **UNIF ON WELL-FOUNDED CLASS GRAPHS**: if every arm strictly descends
+    a rank on classes, then every state's label is provably equal to its
+    class representative's label — hence bisimilar states carry
+    provably-equal labels.  The acyclic half of the open problem, with
+    no uniqueness axiom anywhere. -/
+theorem unif_of_wf {S : Type} [DecidableEq A] (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T)
+    (hsolves : ∀ s : S, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (rank : S → Nat)
+    (hdesc : ∀ s : S, ∀ e ∈ aut.trans s,
+      rank (GkatPlanExistence.bisimRep aut e.2.2)
+        < rank (GkatPlanExistence.bisimRep aut s)) :
+    ∀ s : S, EquivBA (sol s)
+      (sol (GkatPlanExistence.bisimRep aut s)) := by
+  have hcons : ∀ u u' : S, GkatPlanExistence.GenBisimilar aut u u' →
+      EquivBA (sol (GkatPlanExistence.bisimRep aut u))
+        (sol (GkatPlanExistence.bisimRep aut u')) := by
+    intro u u' hb
+    rw [GkatPlanExistence.bisimRep_coherent aut hb]
+    exact EquivBA.base (Equiv.refl _)
+  intro s
+  refine (InvImage.wf (fun x => rank (GkatPlanExistence.bisimRep aut x))
+    Nat.lt_wfRel.wf).induction
+    (C := fun x => EquivBA (sol x)
+      (sol (GkatPlanExistence.bisimRep aut x))) s ?_
+  intro x ih
+  -- step 2: eqRHS sol x ≈ eqRHS (sol ∘ rep) x
+  have hstep2 : EquivBA (GkatKleene.eqRHS aut sol x)
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t)) x) := by
+    refine eqRHS_congr_equivBA aut x ?_
+    intro e he
+    exact ih e.2.2 (hdesc x e he)
+  -- step 3: transport across the class
+  have hstep3 : EquivBA
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t)) x)
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t))
+        (GkatPlanExistence.bisimRep aut x)) :=
+    equation_transport aut (GkatPlanExistence.bisimRep_bisim aut x) _ hcons
+  -- step 4: back to sol at the representative
+  have hstep4 : EquivBA
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t))
+        (GkatPlanExistence.bisimRep aut x))
+      (GkatKleene.eqRHS aut sol (GkatPlanExistence.bisimRep aut x)) := by
+    refine eqRHS_congr_equivBA aut _ ?_
+    intro e he
+    refine EquivBA.symm (ih e.2.2 ?_)
+    have hd := hdesc (GkatPlanExistence.bisimRep aut x) e he
+    rw [bisimRep_idem aut x] at hd
+    exact hd
+  exact EquivBA.trans (hsolves x)
+    (EquivBA.trans hstep2
+      (EquivBA.trans hstep3
+        (EquivBA.trans hstep4
+          (EquivBA.symm (hsolves (GkatPlanExistence.bisimRep aut x))))))
+
+open Classical in
+/-- Bisimilar states carry provably-equal labels, on a well-founded
+    class graph. -/
+theorem unif_bisim_of_wf {S : Type} [DecidableEq A]
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (hsolves : ∀ s : S, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (rank : S → Nat)
+    (hdesc : ∀ s : S, ∀ e ∈ aut.trans s,
+      rank (GkatPlanExistence.bisimRep aut e.2.2)
+        < rank (GkatPlanExistence.bisimRep aut s))
+    {s t : S} (hb : GkatPlanExistence.GenBisimilar aut s t) :
+    EquivBA (sol s) (sol t) := by
+  refine EquivBA.trans (unif_of_wf aut sol hsolves rank hdesc s) ?_
+  rw [GkatPlanExistence.bisimRep_coherent aut hb]
+  exact EquivBA.symm (unif_of_wf aut sol hsolves rank hdesc t)
+
+open Classical in
+/-- The Thompson-sum instance: on an acyclic class graph, the canonical
+    labels of bisimilar states of the RAW sum are provably equal. -/
+theorem unif_sum_of_wf (e f : Exp A T) [DecidableEq A]
+    (rank : ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Nat)
+    (hdesc : ∀ s, ∀ arm ∈ (GkatTrim.SUMof A T e f).trans s,
+      rank (GkatPlanExistence.bisimRep (GkatTrim.SUMof A T e f) arm.2.2)
+        < rank (GkatPlanExistence.bisimRep (GkatTrim.SUMof A T e f) s))
+    {s t : _} (hb : GkatPlanExistence.GenBisimilar
+      (GkatTrim.SUMof A T e f) s t) :
+    EquivBA (stdSum e f s) (stdSum e f t) :=
+  unif_bisim_of_wf _ (stdSum e f)
+    (fun x => sum_solves_std e f x (GkatDecide.sumof_exhaustive e f x))
+    rank hdesc hb
+
+#print axioms foldr_congr_equivBA
+#print axioms eqRHS_congr_equivBA
+#print axioms bisimRep_idem
+#print axioms unif_of_wf
+#print axioms unif_bisim_of_wf
+#print axioms unif_sum_of_wf
+
 end GkatCensus
