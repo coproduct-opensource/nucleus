@@ -9198,3 +9198,72 @@ floor: failures now print, and skips can no longer masquerade as failures.
 more full-collapse failures than one — so: raise the cap further, sample
 harder, and count exits on every failure.  If it holds at n in the dozens, it
 converts the complementarity from a measured coincidence into a reason.
+
+---
+
+## 204 — THE CANONICAL QUOTIENT.  The existential gets a name.
+
+**Why this became urgent.**  Carter–Ferrante–Thomborson (2003), "Folklore
+Confirmed: Reducible Flow Graphs are Exponentially Larger": making an
+irreducible graph reducible by NODE SPLITTING can require `2^(n-1)` nodes, and
+that bound is unavoidable.  Node splitting is un-collapsing — descending the
+bisimulation lattice — and here the supply of nodes is capped by the Thompson
+sum.  If restoring solvability ever needed more nodes than the sum affords,
+`SumQuotientSolvable` would be FALSE.  That makes the existential worth
+replacing, not just proving.
+
+**There is a canonical candidate, and it needs no search.**  Proving `e ≡ f`
+requires identifying the two start states; identifying them FORCES identifying
+their successors atom by atom, to a fixpoint.  The smallest congruence
+containing `(0, start_b)` is therefore the LEAST quotient any proof could use —
+every admissible quotient is coarser.  Since the pair is language-equivalent
+the two starts are bisimilar, so the closure stays inside bisimilarity and is
+automatically behavioural.  `start_congruence` computes it by union-find in
+`O(k^2 · NA)` per round.
+
+**Measured on every open pair (240 000; NA=3 at 120 000):**
+
+    NA=2   canonical solved 103/104      NA=3   190/190      NA=4   250/250
+    not behavioural: 0, 0, 0        too big to build: 0, 0, 0      skipped: 0
+
+The "not behavioural 0" is the prediction confirmed: the closure never leaves
+bisimilarity, on any of 544 pairs.
+
+**The rate is identical to the full collapse** — same numerator, same
+denominator, same single failing pair.  That is not a coincidence to wave at:
+it says the LEAST and GREATEST admissible quotients behave alike here, which is
+what one would expect if solvability is not actually delicate in the lattice
+for these instances.
+
+**The one failure is my calculus, not the quotient.**  Pair #156950's canonical
+quotient is `eliminable=true` under the independent elimination oracle, and
+`nested=true`.  Its shape, and the reason the earlier hand analysis stalled:
+
+    c0: st=[c1,c2]   c1: hl=11 st=[-,-]   c2: st=[c3,c3]
+    c3: st=[c4,c5]   c4: st=[c1,c2]       c5: st=[c1,c5]
+
+`c1` halts on BOTH atoms with no transitions — it is `1`.  So the "exit to an
+external state" that defeated rule 5 at 203 was a HALT all along; what is
+genuinely external is `c5 = wh{a1}(p)·p`.  The SCC `{c2,c3,c4}` therefore has
+one halt-exit and one continuation-exit, and rule 5 handles only the halt.
+
+**CAVEAT, stated rather than buried:** `eliminable=true` is an ORACLE verdict.
+That oracle is known sound on REJECTION for non-nested automata; its
+ACCEPTANCE is not independently language-checked here.  So the correct claim is
+"the oracle reports this solvable", not "this is verified solvable".
+Extracting the expression and language-checking it is the next step, and until
+then the 543/544 figure carries that one asterisk.
+
+**What this changes about the target.**  The remainder was: *for every
+language-equivalent pair, SOME admissible quotient is solved by the rules.*  It
+can now be attempted as: *the LEAST admissible quotient — computed, not chosen
+— is solved by the rules.*  That is strictly harder as a statement and strictly
+easier as a proof obligation, because there is no longer a quotient to conjure:
+`start_congruence` produces it.
+
+**Odds: 70%, up 2.**  The rise is for the target's shape, not for new coverage:
+an existential over an exponentially large lattice has been replaced by a
+canonical construction that holds on 544 of 544 pairs (543 by the calculus, one
+by oracle).  Against it: that last pair still needs a rule my calculus does not
+have, the oracle's acceptance is unverified, and the field's prior that this
+problem does not close still stands.

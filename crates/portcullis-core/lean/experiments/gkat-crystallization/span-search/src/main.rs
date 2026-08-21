@@ -2305,6 +2305,86 @@ fn thompson_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>,
 /// a quotient that keeps them apart proves nothing about `e ≡ f`.  This check
 /// was missing, so every lattice figure before iteration 197 counted quotients
 /// that were solvable but useless.
+/// **THE CANONICAL QUOTIENT** (iteration 204).  `SumQuotientSolvable` is an
+/// EXISTENTIAL — *some* behavioural quotient of the Thompson sum has a
+/// solution — and an existential is a poor target: the search over the
+/// congruence lattice is expensive, and proving one requires exhibiting a
+/// quotient out of thin air.
+///
+/// There is a canonical candidate.  Proving `e ≡ f` requires identifying the
+/// two start states, and identifying them FORCES identifying their successors
+/// atom-by-atom, and so on.  The smallest congruence containing `(0, start_b)`
+/// is therefore the LEAST quotient any proof could use — every admissible
+/// quotient is coarser.  It needs no search: close `(0, start_b)` under
+/// successors to a fixpoint.
+///
+/// Because the pair is language-equivalent the two starts are bisimilar, so
+/// the closure stays inside bisimilarity and is automatically a behavioural
+/// congruence; the halt-mask check below is a guard, not an expectation.
+///
+/// This matters because of the exponential-blowup theorem for node splitting
+/// (Carter–Ferrante–Thomborson 2003): making an irreducible graph reducible
+/// can need `2^(n-1)` nodes, and here the supply of nodes is capped by the
+/// Thompson sum.  If solvability ever required descending BELOW this canonical
+/// quotient by more than the sum affords, the existential would fail.  So the
+/// sharp question is whether the LEAST quotient is already solvable.
+fn start_congruence<const NA: usize>(su: &Aut<NA>, start_b: usize)
+    -> Option<([usize; MAXK], usize)>
+{
+    let k = su.k as usize;
+    if start_b >= k { return None; }
+    let mut uf: [usize; MAXK] = [0; MAXK];
+    for (i, e) in uf.iter_mut().enumerate().take(k) { *e = i; }
+    fn find(uf: &mut [usize; MAXK], x: usize) -> usize {
+        let mut r = x;
+        while uf[r] != r { r = uf[r]; }
+        let mut c = x;
+        while uf[c] != c { let n = uf[c]; uf[c] = r; c = n; }
+        r
+    }
+    let ra = find(&mut uf, 0);
+    let rb = find(&mut uf, start_b);
+    if ra != rb { uf[ra] = rb; }
+    // Close under successors: whenever two states are identified, so are their
+    // targets on every atom where both are defined.
+    loop {
+        let mut changed = false;
+        for u in 0..k {
+            for v in (u + 1)..k {
+                if find(&mut uf, u) != find(&mut uf, v) { continue; }
+                for y in 0..NA {
+                    let (tu, tv) = (su.st[u][y], su.st[v][y]);
+                    if tu == 0 || tv == 0 { continue; }
+                    let (pu, pv) = (find(&mut uf, (tu - 1) as usize),
+                        find(&mut uf, (tv - 1) as usize));
+                    if pu != pv { uf[pu] = pv; changed = true; }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    // Renumber classes, block 0 first, and verify the merge is behavioural.
+    let mut blk = [0usize; MAXK];
+    let mut reps: Vec<usize> = Vec::new();
+    for x in 0..k {
+        let r = find(&mut uf, x);
+        blk[x] = match reps.iter().position(|&t| t == r) {
+            Some(i) => i,
+            None => { reps.push(r); reps.len() - 1 }
+        };
+    }
+    for u in 0..k {
+        for v in (u + 1)..k {
+            if blk[u] != blk[v] { continue; }
+            if su.hl[u] != su.hl[v] { return None; }
+            for y in 0..NA {
+                if (su.st[u][y] == 0) != (su.st[v][y] == 0) { return None; }
+            }
+        }
+    }
+    Some((blk, reps.len()))
+}
+
 fn solvable_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>, elim: bool,
     start_b: usize) -> bool {
     // The top-of-lattice verdict is precomputed; recomputing it here ran the full backtracking
@@ -5677,6 +5757,11 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_open_calc = 0usize;
     let mut n_fail_scc = 0usize;
     let mut n_calc_skipped = 0usize;
+    let mut n_canon = 0usize;
+    let mut n_canon_ok = 0usize;
+    let mut n_canon_skipped = 0usize;
+    let mut n_canon_toobig = 0usize;
+    let mut n_canon_nonbehav = 0usize;
     let mut n_fail_exits = 0usize;
     let mut n_fail_multiexit = 0usize;
     let mut n_open_calc_ok = 0usize;
@@ -6082,6 +6167,43 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 && calculus_somewhere_in_lattice(&su, 4, a.k as usize + 1) {
                 n_open_calc_lattice += 1;
             }
+            // THE CANONICAL QUOTIENT, measured on every open pair.  This is
+            // the LEAST congruence identifying the two starts, so it needs no
+            // search and no existential — if the calculus solves it, the
+            // target theorem can NAME its quotient instead of asserting one
+            // exists.
+            match start_congruence(&su, a.k as usize + 1) {
+                None => n_canon_nonbehav += 1,
+                Some((cb, cnb)) => match quotient_by(&su, &cb, cnb) {
+                    None => n_canon_toobig += 1,
+                    Some(cq) => {
+                        n_canon += 1;
+                        let sc = sccs_of(&cq);
+                        if sc.iter().any(|c| c.len() >= 2 && !calculus_attempted(c)) {
+                            n_canon_skipped += 1;
+                        } else if sc.iter().all(|c| c.len() < 2
+                            || calculus_solves(&cq, c, 5)) {
+                            n_canon_ok += 1;
+                        } else {
+                            // Separate "my calculus is incomplete here" from
+                            // "this quotient is genuinely unsolvable": the
+                            // independent elimination oracle decides it.
+                            println!("  CANONICAL QUOTIENT UNSOLVED (pair #{pairs_done}, k={}): \
+                                eliminable={} nested={}",
+                                cq.k, symbolic_eliminable_raw(&cq), nested(&cq));
+                            for s in 0..(cq.k as usize) {
+                                let row: Vec<String> = (0..NA).map(|i| {
+                                    let t = cq.st[s][i];
+                                    if t == 0 { "-".to_string() }
+                                    else { format!("c{}", t - 1) }
+                                }).collect();
+                                println!("    c{s}: hl={:04b} st=[{}]", cq.hl[s],
+                                    row.join(","));
+                            }
+                        }
+                    }
+                }
+            }
             let tl = std::time::Instant::now();
             let lat = !std::env::var("PAD_NO_LAT").is_ok()
                 && solvable_somewhere_in_lattice(&su, false, a.k as usize + 1);
@@ -6166,6 +6288,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  FULL-COLLAPSE calculus failures: {n_fail_scc}; MULTI-EXIT (Kosaraju) {n_fail_multiexit}; total exit states {n_fail_exits}");
     println!("  SCCs NOT ATTEMPTED (larger than the size cap {}): {n_calc_skipped} — counted as UNKNOWN, not as failures",
         calc_max_scc());
+    println!("  CANONICAL QUOTIENT (least congruence identifying the two starts) measured on {n_canon} open pairs; SOLVED by the calculus: {n_canon_ok}; skipped (over size cap) {n_canon_skipped}; too big to build {n_canon_toobig}; not behavioural {n_canon_nonbehav}");
     println!("  OPEN PAIRS where the CALCULUS solves SOME quotient in the lattice: {n_open_calc_lattice} / {n_open_pairs}");
     println!("  [phases] total {:.1}s = lattice {:.1}s + calculus {:.1}s + absorption {:.1}s + rest {:.1}s",
         t_all.elapsed().as_secs_f64(), t_lat.as_secs_f64(), t_calc.as_secs_f64(),
