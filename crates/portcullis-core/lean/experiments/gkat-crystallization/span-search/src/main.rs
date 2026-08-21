@@ -5469,6 +5469,67 @@ fn check_candidate<const NA: usize>() {
     }
 }
 
+/// **THE HALT-IN-BODY RESISTER** (iteration 201).  A 480k-pair NA=3 sweep
+/// turned up a three-state SCC the four-rule calculus cannot solve:
+///
+///     q0: hl={a0,a1} st=[-,-,q1]   q1: hl={} st=[q1,q2,q1]   q2: hl={a1} st=[q0,-,q1]
+///
+/// Two exit states (q0 and q2), so Kosaraju says no aux-variable-free
+/// structuring of the GRAPH exists — but the automaton is a bisimulation
+/// quotient of a Thompson sum, so a solution must exist all the same.  By
+/// hand:
+///
+///     Seg = wh {a0,a2} p ; p                 -- q1's self-loop, ending at q2
+///     X1  = Seg ; X2
+///     X2  = wh {a2} Seg ; ite a1 1 (p ; X0)
+///     X0  = ite a2 (p ; Seg ; wh {a2} Seg ; ite a1 1 (p ; X0)) 1
+///
+/// The last line recurses under a test (`a0`) that DIFFERS from its entry test
+/// (`a2`), and the recursion site sits inside an `ite` whose other branch is a
+/// HALT, not a dead end.  That is the new shape.  It loopifies because the
+/// halt branch is subsumed by the loop guard already being false there:
+///
+///     X0 = wh {a2} (p ; Seg ; wh {a2} Seg ; ite a0 p 1)
+///
+/// After the inner `wh {a2}` exits, `¬a2` holds, so `ite a0 p 1` does `p` on
+/// `a0` (re-entering the head) and NOTHING on `a1` — where the outer guard
+/// `a2` is then false, so the loop exits and accepts, which is exactly what
+/// `q2`'s `a1` halt wanted.  One trailing conditional action serves as both
+/// the back-edge and the second exit.  Checked here rather than argued.
+fn check_r201<const NA: usize>() {
+    if NA != 3 { println!("check_r201: needs NA=3"); return; }
+    let all: u8 = 0b111;
+    let mut q = Aut::<NA>::blank();
+    q.k = 3;
+    q.hl[0] = 0b011;                                            // q0 halts on a0,a1
+    for (i, &t) in [0u8, 0, 2].iter().enumerate() { q.st[0][i] = t; }
+    q.hl[1] = 0b000;                                            // q1 never halts
+    for (i, &t) in [2u8, 3, 2].iter().enumerate() { q.st[1][i] = t; }
+    q.hl[2] = 0b010;                                            // q2 halts on a1
+    for (i, &t) in [1u8, 0, 2].iter().enumerate() { q.st[2][i] = t; }
+    let p = || Ex::Act;
+    let seq = |x: Ex, y: Ex| Ex::Seq(Box::new(x), Box::new(y));
+    // Seg = wh {a0,a2} p ; p
+    let seg = seq(Ex::Wh(0b101, Box::new(p())), p());
+    // X0 = wh {a2} (p ; Seg ; wh {a2} Seg ; ite a0 p 1)
+    let body = seq(p(), seq(seg.clone(), seq(
+        Ex::Wh(0b100, Box::new(seg.clone())),
+        Ex::Ite(0b001, Box::new(p()), Box::new(Ex::Test(all))))));
+    let x0 = Ex::Wh(0b100, Box::new(body));
+    // X2 = wh {a2} Seg ; ite a1 1 (p ; X0)      X1 = Seg ; X2
+    let x2 = seq(Ex::Wh(0b100, Box::new(seg.clone())),
+        Ex::Ite(0b010, Box::new(Ex::Test(all)), Box::new(seq(p(), x0.clone()))));
+    let x1 = seq(seg, x2.clone());
+    for n in [4usize, 6, 8, 10] {
+        println!("  r201 at depth {n}: X0 {} ; X1 {} ; X2 {}",
+            if ex_matches(&x0, &q, 0, n) { "MATCHES" } else { "differs" },
+            if ex_matches(&x1, &q, 1, n) { "MATCHES" } else { "differs" },
+            if ex_matches(&x2, &q, 2, n) { "MATCHES" } else { "differs" });
+    }
+    println!("  r201 calculus (depth 5): {}", calculus_solves(&q, &[0, 1, 2], 5));
+    println!("  r201 calculus (depth 9): {}", calculus_solves(&q, &[0, 1, 2], 9));
+}
+
 fn scc_census<const NA: usize>(nguards: u8) {
     let npairs: usize = std::env::var("PAD_CENSUS_N").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(20_000);
@@ -5478,6 +5539,12 @@ fn scc_census<const NA: usize>(nguards: u8) {
         .and_then(|v| v.parse().ok()).unwrap_or(3);
     let kmax: usize = std::env::var("PAD_CENSUS_KMAX").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(10);
+    // THE REPORTING WALL.  Every lattice-resistant pair dumps two fully
+    // parenthesised `Exp` trees, and `println!` flushes per line, so a run
+    // that finds thousands of them spends all its time in write(2) — the
+    // analysis phases are milliseconds by comparison.  Off by default so the
+    // census scales; set PAD_CENSUS_DUMP=1 to study individual resisters.
+    let dump = std::env::var("PAD_CENSUS_DUMP").is_ok();
     let mut st0: u64 = 0x5EEDCAFE12345678;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
     // keep the GENERATING EXPRESSION alongside each automaton: when a census
@@ -5939,17 +6006,19 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 // candidate counterexample to `SumQuotientSolvable` — the oracle
                 // is sound on rejection of non-nested automata but not complete,
                 // so this is a candidate, not a refutation.  Dump it whole.
-                println!("  LATTICE-RESISTANT PAIR #{pairs_done} (sum k={}):", su.k);
-                for s in 0..(su.k as usize) {
-                    let row: Vec<String> = (0..NA).map(|i| {
-                        let t = su.st[s][i];
-                        if t == 0 { "-".to_string() } else { format!("{}", t - 1) }
-                    }).collect();
-                    println!("    sum state {s}: hl={:04b} st=[{}]", su.hl[s], row.join(","));
+                if dump {
+                    println!("  LATTICE-RESISTANT PAIR #{pairs_done} (sum k={}):", su.k);
+                    for s in 0..(su.k as usize) {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = su.st[s][i];
+                            if t == 0 { "-".to_string() } else { format!("{}", t - 1) }
+                        }).collect();
+                        println!("    sum state {s}: hl={:04b} st=[{}]", su.hl[s], row.join(","));
+                    }
+                    println!("    nesting coequation: {}; total: {}", nested(&su), total_aut(&su));
+                    println!("    e = {aexp}");
+                    println!("    f = {bexp}");
                 }
-                println!("    nesting coequation: {}; total: {}", nested(&su), total_aut(&su));
-                println!("    e = {aexp}");
-                println!("    f = {bexp}");
                 // EXIT ABSORPTION, constructed and language-checked in Rust
                 for c in sccs_of(&q) {
                     if c.len() < 2 { continue; }
@@ -5958,12 +6027,17 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     if exit_states(&q, &c) > 1 { n_res_multiexit += 1; }
                     if gated_applicable(&q, &c) {
                         n_gated_scc += 1;
-                        println!("    gated identification applies on scc {c:?}");
+                        if dump { println!("    gated identification applies on scc {c:?}"); }
                     }
                     if calculus_solves(&q, &c, 5) {
                         n_calculus += 1;
-                        println!("    THREE-RULE CALCULUS solves scc {c:?} (language-checked)");
+                        if dump {
+                            println!("    THREE-RULE CALCULUS solves scc {c:?} (language-checked)");
+                        }
                     } else {
+                        // ALWAYS printed, dump or not: an SCC the calculus cannot
+                        // solve is the one thing this census exists to find.
+                        println!("  PAIR #{pairs_done} (sum k={}):", su.k);
                         println!("    CALCULUS-RESISTANT scc {c:?}:");
                         for &s in c.iter() {
                             let row: Vec<String> = (0..NA).map(|i| {
@@ -5979,8 +6053,13 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     if let Some(ok) = av {
                         n_absorb_shape += 1;
                         if ok { n_absorb_verified += 1; }
-                        println!("    exit absorption on scc {c:?}: {}",
-                            if ok { "VERIFIED" } else { "MISMATCH" });
+                        // A MISMATCH is a soundness alarm, not a statistic: it
+                        // says a construction the Lean proves correct disagreed
+                        // with the language.  Never silence it.
+                        if dump || !ok {
+                            println!("    exit absorption on scc {c:?}: {}",
+                                if ok { "VERIFIED" } else { "MISMATCH" });
+                        }
                     }
                 }
             }
@@ -6292,6 +6371,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_CHECK_CAND").is_ok() {
         check_candidate::<NA>();
+        return;
+    }
+    if std::env::var("PAD_CHECK_R201").is_ok() {
+        check_r201::<NA>();
         return;
     }
     if std::env::var("PAD_SCC_CENSUS").is_ok() {

@@ -5540,4 +5540,88 @@ theorem entry_restricted_trailing {g R F₁ F₂ : BExp T} {B : Exp A T}
 
 #print axioms entry_restricted_trailing
 
+/-- A guard that is identically `0` selects the else arm. -/
+theorem ite_zero_guard (e f : Exp A T) :
+    EquivBA (.ite .zero e f : Exp A T) f :=
+  EquivBA.trans (EquivBA.base (Equiv.u2 .zero e f))
+    (EquivBA.trans
+      (EquivBA.ite_guard (b := (.not .zero : BExp T)) (c := .one)
+        (fun _ _ _ => rfl))
+      (ite_one f e))
+
+#print axioms ite_zero_guard
+
+/-- **RULE 5: HALT-IN-BODY LOOPIFICATION.**
+
+    Iteration 201's census resister is a three-state SCC whose solution
+    recurses under a test (`c`) that DIFFERS from its entry test (`g`), with
+    the recursion site sitting inside an `ite` whose *other* branch is a HALT
+    rather than a dead end:
+
+        X ≡ ite g (D · ite c (P · X) 1) 1        with  D · ¬g ≡ D
+
+    The four rules proved so far cannot close this: `exit_absorb` needs the
+    mid-body exit to be reachable from the loop head's own halt, and
+    `entry_restricted_trailing` needs one trailing test to cover every exit.
+    Here the second exit lives *inside* the body.
+
+    It loopifies anyway, because the halt branch is subsumed by the loop guard
+    already being false where it sits.  `D · ¬g ≡ D` says the body lands
+    outside `g`; so in the else arm of `c`, `X` unrolls to `1` — and dropping
+    the recursive call there is exactly what turns the body into `D · ite c P 1`
+    with `g` alone as the loop guard.  One trailing conditional action then
+    serves as both the back-edge and the second exit.
+
+    No auxiliary variable, no n-ary uniqueness: `w3_ba` at one unknown. -/
+theorem halt_in_body_loopify {g c : BExp T} {D P X : Exp A T}
+    (hprod : EquivBA
+      (.test (E (.seq D (.ite c P (.test .one)))) : Exp A T) (.test .zero))
+    (hD : EquivBA (.seq D (.test (.not g))) D)
+    (hX : EquivBA X
+      (.ite g (.seq D (.ite c (.seq P X) (.test .one))) (.test .one))) :
+    EquivBA X (.wh g (.seq D (.ite c P (.test .one)))) := by
+  -- Outside the loop guard the unknown is inert: `¬g · X ≡ ¬g · 1`.
+  have hXng : EquivBA (.seq (.test (.not g)) X)
+      (.seq (.test (.not g)) (.test .one)) := by
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hX) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite (.not g) g _ _) ?_
+    refine EquivBA.trans
+      (EquivBA.ite_guard (GkatGuardedAlgebra.bnot_and_self g)) ?_
+    exact ite_zero_guard _ _
+  -- Sequencing the folded body with the unknown reproduces the equation's RHS.
+  have hbody : EquivBA
+      (.seq (.seq D (.ite c P (.test .one))) X)
+      (.seq D (.ite c (.seq P X) (.test .one))) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc _ _ _) ?_
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (GkatGuardedAlgebra.ite_seq_right c P (.test .one) X)) ?_
+    -- Insert the landing assertion `¬g` supplied by `hD`, then use `hXng`.
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.symm hD)
+      (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc _ _ _) ?_
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (GkatGuardedAlgebra.test_seq_ite (.not g) c (.seq P X)
+        (.seq (.test .one) X))) ?_
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.trans
+          (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+            (GkatGuardedAlgebra.one_seq X))
+          hXng))) ?_
+    -- Retract the assertion and restore the `c` guard.
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (EquivBA.symm (GkatGuardedAlgebra.test_seq_ite (.not g) c
+        (.seq P X) (.test .one)))) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc' _ _ _) ?_
+    exact EquivBA.seq_c hD (EquivBA.base (Equiv.refl _))
+  have hX' : EquivBA X
+      (.ite g (.seq (.seq D (.ite c P (.test .one))) X) (.test .one)) :=
+    EquivBA.trans hX
+      (EquivBA.ite_c (EquivBA.symm hbody) (EquivBA.base (Equiv.refl _)))
+  exact EquivBA.trans (EquivBA.w3_ba hprod hX')
+    (GkatGuardedAlgebra.seq_one _)
+
+#print axioms halt_in_body_loopify
+
 end GkatCensus

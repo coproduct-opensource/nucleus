@@ -8977,3 +8977,85 @@ I already knew it closed.  The evidence about SUFFICIENCY is unchanged: four
 rules cover everything measured, and there is still no theorem that four
 suffice.  What 197 taught is that a bigger sample finds new shapes, so the
 honest next move is a bigger sample — not another rule.
+
+---
+
+## 201 — THE HALT-IN-BODY RULE.  The bigger sample paid, and rule 5 is proved.
+
+200's ledger said the honest next move was a bigger sample, not another rule.
+The bigger sample produced another rule.  Both halves of that sentence matter.
+
+**First, the perf note at 200 was wrong about its own cause, twice over.**
+Phase timers say NA=3 analyses 180 000 pairs in 0.6s — the analysis was never
+the problem.  Two things were:
+
+1. *The reporting wall.*  Every lattice-resistant pair dumped two fully
+   parenthesised `Exp` trees, and Rust's `println!` flushes per line, so a run
+   finding thousands of them spent its life in `write(2)`.  Now gated behind
+   `PAD_CENSUS_DUMP`, with two exceptions that ALWAYS print: a
+   calculus-resistant SCC (the thing the census exists to find) and an
+   absorption MISMATCH (a soundness alarm, not a statistic).
+2. *A memory ceiling.*  With the dump gated, NA=3 dies at `exit=137` — SIGKILL
+   — at ~291s whether N is 240 000 or 480 000.  Identical time for doubled work
+   is the signature of an OOM, not of slow analysis.  Still open; not guessed
+   at.  What it did NOT turn out to be is anything superlinear in the analysis,
+   which is what 200 supposed.
+
+**Second, and the real result.**  Before dying, the 480k NA=3 sweep found a
+three-state SCC the four-rule calculus cannot solve — at depth 5 *and* at depth
+9, so not a search-depth shortfall:
+
+    q0: hl={a0,a1} st=[-,-,q1]   q1: hl={} st=[q1,q2,q1]   q2: hl={a1} st=[q0,-,q1]
+
+Two exit states, q0 and q2.  Kosaraju says no aux-variable-free structuring of
+the GRAPH exists — but the automaton is a bisimulation quotient of a Thompson
+sum, so every state is bisimilar to a Thompson state, and a solution must
+exist.  Solving it by hand:
+
+    Seg = wh {a0,a2} p ; p
+    X1  = Seg ; X2
+    X2  = wh {a2} Seg ; ite a1 1 (p ; X0)
+    X0  = ite a2 (p ; Seg ; wh {a2} Seg ; ite a1 1 (p ; X0)) 1
+
+The last line is the new shape: it recurses under a test (`a0`) that DIFFERS
+from its entry test (`a2`), and the recursion site sits inside an `ite` whose
+other branch is a HALT, not a dead end.  Neither `exit_absorb` (which needs the
+mid-body exit reachable from the head's own halt) nor `entry_restricted_trailing`
+(which needs one trailing test to cover every exit) reaches an exit living
+*inside* the body.
+
+It loopifies anyway:
+
+    X0 = wh {a2} (p ; Seg ; wh {a2} Seg ; ite a0 p 1)
+
+`ex_matches` confirms X0, X1, X2 all MATCH the automaton at depths 4, 6, 8, 10
+(`PAD_CHECK_R201`), so the derivation is checked, not argued.
+
+**Rule 5, proved in Lean, ZERO AXIOMS** (`halt_in_body_loopify`) — not even
+`propext` or `Classical.choice`:
+
+    X ≡ ite g (D · ite c (P · X) 1) 1     and     D · ¬g ≡ D
+    ────────────────────────────────────────────────────────
+    X ≡ wh g (D · ite c P 1)
+
+The hypothesis `D · ¬g ≡ D` — the body lands outside the loop guard — is what
+pays for it: in the else arm of `c` the unknown unrolls to `1`, so dropping the
+recursive call there is exactly what turns the body into `D · ite c P 1` with
+`g` alone as the guard.  One trailing conditional action serves as BOTH the
+back-edge and the second exit.  `w3_ba` at one unknown; no n-ary uniqueness.
+Supporting lemma `ite_zero_guard`, also zero axioms.
+
+**Odds: 66%, held — and the reasons cut both ways.**  Against: the four-rule
+calculus was NOT complete, and I had said at 200 that the evidence for
+sufficiency was unchanged while quietly hoping four was the number.  It was
+five.  A calculus that grows a rule each time the sample grows is not obviously
+converging, and the field's prior that this problem does not close still
+stands.  For: the new rule was found, derived, machine-checked against the
+witness, and proved in Lean inside a single iteration, and it needed no new
+axiom and no auxiliary variable — the `w3_ba`-at-one-unknown budget absorbed
+it.  Five rules is still a finite calculus.
+
+**Next.**  Teach the solver rule 5 (as 200 taught it rule 4 — likely another
+generalisation of LOOPIFY rather than a fifth branch), then fix the OOM, then
+sample again.  The sampling loop is working: it is producing shapes faster than
+I can guess at them.
