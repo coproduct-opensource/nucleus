@@ -5805,3 +5805,47 @@ went and removed the hypotheses: eleven lemmas across iterations
 generalize past two-loops, four vacuity results, and the trichotomy —
 none of them new mathematics, all of them needed to make the word
 "unconditional" true rather than merely retracted.
+
+## Iteration 147 — the chord repair's collapses land in `Chain2`, and its `b`-hypotheses halve
+
+Started the last outstanding hardening item, `chordloops_complete_free`.
+Three lemmas, **all ZERO AXIOMS**, and the news is good on both fronts.
+
+* **`chordLoop_c_valid`** — an always-true inner guard makes the chord
+  loop `wh b (p; (x; y))`.
+* **`chordLoop_c_unsat`** — an always-false inner guard makes it
+  `wh b (p; y)`.
+* **`chordLoop_collapse_chain2`** — **both targets are `Chain2` bodies.**
+  `Chain` is any nested sequence of actions, so `p; y` and `p; (x; y)`
+  both qualify.
+
+**That is a better landing spot than the two-loop repair had.**  There,
+the no-overlap collapse fell into `AtomicLoops` and needed a fresh
+vacuity argument (`no_overlap_vs_live_absurd`, four lemmas' worth).
+Here the stratum absorbing the collapse is `chainloops_complete_free` —
+which is ALREADY hypothesis-free, so nothing has to be repaired
+underneath the repair.
+
+**And the `b`-side hypotheses halve for free.**  `chordloops_complete`
+carries THREE conditions on the outer guards: shared entry `b ∧ b'`,
+plus exit-exists for `b` and for `b'` separately.  Both sides are
+loops, so **`wh_guards_agree_of_ule` (iteration 143) gives `b ≡ b'`** —
+whereupon shared entry is just satisfiability of `b`, and the two exit
+conditions are one.  Three become two, with no work, from a lemma
+proved for a different purpose four iterations ago.
+
+**What remains for the chord repair.**  A trichotomy in the shape of
+`twoLoop_trichotomy` — chord loops are provably a test, or provably a
+`Chain2` loop, or live — plus the mixed-case vacuity.  The vacuity
+argument here is an ACTION-COUNT one and is worth recording before it
+is built: a `Chain2` loop with body `p; y` emits exactly two actions per
+iteration, one with `p; (x; y)` exactly three, while a LIVE chord loop
+emits two on `¬c` iterations and three on `c` iterations.  So a live
+chord accepts strings of lengths not congruent to the chain's fixed
+stride, and the contradiction is arithmetic rather than structural —
+a different shape from the two-loop's one-versus-two argument, and the
+one genuinely new piece.
+
+**Hardening status**: five of six theorems hypothesis-free; the sixth
+has its collapses proved, its landing stratum confirmed already free,
+and its `b`-conditions reduced from three to two.

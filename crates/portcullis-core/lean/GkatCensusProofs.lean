@@ -3605,4 +3605,65 @@ theorem twoloops_complete_free (b₁ c₁ b₂ c₂ : BExp T) (q₁ r₁ q₂ r�
 
 #print axioms twoloops_complete_free
 
+/-! ## Toward `chordloops_complete_free`: the collapses land in `Chain2`
+
+    `chordLoop b c p x y = wh b (p; ite c (x·y) y)`.  Its inner guard
+    `c` degenerates two ways, and — the piece that makes this tractable —
+    **both collapse targets are CHAIN bodies**, so they land in
+    `chainloops_complete_free`, which is already hypothesis-free.
+
+    `Chain` is any nested sequence of actions, so `p; y` and `p; (x; y)`
+    are both `Chain2`.  That is a better landing spot than the two-loop
+    repair had: there the no-overlap case fell into `AtomicLoops` and
+    needed a fresh vacuity argument, whereas here the earlier stratum
+    absorbing the collapse is itself already free of side conditions.
+
+    Note also that `chordloops_complete`'s THREE `b`-side hypotheses
+    (shared entry `b ∧ b'`, and exit for `b` and `b'` separately)
+    collapse to TWO under `wh_guards_agree_of_ule` (iteration 143):
+    both sides are loops, so `b ≡ b'`, and shared entry is just
+    satisfiability of `b`. -/
+
+open Classical in
+/-- A chord loop whose inner guard always holds is a CHAIN loop with a
+    three-action body. -/
+theorem chordLoop_c_valid (b : BExp T) (p x y : A) {c : BExp T}
+    (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) c α = true) :
+    EquivBA (GkatThreeLoop.chordLoop b c p x y)
+      (.wh b (.seq (.act p) (.seq (.act x) (.act y)))) := by
+  refine EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_)
+  refine GkatElim.ite_true_collapse ?_ _ _
+  intro Z W v
+  rw [GkatPlanExistence.bval_gen W v c, h (fun t => W t v)]
+
+open Classical in
+/-- A chord loop whose inner guard never holds is a CHAIN loop with a
+    two-action body. -/
+theorem chordLoop_c_unsat (b : BExp T) (p x y : A) {c : BExp T}
+    (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) c α = false) :
+    EquivBA (GkatThreeLoop.chordLoop b c p x y)
+      (.wh b (.seq (.act p) (.act y))) := by
+  refine EquivBA.wh_c (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_)
+  refine EquivBA.trans (EquivBA.ite_guard (b := c) (c := .zero) ?_) ?_
+  · intro Z W v
+    rw [GkatPlanExistence.bval_gen W v c, h (fun t => W t v)]
+    rfl
+  · exact EquivBA.base (GkatFaithful.ite_zero _ _)
+
+/-- Both collapse targets are `Chain2` bodies, so
+    `chainloops_complete_free` applies to them with no side conditions. -/
+theorem chordLoop_collapse_chain2 (p x y : A) :
+    GkatChainFragment.Chain2 (.seq (.act p) (.act y) : Exp A T)
+      ∧ GkatChainFragment.Chain2
+        (.seq (.act p) (.seq (.act x) (.act y)) : Exp A T) :=
+  ⟨GkatChainFragment.Chain2.seq (GkatChainFragment.Chain.act p)
+      (GkatChainFragment.Chain.act y),
+   GkatChainFragment.Chain2.seq (GkatChainFragment.Chain.act p)
+      (GkatChainFragment.Chain.seq (GkatChainFragment.Chain.act x)
+        (GkatChainFragment.Chain.act y))⟩
+
+#print axioms chordLoop_c_valid
+#print axioms chordLoop_c_unsat
+#print axioms chordLoop_collapse_chain2
+
 end GkatCensus
