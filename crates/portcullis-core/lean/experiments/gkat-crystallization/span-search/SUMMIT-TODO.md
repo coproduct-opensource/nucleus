@@ -4754,3 +4754,49 @@ question was asked in.**
    the argument that the continuations agree.
 3. The size induction — the descent (`ite_same_side_cross_step`) still
    holds; the `wh` rung needs re-planning around (2).
+
+### Iteration 128 addendum — the counterexample is confirmed, and the honest weaker statement is exactly what the campaign needs
+
+The follow-up search confirms 128's finding and corrects 127's citation.
+
+* **Expected, not novel.**  Bisimilarity is PRESERVED by coalgebra
+  homomorphisms and REFLECTED only along them.  The loop construction
+  changes the OUTPUT MAP (acceptance) on body states, so
+  `body ↪ loop` is not a G-coalgebra homomorphism and the body is not a
+  subcoalgebra.  Reflection has no reason to hold, and the witness —
+  accepting-at-α (takes the feedback arm) versus non-accepting with a
+  body transition to the same target — is **the canonical shape of that
+  failure**: the loop merges the two "next-step" mechanisms into one
+  observation and discards the acceptance bit.
+* **127's citation was over-general.**  Standard GKAT presentations
+  (Smolka et al.; Schmid-Kappé-Kozen-Silva) are careful to state only
+  that the construction preserves language/behavioural semantics and
+  well-nestedness — **never that it reflects bisimilarity into the
+  body.**  The earlier answer described the transitions-only case.
+* **The direction that DOES hold is the other one**: body-bisimilar ⟹
+  loop-bisimilar (the construction is functorial on the body's
+  transition structure once the guard is fixed).  Note this is the
+  reverse of what 127 claimed to need — and it is the one the induction
+  cannot use.
+* **★ The honest weaker statement is exactly the campaign's target ★**:
+  loop-bisimilarity of `s, t` gives equality of their behaviour
+  RELATIVE TO THE LOOP CONTEXT — the guarded languages
+  `⟨s⟩·(b·⟨body⟩)*·b̄`-style continuations — i.e. precisely
+  `bodyStd s · W ≈ bodyStd t · W` semantically, and NOT body-level trace
+  equivalence.  "If you want body-level conclusions you must re-derive
+  them, not reflect them."  That is the same conclusion 128 reached from
+  the counterexample, arrived at independently: **work at the composite
+  level, never at the body level.**
+* **Reflection's actual side condition**, for the record: it holds when
+  the construction only adds transitions on states already REJECTING
+  under the loop guard — i.e. guard-disjointness / uniform exit, the
+  same hypothesis family as the ring-witness stratum.  No paper isolates
+  it as a named lemma.
+
+**Net.**  The semantic fact the induction wants is true and is the
+standard one; what is needed is its PROVABLE counterpart at the
+composite level, which is exactly what `loop_solution_canonical` and
+`loop_solutions_agree_of_finish` (iterations 121-122) speak about.  The
+`wh` rung of the size induction should be built from those, with the
+continuation-agreement obligation as its input — not from any
+subprogram-bisimilarity reduction.
