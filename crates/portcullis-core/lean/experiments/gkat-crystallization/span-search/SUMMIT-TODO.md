@@ -7907,3 +7907,73 @@ and mechanical.  Still uncovered: chord AT the port (7), two-chord cases
 
 **Odds: ~45%, unchanged.**  A stratum, built to spec, that does not touch
 the existence question for arbitrary quotients.
+
+---
+
+## Iteration 183 — THE LADDER CANNOT CLOSE IT, AND THE MEASUREMENT SAYS SO
+
+Two measurements and one strategic conclusion.
+
+**MEASUREMENT 1 — every reachable open SCC is LAMINAR.**  Rooting each of
+the 31 NA=4 open SCCs at its unique exit state and reading the chord set:
+
+    silent interiors, LAMINAR, 1 chord, all backward   ->  5
+    silent interiors, LAMINAR, 2 chords, all backward  ->  6
+    silent interiors, LAMINAR, 1 chord, has forward    ->  7
+    silent interiors, LAMINAR, 2 chords, has forward   -> 10
+    MULTI-EXIT                                         ->  3
+
+**Not one instance has interior halts, a crossing chord pair, or more than
+two chords.**  So a SINGLE theorem — a lap with a laminar chord set —
+covers all 28, and the three further strata I had queued (chord-at-port,
+two-backward, forward+backward) would be four times the work for the same
+coverage.  Design written up in `LAMINAR-CHORD-PLAN.md`, with the two
+chord kinds and the `seg a b` recursion.  `chorded_cycle_roles` and
+`nested_chord_roles` are its two proved special cases.
+
+**MEASUREMENT 2 — the multi-exit residue is NOT a totality artefact.**  I
+suspected it might be: 3 of 31 quotients are non-total, and 3 are
+multi-exit, and the completeness chain totalizes anyway.  **The sets are
+different** — only #4 is both; #5 and #11 are total AND multi-exit.  A
+clean negative that kills the hypothesis before it cost anything.
+
+    #11  0 → {0,1}, 1 → 2, 2 → {1,0};  0 and 2 both halt on one atom,
+         while 1 CONTINUES on that same atom.
+
+The loop must remember whether it is at 0/2 or at 1.  That is exactly the
+flag Kosaraju says is unavoidable.
+
+**THE CONCLUSION, and it is the real content of this iteration.**
+
+**THE ROLE LADDER CANNOT CLOSE THIS PROBLEM.**  It stands at 98.6% and is
+PROVABLY unable to reach the rest: multi-exit loops are not nests of `wh`s
+without auxiliary variables, and GKAT has none.  I have spent seven
+iterations (176–182) climbing it, producing four real strata, and the
+top-level statement — a class-constant solution for EVERY quotient — is
+exactly where it was.  Chasing 98.6% → 99.x% is chasing a number that
+cannot reach 100 by this method.
+
+I am recording that plainly rather than continuing, because the pattern
+was becoming self-sustaining: each iteration's measurement named the next
+rung, and each rung was genuinely provable, and none of it approached the
+question.  **A ladder that provably cannot reach the roof is not a route,
+however many rungs it has.**
+
+**What the ladder DID buy, stated fairly.**  The nested-elimination
+mechanism (`w3` inner then outer, the rotation to head a loop at its
+brancher) is general and reusable.  `self_gather_role` isolated the role
+obligation so a new stratum costs only its solution definition.  And the
+census apparatus now measures coverage honestly, which is how this
+conclusion became visible at all.
+
+**THE NEXT ROUTE: DUPLICATION.**  Kosaraju's own theorem names the repair
+— duplicate states so each exit becomes a head at a different time.  The
+span era built exactly this and never connected it here:
+`GkatTotalizationProofs`' `splitCover` and `hasThompsonCover_of_splitN`,
+with a measured "one level of un-sharing covers 100% of the uncovered
+padded kernel pairs".  That is a different construction on a different
+object, and it is where the next iterations should go.
+
+**Odds: ~45%, unchanged.**  Nothing today moved the frontier; it made the
+frontier's shape honest.  If anything the discipline of saying "this route
+tops out" is worth more than the four strata that preceded it.
