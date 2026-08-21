@@ -11600,3 +11600,52 @@ kind of pressure from the seq case, and guessing at the fix is exactly what
 `firstMatch` is insensitive to where the extra block sits given the guard
 disjointness the Thompson invariants already provide, and only then adjust the
 definition.
+
+---
+
+## 252 — `IsLayer` MUST BE SEMANTIC.  The `seq` case restricts, it does not merely insert.
+
+251 found that a `seq` layer puts its back edges in the MIDDLE rather than
+appending them, and left open whether relaxing "appended" to "inserted somewhere,
+with disjointness" would suffice.  Working the case precisely says it would not.
+
+For `seq (wh b e) f`, writing `L'` for `e`'s core and `R` for `f`'s:
+
+    sys.trans (inl s)  = (L'.trans s).map inl ++ backedges.map inl
+                         ++ R.initTrans guarded by (L'.hlt s ∧ ¬b ∧ …)
+    base.trans (inl s) = (L'.trans s).map inl
+                         ++ R.initTrans guarded by (L'.hlt s ∧ …)
+
+**The trailing block's GUARDS change too** — from `L'.hlt s ∧ g` to
+`L'.hlt s ∧ ¬b ∧ g`.  That is necessary and correct: where `e` halts, the
+sequence must proceed to `f` only when `¬b`, and loop back when `b`.  But it is a
+different relation from insertion, and no weakening of "appended" to "inserted"
+captures it.
+
+**Why the `wh` case hid this.**  There, `base.trans s = L'.trans s` and the back
+edges are guarded by `hlt ∧ b`, while `CoreHaltDisjoint` makes every base
+transition's guard disjoint from `hlt` — so the two blocks never overlap and
+appending is faithful.  In a sequence the trailing block IS guarded by `hlt`,
+which is exactly where the back edges live, so they must be separated by `b` and
+`¬b`.  246's syntactic `IsLayer` worked because `wh` is the case where the layer
+and the base cannot collide.
+
+**So the fix is not another syntactic weakening — `IsLayer` has to be SEMANTIC:**
+a layer splits a state's EXIT behaviour by the guard, taking the back edge on `b`
+and doing what the base did on `¬b`.  Stated through `firstMatch` that is one
+condition covering both cases, where the syntactic version needs a different
+shape per constructor.
+
+**This is 248 for the third time**, and the pattern is now clear enough to state
+as a rule: **every time `IsLayer` has been defined syntactically it has failed at
+the next constructor** — uniform-halt failed at `sum` (248), append-shape failed
+at `seq` (251, 252).  The object being defined is a relation between BEHAVIOURS;
+defining it on list structure keeps encoding one constructor's accident.
+
+**Odds: 81%, held.**  No proof, but a definition question settled by working the
+case rather than by patching and re-measuring — which is what 228-236 cost four
+iterations by not doing.  The remaining `hsum` cases are unchanged in number;
+what changed is that the next attempt has a reason to work.
+
+**Next.**  Restate `IsLayer` semantically via `firstMatch`, re-derive
+`wh_isLayer` and the sum lifting lemmas from it, then the `seq` layer case.
