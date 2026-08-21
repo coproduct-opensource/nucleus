@@ -5639,3 +5639,40 @@ four collapse lemmas (done, zero axioms) plus a vacuity argument
 (derived today, not yet formal).  No new mathematics is required — and
 this time that claim is backed by a worked argument rather than an
 estimate, which is what the last three revisions were missing.
+
+## Iteration 143 — step 1 formalized, and it generalizes past the two-loop
+
+Started transcribing iteration 142's vacuity argument.  **Step 1 lands,
+and it is not specific to two-loops at all:**
+
+* **`wh_den_nil`** [propext] — a loop accepts an action-free guarded
+  string EXACTLY where its guard fails.  **The body is irrelevant.**
+  Both halves were already in the repo without ever being stated
+  together: `InLoop_nil` gives the forward direction, the `InLoop.exit`
+  constructor the backward one.
+* **`wh_guards_agree_of_ule`** [propext] — **language-equivalent loops
+  have pointwise-equal guards, whatever their bodies.**  Iteration 142
+  derived `b₁ ≡ b₂` for the specific atomic-vs-two-loop pair; the same
+  argument needs nothing about either body, so the general statement is
+  the honest one.
+
+That is a better result than the argument called for, and it is
+reusable well beyond this task: any completeness case analysis that
+pairs two loops now gets guard agreement for free, which is exactly the
+kind of step that has been done ad hoc inside the strata proofs.
+
+**Remaining of the transcription**: step 2 (first actions agree — a
+one-action-deep language observation), step 3 (side 2 cannot halt
+mid-body — the structural core, needing that the inner loop's exit
+still owes the body's tail), step 4 (validity forces empty language,
+already available in spirit via `twoLoop_b_valid` plus `wh_one_zero`).
+Step 3 remains the one with real content; steps 2 and 4 should follow
+the shape of step 1.
+
+**Position after this iteration.**  The hardening task
+`twoloops_complete_free` now stands at: four collapse lemmas proved
+(zero axioms), the vacuity argument derived in full, and its first step
+formalized and generalized.  Nothing about it has required new
+mathematics, which is now a claim backed by two proved lemmas and a
+worked argument rather than by an estimate — the correction that
+iterations 139-141 kept having to make.

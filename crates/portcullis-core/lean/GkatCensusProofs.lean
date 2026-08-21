@@ -3238,4 +3238,48 @@ theorem twoLoop_c_valid (b : BExp T) (q r : A) {c : BExp T}
 #print axioms twoLoop_b_valid
 #print axioms twoLoop_c_valid
 
+/-! ## Step 1 of the vacuity argument, formalized
+
+    Iteration 142 derived by hand that the mixed degenerate case of
+    `twoloops_complete_free` is impossible, in four steps.  Its FIRST
+    step — that language-equivalent loops must have pointwise-equal
+    guards — is not special to two-loops at all: it holds for ANY two
+    loops, because a loop accepts an action-free guarded string exactly
+    where its guard fails, and nothing about the body enters.
+
+    The repo already had both halves of that equivalence without ever
+    stating it: `InLoop_nil` gives one direction and the `InLoop.exit`
+    constructor the other. -/
+
+/-- **A loop accepts an action-free string exactly where its guard
+    fails.**  The body is irrelevant. -/
+theorem wh_den_nil {Atom : Type} (V : T → Atom → Bool) (b : BExp T)
+    (e : Exp A T) (a : Atom) :
+    GkatGS.den V (.wh b e) (a, []) ↔ GkatGS.bval V b a = false :=
+  ⟨fun h => GkatGS.InLoop_nil V h rfl, fun h => GkatGS.InLoop.exit a h⟩
+
+/-- **STEP 1, in full generality**: language-equivalent loops have
+    pointwise-equal guards — whatever their bodies.  Iteration 142's
+    `b₁ ≡ b₂`, and it needed neither side to be a two-loop. -/
+theorem wh_guards_agree_of_ule {b₁ b₂ : BExp T} {e₁ e₂ : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent (.wh b₁ e₁) (.wh b₂ e₂)) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W b₁ x = GkatGS.bval W b₂ x := by
+  intro X W x
+  have hiff : GkatGS.bval W b₁ x = false ↔ GkatGS.bval W b₂ x = false :=
+    Iff.trans (wh_den_nil W b₁ e₁ x).symm
+      (Iff.trans (h X W (x, [])) (wh_den_nil W b₂ e₂ x))
+  cases h₁ : GkatGS.bval W b₁ x with
+  | false => exact (hiff.mp h₁).symm
+  | true =>
+      cases h₂ : GkatGS.bval W b₂ x with
+      | false =>
+          have := hiff.mpr h₂
+          rw [h₁] at this
+          exact nomatch this
+      | true => rfl
+
+#print axioms wh_den_nil
+#print axioms wh_guards_agree_of_ule
+
 end GkatCensus
