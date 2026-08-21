@@ -2495,3 +2495,27 @@ the five-step pipeline over its cascaded chain), subsuming the walked
 and chord instances as 1- and 2-interior cases. Then the Thompson
 census (enumerations from program structure) closes the remaining path
 to FiniteAxiomsCompleteBA.
+
+## Iteration 87 — the chain bridges (all zero axioms, first try)
+
+Five bridges between the schedule world and the gather world:
+
+- `substT_chainT` / `stepSubst_chainT` — substitution and cascades
+  distribute over branch chains (with the map-fusion sublemmas inline).
+- `treeOf_chainT` — flat equations are chains of prefixed calls.
+- `pruneBranch` + `chain_prune_congr` — branchwise pruning preserves
+  chain resolution (dead branches stay in place harmlessly — they
+  carry no calls, so Supp is unaffected).
+- `substT_deadHalts` — dead halts survive substitution.
+
+THE PORT STEP'S FULL DERIVATION CHAIN now type-checks on paper:
+stepSubst closedPre (treeOf o)
+  =[treeOf_chainT + stepSubst_chainT]  chainT h (cascaded branches)
+  ≡[chain_prune_congr]                 chainT h (pruned branches)
+  ≡[port_gather]                       ite selGuard (selBody; sol o) rest
+  →[elim_close]                        closed.
+
+Next: THE PORT CONSTRUCTOR — the schedule assembly threading the
+invariants (interiors: forest hypotheses + DeadHalts + no descents;
+port: the above chain) through the Supp/SchedOk inductions. The last
+constructor before the Thompson census.

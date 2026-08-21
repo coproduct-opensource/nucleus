@@ -1969,4 +1969,138 @@ theorem port_gather {S : Type} (sol : S → Exp A T) (o : S)
 
 #print axioms port_gather
 
+/-! ## Chain bridges
+
+    The port's cascaded equation is a branch chain: substitution
+    distributes over chains, flat equations are chains of prefixed
+    calls, pruning lifts branchwise, and dead halts survive
+    substitution.  The four bridges between the schedule world and the
+    gather world. -/
+
+/-- Substitution distributes over chains. -/
+theorem substT_chainT {S : Type} [DecidableEq S] (u : S)
+    (C : RTree S A T) (h : BExp T) :
+    ∀ L : List (BExp T × RTree S A T),
+      substT u C (chainT h L)
+        = chainT h (L.map (fun b => (b.1, substT u C b.2))) := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons b rest ih =>
+      show RTree.br b.1 (substT u C b.2) (substT u C (chainT h rest)) = _
+      rw [ih]
+      rfl
+
+/-- Cascades distribute over chains. -/
+theorem stepSubst_chainT {S : Type} [DecidableEq S]
+    (h : BExp T) :
+    ∀ (closed : List (S × RTree S A T)) (L : List (BExp T × RTree S A T)),
+      stepSubst closed (chainT h L)
+        = chainT h (L.map (fun b =>
+            (b.1, stepSubst closed b.2))) := by
+  intro closed
+  induction closed with
+  | nil =>
+      intro L
+      show chainT h L = _
+      have : L.map (fun b => (b.1, stepSubst [] b.2)) = L := by
+        induction L with
+        | nil => rfl
+        | cons b rest ihL =>
+            show (b.1, b.2) :: _ = _
+            rw [ihL]
+      rw [this]
+  | cons p rest ih =>
+      intro L
+      rw [stepSubst_cons, substT_chainT, ih]
+      have : (L.map (fun b => (b.1, substT p.1 p.2 b.2))).map
+            (fun b => (b.1, stepSubst rest b.2))
+          = L.map (fun b => (b.1, stepSubst rest (substT p.1 p.2 b.2))) := by
+        induction L with
+        | nil => rfl
+        | cons b rest' ihL =>
+            show (b.1, _) :: _ = (b.1, _) :: _
+            rw [ihL]
+      rw [this]
+      rfl
+
+/-- Flat equations are chains of prefixed calls. -/
+theorem treeOf_chainT {S : Type} (aut : GAut S A T) (s : S) :
+    treeOf aut s
+      = chainT (aut.hlt s) ((aut.trans s).map
+          (fun e => (e.1, .call (.act e.2.1) e.2.2))) := by
+  show armChain (aut.trans s) (aut.hlt s) = _
+  induction aut.trans s with
+  | nil => rfl
+  | cons e rest ih =>
+      show RTree.br e.1 (.call (.act e.2.1) e.2.2)
+        (armChain rest (aut.hlt s)) = _
+      rw [ih]
+      rfl
+
+/-- Prune a branch, keeping dead branches in place. -/
+def pruneBranch {S : Type} (b : BExp T × RTree S A T) :
+    BExp T × RTree S A T :=
+  match pruneT b.2 with
+  | some t' => (b.1, t')
+  | none => b
+
+/-- Branchwise pruning preserves chain resolution. -/
+theorem chain_prune_congr {S : Type} (sol : S → Exp A T) (h : BExp T) :
+    ∀ L : List (BExp T × RTree S A T),
+      (∀ b ∈ L, DeadHalts b.2) →
+      EquivBA (resolveT sol (chainT h L))
+        (resolveT sol (chainT h (L.map pruneBranch))) := by
+  intro L
+  induction L with
+  | nil => intro _; exact EquivBA.base (Equiv.refl _)
+  | cons b rest ih =>
+      intro hall
+      show EquivBA (.ite b.1 (resolveT sol b.2)
+        (resolveT sol (chainT h rest))) _
+      have hd := hall b (List.mem_cons_self ..)
+      cases hp : pruneT b.2 with
+      | some t' =>
+          have hbr : pruneBranch b = (b.1, t') := by
+            show (match pruneT b.2 with
+              | some t' => (b.1, t') | none => b) = _
+            rw [hp]
+          show EquivBA _ (resolveT sol
+            (chainT h (pruneBranch b :: rest.map pruneBranch)))
+          rw [hbr]
+          exact EquivBA.ite_c (prune_resolve sol b.2 t' hd hp)
+            (ih (fun q hq => hall q (List.mem_cons_of_mem _ hq)))
+      | none =>
+          have hbr : pruneBranch b = b := by
+            show (match pruneT b.2 with
+              | some t' => (b.1, t') | none => b) = _
+            rw [hp]
+          show EquivBA _ (resolveT sol
+            (chainT h (pruneBranch b :: rest.map pruneBranch)))
+          rw [hbr]
+          exact EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+            (ih (fun q hq => hall q (List.mem_cons_of_mem _ hq)))
+
+/-- Dead halts survive substitution. -/
+theorem substT_deadHalts {S : Type} [DecidableEq S] (u : S)
+    (C : RTree S A T) (hC : DeadHalts C) :
+    ∀ t : RTree S A T, DeadHalts t → DeadHalts (substT u C t) := by
+  intro t
+  induction t with
+  | halt hb => intro hd; exact hd
+  | call e s =>
+      intro _
+      show DeadHalts (if s = u then .pre e C else .call e s)
+      by_cases hs : s = u
+      · rw [if_pos hs]; exact hC
+      · rw [if_neg hs]; exact True.intro
+  | br g l r ihl ihr => intro hd; exact ⟨ihl hd.1, ihr hd.2⟩
+  | pre e t ih => intro hd; exact ih hd
+
+#print axioms substT_chainT
+#print axioms stepSubst_chainT
+#print axioms treeOf_chainT
+#print axioms chain_prune_congr
+#print axioms substT_deadHalts
+
 end GkatElim
