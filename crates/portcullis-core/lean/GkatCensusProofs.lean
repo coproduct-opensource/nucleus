@@ -2740,4 +2740,37 @@ theorem seq_same_side_inl_step (p q : Exp A T)
 #print axioms ite_same_side_cross_step
 #print axioms seq_same_side_inl_step
 
+/-! ## The clean form S0 will feed
+
+    `solvesBA_trim_of_dead_arms` asks that DEAD arm targets carry
+    provably-zero labels.  When there are no dead arm targets at all the
+    hypothesis is VACUOUS, and the raw solution solves the trim outright
+    — no dead-label obligation, no pruning algebra, nothing.
+
+    That is the precise shape `NormalizationBridge` (S0) has to deliver,
+    and it is worth stating separately because it is STRONGER than
+    `LiveSteps`: `LiveSteps` constrains only FIRING steps, while this
+    constrains every LISTED arm.  A shadowed arm — satisfiable guard, but
+    always pre-empted by an earlier arm — can point at a dead state
+    without ever firing, so `LiveSteps` alone does not discharge this.
+    Recording the distinction so S0 is aimed at the right target. -/
+
+open Classical in
+/-- **NO DEAD ARM TARGETS ⟹ THE TRIM IS SOLVED**: with every listed
+    arm pointing at a live state, a solution of the raw system solves
+    the trimmed one, with no dead-label obligation whatsoever. -/
+theorem solvesBA_trim_of_all_live {S : Type} (aut : GkatKleene.GAut S A T)
+    {sol : S → Exp A T}
+    (hwf1 : ∀ s ∈ aut.states, ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s) α = true →
+        GkatKleene.autStep (GkatPlanExistence.genW T) aut s α = none)
+    (hlive : ∀ s ∈ aut.states, ∀ e ∈ aut.trans s,
+      GkatPlanExistence.Live aut e.2.2)
+    (hsol : GkatKleene.SolvesBA aut sol) :
+    GkatKleene.SolvesBA (GkatTrim.trimAut aut) sol :=
+  solvesBA_trim_of_dead_arms aut hwf1
+    (fun s hs e he hnl => absurd (hlive s hs e he) hnl) hsol
+
+#print axioms solvesBA_trim_of_all_live
+
 end GkatCensus

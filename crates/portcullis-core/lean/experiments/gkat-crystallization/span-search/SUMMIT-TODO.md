@@ -4800,3 +4800,52 @@ composite level, which is exactly what `loop_solution_canonical` and
 `wh` rung of the size induction should be built from those, with the
 continuation-agreement obligation as its input — not from any
 subprogram-bisimilarity reduction.
+
+## Iteration 129 — the clean form S0 must deliver, and the `wh` rung re-planned
+
+**`solvesBA_trim_of_all_live`**: with every LISTED arm pointing at a
+live state, a solution of the raw system solves the trimmed one — no
+dead-label obligation at all, the hypothesis of
+`solvesBA_trim_of_dead_arms` simply going vacuous.  Three lines on top
+of iteration 126.
+
+**Why state it separately: it is STRICTLY STRONGER than `LiveSteps`,
+and that distinction was about to be papered over.**  `LiveSteps`
+constrains only FIRING steps — `autStep`, i.e. `firstMatch`.  This
+constrains every arm in the LIST.  A SHADOWED arm (satisfiable guard,
+always pre-empted by an earlier arm) can point at a dead state and never
+fire, so `LiveSteps` alone does NOT discharge the hypothesis.  Iteration
+126 wrote "under `LiveSteps` every firing step lands on a live state, so
+that hypothesis is discharged (modulo never-firing arms…)" — the
+parenthetical was doing real work and is now a named gap rather than an
+aside.  **S0 must be aimed at no-dead-arm-targets, not at `LiveSteps`**,
+or else at `LiveSteps` plus an argument that shadowed dead arms have
+empty effective guards.
+
+**The `wh` rung, re-planned after 128's refutation.**  The loop case
+cannot go through body-label agreement (128's counterexample), so it
+must be built at the composite level from iterations 121-122:
+`loop_solution_canonical` pins every loop-state solution to
+`bodyStd s · (loop re-entry)`, and `loop_solutions_agree_of_finish`
+makes two solutions of the SAME loop agree once their ambient
+continuations agree.  What that leaves is a genuine mismatch worth
+stating plainly: **those theorems compare two SOLUTIONS, while same-side
+UNIF compares two STATES of ONE solution.**  Converting between the two
+would mean building a second solution family by swapping along the
+bisimulation — which needs the equations to respect the swap, i.e.
+UNIF.  Circular.
+
+So the `wh` rung is NOT yet re-planned into a route; it is re-planned
+into a precise obstruction: *two states of one solution, not two
+solutions.*  That is the sharpest form the core difficulty has taken,
+and it is the same circularity the campaign has been circling since
+iteration 114, now localized to a single structural mismatch rather
+than spread across the argument.
+
+**Route status, honest:**
+1. **S0** — algebra done; target corrected today to no-dead-arm-targets
+   (stronger than `LiveSteps`).  Bounded but not yet done.
+2. **Same-side UNIF** — `ite`/sum trivial; `seq` and `wh` need the
+   composite level, where the two-solutions-vs-two-states mismatch is
+   the open core.
+3. **The size induction** — descent step holds; `wh` rung blocked on (2).
