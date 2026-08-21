@@ -3503,3 +3503,45 @@ as the base cases.  That is exactly the `scc_block_schedP` /
 calculus is NOT dead after all; iteration 114 retired it from the
 critical path for the ACYCLIC part, and this iteration shows the
 cyclic part is where it was always meant to apply.
+
+### Iteration 115 addendum — the literature explains WHY the residue is cyclic
+
+Search (independence/non-finite-basis angle) returned the structural
+reason, which is worth recording because it validates the shape of
+what is left:
+
+* **No independence result exists.**  Smolka et al. (POPL 2020) left
+  UA-derivability explicitly open; Kappé-Schmid-Silva (ESOP 2023) say
+  it "remains open" and add they think it "might be false" — but NO
+  model separating UA from the other axioms has been produced.  The
+  gap is open, not known-closed and not known-unclosable.  (Field
+  prior still leans negative; this is a named pessimistic conjecture
+  from the primary authors, not evidence.)
+* **The classical negative results are about EQUATIONAL systems, not
+  uniqueness rules.**  Redko (1964) and Aceto-Fokkink-Ingólfsdóttir
+  (BRICS RS-96-36) show the equational theory of regular expressions
+  is not finitely based, even over a one-letter alphabet.  So SOME
+  non-equational principle is mandatory.  Kozen's is star induction
+  (`ax ≤ x → a*x ≤ x`) — a quasi-identity requiring the semilattice
+  ORDER and a least fixpoint.  Salomaa's is the uniqueness rule, which
+  is not even a quasi-identity (not substitution-closed).
+* **GKAT has no order and no least fixpoint** — which is exactly why
+  Kozen's escape route is unavailable and why a uniqueness principle
+  reappears.  This repo's `w3` IS a uniqueness rule, restricted to ONE
+  unknown.
+
+That places the campaign precisely: the non-equational power is
+already present and already finite (`w3`, n=1).  The whole question is
+whether ONE-unknown uniqueness plus the finite equations can simulate
+n-unknown uniqueness.  Simulating it means eliminating unknowns one at
+a time — **Gaussian elimination** — which is exactly the RTree /
+`SchedOk` / `scc_block_schedP` calculus of iterations 73-96, and
+exactly what the six hand-cracked strata each did.
+
+So the picture is coherent end to end: `unif_of_wf` (115) makes every
+acyclic part free; the cyclic residue needs one-unknown-at-a-time
+elimination; the elimination calculus exists and is validated on six
+strata.  What does NOT exist is a GENERAL construction of a schedule
+for an ARBITRARY cyclic class — every instance so far was built by
+hand against a specific witness automaton.  That, and only that, is
+the open problem now.
