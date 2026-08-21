@@ -6000,6 +6000,44 @@ fn exhaustive<const NA: usize>() {
     }
 }
 
+/// **IS THE ELIMINATION ORACLE COMPLETE?** (iteration 213.)
+///
+/// 212 called `H_v ⊆ H_u ∨ H_u ⊆ H_v` a NECESSARY condition with false
+/// POSITIVES — automata passing it that the oracle calls unsolvable.  But
+/// `code=131` at NA=3 has no dead atoms and total symmetry:
+///
+///     q0: a0 -> q1, {a1,a2} halt        q1: a0 -> q0, {a1,a2} halt
+///
+/// and by hand `X0 = wh a0 (p ; ite a0 p 1) ; test{a1,a2}` solves it: on the
+/// `¬a0` branch control sits at `q1` with the same atom, the loop guard is
+/// false, the loop exits, and the trailing test accepts exactly `{a1,a2}`.
+/// That is rule 5's shape and it should be solvable.
+///
+/// If it is, the "false positives" are FALSE NEGATIVES OF THE ORACLE, the
+/// oracle is incomplete, and every agreement percentage computed against it —
+/// 211's and 212's alike — is measuring the oracle, not the mathematics.
+/// Language-check rather than argue.
+fn oracle_check<const NA: usize>() {
+    if NA != 3 { println!("oracle_check: needs NA=3"); return; }
+    let mut q = Aut::<NA>::blank();
+    q.k = 2;
+    q.hl[0] = 0b110; for (i, &t) in [2u8, 0, 0].iter().enumerate() { q.st[0][i] = t; }
+    q.hl[1] = 0b110; for (i, &t) in [1u8, 0, 0].iter().enumerate() { q.st[1][i] = t; }
+    let p = || Ex::Act;
+    let seq = |x: Ex, y: Ex| Ex::Seq(Box::new(x), Box::new(y));
+    // X0 = wh a0 (p ; ite a0 p 1) ; test{a1,a2}
+    let body = seq(p(), Ex::Ite(0b001, Box::new(p()), Box::new(Ex::Test(0b111))));
+    let x0 = seq(Ex::Wh(0b001, Box::new(body.clone())), Ex::Test(0b110));
+    // X1 is the same expression by symmetry
+    for n in [4usize, 6, 8, 10, 12] {
+        println!("  oracle_check depth {n}: X0 {} ; X1 {}",
+            if ex_matches(&x0, &q, 0, n) { "MATCHES" } else { "differs" },
+            if ex_matches(&x0, &q, 1, n) { "MATCHES" } else { "differs" });
+    }
+    println!("  oracle says eliminable = {}", symbolic_eliminable_raw(&q));
+    println!("  calculus solves it     = {}", calculus_solves(&q, &[0, 1], 6));
+}
+
 /// **A CANDIDATE CHARACTERIZATION OF SOLVABLE 2-STATE LOOPS** (iteration 211).
 ///
 /// The GKAT literature describes the unsolvable family exactly: "there is no
@@ -6029,6 +6067,10 @@ fn characterize<const NA: usize>() {
     let cells = 2 * NA;
     let total: u64 = (choices as u64).pow(cells as u32);
     let (mut agree, mut n, mut fp, mut fnn) = (0u64, 0u64, 0u64, 0u64);
+    let msk: u8 = ((1u16 << NA) - 1) as u8;
+    let mut fp_dead = 0u64;
+    let mut fp_shown = 0usize;
+    let fp_dump = std::env::var("PAD_FP_DUMP").is_ok();
     let mut fp_ex: Vec<u64> = Vec::new();
     let mut fn_ex: Vec<u64> = Vec::new();
     for code in 0..total {
@@ -6061,10 +6103,33 @@ fn characterize<const NA: usize>() {
         // `H_v ∩ C_u = ∅` (halts and transitions are disjoint at `u`), so it is
         // strictly stronger, and it should account for 211's false positives.
         let pred = (h1 & !h0) == 0 || (h0 & !h1) == 0;
-        let truth = symbolic_eliminable_raw(&a);
+        // TRUTH SOURCE, corrected at 213.  `symbolic_eliminable_raw` is
+        // INCOMPLETE: `code=131` at NA=3 is solved by
+        // `wh a0 (p ; ite a0 p 1) ; test{a1,a2}`, language-checked at five
+        // depths, and the oracle still says false.  A calculus success carries
+        // a language-verified witness, so it PROVES solvability; the oracle
+        // only suggests it.  Take the union — either witness counts — which is
+        // the best lower bound on solvability available here.
+        let truth = calculus_solves(&a, &[0, 1], 6) || symbolic_eliminable_raw(&a);
         n += 1;
         if pred == truth { agree += 1; }
-        else if pred && !truth { if fp_ex.len() < 3 { fp_ex.push(code); } fp += 1; }
+        else if pred && !truth {
+            if fp_ex.len() < 3 { fp_ex.push(code); }
+            fp += 1;
+            // WHAT DO THE SURVIVORS SHARE?  Dead atoms — those with neither a
+            // halt nor a transition — are the one feature neither the 211 nor
+            // the 212 condition looks at, and a dead atom REJECTS where the
+            // loop would have to continue or exit.  Tally the false positives
+            // by whether either state has one.
+            let d0 = !(c0 | h0) & msk;
+            let d1 = !(c1 | h1) & msk;
+            if d0 != 0 || d1 != 0 { fp_dead += 1; }
+            if fp_dump && fp_shown < 8 {
+                fp_shown += 1;
+                println!("    FP code={code}: C0={c0:03b} H0={h0:03b} D0={d0:03b} \
+                    | C1={c1:03b} H1={h1:03b} D1={d1:03b}");
+            }
+        }
         else { if fn_ex.len() < 3 { fn_ex.push(code); } fnn += 1; }
     }
     println!("  characterize NA={NA}: {n} strongly connected 2-state automata; \
@@ -6072,6 +6137,7 @@ fn characterize<const NA: usize>() {
         100.0 * agree as f64 / n.max(1) as f64);
     println!("    predicate says SOLVABLE, oracle says not: {fp}  (examples {fp_ex:?})");
     println!("    predicate says UNSOLVABLE, oracle says solvable: {fnn}  (examples {fn_ex:?})");
+    println!("    of the {fp} false positives, {fp_dead} have a DEAD atom (neither halt nor transition) at some state");
 }
 
 fn nested_sanity<const NA: usize>() {
@@ -7102,6 +7168,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_ORACLE_CHECK").is_ok() {
+        oracle_check::<NA>();
         return;
     }
     if std::env::var("PAD_CHARACTERIZE").is_ok() {

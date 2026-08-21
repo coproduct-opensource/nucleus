@@ -9692,3 +9692,75 @@ remaining gap at NA=4 is still 4 454 automata wide.
 false positives (138 of them, small enough to inspect) and look for what they
 share.  Whatever it is, it is the next necessary condition — and by 212's
 pattern, plausibly the next rule's hypothesis.
+
+---
+
+## 213 — THE SOLVABILITY ORACLE IS BROKEN.  RETRACTING 211 AND 212's HEADLINES.
+
+**The finding.**  `symbolic_eliminable_raw` — the oracle this development has
+used since 204 to decide whether an automaton is solvable — is INCOMPLETE, and
+here is the witness.  NA=3, `code=131`:
+
+    q0: a0 -> q1, {a1,a2} halt        q1: a0 -> q0, {a1,a2} halt
+
+    X0 = wh a0 (p ; ite a0 p 1) ; test{a1,a2}
+
+MATCHES at depths 4, 6, 8, 10, 12, and the calculus solves it too.  The oracle
+says `eliminable = false`.  It is simply wrong.
+
+**How I found it.**  212's plan was to inspect the 138 NA=3 "false positives"
+for a shared obstruction.  Dead atoms covered 120 of 138 (and 4 368 of 4 454 at
+NA=4) — but `code=131` has none and is perfectly symmetric, so I solved it by
+hand expecting to learn what made it hard.  It was not hard.  The oracle was
+wrong.
+
+**What this retracts.**
+
+*211's headline — "a NECESSARY condition, zero false negatives in 32 043
+automata" — is WITHDRAWN.  So is 212's refinement.*  Both were computed against
+the oracle.  Re-running with a language-VERIFIED witness as the truth source
+(calculus success carries a checked witness, so it PROVES solvability; take the
+union with the oracle as the best available lower bound):
+
+                    vs the oracle (211/212)      vs verified witnesses (213)
+    NA=2   49          95.9%  /  95.9%              100.00%   FP 0   FN 0
+    NA=3 1369          82.9%  /  89.9%               96.06%   FP 0   FN 54
+
+The direction of the error REVERSES.  There are no false positives at all —
+and 54 FALSE NEGATIVES at NA=3: automata that ARE solvable while failing the
+condition.  **So the condition was never necessary.  The oracle's
+incompleteness was manufacturing the evidence for its necessity.**  It is exact
+at NA=2 (49/49) and that is all that survives.
+
+**It also undermines 209's coverage claim.**  "SOLVABLE (elimination oracle)
+but UNSOLVED by the calculus: 0" used the oracle as the FILTER.  An oracle that
+under-reports solvability makes that filter admit too few automata, so the
+enumeration tested a SUBSET of what it claimed.  The zero is still a zero over
+what was tested; the coverage around it was overstated.
+
+**And it puts a question mark on today's other result.**  The k=4 enumeration
+finished: 1 679 616 automata, **720 reported as `eliminable=true` but unsolved
+by the calculus**.  Under any earlier iteration that would be the headline —
+720 candidate rule-7 instances.  It is not, because it rests on the same
+oracle, in the other direction: an oracle wrong about `false` may be wrong about
+`true`.  Hand-reading the first, `code=14859`, its SCC `{q0,q1}` has `a0`
+resuming at `q0` and exiting at `q1` while `a1` does the reverse — the
+literature's UNSOLVABLE pattern — which suggests these may be oracle
+FALSE POSITIVES rather than calculus gaps.  I am not claiming either way: the
+instrument is not trustworthy in either direction and must be replaced first.
+
+**Odds: 74%, DOWN 2.**  Nothing was learned that makes the calculus look worse
+— it solved `code=131`, which the oracle could not, and no verified
+counterexample to it exists anywhere in this development.  What changed is my
+confidence in the MEASUREMENTS: the primary solvability instrument is
+demonstrably unreliable, two iterations of published "necessary conditions"
+were artifacts of it, and the exhaustive coverage claim was weaker than
+reported.  A number resting on broken instruments should move down when the
+breakage is found, not stay put because the breakage happened to be in a
+convenient direction.
+
+**Next, and it is now the only sound instrument.**  A BRUTE-FORCE EXPRESSION
+SEARCH: enumerate expressions up to a depth bound, build each one's automaton,
+and language-compare.  A hit proves solvable; exhausting the bound proves
+unsolvable up to that depth.  Both directions verified, no oracle.  That is
+what should have been deciding solvability all along.
