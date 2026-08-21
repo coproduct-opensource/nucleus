@@ -5290,3 +5290,56 @@ rather than answering it, and GKAT automata learning (arXiv 2204.14153).
 Also confirmed: the coalgebraic side of Smolka et al. was verified in
 **Coq**, and **no Lean or Isabelle GKAT formalization exists** — this
 cluster still appears to be the only one.
+
+## Iteration 138 — ★ SECOND HARDENING FINDING: "six unconditional theorems" was an OVERCLAIM ★
+
+Audited the actual Lean signatures of all six completeness theorems
+rather than trusting how the ledger has described them for ~60
+iterations.  The result splits them:
+
+| theorem | hypotheses beyond ULE |
+|---|---|
+| `loopfree_complete` | `LoopFree e`, `LoopFree f` — **fragment only** |
+| `atomicloops_complete` | `AtomicLoops e/f` — **fragment only** |
+| `gloops_complete` | `GLoops e/f` — **fragment only** |
+| `chainloops_complete_free` | `Chain2 body₁/body₂` — **fragment only** |
+| `twoloops_complete` | **+ SIX satisfiability hypotheses** |
+| `chordloops_complete` | **+ SIX satisfiability hypotheses** |
+
+`twoloops_complete` assumes each loop guard is both satisfiable and
+refutable on both sides (`hexitC₁ hexitB₁ hbc₁` and primes);
+`chordloops_complete` assumes shared entry on `b` and on `c` plus
+exit-exists for `b`, `c` and their primes.  These are non-degeneracy
+conditions — the loops must actually be enterable and exitable — and
+they are mild.  **But they are hypotheses, and "unconditional" was the
+wrong word.**  It has been in the ledger, the memory file, and (since
+iteration 136) the published artifact.
+
+**Fixed everywhere**: the artifact section is retitled, each theorem now
+carries its hypothesis class inline, and the page's own corrections log
+records the change.  The literature check confirms this matters: the
+convention (skip-free GKAT, 1-free regular expressions) is that the
+restriction goes in the TITLE and the formal statement, that the
+semantics is named as part of the claim, and that saying "we prove
+completeness for GKAT" when it holds for a fragment or under hypotheses
+is **treated as an overclaim by reviewers**.  The accepted move is to
+name the restricted class as a first-class object — which this repo
+does for four of six (`LoopFree`, `AtomicLoops`, `GLoops`, `Chain2`)
+and does NOT for the two that use side conditions instead.
+
+**And the fix is plausibly available.**  `chainloops_complete_free`
+earns its `_free` suffix by handling degenerate guards with internal
+`Classical.em` case analysis (an unsatisfiable loop guard collapses the
+loop to `1` via `wh_guard_semantic_zero`) instead of assuming them away.
+**That is a template.**  Concrete hardening task, now named: apply the
+same case analysis to `twoloops_complete` and `chordloops_complete` to
+produce `_free` variants, at which point all six become fragment-only
+and "unconditional within its fragment" becomes accurate.
+
+**Running hardening tally:** two audits clean (`sorry`-freeness, axiom
+profiles), two overclaims found and fixed (`uleDec`'s
+computability-vs-proof conflation; "unconditional"), one concrete
+follow-up task identified.  Both overclaims were about *how results
+were described*, not about whether they hold — which is the failure
+mode a machine-checked corpus is most exposed to, since the prover
+never checks the prose.
