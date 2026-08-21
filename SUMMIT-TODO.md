@@ -127,3 +127,55 @@ proper-step explanation is unverified against the source.
 
 **Next.**  NA=3 exhaustive at k<=3 with the minimised filter, and verify the
 proper-step claim against the actual Grabmayer definitions rather than a summary.
+
+---
+
+## 232 — LAYERED ELIMINATION LANDS.  Sound, and incomplete for a nameable reason.
+
+231 diagnosed the residual ~1% as NESTING and named layered elimination as the
+fix.  Implemented: repeatedly take the INNERMOST natural loops, check the halt
+condition against their own guard, remove their back edges, continue on the
+reduced graph.  The worked case from 231 —
+
+    q0: hl={a3} st=[q1,q0,q0,-]      q1: hl={a2,a3} st=[q1,q0,-,-]
+
+— now passes: eliminating the inner self-loop `q1 -a0-> q1` first leaves
+`q1: st=[-,q0,-,-]`, so the outer back edge is `q1 -a1-> q0` alone with guard
+`{a1}`, and both states' halts lie outside it.
+
+**Measured:**
+
+                                   NA=2                NA=3
+    (a) layered-LLEE holds     19 755/19 778 99.88%    99.44%
+    (b) survives collapse      19 688/19 778 99.55%    99.22%
+    (c) LLEE-but-UNSOLVABLE            0                   0
+        solvable-but-no-LLEE          96                 221
+
+**Sufficiency is robust: 0 counterexamples.**  Whenever this graph-only test
+succeeds, the automaton is solvable — across ~40 000 automata, no exceptions,
+which is the third distinct certificate formulation to hold that direction.
+
+**But (a) and (b) both fall short of 100%, and one cause explains both.**  LLEE
+is an EXISTENTIAL over labellings — a chart has it if SOME valid loop labelling
+exists — while my procedure COMMITS to one, the innermost-first natural loops of
+a particular DFS.  So `llee_layered` is a sound SUFFICIENT TEST for LLEE, not a
+decision procedure, and it will report failure whenever the canonical labelling
+fails even if another would succeed.  That is exactly the shape of both
+shortfalls, and it also explains why collapse-stability slipped from
+`uniform_guard`'s 100% to 99.5%: the collapse can force a different labelling
+than the one my DFS picks.
+
+**Worth stating plainly: (b) at 99.5% is NOT evidence against Grabmayer's
+closure theorem**, because I am not testing LLEE — I am testing one labelling
+strategy.  223's measurement of the property that actually matters, solvability
+surviving collapse, remains 0 failures in 131 714.
+
+**Odds: 80%, held.**  A sound layered certificate is real progress and its
+sufficiency is now confirmed three ways over — but requirement (a) is still not
+met, and the fix (search over labellings rather than commit to one) is
+identified, not done.  Nothing here justifies moving the number in either
+direction.
+
+**Next.**  Make the test an existential: backtracking search over which loops to
+eliminate and in what order, rather than the innermost-first DFS choice.  Target
+remains (a) at 100% on Thompson automata with (b) and (c) intact.

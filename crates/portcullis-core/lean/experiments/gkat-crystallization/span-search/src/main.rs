@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_LAYERED").is_ok() {
+        layered_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_LOOPGUARD").is_ok() {
         loopguard_test::<NA>(nguards as u8);
         return;
@@ -11811,4 +11815,79 @@ fn loopguard_test<const NA: usize>(nguards: u8) {
     }
     println!("  loopguard_test NA={NA}: {n} natural loops; \
         no-halt-inside-loop-guard holds on {ok}; after collapse {cok}/{cn}");
+}
+
+/// **LAYERED LOOP ELIMINATION — the "L" in LLEE** (iteration 232).
+///
+/// 231 got `loop_core_hlt`'s prediction to ~99% at natural-loop granularity, and
+/// diagnosed the residual as NESTING: an inner loop inside an outer one, where
+/// the outer guard must be computed only AFTER the inner loop is eliminated.
+/// Worked example from 231:
+///
+///     q0: hl={a3} st=[q1,q0,q0,-]      q1: hl={a2,a3} st=[q1,q0,-,-]
+///
+/// Read flat, the outer loop's back edges give a guard containing `a2`, and
+/// `q1` halts there — a violation.  Eliminate the inner self-loop `q1 -a0-> q1`
+/// first and `q1` becomes `st=[-,q0,-,-]`; the outer back edge is then `q1 -a1->
+/// q0` alone, guard `{a1}`, and both states' halts lie outside it.
+///
+/// So: repeatedly take the INNERMOST loops, check the halt condition against
+/// their own guard, remove their back edges, and continue on the reduced graph.
+/// The automaton has the property iff this runs to an acyclic graph without a
+/// violation.
+fn llee_layered<const NA: usize>(q: &Aut<NA>) -> bool {
+    let mut g = *q;
+    loop {
+        let loops = natural_loops(&g);
+        if loops.is_empty() { return true; }
+        let mut progressed = false;
+        for (h, body, b) in loops.iter() {
+            // innermost: no OTHER loop's body is strictly contained in this one
+            let innermost = !loops.iter().any(|(h2, body2, _)| {
+                h2 != h && body2.len() < body.len()
+                    && body2.iter().all(|s| body.contains(s))
+            });
+            if !innermost { continue; }
+            if body.iter().any(|&s| g.hl[s] & b != 0) { return false; }
+            for &s in body.iter() {
+                for y in 0..NA {
+                    if b >> y & 1 == 0 { continue; }
+                    if g.st[s][y] == (*h + 1) as u8 { g.st[s][y] = 0; }
+                }
+            }
+            progressed = true;
+        }
+        if !progressed { return false; }
+    }
+}
+
+fn layered_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xA4093822299F31D0;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut a_ok, mut b_ok, mut agree, mut l_not_s, mut s_not_l) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..60_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        if llee_layered(&a) { a_ok += 1; }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            if !llee_layered(&a) || llee_layered(&qq) { b_ok += 1; }
+            let solve = {
+                let sing = singleton_states(&qq);
+                sccs_of(&qq).iter().all(|c| c.len() < 2
+                    || calculus_solves(&qq, c, 6)
+                    || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
+            };
+            let l = llee_layered(&qq);
+            if l == solve { agree += 1; }
+            else if l { l_not_s += 1; } else { s_not_l += 1; }
+        }
+    }
+    println!("  layered_test NA={NA}: {n} Thompson automata; \
+        (a) layered-LLEE holds on {a_ok}; (b) survives collapse {b_ok}; \
+        (c) agrees with solvable {agree}, LLEE-but-UNsolvable {l_not_s}, \
+        solvable-but-no-LLEE {s_not_l}");
 }
