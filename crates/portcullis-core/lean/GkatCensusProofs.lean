@@ -1535,4 +1535,257 @@ theorem sum_subsystem_inr {S₁ S₂ : Type}
 #print axioms sum_subsystem_inl
 #print axioms sum_subsystem_inr
 
+/-! ## The forced-solution theorem
+
+    LOCATE turns out to be UNNECESSARY: `ParametricCanonicalBA` in each
+    certificate speaks about the WHOLE program's flattened system at
+    once, not about one nesting level, so a sum-solution restricted to
+    one side is pinned without ever walking the syntax tree.  The
+    ambient sum equation at an internal state IS that side's own
+    parametric equation at finish `1` — the two branch lists fuse to
+    the same list and the fallbacks differ by `s5` alone. -/
+
+open Classical in
+/-- The ambient equation of a left-injected internal state of a Thompson
+    sum is that side's own parametric equation at finish `1`. -/
+theorem sumGAut_toGAut_eqRHS_inl {S₁ S₂ : Type}
+    (a₁ : GkatThompson.InitializedGAut S₁ A T)
+    (a₂ : GkatThompson.InitializedGAut S₂ A T)
+    (sol : (Option S₁ ⊕ Option S₂) → Exp A T) (s : S₁) :
+    EquivBA
+      (GkatKleene.eqRHS (GkatKleene.sumGAut a₁.toGAut a₂.toGAut) sol
+        (.inl (some s)))
+      (GkatThompson.eqRHSParam a₁.core (fun t => sol (.inl (some t)))
+        (.test .one) s) := by
+  have hbranch : GkatKleene.transitionBranches
+      ((GkatKleene.sumGAut a₁.toGAut a₂.toGAut).trans (Sum.inl (some s))) sol
+      = GkatKleene.transitionBranches (a₁.core.trans s)
+          (fun t => sol (Sum.inl (some t))) := by
+    show (((a₁.core.trans s).map (fun tr : BExp T × A × S₁ =>
+          (tr.1, tr.2.1, (some tr.2.2 : Option S₁)))).map
+        (fun t : BExp T × A × Option S₁ =>
+          (t.1, t.2.1, (Sum.inl t.2.2 : Option S₁ ⊕ Option S₂)))).map
+        (fun t : BExp T × A × (Option S₁ ⊕ Option S₂) =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2)))
+      = (a₁.core.trans s).map (fun t : BExp T × A × S₁ =>
+          (t.1, Exp.seq (.act t.2.1) (sol (Sum.inl (some t.2.2)))))
+    rw [List.map_map, List.map_map]
+    rfl
+  rw [GkatKleene.eqRHS_eq_guardedFold, hbranch]
+  exact guardedFold_fallback_congr
+    (EquivBA.symm (EquivBA.base (Equiv.s5 (.test (a₁.core.hlt s)))))
+
+open Classical in
+/-- The right-injected mirror. -/
+theorem sumGAut_toGAut_eqRHS_inr {S₁ S₂ : Type}
+    (a₁ : GkatThompson.InitializedGAut S₁ A T)
+    (a₂ : GkatThompson.InitializedGAut S₂ A T)
+    (sol : (Option S₁ ⊕ Option S₂) → Exp A T) (s : S₂) :
+    EquivBA
+      (GkatKleene.eqRHS (GkatKleene.sumGAut a₁.toGAut a₂.toGAut) sol
+        (.inr (some s)))
+      (GkatThompson.eqRHSParam a₂.core (fun t => sol (.inr (some t)))
+        (.test .one) s) := by
+  have hbranch : GkatKleene.transitionBranches
+      ((GkatKleene.sumGAut a₁.toGAut a₂.toGAut).trans (Sum.inr (some s))) sol
+      = GkatKleene.transitionBranches (a₂.core.trans s)
+          (fun t => sol (Sum.inr (some t))) := by
+    show (((a₂.core.trans s).map (fun tr : BExp T × A × S₂ =>
+          (tr.1, tr.2.1, (some tr.2.2 : Option S₂)))).map
+        (fun t : BExp T × A × Option S₂ =>
+          (t.1, t.2.1, (Sum.inr t.2.2 : Option S₁ ⊕ Option S₂)))).map
+        (fun t : BExp T × A × (Option S₁ ⊕ Option S₂) =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2)))
+      = (a₂.core.trans s).map (fun t : BExp T × A × S₂ =>
+          (t.1, Exp.seq (.act t.2.1) (sol (Sum.inr (some t.2.2)))))
+    rw [List.map_map, List.map_map]
+    rfl
+  rw [GkatKleene.eqRHS_eq_guardedFold, hbranch]
+  exact guardedFold_fallback_congr
+    (EquivBA.symm (EquivBA.base (Equiv.s5 (.test (a₂.core.hlt s)))))
+
+open Classical in
+/-- **THE FORCED-SOLUTION THEOREM**: ANY solution of the raw Thompson-sum
+    equation system is, at every internal state of the left program's
+    automaton, provably that state's canonical Thompson label.  No
+    schedule, no elimination, no UA — and no choice of solution: the
+    canonical labelling is the ONLY one the axioms permit. -/
+theorem sum_solution_forced_left (e f : Exp A T)
+    {sol : ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Exp A T}
+    (hsol : GkatKleene.SolvesBA (GkatTrim.SUMof A T e f) sol) :
+    ∀ s ∈ (GkatThompson.certifiedThompson A T e).aut.core.states,
+      EquivBA (sol (.inl (some s)))
+        ((GkatThompson.certifiedThompson A T e).standard s) := by
+  have hparam := (GkatThompson.certifiedThompson A T e).certificate.parametric.states
+    (.test .one) (fun t => sol (Sum.inl (some t))) (by
+      intro state _
+      exact EquivBA.trans (hsol (Sum.inl (some state))
+          (GkatDecide.sumof_exhaustive e f _))
+        (sumGAut_toGAut_eqRHS_inl _ _ sol state))
+  intro s hs
+  exact EquivBA.trans (hparam s hs)
+    (EquivBA.base (Equiv.s5 ((GkatThompson.certifiedThompson A T e).standard s)))
+
+open Classical in
+/-- The right-side mirror of the forced-solution theorem. -/
+theorem sum_solution_forced_right (e f : Exp A T)
+    {sol : ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Exp A T}
+    (hsol : GkatKleene.SolvesBA (GkatTrim.SUMof A T e f) sol) :
+    ∀ s ∈ (GkatThompson.certifiedThompson A T f).aut.core.states,
+      EquivBA (sol (.inr (some s)))
+        ((GkatThompson.certifiedThompson A T f).standard s) := by
+  have hparam := (GkatThompson.certifiedThompson A T f).certificate.parametric.states
+    (.test .one) (fun t => sol (Sum.inr (some t))) (by
+      intro state _
+      exact EquivBA.trans (hsol (Sum.inr (some state))
+          (GkatDecide.sumof_exhaustive e f _))
+        (sumGAut_toGAut_eqRHS_inr _ _ sol state))
+  intro s hs
+  exact EquivBA.trans (hparam s hs)
+    (EquivBA.base (Equiv.s5 ((GkatThompson.certifiedThompson A T f).standard s)))
+
+open Classical in
+/-- **RIGIDITY**: any two solutions of the raw Thompson sum agree, provably,
+    at every internal state of both sides.  The solution space of the sum
+    system is a single `EquivBA` class — so `RoleCovered` is NOT a free
+    construction: whatever `qsol` it produces is forced to be the canonical
+    labelling, and the dead-state obligations come with it. -/
+theorem sum_solution_rigid (e f : Exp A T)
+    {sol₁ sol₂ : ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Exp A T}
+    (h₁ : GkatKleene.SolvesBA (GkatTrim.SUMof A T e f) sol₁)
+    (h₂ : GkatKleene.SolvesBA (GkatTrim.SUMof A T e f) sol₂) :
+    (∀ s ∈ (GkatThompson.certifiedThompson A T e).aut.core.states,
+        EquivBA (sol₁ (.inl (some s))) (sol₂ (.inl (some s))))
+      ∧ (∀ s ∈ (GkatThompson.certifiedThompson A T f).aut.core.states,
+        EquivBA (sol₁ (.inr (some s))) (sol₂ (.inr (some s)))) := by
+  refine ⟨fun s hs => ?_, fun s hs => ?_⟩
+  · exact EquivBA.trans (sum_solution_forced_left e f h₁ s hs)
+      (EquivBA.symm (sum_solution_forced_left e f h₂ s hs))
+  · exact EquivBA.trans (sum_solution_forced_right e f h₁ s hs)
+      (EquivBA.symm (sum_solution_forced_right e f h₂ s hs))
+
+#print axioms sumGAut_toGAut_eqRHS_inl
+#print axioms sumGAut_toGAut_eqRHS_inr
+#print axioms sum_solution_forced_left
+#print axioms sum_solution_forced_right
+#print axioms sum_solution_rigid
+
+/-! ## Existence is free; the whole problem is UNIF
+
+    Iteration 112 recorded that demanding `SolvesBA` of the sum at the
+    canonical labelling "reopens the dead-state circularity".  That was
+    WRONG, and this section proves it wrong: a solution of the RAW sum
+    at the canonical labelling exists outright (each side already solves
+    its own system by `certifiedThompson_toGAut_solves`, and equations
+    of a disjoint union are the summands' equations).  The circularity
+    lives one step later — in TRIMMING, where dead labels must be shown
+    to collapse to `0` — and trimming is what `solvesBA_untrim` already
+    handles in the useful direction.
+
+    Combined with rigidity, the picture is complete: the raw sum has a
+    solution, that solution is unique up to `EquivBA`, and the ONLY
+    remaining question is whether bisimilar states carry `EquivBA`-equal
+    canonical labels. -/
+
+/-- Equations of a disjoint union are the summands' own equations. -/
+theorem eqRHS_sumGAut_inl {S₁ S₂ : Type} (a₁ : GkatKleene.GAut S₁ A T)
+    (a₂ : GkatKleene.GAut S₂ A T)
+    (sol : (S₁ ⊕ S₂) → Exp A T) (s : S₁) :
+    GkatKleene.eqRHS (GkatKleene.sumGAut a₁ a₂) sol (.inl s)
+      = GkatKleene.eqRHS a₁ (fun t => sol (.inl t)) s := by
+  show ((a₁.trans s).map (fun t : BExp T × A × S₁ =>
+      (t.1, t.2.1, (Sum.inl t.2.2 : S₁ ⊕ S₂)))).foldr
+      (fun t acc => Exp.ite t.1 (Exp.seq (.act t.2.1) (sol t.2.2)) acc)
+      (Exp.test (a₁.hlt s))
+    = (a₁.trans s).foldr
+      (fun t acc => Exp.ite t.1 (Exp.seq (.act t.2.1) (sol (.inl t.2.2))) acc)
+      (Exp.test (a₁.hlt s))
+  induction a₁.trans s with
+  | nil => rfl
+  | cons hd tl ih =>
+      show Exp.ite hd.1 (.seq (.act hd.2.1) (sol (.inl hd.2.2))) _
+        = Exp.ite hd.1 (.seq (.act hd.2.1) (sol (.inl hd.2.2))) _
+      rw [ih]
+
+/-- The right-injected mirror. -/
+theorem eqRHS_sumGAut_inr {S₁ S₂ : Type} (a₁ : GkatKleene.GAut S₁ A T)
+    (a₂ : GkatKleene.GAut S₂ A T)
+    (sol : (S₁ ⊕ S₂) → Exp A T) (s : S₂) :
+    GkatKleene.eqRHS (GkatKleene.sumGAut a₁ a₂) sol (.inr s)
+      = GkatKleene.eqRHS a₂ (fun t => sol (.inr t)) s := by
+  show ((a₂.trans s).map (fun t : BExp T × A × S₂ =>
+      (t.1, t.2.1, (Sum.inr t.2.2 : S₁ ⊕ S₂)))).foldr
+      (fun t acc => Exp.ite t.1 (Exp.seq (.act t.2.1) (sol t.2.2)) acc)
+      (Exp.test (a₂.hlt s))
+    = (a₂.trans s).foldr
+      (fun t acc => Exp.ite t.1 (Exp.seq (.act t.2.1) (sol (.inr t.2.2))) acc)
+      (Exp.test (a₂.hlt s))
+  induction a₂.trans s with
+  | nil => rfl
+  | cons hd tl ih =>
+      show Exp.ite hd.1 (.seq (.act hd.2.1) (sol (.inr hd.2.2))) _
+        = Exp.ite hd.1 (.seq (.act hd.2.1) (sol (.inr hd.2.2))) _
+      rw [ih]
+
+/-- The canonical labelling of a program pair, across the Thompson sum. -/
+def stdSum (e f : Exp A T) :
+    ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Exp A T :=
+  Sum.elim
+    (GkatThompson.initializedStandard e
+      (GkatThompson.certifiedThompson A T e).standard)
+    (GkatThompson.initializedStandard f
+      (GkatThompson.certifiedThompson A T f).standard)
+
+/-- **EXISTENCE IS FREE**: the canonical labelling solves the raw Thompson
+    sum's equation system outright — no schedule, no elimination, no UA,
+    and (contra iteration 112) no dead-state obligation whatsoever. -/
+theorem sum_solves_std (e f : Exp A T) :
+    GkatKleene.SolvesBA (GkatTrim.SUMof A T e f) (stdSum e f) := by
+  intro s _
+  cases s with
+  | inl o =>
+      rw [show GkatKleene.eqRHS (GkatTrim.SUMof A T e f) (stdSum e f) (.inl o)
+          = GkatKleene.eqRHS (GkatThompson.certifiedThompson A T e).aut.toGAut
+              (fun t => stdSum e f (.inl t)) o from
+        eqRHS_sumGAut_inl _ _ _ o]
+      refine GkatThompson.certifiedThompson_toGAut_solves e o ?_
+      cases o with
+      | none => exact List.mem_cons_self ..
+      | some x =>
+          exact List.mem_cons_of_mem _
+            (List.mem_map.mpr ⟨x, GkatDecide.thompson_exhaustive e x, rfl⟩)
+  | inr o =>
+      rw [show GkatKleene.eqRHS (GkatTrim.SUMof A T e f) (stdSum e f) (.inr o)
+          = GkatKleene.eqRHS (GkatThompson.certifiedThompson A T f).aut.toGAut
+              (fun t => stdSum e f (.inr t)) o from
+        eqRHS_sumGAut_inr _ _ _ o]
+      refine GkatThompson.certifiedThompson_toGAut_solves f o ?_
+      cases o with
+      | none => exact List.mem_cons_self ..
+      | some x =>
+          exact List.mem_cons_of_mem _
+            (List.mem_map.mpr ⟨x, GkatDecide.thompson_exhaustive f x, rfl⟩)
+
+/-- **THE WHOLE PROBLEM, IN ONE LINE**: if bisimilar states of the trimmed
+    Thompson sum carry provably-equal canonical labels, GKAT completeness
+    without the n-ary uniqueness axiom follows immediately — the two start
+    states ARE the two programs, and `ule_iff_start_bisim` makes them
+    bisimilar.  Every other component of the reduction is already proven. -/
+theorem equivBA_of_unif (e f : Exp A T)
+    (heq : GkatKleene.UniformLanguageEquivalent e f)
+    (hunif : ∀ s t, GkatPlanExistence.GenBisimilar
+        (GkatTrim.trimAut (GkatTrim.SUMof A T e f)) s t →
+      EquivBA (stdSum e f s) (stdSum e f t)) :
+    EquivBA e f :=
+  hunif _ _ ((GkatDecide.ule_iff_start_bisim e f).mp heq)
+
+#print axioms eqRHS_sumGAut_inl
+#print axioms eqRHS_sumGAut_inr
+#print axioms sum_solves_std
+#print axioms equivBA_of_unif
+
 end GkatCensus

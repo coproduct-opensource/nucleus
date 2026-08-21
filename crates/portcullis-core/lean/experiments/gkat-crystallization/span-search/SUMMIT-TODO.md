@@ -3351,3 +3351,88 @@ then consumes. Next concrete step: build LOCATE (recursion on
 `InitializedGAut`/`GSystem`, the local `standard`, and the ambient
 `finish`-composition path back to the top), THEN wire the rank
 recursion + representative-closing step above into `RoleCovered`.
+
+## Iteration 114 — ★ RIGIDITY + FREE EXISTENCE ★ (and iteration 112 was WRONG)
+
+Web: nothing newer than Pham's 2026 thesis / Kappé-Schmid-Silva
+skip-free line; no arXiv result settling n-ary UA elimination either
+way. Weighted GKAT (ICALP 2025) and ProbGKAT are different variants.
+
+**NINE new theorems, all type-checked, all sorry-free** (verified by
+`lake build GkatCensusProofs`, axiom profiles printed below):
+
+1. `sumGAut_toGAut_eqRHS_inl/inr` [propext] — the ambient equation of
+   an internal state of a Thompson SUM *is* that side's own parametric
+   equation at finish `1`. The two branch lists fuse to the same list
+   (two `map_map`s) and the fallbacks differ by `s5` alone. Uses the
+   pre-existing `eqRHS_eq_guardedFold` bridge (`eqRHS` is foldr over
+   `.trans`, NOT defeq to `guardedFold (transitionBranches ...)` —
+   foldr-over-map needs induction, which that lemma already did).
+
+2. `sum_solution_forced_left/right` [propext, Quot.sound] — **THE
+   FORCED-SOLUTION THEOREM**: ANY `SolvesBA` of the raw Thompson sum
+   is, at every internal state of either side, provably that state's
+   canonical Thompson label. Immediate from (1) + the certificate's
+   `ParametricCanonicalBA` at finish `1`, + `s5`. Choice-free.
+
+3. `sum_solution_rigid` [propext, Quot.sound] — **RIGIDITY**: any two
+   solutions of the raw sum agree provably at every internal state.
+   The solution space is a SINGLE `EquivBA` class.
+
+4. `eqRHS_sumGAut_inl/inr` (zero axioms) — equations of a disjoint
+   union are the summands' own equations.
+
+5. `stdSum` + `sum_solves_std` [propext, Quot.sound] — **EXISTENCE IS
+   FREE**: the canonical labelling solves the raw sum outright, from
+   `certifiedThompson_toGAut_solves` on each side plus (4).
+
+6. `equivBA_of_unif` [propext, Classical.choice, Quot.sound] — the
+   entire open problem in ONE LINE.
+
+**ITERATION 112'S CENTRAL CLAIM WAS WRONG, and (5) refutes it in
+Lean.** 112 recorded that demanding `SolvesBA` of the sum at the
+canonical labelling "reopens the dead-region circularity" because
+`SUMof`'s state list is exhaustive. The error: a dead state's label
+satisfying its OWN equation is NOT the same as that label provably
+collapsing to `0`. The former is `certifiedThompson_toGAut_solves`,
+proven long ago, free, dead states included. The latter (the genuine
+`dead_thompson_label_eq_zero_of_complete` circularity) is needed only
+for TRIMMING — and `solvesBA_untrim` already runs that direction
+(trim-solution → raw-solution), which is the direction actually used.
+So the `stdSol` route was never blocked by what 112 said blocked it.
+Recording this plainly: 112's scoping correction was itself a
+mis-scoping, caught by formalizing rather than reasoning about it.
+
+**WHAT RIGIDITY ACTUALLY BUYS — and what it costs.** Honest reading:
+
+* GOOD: the whole `RoleCovered` / `StateRole` / schedule / Gaussian-
+  elimination apparatus is OFF the critical path for completeness. A
+  quotient solution lifts (`lift_solvesBA`) to a raw solution, so by
+  rigidity ANY `qsol` witnessing `RoleCovered` is forced to satisfy
+  `qsol ∘ bisimRep ≡ stdSum` at every internal state. There was never
+  any freedom in the choice of `qsol` to be clever about. The role
+  framing was UNIF in disguise the whole time.
+
+* SOBERING: consequently `equivBA_of_unif` is a REFORMULATION, not a
+  reduction that makes progress on its own. UNIF at the two starts IS
+  completeness (the start labels ARE `e` and `f`, and `ule_iff_start_
+  bisim` makes ULE ⟺ start bisimilarity). UNIF is EQUIVALENT to the
+  open problem, not weaker than it. Nothing here shrinks the hard
+  core; it strips everything that ISN'T the hard core.
+
+**THE HARD CORE, now stated with zero scaffolding**: bisimilar states
+of `trimAut (SUMof A T e f)` carry `EquivBA`-equal canonical Thompson
+labels. No quotients, no trimming obligations, no role witnesses, no
+schedules, no dead-state pruning, no LOCATE (iteration 113's named
+brick is also unnecessary — `ParametricCanonicalBA` speaks about a
+whole program's flattened system at once, so nothing ever walks the
+syntax tree). Just: bisimilar ⟹ provably equal labels.
+
+Next: attack UNIF directly. The available leverage is `equation_
+transport` (bisimilar states' equations are EquivBA-equal under a
+class-consistent family — note `stdSum` is exactly the family whose
+class-consistency UNIF asserts, so this is a fixpoint/coinduction
+shape, not a straight implication) plus the subsystem lemmas for
+factoring labels of nested states. The coinductive character is now
+explicit and unavoidable: UNIF is self-referential in precisely the
+way UA would have discharged, which is why the axiom was there.
