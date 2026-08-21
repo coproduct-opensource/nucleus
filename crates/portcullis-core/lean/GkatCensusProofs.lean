@@ -4730,4 +4730,277 @@ theorem label_mask_complete_gated (B : List (BExp T × Exp A T))
 #print axioms guardedFold_congr_fallback_gated
 #print axioms label_mask_complete_gated
 
+/-! ### DECISION LISTS THAT DECIDE THE SAME THING ARE PROVABLY EQUAL
+
+    Iteration 168 closed the EXIT dimension of same-side unification.
+    What is left is the TRANSITION dimension: two bisimilar states whose
+    branch lists are different lists.  But bisimilarity never compares
+    lists — it compares what they SELECT.  So the lemma the size
+    induction actually needs is not about lists at all:
+
+      two guarded folds that select EquivBA-equal expressions at every
+      atom are EquivBA-equal.
+
+    `guardedFold_select_congr` proves exactly that, from the finite
+    axioms.  Neither list is assumed ordered, deduplicated, irredundant,
+    or even satisfiable: branches that never fire are killed by their own
+    unsatisfiability, and branches firing on overlapping regions are
+    reconciled region by region.
+
+    The engine is a relativized induction — the same shape as
+    `fold_fallback_gated_aux`, and for the same reason.  Every statement
+    carries an accumulated assertion `r`; `test_seq_ite` pushes it
+    inward and `split_assertion` splits it on the next guard.  The
+    classical step is small and isolated in `const_under`: whether a
+    region is SATISFIABLE.  On an unsatisfiable region both sides are
+    `0`; on a satisfiable one, a single witness atom transports the
+    hypothesis. -/
+
+/-- The expression a guarded fold actually runs at a given atom. -/
+def selectFull {X : Type} (W : T → X → Bool) (x : X) :
+    List (BExp T × Exp A T) → Exp A T → Exp A T
+  | [], fb => fb
+  | br :: tl, fb =>
+      match GkatGS.bval W br.1 x with
+      | true => br.2
+      | false => selectFull W x tl fb
+
+private theorem selectFull_cons_true {X : Type} (W : T → X → Bool) (x : X)
+    {g : BExp T} (u : Exp A T) (tl : List (BExp T × Exp A T)) (fb : Exp A T)
+    (hg : GkatGS.bval W g x = true) :
+    selectFull W x ((g, u) :: tl) fb = u := by
+  show (match GkatGS.bval W g x with
+    | true => u
+    | false => selectFull W x tl fb) = u
+  rw [hg]
+
+private theorem selectFull_cons_false {X : Type} (W : T → X → Bool) (x : X)
+    {g : BExp T} (u : Exp A T) (tl : List (BExp T × Exp A T)) (fb : Exp A T)
+    (hg : GkatGS.bval W g x = false) :
+    selectFull W x ((g, u) :: tl) fb = selectFull W x tl fb := by
+  show (match GkatGS.bval W g x with
+    | true => u
+    | false => selectFull W x tl fb) = selectFull W x tl fb
+  rw [hg]
+
+private theorem and_true_split {a b : Bool} (h : (a && b) = true) :
+    a = true ∧ b = true := by
+  cases a <;> cases b <;> first | exact ⟨rfl, rfl⟩ | exact Bool.noConfusion h
+
+private theorem and_not_true_split {a b : Bool} (h : (a && !b) = true) :
+    a = true ∧ b = false := by
+  cases a <;> cases b <;> first | exact ⟨rfl, rfl⟩ | exact Bool.noConfusion h
+
+/-- Splitting an assertion on an arbitrary guard, with both halves
+    re-asserted.  U1 duplicates, U4 asserts the then arm, `gate_else`
+    asserts the else arm, and the assertions merge by S1/S6. -/
+private theorem split_assertion (r g : BExp T) (u : Exp A T) :
+    EquivBA (.seq (.test r) u)
+      (.ite (.and r g) (.seq (.test (.and r g)) u)
+        (.seq (.test (.and r (.not g))) u)) := by
+  refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u1 (.and r g) _))) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.u4 (.and r g) _ _)) ?_
+  refine EquivBA.trans (gate_else (.and r g) _ _) ?_
+  refine EquivBA.ite_c ?_ ?_
+  · refine EquivBA.trans (GkatGuardedAlgebra.test_seq_merge _ _ u) ?_
+    refine GkatGuardedAlgebra.test_seq_guard_congr _ ?_
+    intro Y W y
+    show ((GkatGS.bval W r y && GkatGS.bval W g y) && GkatGS.bval W r y)
+      = (GkatGS.bval W r y && GkatGS.bval W g y)
+    cases GkatGS.bval W r y <;> cases GkatGS.bval W g y <;> rfl
+  · refine EquivBA.trans (GkatGuardedAlgebra.test_seq_merge _ _ u) ?_
+    refine GkatGuardedAlgebra.test_seq_guard_congr _ ?_
+    intro Y W y
+    show ((!(GkatGS.bval W r y && GkatGS.bval W g y)) && GkatGS.bval W r y)
+      = (GkatGS.bval W r y && !(GkatGS.bval W g y))
+    cases GkatGS.bval W r y <;> cases GkatGS.bval W g y <;> rfl
+
+/-- **The classical step, isolated.**  Under an assertion, a constant may
+    be replaced by anything it is provably equal to at SOME atom of the
+    region — and if the region has no atoms at all, both sides are `0`. -/
+private theorem const_under {u target : Exp A T} {r : BExp T}
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W r x = true → EquivBA u target) :
+    EquivBA (.seq (.test r) u) (.seq (.test r) target) := by
+  refine Or.elim (Classical.em (∃ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W r x = true)) ?_ ?_
+  · intro hsat
+    obtain ⟨Y, W, y, hy⟩ := hsat
+    exact EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (h Y W y hy)
+  · intro hunsat
+    have hz : ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+        GkatGS.bval W r y = false := by
+      intro Y W y
+      cases hb : GkatGS.bval W r y
+      · rfl
+      · exact absurd ⟨Y, W, y, hb⟩ hunsat
+    exact EquivBA.trans (GkatGuardedAlgebra.test_unsat_seq u hz)
+      (EquivBA.symm (GkatGuardedAlgebra.test_unsat_seq target hz))
+
+/-- A fold that selects a FIXED expression throughout a region equals
+    that expression on the region — however many branches it takes to get
+    there, and whichever of them fire. -/
+private theorem fold_const_under (B : List (BExp T × Exp A T)) :
+    ∀ (fb target : Exp A T) (r : BExp T),
+      (∀ (X : Type) (W : T → X → Bool) (x : X),
+          GkatGS.bval W r x = true → EquivBA (selectFull W x B fb) target) →
+      EquivBA (.seq (.test r) (guardedFold B fb)) (.seq (.test r) target) := by
+  induction B with
+  | nil => intro fb target r h; exact const_under h
+  | cons br tl ih =>
+      intro fb target r h
+      obtain ⟨g, u⟩ := br
+      refine EquivBA.trans
+        (GkatGuardedAlgebra.test_seq_ite r g u (guardedFold tl fb)) ?_
+      refine EquivBA.trans (EquivBA.base (Equiv.u4 (.and r g) _ _)) ?_
+      refine EquivBA.trans (gate_else (.and r g) _ _) ?_
+      refine EquivBA.trans ?_ (EquivBA.symm (split_assertion r g target))
+      refine EquivBA.ite_c ?_ ?_
+      · refine const_under ?_
+        intro Y W y hy
+        obtain ⟨hr, hgv⟩ := and_true_split hy
+        have hsel := h Y W y hr
+        rw [selectFull_cons_true W y u tl fb hgv] at hsel
+        exact hsel
+      · refine EquivBA.trans
+          (GkatGuardedAlgebra.test_seq_merge _ _ (guardedFold tl fb)) ?_
+        refine EquivBA.trans (GkatGuardedAlgebra.test_seq_guard_congr
+          (b := .and (.not (.and r g)) r) (c := .and r (.not g))
+          (guardedFold tl fb) ?_) ?_
+        · intro Y W y
+          show ((!(GkatGS.bval W r y && GkatGS.bval W g y))
+              && GkatGS.bval W r y)
+            = (GkatGS.bval W r y && !(GkatGS.bval W g y))
+          cases GkatGS.bval W r y <;> cases GkatGS.bval W g y <;> rfl
+        refine ih fb target (.and r (.not g)) ?_
+        intro Y W y hy
+        obtain ⟨hr, hgv⟩ := and_not_true_split hy
+        have hsel := h Y W y hr
+        rw [selectFull_cons_false W y u tl fb hgv] at hsel
+        exact hsel
+
+/-- The relativized form of the headline theorem. -/
+private theorem fold_select_under (B : List (BExp T × Exp A T)) :
+    ∀ (fb : Exp A T) (B' : List (BExp T × Exp A T)) (fb' : Exp A T) (r : BExp T),
+      (∀ (X : Type) (W : T → X → Bool) (x : X),
+          GkatGS.bval W r x = true →
+          EquivBA (selectFull W x B fb) (selectFull W x B' fb')) →
+      EquivBA (.seq (.test r) (guardedFold B fb))
+        (.seq (.test r) (guardedFold B' fb')) := by
+  induction B with
+  | nil =>
+      intro fb B' fb' r h
+      exact EquivBA.symm (fold_const_under B' fb' fb r
+        (fun Y W y hy => EquivBA.symm (h Y W y hy)))
+  | cons br tl ih =>
+      intro fb B' fb' r h
+      obtain ⟨g, u⟩ := br
+      refine EquivBA.trans
+        (GkatGuardedAlgebra.test_seq_ite r g u (guardedFold tl fb)) ?_
+      refine EquivBA.trans (EquivBA.base (Equiv.u4 (.and r g) _ _)) ?_
+      refine EquivBA.trans (gate_else (.and r g) _ _) ?_
+      refine EquivBA.trans ?_
+        (EquivBA.symm (split_assertion r g (guardedFold B' fb')))
+      refine EquivBA.ite_c ?_ ?_
+      · refine EquivBA.symm (fold_const_under B' fb' u (.and r g) ?_)
+        intro Y W y hy
+        obtain ⟨hr, hgv⟩ := and_true_split hy
+        have hsel := h Y W y hr
+        rw [selectFull_cons_true W y u tl fb hgv] at hsel
+        exact EquivBA.symm hsel
+      · refine EquivBA.trans
+          (GkatGuardedAlgebra.test_seq_merge _ _ (guardedFold tl fb)) ?_
+        refine EquivBA.trans (GkatGuardedAlgebra.test_seq_guard_congr
+          (b := .and (.not (.and r g)) r) (c := .and r (.not g))
+          (guardedFold tl fb) ?_) ?_
+        · intro Y W y
+          show ((!(GkatGS.bval W r y && GkatGS.bval W g y))
+              && GkatGS.bval W r y)
+            = (GkatGS.bval W r y && !(GkatGS.bval W g y))
+          cases GkatGS.bval W r y <;> cases GkatGS.bval W g y <;> rfl
+        refine ih fb B' fb' (.and r (.not g)) ?_
+        intro Y W y hy
+        obtain ⟨hr, hgv⟩ := and_not_true_split hy
+        have hsel := h Y W y hr
+        rw [selectFull_cons_false W y u tl fb hgv] at hsel
+        exact hsel
+
+/-- **DECISION LISTS THAT DECIDE THE SAME THING ARE PROVABLY EQUAL.**
+    If two guarded folds run EquivBA-equal expressions at every atom,
+    they are EquivBA-equal — from the finite GKAT axioms, with no
+    uniqueness axiom and no assumption whatsoever about the shape,
+    length, order, or satisfiability of either branch list.
+
+    This is the transition dimension of same-side unification stated in
+    the only form bisimilarity can supply it: bisimilarity compares
+    SELECTIONS, never lists. -/
+theorem guardedFold_select_congr (B B' : List (BExp T × Exp A T))
+    (fb fb' : Exp A T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        EquivBA (selectFull W x B fb) (selectFull W x B' fb')) :
+    EquivBA (guardedFold B fb) (guardedFold B' fb') :=
+  EquivBA.trans (EquivBA.symm (GkatGuardedAlgebra.one_seq _))
+    (EquivBA.trans
+      (fold_select_under B fb B' fb' .one (fun Y W y _ => h Y W y))
+      (GkatGuardedAlgebra.one_seq _))
+
+#print axioms split_assertion
+#print axioms const_under
+#print axioms guardedFold_select_congr
+
+/-- The selection of a labelled transition list IS `firstMatch`, read
+    through the labelling.  This is the bridge from the automaton to the
+    decision-list lemma. -/
+theorem selectFull_transitionBranches {S X : Type} (W : T → X → Bool) (x : X)
+    (sol : S → Exp A T) (h : BExp T) :
+    ∀ L : List (BExp T × A × S),
+      selectFull W x (transitionBranches L sol) (.test h)
+        = (match firstMatch W x L with
+           | some qt => .seq (.act qt.1) (sol qt.2)
+           | none => .test h)
+  | [] => rfl
+  | (g, q, t) :: tl => by
+      show (match GkatGS.bval W g x with
+        | true => Exp.seq (.act q) (sol t)
+        | false => selectFull W x (transitionBranches tl sol) (.test h))
+        = _
+      cases hb : GkatGS.bval W g x
+      · rw [selectFull_transitionBranches W x sol h tl]
+        show _ = (match (if GkatGS.bval W g x = true then some (q, t)
+                         else firstMatch W x tl) with
+          | some qt => Exp.seq (.act qt.1) (sol qt.2)
+          | none => Exp.test h)
+        rw [hb]
+        rfl
+      · show _ = (match (if GkatGS.bval W g x = true then some (q, t)
+                         else firstMatch W x tl) with
+          | some qt => Exp.seq (.act qt.1) (sol qt.2)
+          | none => Exp.test h)
+        rw [hb]
+        rfl
+
+/-- **THE ONE-STEP SAME-SIDE UNIFICATION LEMMA, AT THE AUTOMATON.**  Two
+    states of one automaton whose Salomaa right-hand sides SELECT
+    EquivBA-equal expressions at every atom have EquivBA-equal right-hand
+    sides — whatever their transition lists look like.
+
+    This is the shape bisimilarity can actually feed: `GAutBisim` gives
+    global halt agreement (its first conjunct) and, at each atom, the
+    same action into related targets.  What it never gives is a relation
+    between the two branch LISTS, and this lemma never asks for one. -/
+theorem eqRHS_congr_of_select {S : Type} (aut : GAut S A T)
+    (sol : S → Exp A T) (s t : S)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans s) sol)
+            (.test (aut.hlt s)))
+          (selectFull W x (transitionBranches (aut.trans t) sol)
+            (.test (aut.hlt t)))) :
+    EquivBA (eqRHS aut sol s) (eqRHS aut sol t) := by
+  rw [eqRHS_eq_guardedFold, eqRHS_eq_guardedFold]
+  exact guardedFold_select_congr _ _ _ _ h
+
+#print axioms selectFull_transitionBranches
+#print axioms eqRHS_congr_of_select
+
 end GkatCensus

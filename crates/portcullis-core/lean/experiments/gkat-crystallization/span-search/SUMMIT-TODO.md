@@ -6947,3 +6947,100 @@ already did.  **When a lemma ships with a side condition, ask whether the
 theorem's own hypothesis already implies it before going looking for a
 supplier.**  I have now over-priced this same obstruction twice in two
 days.
+
+---
+
+## Iteration 169 — DECISION LISTS THAT DECIDE THE SAME THING ARE PROVABLY EQUAL
+
+168 closed the EXIT dimension of same-side unification.  Today is the
+TRANSITION dimension — the piece I have been calling "the size
+induction" and treating as the mountain.
+
+**The reframing that did the work.**  I had been asking: how do two
+bisimilar states' branch LISTS relate?  Wrong question, and it has no
+good answer — bisimilarity never compares lists.  It compares what they
+SELECT: at each atom, the same action, into targets that carry equal
+labels.  So the lemma the induction actually needs is not about lists at
+all:
+
+    two guarded folds that select EquivBA-equal expressions at every
+    atom are EquivBA-equal.
+
+`GkatCensus.guardedFold_select_congr`:
+
+    (∀ X W x, EquivBA (selectFull W x B fb) (selectFull W x B' fb'))
+      →  EquivBA (guardedFold B fb) (guardedFold B' fb')
+
+**No assumption whatsoever about either list** — not ordered, not
+deduplicated, not irredundant, not the same length, not even
+satisfiable.  Branches that never fire are killed by their own
+unsatisfiability; branches firing on overlapping regions are reconciled
+region by region.
+
+The engine is the same relativized induction as 168's
+`fold_fallback_gated_aux`, for the same reason: every statement carries
+an accumulated assertion `r`, `test_seq_ite` pushes it inward,
+`split_assertion` splits it on the next guard.  Supporting:
+`fold_const_under` (a fold selecting a FIXED expression throughout a
+region equals it there) and `fold_select_under` (the relativized
+headline).
+
+**The classical content is one lemma and one question.**  `const_under`
+asks only whether a region is SATISFIABLE.  Unsatisfiable → both sides
+are `0` by `test_unsat_seq`.  Satisfiable → a single witness atom
+transports the hypothesis.  That is the entire use of `Classical.em` in
+the construction; everything else is axiom-free (`split_assertion`,
+`selectFull_transitionBranches`: no axioms at all).
+
+**Landed at the automaton too**, so this is not an abstract lemma looking
+for a home:
+* `selectFull_transitionBranches` — the selection of a labelled
+  transition list IS `firstMatch`, read through the labelling.  Zero
+  axioms.
+* `eqRHS_congr_of_select` — two states of one automaton whose Salomaa
+  right-hand sides select EquivBA-equal expressions at every atom have
+  EquivBA-equal right-hand sides, whatever their transition lists look
+  like.
+
+**Why this is exactly the shape bisimilarity supplies.**  `GAutBisim`'s
+first conjunct is GLOBAL halt agreement — `∀ a, bval (hlt s) a = bval
+(hlt t) a` — so the fall-through case closes by `baTest` at every atom,
+not merely at the atom under consideration.  Its other two conjuncts give
+the same action into related targets.  Both feed `eqRHS_congr_of_select`
+directly.
+
+**What is left, stated precisely.**  The ONE-STEP lemma is done.  What
+remains is the recursion: `EquivBA (sol s') (sol t')` for the targets is
+the hypothesis of the step, so closing same-side UNIF now needs a
+well-founded argument that discharges it — the labels are defined by a
+recursion, and the induction must be on program size because same-side
+UNIF embeds cross-side (iteration 122).  That is a real remaining piece
+and I am not claiming it.  What today removes is the belief that the
+transition lists themselves were the obstacle.  They were not.
+
+**A duplicate, recorded.**  Yesterday's `guardedFold_congr_fallback` is a
+re-derivation of the pre-existing `GkatFaithful.guardedFold_fallback_congr`
+(GkatFaithfulnessProofs.lean:521).  I did not grep before proving.  Same
+species as the counting error at 159: **check the repo before deriving a
+utility lemma.**  It is harmless but it is waste, and it is the second
+time this file has grown a duplicate.
+
+**Odds: ~58%**, up from 52.  Three consecutive iterations have each shown
+the standing obstruction to be a wrong framing rather than a hard
+theorem, and each was cheaper than the last.  That is a real trend, and I
+am reporting it as one — while noting the obvious counter-hypothesis:
+the three cheap wins may simply have been the reducible part, with the
+recursion the actual irreducible core.  The field's prior that this
+problem does not close still stands.
+
+**Method note.**  All three of 167/168/169 came from the same move:
+**stop asking how the obstruction can be overcome and ask what the
+obstruction is actually a statement ABOUT.**  133 said "reflection fails
+at seq" — about exits.  Today said "the lists differ" — but bisimilarity
+was never about lists.  Twice now the obstruction dissolved on being
+restated in the vocabulary of the thing that actually supplies the
+hypothesis.
+
+**Process note, third occurrence.**  The `cd`-into-a-relative-path
+failure silently skipped this ledger append on the first attempt, exactly
+as recorded before.  Absolute paths for heredocs, always.
