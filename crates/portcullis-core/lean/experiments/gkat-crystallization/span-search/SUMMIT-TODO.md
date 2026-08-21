@@ -2962,3 +2962,26 @@ bisimilar states + class-constant-up-to-EquivBA continuations ⟹
 equations EquivBA-equal, with the PairsOk-analogue certificates now
 DERIVABLE from GAutBisim (step agreement per atom). Next: the
 class-level dispatch_ext assembly, then the subsystem lemma.
+
+## Iteration 103 — CLASS DISPATCH EXTENSIONALITY (zero axioms, first try)
+
+**`dispatch_ext_class`**: dispatches matched class-by-class — the
+positional `ClassesOk` certificate carries, per (class₁, class₂,
+action, continuation) entry, pointwise-equal gathered class-guards on
+the current residuals and class-consistent solutions (EquivBA the
+common continuation) on BOTH sides. The zip is even cleaner than the
+pair version: both sides gather to the SAME arm `(act a); V`, so the
+branch step is refl — only the guard needs `ite_guard`.
+
+Note for the application (recorded): the guard/halt pointwise
+hypotheses need ∀-valuation equality while bisimulation gives
+genW-agreement — but genW is UNIVERSAL: `bval W b x = bval genW b
+(fun t => W t x)` (bval_gen), so genW-pointwise agreement lifts to all
+valuations. No gap.
+
+The extensionality toolkit is now bisim-complete:
+gGuardPC_firstMatch converts step-agreement into guard-pointwise
+facts; class_gather + dispatch_ext_class convert those into equation
+equivalence. Remaining census items: the ClassesOk constructor from
+GAutBisim (choose entries = occurring (class, action) pairs), the
+subsystem lemma, dead-region decomposition, rank induction.

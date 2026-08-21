@@ -731,6 +731,61 @@ theorem gGuardPC_firstMatch {S : Type} [DecidableEq A]
           rw [Bool.and_true]
           exact ih
 
+open Classical in
+/-- The positional class certificate: each (class₁, class₂, action,
+    continuation) entry has pointwise-equal gathered guards on the
+    CURRENT residuals and class-consistent solutions on both sides. -/
+def ClassesOk {S₁ S₂ : Type} [DecidableEq A]
+    (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T) :
+    List ((S₁ → Bool) × (S₂ → Bool) × A × Exp A T)
+    → List (BExp T × A × S₁) → List (BExp T × A × S₂) → Prop
+  | [], _, _ => True
+  | e :: rest, L₁, L₂ =>
+      ((∀ (X : Type) (W : T → X → Bool) (x : X),
+          GkatGS.bval W (gGuardPC e.1 e.2.2.1 L₁) x
+            = GkatGS.bval W (gGuardPC e.2.1 e.2.2.1 L₂) x)
+        ∧ (∀ q ∈ L₁, e.1 q.2.2 = true → q.2.1 = e.2.2.1 →
+            EquivBA (sol₁ q.2.2) e.2.2.2)
+        ∧ (∀ q ∈ L₂, e.2.1 q.2.2 = true → q.2.1 = e.2.2.1 →
+            EquivBA (sol₂ q.2.2) e.2.2.2))
+      ∧ ClassesOk sol₁ sol₂ rest
+          (gOthersPC e.1 e.2.2.1 L₁) (gOthersPC e.2.1 e.2.2.1 L₂)
+
+open Classical in
+/-- **CLASS DISPATCH EXTENSIONALITY**: dispatches matched class-by-
+    class — pointwise-equal gathered guards, common continuations up
+    to `EquivBA` — are equivalent.  The bisim-ready form. -/
+theorem dispatch_ext_class {S₁ S₂ : Type} [DecidableEq A]
+    (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T)
+    (h₁ h₂ : BExp T) :
+    ∀ (entries : List ((S₁ → Bool) × (S₂ → Bool) × A × Exp A T))
+      (L₁ : List (BExp T × A × S₁)) (L₂ : List (BExp T × A × S₂)),
+      ClassesOk sol₁ sol₂ entries L₁ L₂ →
+      EquivBA
+        (GkatPlanExistence.foldTL sol₁ h₁
+          (entries.foldl (fun L e => gOthersPC e.1 e.2.2.1 L) L₁))
+        (GkatPlanExistence.foldTL sol₂ h₂
+          (entries.foldl (fun L e => gOthersPC e.2.1 e.2.2.1 L) L₂)) →
+      EquivBA (GkatPlanExistence.foldTL sol₁ h₁ L₁)
+        (GkatPlanExistence.foldTL sol₂ h₂ L₂) := by
+  intro entries
+  induction entries with
+  | nil =>
+      intro L₁ L₂ _ hres
+      exact hres
+  | cons e rest ih =>
+      intro L₁ L₂ hall hres
+      obtain ⟨P₁, P₂, a, V⟩ := e
+      obtain ⟨⟨hguard, hV₁, hV₂⟩, hrest⟩ := hall
+      refine EquivBA.trans (class_gather sol₁ h₁ P₁ a V L₁ hV₁) ?_
+      refine EquivBA.trans ?_
+        (EquivBA.symm (class_gather sol₂ h₂ P₂ a V L₂ hV₂))
+      refine EquivBA.trans (EquivBA.ite_guard
+        (b := gGuardPC P₁ a L₁) (c := gGuardPC P₂ a L₂)
+        (fun X W x => hguard X W x)) ?_
+      refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_
+      exact ih (gOthersPC P₁ a L₁) (gOthersPC P₂ a L₂) hrest hres
+
 #print axioms sreach_partner
 #print axioms firstMatch_mem_of_some
 #print axioms step_arm
@@ -738,5 +793,6 @@ theorem gGuardPC_firstMatch {S : Type} [DecidableEq A]
 #print axioms paramSolves_seq
 #print axioms class_gather
 #print axioms gGuardPC_firstMatch
+#print axioms dispatch_ext_class
 
 end GkatCensus
