@@ -2371,3 +2371,29 @@ Validated: multi-state cascades, pruning-in-rearrangement, factoring.
 Next: the chord 3-state instance (branch state = fold step mid-cascade
 — the remaining certificate pattern), then the census witness
 constructors for canonical quotients.
+
+## Iteration 82b — THE CHORD 3-CYCLE VIA SCHEDULES (all patterns validated)
+
+**`chord_three_sched`** ([propext, Quot.sound] — leaner than the
+bespoke chord assembly, no classical gathering): the abstract chord
+shape (mid → port; branch → mid/port; port feeds back; interior halts
+empty) fully role-covered via the generalized machinery. The schedule:
+
+- mid: FOLD step (closed tree = its own equation, refl rearrangement);
+- branch: FOLD OVER THE CASCADE — the mid's closed tree substitutes
+  into the enter arm, the substituted equation IS the closed tree;
+- port: cascade through both, DOUBLE `halt_prune` (both interior
+  halts), factoring the branching lap
+  `pa;(ite cg (xa;(gx?;ya)) (ncg?;ya'))` — the chordPre form produced
+  by general machinery. AllCalls on a branching lap is a conjunction
+  (⟨rfl, rfl⟩, not rfl).
+
+CERTIFICATE PATTERNS NOW ALL VALIDATED: syntactic split, fold, fold
+over cascade, split over cascade with pruning, single- and
+multi-branch factoring. The generalized assembly SUBSUMES the walked
+and chord bespoke assemblies with BETTER axiom profiles.
+
+Next: the census witness constructors — produce these abstract shapes
+(arm lists + emptiness + distinctness) from canonical quotients, per
+stratum first (re-deriving theorems 4–6 through schedules), then the
+general SINGLE-EXIT construction.

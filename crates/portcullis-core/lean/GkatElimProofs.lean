@@ -1242,4 +1242,168 @@ theorem walked_two_cycle_sched {S : Type} [DecidableEq S]
 
 #print axioms walked_two_cycle_sched
 
+/-! ## Validation instance: the chord 3-cycle as a schedule
+
+    Mid and branch states are FOLD steps (no self-calls — their closed
+    trees are the cascaded equations); the port prunes BOTH dead
+    interior halts and factors the branching lap.  The chord closed
+    form re-derived by general machinery. -/
+
+open Classical in
+/-- **THE CHORD 3-CYCLE VIA SCHEDULES**. -/
+theorem chord_three_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (x p o : S)
+    (hxp : x ≠ p) (hxo : x ≠ o) (hpo : p ≠ o)
+    (gx cg ncg bg : BExp T) (ya xa ya' pa : A)
+    (htx : aut.trans x = [(gx, ya, o)])
+    (htp : aut.trans p = [(cg, xa, x), (ncg, ya', o)])
+    (hto : aut.trans o = [(bg, pa, p)])
+    (hhx : GuardEmpty (aut.hlt x))
+    (hhp : GuardEmpty (aut.hlt p))
+    (hstates : ∀ s ∈ aut.states, s = x ∨ s = p ∨ s = o) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  have htreex : treeOf aut x
+      = .br gx (.call (.act ya) o) (.halt (aut.hlt x)) := by
+    rw [treeOf_armChain, htx]
+    rfl
+  have htreep : treeOf aut p
+      = .br cg (.call (.act xa) x)
+        (.br ncg (.call (.act ya') o) (.halt (aut.hlt p))) := by
+    rw [treeOf_armChain, htp]
+    rfl
+  have htreeo : treeOf aut o
+      = .br bg (.call (.act pa) p) (.halt (aut.hlt o)) := by
+    rw [treeOf_armChain, hto]
+    rfl
+  let Cx : RTree S A T :=
+    .br gx (.call (.act ya) o) (.halt (aut.hlt x))
+  let Cp : RTree S A T :=
+    .br cg (.pre (.act xa) Cx)
+      (.br ncg (.call (.act ya') o) (.halt (aut.hlt p)))
+  let tl' : RTree S A T :=
+    .pre (.act pa) (.br cg
+      (.pre (.act xa) (.pre (.test gx) (.call (.act ya) o)))
+      (.pre (.test ncg) (.call (.act ya') o)))
+  let Co : RTree S A T :=
+    .pre (.wh bg (.seq (.act pa) (.ite cg
+      (.seq (.act xa) (.seq (.test gx) (.act ya)))
+      (.seq (.test ncg) (.act ya'))))) (.halt (aut.hlt o))
+  refine sched_assembly_roles aut (fun _ => 0)
+    (fun r => match r with
+      | 0 => [(x, Cx), (p, Cp), (o, Co)]
+      | _ + 1 => []) ?_ ?_ ?_ ?_ ?_
+  · intro s e _
+    exact Nat.le_refl 0
+  · intro r
+    match r with
+    | 0 =>
+        refine Supp.cons x Cx _ ?_ ?_ ?_ ?_
+        · exact ⟨Or.inl ⟨(o, Co),
+            List.mem_cons_of_mem _ (List.mem_cons_self ..), rfl⟩,
+            True.intro⟩
+        · intro q hq
+          rcases List.mem_cons.mp hq with h1 | h2
+          · rw [h1]; exact hxp
+          · rcases List.mem_cons.mp h2 with h3 | h4
+            · rw [h3]; exact hxo
+            · exact nomatch h4
+        · omega
+        · refine Supp.cons p Cp _ ?_ ?_ ?_ ?_
+          · exact ⟨⟨Or.inl ⟨(o, Co), List.mem_cons_self .., rfl⟩,
+              True.intro⟩,
+              Or.inl ⟨(o, Co), List.mem_cons_self .., rfl⟩,
+              True.intro⟩
+          · intro q hq
+            rcases List.mem_cons.mp hq with h1 | h2
+            · rw [h1]; exact hpo
+            · exact nomatch h2
+          · omega
+          · refine Supp.cons o Co _ ?_ ?_ ?_ Supp.nil
+            · exact True.intro
+            · intro q hq
+              exact nomatch hq
+            · omega
+    | r + 1 => exact Supp.nil
+  · intro r
+    match r with
+    | 0 =>
+        refine ⟨?_, ?_, ?_, True.intro⟩
+        · -- mid: fold
+          refine Or.inr ?_
+          intro sol
+          show EquivBA (resolveT sol (treeOf aut x)) (resolveT sol Cx)
+          rw [htreex]
+          exact EquivBA.base (Equiv.refl _)
+        · -- branch: fold over the cascade
+          refine Or.inr ?_
+          intro sol
+          show EquivBA (resolveT sol
+            (stepSubst [(x, Cx)] (treeOf aut p))) (resolveT sol Cp)
+          have hsub : stepSubst [(x, Cx)] (treeOf aut p) = Cp := by
+            show substT x Cx (treeOf aut p) = Cp
+            rw [htreep]
+            show RTree.br cg
+              (if x = x then .pre (.act xa) Cx else .call (.act xa) x)
+              (.br ncg
+                (if o = x then .pre (.act ya') Cx
+                  else .call (.act ya') o)
+                (.halt (aut.hlt p))) = Cp
+            rw [if_pos rfl, if_neg (fun h => hxo h.symm)]
+          rw [hsub]
+          exact EquivBA.base (Equiv.refl _)
+        · -- port: cascade, double prune, factor
+          refine Or.inl ⟨bg, tl', .halt (aut.hlt o), ?_, ⟨rfl, rfl⟩,
+            rfl⟩
+          intro sol
+          show EquivBA (resolveT sol
+            (stepSubst [(x, Cx), (p, Cp)] (treeOf aut o)))
+            (resolveT sol (.br bg tl' (.halt (aut.hlt o))))
+          have hsub : stepSubst [(x, Cx), (p, Cp)] (treeOf aut o)
+              = .br bg (.pre (.act pa) Cp) (.halt (aut.hlt o)) := by
+            show substT p Cp (substT x Cx (treeOf aut o)) = _
+            rw [htreeo]
+            show substT p Cp (RTree.br bg
+              (if p = x then .pre (.act pa) Cx else .call (.act pa) p)
+              (.halt (aut.hlt o))) = _
+            rw [if_neg (fun h => hxp h.symm)]
+            show RTree.br bg
+              (if p = p then .pre (.act pa) Cp else .call (.act pa) p)
+              (.halt (aut.hlt o)) = _
+            rw [if_pos rfl]
+          rw [hsub]
+          show EquivBA
+            (.ite bg (.seq (.act pa) (.ite cg
+              (.seq (.act xa) (.ite gx (.seq (.act ya) (sol o))
+                (.test (aut.hlt x))))
+              (.ite ncg (.seq (.act ya') (sol o))
+                (.test (aut.hlt p)))))
+              (.test (aut.hlt o)))
+            (.ite bg (.seq (.act pa) (.ite cg
+              (.seq (.act xa) (.seq (.test gx)
+                (.seq (.act ya) (sol o))))
+              (.seq (.test ncg) (.seq (.act ya') (sol o)))))
+              (.test (aut.hlt o)))
+          refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+          refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+          refine EquivBA.ite_c ?_ ?_
+          · refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+            exact halt_prune hhx (.seq (.act ya) (sol o))
+          · exact halt_prune hhp (.seq (.act ya') (sol o))
+    | r + 1 => exact True.intro
+  · intro r q hq
+    match r, hq with
+    | 0, hq => rfl
+    | r + 1, hq => exact nomatch hq
+  · intro s hs
+    rcases hstates s hs with h1 | h2 | h3
+    · rw [h1]
+      exact ⟨Cx, List.mem_cons_self ..⟩
+    · rw [h2]
+      exact ⟨Cp, List.mem_cons_of_mem _ (List.mem_cons_self ..)⟩
+    · rw [h3]
+      exact ⟨Co, List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_self ..))⟩
+
+#print axioms chord_three_sched
+
 end GkatElim
