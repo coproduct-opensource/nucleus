@@ -9526,3 +9526,50 @@ the base rate one should apply to the claims not yet corrected.
 
 **Next.**  Finish k=4 at NA=2 and k=3 at NA=4; then push the exhaustive reach
 as far as compute allows, since it is now the only instrument that can falsify.
+
+---
+
+## 210 — THE k=4 CRASH, AND A GUARD THAT COST A SOLUTION BEFORE IT SAVED ONE.
+
+**The k=4 exhaustive run was not slow, it was dying.**  It printed k=2 and k=3
+and then vanished at 146s with `terminated abnormally` and 1248s of user time —
+no panic message, clean-looking exit status because the status came from the
+tail of a pipe.  Worth stating plainly: I read that as a timeout for one
+iteration before checking stderr.  It was a crash.
+
+**Cause.**  `calc_search`'s final resolution loop substitutes every solution
+into every other, `scc.len()+1` times over.  Each round can SQUARE the
+expression size.  At two or three states that is harmless; at four or more with
+a context-extended list it exhausts memory and the process is killed.
+
+**The fix, and the part worth recording.**  A node-count guard bails the
+candidate out when a term exceeds a cap — sound, since it only means this
+candidate is not pursued and the search reports failure rather than a wrong
+answer.  But at `EX_CAP = 20 000` **the census REGRESSED**: NA=4 went from 0
+full-collapse failures to 1, and canonical 250/250 to 249/250.  Legitimate
+solutions genuinely need large intermediates, so the cap is a
+CORRECTNESS-AFFECTING knob, not free insurance.
+
+Because the failure mode is squaring, sizes jump from thousands to hundreds of
+millions in a single round — so a cap two orders of magnitude higher stops the
+crash while leaving real solutions untouched.  At `EX_CAP = 2 000 000`, all
+three populations are back to 100%:
+
+    NA=2 104/104     NA=3 190/190     NA=4 250/250      full collapse AND canonical
+
+**I would not have caught that by reasoning about it.**  The guard looked
+obviously safe; it silently cost a solution, and only re-running the census
+before trusting it showed so.  That is the second time this program has been
+saved by re-measuring a change that "could not" affect results — 203's dead
+failure dump was the first.
+
+**Odds: 75%, held.**  Nothing was learned about the mathematics this iteration.
+A crash was diagnosed and a guard was calibrated; the exhaustive k=4 run is
+only now able to start.  Holding rather than moving is the honest report when
+an iteration is entirely instrumental — and the 20 000-cap regression is a mild
+argument in the other direction, since it shows the measured 100% rates are
+sensitive to a harness constant nobody had reason to examine.
+
+**Next.**  The k=4 NA=2 enumeration (1 679 616 automata) is running.  Then k=3
+at NA=4, and push the exhaustive reach as far as compute allows — it is the
+only instrument left that can falsify.

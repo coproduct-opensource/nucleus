@@ -4188,6 +4188,23 @@ fn ex_occurs_any(e: &Ex, scc: &[usize]) -> bool {
     scc.iter().any(|&t| ex_occurs(e, t))
 }
 
+/// Node count, used to stop the resolution loop's squaring blowup.  Counts
+/// with an explicit budget so a already-huge term costs O(cap), not O(size).
+fn ex_size(e: &Ex, cap: usize) -> usize {
+    fn go(e: &Ex, n: &mut usize, cap: usize) {
+        if *n > cap { return; }
+        *n += 1;
+        match e {
+            Ex::Seq(a, b) | Ex::Ite(_, a, b) => { go(a, n, cap); go(b, n, cap); }
+            Ex::Wh(_, a) => go(a, n, cap),
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    go(e, &mut n, cap);
+    n
+}
+
 /// `e = H ; f`  ⟹  `H`.  Sequences are right-nested, so the suffix is found by
 /// walking the right spine.
 fn strip_suffix(e: &Ex, f: &Ex) -> Option<Ex> {
@@ -4356,12 +4373,29 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
     if left == 0 {
         // resolve residual references, then verify every SCC state
         let mut fin: Vec<Ex> = scc.iter().map(|&s| sols[s].clone().unwrap()).collect();
+        // SIZE GUARD.  This resolution loop substitutes every solution into
+        // every other, `scc.len()+1` times, so each round can SQUARE the
+        // expression size.  Harmless at two or three states; at four or more
+        // with a context-extended list it exhausts memory and kills the
+        // process — which is exactly how the k=4 exhaustive run died
+        // (`terminated abnormally`, 1248s of user time, no panic message).
+        // Bailing out here is sound: it only means this candidate is not
+        // pursued, and the search reports failure rather than a wrong answer.
+        // The cap is a CORRECTNESS-AFFECTING knob, not free insurance: at
+        // 20 000 the NA=4 census lost a solution it previously found (250/250
+        // became 249/250), because legitimate solutions need large
+        // intermediates.  Since the failure mode is SQUARING, sizes jump from
+        // thousands to hundreds of millions in one round, so a cap two orders
+        // of magnitude higher still stops the crash while leaving real
+        // solutions untouched.  Verified by re-running the census to 250/250.
+        const EX_CAP: usize = 2_000_000;
         for _ in 0..=scc.len() {
             for i in 0..fin.len() {
                 for j in 0..fin.len() {
                     if i != j {
                         let r = fin[j].clone();
                         fin[i] = ex_subst(&fin[i], scc[j], &r);
+                        if ex_size(&fin[i], EX_CAP) > EX_CAP { return false; }
                     }
                 }
             }
@@ -5893,21 +5927,25 @@ fn exhaustive<const NA: usize>() {
                 }
             }
             if !seen.iter().all(|&b| b) { return false; }
-            // ONLY SOLVABLE AUTOMATA.  `nested` alone is the WRONG filter here:
-            // run that way, this enumeration reported 80 "unsolved" automata at
-            // NA=2 k=3 and 102 at NA=3 k=2, and every one came back
-            // `eliminable=false` from the independent oracle — they are not
-            // solvable at all, so the calculus failing on them is correct
-            // behaviour, not a gap.  `nested` is NECESSARY, not sufficient, on
-            // automata that did not arise from expressions; 205's reading of
-            // the characterization was too strong.  Filter by the elimination
-            // oracle, which is the one that tracks actual solvability.
-            if !symbolic_eliminable_raw(&a) { return false; }
+            // CHEAPEST FIRST, again.  Running the elimination oracle on every
+            // automaton costs ~9ms each, which puts k=4 at four hours.  Almost
+            // all automata have no multi-state SCC at all and need no test;
+            // of those that do, almost all are solved by the calculus, and only
+            // there does the question "but is it actually SOLVABLE?" arise.
+            let sccs = sccs_of(&a);
+            if !sccs.iter().any(|c| c.len() >= 2) { return false; }
             let sing = singleton_states(&a);
-            let solved = sccs_of(&a).iter().all(|c| c.len() < 2
+            let solved = sccs.iter().all(|c| c.len() < 2
                 || calculus_solves(&a, c, 6)
                 || calculus_solves(&a, &scc_with_context(&a, c, &sing), 6));
-            !solved
+            if solved { return false; }
+            // ONLY SOLVABLE AUTOMATA COUNT AS FAILURES.  `nested` is the WRONG
+            // filter: run that way this enumeration reported 80 "unsolved" at
+            // NA=2 k=3 and 102 at NA=3 k=2, every one `eliminable=false` and
+            // hand-confirmed genuinely unsolvable.  `nested` is NECESSARY, not
+            // sufficient, on automata that did not arise from expressions —
+            // 205's reading of the characterization was too strong.
+            symbolic_eliminable_raw(&a)
         }).collect();
         println!("  exhaustive NA={NA} k={k}: {total} automata; \
             SOLVABLE (elimination oracle) but UNSOLVED by the calculus: {}", hits.len());
