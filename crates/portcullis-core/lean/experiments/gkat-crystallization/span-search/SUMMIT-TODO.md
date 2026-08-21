@@ -7649,3 +7649,85 @@ stratum — and the top of the ladder is still the existence question for
 arbitrary quotients, which nothing here touches.  The residue shrinking
 from 15 shapes to 2 at these parameters says the ladder is climbable at
 this scale; it says nothing about whether every quotient is reachable.
+
+---
+
+## Iteration 179 — THE COUNT MOVES: chorded classifier wired, and the first IRREDUCIBLE instance
+
+178 verified 13/15 by hand and said plainly that the census count had not
+moved because the classifier did not know the stratum.  Today it does.
+
+**THE CLASSIFIER.**  Added to `scc_census`, mirroring
+`chorded_assembly_roles`' hypotheses exactly.  No permutation search is
+needed: the chord state is the unique brancher, its two in-SCC successors
+are the port and the lap's next position, so the lap reconstructs by
+following unique successors from the candidate port.
+
+    NA=2, depth<=7, 20000 pairs:
+      multi-state SCCs: walked 107; CHORDED 13; OPEN 2      (was OPEN 15)
+
+**The 13 is now MEASURED, and it cross-checks.**  The Rust classifier and
+178's independent Python verifier — different implementations, one
+following unique successors and one brute-forcing permutations — agree on
+13, and on WHICH 13.  The two survivors are exactly #1 and #2, the ones
+the Python flagged.
+
+**AT SCALE (NA=4, depth<=7, 60000 pairs), which is the number that
+matters:**
+
+    pairs fully covered by fold+salomaaE:  57823/59993 = 96.4%
+    multi-state SCCs: 2170 — walked 2126, CHORDED 13, OPEN 31
+    (was 2127/2171 covered = 98.0%; now 2139/2170 = 98.6%)
+
+So the chorded stratum is worth 13 SCCs at NA=4, not the 29 the NA=2 run
+might have suggested.  **The residue at scale is 31, and it is a different
+population from the NA=2 residue** — recording that because I have twice
+been burned by carrying a residue characterization across parameters.
+
+**THE NA=4 RESIDUE, characterized:**
+
+    n=3  1 halt  0 exits  2 branchers  -> 11
+    n=3  1 halt  0 exits  1 brancher   ->  9
+    n=3  2 halts 0 exits  {3,1,0} br   ->  6
+    n=4  1 halt  0 exits  {1,2} br     ->  2
+    n=3  3 halts 0 exits  2 branchers  ->  1
+    n=2  2 halts 0 exits  2 branchers  ->  1
+    n=2  0 halts 3 exits  2 branchers  ->  1
+
+Reading the 9 one-brancher instances individually gives TWO next targets,
+both small variants rather than new mathematics:
+
+  * **CHORD AT THE PORT** (`c = 0`), which `chorded_cycle_roles` excludes
+    by `1 ≤ c`.  Instance #3: `0 → {1,2}, 1 → 0, 2 → 1`, halt at 0 — the
+    port itself branches into a short lap `0→1→0` and a long one
+    `0→2→1→0`.  Needs `double_gather` at the port and a two-branch loop
+    body, so `cPortE`'s shape changes; the rest is unchanged.
+  * **CHORD TO AN INTERIOR** — a genuinely NESTED loop.  Instances #2, #9:
+    the brancher sits at the last lap position and its extra arm targets
+    an interior, creating an inner cycle.  This is the same shape as the
+    two NA=2 survivors, so it is now the dominant unsolved case at both
+    scales.
+
+**AND THE FIRST IRREDUCIBLE INSTANCE.**  Running 176's T1/T2 test over the
+31: **30 reducible, 1 NOT** — and #26 is irreducible from EVERY choice of
+header:
+
+    #26  scc = [0,1,2]   0 → {1,2}   1 → {0,2}   2 → {0,1,2}
+
+The complete digraph on three nodes with a self-loop.  By Kosaraju this is
+not a structured program without auxiliary variables, so **no nest of
+`wh`s expresses it and no role theorem will ever cover it.**  Its language
+is still GKAT-expressible — it is a quotient of a Thompson sum of
+equivalent programs — but only by an automaton that DUPLICATES states.
+
+That vindicates iteration 174's "the role ladder has a ceiling", for one
+instance out of 2170, and for a shape 174 did not name.  174 was right
+about the existence of a ceiling and wrong about where it sits.  **1 in
+2170 is where it sits, at these parameters.**
+
+**Odds: ~45%, unchanged.**  Coverage 98.0% → 98.6% is a real measured
+gain.  It is also the wrong quantity to price: an existence theorem must
+hold for every quotient, and a 1-in-2170 irreducible instance is a
+concrete demonstration that the ladder alone cannot get there.  What would
+move the number is a construction for duplication-requiring quotients, and
+nothing in this iteration is one.

@@ -4897,6 +4897,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_side_collapsed = 0usize;
     let mut side_shrink_total = 0usize;
     let mut n_open_scc = 0usize;
+    let mut n_chorded_scc = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
         // SAME-SIDE collapse measurement: is each program's OWN automaton
         // already its own bisimulation quotient?  Iteration 131's dichotomy
@@ -5073,13 +5074,82 @@ fn scc_census<const NA: usize>(nguards: u8) {
                                 && q.hl[s] & cyclemask == 0))
                     })
                 };
-                if walked { n_walked_scc += 1; } else { n_open_scc += 1; }
+                // chorded-coverage: some lap through EVERY member plus ONE
+                // interior arm straight back to the port — the hypotheses of
+                // `chorded_assembly_roles`.  The chord state is the unique
+                // brancher; its two in-SCC successors are the port and the
+                // lap's next position, so the lap reconstructs by following
+                // unique successors.  No permutation search is needed.
+                let chorded = 'c: {
+                    if walked || branchers != 1 || scc.len() < 3 { break 'c false; }
+                    let succs = |s: usize| -> Vec<usize> {
+                        let mut ns: Vec<usize> = Vec::new();
+                        for i in 0..NA {
+                            let t = q.st[s][i];
+                            if t != 0 {
+                                let t = (t - 1) as usize;
+                                if inscc(t) && !ns.contains(&t) { ns.push(t); }
+                            }
+                        }
+                        ns
+                    };
+                    for &s in scc.iter() {
+                        for i in 0..NA {
+                            let t = q.st[s][i];
+                            if t != 0 && !inscc((t - 1) as usize) { break 'c false; }
+                        }
+                    }
+                    let cst = match scc.iter().find(|&&s| succs(s).len() >= 2) {
+                        Some(&s) => s, None => break 'c false };
+                    let cs = succs(cst);
+                    if cs.len() != 2 { break 'c false; }
+                    let mut good = false;
+                    for pick in 0..2 {
+                        let p = cs[pick];
+                        let nx = cs[1 - pick];
+                        if p == cst { continue; }
+                        let mut lap: Vec<usize> = vec![p];
+                        let mut cur = p;
+                        let mut ok = true;
+                        loop {
+                            let n = if cur == cst { nx } else {
+                                let s1 = succs(cur);
+                                if s1.len() != 1 { ok = false; break; }
+                                s1[0]
+                            };
+                            if n == p { break; }
+                            if lap.contains(&n) { ok = false; break; }
+                            lap.push(n);
+                            cur = n;
+                            if lap.len() > scc.len() { ok = false; break; }
+                        }
+                        if !ok || lap.len() != scc.len() { continue; }
+                        let cpos = match lap.iter().position(|&x| x == cst) {
+                            Some(i) => i, None => continue };
+                        if !(cpos >= 1 && cpos + 1 < lap.len()) { continue; }
+                        if succs(p) != vec![lap[1]] { continue; }
+                        let mut stepmask = 0u8;
+                        for i in 0..NA {
+                            if q.st[p][i] != 0 { stepmask |= 1 << i; }
+                        }
+                        if q.hl[p] & stepmask != 0 { continue; }
+                        if !scc.iter().all(|&s| s == p || (q.hl[s] & !q.hl[p] == 0)) {
+                            continue;
+                        }
+                        good = true;
+                        break;
+                    }
+                    good
+                };
+                if walked { n_walked_scc += 1; }
+                else if chorded { n_chorded_scc += 1; }
+                else { n_open_scc += 1; }
                 // OPEN dump: the SCCs no proved stratum covers.  These are the
                 // residue the elimination-order question is about, so print them
                 // in full — including which members are ports (halt or carry an
                 // external arm), since a port count >= 2 is exactly the case
                 // `elim_reduces`' uniform-exit side condition rules out.
-                if !walked && open_dumps < 40 {
+                if !walked && !chorded && open_dumps < 40 {
                     open_dumps += 1;
                     let nports = scc.iter().filter(|&&s| {
                         q.hl[s] != 0 || (0..NA).any(|i| {
@@ -5150,7 +5220,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  pairs analysed: {pairs_done}; FULLY covered by proved strata (fold+salomaaE): {pairs_covered} ({:.1}%)",
         100.0 * pairs_covered as f64 / pairs_done.max(1) as f64);
     println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");
-    println!("  multi-state SCCs: walked-covered (walked_cycle_roles): {n_walked_scc}; OPEN (exits/tree): {n_open_scc}");
+    println!("  multi-state SCCs: walked-covered (walked_cycle_roles): {n_walked_scc}; chorded-covered (chorded_assembly_roles): {n_chorded_scc}; OPEN: {n_open_scc}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");
