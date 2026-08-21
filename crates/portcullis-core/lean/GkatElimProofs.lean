@@ -714,4 +714,128 @@ theorem sched_solves {S : Type} [DecidableEq S]
 #print axioms backSol_solves_closed
 #print axioms sched_solves
 
+/-! ## The flat bridge and the generalized assembly
+
+    A flat automaton's equations are trees; a family of certified
+    schedules, one per rank class, assembles into full `StateRole`
+    coverage — the walked and chord assemblies as instances. -/
+
+/-- The equation tree of a flat automaton state. -/
+def treeOf {S : Type} (aut : GAut S A T) (s : S) : RTree S A T :=
+  (aut.trans s).foldr
+    (fun e acc => .br e.1 (.call (.act e.2.1) e.2.2) acc)
+    (.halt (aut.hlt s))
+
+private theorem resolve_treeOf_aux {S : Type} (sol : S → Exp A T)
+    (h : BExp T) :
+    ∀ L : List (BExp T × A × S),
+      resolveT sol (L.foldr
+        (fun e acc => .br e.1 (.call (.act e.2.1) e.2.2) acc)
+        (.halt h))
+      = foldTL sol h L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd rest ih =>
+      show Exp.ite hd.1 (.seq (.act hd.2.1) (sol hd.2.2)) _ = _
+      rw [ih]
+      rfl
+
+/-- Trees resolve to the flat equations. -/
+theorem resolve_treeOf {S : Type} (aut : GAut S A T)
+    (sol : S → Exp A T) (s : S) :
+    resolveT sol (treeOf aut s) = eqRHS aut sol s := by
+  rw [eqRHS_foldTL]
+  exact resolve_treeOf_aux sol (aut.hlt s) (aut.trans s)
+
+private theorem callOnly_treeOf_aux {S : Type} (P : S → Prop)
+    (h : BExp T) :
+    ∀ L : List (BExp T × A × S), (∀ e ∈ L, P e.2.2) →
+      CallOnly P (L.foldr
+        (fun e acc => .br e.1 (.call (.act e.2.1) e.2.2) acc)
+        (.halt h)) := by
+  intro L
+  induction L with
+  | nil => intro _; exact True.intro
+  | cons hd rest ih =>
+      intro hall
+      exact ⟨hall hd (List.mem_cons_self ..),
+        ih (fun e he => hall e (List.mem_cons_of_mem _ he))⟩
+
+/-- Arm-descent bounds the tree's call support. -/
+theorem callOnly_treeOf {S : Type} (aut : GAut S A T)
+    (P : S → Prop) (s : S)
+    (h : ∀ e ∈ aut.trans s, P e.2.2) :
+    CallOnly P (treeOf aut s) :=
+  callOnly_treeOf_aux P (aut.hlt s) (aut.trans s) h
+
+/-- The rank-stratified solution: each level closes its schedule over
+    the levels below. -/
+noncomputable def rankSol {S : Type} [DecidableEq S]
+    (sched : Nat → List (S × RTree S A T)) : Nat → S → Exp A T
+  | 0 => fun _ => .test .zero
+  | r + 1 => backSol (rankSol sched r) (sched r)
+
+/-- Levels above a state's rank never move its value. -/
+theorem rankSol_stable {S : Type} [DecidableEq S]
+    (sched : Nat → List (S × RTree S A T)) (rank : S → Nat)
+    (hrank : ∀ r, ∀ p ∈ sched r, rank p.1 = r) :
+    ∀ (r' : Nat) (s : S), rank s < r' →
+      rankSol sched r' s = rankSol sched (rank s + 1) s := by
+  intro r'
+  induction r' with
+  | zero => intro s hs; exact nomatch hs
+  | succ r' ih =>
+      intro s hs
+      by_cases hr : rank s = r'
+      · rw [hr]
+      · have hlt : rank s < r' := by omega
+        show backSol (rankSol sched r') (sched r') s = _
+        rw [backSol_ext (rankSol sched r') (sched r') s
+          (fun p hp => by
+            intro hcontra
+            exact hr (by rw [hcontra]; exact hrank r' p hp))]
+        exact ih s hlt
+
+/-- **THE GENERALIZED SCHEDULE ASSEMBLY**: a flat automaton with
+    rank-bounded arms and a certified schedule per rank class is fully
+    role-covered. -/
+theorem sched_assembly_roles {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (rank : S → Nat)
+    (sched : Nat → List (S × RTree S A T))
+    (hdesc : ∀ s, ∀ e ∈ aut.trans s, rank e.2.2 ≤ rank s)
+    (hsupp : ∀ r, Supp (fun s => rank s < r) (sched r))
+    (hok : ∀ r, SchedOk (treeOf aut) [] (sched r))
+    (hrank : ∀ r, ∀ p ∈ sched r, rank p.1 = r)
+    (hcover : ∀ s ∈ aut.states, ∃ C, (s, C) ∈ sched (rank s)) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨fun s => rankSol sched (rank s + 1) s, fun s hs => ?_⟩
+  obtain ⟨C, hmem⟩ := hcover s hs
+  have hsolve := sched_solves (treeOf aut) (fun t => rank t < rank s)
+    (rankSol sched (rank s)) (sched (rank s)) (hsupp (rank s))
+    (hok (rank s)) (s, C) hmem
+  have hagree : ∀ t, rank t ≤ rank s →
+      backSol (rankSol sched (rank s)) (sched (rank s)) t
+        = rankSol sched (rank t + 1) t := by
+    intro t ht
+    show rankSol sched (rank s + 1) t = _
+    exact rankSol_stable sched rank hrank (rank s + 1) t (by omega)
+  have hcall : CallOnly (fun t => rank t ≤ rank s) (treeOf aut s) :=
+    callOnly_treeOf aut _ s (fun e he => hdesc s e he)
+  refine StateRole.equivFold ?_
+  have h1 : backSol (rankSol sched (rank s)) (sched (rank s)) s
+      = rankSol sched (rank s + 1) s := rfl
+  rw [h1] at hsolve
+  have h2 : resolveT (backSol (rankSol sched (rank s))
+        (sched (rank s))) (treeOf aut s)
+      = resolveT (fun t => rankSol sched (rank t + 1) t)
+        (treeOf aut s) :=
+    resolveT_congr hagree (treeOf aut s) hcall
+  rw [h2, resolve_treeOf] at hsolve
+  exact hsolve
+
+#print axioms resolve_treeOf
+#print axioms rankSol_stable
+#print axioms sched_assembly_roles
+
 end GkatElim

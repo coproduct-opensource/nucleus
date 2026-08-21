@@ -2240,3 +2240,34 @@ system bridge (arms → trees, ERole/StateRole from sched_solves);
 (2) schedule existence for canonical quotients (SINGLE-EXIT hierarchy,
 the census side — the actual remaining mathematical content of the
 open problem); (3) the fragments as sanity instances.
+
+## Iteration 78 — ★ THE GENERALIZED SCHEDULE ASSEMBLY ★
+
+**`sched_assembly_roles`** ([propext, Quot.sound]): a flat automaton
+with rank-bounded arms (`rank e.2.2 ≤ rank s`) and ONE certified
+schedule per rank class (Supp below-rank + SchedOk + rank-exactness +
+coverage) is FULLY ROLE-COVERED.
+
+Machinery: `treeOf` (flat equations as trees, `resolve_treeOf` — zero
+axioms), `callOnly_treeOf` (arm descent bounds call support; the
+projection must be generalized into an aux for the list induction),
+`rankSol` (rank-stratified back-substitution: each level closes its
+schedule over the levels below), `rankSol_stable` (levels above a
+state's rank never move its value — backSol_ext + rank-exactness),
+and the final congruence dance (solved value = stratified value by
+rfl; resolveT_congr transports the equation across stability;
+resolve_treeOf lands on eqRHS; StateRole.equivFold).
+
+**STATUS OF THE OPEN PROBLEM**: with `equivBA_of_quot_solvesBA` +
+`decomp_solves`/`solvesBA_unclean`, FiniteAxiomsCompleteBA is now
+reduced to: for every canonical quotient of a trimmed Thompson sum of
+a ULE pair, EXHIBIT rank + per-rank schedules satisfying the five
+certificate conditions. All six strata become schedule instances. The
+remaining mathematics is SCHEDULE EXISTENCE — the census structure
+theorem (SINGLE-EXIT hierarchy: order each SCC port-last, interiors by
+the two gather situations). One theorem stands between the corpus and
+the full conjecture.
+
+Next: (a) sanity-instance one stratum (e.g. rebuild singleton-SCC or
+the chord as a schedule) to validate the certificate ergonomics;
+(b) begin the census structure theorem.
