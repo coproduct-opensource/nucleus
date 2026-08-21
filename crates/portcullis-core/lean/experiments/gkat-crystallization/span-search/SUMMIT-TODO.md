@@ -5577,3 +5577,65 @@ and it is the right next thing to settle.  Note it is a question about
 the WITNESS PROGRAMS, not about the general open problem: whichever way
 it goes, it affects only how `twoloops_complete`'s hypotheses are
 stated, never whether the theorem holds.
+
+## Iteration 142 — ★ THE MIXED CASE IS VACUOUS — option (b) holds ★
+
+Iteration 141 left a sharp question: does `b₁ ∧ c₁` unsatisfiable,
+together with language equivalence, force the other side to degenerate?
+Worked it out.  **The answer is better than "forces degeneracy": the
+mixed case is IMPOSSIBLE.**  Four steps, each a guarded-string
+observation.
+
+Setting: side 1 has `b₁ ∧ c₁` unsatisfiable, so by `twoLoop_no_overlap`
+it is the atomic loop `wh b₁ (act r₁)`.  Side 2 is LIVE — `b₂ ∧ c₂`
+satisfiable at some `α`, and `b₂`, `c₂` both refutable.
+
+**1. The guards must coincide: `b₁ ≡ b₂`.**  At any atom where `¬b₁`,
+side 1's loop exits immediately and ACCEPTS the single-atom string.  At
+any atom where `b₂` holds, side 2 must run its body and CANNOT accept a
+single-atom string.  So `¬b₁ ⟹ ¬b₂`.  Symmetrically `¬b₂ ⟹ ¬b₁`.
+Hence `b₁ ≡ b₂`.
+
+**2. The first actions must agree: `r₁ = q₂`.**  At the witness atom `α`
+we now have `b₁`, `b₂`, `c₂` all true — and `c₁` FALSE, since `b₁ ∧ c₁`
+is unsatisfiable and `b₁` holds.  Side 1 emits `r₁`; side 2 enters its
+inner loop and emits `q₂`.  Equality of languages forces `r₁ = q₂`.
+
+**3. The killer: side 2 cannot halt where side 1 can.**  After that
+first action both sides sit at an arbitrary next atom `α₁` — but side 1
+is back at its LOOP HEAD, while side 2 is INSIDE the inner loop, which
+must still emit the body's tail `r₂` before it can ever re-test `b₂`.
+So side 1 accepts `α r₁ α₁` whenever `¬b₁` at `α₁`, and side 2 accepts
+`α q₂ α₁` never.  With `r₁ = q₂` from step 2, that is a contradiction —
+**provided some atom has `¬b₁`.**
+
+**4. And if no atom has `¬b₁`, that is a contradiction too.**  `b₁`
+valid makes side 1's loop divergent, so its language is EMPTY.  But
+`b₁ ≡ b₂` from step 1 makes `b₂` valid, contradicting side 2's
+`hexitB₂` — and independently, side 2 with `¬b₂` somewhere accepts a
+single-atom string, so its language is nonempty.
+
+**Every branch contradicts.  The mixed case is vacuous.**
+
+**What this settles.**  141's question has the cheap answer: option (b),
+the one the literature calls "much cheaper when it holds", DOES hold
+here.  So `twoloops_complete_free` needs no atomic-vs-two-loop
+completeness result and no conservativity theorem — the fourth
+degenerate case joins the other three in being discharged by
+separation-style reasoning, just with a longer chain (four steps rather
+than one) because the collapse target emits actions.
+
+**Honest status.**  This is a hand-verified argument, not yet Lean.
+Steps 1 and 4 are single-atom acceptance facts and should formalize
+directly against `autLang`/`den`; step 3 is the one needing care, since
+it asserts side 2's inability to halt mid-body — which is exactly the
+"body tail must still run" structural fact, and the repo's
+`chord_noeps_*` / liveness lemmas are the nearest existing pattern.
+Recording the argument in full so the formalization is transcription
+rather than rediscovery.
+
+**Revised status of the hardening task**: `twoloops_complete_free` is
+four collapse lemmas (done, zero axioms) plus a vacuity argument
+(derived today, not yet formal).  No new mathematics is required — and
+this time that claim is backed by a worked argument rather than an
+estimate, which is what the last three revisions were missing.
