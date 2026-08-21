@@ -8355,3 +8355,56 @@ construct-and-verify over all 69, or the sufficiency theorem.
 2. **The sufficiency theorem**: elimination + gated identification + exit
    absorption solves every behavioural quotient of a Thompson sum.  Still
    the target, and still the only thing that would close this.
+
+---
+
+## Iteration 190 — 20 OF THE 69 ARE NOW VERIFIED SOLUTIONS, NOT PRECONDITIONS
+
+189 reported 69/69 and said plainly that it was a PRECONDITION rate, with
+full solutions constructed and language-verified for exactly two instances.
+Today closes that gap for the absorption half.
+
+**`verify_absorption.py`** (in the repo) builds the solution the absorption
+move prescribes and checks it against the automaton:
+
+    X_h = wh g (p ; <o's dispatch: back-to-h ↦ p, escape to w ↦ p ; X_w>)
+          ; test trail
+
+with `g` the head's step guard, `trail` its halt mask, and escape
+continuations supplied as ORACLE LANGUAGES read off the quotient — so only
+the absorption step itself is under test, not the rest of the automaton.
+
+    population        absorption cases   VERIFIED   MISMATCH
+    NA=2, depth<=7            4              4          0
+    NA=3, depth<=7            8              8          0
+    NA=4, depth<=7            5              5          0
+    NA=4, depth<=10           3              3          0
+    ----------------------------------------------------
+    TOTAL                    20             20          0
+
+Every instance the absorption move claims is now a CONSTRUCTED,
+LANGUAGE-CHECKED solution.  The 49 skipped are exactly the gated cases —
+the counts match the classifier's split instance for instance, which is a
+consistency check I did not have before.
+
+**THE TALLY, restated with the right labels:**
+
+    lattice-resistant instances (4 populations, ~960 000 pairs)   69
+      exit absorption — VERIFIED SOLUTIONS                        20
+      gated identification — PRECONDITION CHECKED ONLY            49
+      unaccounted for                                              0
+
+**Odds: 60%, held.**  The upgrade is real — a construction that could have
+mismatched and did not, twenty times — but it covers under a third of the
+instances, and the gated majority is still evidence of a weaker kind.
+Moving the number on a partial upgrade would be exactly the extrapolation
+187 had to correct.
+
+**NEXT: the same treatment for the gated cases.**  Harder, because the
+absorption construction is a fixed shape while gated identification is a
+REWRITE followed by elimination, so the solver has to search: substitute
+closed forms, apply Salomaa where an unknown's equation permits it, and
+use the gated rewrite when stuck.  That is a small symbolic eliminator
+over 2–3 unknowns with oracle languages for everything outside the SCC —
+a real build, and the right one, so it gets its own iteration rather than
+the tail of this one.
