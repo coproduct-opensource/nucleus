@@ -3169,3 +3169,32 @@ syntax-pair induction skeleton: UNIF(e,f) by strong induction on
 |e|+|f|, with canonicity + subsystem lemmas at each loop level,
 equation transport for cross-side steps, and sub-loop UNIF instances
 for class-internal consistency.
+
+## Iteration 111 — THE SUBSYSTEM CHAPTER CLOSES
+
+**`sum_subsystem_inl/inr`** ([propext]): disjoint-union states keep
+their own side's parametric equations verbatim (one map-fusion each) —
+the ite core is a sum, so this closes the ite case.
+
+**Init dispatches need NO new work**: `ParametricInitialBA` (in every
+certificate) already states `initRHSParam aut sol finish ≡
+program·finish` for ANY parametric solution — the init-state variants
+of the subsystem story were proven months ago.
+
+SUBSYSTEM CHAPTER COMPLETE: seq (finish := right's init dispatch),
+loop (finish := the loop's own init dispatch — feedback or exit),
+sum/ite (verbatim), inits (certificates). Every state of every
+Thompson automaton, at any nesting depth, has its ambient equation
+expressible as its innermost system's parametric equation with a
+composed finish — by iterating these four.
+
+THE REMAINING WORK IS ONE THEOREM: the syntax-pair induction
+UNIF(e, f) — bisimilar-reachable pairs in trim(SUMof e f) have
+EquivBA-equal standards — by strong induction on |e|+|f|, using:
+canonicity (per-loop, from certificates) + subsystem lemmas (to
+instantiate canonicity at nested scopes) + equation_transport /
+dispatch machinery (cross-side) + partner theorem (existence) +
+sub-loop UNIF (class-internal consistency) + IH-unified exits.
+Completeness = UNIF at the starts via ule_iff_start_bisim. Then
+FiniteAxiomsCompleteBA. The final assembly is large but every
+constituent is now proven.

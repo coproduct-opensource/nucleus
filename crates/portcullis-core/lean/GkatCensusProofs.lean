@@ -1487,4 +1487,52 @@ theorem loop_subsystem {S : Type} (guard : BExp T)
 
 #print axioms loop_subsystem
 
+open Classical in
+/-- **THE SUM SUBSYSTEM EQUALITIES**: disjoint-union states keep their
+    own side's parametric equations verbatim (the `ite` core is a sum;
+    branching happens only at the init dispatch). -/
+theorem sum_subsystem_inl {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T)
+    (R : GkatThompson.GSystem S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₁) :
+    GkatThompson.eqRHSParam (GkatThompson.sumGSystem L R) sol F
+        (.inl s)
+      = GkatThompson.eqRHSParam L (fun t => sol (.inl t)) F s := by
+  show GkatFaithful.guardedFold
+      (((L.trans s).map (fun tr : BExp T × A × S₁ =>
+        (tr.1, tr.2.1, Sum.inl tr.2.2))).map
+        (fun t : BExp T × A × Sum S₁ S₂ =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2))))
+      (GkatThompson.paramFallback (L.hlt s) F)
+    = GkatFaithful.guardedFold
+      ((L.trans s).map (fun t : BExp T × A × S₁ =>
+        (t.1, Exp.seq (.act t.2.1) (sol (.inl t.2.2)))))
+      (GkatThompson.paramFallback (L.hlt s) F)
+  rw [List.map_map]
+  rfl
+
+open Classical in
+theorem sum_subsystem_inr {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T)
+    (R : GkatThompson.GSystem S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₂) :
+    GkatThompson.eqRHSParam (GkatThompson.sumGSystem L R) sol F
+        (.inr s)
+      = GkatThompson.eqRHSParam R (fun t => sol (.inr t)) F s := by
+  show GkatFaithful.guardedFold
+      (((R.trans s).map (fun tr : BExp T × A × S₂ =>
+        (tr.1, tr.2.1, Sum.inr tr.2.2))).map
+        (fun t : BExp T × A × Sum S₁ S₂ =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2))))
+      (GkatThompson.paramFallback (R.hlt s) F)
+    = GkatFaithful.guardedFold
+      ((R.trans s).map (fun t : BExp T × A × S₂ =>
+        (t.1, Exp.seq (.act t.2.1) (sol (.inr t.2.2)))))
+      (GkatThompson.paramFallback (R.hlt s) F)
+  rw [List.map_map]
+  rfl
+
+#print axioms sum_subsystem_inl
+#print axioms sum_subsystem_inr
+
 end GkatCensus
