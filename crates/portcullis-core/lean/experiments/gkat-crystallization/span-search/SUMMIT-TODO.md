@@ -7860,3 +7860,50 @@ in the same words as the claim before running anything.**
 **Odds: ~45%, unchanged.**  Three Kosaraju-blocked instances in 2170 is a
 genuine, small, correctly-measured obstruction for the ladder — and the
 ladder was never the route to the general theorem anyway.
+
+---
+
+## Iteration 182 — THE NESTED-CHORD STRATUM: two `w3` applications, built to plan
+
+181 wrote the derivation and stopped.  Today executed it.  Both halves,
+sorry-free, `[propext, Classical.choice, Quot.sound]`:
+
+* `nWalk`, `nWalk_split`, `nInner`, `nTail`, `nPortE`, `nLastE`
+* `nested_chord_roles` — the cycle-local theorem
+* `asmSolN`, `asmSolN_eq`, `nested_chord_assembly_roles` — the assembly
+
+**This is the first stratum with TWO NESTED LOOPS.**  Every earlier one —
+single-port, parked, walked, walked-exit, chorded — closes with one `wh`
+at the port.  This closes with a `wh` inside a `wh`: the inner loop at the
+BRANCHER, the outer at the port, `w3` applied twice.  That mechanism is
+what any nested-loop stratum needs, and it now exists.
+
+**The plan held exactly.**  Every step of `NESTED-CHORD-PLAN.md` went
+through as written: `s2` on the dead fallbacks, `u5` to factor the walk,
+`double_gather` at the brancher, `w3` inner then outer.  Three build
+cycles, all three failures mechanical (`u5` needed the `nTail` unfolding
+staged, two `rfl`s omitted) — **none of them mathematical**.  Deriving
+before building is the difference between three mechanical fixes and a
+half-finished stratum, and it is now two-for-two.
+
+**`nWalk_split` is UNCONDITIONAL** — no length bound, no halt hypotheses,
+no `park_absorb`.  Interiors are silent, so every fallback is literally
+`test 0`, which `s2` rewrites to `0 ; X`, and `u5` factors the
+continuation out of the whole walk.  Compare `pChain_split`, which needs
+`himp` and `hexcl` because its interiors may halt.  **The silence of the
+interiors is doing all the work**, and it is a MEASURED fact about the
+residue, not an assumption of convenience.
+
+**Assembly was cheap again, for the reason 178 recorded**: the cycle's
+closed forms mention no `sol`, so the recursion is needed only at base
+states and the cycle branch of the fixpoint equation needs no congruence
+lemma.  Base case is one line, `self_gather_role`.
+
+**SCOPE.**  This covers a lap whose LAST position chords back to position
+1 — 5 of the 31 measured NA=4 open SCCs.  The classifier does not know
+this stratum yet, so **the census count has not moved**; wiring it is next
+and mechanical.  Still uncovered: chord AT the port (7), two-chord cases
+(16), and the 3 MULTI-EXIT instances that no nest of `wh`s can reach.
+
+**Odds: ~45%, unchanged.**  A stratum, built to spec, that does not touch
+the existence question for arbitrary quotients.

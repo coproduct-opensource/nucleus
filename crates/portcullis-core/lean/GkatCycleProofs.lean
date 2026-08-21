@@ -1880,4 +1880,305 @@ theorem chorded_assembly_roles (aut : GAut S A T) (rank : S → Nat)
 #print axioms asmSolC_eq
 #print axioms chorded_assembly_roles
 
+/-! ## THE NESTED-CHORD STRATUM: two `w3` applications, inner then outer
+
+    Built to the derivation in `span-search/NESTED-CHORD-PLAN.md`, which
+    was written and checked before any Lean.  Shape, from iteration 181's
+    classification of the measured residue:
+
+        lap   m 0 → m 1 → … → m (len-1) → m 0
+        port  m 0 is the UNIQUE exit state; interiors are silent
+        chord one extra arm at position `len-1` back to position `1`
+
+    Interiors being silent is what makes the chain factor: every interior
+    fallback is `test 0`, which `s2` rewrites to `0 ; X`, so `u5` pulls the
+    continuation out of the whole walk.  `nWalk_split` is therefore
+    UNCONDITIONAL — no `park_absorb`, no halt hypotheses, no length bound.
+
+    **The rotation is the trick.**  The inner loop heads at the BRANCHER,
+    not at the chord's target.  A `wh` tests its guard at the top, and the
+    chord guard is the test available at the brancher's atom; at the
+    chord's target the continue condition is not a test at all, it is a
+    test several actions later.  Rotating makes the inner equation a
+    Salomaa equation and `w3` closes it. -/
+
+open Classical in
+/-- The straight walk from position `j` over `k` steps: step onward, or
+    fail.  Interiors are silent, so the fallback is literally `0`. -/
+noncomputable def nWalk (aut : GAut S A T) (m : Nat → S)
+    (term : Exp A T) : Nat → Nat → Exp A T
+  | 0, _ => term
+  | k + 1, j =>
+      .ite (gGuard (m (j + 1)) (aut.trans (m j)))
+        (.seq (gBody (m (j + 1)) (aut.trans (m j)))
+          (nWalk aut m term k (j + 1)))
+        (.test .zero)
+
+/-- **THE WALK SPLIT**, unconditional: a dead fallback is `0 ; X` by `s2`,
+    so `u5` factors the continuation out of the entire walk. -/
+theorem nWalk_split (aut : GAut S A T) (m : Nat → S) (X : Exp A T) :
+    ∀ k j, EquivBA (nWalk aut m X k j)
+      (.seq (nWalk aut m (.test .one) k j) X) := by
+  intro k
+  induction k with
+  | zero => intro j; exact EquivBA.symm (EquivBA.base (Equiv.s4 X))
+  | succ k ih =>
+      intro j
+      show EquivBA
+        (.ite (gGuard (m (j + 1)) (aut.trans (m j)))
+          (.seq (gBody (m (j + 1)) (aut.trans (m j)))
+            (nWalk aut m X k (j + 1)))
+          (.test .zero))
+        (.seq (.ite (gGuard (m (j + 1)) (aut.trans (m j)))
+          (.seq (gBody (m (j + 1)) (aut.trans (m j)))
+            (nWalk aut m (.test .one) k (j + 1)))
+          (.test .zero)) X)
+      refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+        (EquivBA.base (Equiv.u5 _ _ _ X))
+      · exact EquivBA.trans
+          (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (ih (j + 1)))
+          (seq_assoc' _ _ X)
+      · exact EquivBA.symm (EquivBA.base (Equiv.s2 X))
+
+open Classical in
+/-- The inner loop, headed AT THE BRANCHER: take the chord, walk back. -/
+noncomputable def nInner (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    Exp A T :=
+  .wh (gGuard (m 1) (aut.trans (m (len - 1))))
+    (.seq (gBody (m 1) (aut.trans (m (len - 1))))
+      (nWalk aut m (.test .one) (len - 2) 1))
+
+open Classical in
+/-- The brancher's exit dispatch, with the port solution already factored
+    out: close the lap, or fail. -/
+noncomputable def nTail (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    Exp A T :=
+  .ite (gGuard (m 0) (gOthers (m 1) (aut.trans (m (len - 1)))))
+    (gBody (m 0) (gOthers (m 1) (aut.trans (m (len - 1)))))
+    (.test .zero)
+
+open Classical in
+/-- The outer loop: one lap is walk, inner loop, lap close. -/
+noncomputable def nPortE (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    Exp A T :=
+  .seq (.wh (gGuard (m 1) (aut.trans (m 0)))
+      (.seq (gBody (m 1) (aut.trans (m 0)))
+        (.seq (nWalk aut m (.test .one) (len - 2) 1)
+          (.seq (nInner aut m len) (nTail aut m len)))))
+    (.test (aut.hlt (m 0)))
+
+open Classical in
+/-- **THE NESTED-CHORD CYCLE THEOREM.**  A lap whose LAST position carries
+    an extra arm back to position 1, with the port the unique exit state,
+    is fully role-covered — the port and the brancher both `salomaaE`
+    states, the interiors `equivFold`s of walk forms.
+
+    Two `w3` applications, inner then outer.  No uniqueness axiom. -/
+theorem nested_chord_roles (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) (hlen : 3 ≤ len)
+    (hsol_port : sol (m 0) = nPortE aut m len)
+    (hsol_last : sol (m (len - 1))
+      = .seq (nInner aut m len) (.seq (nTail aut m len) (nPortE aut m len)))
+    (hsol_int : ∀ j, 1 ≤ j → j + 1 < len →
+      sol (m j) = nWalk aut m (sol (m (len - 1))) (len - 1 - j) j)
+    (hport_arms : ∀ e ∈ aut.trans (m 0), e.2.2 = m 1)
+    (hint_arms : ∀ j, 1 ≤ j → j + 1 < len →
+      ∀ e ∈ aut.trans (m j), e.2.2 = m (j + 1))
+    (hbr_arms : ∀ e ∈ gOthers (m 1) (aut.trans (m (len - 1))), e.2.2 = m 0)
+    (hsilent : ∀ j, 1 ≤ j → j < len → GuardEmpty (aut.hlt (m j))) :
+    ∀ j, j < len → StateRole aut sol (m j) := by
+  -- the walk from position 1, with the brancher's solution as terminal
+  have hwalk1 : EquivBA (sol (m 1))
+      (.seq (nWalk aut m (.test .one) (len - 2) 1) (sol (m (len - 1)))) := by
+    by_cases h2 : 1 + 1 < len
+    · rw [hsol_int 1 (Nat.le_refl 1) h2,
+        show len - 1 - 1 = len - 2 from by omega]
+      exact nWalk_split aut m (sol (m (len - 1))) (len - 2) 1
+    · have : len - 2 = 0 := by omega
+      have h1 : m 1 = m (len - 1) := by
+        rw [show len - 1 = 1 from by omega]
+      rw [this, h1]
+      exact EquivBA.symm (EquivBA.base (Equiv.s4 (sol (m (len - 1)))))
+  intro j hj
+  cases Nat.eq_zero_or_pos j with
+  | inl hzero =>
+      subst hzero
+      refine StateRole.salomaaE (gGuard (m 1) (aut.trans (m 0)))
+        (.seq (gBody (m 1) (aut.trans (m 0)))
+          (.seq (nWalk aut m (.test .one) (len - 2) 1)
+            (.seq (nInner aut m len) (nTail aut m len))))
+        (.test (aut.hlt (m 0))) hsol_port ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (multi_gather sol (aut.hlt (m 0)) (m 1)
+        (aut.trans (m 0))) ?_
+      rw [gOthers_nil_of_all (m 1) (aut.trans (m 0)) hport_arms]
+      refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+      -- gBody ; sol (m 1)  ≡  (gBody ; (W ; (I ; Tl))) ; sol (m 0)
+      refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+        hwalk1) ?_
+      rw [hsol_last, hsol_port]
+      refine EquivBA.trans (seq_assoc' _ _ _) ?_
+      refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+        (seq_assoc' _ _ _)) ?_
+      refine EquivBA.trans (seq_assoc' _ _ _) ?_
+      exact EquivBA.seq_c (EquivBA.symm (seq_assoc' _ _ _))
+        (EquivBA.base (Equiv.refl _))
+  | inr hpos =>
+      by_cases hlast : j + 1 = len
+      · -- the brancher
+        have hjl : m j = m (len - 1) := by
+          rw [show len - 1 = j from by omega]
+        rw [hjl]
+        refine StateRole.salomaaE (gGuard (m 1) (aut.trans (m (len - 1))))
+          (.seq (gBody (m 1) (aut.trans (m (len - 1))))
+            (nWalk aut m (.test .one) (len - 2) 1))
+          (.seq (nTail aut m len) (nPortE aut m len)) hsol_last ?_
+        rw [eqRHS_foldTL]
+        refine EquivBA.trans (double_gather sol (aut.hlt (m (len - 1)))
+          (m 1) (m 0) (aut.trans (m (len - 1)))) ?_
+        rw [gOthers_nil_of_all (m 0)
+          (gOthers (m 1) (aut.trans (m (len - 1)))) hbr_arms]
+        refine EquivBA.ite_c ?_ ?_
+        · -- gBody ; sol (m 1) ≡ (gBody ; W) ; sol (m (len-1))
+          refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+            hwalk1) ?_
+          exact seq_assoc' _ _ (sol (m (len - 1)))
+        · -- ite gn (bn ; sol (m 0)) (test hlt) ≡ nTail ; nPortE
+          rw [hsol_port]
+          refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+            (EquivBA.baTest (b := aut.hlt (m (len - 1))) (c := .zero)
+              (fun X W x => hsilent (len - 1) (by omega) (by omega) X W x))) ?_
+          refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+            (EquivBA.symm (EquivBA.base (Equiv.s2 (nPortE aut m len))))) ?_
+          exact EquivBA.base (Equiv.u5 _ _ _ (nPortE aut m len))
+      · -- an ordinary interior
+        have hjl : j + 1 < len := by omega
+        refine StateRole.equivFold ?_
+        have hstep : sol (m j)
+            = .ite (gGuard (m (j + 1)) (aut.trans (m j)))
+              (.seq (gBody (m (j + 1)) (aut.trans (m j))) (sol (m (j + 1))))
+              (.test .zero) := by
+          rw [hsol_int j hpos hjl,
+            show len - 1 - j = (len - 1 - (j + 1)) + 1 from by omega]
+          by_cases hj1 : j + 1 + 1 = len
+          · have hm : m (len - 1) = m (j + 1) := by
+              rw [show len - 1 = j + 1 from by omega]
+            rw [show len - 1 - (j + 1) = 0 from by omega, hm]
+            rfl
+          · rw [hsol_int (j + 1) (by omega) (by omega)]
+            rfl
+        rw [hstep, eqRHS_foldTL]
+        refine EquivBA.trans ?_ (EquivBA.symm
+          (multi_gather sol (aut.hlt (m j)) (m (j + 1)) (aut.trans (m j))))
+        rw [gOthers_nil_of_all (m (j + 1)) (aut.trans (m j))
+          (hint_arms j hpos hjl)]
+        exact EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+          (EquivBA.symm (EquivBA.baTest (b := aut.hlt (m j)) (c := .zero)
+            (fun X W x => hsilent j hpos hj X W x)))
+
+#print axioms nWalk_split
+#print axioms nested_chord_roles
+
+open Classical in
+/-- The brancher's closed solution, named so the assembly can use it. -/
+noncomputable def nLastE (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    Exp A T :=
+  .seq (nInner aut m len) (.seq (nTail aut m len) (nPortE aut m len))
+
+open Classical in
+/-- The nested-chord assembly solution.  As with the chorded stratum the
+    cycle's closed forms mention no `sol`, so the recursion is needed only
+    at base states and the cycle branch needs no congruence lemma. -/
+noncomputable def asmSolN (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some (len, m, i) =>
+        if i = 0 then nPortE aut m len
+        else nWalk aut m (nLastE aut m len) (len - 1 - i) i)
+
+open Classical in
+theorem asmSolN_eq (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat)) (s : S) :
+    asmSolN aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSolN aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some (len, m, i) =>
+            if i = 0 then nPortE aut m len
+            else nWalk aut m (nLastE aut m len) (len - 1 - i) i) := by
+  unfold asmSolN
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE NESTED-CHORD ASSEMBLY THEOREM**: an automaton whose every state
+    is BASE (arms self or strictly descending) or a member of a designated
+    nested-chord cycle is fully role-covered. -/
+theorem nested_chord_assembly_roles (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat))
+    (hcy : ∀ s len m i, cy s = some (len, m, i) →
+      i < len ∧ 3 ≤ len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (len, m, j)) ∧
+      (∀ e ∈ aut.trans (m 0), e.2.2 = m 1) ∧
+      (∀ j, 1 ≤ j → j + 1 < len →
+        ∀ e ∈ aut.trans (m j), e.2.2 = m (j + 1)) ∧
+      (∀ e ∈ gOthers (m 1) (aut.trans (m (len - 1))), e.2.2 = m 0) ∧
+      (∀ j, 1 ≤ j → j < len → GuardEmpty (aut.hlt (m j))))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSolN aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      refine self_gather_role aut (asmSolN aut rank cy) s ?_
+      rw [asmSolN_eq, hcys]
+      exact congrArg _ (foldTL_congr' (aut.hlt s) (gOthers s (aut.trans s))
+        (fun e he => dif_pos (hlow e he)))
+  | some q =>
+      obtain ⟨len, m, i⟩ := q
+      obtain ⟨hilt, hlen, hmi, hcoh, hport_arms, hint_arms, hbr_arms,
+        hsilent⟩ := hcy s len m i hcys
+      have hcycsol : ∀ j, j < len →
+          asmSolN aut rank cy (m j)
+            = (if j = 0 then nPortE aut m len
+               else nWalk aut m (nLastE aut m len) (len - 1 - j) j) := by
+        intro j hj
+        rw [asmSolN_eq, hcoh j hj]
+      have hsol_port : asmSolN aut rank cy (m 0) = nPortE aut m len := by
+        rw [hcycsol 0 (by omega), if_pos rfl]
+      have hsol_last : asmSolN aut rank cy (m (len - 1))
+          = .seq (nInner aut m len)
+              (.seq (nTail aut m len) (nPortE aut m len)) := by
+        rw [hcycsol (len - 1) (by omega), if_neg (by omega : ¬ len - 1 = 0),
+          show len - 1 - (len - 1) = 0 from by omega]
+        rfl
+      have hsol_int : ∀ j, 1 ≤ j → j + 1 < len →
+          asmSolN aut rank cy (m j)
+            = nWalk aut m (asmSolN aut rank cy (m (len - 1))) (len - 1 - j) j := by
+        intro j hj1 hj
+        rw [hcycsol j (by omega), if_neg (by omega : ¬ j = 0), hsol_last]
+        rfl
+      have := nested_chord_roles aut (asmSolN aut rank cy) m len hlen
+        hsol_port hsol_last hsol_int hport_arms hint_arms hbr_arms hsilent
+        i hilt
+      rw [hmi] at this
+      exact this
+
+#print axioms asmSolN_eq
+#print axioms nested_chord_assembly_roles
+
 end GkatCycle
