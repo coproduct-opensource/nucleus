@@ -3469,4 +3469,58 @@ theorem scc_block_schedP {S : Type} [DecidableEq S]
 #print axioms forest_prefix_ok
 #print axioms scc_block_schedP
 
+/-! ## Prefix irrelevance
+
+    A block certified with an empty prefix stays certified behind any
+    prefix its equations never call — the tool that lets standalone
+    block certificates concatenate into rank-class schedules. -/
+
+/-- Cascades split across appended prefixes. -/
+theorem stepSubst_append {S : Type} [DecidableEq S]
+    (l₁ l₂ : List (S × RTree S A T)) (t : RTree S A T) :
+    stepSubst (l₁ ++ l₂) t = stepSubst l₂ (stepSubst l₁ t) := by
+  show List.foldl _ t (l₁ ++ l₂) = _
+  rw [List.foldl_append]
+  rfl
+
+/-- **PREFIX IRRELEVANCE**: closing certificates survive un-called
+    prefixes. -/
+theorem SchedOk_disjoint_prefix {S : Type} [DecidableEq S]
+    (sys : S → RTree S A T) (pre : List (S × RTree S A T)) :
+    ∀ (steps done : List (S × RTree S A T)),
+      (∀ p ∈ steps, CallOnly
+        (fun t => ∀ q ∈ pre, t ≠ q.1) (sys p.1)) →
+      SchedOk sys done steps →
+      SchedOk sys (pre ++ done) steps := by
+  intro steps
+  induction steps with
+  | nil => intro _ _ _; exact True.intro
+  | cons hd rest ih =>
+      intro done hdisj hok
+      obtain ⟨u, C⟩ := hd
+      obtain ⟨hclause, hrest⟩ := hok
+      have hnoop : stepSubst (pre ++ done) (sys u)
+          = stepSubst done (sys u) := by
+        rw [stepSubst_append]
+        rw [stepSubst_noop pre (sys u)
+          (hdisj (u, C) (List.mem_cons_self ..))]
+      refine ⟨?_, ?_⟩
+      · rcases hclause with ⟨G, tl, tr, hre, hall, hCf⟩ | hfold
+        · refine Or.inl ⟨G, tl, tr, ?_, hall, hCf⟩
+          intro sol
+          rw [hnoop]
+          exact hre sol
+        · refine Or.inr ?_
+          intro sol
+          rw [hnoop]
+          exact hfold sol
+      · have hres := ih (done ++ [(u, C)])
+          (fun p hp => hdisj p (List.mem_cons_of_mem _ hp)) hrest
+        show SchedOk sys ((pre ++ done) ++ [(u, C)]) rest
+        rw [List.append_assoc]
+        exact hres
+
+#print axioms stepSubst_append
+#print axioms SchedOk_disjoint_prefix
+
 end GkatElim

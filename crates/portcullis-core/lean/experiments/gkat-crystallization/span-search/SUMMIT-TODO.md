@@ -2697,3 +2697,30 @@ sched_assembly_roles.
 Remaining: the top-level Lego theorem (rank classes → block lists →
 full schedule family) and then the single risk locus: single-exit
 facts for canonical quotients of Thompson sums.
+
+## Iteration 94 — PREFIX IRRELEVANCE (the composition toolkit completes)
+
+**`stepSubst_append`** (cascades split across appended prefixes —
+List.foldl_append) and **`SchedOk_disjoint_prefix`** ([propext,
+Quot.sound]): a block's closing certificate survives ANY prefix its
+equations never call — both the split and fold clauses transport by a
+single cascade-noop rewrite, and the inner accumulator shifts by
+associativity.
+
+THE COMPOSITION TOOLKIT IS COMPLETE:
+- concatenate: Supp_append / SchedOk_append
+- retarget: Supp_target
+- reorder past uncalled prefixes: SchedOk_disjoint_prefix
+- blocks: scc_block_schedP (abstract external support)
+- ports over anything: port_step_schedP
+- leaves: forest_prefix_supp/ok, forest_class_sched
+
+Any hierarchical arrangement of single-exit SCC blocks across ranks
+now assembles mechanically. The ONLY remaining input the census must
+supply: per rank class, the block decomposition data (ints/port lists
++ arm-shape facts + halt emptiness) — pure facts about canonical
+quotients, no more scheduling mathematics.
+
+Next: the census facts for quotients of Thompson sums — starting with
+the SINGLE-EXIT structure theorem (syntactic Thompson SCCs exit only
+at loop headers; quotient pairing preserves it).
