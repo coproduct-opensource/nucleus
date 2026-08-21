@@ -4458,3 +4458,61 @@ as the existing half; (2) same-side UNIF — canonical cause discharged
 today, general case open; (3) the size induction — its structural
 interface now exists, with `wh_standard` correcting the shape of the
 loop case before it could mislead.
+
+## Iteration 125 — ★ THE RAW/TRIM SCISSORS, AND THE ONE HYPOTHESIS THAT CLOSES THEM ★
+
+Acting on 124's literature verdict ("don't extend a labelling from the
+live part — normalize the dead part away and work on the trim"), making
+it concrete exposes the gap in its sharpest form yet.  It is a pair of
+scissors:
+
+* on the **RAW** sum we have SOLVING (`sum_solves_std`, iteration 114)
+  — but the bisimilarity `ULE` hands us is about `trimAut`
+  (`ule_iff_start_bisim`);
+* on the **TRIM** we have BISIMILARITY — but not solving, because
+  `solvesBA_untrim` runs trim → raw and the reverse needs dead labels
+  to collapse.
+
+`equation_transport` and the partner retraction (`solves_of_partner`)
+need BOTH at once, on ONE automaton.  Neither side of the scissors has
+both.  That, precisely, is what the "dead-state gap" has been all along
+— stated here for the first time as a property of two automata rather
+than as a vague obstruction.
+
+**`solvesBA_trim_of_dead`** closes them from a single named hypothesis:
+a solution of the RAW system whose DEAD states carry provably-zero
+labels **also solves the TRIM**.  It is the exact converse of
+`solvesBA_untrim`, with the dead-label collapse supplied as an input
+rather than extracted from a trim solution; the proof mirrors
+`solvesBA_untrim`'s chain (`not_zero_strip` / `trim_fold_equiv` /
+`not_zero_strip`) with `hdead` fed in directly.
+
+**So the entire remaining dependency is now ONE named obligation:**
+
+    dead Thompson states carry provably-zero standard labels
+      ∀ t, ¬ Live aut t → EquivBA (stdSum t) (test 0)
+
+which is verbatim what `dead_thompson_label_eq_zero_of_complete`
+already warns "any successful pruning proof must establish directly for
+Thompson labels".  The repo has been circling this since long before
+this campaign; it is now isolated as the single input to a mechanism
+that is otherwise complete.
+
+**Is it tractable?**  Genuinely unclear, and worth not overselling.
+Points for: it is a NULL-language special case, not full completeness,
+and the repo already proves the hardest-looking instance —
+`productive_while_true_eq_zero` kills a productive `while 1 do p`, whose
+language is empty for non-termination reasons.  `certifiedThompson_
+state_empty_iff` and `uniformExpLempty_iff_zero` already connect dead
+states to empty labels.  Points against: emptiness of a GKAT product
+`X·Y` is not "some factor is empty" — it can arise from the last atom of
+every `X`-string starting no `Y`-string — so a structural induction has
+real cases to discharge, and nothing in the repo currently does that.
+
+**Route status, all three pieces now named and none hand-waved:**
+1. **Dead labels are zero** — sole input to `solvesBA_trim_of_dead`;
+   isolated today; tractability open.
+2. **Same-side UNIF** — canonical cause (duplicated subterms)
+   discharged in 124; general case open, needs the size induction.
+3. **The size induction** — structural interface built in 124, with the
+   loop case corrected.

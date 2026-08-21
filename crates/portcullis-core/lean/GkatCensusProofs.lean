@@ -2568,4 +2568,64 @@ theorem dup_branch_unif (c : BExp T) (p : Exp A T)
 #print axioms dup_branch_standard_eq
 #print axioms dup_branch_unif
 
+/-! ## The raw/trim scissors, and the single hypothesis that closes them
+
+    Iteration 124's literature check said: don't extend a labelling from
+    the live part, normalize the dead part away and work on the trim.
+    Making that concrete exposes the gap in its sharpest form yet — a
+    pair of scissors:
+
+    * on the RAW sum we have SOLVING (`sum_solves_std`) but the
+      bisimilarity we can get from `ULE` is about `trimAut`;
+    * on the TRIM we have BISIMILARITY (`ule_iff_start_bisim`) but not
+      solving, since `solvesBA_untrim` runs trim → raw and the reverse
+      needs dead labels to collapse.
+
+    `equation_transport` and the partner retraction need BOTH at once,
+    on one automaton.  The theorem below closes the scissors from a
+    single named hypothesis: **dead states carry provably-zero labels.**
+    That is exactly the obligation
+    `dead_thompson_label_eq_zero_of_complete` warns "any successful
+    pruning proof must establish directly for Thompson labels" — and it
+    is now the ONLY thing standing between the campaign's assembled
+    machinery and a trim-based argument. -/
+
+open Classical in
+/-- **THE SCISSORS CLOSE**: a solution of the raw system whose DEAD
+    states carry provably-zero labels also solves the TRIM.  The exact
+    converse of `solvesBA_untrim`, with the dead-label collapse supplied
+    as a hypothesis instead of extracted from a trim solution. -/
+theorem solvesBA_trim_of_dead {S : Type} (aut : GkatKleene.GAut S A T)
+    {sol : S → Exp A T}
+    (hwf1 : ∀ s ∈ aut.states, ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s) α = true →
+        GkatKleene.autStep (GkatPlanExistence.genW T) aut s α = none)
+    (hdead : ∀ t, ¬ GkatPlanExistence.Live aut t →
+      EquivBA (sol t) (.test .zero))
+    (hsol : GkatKleene.SolvesBA aut sol) :
+    GkatKleene.SolvesBA (GkatTrim.trimAut aut) sol := by
+  intro s hs
+  refine EquivBA.trans (hsol s hs) ?_
+  have hd : ∀ e ∈ aut.trans s, ¬ GkatPlanExistence.Live aut e.2.2 →
+      EquivBA (sol e.2.2) (.test .zero) := fun e _ hnl => hdead _ hnl
+  have hexcl : ∀ e ∈ aut.trans s,
+      GkatRingPlan.GuardEmpty (.and (aut.hlt s) e.1) := by
+    intro e he X W x
+    show (GkatGS.bval W (aut.hlt s) x && GkatGS.bval W e.1 x) = false
+    rw [GkatPlanExistence.bval_gen W x (aut.hlt s),
+      GkatPlanExistence.bval_gen W x e.1]
+    cases hh : GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s)
+        (fun u => W u x) with
+    | false => rfl
+    | true =>
+        rw [GkatTrim.firstMatch_none_all
+          (GkatPlanExistence.genW T) (hwf1 s hs _ hh) e he]
+        rfl
+  refine EquivBA.trans (EquivBA.symm (GkatTrim.not_zero_strip _)) ?_
+  refine EquivBA.trans
+    (GkatTrim.trim_fold_equiv aut (aut.trans s) .zero hd hexcl) ?_
+  exact GkatTrim.not_zero_strip _
+
+#print axioms solvesBA_trim_of_dead
+
 end GkatCensus
