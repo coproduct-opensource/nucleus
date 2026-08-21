@@ -2627,3 +2627,32 @@ Remaining for FiniteAxiomsCompleteBA: THE THOMPSON CENSUS alone —
 enumerations + shape facts from minimal-automaton structure (the
 single open risk: multi-exit mutual cycles, believed unrealizable).
 Then: STEELMAN HARDENING.
+
+## Iteration 92 — THE CENSUS LAYER OPENS: the reachability rank
+
+GkatCensusProofs.lean created. The canonical rank for arbitrary finite
+automata, with NO graph algorithms — pure filter arithmetic over an
+inductive Reach with classical decidability:
+
+  `reachRank aut s := |states.filter (Reach aut s ·)|`
+
+- **`reachRank_le`** — arms weakly shrink the rank (reach-set
+  monotonicity + `filter_length_le`).
+- **`reachRank_eq`** — mutually reachable states have EQUAL rank
+  (subset both ways).
+- **`reachRank_lt`** — an arm that leaves an SCC forever drops rank
+  STRICTLY (the source witnesses itself: s ∈ reachSet s \ reachSet t;
+  `filter_length_lt` — works even with duplicate state lists, no Nodup
+  needed).
+- **`reachRank_hdesc`** — the assembly's descent hypothesis holds
+  outright for every automaton.
+
+This kills the "Mathlib-free SCC machinery" cost estimate: no
+condensation computation, no topological sort — the rank IS the SCC
+structure, extracted by cardinality.
+
+Census remaining: (1) the same-rank ⟹ same-SCC converse (rank-equal +
+reachable ⟹ mutually reachable — needed to know rank classes are
+SCC-unions); (2) the per-class enumeration + single-exit facts for
+quotients of Thompson sums (THE risk locus); (3) plumbing into
+forest/port constructors.
