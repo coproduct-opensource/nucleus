@@ -3782,6 +3782,53 @@ fn parse_attack<const NA: usize>(s: &[u8], pos: &mut usize) -> (Aut<NA>, String,
 }
 
 
+
+/// Number of bisimulation classes of an automaton — the size of its
+/// behavioural minimization.  Same partition-refinement fixpoint the census
+/// uses on the trimmed sum, applied to a single automaton.
+fn min_classes<const NA: usize>(a: &Aut<NA>) -> usize {
+    let k = a.k as usize;
+    let mut cls = [0u8; MAXK];
+    {
+        let mut seen = [255u8; 256];
+        let mut n = 0u8;
+        for s in 0..k {
+            let h = a.hl[s] as usize;
+            if seen[h] == 255 { seen[h] = n; n += 1; }
+            cls[s] = seen[h];
+        }
+    }
+    loop {
+        let mut sigs: Vec<(u8, [u8; NA])> = Vec::new();
+        let mut next = [0u8; MAXK];
+        for s in 0..k {
+            let mut row = [255u8; NA];
+            for i in 0..NA {
+                if a.st[s][i] != 0 { row[i] = cls[(a.st[s][i] - 1) as usize]; }
+            }
+            let sig = (cls[s], row);
+            let j = match sigs.iter().position(|x| *x == sig) {
+                Some(j) => j,
+                None => { sigs.push(sig); sigs.len() - 1 }
+            };
+            next[s] = j as u8;
+        }
+        let (mut c0, mut c1) = (0usize, 0usize);
+        {
+            let mut m = [false; MAXK];
+            for s in 0..k { if !m[cls[s] as usize] { m[cls[s] as usize] = true; c0 += 1; } }
+            let mut m2 = [false; MAXK];
+            for s in 0..k { if !m2[next[s] as usize] { m2[next[s] as usize] = true; c1 += 1; } }
+        }
+        cls = next;
+        if c1 == c0 { break; }
+    }
+    let mut m = [false; MAXK];
+    let mut c = 0usize;
+    for s in 0..k { if !m[cls[s] as usize] { m[cls[s] as usize] = true; c += 1; } }
+    c
+}
+
 /// SCCs of a quotient's transition graph (Kosaraju on <= MAXK states).
 fn sccs_of<const NA: usize>(q: &Aut<NA>) -> Vec<Vec<usize>> {
     let k = q.k as usize;
@@ -4846,8 +4893,22 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut multi_port_dumps = 0usize;
     let mut open_dumps = 0usize;
     let mut n_walked_scc = 0usize;
+    let mut n_side = 0usize;
+    let mut n_side_collapsed = 0usize;
+    let mut side_shrink_total = 0usize;
     let mut n_open_scc = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
+        // SAME-SIDE collapse measurement: is each program's OWN automaton
+        // already its own bisimulation quotient?  Iteration 131's dichotomy
+        // says same-side UNIF is vacuous exactly when it is.
+        for side in [a, b] {
+            n_side += 1;
+            let mc = min_classes(side);
+            if mc < side.k as usize {
+                n_side_collapsed += 1;
+                side_shrink_total += side.k as usize - mc;
+            }
+        }
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let k = su.k as usize;
         // liveness fixpoint (Live in the Lean sense: nonempty language)
@@ -5084,6 +5145,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
         }
         if covered { pairs_covered += 1; }
     }
+    println!("  SAME-SIDE: automata measured: {n_side}; NOT already minimal: {n_side_collapsed} ({:.1}%); total states collapsed: {side_shrink_total}",
+        100.0 * n_side_collapsed as f64 / n_side.max(1) as f64);
     println!("  pairs analysed: {pairs_done}; FULLY covered by proved strata (fold+salomaaE): {pairs_covered} ({:.1}%)",
         100.0 * pairs_covered as f64 / pairs_done.max(1) as f64);
     println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");

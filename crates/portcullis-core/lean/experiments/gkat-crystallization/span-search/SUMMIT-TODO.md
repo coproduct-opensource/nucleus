@@ -6660,3 +6660,51 @@ gap, not a mathematical one.
 corrected by building a weakened relation and proving admissibility;
 every use in ~40 files then eliminated; and the last general case
 reduced to a single published lemma the repo already has.
+
+## Iteration 164 — MEASURED: same-side bisimilarity is ubiquitous, not a corner case
+
+Iteration 131 proved a sharp dichotomy: **either a program's automaton
+is already its own bisimulation collapse — in which case same-side UNIF
+is VACUOUS and a commuting partner map exists — or same-side UNIF is
+exactly the price.**  That left an obvious empirical question never
+asked: **how often are Thompson automata already collapsed?**
+
+Added `min_classes` to the census harness (the same partition-refinement
+fixpoint it already runs on trimmed sums, applied to a single automaton)
+and measured, over 60,000 generated program automata per configuration:
+
+| atoms | automata | NOT already minimal | states collapsed |
+|---|---|---|---|
+| 2 | 60,000 | **58,724 (97.9%)** | 133,770 |
+| 4 | 60,000 | **58,466 (97.4%)** | 89,493 |
+
+**Essentially every Thompson automaton has distinct bisimilar states** —
+roughly 1.5–2.3 of them collapse per automaton.  The dichotomy's
+"collapsed" branch fires in about 2% of cases.
+
+**What this settles, and it is not what I hoped.**  I had wondered
+whether Thompson automata might usually be collapsed, which would have
+made same-side UNIF a rare corner case and the campaign's residue much
+smaller.  **They essentially never are.**  Same-side UNIF cannot be
+dismissed as an edge case; it is the common case, which is consistent
+with its being the core difficulty rather than an artifact of the route.
+It also closes off routing around the problem via "assume the automaton
+is collapsed" — that assumption would discard 97% of instances.
+
+**What it does NOT settle, and the distinction matters.**  Being
+non-minimal does not make an instance HARD.  The literature's canonical
+cause of same-side bisimilarity is duplicated subterms, and iteration
+124 proved that case costs nothing: `ite c p p`'s two branch states
+carry LITERALLY EQUAL labels, so UNIF there is `rfl`.  The 97% figure
+counts bisimilar PAIRS, not difficult ones.
+
+**The measurement that would actually discriminate**: of the bisimilar
+state pairs, what fraction have syntactically DIFFERENT standard labels?
+Those are the ones needing real work; the rest are `rfl`.  The harness
+works on abstract automata without labels, so that measurement needs the
+Thompson labelling threaded through — a bigger change than today's, and
+the natural next experiment.
+
+**Honest reading**: a negative datum, recorded because it removes a
+hoped-for shortcut rather than because it advances the proof.  The
+dichotomy stands; its cheap branch is empirically empty.
