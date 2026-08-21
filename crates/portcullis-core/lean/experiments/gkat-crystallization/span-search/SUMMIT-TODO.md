@@ -2422,3 +2422,27 @@ chord's 10-case lemmas), (b) the cleaned arm lists at reps, (c) the
 schedule shape. (a)+(b) for arbitrary programs = the general census
 structure theorem (SINGLE-EXIT hierarchy + SCC machinery). The
 schedule-shape side (c) is DONE in general (SchedOk certificates).
+
+## Iteration 84 — THE FOREST CONSTRUCTOR (first general census constructor)
+
+**`forest_class_sched`** ([propext, Classical.choice, Quot.sound]): a
+rank class whose same-rank calls are SELF or STRICTLY LATER in the
+enumeration (self-loops over a DAG) schedules with cascade-free
+multi_gather closings — every state's cascade is a no-op (its calls
+are self/later/lower, never earlier), so each closes on its own arm
+list. Subsumes singleton_scc_sched and handles acyclic SCC interiors.
+The "later" hypothesis is split-form:
+`enum r = L₁ ++ s :: L₂ → arms of s target self ∨ lower ∨ L₂`.
+
+Supporting: `pairwise_append_parts` (Pairwise splits across an append
+— cross-relations + right part; gotcha: `nomatch ha, h` parses the
+comma INTO nomatch's discriminants — parenthesize). Also
+`sched_assembly_roles`'s hdesc weakened to member states (the roles
+proof only ever uses it under membership) — un-enumerated junk states
+are now unconstrained, which the constructors need.
+
+Next constructors: the PORT constructor (one designated cycle-closer
+per SCC: interiors forest-schedule, port closes through the cascade
+with pruning+factoring — the walked/chord instances generalized to
+arbitrary interior DAGs), then the Thompson census (produce the
+enumerations from program structure).

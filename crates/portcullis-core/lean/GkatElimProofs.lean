@@ -814,7 +814,8 @@ theorem rankSol_stable {S : Type} [DecidableEq S]
 theorem sched_assembly_roles {S : Type} [DecidableEq S]
     (aut : GAut S A T) (rank : S → Nat)
     (sched : Nat → List (S × RTree S A T))
-    (hdesc : ∀ s, ∀ e ∈ aut.trans s, rank e.2.2 ≤ rank s)
+    (hdesc : ∀ s ∈ aut.states, ∀ e ∈ aut.trans s,
+      rank e.2.2 ≤ rank s)
     (hsupp : ∀ r, Supp (fun s => rank s < r) (sched r))
     (hok : ∀ r, SchedOk (treeOf aut) [] (sched r))
     (hrank : ∀ r, ∀ p ∈ sched r, rank p.1 = r)
@@ -832,7 +833,7 @@ theorem sched_assembly_roles {S : Type} [DecidableEq S]
     show rankSol sched (rank s + 1) t = _
     exact rankSol_stable sched rank hrank (rank s + 1) t (by omega)
   have hcall : CallOnly (fun t => rank t ≤ rank s) (treeOf aut s) :=
-    callOnly_treeOf aut _ s (fun e he => hdesc s e he)
+    callOnly_treeOf aut _ s (fun e he => hdesc s hs e he)
   refine StateRole.equivFold ?_
   have h1 : backSol (rankSol sched (rank s)) (sched (rank s)) s
       = rankSol sched (rank s + 1) s := rfl
@@ -960,7 +961,7 @@ theorem singleton_scc_sched {S : Type} [DecidableEq S]
     (fun r => (enum r).map (fun s => (s, ssTree aut s)))
     ?_ ?_ ?_ ?_ ?_
   · -- hdesc
-    intro s e he
+    intro s _ e he
     rcases hshape s e he with h1 | h2
     · rw [h1]
       exact Nat.le_refl _
@@ -1167,7 +1168,7 @@ theorem walked_two_cycle_sched {S : Type} [DecidableEq S]
       | 0 => [(i, Ci), (o, Co)]
       | _ + 1 => []) ?_ ?_ ?_ ?_ ?_
   · -- hdesc
-    intro s e _
+    intro s _ e _
     exact Nat.le_refl 0
   · -- hsupp
     intro r
@@ -1293,7 +1294,7 @@ theorem chord_three_sched {S : Type} [DecidableEq S]
     (fun r => match r with
       | 0 => [(x, Cx), (p, Cp), (o, Co)]
       | _ + 1 => []) ?_ ?_ ?_ ?_ ?_
-  · intro s e _
+  · intro s _ e _
     exact Nat.le_refl 0
   · intro r
     match r with
@@ -1476,5 +1477,161 @@ theorem chordloops_complete_sched (b c : BExp T) (p x y : A)
     (solvesBA_unclean _ (decomp_solves _ _ hroles))
 
 #print axioms chordloops_complete_sched
+
+/-! ## Census constructor: self-loops over a DAG
+
+    A rank class whose same-rank calls are SELF or STRICTLY LATER in
+    the enumeration schedules with no cascades at all: every state
+    closes by `multi_gather` on its own arm list.  Subsumes the
+    singleton-SCC stratum and handles acyclic SCC interiors — the
+    workhorse leaf constructor for the census. -/
+
+/-- Pairwise relations split across an append. -/
+theorem pairwise_append_parts {α : Type} {R : α → α → Prop} :
+    ∀ (L₁ L₂ : List α), (L₁ ++ L₂).Pairwise R →
+      (∀ a ∈ L₁, ∀ b ∈ L₂, R a b) ∧ L₂.Pairwise R := by
+  intro L₁
+  induction L₁ with
+  | nil => intro L₂ h; exact ⟨fun a ha => (nomatch ha), h⟩
+  | cons x L₁' ih =>
+      intro L₂ h
+      cases h with
+      | cons hx hrest =>
+          obtain ⟨hcross, hp⟩ := ih L₂ hrest
+          refine ⟨?_, hp⟩
+          intro a ha b hb
+          rcases List.mem_cons.mp ha with h1 | h2
+          · rw [h1]
+            exact hx b (List.mem_append.mpr (Or.inr hb))
+          · exact hcross a h2 b hb
+
+open Classical in
+/-- **THE FOREST CONSTRUCTOR**: same-rank calls self-or-later ⟹ the
+    class schedules with cascade-free `multi_gather` closings. -/
+theorem forest_class_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (rank : S → Nat) (enum : Nat → List S)
+    (henum_rank : ∀ r, ∀ s ∈ enum r, rank s = r)
+    (henum_pair : ∀ r, (enum r).Pairwise (· ≠ ·))
+    (hcover : ∀ s ∈ aut.states, s ∈ enum (rank s))
+    (hshape : ∀ (r : Nat) (L₁ : List S) (s : S) (L₂ : List S),
+      enum r = L₁ ++ s :: L₂ → ∀ e ∈ aut.trans s,
+        e.2.2 = s ∨ rank e.2.2 < r ∨ e.2.2 ∈ L₂) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine sched_assembly_roles aut rank
+    (fun r => (enum r).map (fun s => (s, ssTree aut s)))
+    ?_ ?_ ?_ ?_ ?_
+  · -- hdesc
+    intro s hs e he
+    obtain ⟨L₁, L₂, hsplit⟩ := List.append_of_mem (hcover s hs)
+    rcases hshape (rank s) L₁ s L₂ hsplit e he with h1 | h2 | h3
+    · rw [h1]
+      exact Nat.le_refl _
+    · omega
+    · rw [henum_rank (rank s) e.2.2
+        (hsplit ▸ List.mem_append.mpr
+          (Or.inr (List.mem_cons_of_mem _ h3)))]
+      exact Nat.le_refl _
+  · -- hsupp
+    intro r
+    have haux : ∀ (L₂ L₁ : List S), enum r = L₁ ++ L₂ →
+        Supp (fun t => rank t < r)
+          (L₂.map (fun s => (s, ssTree aut s))) := by
+      intro L₂
+      induction L₂ with
+      | nil => intro _ _; exact Supp.nil
+      | cons s L₂' ih =>
+          intro L₁ hL
+          have hpair := pairwise_append_parts L₁ (s :: L₂')
+            (hL ▸ henum_pair r)
+          cases hpair.2 with
+          | cons hhead htail =>
+              refine Supp.cons s (ssTree aut s) _ ?_ ?_ ?_
+                (ih (L₁ ++ [s]) (by rw [hL, List.append_assoc]; rfl))
+              · show CallOnly _
+                  (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+                refine callOnly_armChain _ _ _ ?_
+                intro e he
+                obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+                rcases hshape r L₁ s L₂' hL e heL with h1 | h2 | h3
+                · exact absurd h1 hne
+                · exact Or.inr h2
+                · exact Or.inl ⟨(e.2.2, ssTree aut e.2.2),
+                    List.mem_map.mpr ⟨e.2.2, h3, rfl⟩, rfl⟩
+              · intro q hq
+                obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+                rw [← hqe]
+                exact hhead t htL
+              · rw [henum_rank r s
+                  (hL ▸ List.mem_append.mpr
+                    (Or.inr (List.mem_cons_self ..)))]
+                omega
+    exact haux (enum r) [] rfl
+  · -- hok
+    intro r
+    have haux : ∀ (L₂ L₁ : List S), enum r = L₁ ++ L₂ →
+        SchedOk (treeOf aut) (L₁.map (fun s => (s, ssTree aut s)))
+          (L₂.map (fun s => (s, ssTree aut s))) := by
+      intro L₂
+      induction L₂ with
+      | nil => intro _ _; exact True.intro
+      | cons s L₂' ih =>
+          intro L₁ hL
+          have hparts := pairwise_append_parts L₁ (s :: L₂')
+            (hL ▸ henum_pair r)
+          have hnoop : stepSubst (L₁.map (fun t => (t, ssTree aut t)))
+              (treeOf aut s) = treeOf aut s := by
+            refine stepSubst_noop _ _ ?_
+            refine callOnly_treeOf aut _ s ?_
+            intro e he q hq
+            obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+            rcases hshape r L₁ s L₂' hL e he with h1 | h2 | h3
+            · rw [h1, ← hqe]
+              exact fun hc => (hparts.1 t htL s
+                (List.mem_cons_self ..)) hc.symm
+            · rw [← hqe]
+              intro hc
+              rw [hc, henum_rank r t
+                (hL ▸ List.mem_append.mpr (Or.inl htL))] at h2
+              omega
+            · rw [← hqe]
+              intro hc
+              exact (hparts.1 t htL e.2.2
+                (List.mem_cons_of_mem _ h3)) hc.symm
+          constructor
+          · refine Or.inl ⟨gGuard s (aut.trans s),
+              .call (gBody s (aut.trans s)) s,
+              armChain (gOthers s (aut.trans s)) (aut.hlt s),
+              ?_, rfl, rfl⟩
+            intro sol
+            rw [hnoop, resolve_treeOf, eqRHS_foldTL]
+            show EquivBA _ (Exp.ite (gGuard s (aut.trans s))
+              (.seq (gBody s (aut.trans s)) (sol s))
+              (resolveT sol (armChain (gOthers s (aut.trans s))
+                (aut.hlt s))))
+            rw [resolve_armChain]
+            exact multi_gather sol (aut.hlt s) s (aut.trans s)
+          · have hres := ih (L₁ ++ [s])
+              (by rw [hL, List.append_assoc]; rfl)
+            show SchedOk (treeOf aut)
+              ((L₁.map (fun t => (t, ssTree aut t)))
+                ++ [(s, ssTree aut s)]) _
+            have hmap : (L₁.map (fun t => (t, ssTree aut t)))
+                ++ [(s, ssTree aut s)]
+              = (L₁ ++ [s]).map (fun t => (t, ssTree aut t)) := by
+              rw [List.map_append]
+              rfl
+            rw [hmap]
+            exact hres
+    exact haux (enum r) [] rfl
+  · -- hrank
+    intro r q hq
+    obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+    rw [← hqe]
+    exact henum_rank r t htL
+  · -- hcover
+    intro s hs
+    exact ⟨ssTree aut s, List.mem_map.mpr ⟨s, hcover s hs, rfl⟩⟩
+
+#print axioms forest_class_sched
 
 end GkatElim
