@@ -6263,4 +6263,41 @@ theorem wh_layer_separates (b : BExp T) (e : Exp A T)
 
 #print axioms wh_layer_separates
 
+/-- **ONE LOOP LAYER, AS A RELATION BETWEEN AUTOMATA.**
+
+    `IsLayer sys base b` says `sys` is `base` with a single loop layer at guard
+    `b` added: every state's transitions are `base`'s followed by extra BACK
+    EDGES all lying inside `b`, and every state's halt is `base`'s restricted to
+    `¬b`.
+
+    This packages what 244 and 245 established.  It is the guarded replacement
+    for Milner's "loop sub-chart with start vertex `vₛ`", which 242 showed has no
+    GKAT analogue — there is no vertex all the loop's cycles pass through,
+    because `loopInitialized` compiles it away.  A layer is not a sub-graph
+    picked out of the transition relation; it is a DIFFERENCE between two
+    automata, and that is why no amount of graph search recovered it. -/
+structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
+    (b : BExp T) : Prop where
+  /-- transitions: `base`'s, then back edges, all inside the guard -/
+  trans_split : ∀ s, ∃ extra, sys.trans s = base.trans s ++ extra ∧
+    ∀ tr ∈ extra, GuardImplies tr.1 b
+  /-- halts: `base`'s, restricted to outside the guard -/
+  hlt_eq : ∀ s, sys.hlt s = .and (base.hlt s) (.not b)
+
+/-- **`wh b e`'s automaton is exactly ONE LAYER over `e`'s.**
+
+    The whole point of the per-layer formulation: after removing the layer, what
+    is left is not "an acyclic graph" but `e`'s OWN Thompson automaton — so the
+    remaining obligation is the induction hypothesis rather than a fresh
+    condition.  Proved from `loop_core_trans` and `loop_core_hlt`, both `rfl`
+    since iteration 220, plus 245's guard characterisation. -/
+theorem wh_isLayer (b : BExp T) (e : Exp A T) :
+    IsLayer (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
+      (GkatThompson.certifiedThompson A T e).aut.core b where
+  trans_split s := ⟨_, loop_core_trans b e s,
+    fun tr h => wh_backedge_guard_implies b e s tr h⟩
+  hlt_eq s := loop_core_hlt b e s
+
+#print axioms wh_isLayer
+
 end GkatCensus

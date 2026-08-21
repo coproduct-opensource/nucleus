@@ -11322,3 +11322,49 @@ too small to move the number.
 
 **Next.**  (L1) for the layer, then the induction that assembles these into
 `hsum`.
+
+---
+
+## 246 — A LAYER IS A DIFFERENCE BETWEEN TWO AUTOMATA, NOT A SUB-GRAPH.
+
+**(L1) is not a proof obligation.**  It says the sub-chart is a real loop — "there
+is an infinite path from `vₛ`" — so in the induction it is a CASE SPLIT: either
+the layer has back edges, or there is no cycle and nothing to eliminate.  That
+leaves the assembly, and the assembly needed the right object.
+
+**`IsLayer sys base b`** — `sys` is `base` with one loop layer at guard `b`:
+every state's transitions are `base`'s followed by extra BACK EDGES all inside
+`b`, and every state's halt is `base`'s restricted to `¬b`.
+
+**`wh_isLayer`** — `wh b e`'s automaton is EXACTLY one layer over `e`'s.  Proved
+from `loop_core_trans` and `loop_core_hlt` (both `rfl` since 220) plus 245's
+guard characterisation.
+
+**The formulation is the finding.**  A layer is a DIFFERENCE BETWEEN TWO
+AUTOMATA, not a sub-graph picked out of one.  That is why nothing recovered it
+from the transition relation: 242's head search, 244's entry sets, and nine
+iterations of guard reconstruction (228-236) were all looking INSIDE a single
+graph for something that exists only as a relation BETWEEN `wh b e`'s automaton
+and `e`'s.  Milner's charts let you point at the loop because the head is a
+vertex; GKAT's compile the head away, and what survives is the difference.
+
+That also explains, in retrospect, why `loop_core_trans` — an append, `rfl`,
+sitting in the file since iteration 220 — was the lemma every formulation kept
+almost using.  The append IS the layer.
+
+**`hsum` now stands at:**
+
+    seq, ite     create no loops                            PROVED  (241)
+    wh   layer   back edges inside the guard, halts outside PROVED  (245)
+    wh   layer   `wh b e` is one layer over `e`             PROVED  (246)
+    wh   (L1)    non-degeneracy — a case split, not an obligation
+    induction    the inductive "layered" predicate on automata, and the
+                 assembly over the expression                open
+
+**Odds: 80%, held.**  The object is right and three of the pieces are proved,
+but `hsum` itself is not, and `hcollapse` and `hsolve` remain untouched.  A
+better formulation is not a theorem.
+
+**Next.**  The inductive `Layered` predicate on automata — `acyclic`, or a layer
+over something layered — and `hsum` by induction on the expression, with
+`wh_isLayer` discharging the `wh` case and 241's closure lemmas the others.
