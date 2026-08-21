@@ -41,11 +41,40 @@ theorem den_test_ba {b c : BExp T}
     ∀ gs : GS A Atom, den V (.test b : Exp A T) gs ↔ den V (.test c) gs := by
   intro gs; simp only [den_test, h Atom V gs.1]
 
-/-- GKAT's U/S/W axioms together with the full two-sorted Boolean-test theory.
-    Besides equality of embedded test programs, Boolean equality is transported through
-    the guard positions of conditionals and loops, and S6 embeds conjunction as sequential
-    test composition. These clauses are required by Figure 1's statement that the program
-    congruence is generated together with the laws of Boolean algebra. -/
+/-- GKAT's U/S/W axioms together with the two-sorted Boolean-test theory.
+
+    **Provenance of every clause beyond `Equiv`.**  POPL'20 defines `≡` as the
+    smallest congruence *with respect to all operators* on `Exp` that satisfies
+    Figure 1 and subsumes Boolean equivalence, "in the sense that `b ≡_BA c`
+    implies `b ≡ c`".  Against that definition:
+
+    * `symm`, `trans`, `seq_c`, `ite_c`, `wh_c` — the congruence clause at
+      OPERAND positions.
+    * `baTest` — the `≡_BA`-subsumption clause verbatim.  It is stated
+      semantically (agreement under every carrier and valuation) because the
+      paper establishes that `Bexp/≡_BA` is the FREE Boolean algebra on `T` and
+      that `≡_BA` is complete for the truth-assignment semantics; so agreement
+      under all valuations IS `≡_BA`, not something stronger.
+    * `ite_guard`, `wh_guard` — the congruence clause at GUARD positions,
+      reading `+_·` and `·^(·)` as operators that take their guard from
+      `Bexp ⊆ Exp`.  **This reading is load-bearing and worth stating.**
+      Inspection of Figure 1 shows that no axiom ever replaces a guard by a
+      BA-equal one: each fixes its guards syntactically, U2 negating (`b̄`) and
+      U3 forming a product (`bc`).  So guard transport is NOT derivable from
+      the equations — indeed U2 applied twice gives `e +_{¬¬b} f`, so without
+      it the theory could not even undo a double negation in a guard.  If the
+      intended reading were instead that `+_b` is a FAMILY of binary operators
+      indexed by `b`, these two clauses would be additions, and every claim
+      here of provability "from the finite axioms" would exceed GKAT + BA by
+      exactly them.
+    * `s6` — a REPRESENTATION bridge rather than a theory addition.  The paper
+      has `Bexp ⊆ Exp` with Boolean `·` literally being sequencing, so `b·c`
+      and `b ∧ c` are the same term there and no axiom is needed.  This
+      development keeps `BExp` and `Exp` as separate types, and `s6` is what
+      that separation costs.
+    * `w3_ba` — W3, relative to `EquivBA`.
+
+    Every clause is sound for the guarded-string model: see `sound_BA`. -/
 inductive EquivBA : Exp A T → Exp A T → Prop where
   | base {e f} : Equiv e f → EquivBA e f
   | symm {e f} : EquivBA e f → EquivBA f e

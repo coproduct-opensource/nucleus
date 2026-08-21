@@ -6196,3 +6196,51 @@ W1 gives existence and W3 gives uniqueness.  **"UA is precisely the
 multi-variable generalization of W3"** — which is exactly what this
 programme has been claiming to eliminate, stated in the source's own
 terms.
+
+## Iteration 154 — the trusted base now states what it rests on
+
+The surviving audit question was whether `ite_guard`/`wh_guard` — guard-
+position transport of Boolean equality — is part of the paper's
+congruence or an addition beyond it.  **Settled by inspection, and the
+answer is recorded at the definition site rather than in a ledger.**
+
+**The inspection**: no Figure-1 axiom ever replaces a guard by a
+BA-equal one.  Every guard-bearing axiom fixes its guards
+SYNTACTICALLY — U1, U4, W1 carry a single `b` on both sides; U2 negates
+it (`b̄`); U3 forms a product (`bc`); U5 and W2 likewise.  **So guard
+transport is not derivable from the equations.**
+
+**And it is indispensable, not optional.**  U2 applied twice gives
+`e +_b f ≡ f +_{b̄} e ≡ e +_{¬¬b} f`.  Without guard transport the
+theory cannot return to `e +_b f` — it could not undo a double negation
+in a guard.  A reading of the paper on which guard transport is absent
+would make GKAT pathologically weak, which is strong evidence the
+intended reading is that `+_·` and `·^(·)` take their guard from
+`Bexp ⊆ Exp` and the congruence clause covers it.
+
+**Recorded honestly as a READING.**  `EquivBA`'s docstring now gives the
+provenance of every clause beyond `Equiv`: which are congruence at
+operand positions, which is the `≡_BA`-subsumption clause verbatim
+(with the paper's own free-BA completeness explaining why the semantic
+formulation is not stronger), which are congruence at guard positions
+**under a stated reading, with the consequence spelled out if the
+reading is wrong**, and which is a representation bridge forced by
+keeping `BExp` and `Exp` as separate types.
+
+That last distinction matters and had never been written down: `s6` is
+not an extra axiom about GKAT — in the paper `b·c` and `b ∧ c` are
+literally the same term, because `Bexp ⊆ Exp` and Boolean product IS
+sequencing.  Separating the types is this development's choice, and
+`s6` is its cost.
+
+**Why this is the right form of the fix.**  The hardening campaign's
+finding was that the prover never checks the prose.  A ledger entry is
+prose too.  Putting the provenance in the docstring at the definition
+puts it where anyone auditing `EquivBA` will read it — and states the
+one place a claim rests on interpretation rather than on a theorem,
+along with exactly what would follow if the interpretation were wrong.
+
+**Trusted-base status**: axioms verbatim-verified against the LaTeX
+source (153); no Figure-2 derivable fact assumed; soundness proved not
+assumed; `sorry`-free; the sole interpretive dependency identified,
+argued, and documented in place.
