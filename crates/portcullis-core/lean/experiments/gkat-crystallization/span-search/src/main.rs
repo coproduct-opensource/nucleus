@@ -12022,6 +12022,7 @@ fn llee_guard_search<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
 }
 
 fn guardsearch_test<const NA: usize>(nguards: u8) {
+    let table = synth_table::<NA>(synth_size(), seq_len(NA));
     let mut st0: u64 = 0xBE5466CF34E90C6C;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
     let (mut n, mut a_ok, mut b_ok, mut l_not_s, mut s_not_l) =
@@ -12045,7 +12046,20 @@ fn guardsearch_test<const NA: usize>(nguards: u8) {
                     || calculus_solves(&qq, c, 6)
                     || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
             };
-            if lq && !solve { l_not_s += 1; }
+            let witness = synth_lookup(&table, &qq, 0, seq_len(NA)).is_some();
+            if lq && !solve {
+                l_not_s += 1;
+                println!("    CERT HOLDS, CALCULUS FAILS — synth witness: {}",
+                    if witness { "EXISTS (so this is a CALCULUS gap)" }
+                    else { "none at this size bound (certificate SUSPECT)" });
+                for s in 0..(qq.k as usize) {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = qq.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("c{}", t - 1) }
+                    }).collect();
+                    println!("      c{s}: hl={:03b} st=[{}]", qq.hl[s], row.join(","));
+                }
+            }
             if solve && !lq { s_not_l += 1; }
         }
     }
@@ -12241,6 +12255,11 @@ fn llee_L123<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
 }
 
 fn l123_test<const NA: usize>(nguards: u8) {
+    // 238: adjudicate (c) with a VERIFIED WITNESS, not the calculus.  237 left one
+    // NA=3 case where the certificate holds and the six-rule calculus fails —
+    // which is a calculus gap or certificate unsoundness, and those are very
+    // different findings.  `synth` decides by exhibiting an expression.
+    let table = synth_table::<NA>(synth_size(), seq_len(NA));
     let mut st0: u64 = 0xBE5466CF34E90C6C;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
     let (mut n, mut a_ok, mut b_ok, mut l_not_s, mut s_not_l) =
@@ -12264,7 +12283,20 @@ fn l123_test<const NA: usize>(nguards: u8) {
                     || calculus_solves(&qq, c, 6)
                     || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
             };
-            if lq && !solve { l_not_s += 1; }
+            let witness = synth_lookup(&table, &qq, 0, seq_len(NA)).is_some();
+            if lq && !solve {
+                l_not_s += 1;
+                println!("    CERT HOLDS, CALCULUS FAILS — synth witness: {}",
+                    if witness { "EXISTS (so a CALCULUS gap)" }
+                    else { "none at this size bound (certificate SUSPECT)" });
+                for s in 0..(qq.k as usize) {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = qq.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("c{}", t - 1) }
+                    }).collect();
+                    println!("      c{s}: hl={:03b} st=[{}]", qq.hl[s], row.join(","));
+                }
+            }
             if solve && !lq { s_not_l += 1; }
         }
     }

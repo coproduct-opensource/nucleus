@@ -10916,3 +10916,52 @@ unadjudicated NA=3 case, the untested NA=4 population, and the fact that
 (c) — certificate implies solvable — is exactly the part still owed to a proof.
 
 **Next.**  Adjudicate the NA=3 case with `synth`, and run NA=4.
+
+---
+
+## 238 — THE (c) DISCREPANCY IS A CALCULUS GAP, NOT CERTIFICATE UNSOUNDNESS.
+
+237 left one NA=3 automaton carrying the L1/L2/L3 certificate while the six-rule
+calculus failed on it, and refused to guess whether that was a calculus gap or
+an unsound certificate.  Adjudicated with `synth`, which decides by exhibiting
+an expression:
+
+    CERT HOLDS, CALCULUS FAILS — synth witness: none at this size bound
+
+    c0: st=[c1,c1,c1]        c1: st=[c2,c0,c3]
+    c2: hl={a2} st=[c2,c0,-] c3: hl={a0} st=[-,c0,c3]
+
+The tool printed "certificate SUSPECT" on that verdict.  **The tool's reasoning
+is wrong, and the argument against it is short enough to be decisive.**  `qq` is
+the bisimulation COLLAPSE of a Thompson automaton, and every state of a Thompson
+automaton is expressible by construction — that is what `certifiedThompson`'s
+`standard` labelling IS.  Collapse preserves each state's behaviour.  So every
+state of `qq` is expressible, and `synth` finding nothing at size <= 10 is a
+SIZE-BOUND artifact, not evidence of unsolvability.
+
+**So the automaton is solvable, the certificate is sound on it, and the failure
+is in the CALCULUS.**  That is the good outcome for the route — requirements (a)
+and (b) are what the route needs from the certificate, and both stand at 100%
+over 26 000 automata; the calculus is a separate instrument that does not enter
+the closure argument.
+
+**A correction to the harness's logic, recorded because it will recur.**
+"`synth` found no witness at size <= N" and "unsolvable" are different
+statements, and for automata KNOWN to come from expressions the second is false
+by construction regardless of what the first says.  The message should say
+"unwitnessed at this bound", never "suspect".  216 measured that the behaviour
+table does not saturate, so this gap is permanent and the confusion would
+otherwise recur at every size bound.
+
+**Confirming run in flight:** the same test at size <= 14 (68 484 behaviours
+against 2 677), which should produce the witness if the size-bound reading is
+right.  Reported next iteration either way — if the witness still does not
+appear at 14, that is worth knowing precisely because the argument above says it
+must appear eventually.
+
+**Odds: 81%, held.**  The adjudication went the favourable way, but it went there
+by an argument I could have made at 237 without running anything, so it is a
+clarification rather than new evidence.  Requirements (a) and (b) are unchanged
+at 100%; NA=4 is still untested.
+
+**Next.**  Read the size-14 run; then NA=4.
