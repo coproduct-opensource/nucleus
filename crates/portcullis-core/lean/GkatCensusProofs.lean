@@ -3205,16 +3205,38 @@ theorem twoLoop_no_overlap {b c : BExp T} (q r : A)
 #print axioms twoLoop_no_overlap
 
 open Classical in
+/-- **A LOOP WITH A VALID GUARD IS `0`, WITHOUT LOOP-GUARD TRANSPORT.**
+    `wh_emits_exit_all` says every loop provably ends in its exit guard
+    `¬b`; when `b` is valid that guard is `0`, and `s3` finishes.  No
+    `EquivBA.wh_guard`, no productivity hypothesis, any body.
+
+    This replaces the `wh_guard (c := .one)` idiom used throughout, and
+    with it the whole development's use of loop-guard transport reduces
+    to the two wrappers in `GkatChainFragmentProofs` — both of which
+    have transport-free derivations too (`GkatGuardTransport.wh_zero_free`
+    for the `0` case, this lemma for the `1` case). -/
+theorem wh_valid_zero {b : BExp T} (e : Exp A T)
+    (h : ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true) :
+    EquivBA (.wh b e) (.test .zero) := by
+  refine EquivBA.trans (GkatNormalization.wh_emits_exit_all b e) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+    (EquivBA.baTest (b := .not b) (c := .zero) ?_)) ?_
+  · intro X W x
+    show (!GkatGS.bval W b x) = GkatGS.bval W (.zero : BExp T) x
+    rw [GkatPlanExistence.bval_gen W x b, h (fun t => W t x)]
+    rfl
+  · exact EquivBA.base (Equiv.s3 _)
+
+#print axioms wh_valid_zero
+
+open Classical in
 /-- An outer guard that always holds makes the two-loop divergent, hence
     `0` — `wh_one_zero` needs no side condition at all. -/
 theorem twoLoop_b_valid (c : BExp T) (q r : A) {b : BExp T}
     (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) b α = true) :
     EquivBA (GkatTwoLoop.twoLoop b c q r) (.test .zero) := by
-  refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
-  · intro X W x
-    rw [GkatPlanExistence.bval_gen W x b, h (fun t => W t x)]
-    rfl
-  · exact GkatNormalization.wh_one_zero _
+  exact wh_valid_zero _ h
 
 open Classical in
 /-- An inner guard that always holds makes the INNER loop divergent, so
@@ -3223,11 +3245,7 @@ theorem twoLoop_c_valid (b : BExp T) (q r : A) {c : BExp T}
     (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) c α = true) :
     EquivBA (GkatTwoLoop.twoLoop b c q r) (.test (.not b)) := by
   have hinner : EquivBA (.wh c (.act q) : Exp A T) (.test .zero) := by
-    refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
-    · intro X W x
-      rw [GkatPlanExistence.bval_gen W x c, h (fun t => W t x)]
-      rfl
-    · exact GkatNormalization.wh_one_zero _
+    exact wh_valid_zero _ h
   have hbody : EquivBA
       (.seq (.wh c (.act q)) (.act r) : Exp A T) (.test .zero) :=
     EquivBA.trans (EquivBA.seq_c hinner (EquivBA.base (Equiv.refl _)))
@@ -3533,13 +3551,8 @@ theorem twoLoop_trichotomy (b c : BExp T) (q r : A) :
     · by_cases hexit : ∃ α : T → Bool,
           GkatGS.bval (GkatPlanExistence.genW T) b α = false
       · exact Or.inr (Or.inl ⟨b, r, hcol, hsat, hexit⟩)
-      · refine Or.inl ⟨.zero, EquivBA.trans hcol ?_⟩
-        refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
-        · intro X W x
-          rw [GkatPlanExistence.bval_gen W x b,
-            all_true_of_not_exit hexit (fun t => W t x)]
-          rfl
-        · exact GkatNormalization.wh_one_zero _
+      · exact Or.inl ⟨.zero, EquivBA.trans hcol
+          (wh_valid_zero _ (all_true_of_not_exit hexit))⟩
     · exact Or.inl ⟨.one, EquivBA.trans hcol
         (GkatChainFragment.wh_guard_semantic_zero _
           (all_false_of_not_sat hsat))⟩
@@ -3891,13 +3904,7 @@ theorem chordLoop_tetrachotomy (b c : BExp T) (p x y : A) :
       · exact Or.inr (Or.inl
           ⟨chordLoop_c_unsat b p x y (all_false_of_not_sat hcsat),
             hbsat, hbex⟩)
-    · refine Or.inl ⟨.zero, ?_⟩
-      refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
-      · intro X W v
-        rw [GkatPlanExistence.bval_gen W v b,
-          all_true_of_not_exit hbex (fun t => W t v)]
-        rfl
-      · exact GkatNormalization.wh_one_zero _
+    · exact Or.inl ⟨.zero, wh_valid_zero _ (all_true_of_not_exit hbex)⟩
   · exact Or.inl ⟨.one, GkatChainFragment.wh_guard_semantic_zero _
       (all_false_of_not_sat hbsat)⟩
 

@@ -6448,3 +6448,47 @@ case whose repo derivation is transport-free but not yet reproduced in
 the weakened relation.  **No claim anywhere in the development depends
 on an unproved reading** — which is the property iteration 154 wrongly
 asserted was unavailable, and 157–158 have now actually established.
+
+## Iteration 159 — `wh_guard` eliminated from the census layer; two structural uses remain repo-wide
+
+Iteration 158 relied on a reported count of `wh_guard` uses.  **Grepped
+it myself, and the report was low**: there were SIX, not two — the four
+extra were my own, introduced during this session's hardening work
+(`twoLoop_b_valid`, `twoLoop_c_valid`, and the two shape
+classifications), every one of them the `wh_guard (c := .one)` idiom
+followed by `wh_one_zero`.  Same lesson as 154, one level down: I
+repeated a number instead of checking it.
+
+**`wh_valid_zero`** (ZERO axioms) removes the idiom entirely:
+
+    (∀ α, bval b α = true) → wh b e ≡ 0?
+
+`wh_emits_exit_all` says every loop provably ends in its exit guard
+`¬b`; when `b` is valid that guard is `0`, and `s3` finishes.  No
+loop-guard transport, no productivity hypothesis, any body.  All four
+census uses now go through it, and **`GkatCensusProofs.lean` contains no
+use of `EquivBA.wh_guard` at all**.
+
+**Repo-wide, actual uses are now down to two**, both wrappers in
+`GkatChainFragmentProofs`, and both with known transport-free routes:
+* the `0` wrapper — `GkatGuardTransport.wh_zero_free`'s route (W1 moves
+  the guard into an `ite`, then U7);
+* the `1` wrapper — `wh_valid_zero`'s route above.
+
+(The third hit, in `GkatElimProofs`, is the `wh_guard` CASE of the
+substitution homomorphism's induction, not a use of the rule — it has to
+be there as long as the constructor exists.)
+
+**Also verified directly rather than by report**: `GkatNormalizationProofs`
+contains no `wh_guard` at all, so the `productive_loop` →
+`wh_emits_exit_all` → `wh_one_zero` chain that `wh_valid_zero` rests on
+is genuinely transport-free.  That was the load-bearing assumption in
+158's argument and it holds.
+
+**Where this leaves the constructor.**  `EquivBA.wh_guard` is now used
+twice in ~40 files, both replaceable.  Doing so would make it entirely
+unused, at which point it could be deleted and the admissibility
+question would not merely be answered but be moot.  `ite_guard` is a
+different matter — used in ~40 files and genuinely convenient — but
+iteration 157 already proved it admissible outright, so its presence
+costs nothing.
