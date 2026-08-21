@@ -4144,4 +4144,67 @@ theorem chordloops_complete_free
 #print axioms chordloops_complete_free
 
 
+/-! ## Model equivalence: is `UniformLanguageEquivalent` the PAPER's semantics?
+
+    Every completeness theorem here has the shape
+    `UniformLanguageEquivalent e f → EquivBA e f`, and ULE quantifies
+    over ALL carriers and valuations, whereas POPL'20 fixes a finite `T`
+    and takes guarded strings over its ATOMS.  If ULE were STRICTLY
+    STRONGER — harder to satisfy — the theorems would cover fewer pairs
+    than the paper's completeness statement, and calling them
+    completeness would overclaim.
+
+    They coincide, and the reduction was already implicit in
+    `ule_iff_start_bisim`: `bval` factors through the generic valuation
+    (`bval_gen`), so a language is determined by its behaviour at
+    `genW T`, whose atoms ARE the truth-assignments `T → Bool`.  Stated
+    outright here rather than left inside another proof. -/
+
+open Classical in
+/-- **ULE IS GENERIC-VALUATION EQUIVALENCE** — quantifying over all
+    carriers adds nothing beyond the truth-assignment model, so these
+    theorems' hypothesis is the paper's semantic equality and no
+    stronger. -/
+theorem ule_iff_generic (e f : Exp A T) :
+    GkatKleene.UniformLanguageEquivalent e f
+      ↔ ∀ gs : GkatGS.GS A (T → Bool),
+          GkatGS.den (GkatPlanExistence.genW T) e gs
+            ↔ GkatGS.den (GkatPlanExistence.genW T) f gs := by
+  constructor
+  · intro h gs
+    exact h (T → Bool) (GkatPlanExistence.genW T) gs
+  · intro h X W gs
+    have hstart : ∀ (Y : Type) (V : T → Y → Bool),
+        GkatKleene.autLang V (GkatTrim.SUMof A T e f) (Sum.inl none)
+          = GkatGS.den V e
+        ∧ GkatKleene.autLang V (GkatTrim.SUMof A T e f) (Sum.inr none)
+          = GkatGS.den V f := by
+      intro Y V
+      refine ⟨?_, ?_⟩
+      · show GkatKleene.autLang V (GkatKleene.sumGAut
+            (GkatThompson.certifiedThompson A T e).aut.toGAut
+            (GkatThompson.certifiedThompson A T f).aut.toGAut)
+            (Sum.inl none) = _
+        rw [GkatDecide.autLang_sum_inl,
+          GkatThompson.certifiedThompson_start_language e]
+      · show GkatKleene.autLang V (GkatKleene.sumGAut
+            (GkatThompson.certifiedThompson A T e).aut.toGAut
+            (GkatThompson.certifiedThompson A T f).aut.toGAut)
+            (Sum.inr none) = _
+        rw [GkatDecide.autLang_sum_inr,
+          GkatThompson.certifiedThompson_start_language f]
+    have hgen : GkatKleene.autLang (GkatPlanExistence.genW T)
+        (GkatTrim.SUMof A T e f) (Sum.inl none)
+        = GkatKleene.autLang (GkatPlanExistence.genW T)
+          (GkatTrim.SUMof A T e f) (Sum.inr none) := by
+      rw [(hstart (T → Bool) (GkatPlanExistence.genW T)).1,
+        (hstart (T → Bool) (GkatPlanExistence.genW T)).2]
+      funext gs'
+      exact propext (h gs')
+    have hU := GkatPlanExistence.uniformStateEquiv_of_gen hgen X W
+    rw [(hstart X W).1, (hstart X W).2] at hU
+    exact iff_of_eq (congrFun hU gs)
+
+#print axioms ule_iff_generic
+
 end GkatCensus

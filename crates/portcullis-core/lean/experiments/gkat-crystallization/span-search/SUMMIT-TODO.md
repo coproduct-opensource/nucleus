@@ -6244,3 +6244,50 @@ along with exactly what would follow if the interpretation were wrong.
 source (153); no Figure-2 derivable fact assumed; soundness proved not
 assumed; `sorry`-free; the sole interpretive dependency identified,
 argued, and documented in place.
+
+## Iteration 155 — the SEMANTICS is audited: ULE is the paper's equality, not something stronger
+
+Continuing the trusted-base work.  Every completeness theorem here has
+the shape `UniformLanguageEquivalent e f → EquivBA e f` — and ULE
+quantifies over ALL carriers and valuations, whereas POPL'20 fixes a
+finite `T` and takes guarded strings over its ATOMS.
+
+**The risk was directional and real.**  If ULE were STRICTLY STRONGER —
+harder to satisfy — then `ULE → EquivBA` would cover FEWER pairs than
+the paper's completeness statement, and calling the six theorems
+"completeness" would overclaim.  A weaker hypothesis makes a stronger
+theorem; a stronger hypothesis quietly makes a weaker one.
+
+**`ule_iff_generic`** [propext, Quot.sound] settles it:
+
+    UniformLanguageEquivalent e f
+      ↔ ∀ gs, den (genW T) e gs ↔ den (genW T) f gs
+
+Quantifying over all carriers adds NOTHING beyond the truth-assignment
+model, whose atoms are exactly the assignments `T → Bool`.  So the
+hypothesis of every completeness theorem here IS the paper's semantic
+equality.
+
+**The reduction was already implicit** in `ule_iff_start_bisim`, which
+silently used it in its reverse direction: `bval` factors through the
+generic valuation (`bval_gen`), so a language is determined by its
+behaviour at `genW T`, and `uniformStateEquiv_of_gen` lifts that from
+the generic valuation to all of them.  Stating it outright means the
+claim can be checked without reading another proof to find it.
+
+**Trusted-base status after 153–155.**  Four things an auditor would
+want, now each either proved or documented in place:
+1. **The axioms** — verbatim against the LaTeX source; no Figure-2
+   derivable fact assumed; no `axiom` declarations.
+2. **The Boolean layer** — provenance of every clause at the definition
+   site, with the one interpretive dependency (guard-position
+   congruence) argued and its consequence-if-wrong spelled out.
+3. **The model** — standard guarded strings; soundness PROVED for both
+   layers, not assumed.
+4. **The semantics of the hypothesis** — ULE is the paper's equality
+   (today).
+
+What remains of the queued STEELMAN list: edge cases (empty `T`, empty
+`A`), and a differential-testing harness for `uleDec` against a
+reference implementation.  Both are finite and neither touches the open
+mathematics.
