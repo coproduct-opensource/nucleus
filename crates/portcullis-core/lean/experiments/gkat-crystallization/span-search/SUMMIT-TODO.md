@@ -5131,3 +5131,55 @@ constructors that turn out to need it, before the reason was known.
 3. **Size induction** — descent proved (127); `ite` transfer proved
    (132); `seq`/`wh` transfers now known impossible, so those rungs must
    be built by subsystem canonicity instead.
+
+## Iteration 134 — the fixpoint MOVED rather than vanished; `prune` avoids the new construction
+
+(Search note: reused iteration 129's answer — deadness in GKAT is an
+atom-indexed greatest fixpoint, per Kappé-Schmid-Silva Def. 14 — which
+is precisely what this iteration re-tests against 130's re-routing.)
+
+**Correction to iteration 130.**  That iteration re-routed S0's
+dead-label obligation from states to labels and named the missing piece
+as `inG`, an input-guard dual to `outG`, calling it "a structural
+induction on EXPRESSIONS — the shape that worked for `outG`".  Working
+it out shows **the fixpoint does not disappear under that re-routing; it
+MOVES.**  A TIGHT `inG` for `wh b e` asks *from which atoms does this
+loop terminate* — a genuine fixpoint, the same atom-indexed one 129
+identified.  So 130's grading was again too optimistic, in the same way
+126's was.
+
+**But the two sides are NOT symmetric, and that is the real content.**
+* **OUTPUT guards are cheap and tight.**  `wh_emits_exit_all` gives a
+  loop's output guard as exactly `¬b` — no fixpoint, no productivity
+  hypothesis, already proved.  A loop exits precisely where its guard
+  fails; nothing to compute.
+* **INPUT guards carry the fixpoint.**  "Does this loop terminate from
+  α" is not structural.
+
+So the difficulty is localized to one side, and it is the side that can
+be avoided.
+
+**`zero_of_prune_zero`**: if `X` emits `g` and `prune g Y = 0`, then
+`X·Y` is provably zero.  The repo ALREADY HAS the guard-relative
+deadness detector — `prune`, with `prune_equiv` proving
+`g?·e ≡ g?·(prune g e)` unconditionally — so no input guard need be
+constructed at all.  **The obligation becomes a COMPLETENESS property of
+an existing function** ("semantically dead under `g` ⟹ `prune g` returns
+`0`") rather than the construction of a new one.
+
+That is a strictly better place to stand than 130's: same fixpoint
+underneath, but attached to a function that is already defined, already
+proved sound, and already exercised throughout
+`GkatNormalizationProofs`.  Whether `prune`'s completeness at loops is
+any easier than a tight `inG` is NOT claimed — the fixpoint is still
+there, and this ledger has now twice over-graded S0.  Recording it as:
+same difficulty, better-positioned.
+
+**Route status:**
+1. **S0** — algebra done; obligation now stated as `prune`-completeness
+   (today) rather than `inG`-construction (130); fixpoint at loop INPUT
+   guards is the real content, and is NOT graded as bounded.
+2. **Same-side UNIF** — `ite` rung closed (132); `seq`/`wh` refuted for
+   reflection (128, 133) and routed to subsystem canonicity, where the
+   two-states-vs-two-solutions mismatch (129, intrinsic per 131) stands.
+3. **Size induction** — descent proved; `ite` transfer proved.

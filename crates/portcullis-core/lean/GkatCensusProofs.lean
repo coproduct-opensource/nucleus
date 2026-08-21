@@ -3024,4 +3024,42 @@ theorem ite_bisim_reflect_inl (c : BExp T) (p q : Exp A T)
 #print axioms step_ite_inl
 #print axioms ite_bisim_reflect_inl
 
+/-! ## The scissors, restated against `prune` — no `inG` needed
+
+    Iteration 130 re-routed S0's dead-label obligation from states to
+    labels via `zero_of_emission_disjoint`, and named the missing piece
+    as `inG`, an INPUT-guard dual to `outG`.  Working that out shows the
+    fixpoint 129 identified does not actually disappear under that
+    re-routing — it MOVES.  A tight `inG` for `wh b e` asks "from which
+    atoms does this loop terminate", which is a genuine fixpoint, the
+    same atom-indexed one.  (The OUTPUT side is fine: `wh_emits_exit_all`
+    gives a loop's output guard as exactly `¬b`, tight and cheap.  It is
+    the INPUT side that carries the fixpoint.)
+
+    But `inG` is avoidable.  The repo already HAS the guard-relative
+    deadness detector — `prune` — with `prune_equiv` proving
+    `g?·e ≡ g?·(prune g e)` unconditionally.  So the scissors can be
+    restated to consume `prune g Y = 0` directly, and the obligation
+    becomes a COMPLETENESS property of an existing function rather than
+    the construction of a new one. -/
+
+open Classical in
+/-- **THE SCISSORS, VIA `prune`**: if `X` emits `g` and `Y` prunes to
+    zero under `g`, then `X·Y` is provably zero.  No input guard, no new
+    construction — `prune_equiv` does the work. -/
+theorem zero_of_prune_zero {X Y : Exp A T} {g : BExp T}
+    (hout : EquivBA X (.seq X (.test g)))
+    (hprune : GkatNormalization.prune g Y = (.test .zero : Exp A T)) :
+    EquivBA (.seq X Y) (.test .zero) := by
+  refine EquivBA.trans (EquivBA.seq_c hout (EquivBA.base (Equiv.refl Y))) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.s1 X (.test g) Y)) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (GkatNormalization.prune_equiv Y g)) ?_
+  rw [hprune]
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.base (Equiv.s3 (.test g)))) ?_
+  exact EquivBA.base (Equiv.s3 X)
+
+#print axioms zero_of_prune_zero
+
 end GkatCensus
