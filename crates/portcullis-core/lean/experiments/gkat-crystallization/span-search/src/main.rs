@@ -4149,7 +4149,7 @@ fn absorption_verified<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize)
 
 /// A candidate solution under construction.  `Unk` is an unsolved SCC state,
 /// `Sub` an oracle: the quotient entered at a state outside the SCC.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Ex {
     Test(u8),
     Act,
@@ -4186,6 +4186,48 @@ fn ex_occurs(e: &Ex, s: usize) -> bool {
 /// its oracle reading happens to match.
 fn ex_occurs_any(e: &Ex, scc: &[usize]) -> bool {
     scc.iter().any(|&t| ex_occurs(e, t))
+}
+
+/// `e = H ; f`  ⟹  `H`.  Sequences are right-nested, so the suffix is found by
+/// walking the right spine.
+fn strip_suffix(e: &Ex, f: &Ex) -> Option<Ex> {
+    if e == f { return Some(Ex::Test(0xFF)); }
+    match e {
+        Ex::Seq(a, b) => {
+            if **b == *f { return Some((**a).clone()); }
+            strip_suffix(b, f).map(|b2| Ex::Seq(a.clone(), Box::new(b2)))
+        }
+        _ => None,
+    }
+}
+
+/// **RULE 6 IN THE SOLVER** (iteration 207): TRAILING-SUFFIX SHARING.
+///
+/// `trailing_suffix_shared` says a mid-body exit need not be a halt — it needs
+/// to LAND OUTSIDE THE GUARD and SHARE THE LOOP'S TRAILING SUFFIX.  So in each
+/// arm of the body's decision structure, if the arm ENDS in the loop's trailing
+/// expression `f`, drop that suffix: the arm then falls out of the loop (its
+/// guard is false where it lands) and the shared trailing `f` supplies the
+/// dropped part.
+///
+/// The compiler literature reaches the same restructuring by routing every loop
+/// exit to a MERGE node at the bottom of the loop — but pays for it with a
+/// control variable saying which exit fired.  GKAT has no such variable; here
+/// the guard's falsity does the selecting, which is exactly why the rule needs
+/// `H · ¬g ≡ H` and the language check has to confirm it.
+///
+/// The recursive arm is never stripped: after substitution it ends in the
+/// unknown's assertion, not in `f`.
+fn share_tail(e: &Ex, f: &Ex) -> Ex {
+    match e {
+        Ex::Ite(m, a, b) =>
+            Ex::Ite(*m, Box::new(share_tail(a, f)), Box::new(share_tail(b, f))),
+        Ex::Seq(a, b) => match strip_suffix(e, f) {
+            Some(h) => h,
+            None => Ex::Seq(a.clone(), Box::new(share_tail(b, f))),
+        },
+        _ => e.clone(),
+    }
 }
 
 fn ex_subst(e: &Ex, s: usize, r: &Ex) -> Ex {
@@ -4416,7 +4458,24 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
                     &Ex::Test(all));
                 let tail = ex_dispatch(&out_br, &fb);
                 cands.push((all, Ex::Seq(
-                    Box::new(Ex::Wh(g_self, Box::new(body))), Box::new(tail))));
+                    Box::new(Ex::Wh(g_self, Box::new(body.clone()))),
+                    Box::new(tail.clone()))));
+                // RULE 6: share the trailing suffix with every mid-body exit
+                // that ends in it.  Try both the full tail and, when the tail
+                // is a guarded dispatch, its then-arm — the loop exits into a
+                // known region, so the guard wrapping the tail is often
+                // redundant there and the arm is what a mid-body exit actually
+                // shares.
+                let mut fs: Vec<Ex> = vec![tail.clone()];
+                if let Ex::Ite(_, t, _) = &tail { fs.push((**t).clone()); }
+                for f in fs {
+                    let shared = share_tail(&body, &f);
+                    if shared != body {
+                        cands.push((all, Ex::Seq(
+                            Box::new(Ex::Wh(g_self, Box::new(shared))),
+                            Box::new(tail.clone()))));
+                    }
+                }
             }
         }
         for (_pm, sol) in cands {
@@ -4514,6 +4573,52 @@ fn calc_max_scc() -> usize {
 /// Whether the calculus will even try this SCC — the caller's guard, so that
 /// "too big to attempt" is never silently folded into "the calculus failed".
 fn calculus_attempted(scc: &[usize]) -> bool { scc.len() <= calc_max_scc() }
+
+/// **SCC-LOCAL REASONING IS INCOMPLETE** (iteration 207).
+///
+/// Rule 6 (`trailing_suffix_shared`) needs to SEE that a mid-body exit ends in
+/// the same expression as the loop's trailing suffix.  But states outside the
+/// SCC enter the search as opaque `Ex::Sub` oracles, so for 206's resister the
+/// tail reads `p ; Sub(c1)` and the mid-body exit `p ; Sub(c5)` — no shared
+/// syntactic suffix, even though `Sub(c1) = 1` makes the real shared suffix
+/// `p`.  Measured: that SCC is unsolvable given the SCC alone and solvable at
+/// depth 5 given the whole automaton.  The obstruction is oracle opacity, not
+/// the rule.
+///
+/// So extend the SCC with the outside states it can reach whose OWN SCC is a
+/// singleton — those are solvable by the existing SUBST/elimination moves, and
+/// solving them here makes their expressions syntactically visible to the
+/// suffix match.  Non-singleton neighbours are left as oracles: they are other
+/// loops, with their own solutions, and pulling them in would merge two
+/// independent problems.
+fn scc_with_context<const NA: usize>(q: &Aut<NA>, scc: &[usize],
+    singleton: &[bool]) -> Vec<usize>
+{
+    let mut out: Vec<usize> = scc.to_vec();
+    let mut i = 0;
+    while i < out.len() {
+        let s = out[i];
+        i += 1;
+        for y in 0..NA {
+            let t = q.st[s][y];
+            if t == 0 { continue; }
+            let t = (t - 1) as usize;
+            if out.contains(&t) || !singleton[t] { continue; }
+            if out.len() >= calc_max_scc() { return out; }
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Which states lie in a SINGLETON strongly connected component.
+fn singleton_states<const NA: usize>(q: &Aut<NA>) -> Vec<bool> {
+    let mut v = vec![true; q.k as usize];
+    for c in sccs_of(q) {
+        if c.len() >= 2 { for &s in c.iter() { v[s] = false; } }
+    }
+    v
+}
 
 fn calculus_solves<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize) -> bool {
     let k = q.k as usize;
@@ -5707,8 +5812,19 @@ fn check_r206<const NA: usize>() {
             if ex_matches(&x0, &q, 0, n) { "MATCHES" } else { "differs" },
             if ex_matches(&x4, &q, 4, n) { "MATCHES" } else { "differs" });
     }
-    println!("  r206 calculus (depth 5): {}",
+    println!("  r206 calculus, SCC only [0,2,3] (depth 5): {}",
         calculus_solves(&q, &[0, 2, 3], 5));
+    // Rule 6 needs to SEE the shared suffix, but states outside the SCC enter
+    // the search as opaque `Ex::Sub` oracles: the tail is `p ; Sub(c1)` and the
+    // mid-body exit is `p ; Sub(c5)`, which share no syntactic suffix even
+    // though `Sub(c1) = 1` makes the real shared suffix `p`.  Handing the
+    // solver the WHOLE automaton turns those oracles into unknowns it must
+    // solve, so the suffix becomes visible.  If this succeeds where the
+    // SCC-only call fails, the blocker is oracle opacity, not the rule.
+    println!("  r206 calculus, whole automaton [0..4] (depth 5): {}",
+        calculus_solves(&q, &[0, 1, 2, 3, 4], 5));
+    println!("  r206 calculus, whole automaton [0..4] (depth 9): {}",
+        calculus_solves(&q, &[0, 1, 2, 3, 4], 9));
 }
 
 fn nested_sanity<const NA: usize>() {
@@ -5948,6 +6064,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
         let q = match trim_canon(&q0) { Some(q) => q, None => continue };
         pairs_done += 1;
         let sccs = sccs_of(&q);
+        let singles = singleton_states(&q);
         let mut covered = true;
         let mut pair_open = false;
         let mut pair_calc_ok = true;
@@ -6123,7 +6240,13 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     }
                     n_open_calc += 1;
                     let t0 = std::time::Instant::now();
+                    // Give the search its outside context (see
+                    // `scc_with_context`): rule 6 cannot match a shared suffix
+                    // through an opaque oracle.  Fall back to the bare SCC if
+                    // the extension gained nothing.
+                    let ctx = scc_with_context(&q, scc, &singles);
                     let calc_ok = std::env::var("PAD_NO_CALC").is_ok()
+                        || calculus_solves(&q, &ctx, 5)
                         || calculus_solves(&q, scc, 5);
                     t_calc += t0.elapsed();
                     if calc_ok {
@@ -6308,8 +6431,11 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         let sc = sccs_of(&cq);
                         if sc.iter().any(|c| c.len() >= 2 && !calculus_attempted(c)) {
                             n_canon_skipped += 1;
-                        } else if sc.iter().all(|c| c.len() < 2
-                            || calculus_solves(&cq, c, 5)) {
+                        } else if { let csg = singleton_states(&cq);
+                            sc.iter().all(|c| c.len() < 2
+                                || calculus_solves(&cq,
+                                    &scc_with_context(&cq, c, &csg), 5)
+                                || calculus_solves(&cq, c, 5)) } {
                             n_canon_ok += 1;
                         } else {
                             // Separate "my calculus is incomplete here" from
