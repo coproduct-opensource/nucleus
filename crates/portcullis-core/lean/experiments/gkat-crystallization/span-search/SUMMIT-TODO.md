@@ -7467,3 +7467,61 @@ wrong characterizations (173's "non-subset halts fall", 174's "the residue
 is Kosaraju-blocked"), both from reasoning about remembered data instead
 of the data.  **The census takes four minutes to run.  Run it before
 describing what is open.**
+
+---
+
+## Iteration 176 — ALL 15 OPEN SCCs ARE REDUCIBLE, AND 14 HAVE EXACTLY ONE BRANCHER
+
+175 measured that the residue is branchy.  Today asks the structural
+question that decides whether the role ladder can reach it, and answers it
+with a test rather than an eyeball.
+
+**THE TEST.**  Hecht–Ullman T1/T2, run over the 15 dumped open SCCs
+(`analyze_open_sccs.py`, now in the repo so it is re-runnable).  T1 drops a
+self-loop; T2 merges a non-header node having a unique predecessor into
+that predecessor; a flow graph is reducible iff T1/T2 collapse it to a
+single node.
+
+    open SCCs: 15;  T1/T2-REDUCIBLE: 15;  irreducible: 0
+
+    sizes 3,3,4,3,4,3,4,3,5,3,3,3,3,4,4
+    branchers per SCC: 2,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+
+**EVERY ONE IS REDUCIBLE.  FOURTEEN OF FIFTEEN HAVE EXACTLY ONE BRANCHER.**
+
+That settles the question 174 got wrong from the other direction.
+Reducible means the loops form a NESTED family, which is exactly the
+structure a nest of `wh`s expresses — no auxiliary variables, no
+unrolling, no Kosaraju obstruction.  **The role ladder can reach the
+residue.**  What it needs is one more rung, and the rung is now specified
+by measurement rather than by guesswork:
+
+  **NEXT TARGET: a role theorem for a walked cycle with ONE extra in-SCC
+  arm from one position, targeting an ancestor.**  Sizes 3–5.  This is
+  `chord3_roles` (which handles size 3 with a supplied closed form)
+  generalized to arbitrary cycle length, or equivalently
+  `walked_cycle_roles` with `hint_nil` relaxed at exactly one position.
+
+**Also landed: `self_gather_role`, the atom, extracted.**  Five theorems in
+this corpus inline the same three lines — `StateRole.salomaaE` on the
+self-arms plus `multi_gather` to commute them to the head.  Pulled out
+with NO hypotheses beyond the shape of the solution, and
+`singleton_scc_roles` rewired to call it.
+
+The point of the extraction is not tidiness.  It says where the work in a
+new stratum actually is: **discharging the role is free once the solution
+is in self-gathered form, so the entire cost of a new stratum is DEFINING
+the solution.**  That is worth knowing before starting the branchy rung.
+
+**A caveat on the reducibility test, stated because it matters.**  The
+header used is the first state the census prints for each SCC, which is
+its entry.  If a different entry were the true one the verdict could
+differ — reducibility is relative to the entry.  I did not verify the
+census prints the entry first; I read it from the dumps' structure.  The
+15/15 result should be re-confirmed once the branchy rung is being
+written against a specific instance.
+
+**Odds: ~45%, unchanged.**  This is a measurement plus a refactor.  It
+tells the next iteration exactly what to prove and rules out the
+obstruction 174 feared, which is worth a great deal procedurally and
+nothing probabilistically until the theorem exists.

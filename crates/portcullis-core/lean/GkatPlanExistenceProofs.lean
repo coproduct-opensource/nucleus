@@ -1184,6 +1184,31 @@ theorem ssSol_eq (aut : GAut S A T) (rank : S → Nat) (s : S) :
   rw [WellFounded.fix_eq]
 
 open Classical in
+/-- **THE SELF-GATHER ROLE** — the atom of every Salomaa stratum in this
+    development, extracted.  A state whose solution is its own self-arms
+    looped in front of the fold of everything else has a `salomaaE` role
+    with NO further hypotheses: `multi_gather` commutes the self-arms to
+    the head of the dispatch, and `w3` does the rest.
+
+    Five theorems in this corpus inline this argument
+    (`singleton_scc_roles`, `assembly_roles`, `full_assembly_roles`,
+    `walked_assembly_roles`, `chord_assembly_roles`).  Any future stratum
+    that builds its solution in self-gathered form gets its roles from
+    here, so the work of a new stratum is entirely in DEFINING the
+    solution — never in discharging the role. -/
+theorem self_gather_role (aut : GAut S A T) (sol : S → Exp A T) (s : S)
+    (hsol : sol s = .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+      (foldTL sol (aut.hlt s) (gOthers s (aut.trans s)))) :
+    StateRole aut sol s :=
+  StateRole.salomaaE (gGuard s (aut.trans s)) (gBody s (aut.trans s))
+    (foldTL sol (aut.hlt s) (gOthers s (aut.trans s))) hsol
+    (by
+      rw [eqRHS_foldTL]
+      exact multi_gather sol (aut.hlt s) s (aut.trans s))
+
+#print axioms self_gather_role
+
+open Classical in
 /-- **THE SINGLETON-SCC THEOREM** (S2, complete 1-cycle stratum): an automaton
     whose every cycle is a self-loop — any number of self-arms, any positions —
     is fully role-covered.  Subsumes the acyclic, head-self-loop, and
@@ -1203,10 +1228,7 @@ theorem singleton_scc_roles (aut : GAut S A T) (rank : S → Nat)
     rcases hshape s hs e heL with h1 | h2
     · exact absurd h1 hene
     · rw [dif_pos h2]
-  refine StateRole.salomaaE (gGuard s (aut.trans s)) (gBody s (aut.trans s))
-    (foldTL (ssSol aut rank) (aut.hlt s) (gOthers s (aut.trans s))) hsol ?_
-  rw [eqRHS_foldTL]
-  exact multi_gather (ssSol aut rank) (aut.hlt s) s (aut.trans s)
+  exact self_gather_role aut (ssSol aut rank) s hsol
 
 #print axioms singleton_scc_roles
 
