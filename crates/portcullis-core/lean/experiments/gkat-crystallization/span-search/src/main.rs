@@ -4898,6 +4898,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut side_shrink_total = 0usize;
     let mut n_open_scc = 0usize;
     let mut n_chorded_scc = 0usize;
+    let mut n_open_pairs = 0usize;
+    let mut n_open_pairs_lattice = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
         // SAME-SIDE collapse measurement: is each program's OWN automaton
         // already its own bisimulation quotient?  Iteration 131's dichotomy
@@ -4990,6 +4992,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
         pairs_done += 1;
         let sccs = sccs_of(&q);
         let mut covered = true;
+        let mut pair_open = false;
         for scc in sccs.iter() {
             if scc.len() == 1 {
                 let s = scc[0];
@@ -5143,7 +5146,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 };
                 if walked { n_walked_scc += 1; }
                 else if chorded { n_chorded_scc += 1; }
-                else { n_open_scc += 1; }
+                else { n_open_scc += 1; pair_open = true; }
                 // OPEN dump: the SCCs no proved stratum covers.  These are the
                 // residue the elimination-order question is about, so print them
                 // in full — including which members are ports (halt or carry an
@@ -5215,6 +5218,32 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 }
             }
         }
+        // THE LATTICE QUESTION.  The census classifies SCCs of the FULL
+        // bisimulation collapse, but `SumQuotientSolvable` asks only for SOME
+        // behavioural quotient with a solution — the full collapse is the top
+        // of the lattice, not the whole of it.  For every pair the strata
+        // leave open, ask whether ANY intermediate congruence is solvable.
+        if pair_open {
+            n_open_pairs += 1;
+            if solvable_somewhere_in_lattice(&su, false) { n_open_pairs_lattice += 1; }
+            else {
+                // THE CANDIDATE.  A pair no intermediate congruence solves is a
+                // candidate counterexample to `SumQuotientSolvable` — the oracle
+                // is sound on rejection of non-nested automata but not complete,
+                // so this is a candidate, not a refutation.  Dump it whole.
+                println!("  LATTICE-RESISTANT PAIR #{pairs_done} (sum k={}):", su.k);
+                for s in 0..(su.k as usize) {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = su.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("{}", t - 1) }
+                    }).collect();
+                    println!("    sum state {s}: hl={:04b} st=[{}]", su.hl[s], row.join(","));
+                }
+                println!("    nesting coequation: {}; total: {}", nested(&su), total_aut(&su));
+                println!("    e = {aexp}");
+                println!("    f = {bexp}");
+            }
+        }
         if covered { pairs_covered += 1; }
     }
     println!("  SAME-SIDE: automata measured: {n_side}; NOT already minimal: {n_side_collapsed} ({:.1}%); total states collapsed: {side_shrink_total}",
@@ -5223,6 +5252,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
         100.0 * pairs_covered as f64 / pairs_done.max(1) as f64);
     println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");
     println!("  multi-state SCCs: walked-covered (walked_cycle_roles): {n_walked_scc}; chorded-covered (chorded_assembly_roles): {n_chorded_scc}; OPEN: {n_open_scc}");
+    println!("  pairs with an OPEN SCC in the FULL collapse: {n_open_pairs}; of those, SOLVABLE SOMEWHERE IN THE BISIMULATION LATTICE: {n_open_pairs_lattice}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");

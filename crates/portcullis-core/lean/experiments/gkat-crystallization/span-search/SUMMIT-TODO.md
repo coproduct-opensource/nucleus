@@ -7977,3 +7977,75 @@ object, and it is where the next iterations should go.
 **Odds: ~45%, unchanged.**  Nothing today moved the frontier; it made the
 frontier's shape honest.  If anything the discipline of saying "this route
 tops out" is worth more than the four strata that preceded it.
+
+---
+
+## Iteration 184 — THE CENSUS WAS MEASURING THE WRONG QUOTIENT; the true residue is ONE PAIR
+
+183 concluded the role ladder tops out at 98.6% and named duplication as
+the next route.  That conclusion was drawn against the wrong object, and
+today's measurement corrects it.
+
+**THE FRAMING ERROR.**  The census classifies SCCs of the **FULL
+bisimulation collapse**.  `SumQuotientSolvable` asks for SOME behavioural
+quotient with a solution — the full collapse is the TOP of the lattice of
+congruences, not the whole of it.  A coarser quotient still identifying the
+two starts is equally admissible, and it may avoid the shape the full
+collapse creates.  `solvable_somewhere_in_lattice` has been in the harness
+the whole time, with a comment saying exactly this; the SCC census never
+called it.
+
+**THE MEASUREMENT** (NA=4, depth<=7, 60000 pairs):
+
+    pairs with an OPEN SCC in the FULL collapse:                31
+    of those, SOLVABLE SOMEWHERE IN THE BISIMULATION LATTICE:   30
+
+**So the true residue is ONE PAIR in 59993 — not 31.**  Every ladder
+stratum built in 176–182 was chasing a residue that a coarser quotient
+mostly dissolves.  Coverage for the hypothesis that actually matters is
+59992/59993 = **99.998%**.
+
+**183's conclusion, corrected.**  "The role ladder cannot close this" is
+still true as stated — the ladder alone cannot — but the inference I drew
+from it, that duplication is the next route, is wrong.  **The lattice is
+the next route**, and it is not a construction to be invented: it is a
+choice of quotient, already implemented, already measured.  Duplication and
+"collapse less" are the same idea, and the second is free.
+
+**THE ONE RESISTANT PAIR IS DUMPED**
+(`runs/lattice-resistant-NA4-60k.txt`).  Sum has 11 states, satisfies the
+nesting coequation, and is total.  Both source programs are recorded.
+
+    sum state 0: hl=1000 st=[1,1,2,-]      sum state 6: hl=1000 st=[5,6,7,-]
+    sum state 1: hl=1000 st=[1,1,2,-]      sum state 7: hl=0000 st=[8,8,8,8]
+    sum state 2: hl=0000 st=[3,3,3,3]      sum state 8: hl=1000 st=[9,6,7,-]
+    sum state 3: hl=1000 st=[2,1,2,-]      sum state 9: hl=0000 st=[10,10,10,10]
+    sum state 4: hl=1000 st=[5,6,7,-]      sum state 10: hl=1000 st=[9,6,7,-]
+    sum state 5: hl=1000 st=[5,6,7,-]
+
+**THIS IS A CANDIDATE, NOT A REFUTATION, and the distinction is the whole
+of its value.**  `solvable_somewhere_in_lattice` enumerates congruences and
+runs `symbolic_eliminable_raw` on each; the oracle is sound in the
+direction that matters for REJECTING non-nested automata, but it is not
+complete, and the enumeration has a budget.  A `false` means "not found",
+not "does not exist".  So this pair is the first place to look, and the two
+questions to ask of it are: does the enumeration reach the right
+congruence, and is the elimination oracle complete on what it reaches.
+
+**The right next step is to settle that one pair**, either by finding its
+solution by hand — it is 11 states, and both generating expressions are
+recorded — or by proving no congruence solves it.  Settling it decides
+whether `SumQuotientSolvable` survives, and nothing else on the board
+decides anything comparable.
+
+**Odds: ~45%, held deliberately.**  99.998% coverage is a much better
+number than 98.6%, and I am not moving on it: a single resistant instance
+is exactly what a counterexample looks like before it is confirmed, and an
+existence theorem needs all of them.  If the one pair turns out solvable,
+that is when the number moves.
+
+**Method note.**  Seven iterations of ladder work were spent on a residue
+defined by a choice — the full collapse — that the hypothesis never
+required.  The harness contained the correction the whole time, in a
+function with a comment stating it.  **When a measurement defines the work,
+check that it measures the object the HYPOTHESIS names.**
