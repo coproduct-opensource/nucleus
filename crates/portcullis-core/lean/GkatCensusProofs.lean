@@ -3952,4 +3952,98 @@ theorem chain3_ne_test {b : BExp T} {p x y : A} (t : BExp T)
 #print axioms chain2_ne_test
 #print axioms chain3_ne_test
 
+open Classical in
+/-- **★ `chordloops_complete`, DOWN TO ONE HYPOTHESIS ★** — five of the
+    six satisfiability conditions are gone.  Only SHARED INNER-GUARD
+    ENTRY (`∃α, c ∧ c'`) remains, because it is the one condition that
+    guard agreement cannot supply: `b ≡ b'` follows from both sides
+    being loops, but `c` and `c'` sit INSIDE the bodies.
+
+    Sixteen cases; every mixed one is impossible, and the diagonal is
+    `test_test_equiv`, `chainloops_complete_free` (both collapse targets
+    are `Chain2`), and `chordloops_complete`. -/
+theorem chordloops_complete_of_shared_entry
+    (b c : BExp T) (p x y : A) (b' c' : BExp T) (p' x' y' : A)
+    (hentC : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c' α = true)
+    (heq : GkatKleene.UniformLanguageEquivalent
+      (GkatThreeLoop.chordLoop b c p x y)
+      (GkatThreeLoop.chordLoop b' c' p' x' y')) :
+    EquivBA (GkatThreeLoop.chordLoop b c p x y)
+      (GkatThreeLoop.chordLoop b' c' p' x' y') := by
+  have hga := wh_guards_agree_of_ule heq (T → Bool) (GkatPlanExistence.genW T)
+  rcases chordLoop_tetrachotomy b c p x y with
+    ⟨t₁, h₁⟩ | ⟨h₁, hs₁, he₁⟩ | ⟨h₁, hs₁, he₁⟩ | ⟨hbs₁, hbe₁, hcs₁, hce₁⟩
+  · rcases chordLoop_tetrachotomy b' c' p' x' y' with
+      ⟨t₂, h₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨hbs₂, hbe₂, hcs₂, hce₂⟩
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.test_test_equiv
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq)))
+        (fun hu => chain2_ne_test t₁ hs₂ he₂ hu)
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq)))
+        (fun hu => chain3_ne_test t₁ hs₂ he₂ hu)
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => live_chord_ne_test t₁ hbs₂ hbe₂ hu)
+  · rcases chordLoop_tetrachotomy b' c' p' x' y' with
+      ⟨t₂, h₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨hbs₂, hbe₂, hcs₂, hce₂⟩
+    · exact absurd (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => chain2_ne_test t₂ hs₁ he₁ hu)
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.chainloops_complete_free b b'
+          (chordLoop_collapse_chain2 p x y).1
+          (chordLoop_collapse_chain2 p' x' y').1
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.chainloops_complete_free b b'
+          (chordLoop_collapse_chain2 p x y).1
+          (chordLoop_collapse_chain2 p' x' y').2
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => live_chord_ne_chain2 hbs₂ hcs₂ hbe₂ hu)
+  · rcases chordLoop_tetrachotomy b' c' p' x' y' with
+      ⟨t₂, h₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨hbs₂, hbe₂, hcs₂, hce₂⟩
+    · exact absurd (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => chain3_ne_test t₂ hs₁ he₁ hu)
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.chainloops_complete_free b b'
+          (chordLoop_collapse_chain2 p x y).2
+          (chordLoop_collapse_chain2 p' x' y').1
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.chainloops_complete_free b b'
+          (chordLoop_collapse_chain2 p x y).2
+          (chordLoop_collapse_chain2 p' x' y').2
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => live_chord_ne_chain3 hbs₂ hce₂ hbe₂ hu)
+  · rcases chordLoop_tetrachotomy b' c' p' x' y' with
+      ⟨t₂, h₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨h₂, hs₂, he₂⟩ | ⟨hbs₂, hbe₂, hcs₂, hce₂⟩
+    · exact absurd (GkatChainFragment.ule_congr_right h₂ heq)
+        (fun hu => live_chord_ne_test t₂ hbs₁ hbe₁ hu)
+    · exact absurd (GkatChainFragment.ule_congr_right h₂ heq)
+        (fun hu => live_chord_ne_chain2 hbs₁ hcs₁ hbe₁ hu)
+    · exact absurd (GkatChainFragment.ule_congr_right h₂ heq)
+        (fun hu => live_chord_ne_chain3 hbs₁ hce₁ hbe₁ hu)
+    · obtain ⟨α, hb⟩ := hbs₁
+      exact GkatThreeLoop.chordloops_complete b c p x y b' c' p' x' y'
+        ⟨α, hb, by rw [← hga α]; exact hb⟩ hentC hce₁ hbe₁ hce₂ hbe₂ heq
+
+#print axioms chordloops_complete_of_shared_entry
+
 end GkatCensus

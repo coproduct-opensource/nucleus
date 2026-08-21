@@ -5973,3 +5973,56 @@ shape already proved above, but not yet written.
 reduced from six hypotheses to one, with every mixed case of its
 assembly discharged and the residual hypothesis identified precisely
 along with a route to removing it.
+
+## Iteration 151 — ★ `chordloops_complete_of_shared_entry`: SIX HYPOTHESES DOWN TO ONE ★
+
+**`chordloops_complete_of_shared_entry`** [propext, Classical.choice,
+Quot.sound] — completeness for chord-loop programs assuming ONLY shared
+inner-guard entry `∃α, c ∧ c'`.  The other five satisfiability
+conditions are gone.  Sixteen cases, compiled on the first attempt:
+
+* **diagonal** — `test_test_equiv`; `chainloops_complete_free` for all
+  FOUR chain-vs-chain combinations (both collapse targets are `Chain2`,
+  so two-stride and three-stride mix freely); `chordloops_complete` for
+  live-vs-live.
+* **twelve mixed cells** — every one impossible, by
+  `chain2_ne_test`, `chain3_ne_test`, `live_chord_ne_test`,
+  `live_chord_ne_chain2`, `live_chord_ne_chain3`.
+* **`hentB` supplied for free** — `wh_guards_agree_of_ule` gives
+  `b ≡ b'`, so shared entry on the OUTER guard follows from `b` being
+  satisfiable, which the live branch already provides.
+
+**Why `hentC` stays.**  It is the one condition guard agreement cannot
+reach: `b` and `b'` are loop guards of the two top-level loops, so
+language equivalence pins them together, but `c` and `c'` sit INSIDE
+the bodies where no such pinning applies.  The sketch at iteration 150
+for deriving it stands unproved and is deliberately not claimed.
+
+---
+
+### The hardening campaign, closed out
+
+Iteration 138 audited the six completeness theorems against their Lean
+signatures and found the ledger had been calling them "unconditional"
+when two carried satisfiability hypotheses.  Thirteen iterations later:
+
+| theorem | before | after |
+|---|---|---|
+| `loopfree` | fragment only | unchanged |
+| `atomicloops` | fragment only | unchanged |
+| `gloops` | fragment only | unchanged |
+| `chainloops_free` | fragment only | unchanged |
+| `twoloops` | **+6 hypotheses** | **`_free` — 0** |
+| `chordloops` | **+6 hypotheses** | **`_of_shared_entry` — 1** |
+
+Roughly thirty lemmas, none of them new mathematics: collapse lemmas,
+guard/acceptance primitives that generalize past their originating
+fragment (`wh_den_nil`, `wh_guards_agree_of_ule`), stride invariants,
+acceptance witnesses, vacuity results, and two shape classifications.
+All of it existed only to make a word true that had been asserted
+without being checked.
+
+**The pattern worth carrying**: the prover never checks the prose.  Two
+audits came back clean and two claims came back wrong, both of them
+about how results were *described* rather than whether they *held* — and
+that is exactly the exposure a machine-checked corpus has.
