@@ -6345,3 +6345,59 @@ today.  What remains queued is edge cases (empty `T`, empty `A`) — and
 note the theorems are polymorphic in both, so Lean has already checked
 them there; what an edge-case pass would add is NON-VACUITY evidence,
 not soundness.
+
+## Iteration 157 — ★ ITERATION 154 WAS WRONG: guard transport IS derivable, and it is now proved in-repo ★
+
+Iteration 154 asserted, on the strength of an inspection I described as
+settling the matter, that guard-position transport is **not** derivable
+from Figure 1 — and wrote that into `EquivBA`'s docstring as the one
+place a claim rests on interpretation.  **Both of its specific claims
+were false.**
+
+* I wrote: "U2 applied twice gives `e +_{¬¬b} f`, so without guard
+  transport the theory could not even undo a double negation."
+  **U2 applied twice IS the undoing.**
+  `e +_b f ≡ f +_{b̄} e ≡ e +_{¬¬b} f` is a DERIVATION, not an
+  obstacle.  I read a two-step derivation as a trap.
+* I wrote: "guard transport is NOT derivable from the equations."
+  **It is**, and the derivation is short.
+
+**`GkatGuardTransportProofs.lean`** (new, in the lakefile, `[propext]`,
+sorry-free) settles it against a DELIBERATELY WEAKENED relation:
+Figure 1, plus `≡_BA` at TEST positions, plus the `s6` representation
+bridge, with congruence at **operand positions only** — no
+guard-position constructor anywhere.  In that relation:
+
+* **`ite_guard`** — `b ≡_BA c → (e +_b f) ≡ (e +_c f)` — is a THEOREM.
+  Route: `U2×2 → U6 → U8 → U8' → U4' → canon → transport`.
+* **`wh_guard_productive`** — the same for loops with productive bodies,
+  via `W1 + ite_guard + W3`.
+
+**The route matters, and this is the part I would have got wrong.**  The
+published derivation of U8 goes through U5' and U3' — but U3' is itself
+derived using a guard-transport step, so **the published route is
+circular for this purpose.**  The proof instead instantiates the AXIOM
+U3 at `e := 0`, `b := 1`, `c := b̄`.  Anyone re-deriving this from the
+paper's Figure 2 would walk straight into the circularity.
+
+**Consequence, and it is entirely good.**  `EquivBA` does NOT exceed the
+paper's `≡`: the two guard constructors are admissible, so the relation
+is the same with or without them.  **The interpretive dependency
+identified at 153–154 is gone** — not resolved by argument, discharged
+by proof.  Every downstream claim of provability "from the finite
+axioms" now stands without a reading attached.
+
+**The lesson, sharper than the earlier ones.**  The hardening campaign's
+finding was *the prover never checks the prose*.  Iteration 154 was that
+failure in its purest form: I inspected thirteen axioms, drew a
+metatheoretic conclusion — "not derivable" — and wrote it into the
+source as established.  A negative claim about derivability is exactly
+what inspection cannot establish, and I asserted one anyway.  **The fix
+was not to argue better but to build the weakened relation and let the
+prover answer.**  That is now a file rather than a paragraph.
+
+**Trusted base, final**: axioms verbatim; no Figure-2 fact assumed; the
+Boolean layer's every clause with proved provenance and NO remaining
+interpretive dependency; soundness proved; ULE proved to be the paper's
+semantics; the decider executed on ten cases including negative
+controls.

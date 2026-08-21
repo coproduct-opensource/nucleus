@@ -1124,3 +1124,6 @@ lean_lib «GkatElimProofs» where
 
 lean_lib «GkatCensusProofs» where
   roots := #[`GkatCensusProofs]
+
+lean_lib «GkatGuardTransportProofs» where
+  roots := #[`GkatGuardTransportProofs]

@@ -55,18 +55,27 @@ theorem den_test_ba {b c : BExp T}
       paper establishes that `Bexp/≡_BA` is the FREE Boolean algebra on `T` and
       that `≡_BA` is complete for the truth-assignment semantics; so agreement
       under all valuations IS `≡_BA`, not something stronger.
-    * `ite_guard`, `wh_guard` — the congruence clause at GUARD positions,
-      reading `+_·` and `·^(·)` as operators that take their guard from
-      `Bexp ⊆ Exp`.  **This reading is load-bearing and worth stating.**
-      Inspection of Figure 1 shows that no axiom ever replaces a guard by a
-      BA-equal one: each fixes its guards syntactically, U2 negating (`b̄`) and
-      U3 forming a product (`bc`).  So guard transport is NOT derivable from
-      the equations — indeed U2 applied twice gives `e +_{¬¬b} f`, so without
-      it the theory could not even undo a double negation in a guard.  If the
-      intended reading were instead that `+_b` is a FAMILY of binary operators
-      indexed by `b`, these two clauses would be additions, and every claim
-      here of provability "from the finite axioms" would exceed GKAT + BA by
-      exactly them.
+    * `ite_guard`, `wh_guard` — **ADMISSIBLE, hence harmless.**  These
+      transport Boolean equality through GUARD positions, and it is a fair
+      question whether they exceed the paper's congruence clause.  They do
+      not: guard transport is DERIVABLE from Figure 1 together with the
+      test-level `≡_BA` subsumption and `s6`, with congruence needed at
+      OPERAND positions only.  The derivation is
+      `U2×2 → U6 → U8 → U8' → U4' → canon → transport`, where U8 comes from
+      the AXIOM U3 instantiated at `e := 0`, `b := 1`, `c := b̄` (the
+      published route to U8 via U5' and U3' is circular for this purpose,
+      since U3' is itself derived using a guard-transport step).  For loops,
+      `W1 + ite_guard + W3` gives it for productive bodies, and
+      `GkatNormalization.productive_loop` reduces the general case — and that
+      lemma's own proof uses `ite_guard` at most, never `wh_guard`, so there
+      is no circularity.
+      An earlier version of this docstring asserted the opposite — that
+      guard transport is NOT derivable, on the grounds that U2 applied twice
+      yields `e +_{¬¬b} f` and cannot be undone.  That was wrong twice over:
+      U2 applied twice IS the undoing (`e +_b f ≡ f +_{b̄} e ≡ e +_{¬¬b} f`
+      is a derivation, not an obstacle), and the general transport follows.
+      So including these as constructors does not strengthen `EquivBA`
+      beyond the paper's `≡`; the relation is the same either way.
     * `s6` — a REPRESENTATION bridge rather than a theory addition.  The paper
       has `Bexp ⊆ Exp` with Boolean `·` literally being sequencing, so `b·c`
       and `b ∧ c` are the same term there and no axiom is needed.  This
