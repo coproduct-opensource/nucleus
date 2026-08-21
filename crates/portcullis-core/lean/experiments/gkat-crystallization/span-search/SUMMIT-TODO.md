@@ -6078,3 +6078,54 @@ classifications are reusable normal forms.
 
 **Tactic note**: `by_contra` is Mathlib; this cluster is Mathlib-free.
 Use `refine Classical.byContradiction (fun h => ?_)`.
+
+## Iteration 153 — auditing the AXIOMS themselves (the trusted base)
+
+The hardening campaign's lesson was *the prover never checks the prose*.
+The sharpest version of that exposure is one this ledger has never
+audited: **are the axioms right?**  Everything proved here is
+`EquivBA`-derivability, so if `EquivBA` is not GKAT-plus-Boolean-algebra
+then the whole corpus proves something else.
+
+**Verified internally this iteration:**
+
+* **The axiom inventory.**  `Equiv` has exactly: equivalence (refl,
+  symm, trans), congruence (seq_c, ite_c, wh_c), U1–U5, S1–S5, W1–W3.
+  Nothing else.  U1 idempotence, U2 skew commutativity, U3 skew
+  associativity, U4 guard absorption, U5 right distributivity; S1
+  associativity and the four `0`/`1` laws; W1 unrolling, W2 tightening,
+  W3 the fixpoint rule with side condition `E(e) ≡ 0`.
+* **`E` matches the standard definition** — `act ↦ 0`, `test b ↦ b`,
+  `seq ↦ ∧`, `ite ↦ (b∧E e) ∨ (¬b∧E f)`, `wh b _ ↦ ¬b`.
+* **The model is the standard one.**  `GS A Atom = Atom × List (A × Atom)`
+  is the guarded-string representation `α₀ p₁ α₁ … αₙ`, and soundness is
+  PROVED, not assumed, for both layers: `GkatGS.sound` and
+  `GkatFaithful.sound_BA`, each at `[propext, Quot.sound]`.
+* **No axiom is stated as `axiom`.**  Everything is an inductive
+  constructor of `Equiv`/`EquivBA`, so the trusted base is exactly the
+  two inductive types plus Lean's own three axioms.
+
+**One finding, and it is about a justification rather than a mistake.**
+`EquivBA`'s Boolean layer is stated SEMANTICALLY: `baTest`, `ite_guard`
+and `wh_guard` take `∀ X W x, bval W b x = bval W c x` — equality under
+every carrier and valuation — where the paper's Figure 1 says the
+congruence is generated together with THE LAWS of Boolean algebra,
+i.e. syntactic BA-derivability.
+
+These coincide, because equality in the free Boolean algebra on `T` is
+exactly agreement under all Boolean valuations.  But **that coincidence
+is assumed here, not proved and not cited** — and the direction of risk
+is real: if semantic guard equality were STRICTLY WEAKER as a hypothesis
+(i.e. the rule stronger), then `EquivBA` would be a stronger system than
+GKAT + BA and every "provable from the finite axioms" claim would be
+overclaimed by exactly that gap.
+
+The file's docstring asserts the clauses "are required by Figure 1's
+statement" — which is the right instinct, but it argues NECESSITY, not
+SUFFICIENCY.  What is missing is the other direction: that they add
+nothing beyond BA.
+
+**Recorded as the first item of the trusted-statement-kernel work**:
+either prove BA completeness for the free algebra on `T` in-repo, or
+cite it explicitly at the definition site.  It is the one place where a
+claim about what the axioms ARE rests on an unstated mathematical fact.
