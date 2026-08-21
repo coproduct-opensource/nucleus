@@ -6618,3 +6618,45 @@ credibility rests more on those than on the theorem count — and
 iteration 154's entry is the one that best demonstrates the discipline,
 because it is a case where the ledger's own method caught the ledger's
 own error.
+
+## Iteration 163 — the guard-transport story is now COMPLETE up to one named published lemma
+
+Iteration 160 kept `EquivBA.wh_guard` (unused but faithful) partly
+because its GENERAL admissibility — non-productive bodies — was
+unproved, so removing it might have made the relation strictly weaker
+than the paper's.  **That residue is now reduced to a single named
+lemma.**
+
+**`wh_guard_of_norm`** [propext]: general loop-guard transport follows
+from **POPL'20 Lemma 3.9 alone** — every loop is equivalent to one with
+a productive body — and from nothing else.  Given the normalization,
+route `wh b e ≡ wh b ê ≡ wh c ê ≡ wh c e`, the middle step by
+`wh_guard_productive`.
+
+**Why this is worth the four lines.**  It converts "the general case is
+open in this file" into "the general case is exactly Lemma 3.9" — a much
+smaller and much more useful statement, because the main development
+**already proves that lemma** (`GkatNormalization.productive_loop`), and
+because iteration 159 verified BY GREP that `GkatNormalizationProofs`
+contains no `wh_guard`, so there is no circularity in appealing to it.
+
+So the position is now precise on both sides:
+* **In the weakened relation** (congruence at operand positions only):
+  `ite_guard` outright; `wh_guard` for productive bodies; general
+  `wh_guard` modulo Lemma 3.9, which is not ported here.
+* **In the main development**: Lemma 3.9 is proved, transport-free.  So
+  general loop-guard transport is admissible there too — the only thing
+  missing is that the two halves live in different files.
+
+**And the practical consequence is unchanged and better justified.**
+`wh_guard` has no uses anywhere; `ite_guard` is admissible outright.
+Every theorem in the corpus is provable in `EquivBA` minus `wh_guard`,
+and — given the above — that relation is not weaker than the paper's.
+The reason iteration 160 gave for keeping the constructor (faithfulness
+risk) has now largely evaporated; what remains is a file-organization
+gap, not a mathematical one.
+
+**Guard-transport thread, final** (154 → 163): a false negative claim,
+corrected by building a weakened relation and proving admissibility;
+every use in ~40 files then eliminated; and the last general case
+reduced to a single published lemma the repo already has.

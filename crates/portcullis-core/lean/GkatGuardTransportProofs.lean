@@ -236,6 +236,31 @@ theorem wh_zero_free {b : BExp T} (h : BAeq b .zero) (e : Exp A T) :
     (Eqv.trans (ite_guard h (.seq e (.wh b e)) (.test .one))
       (u7 (.seq e (.wh b e)) (.test .one)))
 
+/-! ## The general loop case, reduced to ONE named published lemma
+
+    `wh_guard_productive` needs a strictly productive body.  The general
+    case reduces to POPL'20's Lemma 3.9 — every loop is equivalent to one
+    with a productive body — and to nothing else.  Stating that reduction
+    explicitly turns "the general case is open here" into "the general
+    case is exactly Lemma 3.9", which is a much smaller claim and one the
+    main development already discharges (`GkatNormalization.productive_loop`,
+    whose own proof uses no loop-guard transport — checked). -/
+
+/-- **General loop-guard transport, GIVEN productive normalization.**  The
+    hypothesis is POPL'20 Lemma 3.9 in this file's relation; nothing else
+    is needed. -/
+theorem wh_guard_of_norm
+    (norm : ∀ e : Exp A T, ∃ ê : Exp A T,
+      Eqv (.test (E ê) : Exp A T) (.test .zero)
+        ∧ ∀ b : BExp T, Eqv (.wh b e) (.wh b ê))
+    {b c : BExp T} (h : BAeq b c) (e : Exp A T) :
+    Eqv (.wh b e) (.wh c e) := by
+  obtain ⟨ê, hp, hnorm⟩ := norm e
+  exact Eqv.trans (hnorm b)
+    (Eqv.trans (Eqv.symm (wh_guard_productive h ê hp))
+      (Eqv.symm (hnorm c)))
+
+#print axioms wh_guard_of_norm
 #print axioms ite_one
 #print axioms u7
 #print axioms wh_zero_free
