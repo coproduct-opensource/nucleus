@@ -11110,3 +11110,61 @@ change the odds of the hard part.
 cycle of the body?  Note this is a statement about `e`'s OWN cycles, so it will
 need the induction hypothesis — which is the first point in this development
 where the expression-induction 217 proposed genuinely earns its place.
+
+---
+
+## 242 — THERE IS NO CANONICAL LOOP HEAD.  GKAT inlines it, and it shows.
+
+241 left (L2) as the remaining content of `hsum`.  Before attempting it: (L2) is
+stated for a loop sub-chart with a SINGLE start vertex `vₛ`, but
+`loopInitialized`'s back edges target `body.initTrans`'s targets — a SET of entry
+states, one per atom.  The construction hands over no canonical head, and the
+Rust check has been finding heads by SEARCH.  A Lean proof must exhibit one.
+
+**Measured — for each loop SCC, how many of its states are a valid head (L2 and
+guarded-L3, whole SCC as body)?**
+
+    valid heads      0      1      2     3+
+    NA=2  (1484)    240    567    606    71
+    NA=3  (2124)    622    900    548    54
+    NA=4  (2615)    986   1098    491    40
+
+    an ENTRY state is a valid head:  850/1071, 1051/1609, 1181/2058
+                                       79%       65%       57%
+
+**16-38% of loop SCCs admit NO valid head at all.**  So 237's 100% did not come
+from finding one head per SCC — it came from decompositions whose bodies are
+PROPER SUBSETS of the SCC, nested sub-charts found by subset enumeration.  And
+there is no canonical selection rule: "the entry state is the head" holds only
+57-79% of the time, falling as the atom count rises.
+
+**The underlying reason is the one that has shaped this whole translation.**
+Milner's charts have an explicit loop head; **GKAT's Thompson construction
+INLINES it** — `loopInitialized` keeps the body's state set and distributes the
+head's guard test over the body's exit points (`loop_state_eq`, `rfl`, from 218).
+There is simply no vertex through which all of a GKAT loop's cycles pass, because
+the vertex was compiled away.
+
+**What that costs.**  `hsum` cannot be proved by exhibiting a head per SCC; it
+needs the nested sub-chart decomposition constructed, and the natural source for
+it is the EXPRESSION structure rather than the graph — for `wh b e` the outer
+body is `e`'s states and `e`'s own loops nest inside.  That is a real
+construction, not a lemma, and it is more work than 241 implied.
+
+**One idea worth recording rather than pursuing now:** an equivalent Thompson
+construction that keeps an EXPLICIT head state for `wh` would make (L2) apply
+directly, since it would restore the vertex Milner's charts have.  Such an
+automaton is bisimilar to the inlined one.  The catch is that bisimulation
+collapse would then remove the explicit head again — which is exactly the
+tension crystallization exists to manage, and 223 measured GKAT does not suffer.
+Whether those two facts can be held together is the question.
+
+**Odds: 80%, DOWN 1.**  The measurement was the right thing to run before
+attempting (L2) and it came back unfavourable: the proof obligation is a
+construction over nested sub-charts, not the exhibition of a state.  241's
+"(L2) is the real remaining content" was right; its implied difficulty was
+understated.
+
+**Next.**  Decide between constructing the nested decomposition from the
+expression structure, and the explicit-head variant above.  The second is
+cheaper if the collapse tension resolves; measure that before committing.

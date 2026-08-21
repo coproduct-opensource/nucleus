@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_HEADS").is_ok() {
+        head_census::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_L123").is_ok() {
         l123_test::<NA>(nguards as u8);
         return;
@@ -12303,4 +12307,90 @@ fn l123_test<const NA: usize>(nguards: u8) {
     println!("  l123_test NA={NA}: {n} Thompson automata; \
         (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
         (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
+}
+
+/// **IS THE LOOP HEAD CANONICAL?** (iteration 242.)
+///
+/// (L2) is stated for a loop sub-chart with a SINGLE start vertex `vₛ`.  But
+/// `loopInitialized`'s back edges target `body.initTrans`'s targets — a SET of
+/// entry states, one per atom — so the construction hands us no canonical head,
+/// and the Rust check has been finding heads by search.  A Lean proof must
+/// EXHIBIT one.
+///
+/// So measure: for each loop SCC of a Thompson automaton, how many of its states
+/// can serve as a valid head (satisfying L2 and guarded-L3 with the whole SCC as
+/// body)?  If it is usually one, that one is the canonical choice.  If it is
+/// many, a selection rule is needed; if it is sometimes ZERO, then the working
+/// decomposition uses a PROPER SUBSET of the SCC as body and the proof is harder
+/// than exhibiting a state.
+fn head_census<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x3F84D5B5B5470917;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let mut hist = [0usize; 8];
+    let mut sccs_n = 0usize;
+    let mut entry_is_head = 0usize;
+    let mut entry_known = 0usize;
+    for _ in 0..40_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        for c in sccs_of(&a) {
+            if c.len() < 2 { continue; }
+            sccs_n += 1;
+            let mut heads: Vec<usize> = Vec::new();
+            for &h in c.iter() {
+                // guard from edges of the SCC back into h
+                let mut gd: u8 = 0;
+                for &s in c.iter() {
+                    for y in 0..NA { if a.st[s][y] == (h + 1) as u8 { gd |= 1 << y; } }
+                }
+                if gd == 0 { continue; }
+                if c.iter().any(|&s| a.hl[s] & gd != 0) { continue; }        // L3
+                // L2: c \ {h} acyclic
+                let rest: Vec<usize> = c.iter().copied().filter(|&s| s != h).collect();
+                let mut indeg: Vec<usize> = rest.iter().map(|&v| rest.iter()
+                    .filter(|&&u| (0..NA).any(|y| a.st[u][y] == (v + 1) as u8)).count())
+                    .collect();
+                let mut removed = vec![false; rest.len()];
+                let mut prog = true;
+                while prog {
+                    prog = false;
+                    for i in 0..rest.len() {
+                        if removed[i] || indeg[i] != 0 { continue; }
+                        removed[i] = true; prog = true;
+                        for j in 0..rest.len() {
+                            if removed[j] { continue; }
+                            if (0..NA).any(|y| a.st[rest[i]][y] == (rest[j] + 1) as u8) {
+                                indeg[j] -= 1;
+                            }
+                        }
+                    }
+                }
+                if removed.iter().all(|&r| r) { heads.push(h); }
+            }
+            hist[heads.len().min(7)] += 1;
+            // is an ENTRY state (target of an edge from outside the SCC) a head?
+            let mut entries: Vec<usize> = Vec::new();
+            for s in 0..(a.k as usize) {
+                if c.contains(&s) { continue; }
+                for y in 0..NA {
+                    let t = a.st[s][y];
+                    if t != 0 && c.contains(&((t - 1) as usize)) {
+                        entries.push((t - 1) as usize);
+                    }
+                }
+            }
+            for y in 0..NA {
+                let t = a.it[y];
+                if t != 0 && c.contains(&((t - 1) as usize)) { entries.push((t - 1) as usize); }
+            }
+            if !entries.is_empty() {
+                entry_known += 1;
+                if entries.iter().any(|e| heads.contains(e)) { entry_is_head += 1; }
+            }
+        }
+    }
+    println!("  head_census NA={NA}: {sccs_n} loop SCCs; valid-head counts \
+        0:{} 1:{} 2:{} 3:{} 4:{} 5:{} 6:{} 7+:{}; \
+        an ENTRY state is a valid head in {entry_is_head}/{entry_known}",
+        hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]);
 }
