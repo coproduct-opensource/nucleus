@@ -10644,3 +10644,58 @@ a corrected model.
 forest (Havlak/Ramalingam), read a guard PER LOOP rather than per SCC, and check
 `loop_core_hlt`'s prediction against that.  If the prediction holds at 100% on
 Thompson automata, that labelling is the certificate.
+
+---
+
+## 231 — TRANSITION GRANULARITY WORKS.  94% -> 99%.  And a one-example generalisation punished.
+
+230 established that the certificate must live at TRANSITION granularity.  The
+standard construction there is the natural loop of a DFS back edge: for a back
+edge `s -a-> h` with `h` an ancestor on the DFS stack, `h` is a loop HEADER and
+its natural loop is `{h}` plus every state reaching `s` without passing through
+`h`.  Guard := the atoms on which that loop's back edges fire.
+`loop_core_hlt`'s prediction, at last asked at the right granularity: no state
+of a natural loop halts inside its own loop guard.
+
+    NA=2   18 445 / 18 475 natural loops   99.84%      (SCC-level was 95%)
+    NA=3   22 366 / 22 496                 99.42%      (94%)
+    NA=4   24 928 / 25 186                 98.99%      (94%)
+
+**Transition granularity is right** — the error rate falls by roughly a factor
+of six, and 230's diagnosis is confirmed by the improvement rather than by
+argument.
+
+**Then I broke it.**  One violating case —
+
+    q0,q1: st=[q2,q2,q2,q2]      q2: hl={a2,a3} st=[q1,q1,-,-]
+
+— has back edges `q1 -> q2` at ALL FOUR atoms, giving guard `1111`, so `q2`'s
+own halts fall inside it.  But `q1 -> q2` is a BODY MOVE, not a restart, and
+reading the guard off the header's moves into the body gives `{a0,a1}`, under
+which the violation disappears.  Convincing, and I changed the guard.  Measured:
+
+    96.3% / 94.2% / 92.6%   —   strictly WORSE than the back-edge guard
+
+**So the generalisation from that one example is false, and the back-edge guard
+stands.**  Reverted, with the number recorded in the source so the same
+"obvious" change is not made again.  This is the third time this session that a
+claim derived by reasoning from a single instance was refuted by the first
+measurement of it — and the first two (228's nesting, 226's `QuotientClosure`)
+cost an iteration each because I published before checking.  This one cost
+minutes, because the check ran before the write-up.
+
+**The remaining ~1%, diagnosed from the second violation** — `q0: hl={a3}
+st=[q1,q0,q0,-]`, `q1: hl={a2,a3} st=[q1,q0,-,-]` — is a genuine NESTED pair:
+`q1` carries a self-loop inside the outer `q0 <-> q1` loop, and the outer guard
+must be computed on the graph with the inner loop already eliminated.  That is
+LAYERED elimination, which is the "L" in LLEE, and it is the one piece of the
+definition not yet implemented.
+
+**Odds: 80%, held.**  Real progress on the certificate — the granularity
+question is settled and the residue is one named mechanism — but the iteration
+also produced a wrong turn that measurement caught, and no property has yet been
+shown to hold at 100% on Thompson automata, which is requirement (a).
+
+**Next.**  Layered elimination: compute the loop-nesting forest, eliminate
+innermost loops first, and read each outer guard on the reduced graph.  Target
+is (a) at 100%, with (b) collapse-stability and (c) sufficiency re-checked.

@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_LOOPGUARD").is_ok() {
+        loopguard_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_ENTRY_GUARD").is_ok() {
         entry_guard_test::<NA>(nguards as u8);
         return;
@@ -11698,4 +11702,113 @@ fn entry_guard_test<const NA: usize>(nguards: u8) {
     println!("  entry_guard_test NA={NA}: {sccs_n} loop SCCs; \
         no-halt-inside-entry-guard holds on {ok}; entry guard empty on {empty_b}; \
         after collapse {coll_ok}/{coll_n}");
+}
+
+/// **A GUARD PER LOOP, NOT PER SCC** (iteration 231).
+///
+/// 230 established the constraint: an SCC is not a loop, so no per-SCC guard can
+/// be right.  Loop structure lives at TRANSITION granularity, which is why LLEE
+/// labels edges.  The standard construction at that granularity is the natural
+/// loop of a DFS back edge: for a back edge `s -a-> h` (target `h` an ancestor
+/// of `s` on the DFS stack), `h` is a loop HEADER and its natural loop is `{h}`
+/// together with every state that can reach `s` without passing through `h`.
+///
+/// Then the guard of that loop is the atoms on which its back edges fire, and
+/// `loop_core_hlt` (`rfl`, 220) predicts: **no state of the natural loop halts
+/// at an atom of its own loop guard**, because a loop's halt is `hlt ∧ ¬b`.
+/// This is the same prediction as 230's, now asked at the granularity the
+/// structure actually has.
+fn natural_loops<const NA: usize>(q: &Aut<NA>) -> Vec<(usize, Vec<usize>, u8)> {
+    let k = q.k as usize;
+    // iterative DFS recording back edges (target on the current stack)
+    let mut onstack = vec![false; k];
+    let mut visited = vec![false; k];
+    let mut back: Vec<(usize, usize, u8)> = Vec::new();   // (from, header, atom)
+    let mut stack: Vec<(usize, usize)> = Vec::new();      // (state, next atom index)
+    for root in 0..k {
+        if visited[root] { continue; }
+        visited[root] = true; onstack[root] = true;
+        stack.push((root, 0));
+        while let Some(&mut (s, ref mut i)) = stack.last_mut() {
+            if *i >= NA { onstack[s] = false; stack.pop(); continue; }
+            let y = *i; *i += 1;
+            let t = q.st[s][y];
+            if t == 0 { continue; }
+            let t = (t - 1) as usize;
+            if onstack[t] { back.push((s, t, y as u8)); }
+            else if !visited[t] {
+                visited[t] = true; onstack[t] = true; stack.push((t, 0));
+            }
+        }
+    }
+    // group back edges by header, build each natural loop
+    let mut out: Vec<(usize, Vec<usize>, u8)> = Vec::new();
+    let mut headers: Vec<usize> = back.iter().map(|e| e.1).collect();
+    headers.sort_unstable(); headers.dedup();
+    for h in headers {
+        let mut b: u8 = 0;
+        let mut body: Vec<usize> = vec![h];
+        for &(s, hh, y) in back.iter() {
+            if hh != h { continue; }
+            b |= 1 << y;
+            // states reaching s without passing through h
+            if !body.contains(&s) { body.push(s); }
+            let mut i = 0;
+            while i < body.len() {
+                let x = body[i]; i += 1;
+                if x == h { continue; }
+                for p in 0..(q.k as usize) {
+                    if p == h || body.contains(&p) { continue; }
+                    if (0..NA).any(|y2| q.st[p][y2] == (x + 1) as u8) { body.push(p); }
+                }
+            }
+        }
+        // 231: the guard is read off the BACK EDGES.  Reading it instead off
+        // the header.s own moves into the body — which one violating example
+        // suggested — measured WORSE (96.3/94.2/92.6% against 99.8/99.4/99.0%),
+        // so that generalisation from a single case is wrong and this stands.
+        out.push((h, body, b));
+    }
+    out
+}
+
+fn loopguard_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x13198A2E03707344;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut ok, mut cn, mut cok) = (0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..60_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        let check = |q: &Aut<NA>| -> (usize, usize) {
+            let mut good = 0; let mut tot = 0;
+            for (_h, body, b) in natural_loops(q) {
+                tot += 1;
+                if body.iter().all(|&s| q.hl[s] & b == 0) { good += 1; }
+            }
+            (tot, good)
+        };
+        let (t, g) = check(&a);
+        n += t; ok += g;
+        if g < t && shown < 2 {
+            shown += 1;
+            println!("    LOOP-GUARD VIOLATED, k={}:", a.k);
+            for s in 0..(a.k as usize) {
+                let row: Vec<String> = (0..NA).map(|i| {
+                    let x = a.st[s][i];
+                    if x == 0 { "-".to_string() } else { format!("q{}", x - 1) }
+                }).collect();
+                println!("      q{s}: hl={:03b} st=[{}]", a.hl[s], row.join(","));
+            }
+            for (h, body, b) in natural_loops(&a) {
+                println!("      loop header q{h} guard={b:03b} body={body:?}");
+            }
+        }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let (t2, g2) = check(&qq); cn += t2; cok += g2;
+        }
+    }
+    println!("  loopguard_test NA={NA}: {n} natural loops; \
+        no-halt-inside-loop-guard holds on {ok}; after collapse {cok}/{cn}");
 }
