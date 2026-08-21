@@ -5888,3 +5888,42 @@ and a three-action string via a `c` entry — same construction as
 `twoLoop_trichotomy`, and the 3 × 3 assembly.  Every piece now has a
 worked precedent from the two-loop repair except the stride argument,
 which is proved above.
+
+## Iteration 149 — the chord vacuities land: both mixed cases die by arithmetic
+
+Four lemmas; the two witnesses at **ZERO AXIOMS**, the two vacuities at
+[propext].
+
+* **`chordLoop_accepts_three`** / **`chordLoop_accepts_two`** — a chord
+  loop accepts a three-action string when the branch guard holds after
+  `p`, and a two-action string when it fails.  **Note where `c` is
+  read**: `chordBody = p · (x·y +_c y)`, so the branch guard is tested
+  at the POST-`p` atom, not at the loop head — the witnesses thread
+  that correctly, which is the one place this construction differs from
+  `twoLoop_live_accepts`.
+* **`live_chord_ne_chain2`** — a live chord is never a two-stride chain
+  loop: its three-action string has ODD length, and `chain2_even` says
+  the chain accepts only even ones.
+* **`live_chord_ne_chain3`** — a live chord is never a three-stride
+  chain loop: its two-action string is not a multiple of three.
+
+**Both mixed cases of `chordloops_complete_free` are now closed**, and
+exactly as predicted at iteration 147: by arithmetic on action counts
+rather than by structure.  The prediction was made before the stride
+invariant existed and held up, which is a change from this campaign's
+recent record on forecasts.
+
+**Tactic note**: `nomatch` closed `2 % 3 = 0` but not `3 % 2 = 0` —
+the latter needed `absurd h (by decide)` with the type ascribed to
+`(3 : Nat) % 2 = 0` first, so the numeral reduces before `decide` runs.
+
+**Remaining for `chordloops_complete_free`**: a live-chord-vs-test
+vacuity (five lines: any of the two witnesses plus `test_no_action`),
+the trichotomy in the shape of `twoLoop_trichotomy`, and the 3 × 3
+assembly.  All three have exact precedents from the two-loop repair.
+
+**Where the hardening campaign stands**: five of six theorems
+hypothesis-free; the sixth has its collapses proved, its landing
+stratum confirmed already free, its `b`-conditions halved by
+`wh_guards_agree_of_ule`, and now both of its mixed-case vacuities
+discharged.

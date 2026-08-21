@@ -3728,4 +3728,92 @@ theorem chain3_mod {Atom : Type} (V : T → Atom → Bool) (b : BExp T)
 #print axioms chain2_even
 #print axioms chain3_mod
 
+/-! ## Chord acceptance witnesses, and the two arithmetic vacuities
+
+    A live chord emits THREE actions on a `c`-iteration and TWO on a
+    `¬c` one.  Note where `c` is read: `chordBody = p · (x·y +_c y)`,
+    so the branch guard is tested at the POST-`p` atom, not at the loop
+    head.  The witnesses below thread that correctly. -/
+
+open Classical in
+/-- **A chord loop accepts a THREE-action string** when the branch guard
+    holds after `p`. -/
+theorem chordLoop_accepts_three {Atom : Type} (V : T → Atom → Bool)
+    (b c : BExp T) (p x y : A) (a a₁ a₂ a₃ : Atom)
+    (hb : GkatGS.bval V b a = true) (hc : GkatGS.bval V c a₁ = true)
+    (hb₃ : GkatGS.bval V b a₃ = false) :
+    GkatGS.den V (GkatThreeLoop.chordLoop b c p x y)
+      (a, [(p, a₁), (x, a₂), (y, a₃)]) :=
+  GkatGS.InLoop.step a [(p, a₁), (x, a₂), (y, a₃)] [] hb
+    ⟨[(p, a₁)], [(x, a₂), (y, a₃)], rfl, ⟨a, a₁, rfl⟩,
+      Or.inl ⟨hc, ⟨[(x, a₂)], [(y, a₃)], rfl, ⟨a₁, a₂, rfl⟩, ⟨a₂, a₃, rfl⟩⟩⟩⟩
+    (GkatGS.InLoop.exit a₃ hb₃)
+
+open Classical in
+/-- **A chord loop accepts a TWO-action string** when the branch guard
+    fails after `p`. -/
+theorem chordLoop_accepts_two {Atom : Type} (V : T → Atom → Bool)
+    (b c : BExp T) (p x y : A) (a a₁ a₂ : Atom)
+    (hb : GkatGS.bval V b a = true) (hc : GkatGS.bval V c a₁ = false)
+    (hb₂ : GkatGS.bval V b a₂ = false) :
+    GkatGS.den V (GkatThreeLoop.chordLoop b c p x y)
+      (a, [(p, a₁), (y, a₂)]) :=
+  GkatGS.InLoop.step a [(p, a₁), (y, a₂)] [] hb
+    ⟨[(p, a₁)], [(y, a₂)], rfl, ⟨a, a₁, rfl⟩,
+      Or.inr ⟨hc, ⟨a₁, a₂, rfl⟩⟩⟩
+    (GkatGS.InLoop.exit a₂ hb₂)
+
+open Classical in
+/-- **A live chord is never a two-stride chain loop** — its three-action
+    string has odd length. -/
+theorem live_chord_ne_chain2 {b c : BExp T} {p x y : A}
+    {b' : BExp T} {p' y' : A}
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hcsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = true)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (GkatThreeLoop.chordLoop b c p x y)
+      (.wh b' (.seq (.act p') (.act y')))) :
+    False := by
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨α₁, hc⟩ := hcsat
+  obtain ⟨α₃, hb₃⟩ := hbex
+  have hacc := chordLoop_accepts_three (GkatPlanExistence.genW T)
+    b c p x y α α₁ α₁ α₃ hb hc hb₃
+  have h3 : (3 : Nat) % 2 = 0 := chain2_even (GkatPlanExistence.genW T) b' p' y'
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact absurd h3 (by decide)
+
+open Classical in
+/-- **A live chord is never a three-stride chain loop** — its two-action
+    string is not a multiple of three. -/
+theorem live_chord_ne_chain3 {b c : BExp T} {p x y : A}
+    {b' : BExp T} {p' x' y' : A}
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hcex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = false)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (GkatThreeLoop.chordLoop b c p x y)
+      (.wh b' (.seq (.act p') (.seq (.act x') (.act y'))))) :
+    False := by
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨α₁, hc⟩ := hcex
+  obtain ⟨α₂, hb₂⟩ := hbex
+  have hacc := chordLoop_accepts_two (GkatPlanExistence.genW T)
+    b c p x y α α₁ α₂ hb hc hb₂
+  have := chain3_mod (GkatPlanExistence.genW T) b' p' x' y'
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact nomatch this
+
+#print axioms chordLoop_accepts_three
+#print axioms chordLoop_accepts_two
+#print axioms live_chord_ne_chain2
+#print axioms live_chord_ne_chain3
+
 end GkatCensus
