@@ -4268,3 +4268,61 @@ one known gap is already identified.
 **Next**: test the sketch's same-side lemma directly — do bisimilar
 states of ONE program's Thompson automaton have provably equal standard
 labels?  Small enough to settle, and it is the load-bearing half.
+
+### Iteration 122 addendum — the same-side conjecture, tested against the literature (and against itself)
+
+The same-side search returned three things that change the assessment
+of 122's own conjecture — one encouraging, one cautionary, one that
+nearly kills it and then does not.
+
+**(a) Same-side bisimilarity is REAL, and its canonical cause is
+harmless.**  Position/Thompson automata are famously NOT reduced
+(Ilie-Yu; Champarnaud-Ziadi; Maia-Moreira-Reis CIAA 2014 — partial
+derivative automata are exactly quotients of position automata BY
+BISIMULATIONS).  Distinct states of ONE expression's automaton can be
+bisimilar, and the canonical cause is duplicated/shared subterms, e.g.
+`ite c p p`.  But note what that costs HERE: `ite c p p` builds
+`sumGSystem` of p's system with p's system, so the two bisimilar states
+are `inl s` and `inr s` and their standard labels are both p's standard
+at `s` — **literally the same expression**.  For the canonical cause,
+same-side UNIF is syntactic identity, free.
+
+**(b) No published no-collapse theorem, and no
+bisimilar-implies-provably-equal theorem.**  Brzozowski's finiteness is
+modulo ACI — a FIXED NORMALIZATION and a syntactic-identity criterion,
+not "bisimilar residuals are provably equal from the axioms".  For GKAT
+specifically, Antimirov-style derivatives underpin the decision
+procedure, but nothing of the form this campaign needs exists.
+
+**(c) THE DECOMPOSITION IS NOVEL — and it is CIRCULAR unless the
+induction is on SIZE.**  The search found no precedent for
+"same-expression bisimilarity ⟹ provable label equality, then bootstrap
+to two expressions via a partner map"; published routes go through
+disjoint union + bisimulation collapse + solvability of the collapse
+(Smolka et al., ProbGKAT, Weighted GKAT), and Grabmayer-Fokkink work
+chart-globally.  Novelty is good news; but testing the conjecture
+against ITSELF exposes the catch: **same-side UNIF EMBEDS cross-side
+UNIF.**  Take `ite c (p;q) (p;q')` with `q ≈ q'` semantically but
+syntactically different — its two branch states are bisimilar, and
+their labels are `q·rest` and `q'·rest`, so proving same-side UNIF
+there IS proving `q ≈ q'`, an arbitrary cross-side instance.  So
+same-side and cross-side are MUTUALLY REDUCIBLE and neither is
+"simpler" outright.
+
+**What saves it is exactly what iteration 108 proposed and could not
+then justify: induct on SIZE.**  The embedded instance `(q, q')` lives
+in strictly smaller subterms of `P`, and the reduction runs
+cross-side`(e,f)` → same-side`(e)`, where `|e| < |e| + |f|`.  So the
+two reductions descend in `|e| + |f|` in opposite directions and the
+induction is plausibly well-founded.  Iteration 108 reached this
+structure by intuition and 112-114 abandoned it; it is now re-derived
+from a mechanism (partner maps + canonicity) rather than a hunch, and
+122's inductive engine — agreement propagates inward — is the tool it
+was missing.
+
+**Status: a candidate route with TWO known gaps, both named** — dead
+states (no guaranteed partner; `ParametricCanonicalBA` is about the raw
+core, not the trim) and the size-induction bookkeeping (the two
+reductions must be shown to descend together).  Not yet a plan.  Next
+iteration should test the smallest nontrivial same-side case in Lean
+rather than reason about it further.
