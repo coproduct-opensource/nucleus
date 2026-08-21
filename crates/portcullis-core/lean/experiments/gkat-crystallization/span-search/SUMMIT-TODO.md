@@ -3091,3 +3091,28 @@ loop's canonicity, with equation_transport converting bisimilarity
 into the equation-equality that ParamSolvesBA needs. Remaining: the
 subsystem lemma (ambient loop-state equations = parametric equations),
 the dead-region decomposition, and the induction assembly.
+
+## Iteration 108 — the induction restructures to SYNTAX PAIRS + subsystem bricks
+
+**Design event**: chasing the same-rank circularity to ground revealed
+its true resolution — same-CLASS-INTERNAL unification (two bisimilar
+states of ONE side's loop) reduces via canonicity to
+`standard(v) ≡ standard(v′)` for the WRAPPED sub-labels, which is the
+unification claim for the SUB-PROGRAM pair — a strictly smaller
+instance. THE INDUCTION IS ON SYNTACTIC SIZE OF THE PROGRAM PAIR, not
+rank: UNIF(e,f) uses UNIF at sub-loops (well-founded ✓), canonicity at
+each loop level, equation-transport/dispatch machinery for the
+cross-side steps, and IH-unification for the exits (lower loops =
+smaller subterms of the continuation... to be organized). The rank
+layer (reachRank) remains for organizing exits/dead regions.
+
+**Bricks** (zero axioms): `foldTL_append` (dispatches split over
+appends) and `foldTL_guard_factor` (a guard conjoined onto every arm
+and the halt factors out as a test prefix — s6 + test_seq_ite chain).
+These are the seq-subsystem lemma's two halves: the composite equation
+at a left state = left-arm chain with fallback (factored continuation
+dispatch) = eqRHSParam left (sol∘inl) (initRHSParam right ...).
+
+Next: assemble the seq-subsystem lemma from the bricks, then the loop-
+subsystem analogue (feedback arms factor by the same pattern), then
+the syntax-pair induction skeleton.

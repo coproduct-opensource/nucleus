@@ -1262,4 +1262,61 @@ theorem equation_transport {S : Type} [DecidableEq A]
 
 #print axioms equation_transport
 
+/-! ## Subsystem bricks
+
+    The seq construction appends continuation arms guarded by the left
+    state's halt; the subsystem lemma factors them back into a
+    parametric finish.  Two structural bricks: dispatches split over
+    appends, and a common guard factors out of a dispatch. -/
+
+open Classical in
+/-- Dispatches split over appended arm lists: the first part's
+    fallback is the second part's dispatch. -/
+theorem foldTL_append {S : Type} (sol : S → Exp A T) (h : BExp T) :
+    ∀ L₁ L₂ : List (BExp T × A × S),
+      GkatPlanExistence.foldTL sol h (L₁ ++ L₂)
+        = (L₁.foldr (fun t acc =>
+            Exp.ite t.1 (.seq (.act t.2.1) (sol t.2.2)) acc)
+            (GkatPlanExistence.foldTL sol h L₂)) := by
+  intro L₁ L₂
+  induction L₁ with
+  | nil => rfl
+  | cons e rest ih =>
+      show Exp.ite e.1 (.seq (.act e.2.1) (sol e.2.2))
+          (GkatPlanExistence.foldTL sol h (rest ++ L₂)) = _
+      rw [ih]
+      rfl
+
+open Classical in
+/-- **GUARD FACTORING**: a guard conjoined onto every arm and the halt
+    factors out as a test prefix. -/
+theorem foldTL_guard_factor {S : Type} (sol : S → Exp A T)
+    (hG : BExp T) (h : BExp T) :
+    ∀ L : List (BExp T × A × S),
+      EquivBA
+        (GkatPlanExistence.foldTL sol (.and hG h)
+          (L.map (fun e => (.and hG e.1, e.2.1, e.2.2))))
+        (.seq (.test hG) (GkatPlanExistence.foldTL sol h L)) := by
+  intro L
+  induction L with
+  | nil =>
+      show EquivBA (.test (.and hG h)) (.seq (.test hG) (.test h))
+      exact EquivBA.symm (EquivBA.s6 hG h)
+  | cons e rest ih =>
+      show EquivBA (.ite (.and hG e.1)
+        (.seq (.act e.2.1) (sol e.2.2))
+        (GkatPlanExistence.foldTL sol (.and hG h)
+          (rest.map (fun e => (.and hG e.1, e.2.1, e.2.2)))))
+        (.seq (.test hG) (.ite e.1
+          (.seq (.act e.2.1) (sol e.2.2))
+          (GkatPlanExistence.foldTL sol h rest)))
+      refine EquivBA.trans (EquivBA.ite_c
+        (EquivBA.base (Equiv.refl _)) ih) ?_
+      exact EquivBA.symm (GkatGuardedAlgebra.test_seq_ite hG e.1
+        (.seq (.act e.2.1) (sol e.2.2))
+        (GkatPlanExistence.foldTL sol h rest))
+
+#print axioms foldTL_append
+#print axioms foldTL_guard_factor
+
 end GkatCensus
