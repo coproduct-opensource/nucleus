@@ -6492,3 +6492,47 @@ question would not merely be answered but be moot.  `ite_guard` is a
 different matter — used in ~40 files and genuinely convenient — but
 iteration 157 already proved it admissible outright, so its presence
 costs nothing.
+
+## Iteration 160 — `wh_guard` is now UNUSED across the whole development — and deliberately kept
+
+Rewrote the last two uses, both wrappers in `GkatChainFragmentProofs`,
+transport-free.  **Both are now at ZERO AXIOMS**, where before they
+invoked the `wh_guard` constructor:
+
+* `wh_guard_semantic_one` — `wh_emits_exit_all` gives `wh b e ≡
+  (wh b e)·(¬b)?`; a valid guard makes `(¬b)?` be `0?`, and `s3`
+  finishes.
+* `wh_guard_semantic_zero` — `w1` moves the guard into an `ite`, where
+  guard equality is admissible (iteration 157), and `ite_zero` finishes.
+
+**`EquivBA.wh_guard` now has NO uses anywhere in ~40 files.**  The only
+remaining occurrences are its own declaration and two INDUCTION CASES
+(`GkatElimProofs`' substitution homomorphism, `GkatModelProofs`' model
+interpretation) which exist solely because the constructor does.
+
+**Considered deleting it, and decided not to — the reason is the
+interesting part.**  Deleting would make the admissibility question moot
+and make every theorem a claim about a strictly smaller system, which
+sounds like a pure gain.  But `wh_guard`'s general admissibility (for
+NON-productive bodies) is still unproved, so a relation without it might
+be strictly weaker than the paper's `≡` — and then the corpus would be
+proving completeness for **a different system than GKAT**.  Stronger
+results, less faithful claim.  Faithfulness is the property this whole
+audit has been protecting, so the constructor stays.
+
+**What can be said instead, and it costs nothing.**  Since no proof uses
+it, **every theorem in the development is already provable in `EquivBA`
+minus `wh_guard`.**  That is strictly stronger than the theorems as
+stated, holds without touching a definition, and leaves the stated
+results faithful to the paper.  Both readings are now available to a
+reader, which is better than picking one.
+
+**The guard-transport thread, closed** (154 → 160):
+* 154 asserted guard transport underivable — **wrong**, and wrong in the
+  one way inspection cannot catch (a negative derivability claim).
+* 157 proved `ite_guard` admissible outright, against a deliberately
+  weakened relation, avoiding the published route's circularity.
+* 158 proved the `0` case of loop transport needs nothing.
+* 159 removed the idiom from the census layer via `wh_valid_zero`, after
+  finding my own use-count had been reported low.
+* 160 removed the last two uses, leaving the constructor unused.

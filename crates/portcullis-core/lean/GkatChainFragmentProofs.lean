@@ -2616,24 +2616,32 @@ open Classical in
     generic atom is `assert false`. -/
 theorem wh_guard_semantic_one {b : BExp T} (e : Exp A T)
     (h : ∀ α : T → Bool, bval (genW T) b α = true) :
-    EquivBA (.wh b e : Exp A T) (.test .zero) :=
-  EquivBA.trans
-    (EquivBA.wh_guard (c := .one) (fun X W x => by
-      rw [bval_gen W x b, h (fun t => W t x)]
-      rfl))
-    (wh_one_zero e)
+    EquivBA (.wh b e : Exp A T) (.test .zero) := by
+  -- transport-free: every loop ends in its exit guard, which here is `0`
+  refine EquivBA.trans (wh_emits_exit_all b e) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+    (EquivBA.baTest (b := .not b) (c := .zero) ?_)) ?_
+  · intro X W x
+    show (!bval W b x) = bval W (.zero : BExp T) x
+    rw [bval_gen W x b, h (fun t => W t x)]
+    rfl
+  · exact EquivBA.base (Equiv.s3 _)
 
 open Classical in
 /-- **SEMANTICALLY-FALSE GUARD ⟹ SKIP**: a loop whose guard fails at every
     generic atom is `skip`. -/
 theorem wh_guard_semantic_zero {b : BExp T} (e : Exp A T)
     (h : ∀ α : T → Bool, bval (genW T) b α = false) :
-    EquivBA (.wh b e : Exp A T) (.test .one) :=
-  EquivBA.trans
-    (EquivBA.wh_guard (c := .zero) (fun X W x => by
-      rw [bval_gen W x b, h (fun t => W t x)]
-      rfl))
-    (wh_zero_skip e)
+    EquivBA (.wh b e : Exp A T) (.test .one) := by
+  -- transport-free: `w1` moves the guard into an `ite`, where guard
+  -- equality is admissible (GkatGuardTransport.ite_guard), and `ite_zero`
+  -- finishes.  No loop-guard transport.
+  refine EquivBA.trans (EquivBA.base (Equiv.w1 b e)) ?_
+  refine EquivBA.trans (EquivBA.ite_guard (b := b) (c := .zero) ?_) ?_
+  · intro X W x
+    rw [bval_gen W x b, h (fun t => W t x)]
+    rfl
+  · exact EquivBA.base (GkatFaithful.ite_zero _ _)
 
 #print axioms wh_guard_semantic_one
 #print axioms wh_guard_semantic_zero
