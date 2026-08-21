@@ -3266,3 +3266,88 @@ rank-recursion + `StateRole` case dispatch (mirroring `slSol`/`saSol`'s
 existing pattern in GkatPlanExistenceProofs.lean) rather than via a
 `SolvesBA aut stdSol` hypothesis. No new theorem lands this iteration;
 this is a scoping correction that avoids a wasted future attempt.
+
+## Iteration 113 — the induction is native to the QUOTIENT; the missing brick is LOCATE
+
+**Web check**: Hung Pham's 2026 Bucknell thesis (the SAME Pham already
+cited in GkatThompsonUniquenessProofs.lean's docstring for
+`ParametricCanonicalBA`) proves exactly the per-automaton solution-
+uniqueness fact this repo already has, and explicitly frames full
+completeness as reducing to EXISTENCE of a solution for the trimmed
+automaton — i.e. published work is now converging on this repo's own
+strategy (role/witness existence over UA-elimination-by-brute-force).
+Still open since 2019; only skip-free GKAT (Kappé-Schmid-Silva) has a
+full UA-free proof; well-nested automata are confirmed NOT closed
+under quotient (rules out a naive well-nestedness route, already
+known here). No SCC-decomposition technique found in the literature —
+the S2-stratum/singleton-SCC/schedule-calculus angle here appears
+novel. Calibration unchanged: genuinely open, field leans negative,
+but this repo's strategy now has independent external confirmation.
+
+**Re-derivation, sharper than iteration 112**: chasing "how does a
+rank-recursion `qsol` actually get BUILT for `RoleCovered`" to ground
+resolves the last imprecision in 112's own framing (which spoke of
+"same-reachRank, possibly cross-side block" — but raw `reachRank` is
+a literal-state count and is NOT obviously bisimulation-invariant
+across two differently-sized Thompson constructions, so organizing
+the induction on TWO SIDES' ranks jointly would have been the wrong
+frame again). The fix: **`RoleCovered`'s domain is already the
+QUOTIENT automaton** (`bisimQuotAut (trimAut (SUMof A T e f))`) —
+states there are single REPRESENTATIVES (one raw state chosen per
+class by `bisimRep`/`Classical.choose`), so `reachRank`/`dag_roles`/
+`slSol`/`saSol`-style rank recursion applies NATIVELY and UNIFORMLY
+to this ONE automaton — no two-sided bookkeeping needed at the
+induction-organizing level at all. The two-sidedness only enters when
+CLOSING one representative's own equation.
+
+**The representative-closing step is already fully assembled**: a
+representative `s` is some raw state, hence sits in EITHER e's or f's
+own certified Thompson tree, at some nesting depth. Its ambient
+quotient equation, by `eqRHS_quot`, is `eqRHS aut (qsol∘bisimRep) s`
+for `aut := trimAut (SUMof e f)` — by iterating the subsystem lemmas
+(seq/loop/sum, ALL closed since iteration 111) down to `s`'s innermost
+enclosing loop/leaf, this equals that subsystem's OWN `eqRHSParam` at
+an appropriate composed `finish`. **`StandardSolvesBA.withContinuation`**
+(already proven, zero new work — `GkatThompsonUniquenessProofs.lean:195`)
+says `.seq (standard state) finish` UNCONDITIONALLY satisfies that
+subsystem's own parametric equations at that `finish`, for ANY finish
+— no schedule, no Gaussian elimination, no rank recursion needed
+WITHIN one side's own loop. So `qsol(s) := .seq (standard_side s) finish`
+closes s's own equation outright, PROVIDED: (a) `finish` is built
+correctly from the exit continuations (already-assigned, lower in the
+induction), and (b) every DIRECT successor `t` of `s` (within `s`'s
+OWN loop) has `qsol (bisimRep t) ≡ standard_side(t); finish` — i.e.
+the value the quotient ACTUALLY assigned at `t`'s class (which might
+be a REPRESENTATIVE CHOSEN FROM THE OTHER SIDE, if `bisimRep` picked
+a cross-side partner) agrees with what `s`'s own side would want
+there. THIS single per-edge consistency check — not global `SolvesBA`,
+not a two-sided rank-matched induction — is the entire remaining
+content, and it is exactly one instance of `equation_transport`
+(`GenBisimilar aut t (bisimRep aut t)`, already have `bisimRep_bisim`)
+combined with `ParametricCanonicalBA.unique` (both candidate values
+solve the SAME local system at the SAME finish once agreement is
+assumed on THEIR successors — induction closes by well-founded
+recursion on the quotient rank, exactly as `dag_roles`/`slSol` do).
+
+**The one missing structural brick, now named precisely: LOCATE.**
+None of the above compiles into a construction yet because nothing
+in the repo currently maps an ARBITRARY raw state of
+`certifiedThompson A T p` to "which subsystem (at which nesting
+depth) it belongs to, and what its local `standard` map is" — the
+subsystem lemmas (`seq_subsystem`/`loop_subsystem`/`sum_subsystem_*`)
+each show the equation identity GIVEN you already know a state has
+the shape `.inl s`/`.inr s` for a NAMED nested `GSystem`; walking an
+opaque `(certifiedThompson A T p).State` down to its innermost home
+requires an induction mirroring `certifiedThompson`'s OWN recursive
+definition (test/act base cases; seq/ite/wh recursive cases building
+the nested `Sum`/`Option` state types) — a genuine, well-scoped, but
+not-yet-built piece of machinery. This is the same content the ledger
+called "syntax-pair induction," now sharpened: it is not induction on
+BISIMILAR PAIRS at all — it is a single-sided structural recursion
+(LOCATE) over ONE certified Thompson tree, needed on both e's and f's
+side independently, that the cross-side unification argument above
+then consumes. Next concrete step: build LOCATE (recursion on
+`certifiedThompson`'s match arms, producing per-state: the enclosing
+`InitializedGAut`/`GSystem`, the local `standard`, and the ambient
+`finish`-composition path back to the top), THEN wire the rank
+recursion + representative-closing step above into `RoleCovered`.
