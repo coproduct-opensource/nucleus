@@ -9920,3 +9920,58 @@ moved.
 
 **Next.**  NA=2 k=4 (1 679 616 automata) with the table filter is running.  Then
 NA=3, now that per-automaton cost is a lookup.
+
+---
+
+## 217 — THE PIVOT: INDUCT ON THE EXPRESSION, NOT ON THE AUTOMATON.
+
+**Why pivot.**  Every instrument failure this session traces to ONE thing:
+deciding whether an ARBITRARY automaton is solvable.  `nested` was necessary
+but not sufficient (205); `symbolic_eliminable_raw` is wrong in BOTH directions
+(213, 214); `synth` gives only size-bounded negatives, and 216 measured that
+the route to unconditional ones is closed.  That is not bad luck — CHARACTERIZING
+SOLVABLE AUTOMATA IS THE LITERATURE'S OWN OPEN PROBLEM, and I kept
+re-discovering that I cannot shortcut it.
+
+**But the target theorem never quantifies over arbitrary automata.**  Its
+automata are behavioural quotients of Thompson automata OF EXPRESSIONS, and the
+expression is always in hand.  So induct on the expression, where
+`GkatThompson`'s `seqGSystem` / `loopInitialized` / `sumGSystem` decomposition
+gives exactly the case structure the six rules already have.
+
+**The remainder, written as one predicate** (`ThompsonUnif`): bisimilar states
+of `e`'s Thompson automaton carry `EquivBA`-equal standard labels.  By
+`unif_of_class_constant_solution` / `class_constant_solution_of_unif` (iteration
+170) this is EQUIVALENT to `SumQuotientSolvable`, and
+`completeness_of_sumQuotientSolvable` turns that into completeness.  So
+`∀ e, ThompsonUnif e` IS the theorem — no reformulation left to do.
+
+**Landed, no `sorry` and no new axiom** (`propext`, `Quot.sound` only):
+
+    thompsonUnif_test       vacuous: `test t`'s automaton has NO states
+    thompsonUnif_act        one state, so reflexivity
+    thompsonUnif_of_steps   the induction, discharged
+
+**What that leaves is exactly three hypotheses** — `seq`, `ite`, `wh` — carried
+as explicit arguments rather than as `sorry`, which is what makes it CHECKABLE
+that they are all that is open.  A reader can confirm the reduction without
+trusting me about what remains.
+
+One design note worth keeping: stating `ThompsonUnif` over `aut.toGAut` would
+have dragged the initial pseudostate into what should be a base case (at
+`act a`, `none` and `some ()` are not bisimilar, but PROVING that is work, not a
+base case).  Quantifying over a start state of the CORE instead makes `test`
+vacuous FOR THE RIGHT REASON — there are no states at all — and `act` a
+one-state reflexivity.
+
+**Odds: 77%, held.**  No new mathematics: this is a restatement, and a
+restatement does not make a theorem more likely to be true.  What it changes is
+what I can work on — three concrete inductive steps instead of an existential
+over automata I have repeatedly failed to characterize.  The `wh` case is the
+one that decides it, and it is where rules 5 and 6 must earn their place: a
+loop's Thompson automaton is exactly where bisimilar states can sit on opposite
+sides of the back edge.
+
+**Next.**  The `wh` step.  If it goes through, `seq` and `ite` should follow the
+same pattern; if it breaks, the break will name the missing rule, the way 201's
+and 206's resisters did.

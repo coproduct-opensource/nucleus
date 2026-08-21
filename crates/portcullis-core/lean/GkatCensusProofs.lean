@@ -5739,4 +5739,85 @@ theorem two_state_solvable {g c h : BExp T} {D P F X : Exp A T}
 
 #print axioms two_state_solvable
 
+/-! ## The remainder, as an induction on expressions
+
+Every instrument this development has tried for deciding whether an ARBITRARY
+automaton is solvable has failed, and not by accident: that is the literature's
+own open problem.  `nested` turned out necessary but not sufficient; the
+elimination oracle is wrong in both directions; the brute-force search gives
+only size-bounded negatives.
+
+But the target theorem never quantifies over arbitrary automata.  Its automata
+are behavioural quotients of Thompson automata of EXPRESSIONS, and the
+expression is always in hand.  So induct on the expression, where the
+constructors — and `GkatThompson`'s `seqGSystem` / `loopInitialized` /
+`sumGSystem` decomposition — give exactly the case structure the six rules
+already have.
+
+Iteration 170 reduced the whole remainder to same-side unification.  Written
+against `certifiedThompson`, whose `standard` labelling already solves its
+automaton by construction, that is: -/
+
+/-- **THE WHOLE REMAINDER, AS ONE PREDICATE ON EXPRESSIONS.**  Bisimilar states
+    of `e`'s Thompson automaton carry `EquivBA`-equal standard labels.
+
+    By `unif_of_class_constant_solution` / `class_constant_solution_of_unif`
+    (iteration 170) this is EQUIVALENT to `SumQuotientSolvable`, and
+    `completeness_of_sumQuotientSolvable` turns that into completeness.  So
+    `∀ e, ThompsonUnif e` IS the theorem. -/
+def coreGAut (e : Exp A T)
+    (s₀ : (GkatThompson.certifiedThompson A T e).State) :
+    GkatKleene.GAut (GkatThompson.certifiedThompson A T e).State A T where
+  states := (GkatThompson.certifiedThompson A T e).aut.core.states
+  hlt := (GkatThompson.certifiedThompson A T e).aut.core.hlt
+  trans := (GkatThompson.certifiedThompson A T e).aut.core.trans
+  start := s₀
+
+def ThompsonUnif (e : Exp A T) : Prop :=
+  ∀ s₀ u v, GkatPlanExistence.GenBisimilar (coreGAut e s₀) u v →
+    EquivBA ((GkatThompson.certifiedThompson A T e).standard u)
+      ((GkatThompson.certifiedThompson A T e).standard v)
+
+/-- Base case: `test t`'s Thompson automaton has NO states at all, so there is
+    no `s₀` to quantify over and the statement is vacuous. -/
+theorem thompsonUnif_test (t : BExp T) : ThompsonUnif (A := A) (.test t) :=
+  fun s₀ _ _ _ => nomatch s₀
+
+/-- Base case: `act a`'s Thompson automaton has ONE state, so any two states
+    are equal and reflexivity finishes. -/
+theorem thompsonUnif_act (a : A) : ThompsonUnif (A := A) (T := T) (.act a) :=
+  fun _ _ _ _ => EquivBA.base (Equiv.refl _)
+
+/-- **THE REMAINDER, REDUCED TO THREE INDUCTIVE STEPS.**
+
+    The induction itself is discharged here and the base cases are proved, so
+    what stands between this development and completeness is exactly the three
+    hypotheses below — one per compound constructor.  Nothing is assumed about
+    automata in general, and there is no `sorry`: the open content is carried
+    as explicit hypotheses, which is what makes it checkable that they are ALL
+    that is open.
+
+    The `wh` step is the one that decides it, and it is where rules 5 and 6 have
+    to earn their place: a loop's Thompson automaton is where bisimilar states
+    can sit on opposite sides of the back edge. -/
+theorem thompsonUnif_of_steps
+    (hseq : ∀ e f : Exp A T, ThompsonUnif e → ThompsonUnif f →
+      ThompsonUnif (.seq e f))
+    (hite : ∀ (b : BExp T) (e f : Exp A T), ThompsonUnif e → ThompsonUnif f →
+      ThompsonUnif (.ite b e f))
+    (hwh : ∀ (b : BExp T) (e : Exp A T), ThompsonUnif e →
+      ThompsonUnif (.wh b e)) :
+    ∀ e : Exp A T, ThompsonUnif e := by
+  intro e
+  induction e with
+  | test t => exact thompsonUnif_test t
+  | act a => exact thompsonUnif_act a
+  | seq e f ihe ihf => exact hseq e f ihe ihf
+  | ite b e f ihe ihf => exact hite b e f ihe ihf
+  | wh b e ihe => exact hwh b e ihe
+
+#print axioms thompsonUnif_test
+#print axioms thompsonUnif_act
+#print axioms thompsonUnif_of_steps
+
 end GkatCensus

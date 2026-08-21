@@ -5954,30 +5954,29 @@ fn exhaustive<const NA: usize>() {
                 }
             }
             if !seen.iter().all(|&b| b) { return false; }
-            // CHEAPEST FIRST, again.  Running the elimination oracle on every
-            // automaton costs ~9ms each, which puts k=4 at four hours.  Almost
-            // all automata have no multi-state SCC at all and need no test;
-            // of those that do, almost all are solved by the calculus, and only
-            // there does the question "but is it actually SOLVABLE?" arise.
+            // CHEAPEST FIRST — and 216 INVERTED which one is cheapest.  While
+            // solvability came from an oracle costing ~9ms, the calculus ran
+            // first; now `synth_lookup` is a hash lookup and `calculus_solves`
+            // is the exponential one, so the order flips.
+            //
+            // A counterexample needs BOTH "solvable" AND "calculus fails", so
+            // either test may gate the other.  Gate on the lookup: an automaton
+            // whose behaviour is not in the table is not known solvable and can
+            // never be a counterexample, whatever the calculus does with it.
             let sccs = sccs_of(&a);
             if !sccs.iter().any(|c| c.len() >= 2) { return false; }
+            // Solvability by CONSTRUCTION, not by an oracle.  Both oracles
+            // tried before failed here: `nested` admits unsolvable automata
+            // (205's reading was too strong) and `symbolic_eliminable_raw` is
+            // wrong in BOTH directions (213, 214), producing the 80/102
+            // phantoms at k<=3 and the 720 phantoms at k=4.  A table hit is a
+            // WITNESS, verified by `ex_matches` before it is believed.
+            if synth_lookup(&table, &a, 0, seq_len(NA)).is_none() { return false; }
             let sing = singleton_states(&a);
             let solved = sccs.iter().all(|c| c.len() < 2
                 || calculus_solves(&a, c, 6)
                 || calculus_solves(&a, &scc_with_context(&a, c, &sing), 6));
-            if solved { return false; }
-            // ONLY SOLVABLE AUTOMATA COUNT AS FAILURES — and solvability is now
-            // decided by CONSTRUCTION, not by an oracle.  The two oracles tried
-            // before both failed here: `nested` admits unsolvable automata
-            // (205's reading was too strong), and `symbolic_eliminable_raw` is
-            // wrong in BOTH directions (213, 214) — it produced the 80/102
-            // phantoms at k<=3 and the 720 phantoms at k=4.
-            //
-            // `synth` returns an expression or nothing, so a hit here is a
-            // WITNESS that this automaton is solvable while the calculus could
-            // not solve it: a real counterexample.  It runs only on calculus
-            // failures, which is why an exponential search is affordable.
-            synth_lookup(&table, &a, 0, seq_len(NA)).is_some()
+            !solved
         }).collect();
         println!("  exhaustive NA={NA} k={k}: {total} automata; \
             SOLVABLE (witness from brute-force search) but UNSOLVED by the calculus: {}", hits.len());
