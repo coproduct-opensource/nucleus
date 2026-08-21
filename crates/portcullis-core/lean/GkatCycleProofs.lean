@@ -1766,4 +1766,118 @@ theorem chorded_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
 #print axioms cChain_split
 #print axioms chorded_cycle_roles
 
+/-! ## The chorded assembly
+
+    177 proved the chorded cycle theorem CYCLE-LOCALLY: closed forms
+    supplied, roles derived.  This is the other half — the solution
+    DEFINED by recursion, so the stratum is usable by the engine rather
+    than only stated.
+
+    One thing makes this assembly much lighter than the walked one.  A
+    chorded cycle's port arms all re-enter the cycle and its interiors'
+    arms all stay in it, so **`cPortE` and `cChain` mention no `sol` at
+    all** — the whole SCC's solution is closed in `aut, m, len, c`.  The
+    recursion is therefore needed only at BASE states, and the cycle
+    branch of the fixpoint equation needs no congruence lemma: it is
+    already syntactically what it should be.
+
+    That is the pattern to expect whenever a stratum's cycles are
+    self-contained.  The walked assembly needs `walkedExitPortE_congr` and
+    `wChain_term_congr` precisely because its port folds `sol` over
+    descending arms; a chorded cycle has none. -/
+
+open Classical in
+/-- The chorded assembly solution: gathered Salomaa closed forms at base
+    states, chorded chain/port closed forms on designated cycles. -/
+noncomputable def asmSolC (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat × Nat)) : S → Exp A T :=
+  (InvImage.wf rank Nat.lt_wfRel.wf).fix (fun s rec =>
+    match cy s with
+    | none =>
+        .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+          (foldTL (fun t => if h : rank t < rank s then rec t h else .test .zero)
+            (aut.hlt s) (gOthers s (aut.trans s)))
+    | some (len, m, c, i) =>
+        if i = 0 then cPortE aut m len c
+        else cChain aut m len c (cPortE aut m len c) (len - i) i)
+
+open Classical in
+theorem asmSolC_eq (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat × Nat)) (s : S) :
+    asmSolC aut rank cy s
+      = (match cy s with
+        | none =>
+            .seq (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+              (foldTL (fun t =>
+                  if _ : rank t < rank s then asmSolC aut rank cy t
+                  else .test .zero)
+                (aut.hlt s) (gOthers s (aut.trans s)))
+        | some (len, m, c, i) =>
+            if i = 0 then cPortE aut m len c
+            else cChain aut m len c (cPortE aut m len c) (len - i) i) := by
+  unfold asmSolC
+  rw [WellFounded.fix_eq]
+
+open Classical in
+/-- **THE CHORDED ASSEMBLY THEOREM**: an automaton whose every state is
+    BASE (arms self or strictly descending) or a member of a designated
+    CHORDED cycle — a lap through every member plus one interior arm
+    straight back to the port — is fully role-covered.
+
+    This is the shape thirteen of the fifteen measured open SCCs have. -/
+theorem chorded_assembly_roles (aut : GAut S A T) (rank : S → Nat)
+    (cy : S → Option (Nat × (Nat → S) × Nat × Nat))
+    (hcy : ∀ s len m c i, cy s = some (len, m, c, i) →
+      i < len ∧ 2 ≤ len ∧ 1 ≤ c ∧ c + 1 < len ∧ m i = s ∧
+      (∀ j, j < len → cy (m j) = some (len, m, c, j)) ∧
+      (∀ j, 1 ≤ j → j < len → j ≠ c →
+        ∀ e ∈ aut.trans (m j), e.2.2 = nxtAt m len j) ∧
+      (∀ e ∈ gOthers (nxtAt m len c) (aut.trans (m c)), e.2.2 = m 0) ∧
+      (∀ e ∈ aut.trans (m 0), e.2.2 = m 1) ∧
+      (∀ j, 1 ≤ j → j < len →
+        GuardImplies (aut.hlt (m j)) (aut.hlt (m 0))) ∧
+      GuardImplies (aut.hlt (m 0))
+        (.not (gGuard (m 1) (aut.trans (m 0)))))
+    (hbase : ∀ s ∈ aut.states, cy s = none →
+      ∀ e ∈ aut.trans s, e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  refine ⟨asmSolC aut rank cy, fun s hs => ?_⟩
+  cases hcys : cy s with
+  | none =>
+      have hlow : ∀ e ∈ gOthers s (aut.trans s), rank e.2.2 < rank s := by
+        intro e he
+        obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+        rcases hbase s hs hcys e heL with h1 | h2
+        · exact absurd h1 hne
+        · exact h2
+      refine self_gather_role aut (asmSolC aut rank cy) s ?_
+      rw [asmSolC_eq, hcys]
+      exact congrArg _ (foldTL_congr' (aut.hlt s) (gOthers s (aut.trans s))
+        (fun e he => dif_pos (hlow e he)))
+  | some q =>
+      obtain ⟨len, m, c, i⟩ := q
+      obtain ⟨hilt, hlen, hc1, hc2, hmi, hcoh, hint_arms, hchord_arms,
+        hport_arms, himp, hexcl⟩ := hcy s len m c i hcys
+      have hcycsol : ∀ j, j < len →
+          asmSolC aut rank cy (m j)
+            = (if j = 0 then cPortE aut m len c
+               else cChain aut m len c (cPortE aut m len c) (len - j) j) := by
+        intro j hj
+        rw [asmSolC_eq, hcoh j hj]
+      have hsol_port : asmSolC aut rank cy (m 0) = cPortE aut m len c := by
+        rw [hcycsol 0 (by omega), if_pos rfl]
+      have hsol_int : ∀ j, 1 ≤ j → j < len →
+          asmSolC aut rank cy (m j)
+            = cChain aut m len c (cPortE aut m len c) (len - j) j := by
+        intro j hj1 hj
+        rw [hcycsol j hj, if_neg (by omega : ¬ j = 0)]
+      have := chorded_cycle_roles aut (asmSolC aut rank cy) m len c hlen
+        hc1 hc2 hsol_int hsol_port hint_arms hchord_arms hport_arms himp hexcl
+        i hilt
+      rw [hmi] at this
+      exact this
+
+#print axioms asmSolC_eq
+#print axioms chorded_assembly_roles
+
 end GkatCycle

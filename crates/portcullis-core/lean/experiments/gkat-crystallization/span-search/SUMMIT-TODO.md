@@ -7590,3 +7590,62 @@ test.
 
 **Odds: ~45%, unchanged.**  A rung on a ladder whose top is still the
 existence question.  Progress is real and local.
+
+---
+
+## Iteration 178 — THE CHORDED ASSEMBLY, AND 13/15 VERIFIED AGAINST IT
+
+177 left the chorded stratum half-built: a cycle-LOCAL theorem taking
+closed forms as hypotheses, with the explicit note that the census count
+would not move until an ASSEMBLY defined the solution by recursion.  Both
+halves now exist, and the instances have been checked against them.
+
+**`GkatCycle.chorded_assembly_roles`** (with `asmSolC`, `asmSolC_eq`) —
+proved first try, sorry-free, `[propext, Classical.choice, Quot.sound]`.
+An automaton whose every state is BASE (arms self or strictly descending)
+or a member of a designated chorded cycle is fully role-covered.
+
+**The assembly is much lighter than the walked one, for a reason worth
+recording.**  A chorded cycle's port arms all re-enter the cycle and its
+interiors' arms all stay in it, so **`cPortE` and `cChain` mention no
+`sol` at all** — the SCC's solution is closed in `aut, m, len, c`.  The
+recursion is needed only at base states, and the cycle branch of the
+fixpoint equation needs NO congruence lemma: it is already syntactically
+right.  The walked assembly needs `walkedExitPortE_congr` and
+`wChain_term_congr` precisely because its port folds `sol` over descending
+arms; a chorded cycle has none.  **Expect this whenever a stratum's cycles
+are self-contained.**  The base case is now one line —
+`self_gather_role`, extracted in 176.
+
+**VERIFICATION AGAINST THE MEASURED INSTANCES** (`verify_chorded.py`, in
+the repo).  For each of the 15 dumped open SCCs, brute-force a lap over
+permutations and check every hypothesis the Lean theorem asks for: lap
+through every member, port arms all to `m 1`, interior arms all to the
+next position, a chord at `c` with `1 ≤ c` and `c + 1 < len`, interiors
+silent, port halting, port halt excluding its step guard.
+
+    all hypotheses verified: 13 / 15
+
+    #1  n=3  NOT CHORDED — nested loops, a genuinely different shape
+    #2  n=3  chorded lap found, but an INTERIOR HALTS
+
+**#2 is not a refutation, and I want to be exact about that.**  My check
+tests `himp` in the strong form "interiors do not halt at all".  The Lean
+hypothesis is weaker — `GuardImplies (hlt (m j)) (hlt (m 0))` — so #2 may
+well satisfy the theorem; I did not evaluate the guard implication.  Two
+instances are therefore UNRESOLVED, one certainly a different shape and
+one merely unchecked.
+
+**What this does and does not claim.**  The theorem is proved and 13 of
+the 15 measured open SCCs provably satisfy its hypotheses.  It does NOT
+follow that the census's open count drops to 2: the census classifier does
+not know about the chorded stratum, so re-running it would still report
+15.  Wiring the classifier is a separate, mechanical job, and until it is
+done the 13 is a hand-verified figure about a dump, not a measured
+coverage rate.  I am recording it as the former.
+
+**Odds: ~45%, unchanged.**  Two iterations of real, verified progress on a
+stratum — and the top of the ladder is still the existence question for
+arbitrary quotients, which nothing here touches.  The residue shrinking
+from 15 shapes to 2 at these parameters says the ladder is climbable at
+this scale; it says nothing about whether every quotient is reachable.
