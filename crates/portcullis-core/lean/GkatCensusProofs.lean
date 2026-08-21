@@ -5160,4 +5160,62 @@ theorem class_constant_solution_of_unif {S : Type}
 #print axioms unif_of_class_constant_solution
 #print axioms class_constant_solution_of_unif
 
+/-! ### UNIQUENESS TRANSFERS DOWN A SURJECTIVE HOMOMORPHISM
+
+    Literature check (ICALP 2021, Smolka-Kappe-Foster-Rot-Silva), which
+    changes the map in two ways; both are load-bearing and both are
+    recorded here so they are not re-derived:
+
+    * **The route through well-nestedness is REFUTED by the authors
+      themselves.**  Their Figure 4 exhibits a well-nested automaton
+      whose quotient (identifying `v1` with `v4` and `v3` with `v6`) is
+      NOT well-nested.  So "the behavioural quotient of a Thompson sum is
+      well-nested" is false, and no amount of searching will make it true.
+    * **But the quotient does satisfy the nesting coequation.**  `Cov(W)`
+      is a covariety, closed under homomorphic images (Prop. 13/14), and
+      a quotient is a homomorphic image.  The quotient therefore stays
+      inside the expressible class; what it loses is only the syntactic
+      witness.
+
+    Their completeness proof uses UA at exactly one place: the
+    bisimulation yields a Salomaa system admitting BOTH derivative
+    labellings as solutions, and UA collapses them (Thm. 17, Cor. 22).
+    So in their argument, as in ours, EXISTENCE is free and UNIQUENESS is
+    the whole of what UA buys.
+
+    This section buys part of it back.  A surjective homomorphism carries
+    uniqueness DOWNWARD: two solutions of the target pull back along the
+    homomorphism (`GAutHom.lift_solvesBA`), uniqueness upstairs
+    identifies the pullbacks, and surjectivity carries the identification
+    back down.
+
+    The consequence for this project: a behavioural quotient of a
+    Thompson sum inherits uniqueness from
+    `certifiedThompson_solution_unique` with NO uniqueness axiom.  **Any
+    class-constant solution that exists is THE solution** — nothing is
+    lost by choosing badly, and the entire remaining gap is existence. -/
+
+/-- **UNIQUENESS TRANSFERS DOWN A SURJECTIVE HOMOMORPHISM.**  If the
+    source system has provably unique solutions and `phi` is onto the
+    target's listed states, the target system has provably unique
+    solutions too.
+
+    Uniqueness is precisely what UA is used for in the published
+    completeness proof.  This recovers it, from the finite axioms, for
+    every automaton this development actually quotients. -/
+theorem unique_of_surjective_hom {S Q : Type}
+    {aut : GAut S A T} {quot : GAut Q A T} (phi : GAutHom aut quot)
+    (hsurj : ∀ q ∈ quot.states, ∃ s ∈ aut.states, phi.mapState s = q)
+    (huniq : ∀ l r : S → Exp A T, SolvesBA aut l → SolvesBA aut r →
+      ∀ s ∈ aut.states, EquivBA (l s) (r s))
+    {l r : Q → Exp A T} (hl : SolvesBA quot l) (hr : SolvesBA quot r) :
+    ∀ q ∈ quot.states, EquivBA (l q) (r q) := by
+  intro q hq
+  obtain ⟨s, hs, hmap⟩ := hsurj q hq
+  have hkey := huniq _ _ (phi.lift_solvesBA hl) (phi.lift_solvesBA hr) s hs
+  rw [hmap] at hkey
+  exact hkey
+
+#print axioms unique_of_surjective_hom
+
 end GkatCensus

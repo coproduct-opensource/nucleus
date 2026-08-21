@@ -7129,3 +7129,71 @@ rather than about GKAT: one route was circular, one target was already
 proved.  Both were caught by doing the analysis and the grep BEFORE
 writing Lean.  The prover would have caught the first eventually and
 never the second.
+
+---
+
+## Iteration 171 — UNIQUENESS WITHOUT UA, AND TWO FACTS FROM THE SOURCE
+
+Today's biggest move was reading the paper properly rather than around
+it.  Two PDF fetches failed on compressed streams; the ar5iv HTML
+rendering worked.  From Smolka–Kappé–Foster–Rot–Silva, ICALP 2021:
+
+**FACT 1 — the well-nestedness route is REFUTED, by the authors.**  Their
+Figure 4 gives a well-nested automaton whose quotient (identify `v₁` with
+`v₄`, `v₃` with `v₆`) is NOT well-nested.  I had this queued as the next
+route to try — "show the behavioural quotient of a Thompson sum is
+well-nested, then apply well-nested ⇒ solvable".  It is false at the
+first step.  **Do not search for it.**  This is the cheapest refutation
+of the campaign: one fetch, no Lean.
+
+**FACT 2 — but the quotient stays in the expressible class.**  `Cov(W)`
+is a covariety, closed under homomorphic images (Prop. 13/14), and a
+quotient IS a homomorphic image.  So the quotient satisfies the nesting
+coequation even though it is not well-nested.  What it loses is only the
+SYNTACTIC witness, which is exactly the thing we need — so this explains
+precisely why the gap is where it is, rather than closing it.
+
+**FACT 3 — where UA is actually used.**  Exactly one place: the
+bisimulation yields a Salomaa system admitting BOTH derivative labellings
+as solutions, and UA collapses them (Thm. 17, Cor. 22).  **In their proof,
+as in ours, EXISTENCE is free and UNIQUENESS is the whole of what UA
+buys.**  That is worth stating flatly because this project has spent
+iterations treating existence as the hard half.
+
+**The theorem: buying some of that uniqueness back.**
+
+`GkatCensus.unique_of_surjective_hom` — if the SOURCE system has provably
+unique solutions and `φ` is a homomorphism onto the target's listed
+states, then the TARGET system has provably unique solutions.  Two
+solutions of the target pull back along `φ`, uniqueness upstairs
+identifies the pullbacks, surjectivity carries it back down.  **No
+axioms at all.**
+
+Consequence: a behavioural quotient of a Thompson sum inherits uniqueness
+from `certifiedThompson_solution_unique` — **without UA**, which is
+exactly the step the published proof spends UA on.  So **any
+class-constant solution that exists is THE solution**; nothing is lost by
+choosing badly, and the entire remaining gap is existence.  Combined with
+170's equivalence, the `huniq` hypothesis there is now discharged for the
+automata that matter.
+
+**A THIRD DUPLICATION, and this one I half-caught.**  I wrote `eqRHS_hom`
+and `solves_pullback` before finding `GkatKleene.eqRHS_hom` and
+`GAutHom.lift_solvesBA` (Pham Thm 5.6) already in the corpus.  I HAD
+grepped — for `solves_pullback`, `pullback_solves`, `surjective.*hom` —
+and missed them because I searched for my own names rather than the
+CONCEPT.  Both duplicates are now deleted and the theorem is restated
+over the existing `GAutHom`.  **Grep for the concept and for the
+literature's name for it, not for the name you were about to give it.**
+Three duplications in three days (169 `guardedFold_fallback_congr`, 170
+`completeness_of_sumQuotientSolvable` — caught in time, 171 these two).
+The corpus is now large enough that this is the dominant waste mode.
+
+**Odds: ~58%, unchanged, and I want to be explicit about why not higher.**
+Today removed a route (well-nestedness) and removed a hypothesis
+(uniqueness).  Removing a false route does not increase the chance of
+success; it only stops a waste.  And uniqueness was never the piece I was
+stuck on — Fact 3 says it was the piece the LITERATURE was stuck on, and
+this development had already bought it for Thompson systems.  The
+existence question is untouched.  The field's prior that this problem
+does not close still stands.
