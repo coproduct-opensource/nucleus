@@ -4134,3 +4134,70 @@ sides' loop RE-ENTRY DISPATCHES agree", a single `EquivBA` obligation
 per loop.  Next: discharge it from bisimilarity of the loop headers,
 where `equation_transport` applies to ONE pair rather than to every
 in-class arm target.
+
+### Iteration 121 addendum — ★ ELIMINATION IS PROVABLY IMPOSSIBLE IN GENERAL — the redirect is now forced, not chosen ★
+
+The loop-with-mid-exit search returned the most decisive strategic
+result of the campaign.
+
+**(a) Loop rotation IS valid and IS already in this repo.**
+`loop {A; if h break; B} ≡ A; while ¬h do (B; A)` is propositionally
+valid, W1-derivable, pure code duplication, NO auxiliary Boolean.  This
+repo already has it: `GkatResidueFamily.loop_rotation`.  Adjacent tests
+also merge — KT note Kosaraju's own Fig. 2 counterexample collapses to
+`while b·c do p` once Boolean combinations of tests are allowed.  **The
+merge fails exactly when an ACTION separates the two tests**, which is
+precisely iteration 119's shape (`W` and `q` separate `g` and `h`).  So
+rotation is a real tool, and it is exactly one notch short of the
+residue.
+
+**(b) THE DECISIVE FACT.**  Smolka et al., GKAT (POPL 2020),
+**Remark 6.1**: it would be **UNSOUND to assume that left-affine systems
+with n ≥ 2 unknowns have solutions at all**.  Only n = 1
+(`x = e·x +_b d`) has guaranteed existence, via W1.  Their
+counterexample is precisely Kozen-Tseng's system.  And a KT-style
+argument on iteration 119's own two-state shape
+(`x = W·y +_¬g p`, `y = q·x +_h r`) shows it has NO while program when
+`p, w, q, r` are distinct and `g, h` independent: after `r` the body
+must fall through to the top test, and no choice of loop guard
+reproduces "halt now" versus "iterate".
+
+**(c) THEREFORE THE ELIMINATION ROUTE CANNOT EXIST.**  Not "has not
+been found" — CANNOT.  A general elimination method would have to solve
+arbitrary n ≥ 2 left-affine systems, and those systems provably need
+not have solutions.  Any method that always succeeds is therefore
+refuted outright.  This closes the route that iterations 73-96 built
+and that 117 proved a conditional step for — `elim_reduces` remains
+correct and useful, but its uniform-exit side condition is now known to
+be ESSENTIAL rather than an artifact of not trying hard enough.
+
+**(d) AND IT FORCES THE REMAINING ROUTE.**  Iteration 118's search
+established (Kozen-Tseng Lemmas 1+5) that a quotient by a congruence is
+bisimilar to the original, hence guarded-string-equal — so **every
+quotient of a program automaton DOES have a solution**.  Put beside (b):
+the systems this campaign must solve sit in a STRICTLY SMALLER class
+than "arbitrary left-affine systems", and the ONLY thing that can
+distinguish them is their PROGRAM ORIGIN.  So any successful method
+must consume program-origin, and cannot be a general system-solving
+procedure.  That is exactly `loop_solution_canonical` (iteration 121):
+the solution is the ORIGINAL loop re-used, handed over by canonicity,
+never constructed from the quotient's arms.
+
+Iterations 119 and 121 redirected to unification on the strength of one
+worked instance.  That redirect is now **forced by a published
+impossibility result**, not chosen on taste.  The campaign is on the
+only route that can work.
+
+**(e) Criterion, for the eventual hardening.**  The exact
+characterization of while-expressible behaviour is NOT well-nestedness
+(Schmid-Kappé-Kozen-Silva ICALP'21 Fig. 4: well-nested automata are not
+closed under homomorphism, so it is sufficient but not necessary) but
+the **nesting coequation W** (their Prop. 6.2: W = the set of GKAT
+program behaviours).  Any claim this campaign makes about "which
+automata are expressible" must be phrased against W, not
+well-nestedness.
+
+**Net effect on the residue.**  Unchanged in content, sharpened in
+status: discharge the per-loop re-entry agreement of
+`loop_solutions_agree` from bisimilarity of the loop headers.  What
+changed is that no alternative route remains to hedge with.
