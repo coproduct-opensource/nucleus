@@ -6781,3 +6781,82 @@ fast automaton path rather than by re-elaborating Lean per pair.  That
 is a real piece of work and is now the named next experiment — with the
 performance reason for doing it there rather than in Lean recorded, so
 the next attempt does not repeat today's dead end.
+
+---
+
+## Iteration 167 — THE MASKING LEMMA: the `seq` half of same-side unification, PRICED AND PAID
+
+Two housekeeping acts and one real theorem.
+
+**Housekeeping first.** The two GKAT memory files had grown to 194KB
+combined (72KB + 121KB) — append-only logs loading into every session.
+That is not recall, it is crowding.  Both rewritten as durable facts
+only (6KB + 5KB); the narrative already lives here, in git, where it
+belongs.  The rule I broke and am now recording: **memory is curated,
+not append-only** — a memory file that reads like this ledger has stopped
+being a memory file.
+
+**The theorem.**  Iteration 133 refuted bisimilarity reflection at `seq`:
+two states of `e` can be bisimilar inside `seq e f` while `e` alone
+distinguishes them.  That refutation said only THAT reflection fails.
+It never said what the failure COSTS — and for 34 iterations I have been
+treating it as an obstruction rather than asking for its price.
+
+The price is small and it is now paid.
+
+A state's standard label is a guarded fold whose fallback is its exit.
+Inside `seq e f` the exit becomes `exit ; F`, with `F` the label of `f`'s
+start.  So two states of `e` whose exit TESTS differ still carry
+EquivBA-equal labels inside the composite exactly when `F` is dead on the
+region where the exits differ.  **Masking is nothing else**: a difference
+survives the composite iff the continuation is live where the difference
+lives.
+
+`GkatCensus.seq_mask_of_dead_region` (GkatCensusProofs.lean):
+
+    hdead  : EquivBA (test r ; F) (test 0)
+    hagree : ¬r ∧ c  =  ¬r ∧ d   (semantically, at every valuation)
+    ⊢ EquivBA (test c ; F) (test d ; F)
+
+Proof: split on `r` with U1 (duplicate the branch), gate the THEN branch
+with U4 and the ELSE branch with `gate_else` (U2, U4, U2, and `¬¬r = r`
+by `baTest`); the `r` branch dies via `dead_conj` (S6 to fuse the tests,
+`and_comm_test` to commute them, S1 to reassociate, the certificate, S3);
+the `¬r` branches match by `baTest` on `hagree`.
+
+**`#print axioms` on all four new theorems: does not depend on any
+axioms.**  Not `[propext]` — nothing at all.  U1, U2, U4, S1, S3, S6,
+`baTest`, congruence.  No uniqueness axiom.  Not even W3.
+
+Also landed:
+* `seq_mask_of_dead_tail` — the degenerate case `F` itself dead, which is
+  where the 133 counterexample actually lived, now discharged outright.
+* `guardedFold_congr_fallback` — the dual of `foldr_congr_equivBA`
+  (that one varies the SOLUTION under a fixed fallback; this varies the
+  FALLBACK under fixed branches).  The exit IS the fallback, so this is
+  what lifts masking from an exit test to a whole label.
+* `label_mask_of_dead_region` — the composite: two states of `e` agreeing
+  on every transition and differing only in halt carry EquivBA-equal
+  labels inside `seq e f`, given the certificate.
+
+**Why this is the biggest available step.**  It converts the standing
+`seq` obstruction into a side condition WITH A NAMED DISCHARGER.  The
+side condition is a dead-region certificate — and `diverging_region_zero`
+(iteration 136) already produces exactly those for loops, from two guard
+implications.  The two open pieces were never independent: **S0's
+divergence region is the certificate that the `seq` half of same-side
+UNIF consumes.**  That link is new today.
+
+**What is NOT proved, stated plainly.**  This handles states agreeing on
+transitions and differing only in halt.  General same-side UNIF also has
+to handle states whose TRANSITION LISTS differ, which is the size
+induction, untouched.  And the side condition's NECESSITY is unproved: I
+believe the dead-region hypothesis is exactly right rather than merely
+sufficient, and iteration 154 is the standing reminder that a belief
+about derivability is worth nothing until the prover rules.  Do not read
+this entry as more than it says.
+
+**Odds, unchanged at ~46%**, and the field's prior remains that this
+problem does not close.  Today removed an obstruction I had been carrying
+as structural; it did not touch the size induction, which is still the
+mountain.

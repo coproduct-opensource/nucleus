@@ -4324,4 +4324,143 @@ private def ga : Exp Act T2 := .act 0
 
 end DecideSmoke
 
+/-! ## THE MASKING LEMMA — pricing the `seq` half of same-side unification
+
+    Iteration 133 refuted bisimilarity reflection at `seq`: two states of
+    `e` can be bisimilar inside `seq e f` while `e` alone distinguishes
+    them.  The refutation said only THAT reflection fails.  This section
+    says exactly WHAT it costs, and then pays it.
+
+    A state's standard label is a guarded fold whose fallback is its
+    exit.  Inside `seq e f` that exit becomes `exit ; F`, with `F` the
+    label of `f`'s start.  So two states of `e` whose exit tests differ
+    still carry EquivBA-equal labels inside `seq e f` whenever `F` is
+    dead on the region where the exits differ.  Masking is nothing else:
+    a difference survives the composite iff the continuation is live
+    where it lives.
+
+    `seq_mask_of_dead_region` discharges it from the base axioms alone —
+    U1, U2, U4, S1, S3, S6, `baTest`, congruence.  No uniqueness axiom,
+    not even W3.  Paired with `diverging_region_zero`, which certifies
+    exactly such regions for loops, the `seq` half of same-side
+    unification stops being an obstruction and becomes a side condition
+    with a named discharger. -/
+
+/-- Two tests in front of `F` fuse into their conjunction (S1 + S6). -/
+private theorem test_absorb (g c : BExp T) (F : Exp A T) :
+    EquivBA (.seq (.test g) (.seq (.test c) F)) (.seq (.test (.and g c)) F) :=
+  EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.s1 _ _ _)))
+    (EquivBA.seq_c (EquivBA.s6 g c) (EquivBA.base (Equiv.refl F)))
+
+/-- Conjunction of tests commutes, through `baTest`. -/
+private theorem and_comm_test (b c : BExp T) :
+    EquivBA (.test (.and b c) : Exp A T) (.test (.and c b)) :=
+  EquivBA.baTest (by
+    intro X W x
+    show (GkatGS.bval W b x && GkatGS.bval W c x)
+      = (GkatGS.bval W c x && GkatGS.bval W b x)
+    cases h₁ : GkatGS.bval W b x <;> cases h₂ : GkatGS.bval W c x <;> rfl)
+
+/-- Anything conjoined with a certified-dead region still kills `F`. -/
+private theorem dead_conj {r : BExp T} {F : Exp A T}
+    (hdead : EquivBA (.seq (.test r) F) (.test .zero)) (c : BExp T) :
+    EquivBA (.seq (.test (.and r c)) F) (.test .zero) :=
+  EquivBA.trans
+    (EquivBA.seq_c
+      (EquivBA.symm (EquivBA.trans (EquivBA.s6 c r) (and_comm_test c r)))
+      (EquivBA.base (Equiv.refl F)))
+    (EquivBA.trans (EquivBA.base (Equiv.s1 _ _ _))
+      (EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hdead)
+        (EquivBA.base (Equiv.s3 _))))
+
+/-- U4 gates the THEN branch; this gates the ELSE branch, by flipping
+    with U2, gating, and flipping back through the guard `¬¬r = r`. -/
+private theorem gate_else (r : BExp T) (u v : Exp A T) :
+    EquivBA (.ite r u v) (.ite r u (.seq (.test (.not r)) v)) :=
+  EquivBA.trans (EquivBA.base (Equiv.u2 r u v))
+    (EquivBA.trans (EquivBA.base (Equiv.u4 (.not r) v u))
+      (EquivBA.trans
+        (EquivBA.base (Equiv.u2 (.not r) (.seq (.test (.not r)) v) u))
+        (EquivBA.ite_guard (b := .not (.not r)) (c := r) (by
+          intro X W x
+          show (!(!GkatGS.bval W r x)) = GkatGS.bval W r x
+          cases h : GkatGS.bval W r x <;> rfl))))
+
+/-- **THE MASKING LEMMA.**  If `F` is provably zero on a region `r`, then
+    two exit tests agreeing OFF `r` are interchangeable in front of `F` —
+    their difference is invisible because it lives only where `F` is
+    dead.
+
+    This is the exact price of the failed reflection at `seq`, and it is
+    payable from the finite axioms: the proof splits on `r` with U1/U4/U2,
+    kills the `r` branch with the dead-region certificate, and matches the
+    `¬r` branches by Boolean-algebra subsumption. -/
+theorem seq_mask_of_dead_region {r c d : BExp T} {F : Exp A T}
+    (hdead : EquivBA (.seq (.test r) F) (.test .zero))
+    (hagree : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.and (.not r) c) x
+          = GkatGS.bval W (.and (.not r) d) x) :
+    EquivBA (.seq (.test c) F) (.seq (.test d) F) := by
+  have split : ∀ g : BExp T,
+      EquivBA (.seq (.test g) F : Exp A T)
+        (.ite r (.test .zero) (.seq (.test (.and (.not r) g)) F)) := by
+    intro g
+    refine EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u1 r _))) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.u4 r _ _)) ?_
+    refine EquivBA.trans (gate_else r _ _) ?_
+    exact EquivBA.ite_c
+      (EquivBA.trans (test_absorb r g F) (dead_conj hdead g))
+      (test_absorb (.not r) g F)
+  exact EquivBA.trans (split c)
+    (EquivBA.trans
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.seq_c (EquivBA.baTest hagree) (EquivBA.base (Equiv.refl F))))
+      (EquivBA.symm (split d)))
+
+/-- The masking lemma with the region taken to be the whole atom space:
+    a DEAD continuation absorbs every exit difference.  This is the
+    degenerate case the `seq` reflection counterexample actually lived
+    in, now discharged outright. -/
+theorem seq_mask_of_dead_tail {c d : BExp T} {F : Exp A T}
+    (hdead : EquivBA F (.test .zero)) :
+    EquivBA (.seq (.test c) F : Exp A T) (.seq (.test d) F) :=
+  EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hdead)
+    (EquivBA.trans (EquivBA.base (Equiv.s3 _))
+      (EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.s3 (.test d))))
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (EquivBA.symm hdead))))
+
+/-- `foldr_congr_equivBA` varies the SOLUTION under a fixed fallback.
+    This is its dual: vary the FALLBACK under fixed branches.  The exit
+    of a state is exactly the fallback of its guarded fold, so this is
+    the lemma that lifts masking from an exit test to a whole label. -/
+theorem guardedFold_congr_fallback (branches : List (BExp T × Exp A T))
+    {fb₁ fb₂ : Exp A T} (h : EquivBA fb₁ fb₂) :
+    EquivBA (guardedFold branches fb₁) (guardedFold branches fb₂) := by
+  induction branches with
+  | nil => exact h
+  | cons _ _ ih => exact EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih
+
+/-- **MASKING, AT THE LABEL.**  Two states of `e` that agree on every
+    transition and differ only in their halt test carry EquivBA-equal
+    labels inside `seq e f`, provided the difference is confined to a
+    region where `f`'s label is certified dead.
+
+    This is the `seq` half of same-side unification, discharged: the
+    reflection failure of iteration 133 costs exactly one dead-region
+    certificate, and nothing more.  Zero axioms — not even W3. -/
+theorem label_mask_of_dead_region (branches : List (BExp T × Exp A T))
+    {r c d : BExp T} {F : Exp A T}
+    (hdead : EquivBA (.seq (.test r) F) (.test .zero))
+    (hagree : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.and (.not r) c) x
+          = GkatGS.bval W (.and (.not r) d) x) :
+    EquivBA (guardedFold branches (.seq (.test c) F))
+      (guardedFold branches (.seq (.test d) F)) :=
+  guardedFold_congr_fallback branches (seq_mask_of_dead_region hdead hagree)
+
+#print axioms seq_mask_of_dead_region
+#print axioms seq_mask_of_dead_tail
+#print axioms guardedFold_congr_fallback
+#print axioms label_mask_of_dead_region
+
 end GkatCensus
