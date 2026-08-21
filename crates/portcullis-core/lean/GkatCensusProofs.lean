@@ -6455,4 +6455,57 @@ theorem layered_ite (b : BExp T) (e f : Exp A T)
 
 #print axioms layered_ite
 
+/-- Fold-max of a list, Mathlib-free. -/
+private def maxOf : List Nat → Nat
+  | [] => 0
+  | x :: xs => max x (maxOf xs)
+
+private theorem le_maxOf {l : List Nat} {x : Nat} (h : x ∈ l) : x ≤ maxOf l := by
+  induction l with
+  | nil => cases h
+  | cons y ys ih =>
+      cases h with
+      | head => exact Nat.le_max_left _ _
+      | tail _ h' => exact Nat.le_trans (ih h') (Nat.le_max_right _ _)
+
+/-- **THE `seq` CASE OF `hsum`.**
+
+    `seqGSystem` is NOT `sumGSystem`: a LEFT state's transitions include the
+    RIGHT half's ENTRY transitions, guarded by `left.hlt s`, so control crosses
+    the seam ONE-WAY when the left half halts (241's `seq_inr_closed` says only
+    that the right half is closed).  So the componentwise rank of `layered_sum`
+    does not transfer — the crossing must itself be a DECREASE.
+
+    It is, once every left state outranks every right one.  `GSystem.states` is a
+    `List`, so the right ranks are bounded by a fold-max `M`, and
+    `InitTargetsListed` puts every crossing target in that list; ranking left
+    states at `r₁ x + M + 1` makes the one-way crossing strictly decreasing. -/
+theorem layered_seq_acyclic {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (hR : GkatThompson.InitTargetsListed R)
+    (r₁ : S₁ → Nat) (h₁ : ∀ s tr, tr ∈ L.trans s → r₁ tr.2.2 < r₁ s)
+    (r₂ : S₂ → Nat) (h₂ : ∀ s tr, tr ∈ R.core.trans s → r₂ tr.2.2 < r₂ s) :
+    Layered (GkatThompson.seqGSystem L R) := by
+  refine Layered.acyclic ⟨Sum.elim
+    (fun x => r₁ x + maxOf (R.core.states.map r₂) + 1) r₂, ?_⟩
+  rintro (x | y) tr htr
+  · show Sum.elim _ _ tr.2.2 < r₁ x + _ + 1
+    simp only [GkatThompson.seqGSystem, List.mem_append, List.mem_map] at htr
+    cases htr with
+    | inl h =>
+        obtain ⟨t, ht, rfl⟩ := h
+        exact Nat.add_lt_add_right (Nat.add_lt_add_right (h₁ x t ht) _) 1
+    | inr h =>
+        obtain ⟨t, ht, rfl⟩ := h
+        have : r₂ t.2.2 ≤ maxOf (R.core.states.map r₂) :=
+          le_maxOf (List.mem_map_of_mem (hR t ht))
+        exact Nat.lt_succ_of_le (Nat.le_add_left_of_le this)
+  · show Sum.elim _ _ tr.2.2 < r₂ y
+    simp only [GkatThompson.seqGSystem, List.mem_map] at htr
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact h₂ y t ht
+
+#print axioms layered_seq_acyclic
+
+
 end GkatCensus

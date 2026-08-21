@@ -11552,3 +11552,51 @@ closes.
 
 **Next.**  `layered_seq` with the offset rank, then `hsum` by induction on the
 expression.
+
+---
+
+## 251 — THE `seq` ACYCLIC CASE, PROVED.  And a shape problem in the layer case.
+
+**`layered_seq_acyclic`** — proved first try.  `seqGSystem` crosses the seam
+ONE-WAY (a left state's transitions include the right half's ENTRY transitions,
+guarded by `left.hlt s`), so `layered_sum`'s componentwise rank does not
+transfer; the crossing must itself be a decrease.  It is, once every left state
+outranks every right one: `GSystem.states` is a `List`, so the right ranks are
+bounded by a fold-max `M` (defined Mathlib-free), `InitTargetsListed` puts every
+crossing target in that list, and ranking left states at `r₁ x + M + 1` makes
+the crossing strictly decreasing.
+
+**And attempting the LAYER case for `seq` surfaces a real shape problem, worth
+recording rather than rushing.**  `IsLayer` requires
+
+    sys.trans s  =  base.trans s ++ extra
+
+— the back edges APPENDED.  For a layer in the left component of a sequence:
+
+    sys.trans (inl s)  =  (L'.trans s ++ extra).map inl  ++  R.initTrans.map …
+                       =  (L'.trans s).map inl ++ extra.map inl ++ R.initTrans.map …
+    base.trans (inl s) =  (L'.trans s).map inl           ++  R.initTrans.map …
+
+**The extra sits in the MIDDLE, not at the end.**  So `sys.trans s ≠
+base.trans s ++ extra` and `IsLayer` does not apply as stated.
+
+Whether that matters SEMANTICALLY is a separate question — transition lists are
+resolved by `firstMatch`, so order is only observable when guards overlap, and
+`CoreHaltDisjoint` constrains that.  But the definition as written is
+syntactic, so either it needs relaxing to "`extra` inserted somewhere, with
+disjointness" or the seq layer case needs a different route.  248 already had to
+relativise `IsLayer` once when the sum case would not state; this is the same
+kind of pressure from the seq case, and guessing at the fix is exactly what
+228-236 punished.
+
+    layered_test / act / wh / sum / ite    PROVED  (247, 250)
+    layered_seq  acyclic case              PROVED  (251)
+    layered_seq  layer case                blocked on the IsLayer shape
+    hsum         assembly                  open
+
+**Odds: 81%, held.**  One case proved, one obstacle found and NOT papered over.
+
+**Next.**  Decide the `IsLayer` shape question properly: check whether
+`firstMatch` is insensitive to where the extra block sits given the guard
+disjointness the Thompson invariants already provide, and only then adjust the
+definition.
