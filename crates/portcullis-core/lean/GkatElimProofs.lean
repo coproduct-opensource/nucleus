@@ -642,10 +642,15 @@ def SchedOk {S : Type} [DecidableEq S] (sys : S → RTree S A T) :
     List (S × RTree S A T) → List (S × RTree S A T) → Prop
   | _, [] => True
   | closedPre, (u, C) :: rest =>
-      ((∃ G tl tr, stepSubst closedPre (sys u) = .br G tl tr
+      ((∃ G tl tr,
+          (∀ sol : S → Exp A T,
+            EquivBA (resolveT sol (stepSubst closedPre (sys u)))
+              (resolveT sol (.br G tl tr)))
           ∧ AllCalls u tl
           ∧ C = .pre (.wh G (factorE tl)) tr)
-        ∨ C = stepSubst closedPre (sys u))
+        ∨ (∀ sol : S → Exp A T,
+            EquivBA (resolveT sol (stepSubst closedPre (sys u)))
+              (resolveT sol C)))
       ∧ SchedOk sys (closedPre ++ [(u, C)]) rest
 
 /-- **SCHEDULE SOUNDNESS** (positioned form). -/
@@ -688,11 +693,16 @@ theorem sched_solves_from {S : Type} [DecidableEq S]
             rfl
           have hclose' := elim_close (backSol ext full) u G tl tr
             hall hsol
-          rw [show RTree.br G tl tr = stepSubst pre (sys u)
-            from hsplit.symm, hstep] at hclose'
-          exact hclose'
-        · rw [hsolu, hCfold, hstep]
-          exact EquivBA.base (Equiv.refl _)
+          have hchain := EquivBA.trans hclose'
+            (EquivBA.symm (hsplit (backSol ext full)))
+          rw [hstep] at hchain
+          exact hchain
+        · have hchain : EquivBA (backSol ext full u)
+              (resolveT (backSol ext full) (stepSubst pre (sys u))) := by
+            rw [hsolu]
+            exact EquivBA.symm (hCfold (backSol ext full))
+          rw [hstep] at hchain
+          exact hchain
       · refine ih (pre ++ [(u, C)]) ?_ hrestok p hpr
         rw [hfull]
         rw [List.append_assoc]
@@ -837,5 +847,69 @@ theorem sched_assembly_roles {S : Type} [DecidableEq S]
 #print axioms resolve_treeOf
 #print axioms rankSol_stable
 #print axioms sched_assembly_roles
+
+/-! ## Instance support -/
+
+/-- Substitution is a no-op on trees that never call the state. -/
+theorem substT_noop {S : Type} [DecidableEq S] (u : S)
+    (C : RTree S A T) :
+    ∀ t : RTree S A T, CallOnly (fun s => s ≠ u) t →
+      substT u C t = t := by
+  intro t
+  induction t with
+  | halt h => intro _; rfl
+  | call e s =>
+      intro hc
+      show (if s = u then _ else _) = _
+      rw [if_neg hc]
+  | br g l r ihl ihr =>
+      intro hc
+      show RTree.br g (substT u C l) (substT u C r) = _
+      rw [ihl hc.1, ihr hc.2]
+  | pre e t ih =>
+      intro hc
+      show RTree.pre e (substT u C t) = _
+      rw [ih hc]
+
+/-- A cascade over a call-free tree is a no-op. -/
+theorem stepSubst_noop {S : Type} [DecidableEq S]
+    (closed : List (S × RTree S A T)) (t : RTree S A T)
+    (h : CallOnly (fun s => ∀ p ∈ closed, s ≠ p.1) t) :
+    stepSubst closed t = t := by
+  induction closed generalizing t with
+  | nil => rfl
+  | cons hd rest ih =>
+      rw [stepSubst_cons]
+      rw [substT_noop hd.1 hd.2 t
+        (callOnly_mono (fun s hs => hs hd (List.mem_cons_self ..)) t h)]
+      exact ih t (callOnly_mono
+        (fun s hs p hp => hs p (List.mem_cons_of_mem _ hp)) t h)
+
+/-- The arm-chain tree of a flat arm list. -/
+def armChain {S : Type} (L : List (BExp T × A × S)) (h : BExp T) :
+    RTree S A T :=
+  L.foldr (fun e acc => .br e.1 (.call (.act e.2.1) e.2.2) acc)
+    (.halt h)
+
+/-- Arm chains resolve to the flat dispatch. -/
+theorem resolve_armChain {S : Type} (sol : S → Exp A T)
+    (L : List (BExp T × A × S)) (h : BExp T) :
+    resolveT sol (armChain L h) = foldTL sol h L :=
+  resolve_treeOf_aux sol h L
+
+/-- `treeOf` is the arm chain of the automaton's arms. -/
+theorem treeOf_armChain {S : Type} (aut : GAut S A T) (s : S) :
+    treeOf aut s = armChain (aut.trans s) (aut.hlt s) := rfl
+
+/-- Arm chains call only arm targets. -/
+theorem callOnly_armChain {S : Type} (P : S → Prop)
+    (L : List (BExp T × A × S)) (h : BExp T)
+    (hall : ∀ e ∈ L, P e.2.2) :
+    CallOnly P (armChain L h) :=
+  callOnly_treeOf_aux P h L hall
+
+#print axioms substT_noop
+#print axioms stepSubst_noop
+#print axioms resolve_armChain
 
 end GkatElim

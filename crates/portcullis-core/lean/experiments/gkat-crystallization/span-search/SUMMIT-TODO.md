@@ -2271,3 +2271,26 @@ the full conjecture.
 Next: (a) sanity-instance one stratum (e.g. rebuild singleton-SCC or
 the chord as a schedule) to validate the certificate ergonomics;
 (b) begin the census structure theorem.
+
+## Iteration 79 — EquivBA-mediated SchedOk + instance support
+
+Certificate ergonomics fix discovered by attempting the singleton-SCC
+instance: real quotient trees have SCATTERED self-arms (br-chains),
+never literal top splits. `SchedOk` upgraded: the split/fold clauses
+now take ∀-sol EquivBA-mediated rearrangement hypotheses
+(`∀ sol, EquivBA (resolveT sol (stepSubst pre (sys u))) (resolveT sol
+(.br G tl tr))`) instead of syntactic equality — instantiated at
+backSol in the soundness proof (two-line patch, same axiom profiles:
+sched_solves [propext], sched_assembly_roles [propext, Quot.sound]).
+The rearrangement engine for instances is the EXISTING multi_gather:
+G := gGuard, tl := .call (gBody) u (AllCalls trivially!), tr :=
+armChain (gOthers) — resolve_armChain connects tree and flat worlds.
+
+Instance-support lemmas (zero axioms): substT_noop / stepSubst_noop
+(cascades are no-ops on call-free trees — singleton-SCC states never
+call same-rank peers), armChain + resolve_armChain + treeOf_armChain +
+callOnly_armChain.
+
+Next: assemble the singleton-SCC schedule instance end-to-end (list
+plumbing: per-rank state lists, nodup hypothesis, coverage), then the
+census structure theorem.
