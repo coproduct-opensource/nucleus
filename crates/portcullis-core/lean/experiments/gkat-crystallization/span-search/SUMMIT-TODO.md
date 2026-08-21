@@ -3670,3 +3670,74 @@ schedule soundness theorem (`sched_solves`), the assembly
 (`sched_assembly_roles`), the SCC constructors (`scc_rank_sched`,
 `scc_block_schedP`), and six worked instances — and lacks only the
 general schedule-existence construction.
+
+## Iteration 117 — ★ THE ELIMINATION STEP, AND EXACTLY WHY IT IS CONDITIONAL ★
+
+**Five new theorems, ZERO AXIOMS** (no choice, no propext, no
+Quot.sound — fully constructive):
+
+* `productive_act_prefix` — any action-headed prefix is productive, so
+  it can serve as a `w3` loop body downstream.
+* **`elim_to_prefix`** — a state whose gathered equation is a self-loop
+  followed by a UNIFORM single exit closes, by ONE `w3`, to a PREFIX
+  times that exit: `U ≈ ite G (B·U) (P·V)` ⟹ `U ≈ ((wh G B)·P)·V`.
+* **`elim_affine_step`** — substituting a prefix-form closed solution
+  into an arm body yields another arm body (`s1` reassociation).
+* **`elim_reduces`** — the two together: **n+1 → n**, with the new
+  prefix still productive, so the next `w3` applies and elimination
+  RECURSES.
+* `elim_back` — back-substitution recovers the eliminated unknown once
+  its exit is known, so a full schedule reconstructs every original
+  unknown, not only the last.
+
+**THE DIAGNOSIS — why elimination is conditional, stated exactly.**
+A left-affine system needs every unknown in position
+`guard → prefix · unknown`, with all guards read AT THE CURRENT STATE.
+Eliminating `U` substitutes its closed form `(wh G B)·R` under an
+action, giving `a·(wh G B)·R`.
+
+* `R = P·V` (prefix times ONE unknown, no residual guard, no residual
+  halt): reassociates by `s1` to `(a·(wh G B)·P)·V` — still
+  `prefix · unknown`.  Left-affine, one fewer unknown.  ✓ PROVEN above.
+* `R` branches (`ite h (b·V₁) (ite h' (b'·V₂) …)`): the substituted
+  form is `a·(wh G B)·(ite h …)` and **`h` is read AFTER `a` has
+  executed**.  NO AXIOM MOVES A GUARD LEFTWARD PAST AN ACTION — `u5`
+  distributes a guard already at the FRONT
+  (`(ite g p q)·r ≡ ite g (p·r) (q·r)`), and `test_seq_ite` commutes a
+  guard past a TEST, but nothing commutes one past an action.
+  Left-affineness is destroyed; the reduced system leaves the class
+  `w3` can close.  ✗
+
+**In Kleene algebra this cannot arise**: choice is unconditional, so
+`a(p+q) = ap + aq` redistributes any branching back to the front, and
+matrices over a KA form a KA.  GKAT's choice is GUARDED — state
+dependent — and that single difference is the entire obstruction.  It
+is also exactly what "skip-free"/"uniform exit" restrictions buy: they
+force `R` into the first shape by construction, which is why
+Kappé-Schmid-Silva could eliminate UA there and not in general.
+
+So "no general method to transform n+1 unknowns into n" is now, in
+this repo, a PROVEN METHOD PLUS A PRECISELY CHARACTERIZED SIDE
+CONDITION: uniform exit of the eliminated state.  That reframes the
+open problem one more time, and sharply:
+
+    **Does every multi-class SCC of a canonical Thompson-sum quotient
+    admit an elimination ORDER in which each state, at the time it is
+    eliminated, has a uniform exit?**
+
+Not "does some state have a uniform exit" (the refuted single-exit
+conjecture, iteration 96) but "is there an ORDER" — and crucially the
+exits are computed against the ALREADY-ELIMINATED remainder, so a
+state with two exits now may have one later, once the other has been
+absorbed into a prefix.  The iteration-96 counterexample
+`wh b (ite c (p; test d) q)` refuted the static single-exit property;
+it does NOT refute the dynamic ordering question, which is strictly
+weaker and, as far as this ledger knows, untouched.  Also relevant:
+`GkatDeadExitElim.elim_scc2` already exists in the repo — 2-SCC
+elimination machinery predating this campaign, worth re-reading
+against the new framing.
+
+Next: attack the ordering question — either construct an order for an
+arbitrary multi-class SCC, or find a witness SCC where no order works
+(which would be the first genuine negative result of the campaign and
+would explain the field's pessimism concretely).

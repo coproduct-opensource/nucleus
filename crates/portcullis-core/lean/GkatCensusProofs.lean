@@ -2055,4 +2055,101 @@ theorem unif_sum_of_wf_mod_cycles (e f : Exp A T) [DecidableEq A]
 #print axioms unif_bisim_of_wf_mod_cycles
 #print axioms unif_sum_of_wf_mod_cycles
 
+/-! ## The elimination step, and exactly why it is conditional
+
+    Kappé-Schmid-Silva: "there is no general method to transform a
+    left-affine system with n+1 unknowns into one with n unknowns,
+    even though this is possible in certain cases."  This section
+    pins down WHICH cases, and proves the step for them.
+
+    A left-affine system needs every unknown to sit in the position
+    `guard → prefix · unknown`, with all guards read AT THE CURRENT
+    STATE.  Eliminating `U` means solving its gathered equation by
+    `w3` and substituting the closed form `(wh G B) · R` wherever `U`
+    occurred, i.e. under an action: `a · (wh G B) · R`.
+
+    * If `R` is `P · V` — a prefix times ONE unknown, no residual guard
+      and no residual halt — then `a · (wh G B) · P · V` REASSOCIATES
+      (s1) to `(a · (wh G B) · P) · V`: still `prefix · unknown`.  The
+      system stays left-affine with one fewer unknown, and the new
+      prefix is still productive because it is action-headed, so the
+      next `w3` applies.  That is `elim_reduces` below.
+    * If `R` branches — `ite h (b·V₁) (ite h' (b'·V₂) …)` — then the
+      substituted form is `a · (wh G B) · (ite h …)`, and `h` is read
+      AFTER `a` has executed.  No axiom moves a guard leftward past an
+      ACTION: `u5` distributes a guard sitting at the FRONT
+      (`(ite g p q)·r ≡ ite g (p·r) (q·r)`) and `test_seq_ite` commutes
+      a guard past a TEST, but nothing commutes one past an action.
+      Left-affineness is destroyed and the reduced system is outside
+      the class `w3` can close.
+
+    In Kleene algebra this cannot arise: choice is unconditional, so
+    `a(p+q) = ap + aq` redistributes any branching back to the front.
+    GKAT's choice is guarded — state-dependent — and that single
+    difference is the whole obstruction.  It is also exactly what
+    "skip-free"/"uniform exit" restrictions buy: they force `R` into
+    the first shape. -/
+
+/-- Any action-headed prefix is productive, so it can serve as a `w3`
+    loop body downstream. -/
+theorem productive_act_prefix (a : A) (Q : Exp A T) :
+    EquivBA (.test (E (.seq (.act a) Q)) : Exp A T) (.test .zero) :=
+  EquivBA.baTest (fun _ _ _ => rfl)
+
+open Classical in
+/-- **THE ELIMINATION STEP**: a state whose gathered equation is a
+    self-loop followed by a UNIFORM single exit closes, by one `w3`, to
+    a PREFIX times that exit. -/
+theorem elim_to_prefix {G : BExp T} {B P U V : Exp A T}
+    (hprod : EquivBA (.test (E B) : Exp A T) (.test .zero))
+    (heq : EquivBA U (.ite G (.seq B U) (.seq P V))) :
+    EquivBA U (.seq (.seq (.wh G B) P) V) :=
+  EquivBA.trans (EquivBA.w3_ba hprod heq)
+    (EquivBA.symm (EquivBA.base (Equiv.s1 (.wh G B) P V)))
+
+open Classical in
+/-- **LEFT-AFFINENESS IS PRESERVED**: substituting a prefix-form closed
+    solution into an arm body yields another arm body. -/
+theorem elim_affine_step (a : A) {Q U V : Exp A T}
+    (h : EquivBA U (.seq Q V)) :
+    EquivBA (.seq (.act a) U) (.seq (.seq (.act a) Q) V) :=
+  EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) h)
+    (EquivBA.symm (EquivBA.base (Equiv.s1 (.act a) Q V)))
+
+open Classical in
+/-- **n+1 → n, UNDER UNIFORM EXIT**: eliminating a uniform-exit unknown
+    from a left-affine system yields a left-affine system with one
+    fewer unknown, whose new prefix is still productive — so the next
+    `w3` applies and the elimination can recurse.  This is the step the
+    literature reports as missing in general; it is available exactly
+    when the eliminated state's residual is a single prefixed exit. -/
+theorem elim_reduces {G : BExp T} {B P U V : Exp A T} (a : A)
+    (hprod : EquivBA (.test (E B) : Exp A T) (.test .zero))
+    (heq : EquivBA U (.ite G (.seq B U) (.seq P V))) :
+    EquivBA (.seq (.act a) U)
+        (.seq (.seq (.act a) (.seq (.wh G B) P)) V)
+      ∧ EquivBA
+        (.test (E (.seq (.act a) (.seq (.wh G B) P))) : Exp A T)
+        (.test .zero) :=
+  ⟨elim_affine_step a (elim_to_prefix hprod heq),
+    productive_act_prefix _ _⟩
+
+open Classical in
+/-- The eliminated unknown's own value is recovered by back-substitution
+    once the exit is known — so a full elimination schedule reconstructs
+    every original unknown, not just the last one. -/
+theorem elim_back {G : BExp T} {B P U V : Exp A T}
+    (hprod : EquivBA (.test (E B) : Exp A T) (.test .zero))
+    (heq : EquivBA U (.ite G (.seq B U) (.seq P V)))
+    {W : Exp A T} (hV : EquivBA V W) :
+    EquivBA U (.seq (.seq (.wh G B) P) W) :=
+  EquivBA.trans (elim_to_prefix hprod heq)
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hV)
+
+#print axioms productive_act_prefix
+#print axioms elim_to_prefix
+#print axioms elim_affine_step
+#print axioms elim_reduces
+#print axioms elim_back
+
 end GkatCensus
