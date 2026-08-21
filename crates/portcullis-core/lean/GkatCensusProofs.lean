@@ -380,6 +380,42 @@ theorem dispatch_ext {S₁ S₂ : Type} [DecidableEq S₁] [DecidableEq S₂]
         (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hp.2) ?_
       exact ih (gOthersPA t₁ a L₁) (gOthersPA t₂ a L₂) hrest hres
 
+/-! ## Semantic reachability and the partner theorem
+
+    Bisimilarity transports firing steps, so every state reachable
+    from one start has a bisimilar partner reachable from the other —
+    under ULE, every reachable class of the sum has members from BOTH
+    sides.  The unification route's plumbing. -/
+
+/-- Step-reachability at the generic valuation. -/
+inductive SReach {S : Type} (aut : GkatKleene.GAut S A T) :
+    S → S → Prop where
+  | refl (s : S) : SReach aut s s
+  | step {s t u : S} {α : T → Bool} {a : A} :
+      GkatKleene.autStep (GkatPlanExistence.genW T) aut s α
+        = some (a, t) →
+      SReach aut t u → SReach aut s u
+
+/-- **THE PARTNER THEOREM**: bisimilarity transports semantic
+    reachability. -/
+theorem sreach_partner {S : Type} (aut : GkatKleene.GAut S A T) :
+    ∀ {s₀ s : S}, SReach aut s₀ s →
+      ∀ {t₀ : S}, GkatPlanExistence.GenBisimilar aut s₀ t₀ →
+      ∃ t : S, SReach aut t₀ t
+        ∧ GkatPlanExistence.GenBisimilar aut s t := by
+  intro s₀ s hreach
+  induction hreach with
+  | refl s =>
+      intro t₀ hb
+      exact ⟨t₀, SReach.refl t₀, hb⟩
+  | step hstep hrest ih =>
+      intro t₀ hb
+      obtain ⟨h1, h2, h3⟩ :=
+        GkatPlanExistence.genBisimilar_bisim aut _ _ hb
+      obtain ⟨t', ht', hb'⟩ := h2 _ _ _ hstep
+      obtain ⟨u', hu', hb''⟩ := ih hb'
+      exact ⟨u', SReach.step ht' hu', hb''⟩
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
@@ -390,5 +426,55 @@ theorem dispatch_ext {S₁ S₂ : Type} [DecidableEq S₁] [DecidableEq S₂]
 #print axioms eqRHS_quot
 #print axioms pair_gather
 #print axioms dispatch_ext
+/-- The fired arm is listed. -/
+theorem firstMatch_mem_of_some {Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) {S : Type} :
+    ∀ (L : List (BExp T × A × S)) (a : A) (t : S),
+      GkatKleene.firstMatch V x L = some (a, t) →
+      ∃ g, (g, a, t) ∈ L := by
+  intro L
+  induction L with
+  | nil => intro a t h; exact nomatch h
+  | cons e rest ih =>
+      intro a t h
+      obtain ⟨g₀, a₀, t₀⟩ := e
+      have hunf : GkatKleene.firstMatch V x ((g₀, a₀, t₀) :: rest)
+          = if GkatGS.bval V g₀ x = true then some (a₀, t₀)
+            else GkatKleene.firstMatch V x rest := rfl
+      rw [hunf] at h
+      by_cases hg : GkatGS.bval V g₀ x = true
+      · rw [if_pos hg] at h
+        have hp := Option.some.inj h
+        have ha : a₀ = a := congrArg Prod.fst hp
+        have ht : t₀ = t := congrArg Prod.snd hp
+        rw [← ha, ← ht]
+        exact ⟨g₀, List.mem_cons_self ..⟩
+      · rw [if_neg hg] at h
+        obtain ⟨g, hgmem⟩ := ih a t h
+        exact ⟨g, List.mem_cons_of_mem _ hgmem⟩
+
+/-- Firing steps are arms. -/
+theorem step_arm {S : Type} (aut : GkatKleene.GAut S A T)
+    {s t : S} {α : T → Bool} {a : A}
+    (h : GkatKleene.autStep (GkatPlanExistence.genW T) aut s α
+      = some (a, t)) :
+    Arm aut s t := by
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some
+    (GkatPlanExistence.genW T) α (aut.trans s) a t h
+  exact ⟨(g, a, t), hg, rfl⟩
+
+/-- Semantic reachability refines arm reachability — the rank theory
+    applies along firing paths. -/
+theorem sreach_reach {S : Type} (aut : GkatKleene.GAut S A T) :
+    ∀ {s t : S}, SReach aut s t → Reach aut s t := by
+  intro s t h
+  induction h with
+  | refl s => exact Reach.refl s
+  | step hstep _ ih => exact Reach.step (step_arm aut hstep) ih
+
+#print axioms sreach_partner
+#print axioms firstMatch_mem_of_some
+#print axioms step_arm
+#print axioms sreach_reach
 
 end GkatCensus

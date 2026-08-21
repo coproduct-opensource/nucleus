@@ -2878,3 +2878,26 @@ both sides; matched pairs from the step function); (4) the rank
 induction assembly. All four are bookkeeping-flavored; the
 mathematical content is now fully covered by certificates +
 dispatch_ext.
+
+## Iteration 100 — THE PARTNER THEOREM (unification route, item 3)
+
+All zero axioms, first-or-second try:
+
+- `SReach` — semantic (firing-step) reachability at genW.
+- **`sreach_partner`** — bisimilarity transports semantic
+  reachability: every state reachable from one start has a bisimilar
+  partner reachable from the other (generalized induction over the
+  reach derivation, stepping the bisim pair via genBisimilar_bisim's
+  forward component). Under ULE (starts bisimilar via
+  ule_iff_start_bisim), every left-reachable class of the trim-sum has
+  a right member and vice versa — the two-sided-members fact the
+  unification route needs.
+- `firstMatch_mem_of_some` (the fired arm is listed), `step_arm`,
+  `sreach_reach` — firing paths refine arm paths, so the reachRank
+  theory (descent, SCC-constancy, strict drops) applies along
+  semantic reachability.
+
+Unification route status: (3) partner plumbing CORE DONE. Remaining:
+(1) loop-scope ↔ SCC correspondence, (2) standard compositionality —
+both live inside the CertifiedThompson.seq/ite/loop construction
+proofs (next recon target), then (4) the rank-induction assembly.
