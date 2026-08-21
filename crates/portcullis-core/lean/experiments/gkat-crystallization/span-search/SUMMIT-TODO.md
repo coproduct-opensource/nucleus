@@ -5064,3 +5064,70 @@ different technique, with the descent structure checked.
    needs the composite-level argument, which is the campaign's core.
 3. **Size induction** — descent proved (127), `ite` transfer proved
    (132).
+
+## Iteration 133 — ★ THE `seq` RUNG IS REFUTED TOO — one mechanism, one criterion ★
+
+(Search note: the governing literature answer — "reflection holds only
+when the inclusion is a homomorphism, i.e. the construction only adds
+transitions on states already rejecting under the guard" — was obtained
+at iteration 128 and is stated at exactly the generality needed here, so
+this iteration reuses it rather than re-issuing the query.)
+
+Iteration 132 left `seq` transfer as the one OPEN rung.  Checked it
+against the actual definition rather than assuming it easier than `wh`.
+**`seqGSystem` has EXACTLY `loopInitialized`'s shape:**
+
+    hlt  (inl s) = left.hlt s ∧ right.initHlt          -- REWRITTEN
+    trans(inl s) = (left arms, retargeted)
+                   ++ right.initTrans guarded by left.hlt s   -- ADDED
+
+Halt rewritten, arms added under the halt guard — the two features that
+iteration 128's counterexample exploited.  **So the same counterexample
+refutes `seq` reflection**: take a left state `s` with `left.hlt s = α`
+and no left arms, and a left state `t` with `left.hlt t = 0` carrying a
+left arm at `α` with action `a` to a state bisimilar to `right`'s init
+target.  At `α`, if `right.initHlt` is false, both composite halts are
+false; `s` fires its ADDED arm into the right side and `t` fires its own
+left arm, both with action `a` to bisimilar targets.  **Composite-
+bisimilar, not left-bisimilar.**
+
+**THE CRITERION, now uniform.**  A Thompson constructor REFLECTS
+bisimilarity into its subprogram exactly when it does NOT rewrite
+acceptance on that subprogram's states:
+
+| constructor | rewrites acceptance? | reflects bisimilarity |
+|---|---|---|
+| `ite` (`sumGSystem`) | no — `hlt (inl s) = left.hlt s` | **YES (proved, 132)** |
+| `seq` (`seqGSystem`) | yes — `∧ right.initHlt` | **NO (today)** |
+| `wh`  (`loopInitialized`) | yes — `∧ ¬guard` | **NO (128)** |
+
+`ite` is the only constructor that leaves acceptance alone, and it is
+exactly the only one that reflects.  That matches the literature
+criterion verbatim.
+
+**Why this is a SIMPLIFICATION, not just a second loss.**  Iteration 132
+listed three rungs needing three treatments: one proved, one open, one
+refuted.  There are really only TWO cases, split by a single structural
+property — and the two refuted rungs fail for the SAME reason and
+therefore need the SAME technique: composite-level canonicity
+(`loop_solution_canonical`, `loop_solutions_agree_of_finish`,
+`seq_subsystem`).  The campaign's remaining work is ONE technique
+applied twice, not two separate problems.
+
+**And it retroactively justifies the subsystem chapter.**  Iterations
+109-111 proved `seq_subsystem` and `loop_subsystem` — that an ambient
+equation at a `seq`-left or loop-body state IS the subprogram's
+parametric equation at a composed finish.  Those are exactly the
+composite-level replacements for the two reflection lemmas that do not
+exist.  The subsystem chapter was built for precisely the two
+constructors that turn out to need it, before the reason was known.
+
+**Route status:**
+1. **S0** — algebra done; automaton half re-routed to labels (130).
+2. **Same-side UNIF** — `ite` rung closed (132); `seq` and `wh` both
+   refuted-by-reflection and both routed to composite-level canonicity,
+   where the two-states-vs-two-solutions mismatch (129, shown intrinsic
+   at 131) is the single remaining obstruction.
+3. **Size induction** — descent proved (127); `ite` transfer proved
+   (132); `seq`/`wh` transfers now known impossible, so those rungs must
+   be built by subsystem canonicity instead.
