@@ -4253,6 +4253,53 @@ private def pb : Exp Act Tst := .act 1
 -- but swapping the branches is NOT invisible
 #eval @decide _ (GkatDecide.uleDec (.ite t0 pa pb) (.ite t0 pb pa)) -- expect false
 
+/-! ### The paper's Figure-2 derivable facts, checked by EXECUTION
+
+    Figure 2 of POPL'20 lists twelve facts DERIVABLE from the axioms.
+    None is an axiom here, so the decider agreeing with all twelve is
+    independent evidence that this development's model computes the
+    paper's semantics.  A disagreement would be a serious finding. -/
+
+abbrev T2 := Fin 2
+private def bb : BExp T2 := .prim 0
+private def cc : BExp T2 := .prim 1
+private def ea : Exp Act T2 := .act 0
+private def fa : Exp Act T2 := .act 1
+private def ga : Exp Act T2 := .act 0
+
+-- U3'  e +_b (f +_c g) ≡ (e +_b f) +_{b+c} g
+#eval @decide _ (GkatDecide.uleDec (.ite bb ea (.ite cc fa ga))
+  (.ite (.or bb cc) (.ite bb ea fa) ga))
+-- U4'  e +_b f ≡ e +_b b̄f
+#eval @decide _ (GkatDecide.uleDec (.ite bb ea fa)
+  (.ite bb ea (.seq (.test (.not bb)) fa)))
+-- U5'  b(e +_c f) ≡ be +_c bf   (the VALID fragment of left distribution)
+#eval @decide _ (GkatDecide.uleDec (.seq (.test bb) (.ite cc ea fa))
+  (.ite cc (.seq (.test bb) ea) (.seq (.test bb) fa)))
+-- U6   e +_b 0 ≡ be
+#eval @decide _ (GkatDecide.uleDec (.ite bb ea (.test .zero))
+  (.seq (.test bb) ea))
+-- U7   e +_0 f ≡ f
+#eval @decide _ (GkatDecide.uleDec (.ite .zero ea fa) fa)
+-- U8   b(e +_b f) ≡ be
+#eval @decide _ (GkatDecide.uleDec (.seq (.test bb) (.ite bb ea fa))
+  (.seq (.test bb) ea))
+-- W4   e^(b) ≡ e^(b)·b̄
+#eval @decide _ (GkatDecide.uleDec (.wh bb ea)
+  (.seq (.wh bb ea) (.test (.not bb))))
+-- W4'  e^(b) ≡ (be)^(b)
+#eval @decide _ (GkatDecide.uleDec (.wh bb ea)
+  (.wh bb (.seq (.test bb) ea)))
+-- W6'  b^(c) ≡ c̄
+#eval @decide _ (GkatDecide.uleDec (.wh cc (.test bb) : Exp Act T2)
+  (.test (.not cc)))
+-- W7   e^(c) ≡ e^(bc)·e^(c)
+#eval @decide _ (GkatDecide.uleDec (.wh cc ea)
+  (.seq (.wh (.and bb cc) ea) (.wh cc ea)))
+-- NEGATIVE CONTROL: full left distribution is NOT valid (refuted in-repo)
+#eval @decide _ (GkatDecide.uleDec (.seq ea (.ite cc fa (.test .zero)))
+  (.ite cc (.seq ea fa) (.seq ea (.test .zero))))
+
 end DecideSmoke
 
 end GkatCensus

@@ -6536,3 +6536,46 @@ reader, which is better than picking one.
 * 159 removed the idiom from the census layer via `wh_valid_zero`, after
   finding my own use-count had been reported low.
 * 160 removed the last two uses, leaving the constructor unused.
+
+## Iteration 161 — ALL TWELVE of the paper's derivable facts confirmed by execution
+
+Iteration 156 executed the decider on ten smoke tests, two of which
+(W5, W6) were Figure-2 facts.  This iteration does the **remaining ten**,
+plus a negative control.  Every one agrees:
+
+| Figure-2 fact | statement | decider |
+|---|---|---|
+| U3′ | `e +_b (f +_c g) ≡ (e +_b f) +_{b+c} g` | true ✓ |
+| U4′ | `e +_b f ≡ e +_b b̄f` | true ✓ |
+| **U5′** | `b(e +_c f) ≡ be +_c bf` | true ✓ |
+| U6 | `e +_b 0 ≡ be` | true ✓ |
+| U7 | `e +_0 f ≡ f` | true ✓ |
+| U8 | `b(e +_b f) ≡ be` | true ✓ |
+| W4 | `e^{(b)} ≡ e^{(b)}·b̄` | true ✓ |
+| W4′ | `e^{(b)} ≡ (be)^{(b)}` | true ✓ |
+| W6′ | `b^{(c)} ≡ c̄` | true ✓ |
+| W7 | `e^{(c)} ≡ e^{(bc)}·e^{(c)}` | true ✓ |
+| W5, W6 | (iteration 156) | true ✓ |
+| **negative control** | full left distribution `e(f +_c g) ≡ ef +_c eg` | **false** ✓ |
+
+**Why this is worth having.**  None of the twelve is an axiom in this
+development — `Equiv` carries only U1–U5, S1–S5, W1–W3.  So the decider
+agreeing with all twelve is **independent evidence that the model
+computes the paper's semantics**, obtained by running code rather than
+by reading definitions.  Twelve published theorems, twelve agreements.
+
+**The negative control is the sharpest of the set.**  U5′ says left
+distribution IS valid when the left factor is a TEST; the control says
+it FAILS for a general left factor — and those two sit adjacent in the
+table, differing only in whether `b` is a test or an action.  The
+decider distinguishes them.  That matches the repo's own machine-checked
+`left_distrib_fails` / `left_distrib_not_ba_theorem`, now confirmed a
+second way: once by proof, once by computation.
+
+**Validation status.**  The trusted base is audited (axioms verbatim,
+Boolean layer with proved provenance, model standard, soundness proved,
+hypothesis semantics proved to be the paper's), the one interpretive
+dependency is discharged (157–160), and the model is now cross-checked
+against every derivable fact the paper lists, plus a control that
+distinguishes the valid fragment of left distribution from the invalid
+one.
