@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_LLEE").is_ok() {
+        llee_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_CLOSURE").is_ok() {
         closure_test::<NA>(nguards as u8);
         return;
@@ -11480,4 +11484,78 @@ fn closure_test<const NA: usize>(nguards: u8) {
     }
     println!("  closure_test NA={NA}: {auts} solvable Thompson automata; \
         {quots} behavioural quotients checked; QuotientClosure FAILURES: {bad}");
+}
+
+/// **THE GKAT TRANSLATION OF LLEE'S LOOP CONDITION** (iteration 228).
+///
+/// Milner's LLEE forbids successful termination mid-loop — you leave a loop only
+/// at its head.  GKAT inlines the head into the body's exit points, and
+/// `loop_core_hlt` (proved `rfl` at 220) says how: in `wh b e`, EVERY body state
+/// halts exactly at `hlt_body ∧ ¬b`, and every back edge fires exactly at
+/// `hlt_body ∧ b`.  So one guard `b` separates staying from leaving, UNIFORMLY
+/// across the whole loop.
+///
+/// As a property of the graph alone: an SCC has a uniform guard if, taking `b`
+/// to be the atoms on which it moves internally, no state of the SCC halts
+/// inside `b` and no transition leaves the SCC inside `b`.  Equivalently, `b`
+/// tells you "stay" and `¬b` tells you "go", the same way at every state.
+///
+/// This is the candidate certificate: a property of the transition graph, not of
+/// any solution — which is what role-coverage could not be, and what has to be
+/// true if the certificate is to survive collapse.
+fn uniform_guard<const NA: usize>(q: &Aut<NA>, scc: &[usize]) -> bool {
+    let inscc = |t: usize| scc.contains(&t);
+    let mut b: u8 = 0;
+    for &s in scc.iter() {
+        for a in 0..NA {
+            let t = q.st[s][a];
+            if t != 0 && inscc((t - 1) as usize) { b |= 1 << a; }
+        }
+    }
+    for &s in scc.iter() {
+        for a in 0..NA {
+            if b >> a & 1 == 0 { continue; }
+            if q.hl[s] >> a & 1 == 1 { return false; }      // halts inside the guard
+            let t = q.st[s][a];
+            if t == 0 { return false; }                      // rejects inside the guard
+            if !inscc((t - 1) as usize) { return false; }    // leaves inside the guard
+        }
+    }
+    true
+}
+
+/// Test the candidate certificate on the three things it must satisfy.
+fn llee_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x9E3779B97F4A7C15;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut thom, mut coll, mut agree, mut ug_not_sol, mut sol_not_ug) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..60_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        let ug = |q: &Aut<NA>| sccs_of(q).iter().all(|c| c.len() < 2 || uniform_guard(q, c));
+        let solve = |q: &Aut<NA>| -> bool {
+            let sing = singleton_states(q);
+            sccs_of(q).iter().all(|c| c.len() < 2
+                || calculus_solves(q, c, 6)
+                || calculus_solves(q, &scc_with_context(q, c, &sing), 6))
+        };
+        n += 1;
+        // (a) every Thompson automaton should satisfy it
+        if ug(&a) { thom += 1; }
+        // (b) preserved by bisimulation collapse
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(q) = quotient_by(&a, &blk, nb) {
+            if !ug(&a) || ug(&q) { coll += 1; }
+            // (c) does it coincide with calculus-solvability?
+            let (u, s) = (ug(&q), solve(&q));
+            if u == s { agree += 1; }
+            else if u { ug_not_sol += 1; } else { sol_not_ug += 1; }
+        }
+    }
+    println!("  llee_test NA={NA}: {n} Thompson automata; \
+        (a) uniform-guard holds on {thom}; (b) survives collapse {coll}; \
+        (c) on collapses: agrees with solvable {agree}, \
+        guard-but-UNsolvable {ug_not_sol}, solvable-but-NO-guard {sol_not_ug}");
 }

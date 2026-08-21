@@ -10483,3 +10483,58 @@ parameterised by the solution, so "role-covered" is close to a restatement of
 solvable, while LLEE is a property of the GRAPH alone.  So: port LLEE to guarded
 charts, defining it on the automaton and checking on Thompson automata that it
 holds, survives collapse, and coincides with calculus-solvability.
+
+---
+
+## 228 — A GRAPH-ONLY CERTIFICATE THAT SURVIVES COLLAPSE AND IMPLIES SOLVABILITY.
+
+The certificate has to be a property of the GRAPH, not of a solution — that is
+why role-coverage cannot serve (`StateRole` is parameterised by `sol`) and why
+LLEE can.  Translating LLEE's loop condition into guard language:
+
+Milner's LLEE forbids successful termination mid-loop; you leave only at the
+head.  GKAT inlines the head into the body's exit points, and `loop_core_hlt`
+(`rfl`, 220) says exactly how — in `wh b e` every body state halts at
+`hlt_body ∧ ¬b` and every back edge fires at `hlt_body ∧ b`.  **One guard
+separates staying from leaving, uniformly across the whole loop.**  As a
+property of the graph: take `b` to be the atoms on which an SCC moves
+internally, and require that no state of the SCC halts inside `b`, rejects
+inside `b`, or leaves the SCC inside `b`.
+
+**Measured on Thompson automata of random expressions:**
+
+                                    NA=2        NA=3        NA=4
+    (a) holds on Thompson       18546/19857   17608       17029     ~90%
+    (b) survives collapse       19857/19857   19857       19857     100%
+    (c) guard-but-UNSOLVABLE          0           0           0
+        solvable-but-no-guard        1283        2231        2817
+
+**Two of the three requirements are met, and they are the two that matter for
+the route:**
+  * **(b) it survives bisimulation collapse — 100%, no exceptions.**  This is
+    the property role-coverage could not have and the one Grabmayer's whole
+    architecture turns on.
+  * **(c) it is SUFFICIENT for solvability — 0 counterexamples in ~60 000
+    automata across three populations.**  A uniform guard always yields a
+    solvable automaton.
+
+**It fails (a), and it fails informatively.**  About 10% of Thompson automata
+lack a uniform guard, and the cases are NESTED loops: an outer SCC that contains
+an inner loop unions both guards, so no single `b` separates.  That is exactly
+the LAYERING that 225 identified as LLEE's content beyond the obvious part —
+LLEE permits nested loops at different levels, and my condition is its
+single-level restriction.
+
+So this is not the certificate yet; it is the certificate's bottom layer, and
+the measurement says the layered version is what to build.
+
+**Odds: 81%, up 1.**  First graph-only property in this development with
+collapse-stability and sufficiency both VERIFIED rather than hoped — and those
+are the two the route needs, with (a) being the one a layered definition is
+designed to fix.  Only +1 because a single-level condition failing on nested
+loops is the easy part of LLEE working and the hard part untested.
+
+**Next.**  The layered version: pick a header, take the outer guard to be the
+atoms on which back edges into it fire, remove those edges, recurse on the SCCs
+that fall out.  Re-run (a), (b), (c) — the target is (a) at 100% with (b) and
+(c) holding.
