@@ -5480,3 +5480,63 @@ hypotheses flagged at 138 are removable by routine means.  The
 hardening finding was real — the wording overclaimed — but the
 mathematics behind it is not in doubt, and the repair path is fully
 mapped with no new ideas required.
+
+## Iteration 141 — ★ THE ASSEMBLY IS NOT ROUTINE: one of the four cases leaves the fragment ★
+
+Attempted the `twoloops_complete_free` assembly and found that
+iterations 139–140 graded it too optimistically.  **Three of the four
+degenerate cases are routine; the fourth is not.**
+
+**Read the template properly first.**  `chainloops_complete_free`'s
+actual case structure, now inspected line by line:
+* both sides collapse to TESTS → `test_test_equiv` after transporting
+  the equivalence with `ule_congr_left/right` (BA completeness, the
+  one-line base case the literature describes);
+* one side collapses to a TEST, the other is LIVE → **`absurd`** — the
+  case is VACUOUS, killed by separation exactly as the field does it.
+
+That template covers a collapse **to a test**.  Checking the four
+two-loop collapses against it:
+
+| collapse | target | covered by the template? |
+|---|---|---|
+| `b` unsat | `1` | yes — a test |
+| `b` valid | `0` | yes — a test |
+| `c` valid | `¬b?` | yes — a test |
+| **no `b∧c` overlap** | **`wh b (act r)`** | **NO — an atomic loop, not a test** |
+
+**The fourth case leaves the fragment rather than collapsing out of
+it.**  A no-overlap two-loop becomes an ATOMIC LOOP; if the other side
+is a LIVE two-loop, the pair is (atomic loop, two-loop) — and no
+existing stratum covers it.  Checked directly rather than assumed:
+`wh b (act r)` is in `AtomicLoops` (constructor `wh b p`), but
+`twoLoop` is NOT in `GLoops`, because `GLoops.whOne` needs a `OneAct`
+body and `twoLoop`'s body `(wh c (act q)); act r` carries TWO action
+occurrences.  So `atomicloops_complete` does not apply (the two-loop
+isn't atomic) and `gloops_complete` does not apply (the two-loop isn't
+GLoops).  Separation does not apply either — both sides emit actions,
+so there is no contradiction to derive.
+
+**This is the known pitfall**: fragment completeness theorems do not
+compose across fragments, and a degenerate case that collapses a program
+into a DIFFERENT fragment must then be compared against a
+non-degenerate program of the original one.  The standard resolutions
+are to prove completeness for the union, or to show the degeneracy
+forces the other side to degenerate too.  Neither is available here for
+free: whether `b₁ ∧ c₁` unsatisfiable forces `b₂ ∧ c₂` unsatisfiable
+under language equivalence is **not obvious and is not proved**.
+
+**Correcting the record.**  Iteration 139 wrote "the assembly is a case
+split over already-proved results rather than new mathematics" and 140
+repeated it.  That is right for three cases and wrong for the fourth.
+The satisfiability hypotheses of `twoloops_complete` are therefore
+**not** removable by pure bookkeeping — removing `hbc` specifically
+needs either an atomic-vs-two-loop completeness result or a proof that
+no-overlap propagates across language equivalence.
+
+**Status change.**  `twoloops_complete_free` moves from "bookkeeping,
+pending" to "three cases done, one genuinely open".  The two overclaims
+found at 137–138 remain correctly diagnosed; what was wrong was my
+estimate of the REPAIR cost, which is the third estimate this campaign
+has had to revise downward on contact.  The collapse lemmas of
+iterations 139–140 all stand and are all still needed.
