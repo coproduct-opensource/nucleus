@@ -2542,3 +2542,26 @@ def).
 Chunk 2 next: `scc_rank_sched` — the per-rank SCC certificate
 (interiors forest-style + the port's five-step closing), then the
 mixed per-rank assembly.
+
+## Iteration 89 — prune/selector interplay (port constructor, chunk 2)
+
+Six lemmas (near-all zero axioms): `pairwise_append_left`,
+`callOnly_pruneT` (pruning preserves call support), `pruneT_haltFree`
+(pruned trees are halt-free BY CONSTRUCTION — pruneT never emits halt
+nodes), `pruneT_none_noCalls` (fully dead ⟹ call-free, any support),
+`callsB_of_callOnly` (selector completeness), `selOthers_sub`
+(unselected branches come from the list, unselected).
+
+These close the port constructor's case analysis: every cascaded port
+branch is (a) interior-target ⟹ CallOnly-port (stepSubst_callOnly) ⟹
+pruned-some ⟹ selected (callsB_of_callOnly + pruneT_haltFree), or
+dead ⟹ call-free; (b) self ⟹ selected; (c) descent ⟹ unselected with
+lower-rank calls. So the others-chain is always lower-rank-or-dead —
+Supp-safe — and selected branches are AllCalls (allCalls_of_bools).
+
+Next (chunk 3, the assembly): `scc_rank_sched` — ∃ steps with the
+four certificates; interiors via the forest logic against the
+ints++[o] enumeration; the port via
+treeOf_chainT → stepSubst_chainT → chain_prune_congr → port_gather
+(sel := callsB && haltFreeB) with tl := .call selBody o (the
+single-call-node trick). Then the mixed per-rank assembly.

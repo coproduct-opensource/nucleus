@@ -2222,4 +2222,210 @@ theorem callOnly_of_callsB {S : Type} [DecidableEq S] (o : S) :
 #print axioms stepSubst_callOnly
 #print axioms allCalls_of_bools
 
+/-! ## Prune/selector interplay -/
+
+/-- Pairwise restricts to the left part of an append. -/
+theorem pairwise_append_left {α : Type} {R : α → α → Prop} :
+    ∀ (L₁ L₂ : List α), (L₁ ++ L₂).Pairwise R → L₁.Pairwise R := by
+  intro L₁
+  induction L₁ with
+  | nil => intro _ _; exact List.Pairwise.nil
+  | cons x L₁' ih =>
+      intro L₂ h
+      cases h with
+      | cons hx hrest =>
+          exact List.Pairwise.cons
+            (fun b hb => hx b (List.mem_append.mpr (Or.inl hb)))
+            (ih L₂ hrest)
+
+/-- Pruning preserves the call support. -/
+theorem callOnly_pruneT {S : Type} {P : S → Prop} :
+    ∀ (t t' : RTree S A T), CallOnly P t → pruneT t = some t' →
+      CallOnly P t' := by
+  intro t
+  induction t with
+  | halt h => intro t' _ hp; exact nomatch hp
+  | call e s =>
+      intro t' hc hp
+      have := Option.some.inj hp
+      rw [← this]
+      exact hc
+  | br g l r ihl ihr =>
+      intro t' hc hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = some t' := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              exact ⟨ihl l' hc.1 hl, ihr r' hc.2 hr⟩
+          | none =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              exact ihl l' hc.1 hl
+      | none =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              exact ihr r' hc.2 hr
+          | none =>
+              rw [hl, hr] at hpeq
+              exact nomatch hpeq
+  | pre e t ih =>
+      intro t' hc hp
+      have hpeq : (pruneT t).map (RTree.pre e) = some t' := hp
+      cases ht : pruneT t with
+      | some t₀ =>
+          rw [ht] at hpeq
+          rw [← Option.some.inj hpeq]
+          exact ih t₀ hc ht
+      | none =>
+          rw [ht] at hpeq
+          exact nomatch hpeq
+
+/-- Pruned trees are halt-free. -/
+theorem pruneT_haltFree {S : Type} :
+    ∀ (t t' : RTree S A T), pruneT t = some t' →
+      haltFreeB t' = true := by
+  intro t
+  induction t with
+  | halt h => intro t' hp; exact nomatch hp
+  | call e s =>
+      intro t' hp
+      rw [← Option.some.inj hp]
+      rfl
+  | br g l r ihl ihr =>
+      intro t' hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = some t' := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              show (haltFreeB l' && haltFreeB r') = true
+              rw [ihl l' hl, ihr r' hr]
+              rfl
+          | none =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              exact ihl l' hl
+      | none =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              rw [← Option.some.inj hpeq]
+              exact ihr r' hr
+          | none =>
+              rw [hl, hr] at hpeq
+              exact nomatch hpeq
+  | pre e t ih =>
+      intro t' hp
+      have hpeq : (pruneT t).map (RTree.pre e) = some t' := hp
+      cases ht : pruneT t with
+      | some t₀ =>
+          rw [ht] at hpeq
+          rw [← Option.some.inj hpeq]
+          exact ih t₀ ht
+      | none =>
+          rw [ht] at hpeq
+          exact nomatch hpeq
+
+/-- Fully dead trees are call-free. -/
+theorem pruneT_none_noCalls {S : Type} (P : S → Prop) :
+    ∀ t : RTree S A T, pruneT t = none → CallOnly P t := by
+  intro t
+  induction t with
+  | halt h => intro _; exact True.intro
+  | call e s => intro hp; exact nomatch hp
+  | br g l r ihl ihr =>
+      intro hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = none := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' => rw [hl, hr] at hpeq; exact nomatch hpeq
+          | none => rw [hl, hr] at hpeq; exact nomatch hpeq
+      | none =>
+          cases hr : pruneT r with
+          | some r' => rw [hl, hr] at hpeq; exact nomatch hpeq
+          | none => exact ⟨ihl hl, ihr hr⟩
+  | pre e t ih =>
+      intro hp
+      have hpeq : (pruneT t).map (RTree.pre e) = none := hp
+      cases ht : pruneT t with
+      | some t₀ => rw [ht] at hpeq; exact nomatch hpeq
+      | none => exact ih ht
+
+/-- The Boolean call check is complete. -/
+theorem callsB_of_callOnly {S : Type} [DecidableEq S] (o : S) :
+    ∀ t : RTree S A T, CallOnly (fun s => s = o) t →
+      callsB o t = true := by
+  intro t
+  induction t with
+  | halt h => intro _; rfl
+  | call e s =>
+      intro hc
+      show decide (s = o) = true
+      exact decide_eq_true hc
+  | br g l r ihl ihr =>
+      intro hc
+      show (callsB o l && callsB o r) = true
+      rw [ihl hc.1, ihr hc.2]
+      rfl
+  | pre e t ih => intro hc; exact ih hc
+
+/-- Unselected branches come from the list, unselected. -/
+theorem selOthers_sub {S : Type} (sel : BExp T × RTree S A T → Bool) :
+    ∀ L : List (BExp T × RTree S A T),
+      ∀ b ∈ selOthers sel L, b ∈ L ∧ sel b = false := by
+  intro L
+  induction L with
+  | nil => intro b hb; exact nomatch hb
+  | cons q rest ih =>
+      intro b hb
+      by_cases hq : sel q = true
+      · have : selOthers sel (q :: rest) = selOthers sel rest := by
+          show (if sel q then _ else _) = _
+          rw [hq]
+          rfl
+        rw [this] at hb
+        obtain ⟨h1, h2⟩ := ih b hb
+        exact ⟨List.mem_cons_of_mem _ h1, h2⟩
+      · have hqf : sel q = false := by
+          cases hs : sel q
+          · rfl
+          · exact absurd hs hq
+        have : selOthers sel (q :: rest) = q :: selOthers sel rest := by
+          show (if sel q then _ else _) = _
+          rw [hqf]
+          rfl
+        rw [this] at hb
+        rcases List.mem_cons.mp hb with h1 | h2
+        · rw [h1]
+          exact ⟨List.mem_cons_self .., hqf⟩
+        · obtain ⟨h3, h4⟩ := ih b h2
+          exact ⟨List.mem_cons_of_mem _ h3, h4⟩
+
+#print axioms pairwise_append_left
+#print axioms callOnly_pruneT
+#print axioms pruneT_haltFree
+#print axioms pruneT_none_noCalls
+#print axioms callsB_of_callOnly
+#print axioms selOthers_sub
+
 end GkatElim
