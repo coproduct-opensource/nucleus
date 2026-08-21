@@ -29,12 +29,17 @@ def parse(path):
                re.search(r'scc \[([0-9, ]+)\]', head).group(1).split(',')]
         st, hl = {}, {}
         for line in block.split('\n'):
+            if line.startswith('    --'):
+                break
             m = re.match(r'\s+state (\d+): hl=(\S+) st=\[(.*)\]\s*$', line)
             if not m or int(m.group(1)) not in scc:
                 continue
             u = int(m.group(1))
             hl[u] = int(m.group(2), 2)
             st[u] = [t.strip() for t in m.group(3).split(',')]
+        assert len(st) == len(scc) and len(hl) == len(scc), \
+            "parsed %d state rows for an SCC of %d — the block boundary is wrong" \
+            % (len(st), len(scc))
         yield head.split(' ')[0], scc, st, hl
 
 

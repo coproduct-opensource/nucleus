@@ -52,6 +52,8 @@ def parse(path):
                re.search(r'scc \[([0-9, ]+)\]', head).group(1).split(',')]
         edges = {n: set() for n in scc}
         for line in block.split('\n'):
+            if line.startswith('    --'):
+                break
             m = re.match(r'\s+state (\d+): hl=\S+ st=\[(.*)\]\s*$', line)
             if not m or int(m.group(1)) not in edges:
                 continue
@@ -62,6 +64,10 @@ def parse(path):
                     v = int(tok[1:])
                     if v in edges:
                         edges[u].add(v)
+        # Sanity check that saved this analysis once already: the dump has
+        # other sections (MULTI-PORT, full-quotient) whose lines look alike,
+        # and a parser that swallows them silently invents edges.
+        assert len(edges) == len(scc) and all(edges[n] is not None for n in scc)
         yield head.split(' ')[0], scc, edges
 
 

@@ -5170,6 +5170,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         }).collect();
                         println!("    state {s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
                     }
+                    println!("    nesting coequation (whole quotient): {}; total: {}",
+                        nested(&q), total_aut(&q));
                     println!("    -- source programs (language-equivalent pair):");
                     println!("       e = {aexp}");
                     println!("       f = {bexp}");

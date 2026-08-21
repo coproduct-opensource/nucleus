@@ -7731,3 +7731,71 @@ hold for every quotient, and a 1-in-2170 irreducible instance is a
 concrete demonstration that the ladder alone cannot get there.  What would
 move the number is a construction for duplication-requiring quotients, and
 nothing in this iteration is one.
+
+---
+
+## Iteration 180 — RETRACTION: there was no irreducible instance; it was a parser bug
+
+**179's headline finding is FALSE and I am retracting it.**
+
+179 reported "the first IRREDUCIBLE instance": open SCC #26 at NA=4,
+allegedly the complete digraph on three nodes, irreducible from every
+header, and therefore provably beyond any role theorem by Kosaraju.  That
+instance does not exist.  Its actual dump is
+
+    OPEN-SCC #26  scc [0,1,2]
+      state 0: hl=1010 st=[s1,-,s2,-]
+      state 1: hl=0000 st=[s0,s0,s0,s0]
+      state 2: hl=0000 st=[s1,s2,s2,s2]
+
+i.e. `0→{1,2}`, `1→{0}`, `2→{1,2}` — which T1/T2 reduces immediately (drop
+the self-loop at 2, merge 2 into its unique predecessor 0, merge 1 into 0).
+**Reducible.**
+
+**The bug.**  `analyze_open_sccs.py` split the dump on `OPEN-SCC #` and
+then consumed every `state N: hl=… st=[…]` line in the block.  The NA=4
+dump also contains twelve `MULTI-PORT #` sections whose rows have exactly
+that shape, so block #26 swallowed the rows of the MULTI-PORT section that
+followed it and invented the edges `1→2` and `2→0`.  The NA=2 dump has NO
+MULTI-PORT sections, which is why 175/176's results there were unaffected.
+
+**CORRECTED FINDINGS, with the fixed parser:**
+
+    NA=4, 31 open SCCs:  T1/T2-REDUCIBLE 31; irreducible 0
+    NA=2, 15 open SCCs:  T1/T2-REDUCIBLE 15; irreducible 0   (unchanged)
+    chorded verification at NA=2:  13 / 15                   (unchanged)
+
+**So there is NO measured instance beyond the role ladder.**  Every open
+SCC at both scales is reducible, hence a nest of `wh`s in principle.
+Iteration 174's ceiling is still a theorem — Kosaraju is real — but it has
+zero measured instances, and 179's claim that it "sits at 1 in 2170" is
+withdrawn.  The right reading is the opposite of 179's: **keep climbing;
+nothing observed is out of reach.**
+
+**One finding from 179 SURVIVES, and it is worth having.**  Added
+`nested(&q)` and `total_aut(&q)` to the dump:
+
+    all 31 open quotients satisfy the NESTING COEQUATION (true)
+    28 of 31 are TOTAL; 3 are not
+
+The coequation is necessary for a behaviour to be an expression's, so this
+confirms the covariety reading from 171 empirically: no residue instance
+is a counterexample to expressibility.  The three non-total ones are the
+`GkatTotalization` chapter's business, not a new obstruction.
+
+**How this happened, exactly.**  I printed the PARSED edge set and reasoned
+from it.  I never printed the raw dump block for #26 until today.  A parser
+over a semi-structured text dump is a place where a silent merge produces a
+plausible object, and a plausible object survives review.
+
+**The check that would have caught it, now in both scripts:** assert that
+the number of parsed state rows equals the SCC size.  A block boundary
+error violates it immediately.  That is a mechanical guard, not a
+resolution to be careful — the fourth time this campaign has needed one.
+
+**VERIFY A PARSER AGAINST THE RAW TEXT FOR AT LEAST ONE INSTANCE BEFORE
+DRAWING A CONCLUSION FROM IT.**
+
+**Odds: ~45%, unchanged.**  A retraction that makes the measured picture
+better, not worse, and I decline to move the number on it — the existence
+question is about all quotients, not the ones a generator happens to reach.
