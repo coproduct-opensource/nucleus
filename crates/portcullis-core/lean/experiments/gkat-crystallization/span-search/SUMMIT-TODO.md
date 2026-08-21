@@ -4849,3 +4849,53 @@ than spread across the argument.
    composite level, where the two-solutions-vs-two-states mismatch is
    the open core.
 3. **The size induction** — descent step holds; `wh` rung blocked on (2).
+
+### Iteration 129 addendum — S0's remaining half is HARDER than iteration 126 judged
+
+Searched whether "normalized expression ⟹ Thompson automaton has no
+dead states" is known.  The answer downgrades iteration 126's
+"bounded engineering task" assessment, and the reason is precise.
+
+* **For CLASSICAL regular expressions it is folklore-easy.**  Reduce to
+  a ∅-free expression (`0+e=e`, `0·e=0`, `0*=1`), and then every
+  position is on some accepting path — reachability from First/Follow
+  closure, co-reachability from Last/Follow, by routine structural
+  induction.  Sakarovitch frames it via the standard automaton of a
+  reduced expression.  **The subtlety is entirely in the ∅-elimination
+  pass, not in trimness.**
+* **For GKAT it is NOT published, and the reason is exactly this
+  repo's situation.**  Kappé-Schmid-Silva (skip-free GKAT) Definition 14
+  defines the dead set as a **GREATEST FIXPOINT over atoms** — "for all
+  α ∈ At, `h(x)(α) = ⊥` or `h(x)(α) ∈ Σ × D`" — i.e. deadness is
+  coinductive and atom-indexed, NOT a per-subterm property.  Their
+  Definition 15 normalizes **on expressions** (`⌊e₁·e₂⌋ = 0` when `e₂`
+  is dead) with Lemma 11 giving `e ≡ ⌊e⌋` — but they **never state that
+  `⌊e⌋`'s automaton has no dead states.**  Normalization is used to
+  redirect dead transitions to reject; deadness is decided
+  semantically/coinductively rather than derived by induction.
+  **"The atom-indexing is what blocks the naive induction."**
+* **No formalization exists** of position-automaton trimness in any
+  proof assistant (Coq/Isabelle regex work formalizes derivatives and
+  equivalence checking, never trimness).
+
+**Honest re-grading.**  Iteration 126 called S0's remainder "a bounded
+structural induction over `prune`'s own recursion".  That was the
+classical-regex intuition.  With tests, the property being inducted on
+is a greatest fixpoint over atoms, which is precisely what defeats a
+naive structural induction — and the closest published work
+deliberately routes around it rather than proving it.  So S0's
+remainder is **not** clearly bounded; it is a second open problem of
+its own, smaller than the core but not free.
+
+This also explains, retroactively, why `NormalizationBridge` has sat as
+a HYPOTHESIS in this repo since long before this campaign while its
+algebra half got finished: the algebra was tractable and the automaton
+half is the part that resists.
+
+**Route status, re-graded honestly:**
+1. **S0** — algebra done unconditionally; automaton half now assessed as
+   a second open problem (atom-indexed greatest fixpoint defeats naive
+   induction), not bounded engineering.
+2. **Same-side UNIF** — `ite`/sum trivial; `seq`/`wh` blocked on the
+   two-states-vs-two-solutions mismatch (this iteration).
+3. **Size induction** — descent holds; `wh` rung blocked on (2).
