@@ -6152,4 +6152,53 @@ theorem wh_loop_halt_implies (b : BExp T) (e : Exp A T)
 
 #print axioms wh_loop_halt_implies
 
+/-! ### `seq` and `ite` introduce no new loops
+
+`hsum` needs the certificate for EVERY loop of a Thompson automaton, so the
+compound constructors must not create loops of their own — otherwise each would
+need its own (L1)/(L2)/(L3) argument rather than inheriting from its parts.
+
+They do not, and the reason is one-directional edges.  In `seqGSystem`, a right
+state's transitions all target right states: control passes from left to right
+when the left half halts, and NEVER back.  In `sumGSystem` — which `ite` uses —
+the two halves are disjoint and neither reaches the other at all; the choice is
+made once, at the initial pseudostate.  So every cycle lies wholly inside one
+sub-automaton, and `wh` is the ONLY constructor that creates a cycle. -/
+
+/-- In a sequential composition, the right half is CLOSED: no transition leaves
+    it.  Hence no cycle crosses the seam, and `seq` adds no loop. -/
+theorem seq_inr_closed {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (s : S₂) (tr : BExp T × A × (Sum S₁ S₂))
+    (h : tr ∈ (GkatThompson.seqGSystem L R).trans (.inr s)) :
+    ∃ t : S₂, tr.2.2 = .inr t := by
+  simp only [GkatThompson.seqGSystem, List.mem_map] at h
+  obtain ⟨tr', _, rfl⟩ := h
+  exact ⟨tr'.2.2, rfl⟩
+
+/-- In a guarded choice the two halves are mutually unreachable: a left state's
+    transitions stay left. -/
+theorem sum_inl_closed {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (s : S₁) (tr : BExp T × A × (Sum S₁ S₂))
+    (h : tr ∈ (GkatThompson.sumGSystem L R).trans (.inl s)) :
+    ∃ t : S₁, tr.2.2 = .inl t := by
+  simp only [GkatThompson.sumGSystem, List.mem_map] at h
+  obtain ⟨tr', _, rfl⟩ := h
+  exact ⟨tr'.2.2, rfl⟩
+
+/-- …and a right state's stay right. -/
+theorem sum_inr_closed {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (s : S₂) (tr : BExp T × A × (Sum S₁ S₂))
+    (h : tr ∈ (GkatThompson.sumGSystem L R).trans (.inr s)) :
+    ∃ t : S₂, tr.2.2 = .inr t := by
+  simp only [GkatThompson.sumGSystem, List.mem_map] at h
+  obtain ⟨tr', _, rfl⟩ := h
+  exact ⟨tr'.2.2, rfl⟩
+
+#print axioms seq_inr_closed
+#print axioms sum_inl_closed
+#print axioms sum_inr_closed
+
 end GkatCensus

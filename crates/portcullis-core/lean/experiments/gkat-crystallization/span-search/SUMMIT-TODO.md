@@ -11063,3 +11063,50 @@ obligations.  Real — it is the first part of the certificate that is proved
 rather than sampled — but far too small to move the estimate.
 
 **Next.**  `seq` and `ite` introduce no new loops; then (L1)/(L2) for `wh`.
+
+---
+
+## 241 — `wh` IS THE ONLY LOOP-CREATING CONSTRUCTOR.  Proved.
+
+`hsum` needs the certificate for EVERY loop of a Thompson automaton.  If `seq` or
+`ite` could create loops, each would need its own (L1)/(L2)/(L3) argument; if
+they cannot, the certificate is inherited from sub-expressions and only `wh`
+needs work.
+
+**They cannot, and the reason is one-directional edges:**
+
+    seq_inr_closed   in `seqGSystem`, a RIGHT state's transitions all target
+                     right states — control passes left-to-right when the left
+                     half halts, and NEVER back
+    sum_inl_closed   in `sumGSystem` (which `ite` uses), a left state's
+                     transitions stay left
+    sum_inr_closed   …and a right state's stay right — the two halves are
+                     mutually unreachable, the choice being made once at the
+                     initial pseudostate
+
+All three proved, `propext`/`Quot.sound` only.  So every cycle lies wholly inside
+one sub-automaton, and **`wh` is the only constructor that creates a cycle.**
+
+**Where `hsum` now stands.**  Combined with 240's `wh_loop_L3`:
+
+    seq, ite    create no loops                                    PROVED
+    wh   (L3)   no body state terminates inside the loop's guard   PROVED
+    wh   (L1)   an infinite path leaves the head                   open
+    wh   (L2)   the head cuts every cycle in the body              open
+    assembly    a cycle in a sum lies wholly in one side           open
+
+The assembly step is the closure lemmas turned into a statement about cycles
+rather than single transitions; it should be mechanical.  **(L2) is the real
+remaining content**, and it is the same condition 237 found had never been
+implemented in nine iterations of measurement — which is at least consistent
+about where the difficulty lives.
+
+**Odds: 81%, held.**  Three structural lemmas that were always going to be true
+and took four lines each.  They matter for the shape of the induction — the
+`wh` case is now the ONLY case — but proving the easy parts of a proof does not
+change the odds of the hard part.
+
+**Next.**  (L2) for the `wh` loop: in `wh b e`, does the loop's head cut every
+cycle of the body?  Note this is a statement about `e`'s OWN cycles, so it will
+need the induction hypothesis — which is the first point in this development
+where the expression-induction 217 proposed genuinely earns its place.
