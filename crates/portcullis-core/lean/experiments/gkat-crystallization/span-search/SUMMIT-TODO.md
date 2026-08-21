@@ -5442,3 +5442,41 @@ and needs instantiating rather than inventing.
 two overclaims found and fixed (`uleDec`'s algorithm-vs-proof
 conflation; "unconditional"), and the fix for the second is now four
 collapse lemmas deep with only the assembly left.
+
+### Iteration 140 addendum — the separation step is routine, and the field says so
+
+Checked whether the remaining assembly step (a live loop cannot equal a
+test) is standard or hides work.  It is standard, and instructively so:
+
+* **Separation is not a named lemma anywhere** — it falls straight out
+  of the guarded-string grading.  A test's denotation sits inside `At`:
+  every accepted string has ZERO actions.  Any string containing an
+  action letter therefore cannot be in it.  Proofs in the literature
+  "use it silently".  The nearest named machinery is Kozen's `E(e)`
+  accepting-immediately decomposition, with Salomaa's empty-word
+  property as the KA analogue.
+* **Liveness is NOT argued from satisfiable-guard-plus-productive-body**,
+  which is what this ledger assumed at iteration 140.  The standard move
+  (ICALP'21, productive loops) is to SPLIT `e` into `E(e)` plus a
+  strictly productive part and REWRITE to an equivalent productive loop,
+  rather than to argue that some particular loop is live.  Worth
+  recording as a course-correction before building the assembly the
+  wrong way — and note this repo already has the rewrite:
+  `guardedness_normalization` produces exactly the productive
+  replacement, and `wh_congr_under_guard` installs it.
+* **The both-tests branch** reduces to equality of two Boolean guards as
+  subsets of atoms, discharged by BA completeness — "explicitly a base
+  case, always one line".  This repo's `EquivBA.baTest` is precisely
+  that one line.
+
+So all three ingredients of the assembly are routine AND already
+present in the repo: separation from the grading, productivity by
+rewriting rather than liveness argument, and the both-tests base case by
+`baTest`.  The assembly is bookkeeping over existing parts, which is the
+same verdict iteration 139's search gave for the task as a whole.
+
+**Calibration note.**  Two searches in a row have now confirmed that the
+hypotheses flagged at 138 are removable by routine means.  The
+hardening finding was real — the wording overclaimed — but the
+mathematics behind it is not in doubt, and the repair path is fully
+mapped with no new ideas required.
