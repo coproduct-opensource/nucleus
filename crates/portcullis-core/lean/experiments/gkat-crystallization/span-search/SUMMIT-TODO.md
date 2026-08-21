@@ -11368,3 +11368,48 @@ better formulation is not a theorem.
 **Next.**  The inductive `Layered` predicate on automata — `acyclic`, or a layer
 over something layered — and `hsum` by induction on the expression, with
 `wh_isLayer` discharging the `wh` case and 241's closure lemmas the others.
+
+---
+
+## 247 — THE CERTIFICATE IS AN INDUCTIVE PREDICATE, AND THE `wh` CASE IS THREE LINES.
+
+**`Layered sys`** — an automaton is layered when it is ACYCLIC, or is one loop
+layer over something layered.  Stated on the AUTOMATON, not on an expression,
+because `hcollapse` must apply it to the quotient (245).  Acyclicity is witnessed
+by a rank every transition strictly decreases — the finite-state form of LLEE's
+"elimination terminates at a chart without infinite paths", which avoids needing
+a path predicate at all.
+
+**Proved:**
+
+    layered_test   no states; vacuous rank
+    layered_act    one state, no transitions
+    layered_wh     Layered.layer (wh_isLayer b e) h
+
+**`layered_wh` is three lines.**  The `wh` case is the one iterations 228-246
+could not formulate — five certificate variants, two soundness breaks, a peak of
+99.84%, and 242/244 refuting the head and entry-set readings at 16-38% and 62%.
+Once a layer is the DIFFERENCE between `wh b e`'s automaton and `e`'s (246)
+rather than a sub-graph of either, the case is `Layered.layer` applied to a fact
+that has been `rfl` since iteration 220.
+
+**What remains of `hsum`: `seq` and `ite`.**  Those need `Layered` to relate
+automata with DIFFERENT state types — `Sum S₁ S₂` against `S₁` and `S₂` — which
+is what 241's closure lemmas are for: a right state's transitions stay right, a
+left state's stay left, so cycles never cross the seam and a rank can be built
+componentwise.  Mechanical, but not free: it is the one place the state type
+changes.
+
+    layered_test / layered_act    base cases                  PROVED  (247)
+    layered_wh                    the loop case               PROVED  (247)
+    layered_seq / layered_ite     componentwise, via 241       open
+    hsum                          assemble by induction on e   open
+    hcollapse, hsolve             untouched
+
+**Odds: 81%, up 1.**  Three of the five `hsum` cases proved, including the one
+that was believed hardest and consumed sixteen iterations.  The remaining two
+are of a kind that has not resisted before — 241 already proved the facts they
+need — which is a different situation from any point in the 228-246 stretch.
+Only +1: `hsum` is one of three obligations and the other two are untouched.
+
+**Next.**  `layered_seq` and `layered_ite` by componentwise rank, then `hsum`.

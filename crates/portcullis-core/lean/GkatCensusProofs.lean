@@ -6300,4 +6300,50 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
 
 #print axioms wh_isLayer
 
+/-- **THE CERTIFICATE, AS AN INDUCTIVE PREDICATE ON AUTOMATA.**
+
+    An automaton is layered when it is acyclic, or is one loop layer over
+    something layered.  This is the certificate `Cert` of 239's architecture,
+    and it is stated on the AUTOMATON — not on an expression — because
+    `hcollapse` must apply it to the quotient, which has no expression (245).
+
+    Acyclicity is witnessed by a rank that every transition strictly decreases;
+    that is the finite-state form of LLEE's "elimination terminates at a chart
+    without infinite paths", and it avoids needing a path predicate. -/
+inductive Layered {S : Type} : GkatThompson.GSystem S A T → Prop where
+  | acyclic {sys : GkatThompson.GSystem S A T} :
+      (∃ rank : S → Nat, ∀ s tr, tr ∈ sys.trans s → rank tr.2.2 < rank s) →
+      Layered sys
+  | layer {sys base : GkatThompson.GSystem S A T} {b : BExp T} :
+      IsLayer sys base b → Layered base → Layered sys
+
+/-- **`wh` PRESERVES THE CERTIFICATE — the `wh` case of `hsum`, discharged.**
+
+    Immediate from `wh_isLayer`: `wh b e`'s automaton IS one layer over `e`'s, so
+    if `e`'s is layered, so is it.  Sixteen iterations of graph search for this
+    step; three lines once the layer is the right object. -/
+theorem layered_wh (b : BExp T) (e : Exp A T)
+    (h : Layered (GkatThompson.certifiedThompson A T e).aut.core) :
+    Layered (GkatThompson.certifiedThompson A T (.wh b e)).aut.core :=
+  Layered.layer (wh_isLayer b e) h
+
+#print axioms layered_wh
+
+/-- **The base cases.**  `test t`'s automaton has no states, so the empty rank
+    function witnesses acyclicity vacuously; `act a`'s single state has no
+    transitions at all. -/
+theorem layered_test (t : BExp T) :
+    Layered (GkatThompson.certifiedThompson A T (.test t)).aut.core := by
+  apply Layered.acyclic
+  refine ⟨fun s => (nomatch s : Nat), ?_⟩
+  intro s
+  exact nomatch s
+
+theorem layered_act (a : A) :
+    Layered (GkatThompson.certifiedThompson A T (.act a)).aut.core :=
+  Layered.acyclic ⟨fun _ => 0, by intro s tr h; cases h⟩
+
+#print axioms layered_test
+#print axioms layered_act
+
 end GkatCensus
