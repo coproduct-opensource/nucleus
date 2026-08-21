@@ -565,10 +565,178 @@ theorem paramSolves_seq {S : Type}
     (.seq (.test (aut.hlt s)) (.seq fin g))
   exact EquivBA.base (Equiv.s1 (.test (aut.hlt s)) fin g)
 
+/-! ## Class gathering
+
+    The pair-level certificate is too fine for real bisimulations: a
+    counterpart may split one (target, action) guard across several
+    bisimilar targets.  Gathering by (target-CLASS, action) — with
+    `EquivBA`-equal continuations across the class — is
+    bisim-invariant: the gathered guard says "the first firing arm
+    does `a` into the class", which the step function preserves. -/
+
+open Classical in
+/-- The gathered guard of a (target-class, action) pair. -/
+noncomputable def gGuardPC {S : Type} [DecidableEq A]
+    (P : S → Bool) (a : A) : List (BExp T × A × S) → BExp T
+  | [] => .zero
+  | (g, b, u) :: rest =>
+      if P u = true ∧ b = a then .or g (gGuardPC P a rest)
+      else .and (gGuardPC P a rest) (.not g)
+
+open Classical in
+/-- The remainder after removing a (target-class, action) pair. -/
+noncomputable def gOthersPC {S : Type} [DecidableEq A]
+    (P : S → Bool) (a : A) :
+    List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, b, u) :: rest =>
+      if P u = true ∧ b = a then gOthersPC P a rest
+      else (g, b, u) :: gOthersPC P a rest
+
+open Classical in
+/-- **THE CLASS GATHER**: a (class, action) pair collects into one
+    Salomaa arm over a common continuation, given the class members'
+    solutions are equivalent to it. -/
+theorem class_gather {S : Type} [DecidableEq A]
+    (sol : S → Exp A T) (h : BExp T) (P : S → Bool) (a : A)
+    (V : Exp A T) :
+    ∀ L : List (BExp T × A × S),
+      (∀ e ∈ L, P e.2.2 = true → e.2.1 = a →
+        EquivBA (sol e.2.2) V) →
+      EquivBA (GkatPlanExistence.foldTL sol h L)
+        (.ite (gGuardPC P a L) (.seq (.act a) V)
+          (GkatPlanExistence.foldTL sol h (gOthersPC P a L))) := by
+  intro L
+  induction L with
+  | nil =>
+      intro _
+      exact EquivBA.symm (GkatDeadExitElim.ite_zero_guard _ _
+        (fun X W x => rfl))
+  | cons hd rest ih =>
+      intro hall
+      obtain ⟨g, b, u⟩ := hd
+      have ihr := ih (fun q hq => hall q (List.mem_cons_of_mem _ hq))
+      by_cases hu : P u = true ∧ b = a
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .or g (gGuardPC P a rest) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        have hot : gOthersPC P a ((g, b, u) :: rest)
+            = gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        rw [hgu, hot]
+        show EquivBA (.ite g (.seq (.act b) (sol u))
+          (GkatPlanExistence.foldTL sol h rest)) _
+        have hVu : EquivBA (sol u) V :=
+          hall (g, b, u) (List.mem_cons_self ..) hu.1 hu.2
+        obtain ⟨-, hu2⟩ := hu
+        subst hu2
+        refine EquivBA.trans (EquivBA.ite_c
+          (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hVu) ihr) ?_
+        refine EquivBA.trans (GkatPlanExistence.arms_merge g
+          (gGuardPC P b rest) (.act b) (.act b) V
+          (GkatPlanExistence.foldTL sol h (gOthersPC P b rest))) ?_
+        refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+        refine EquivBA.seq_c ?_ (EquivBA.base (Equiv.refl _))
+        exact EquivBA.base (Equiv.u1 g (.act b))
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .and (gGuardPC P a rest) (.not g) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        have hot : gOthersPC P a ((g, b, u) :: rest)
+            = (g, b, u) :: gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        rw [hgu, hot]
+        show EquivBA (.ite g (.seq (.act b) (sol u))
+          (GkatPlanExistence.foldTL sol h rest)) _
+        refine EquivBA.trans (EquivBA.ite_c
+          (EquivBA.base (Equiv.refl _)) ihr) ?_
+        exact GkatPlanExistence.arm_commute g (gGuardPC P a rest)
+          (.seq (.act b) (sol u)) (.seq (.act a) V)
+          (GkatPlanExistence.foldTL sol h (gOthersPC P a rest))
+
+open Classical in
+/-- **CLASS-GUARD SEMANTICS**: the gathered guard fires exactly when
+    the dispatch's first match does the action into the class — the
+    bridge from bisimulation step-agreement to pointwise guard
+    equality. -/
+theorem gGuardPC_firstMatch {S : Type} [DecidableEq A]
+    {Atom : Type} (V₀ : T → Atom → Bool) (x : Atom)
+    (P : S → Bool) (a : A) :
+    ∀ L : List (BExp T × A × S),
+      GkatGS.bval V₀ (gGuardPC P a L) x = true
+        ↔ ∃ t', GkatKleene.firstMatch V₀ x L = some (a, t')
+            ∧ P t' = true := by
+  intro L
+  induction L with
+  | nil =>
+      constructor
+      · intro h; exact nomatch h
+      · intro ⟨t', h, _⟩; exact nomatch h
+  | cons hd rest ih =>
+      obtain ⟨g, b, u⟩ := hd
+      have hunf : GkatKleene.firstMatch V₀ x ((g, b, u) :: rest)
+          = if GkatGS.bval V₀ g x = true then some (b, u)
+            else GkatKleene.firstMatch V₀ x rest := rfl
+      by_cases hu : P u = true ∧ b = a
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .or g (gGuardPC P a rest) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        rw [hgu, hunf]
+        show (GkatGS.bval V₀ g x || GkatGS.bval V₀ (gGuardPC P a rest) x)
+          = true ↔ _
+        by_cases hg : GkatGS.bval V₀ g x = true
+        · rw [if_pos hg, hg]
+          constructor
+          · intro _
+            exact ⟨u, by rw [hu.2], hu.1⟩
+          · intro _
+            rfl
+        · have hgf : GkatGS.bval V₀ g x = false := by
+            cases hb : GkatGS.bval V₀ g x
+            · rfl
+            · exact absurd hb hg
+          rw [if_neg hg, hgf]
+          show (false || _) = true ↔ _
+          rw [Bool.false_or]
+          exact ih
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .and (gGuardPC P a rest) (.not g) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        rw [hgu, hunf]
+        show (GkatGS.bval V₀ (gGuardPC P a rest) x
+            && !(GkatGS.bval V₀ g x)) = true ↔ _
+        by_cases hg : GkatGS.bval V₀ g x = true
+        · rw [if_pos hg, hg]
+          constructor
+          · intro h
+            rw [Bool.and_eq_true_iff] at h
+            exact nomatch h.2
+          · intro ⟨t', ht', hPt⟩
+            have hp := Option.some.inj ht'
+            have hb : b = a := congrArg Prod.fst hp
+            have hut : u = t' := congrArg Prod.snd hp
+            exact absurd ⟨by rw [hut]; exact hPt, hb⟩ hu
+        · have hgf : GkatGS.bval V₀ g x = false := by
+            cases hb : GkatGS.bval V₀ g x
+            · rfl
+            · exact absurd hb hg
+          rw [if_neg hg, hgf]
+          show (_ && !false) = true ↔ _
+          show (GkatGS.bval V₀ (gGuardPC P a rest) x && true) = true ↔ _
+          rw [Bool.and_true]
+          exact ih
+
 #print axioms sreach_partner
 #print axioms firstMatch_mem_of_some
 #print axioms step_arm
 #print axioms sreach_reach
 #print axioms paramSolves_seq
+#print axioms class_gather
+#print axioms gGuardPC_firstMatch
 
 end GkatCensus

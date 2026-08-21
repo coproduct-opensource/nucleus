@@ -2936,3 +2936,29 @@ Remaining for the route: the dead-region decomposition (structural),
 the subsystem lemma (ambient equations of loop states = parametric
 equations — the seq/loop construction shapes), and the rank-induction
 assembly.
+
+## Iteration 102 — CLASS GATHERING (the pair-level flaw found and fixed)
+
+**Design flaw caught before it bit**: the pair-level PairsOk
+certificate is UNUSABLE for real bisimulations — a counterpart state
+may split one (target, action) guard across several distinct-but-
+bisimilar targets, so pointwise pair-guard equality fails. The correct
+granularity is (target-CLASS, action).
+
+Landed (zero axioms both):
+- `gGuardPC`/`gOthersPC` + **`class_gather`** — a (class, action)
+  pair collects into ONE Salomaa arm over a COMMON continuation V,
+  given class members' solutions are EquivBA V (the continuation
+  congruence rides inside the gather — arms_merge with equalized
+  bodies + u1).
+- **`gGuardPC_firstMatch`** — the gathered guard fires at an atom IFF
+  the dispatch's firstMatch does the action into the class: the exact
+  bridge from bisimulation step-agreement to pointwise guard equality.
+  (Tactic: resolve `if_pos/if_neg` BEFORE rewriting the bval that
+  feeds the condition, or the pattern is clobbered.)
+
+With these, the class-level dispatch extensionality is assembly:
+bisimilar states + class-constant-up-to-EquivBA continuations ⟹
+equations EquivBA-equal, with the PairsOk-analogue certificates now
+DERIVABLE from GAutBisim (step agreement per atom). Next: the
+class-level dispatch_ext assembly, then the subsystem lemma.
