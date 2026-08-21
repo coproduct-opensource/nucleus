@@ -786,6 +786,22 @@ theorem dispatch_ext_class {S₁ S₂ : Type} [DecidableEq A]
       refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_
       exact ih (gOthersPC P₁ a L₁) (gOthersPC P₂ a L₂) hrest hres
 
+open Classical in
+/-- **THE GENERIC-VALUATION LIFT**: guard agreement at `genW` is guard
+    agreement everywhere — `genW` is the free Boolean valuation, and
+    every valuation factors through it (`bval_gen`).  Bisimulation
+    facts (stated at `genW`) feed `baTest`/`ite_guard` (which demand
+    all valuations) with no gap. -/
+theorem pointwise_of_genW {b c : BExp T}
+    (h : ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α
+        = GkatGS.bval (GkatPlanExistence.genW T) c α) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W b x = GkatGS.bval W c x := by
+  intro X W x
+  rw [GkatPlanExistence.bval_gen W x b, GkatPlanExistence.bval_gen W x c]
+  exact h (fun t => W t x)
+
 #print axioms sreach_partner
 #print axioms firstMatch_mem_of_some
 #print axioms step_arm
@@ -794,5 +810,6 @@ theorem dispatch_ext_class {S₁ S₂ : Type} [DecidableEq A]
 #print axioms class_gather
 #print axioms gGuardPC_firstMatch
 #print axioms dispatch_ext_class
+#print axioms pointwise_of_genW
 
 end GkatCensus

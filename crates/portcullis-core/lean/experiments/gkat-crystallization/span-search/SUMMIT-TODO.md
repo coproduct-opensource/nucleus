@@ -2985,3 +2985,30 @@ facts; class_gather + dispatch_ext_class convert those into equation
 equivalence. Remaining census items: the ClassesOk constructor from
 GAutBisim (choose entries = occurring (class, action) pairs), the
 subsystem lemma, dead-region decomposition, rank induction.
+
+## Iteration 104 — the valuation lift + THE RESIDUAL-PRESERVATION ANALYSIS
+
+**`pointwise_of_genW`** (zero axioms): guard agreement at genW lifts
+to all valuations (genW is free; bval_gen factors every valuation
+through it). Bisimulation facts now feed baTest/ite_guard directly.
+
+**Analysis — the ClassesOk constructor's subtlety found**: positional
+stripping does NOT preserve dispatch-matching for raw lists — a
+SHADOWED arm (never firing in the full dispatch, different class)
+becomes live in the residual after its shadower is stripped,
+producing pointwise-unequal residual guards even though the full
+dispatches match. Counterexample: [(⊤,a,X)] vs
+[(⊤,a,X′),(⊤,b,Y)] — matched full dispatches, mismatched residuals.
+
+**Resolution: CLEANEDNESS.** In cleaned lists every arm's effective
+region is nonempty, so equal class-action firing functions force
+region-by-region arm matching, and stripping by (class, action)
+preserves the correspondence. The ClassesOk constructor must
+therefore be built over cleanAut arm lists — consistent with the
+route (the quotient pipeline already cleans), but the constructor's
+hypotheses must carry cleanedness. This is exactly the predicted
+layer-bridging friction, now precisely located.
+
+Next: the residual-preservation lemma for cleaned dispatches (the
+constructor's core), then the ClassesOk constructor from GAutBisim +
+cleanedness, then the subsystem lemma.
