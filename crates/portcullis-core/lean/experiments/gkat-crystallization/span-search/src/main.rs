@@ -5959,16 +5959,21 @@ fn exhaustive<const NA: usize>() {
                 || calculus_solves(&a, c, 6)
                 || calculus_solves(&a, &scc_with_context(&a, c, &sing), 6));
             if solved { return false; }
-            // ONLY SOLVABLE AUTOMATA COUNT AS FAILURES.  `nested` is the WRONG
-            // filter: run that way this enumeration reported 80 "unsolved" at
-            // NA=2 k=3 and 102 at NA=3 k=2, every one `eliminable=false` and
-            // hand-confirmed genuinely unsolvable.  `nested` is NECESSARY, not
-            // sufficient, on automata that did not arise from expressions —
-            // 205's reading of the characterization was too strong.
-            symbolic_eliminable_raw(&a)
+            // ONLY SOLVABLE AUTOMATA COUNT AS FAILURES — and solvability is now
+            // decided by CONSTRUCTION, not by an oracle.  The two oracles tried
+            // before both failed here: `nested` admits unsolvable automata
+            // (205's reading was too strong), and `symbolic_eliminable_raw` is
+            // wrong in BOTH directions (213, 214) — it produced the 80/102
+            // phantoms at k<=3 and the 720 phantoms at k=4.
+            //
+            // `synth` returns an expression or nothing, so a hit here is a
+            // WITNESS that this automaton is solvable while the calculus could
+            // not solve it: a real counterexample.  It runs only on calculus
+            // failures, which is why an exponential search is affordable.
+            synth(&a, 0, synth_size(), seq_len(NA)).is_some()
         }).collect();
         println!("  exhaustive NA={NA} k={k}: {total} automata; \
-            SOLVABLE (elimination oracle) but UNSOLVED by the calculus: {}", hits.len());
+            SOLVABLE (witness from brute-force search) but UNSOLVED by the calculus: {}", hits.len());
         for &code in hits.iter().take(4) {
             let mut a = Aut::<NA>::blank();
             a.k = k as u8;
@@ -5997,6 +6002,34 @@ fn exhaustive<const NA: usize>() {
                 println!("      q{s}: hl={:04b} st=[{}]", a.hl[s], row.join(","));
             }
         }
+    }
+}
+
+/// Expression-size bound for the brute-force search.  A NEGATIVE from `synth`
+/// means "no expression of at most this size", never "unsolvable" — so this
+/// constant is the strength of every negative result the enumeration reports,
+/// and it is stated rather than buried.
+fn synth_size() -> usize {
+    std::env::var("PAD_SYNTH_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(10)
+}
+
+/// Guarded-string length bound for the behaviour signature, DERIVED from `NA`
+/// so the signature fits a `u128`.
+///
+/// This was a hard-coded 5, which is a silent-vacuity bug: at NA=3 that is
+/// 3+9+27+81+243 = 363 strings, `synth` bails on `seqs.len() > 128` and returns
+/// `None` every single time — so the enumeration's filter never fires and its
+/// "0 counterexamples" means nothing.  Derive the bound instead, and let
+/// `synth` announce loudly if it is ever asked for something it cannot
+/// represent, rather than answering `None`.
+fn seq_len(na: usize) -> usize {
+    let mut l = 1;
+    let mut total = 0usize;
+    loop {
+        let next = total + na.pow(l as u32);
+        if next > 128 { return l - 1; }
+        total = next;
+        l += 1;
     }
 }
 
@@ -6036,7 +6069,10 @@ fn synth<const NA: usize>(q: &Aut<NA>, start: usize, maxsize: usize, l: usize)
     -> Option<Ex>
 {
     let seqs = all_seqs::<NA>(l);
-    if seqs.len() > 128 { return None; }
+    assert!(seqs.len() <= 128,
+        "synth: {} guarded strings exceeds the 128-bit signature at NA={NA}, l={l} — \
+         this silently returned None before, making every negative VACUOUS",
+        seqs.len());
     let sig = |e: &Ex| -> u128 {
         let mut s: u128 = 0;
         for (i, w) in seqs.iter().enumerate() {

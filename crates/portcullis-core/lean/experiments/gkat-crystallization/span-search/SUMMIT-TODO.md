@@ -9826,3 +9826,50 @@ BOUNDED negative, not a proof of unsolvability.
 solvability filter instead of the oracle.  That is the first exhaustive test in
 this development whose every verdict is verified in both directions — and the
 first that could produce a counterexample I would believe.
+
+---
+
+## 215 — THE FIRST FULLY-VERIFIED EXHAUSTIVE ZERO, AND A VACUITY BUG CAUGHT IN THE SAME RUN.
+
+**`synth` is now the exhaustive enumeration's solvability filter**, replacing
+two discredited oracles.  It runs only where the calculus FAILS — rare — so an
+exponential search is affordable, and a hit there is a WITNESS that the
+automaton is solvable while the calculus could not solve it: a real
+counterexample, not an oracle verdict.
+
+**Result, NA=2, every automaton with k <= 3:**
+
+    k=2:    256 automata   solvable-but-unsolved: 0
+    k=3: 15 625 automata   solvable-but-unsolved: 0     (54s)
+
+**This is the first exhaustive result in this development whose every verdict is
+verified in both directions** — solvable by exhibited expression, unsolved by
+language-checked search, no oracle anywhere.
+
+**And in the same run, a silent-vacuity bug in the new instrument.**  The
+guarded-string bound for the behaviour signature was a hard-coded 5.  At NA=3
+that is 3+9+27+81+243 = 363 strings, which exceeds the 128-bit signature, so
+`synth` hit its `seqs.len() > 128` guard and returned `None` — EVERY TIME.  The
+filter never fired, and the NA=3 line would have read "0 counterexamples"
+while testing nothing at all.  I nearly published it.
+
+Fixed two ways: the bound is now DERIVED from `NA` (`seq_len`: 6 for NA=2, 4
+for NA=3, 3 for NA=4 — NA=2 is now stronger than before, 126 strings against
+62), and the silent `return None` is now an `assert!` that says exactly why a
+negative would be vacuous.  A bounds check that answers "no" is
+indistinguishable from a real "no"; it must refuse to answer instead.  NA=3 now
+runs genuinely slowly, which is the evidence that the filter is firing.
+
+**That is the third silent-vacuity class this session** — 203's dead failure
+dump, 210's guard that quietly discarded solutions, and now this.  All three
+had the same shape: a fast path that returns the FAVOURABLE answer when it
+cannot do the work.
+
+**Odds: 77%, held.**  A real gain — the first exhaustive zero verified in both
+directions — offset by finding another way my own instrument was reporting
+success without testing anything.  The NA=2 k<=3 result stands on its own and
+is not affected by the bug (62 strings was under the limit, so that filter was
+firing).  The NA=3 figure from the same run is WITHDRAWN.
+
+**Next.**  NA=2 k=4 (1 679 616 automata) with the verified filter, and NA=3
+k<=3 now that its search actually runs.
