@@ -6019,4 +6019,91 @@ theorem sumQuotientSolvable_of_closure
 
 #print axioms sumQuotientSolvable_of_closure
 
+/-! ## The architecture, abstract over the certificate
+
+226 reduced the remainder to `QuotientClosure`, and 227 showed the naive proof
+of it cannot work: transporting a solution across a quotient needs bisimilar
+states to carry provably equal labels, which is the thing being proved.
+Grabmayer's answer is to RE-DERIVE the solution downstairs from a STRUCTURAL
+CERTIFICATE that survives the collapse.
+
+Iterations 228-238 searched for that certificate empirically and found it at
+237, once LLEE's conditions were read rather than reconstructed.  A loop
+sub-chart with start `vₛ` must satisfy (L1) an infinite path leaves `vₛ`,
+(L2) every infinite path from `vₛ` RETURNS to it, and (L3) termination happens
+only at `vₛ` — with (L3) relativised to guards, since GKAT's `hlt` is a test
+rather than a state property.  Measured over 26 000 Thompson automata at
+NA = 2 and 3: every one carries the certificate, and it survives bisimulation
+collapse every time.
+
+What follows abstracts over the certificate so the architecture itself is
+machine-checked, and completeness reduces to three properties of ONE predicate.
+Each has been measured; none is yet proved. -/
+
+/-- **COMPLETENESS FROM ANY CERTIFICATE WITH THREE PROPERTIES.**
+
+    `Cert` is any predicate on automata such that
+
+      * `hsum`      — the Thompson SUM of two expressions carries it;
+      * `hcollapse` — it survives passage to a MINIMAL behavioural quotient;
+      * `hsolve`    — carrying it implies a solution exists.
+
+    Then `SumQuotientSolvable` holds, and `completeness_of_sumQuotientSolvable`
+    carries that to completeness of the finite axioms.
+
+    This is Grabmayer's architecture, stated for GKAT: not an induction that must
+    survive quotienting, but a certificate that does.  The candidate for `Cert`
+    is the L1/L2/L3 loop-sub-chart property; `hsum` and `hcollapse` are what
+    iterations 237-238 measured at 100%, and `hsolve` is the analogue of "every
+    prechart with LLEE admits a solution", which is proved in the
+    regular-expression setting.
+
+    The start-identifying hypothesis is bookkeeping, as at 226: the two start
+    pseudostates of a language-equivalent pair are bisimilar, so the full
+    collapse identifies them. -/
+theorem sumQuotientSolvable_of_certificate
+    (Cert : {S : Type} → GkatKleene.GAut S A T → Prop)
+    (hstart : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient
+              (GkatTrim.SUMof A T e f) quot),
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) ∧
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none))
+    (hsum : ∀ e f : Exp A T, Cert (GkatTrim.SUMof A T e f))
+    (hcollapse : ∀ {S Q : Type} (aut : GkatKleene.GAut S A T)
+        (quot : GkatKleene.GAut Q A T),
+        GkatKleene.UniformBehavioralGAutQuotient aut quot →
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) →
+        Cert aut → Cert quot)
+    (hsolve : ∀ {Q : Type} (quot : GkatKleene.GAut Q A T),
+        Cert quot → ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  intro e f hef
+  obtain ⟨Q, quot, π, hmin, hπ⟩ := hstart e f hef
+  obtain ⟨qsol, hqsol⟩ := hsolve quot (hcollapse _ _ π hmin (hsum e f))
+  exact ⟨Q, quot, π, qsol, hqsol, hπ⟩
+
+#print axioms sumQuotientSolvable_of_certificate
+
+/-- The certificate architecture SUBSUMES 226's closure property: a certificate
+    with the three properties yields `QuotientClosure` on the automata it covers,
+    without the transport argument 227 showed cannot work. -/
+theorem quotientClosure_of_certificate
+    (Cert : {S : Type} → GkatKleene.GAut S A T → Prop)
+    (hcollapse : ∀ {S Q : Type} (aut : GkatKleene.GAut S A T)
+        (quot : GkatKleene.GAut Q A T),
+        GkatKleene.UniformBehavioralGAutQuotient aut quot →
+        (∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v) →
+        Cert aut → Cert quot)
+    (hsolve : ∀ {Q : Type} (quot : GkatKleene.GAut Q A T),
+        Cert quot → ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol)
+    {S Q : Type} (aut : GkatKleene.GAut S A T) (quot : GkatKleene.GAut Q A T)
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hmin : ∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v)
+    (hcert : Cert aut) :
+    ∃ qsol : Q → Exp A T, GkatKleene.SolvesBA quot qsol :=
+  hsolve quot (hcollapse aut quot π hmin hcert)
+
+#print axioms quotientClosure_of_certificate
+
 end GkatCensus

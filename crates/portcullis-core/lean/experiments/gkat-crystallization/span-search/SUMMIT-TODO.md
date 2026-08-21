@@ -10965,3 +10965,53 @@ clarification rather than new evidence.  Requirements (a) and (b) are unchanged
 at 100%; NA=4 is still untested.
 
 **Next.**  Read the size-14 run; then NA=4.
+
+---
+
+## 239 — THE ARCHITECTURE IS NOW MACHINE-CHECKED, ABSTRACT OVER THE CERTIFICATE.
+
+Ten iterations of measurement found the certificate (237) and adjudicated its
+one discrepancy (238).  The measurements have done their job; this moves the
+architecture into Lean.
+
+**`sumQuotientSolvable_of_certificate`** — for ANY predicate `Cert` on automata:
+
+    hsum       the Thompson SUM of two expressions carries it
+    hcollapse  it survives passage to a MINIMAL behavioural quotient
+    hsolve     carrying it implies a solution exists
+    ──────────────────────────────────────────────────────────────
+    SumQuotientSolvable  ⟹  completeness of the finite axioms
+
+**`quotientClosure_of_certificate`** — and such a certificate yields 226's
+closure property directly, WITHOUT the transport argument 227 proved cannot
+work.  That theorem needs **no axioms at all**; the first needs only
+`propext`/`Quot.sound`.
+
+**Why abstracting over `Cert` is the right move rather than a dodge.**  It
+separates the architecture from the candidate.  The architecture is
+Grabmayer's and is now checked; the candidate is the L1/L2/L3 loop-sub-chart
+property, and if it turns out to need adjustment — as it has repeatedly — the
+chain above does not move.  It also states the obligations in a form where each
+can be attacked independently, and two of the three are exactly what 237-238
+measured at 100% over 26 000 automata.
+
+**Where each obligation stands:**
+
+    hsum       measured 100% (13 126/13 126 at NA=2 and NA=3)   unproved
+    hcollapse  measured 100% (13 126/13 126 at NA=2 and NA=3)   unproved
+    hsolve     Grabmayer's "every prechart with LLEE admits a
+               solution", proved in the regular-expression
+               setting; the GKAT analogue is what the six rules
+               do constructively                                unproved
+
+**Odds: 81%, held.**  A machine-checked restatement is not new mathematics — all
+three obligations are hypotheses — but it makes the target precise, keeps the
+architecture stable against further revisions of the certificate, and records
+that two of three are measured at 100%.  Nothing here justifies moving the
+number.
+
+**Next.**  NA=4 for `hsum` and `hcollapse` is running.  Then the first real
+proof: `hsum`, by structural induction on the expression — every Thompson
+automaton carries the certificate — which is where `loop_state_eq`,
+`loop_core_hlt` and `loop_core_trans` (all `rfl`, from 218 and 220) should
+finally pay off, since they describe exactly the loop a `wh` introduces.
