@@ -11649,3 +11649,49 @@ what changed is that the next attempt has a reason to work.
 
 **Next.**  Restate `IsLayer` semantically via `firstMatch`, re-derive
 `wh_isLayer` and the sum lifting lemmas from it, then the `seq` layer case.
+
+---
+
+## 253 — THE SHAPE THAT COVERS BOTH CASES, DESIGNED AND NOT YET LANDED.
+
+252 concluded `IsLayer` must become semantic.  Before refactoring to `firstMatch`
+— which would break the SYNTACTIC rank proofs in `layered_sum` and
+`layered_seq_acyclic`, both of which decompose transition-list membership — I
+looked for a syntactic shape general enough for both constructors.  There is one:
+
+    base.trans s = pre ++ post
+    sys.trans s  = pre ++ extra ++ post.map (fun tr => (¬b ∧ tr.1, tr.2))
+                   with every guard in `extra` implying `b`
+
+`wh` is the case `post = []`: `CoreHaltDisjoint` keeps the back edges from
+colliding with anything, so appending is faithful and 246 got away with it.
+`seq` is `pre = (L'.trans s).map inl`, `post =` the right half's ENTRY block —
+guarded by `hlt`, exactly where the back edges live, so it must be RESTRICTED to
+`¬b` rather than left alone.  One shape, both constructors, and the rank proofs
+survive because membership still decomposes.
+
+**Not landed.**  Changing the field ripples into `wh_isLayer`,
+`sum_isLayer_left` and `sum_isLayer_right`, and I could not finish all three
+within this iteration.  **The file was reverted to green rather than committed
+with `sorryAx` in it** — the repo has held zero `sorry` in this cluster
+throughout, and a half-migrated definition would silently weaken every theorem
+downstream of it while still printing axioms lines that look fine.
+
+**What is actually owed**, so the next attempt is bookkeeping rather than
+rediscovery:
+
+    wh_isLayer         pre = base.trans s, extra = back edges, post = []
+                       (two `List.append_nil` rewrites)
+    sum_isLayer_left   pre' = pre.map inl, extra' = extra.map inl,
+                       post' = post.map inl; needs
+                       (post.map restrict).map inl = (post.map inl).map restrict,
+                       which is `List.map_map` on both sides
+    sum_isLayer_right  symmetric
+    layered_seq        then available for the first time
+
+**Odds: 81%, held.**  A design step and a clean revert.  Reverting is the right
+call and costs an iteration; committing a partially-migrated `IsLayer` would have
+cost more, because every theorem above it would still typecheck against the old
+shape while the new one was unproved.
+
+**Next.**  Land the shape across all three lemmas in one go, then `layered_seq`.
