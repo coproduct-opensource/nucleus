@@ -1118,3 +1118,6 @@ lean_lib «GkatSumQuotientProofs» where
 
 lean_lib «GkatGapWitnessProofs» where
   roots := #[`GkatGapWitnessProofs]
+
+lean_lib «GkatElimProofs» where
+  roots := #[`GkatElimProofs]

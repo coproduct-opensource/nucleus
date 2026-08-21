@@ -2042,3 +2042,39 @@ Remaining campaign: generalize to FiniteAxiomsCompleteBA (arbitrary
 programs — hierarchical clusters, general census machinery); then
 STEELMAN HARDENING (statement kernel, model equivalence, cleanAutD,
 whole-chain de-choice, uleDec differential testing, claim wording).
+
+## Iteration 73 — THE GENERALIZATION DESIGN (FiniteAxiomsCompleteBA campaign opens)
+
+Deep analysis + recon of the Kleene-direction machinery (WNAutE:
+Exp-labeled generalized automaton, self-loop + strictly-descending
+exits, `wnSolE_solves` via `salomaa_solution_exists` — the terminal
+form of state elimination, ALREADY certified).
+
+**The design**: general Gaussian elimination needs NO structural
+assumption on same-rank SCCs (no feedback vertex, no well-nestedness):
+
+- Forward elimination over any linear order of a rank class: at step i,
+  substitute earlier parametric forms, MERGE the state's self-arms
+  (multi_gather/arms_merge — bodies are action-headed ⟹ productive ⟹
+  w3 applies), Salomaa-close ⟹ parametric form in LATER unknowns only.
+  The last state closes fully; back-substitute.
+- The naive Brzozowski–McCluskey obstruction (composite arms through an
+  eliminated state sharing one entry guard but multiple targets — the
+  determinism violation that motivated well-nestedness) is DODGED
+  because we eliminate by SUBSTITUTION INTO EQUATIONS, not by arm
+  rewiring: multi-target continuations stay inside the substituted
+  expression.
+- Formalization vehicle: expression-labeled automata (ELabAut,
+  generalizing GAut arms to (BExp × Exp × S)) + a roles interface +
+  ONE-STEP ELIMINATION lemma (role-coverage of the u-substituted
+  automaton lifts to the original) + induction on rank-class size,
+  terminating at WNAutE/wnSolE.
+- This subsumes the walked AND chord assemblies as special cases and
+  would give: EVERY canonical quotient is role-covered ⟹
+  FiniteAxiomsCompleteBA (with the census/liveness side conditions the
+  fragments discharge per-program — the remaining general work there:
+  general cover machinery).
+
+Foundation laid this iteration: GkatElimProofs.lean with ELabAut,
+foldTLE/eqRHSEL, ERole (fold/salomaaE/equivFold analogues), the
+GAut → ELabAut embedding, and roles transfer.
