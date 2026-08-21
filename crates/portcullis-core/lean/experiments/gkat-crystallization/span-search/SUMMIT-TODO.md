@@ -8242,3 +8242,63 @@ differing everywhere, one loop with an exit in the middle of its body.
 Either they are solvable by a further move — and then that move is the next
 general mechanism — or one of them is the counterexample this campaign has
 been unable to produce for 187 iterations.
+
+---
+
+## Iteration 188 — ALL 23 ACCOUNTED FOR: exit absorption is the second move
+
+187 left five resistant instances that gated identification cannot reach —
+a two-state SCC differing at every atom, giving a loop whose body has an
+EARLY EXIT.  **All five are solvable, by one observation: the escape
+branch is not a break.**
+
+    X2 = wh (a0∨a1∨a2) p ; test a3
+    X0 = wh (a0∨a1) (p ; ite a1 (p ; X2) p) ; test (a2∨a3)
+    X1 = ite a1 (p ; X2) (p ; X0)
+
+Verified before claiming: exact language equality with the automaton on
+every guarded string up to eight actions — 8116 / 9322 / 9841 strings.
+
+**WHY IT WORKS.**  `X2` terminates only at `a3`.  `a3` is NOT in the outer
+guard `a0∨a1`, so after the escape control returns to the loop head, the
+guard rejects, and **the loop's own exit does the break's work**; and `a3`
+IS in the trailing test `a2∨a3`, so that exit accepts.  The mid-body exit
+is absorbed into the loop's normal exit and the branch is simply inlined.
+
+**Checked on all five**: the escape continuation's halt atoms lie outside
+the loop guard and inside the trailing test, every time.
+
+**LANDED: `GkatCycle.exit_absorb`, ZERO AXIOMS.**  A continuation
+terminating only inside a region `r` absorbs a following loop-and-test
+when `r ⟹ c` and `c ⟹ ¬g`.  It is `park_absorb` lifted from a test to an
+arbitrary continuation — the lemma has been in this file since the parked
+stratum, one generalization away from this use.
+
+**THE TALLY, at NA=4 over 240000 pairs:**
+
+    lattice-resistant instances                    23
+      solved by gated_unknown_identification (186) 18
+      solved by exit_absorb (188)                   5
+      UNACCOUNTED FOR                               0
+
+**Every measured instance is now accounted for.**  Two moves beyond
+classical elimination do it: IDENTIFY two unknowns on a region that cannot
+tell them apart, and ABSORB a mid-body exit into the loop's own exit.
+Both are small, both are provable from the finite axioms, and both were
+found by taking a concrete resistant instance seriously rather than by
+generalizing.
+
+**Odds: 50% → 58%.**  This is a real update and I want to say why it is
+not larger.  What changed: the resistant set is no longer a mystery — it
+has a complete two-move account, and the moves are general mechanisms in
+Lean, not case analysis.  What did NOT change: these are 23 instances out
+of a generator's output, the moves are not proved SUFFICIENT in general,
+and no theorem yet says every quotient yields to them.  The gap between
+"every measured instance falls" and "every instance falls" is exactly the
+gap this problem has always been.  The field's prior still stands.
+
+**NEXT: prove a sufficiency theorem.**  The target is now clean —
+elimination, plus gated identification, plus exit absorption, solves every
+behavioural quotient of a Thompson sum.  That is a statement about a
+three-rule calculus rather than about shapes, and it is the first time the
+remainder has had that form.

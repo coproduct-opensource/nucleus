@@ -2181,4 +2181,48 @@ theorem nested_chord_assembly_roles (aut : GAut S A T) (rank : S → Nat)
 #print axioms asmSolN_eq
 #print axioms nested_chord_assembly_roles
 
+/-! ### EXIT ABSORPTION — the second move the resistant instances need
+
+    Iteration 187 left five resistant instances that
+    `gated_unknown_identification` cannot reach: a two-state SCC whose
+    members differ at EVERY atom, giving a loop whose body has an EARLY
+    EXIT into a continuation that does something else entirely.
+
+    They are all solvable, and by one observation: **the escape branch is
+    not a break.**  Its continuation terminates only at atoms where the
+    loop guard ALREADY FAILS, so control returns to the loop head, the
+    guard rejects, and the loop's own exit does the work — and the
+    trailing test after the loop accepts exactly there.  So the branch can
+    be INLINED IN THE BODY and no break is needed.
+
+    Verified on the measured instance: with `X2 = wh (a0∨a1∨a2) p ; test a3`,
+
+        X0 = wh (a0∨a1) (p ; ite a1 (p ; X2) p) ; test (a2∨a3)
+
+    has exactly the automaton's language (8116 guarded strings up to eight
+    actions, exact set equality), and all five resistant instances satisfy
+    the two side conditions.
+
+    Algebraically the move is `park_absorb` lifted from a test to an
+    arbitrary continuation. -/
+
+/-- **EXIT ABSORPTION.**  A continuation that terminates only inside a
+    region `r` absorbs a following loop-and-test, provided `r` implies the
+    trailing test and the trailing test excludes the loop guard.
+
+    So a mid-body branch running `K` may be inlined into the body of
+    `wh g B ; test c`: after `K` the loop is a no-op. -/
+theorem exit_absorb {r c g : BExp T} {K B : Exp A T}
+    (hK : EquivBA K (.seq K (.test r)))
+    (himp : GuardImplies r c)
+    (hexcl : GuardImplies c (.not g)) :
+    EquivBA (.seq K (.seq (.wh g B) (.test c))) K := by
+  refine EquivBA.trans (EquivBA.seq_c hK (EquivBA.base (Equiv.refl _))) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.s1 K (.test r) _)) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl K))
+    (EquivBA.symm (park_absorb B himp hexcl))) ?_
+  exact EquivBA.symm hK
+
+#print axioms exit_absorb
+
 end GkatCycle
