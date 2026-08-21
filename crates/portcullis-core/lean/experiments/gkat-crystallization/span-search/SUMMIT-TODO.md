@@ -2180,3 +2180,27 @@ factoring, syntactic substitution, and closing. Next: the schedule —
 a per-SCC elimination order + the induction assembling ERole/StateRole
 coverage for automata satisfying SINGLE-EXIT hierarchy; then the
 census bridge to canonical quotients.
+
+## Iteration 77 — schedule machinery (all zero axioms)
+
+New in GkatElimProofs.lean, all zero axioms first try:
+- `CallOnly` (call support) + `resolveT_congr` (resolution reads only
+  the support) + `callOnly_mono` + `callOnly_substT` (substitution
+  support arithmetic).
+- **`backSol`** — the back-substitution solution: structural recursion
+  over the schedule list; head state's value = its closed tree
+  resolved against the tail's solution. `backSol_head/ne/ext`.
+- **`stepSubst`** — the left-to-right cascade substitution of the
+  closed prefix (maintains the forward-parametric invariant: each
+  closed tree calls only later states + externals).
+- **`resolve_stepSubst`** — the cascade is resolution-invisible when
+  the assignment solves every closed state as its tree (foldl
+  induction over resolve_substT).
+
+Remaining for the general assembly: THE SCHEDULE SOUNDNESS THEOREM —
+certificate structure per step (split br G tl rest with AllCalls-self
+tl + support condition, or fold step), and the induction: backSol
+solves every scheduled state's ORIGINAL equation (via
+resolve_stepSubst + elim_close + resolveT_congr with the support
+invariant), plus externals untouched. Then: bridge to ERole/StateRole,
+and the census side (SINGLE-EXIT hierarchy for canonical quotients).

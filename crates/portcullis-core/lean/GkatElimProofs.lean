@@ -414,4 +414,146 @@ theorem elim_close {S : Type} (sol : S → Exp A T) (u : S) (G : BExp T)
 
 #print axioms elim_close
 
+/-! ## The schedule: back-substitution and call support
+
+    A schedule closes states in order; each closed tree calls only
+    LATER states and externals (the forward-parametric invariant), so
+    the solution assigns values by structural recursion from the last
+    step backwards.  Resolution respects call support, which is what
+    lets the soundness induction replace tails. -/
+
+/-- Calls restricted to a support. -/
+def CallOnly {S : Type} (P : S → Prop) : RTree S A T → Prop
+  | .halt _ => True
+  | .call _ s => P s
+  | .br _ l r => CallOnly P l ∧ CallOnly P r
+  | .pre _ t => CallOnly P t
+
+/-- Resolution only reads the solution on the call support. -/
+theorem resolveT_congr {S : Type} {sol₁ sol₂ : S → Exp A T}
+    {P : S → Prop} (h : ∀ s, P s → sol₁ s = sol₂ s) :
+    ∀ t : RTree S A T, CallOnly P t →
+      resolveT sol₁ t = resolveT sol₂ t := by
+  intro t
+  induction t with
+  | halt hb => intro _; rfl
+  | call e s =>
+      intro hc
+      show Exp.seq e (sol₁ s) = Exp.seq e (sol₂ s)
+      rw [h s hc]
+  | br g l r ihl ihr =>
+      intro hc
+      show Exp.ite g (resolveT sol₁ l) (resolveT sol₁ r) = _
+      rw [ihl hc.1, ihr hc.2]
+      rfl
+  | pre e t ih =>
+      intro hc
+      show Exp.seq e (resolveT sol₁ t) = _
+      rw [ih hc]
+      rfl
+
+/-- Monotonicity of call support. -/
+theorem callOnly_mono {S : Type} {P Q : S → Prop}
+    (h : ∀ s, P s → Q s) :
+    ∀ t : RTree S A T, CallOnly P t → CallOnly Q t := by
+  intro t
+  induction t with
+  | halt hb => intro _; exact True.intro
+  | call e s => intro hc; exact h s hc
+  | br g l r ihl ihr => intro hc; exact ⟨ihl hc.1, ihr hc.2⟩
+  | pre e t ih => intro hc; exact ih hc
+
+/-- Substitution's support: calls of the substituted tree lie in the
+    original support minus `u`, plus the closed tree's support. -/
+theorem callOnly_substT {S : Type} [DecidableEq S] {P Q : S → Prop}
+    (u : S) (C : RTree S A T) (hC : CallOnly Q C)
+    (hPQ : ∀ s, P s → s ≠ u → Q s) :
+    ∀ t : RTree S A T, CallOnly P t →
+      CallOnly Q (substT u C t) := by
+  intro t
+  induction t with
+  | halt hb => intro _; exact True.intro
+  | call e s =>
+      intro hc
+      show CallOnly Q (if s = u then .pre e C else .call e s)
+      by_cases hs : s = u
+      · rw [if_pos hs]; exact hC
+      · rw [if_neg hs]; exact hPQ s hc hs
+  | br g l r ihl ihr => intro hc; exact ⟨ihl hc.1, ihr hc.2⟩
+  | pre e t ih => intro hc; exact ih hc
+
+/-- The back-substitution solution: the head step's value resolves its
+    closed tree against the tail's solution. -/
+def backSol {S : Type} [DecidableEq S] (ext : S → Exp A T) :
+    List (S × RTree S A T) → S → Exp A T
+  | [] => ext
+  | (u, C) :: rest => fun s =>
+      if s = u then resolveT (backSol ext rest) C
+      else backSol ext rest s
+
+theorem backSol_head {S : Type} [DecidableEq S] (ext : S → Exp A T)
+    (u : S) (C : RTree S A T) (rest : List (S × RTree S A T)) :
+    backSol ext ((u, C) :: rest) u
+      = resolveT (backSol ext rest) C := by
+  show (if u = u then _ else _) = _
+  rw [if_pos rfl]
+
+theorem backSol_ne {S : Type} [DecidableEq S] (ext : S → Exp A T)
+    (u : S) (C : RTree S A T) (rest : List (S × RTree S A T))
+    (s : S) (h : s ≠ u) :
+    backSol ext ((u, C) :: rest) s = backSol ext rest s := by
+  show (if s = u then _ else _) = _
+  rw [if_neg h]
+
+/-- Off-schedule states keep their external values. -/
+theorem backSol_ext {S : Type} [DecidableEq S] (ext : S → Exp A T) :
+    ∀ (steps : List (S × RTree S A T)) (s : S),
+      (∀ p ∈ steps, s ≠ p.1) → backSol ext steps s = ext s := by
+  intro steps
+  induction steps with
+  | nil => intro s _; rfl
+  | cons hd rest ih =>
+      intro s hs
+      obtain ⟨u, C⟩ := hd
+      rw [backSol_ne ext u C rest s (hs (u, C) (List.mem_cons_self ..))]
+      exact ih s (fun p hp => hs p (List.mem_cons_of_mem _ hp))
+
+/-- The left-to-right cascade substitution of a closed prefix. -/
+def stepSubst {S : Type} [DecidableEq S]
+    (closed : List (S × RTree S A T)) (t : RTree S A T) : RTree S A T :=
+  closed.foldl (fun acc p => substT p.1 p.2 acc) t
+
+theorem stepSubst_nil {S : Type} [DecidableEq S] (t : RTree S A T) :
+    stepSubst ([] : List (S × RTree S A T)) t = t := rfl
+
+theorem stepSubst_cons {S : Type} [DecidableEq S]
+    (u : S) (C : RTree S A T) (closed : List (S × RTree S A T))
+    (t : RTree S A T) :
+    stepSubst ((u, C) :: closed) t = stepSubst closed (substT u C t) := rfl
+
+/-- Cascade substitution is resolution-sound: if the assignment solves
+    every closed state as its closed tree, the cascade is invisible. -/
+theorem resolve_stepSubst {S : Type} [DecidableEq S]
+    (sol : S → Exp A T) :
+    ∀ (closed : List (S × RTree S A T)),
+      (∀ p ∈ closed, sol p.1 = resolveT sol p.2) →
+      ∀ t : RTree S A T,
+        resolveT sol (stepSubst closed t) = resolveT sol t := by
+  intro closed
+  induction closed with
+  | nil => intro _ t; rfl
+  | cons hd rest ih =>
+      intro hall t
+      obtain ⟨u, C⟩ := hd
+      rw [stepSubst_cons]
+      rw [ih (fun p hp => hall p (List.mem_cons_of_mem _ hp))
+        (substT u C t)]
+      exact resolve_substT sol u C
+        (hall (u, C) (List.mem_cons_self ..)) t
+
+#print axioms resolveT_congr
+#print axioms callOnly_substT
+#print axioms backSol_ext
+#print axioms resolve_stepSubst
+
 end GkatElim
