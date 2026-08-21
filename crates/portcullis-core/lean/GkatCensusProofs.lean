@@ -5867,4 +5867,60 @@ theorem thompsonUnif_wh_of_residual (b : BExp T) (e : Exp A T)
 #print axioms loop_standard_eq
 #print axioms thompsonUnif_wh_of_residual
 
+/-- The loop's halt is the body's, restricted to `¬b`.  Definitional, and it
+    pins where a loop can differ from its body: only where the body halts and
+    the guard holds. -/
+theorem loop_core_hlt (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State) :
+    (GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt s
+      = .and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s) (.not b) :=
+  rfl
+
+/-- And there the halt becomes a BACK EDGE into the body's own entry
+    transitions, guarded by `hlt_body ∧ b`. -/
+theorem loop_core_trans (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State) :
+    (GkatThompson.certifiedThompson A T (.wh b e)).aut.core.trans s
+      = (GkatThompson.certifiedThompson A T e).aut.core.trans s
+        ++ (GkatThompson.certifiedThompson A T e).aut.initTrans.map
+            (fun tr => (BExp.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
+              (BExp.and b tr.1), tr.2)) :=
+  rfl
+
+/-- **WHAT THE `wh` STEP ACTUALLY NEEDS: A PARAMETRIC INDUCTION HYPOTHESIS.**
+
+    219 measured the residual — loop-bisimilar but not body-bisimilar — and
+    found it non-empty at 3-6%, so `ThompsonUnif e` is too weak to carry the
+    `wh` step.  The diagnosis is visible in `loop_core_hlt` and
+    `loop_core_trans`: a loop is the body with its halts REDIRECTED, halting
+    only under `¬b` and looping back under `b`.  Asking about the body's own
+    bisimilarity is asking the wrong question, because the states in question
+    are never compared in the body — they are compared in the REDIRECTED body.
+
+    The repo's Thompson development is already parametric for exactly this
+    reason (`ParamSolvesBA sys sol finish`, and uniqueness quantified over
+    `finish`).  The induction hypothesis has to be parametric too: unification
+    for the body under ANY loop-redirection, with an ARBITRARY trailing
+    continuation. -/
+def ThompsonUnifP (e : Exp A T) : Prop :=
+  ∀ (c : BExp T) (F : Exp A T) s₀ u v,
+    GkatPlanExistence.GenBisimilar (coreGAut (.wh c e) s₀) u v →
+      EquivBA (.seq ((GkatThompson.certifiedThompson A T e).standard u) F)
+        (.seq ((GkatThompson.certifiedThompson A T e).standard v) F)
+
+/-- **The `wh` step, from the parametric hypothesis — no residual left.**
+    Instantiate the redirection at the loop's own guard and the continuation at
+    the loop itself.  `loop_state_eq` and `loop_standard_eq` make both sides
+    definitionally the right thing, so this is a direct application: the
+    residual case 219 measured is absorbed because the parametric hypothesis
+    compares states in the redirected body, which is where the loop compares
+    them. -/
+theorem thompsonUnif_wh_of_param (b : BExp T) (e : Exp A T)
+    (h : ThompsonUnifP e) : ThompsonUnif (.wh b e) :=
+  fun s₀ u v hb => h b (.wh b e) s₀ u v hb
+
+#print axioms loop_core_hlt
+#print axioms loop_core_trans
+#print axioms thompsonUnif_wh_of_param
+
 end GkatCensus

@@ -10088,3 +10088,53 @@ route I can see is a class-constant solution for the LOOP automaton plus
 `class_constant_solves_of_reps` wants unification at successors, which is what
 is being proved.  Whether the loop's structure supplies a well-founded order
 there is the next question.
+
+---
+
+## 220 — THE RESIDUAL WAS AN ARTIFACT OF THE WRONG INDUCTION HYPOTHESIS.
+
+219 measured the `wh` residual at 3-6% and concluded the step needs new
+mathematics.  It needs a different HYPOTHESIS, and the diagnosis is visible in
+two more `rfl` facts:
+
+    loop_core_hlt    loop halt = body halt ∧ ¬b
+    loop_core_trans  and there the halt becomes a BACK EDGE into the body's own
+                     entry transitions, guarded by hlt_body ∧ b
+
+**A loop is the body with its halts REDIRECTED.**  So asking whether two states
+are bisimilar IN THE BODY is asking the wrong question — the loop never compares
+them there.  It compares them in the redirected body, and `ThompsonUnif e`
+says nothing about that.  The 3-6% residual was measuring my hypothesis's
+weakness, not an obstruction in the mathematics.
+
+**The repo was already parametric for exactly this reason.**
+`ParamSolvesBA sys sol finish` — solutions relative to a trailing continuation,
+with uniqueness quantified over `finish`.  My `ThompsonUnif` used the
+non-parametric form.  Corrected:
+
+    ThompsonUnifP e := for EVERY redirection guard `c` and EVERY trailing `F`,
+                       states bisimilar in the `c`-redirected body carry
+                       EquivBA-equal `std s ; F`
+
+**`thompsonUnif_wh_of_param` then discharges the whole `wh` step in one line**
+— instantiate the redirection at the loop's own guard and the continuation at
+the loop itself; `loop_state_eq` and `loop_standard_eq` make both sides
+definitionally right.  No residual, no case split, no appeal to rules 5 or 6.
+Zero axioms beyond `propext`/`Quot.sound`.
+
+**The honest cost, stated because it is real.**  Strengthening the hypothesis
+moves the difficulty rather than removing it: proving `∀ e, ThompsonUnifP e`
+now has its OWN `wh` case, which redirects an already-redirected system —
+double redirection.  What has been bought is that the difficulty is now in a
+statement the repo's machinery was built for, instead of in a statement that
+was structurally unable to express the comparison being made.
+
+**Odds: 77%, up 1, recovering 219's drop.**  219 charged the theorem for what
+turned out to be my own mis-specification; that charge is refunded, and not
+more.  The `wh` step of the ORIGINAL statement is now proved outright, which is
+the first of the three steps to fall, but the strengthened statement it rests on
+is not yet established.
+
+**Next.**  Redo the base cases and `of_steps` parametrically — `test` should
+still be vacuous and `act` still a one-state reflexivity — then the parametric
+`seq` and `ite` steps, and the double-redirection `wh` case.
