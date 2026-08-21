@@ -168,10 +168,21 @@ theorem reach_back_of_rank_eq {S : Type} (aut : GAut S A T) {s t : S}
     s hs (decide_eq_true (Reach.refl s))
   exact of_decide_eq_true hback
 
+open Classical in
+/-- **CLASS DISJOINTNESS**: same-rank arms are intra-SCC — distinct
+    SCCs sharing a rank have no arms between them, so rank classes are
+    disjoint unions of SCCs and blocks compose in any order. -/
+theorem same_rank_arm_mutual {S : Type} (aut : GAut S A T) {s t : S}
+    (h : Arm aut s t) (hrk : reachRank aut s = reachRank aut t)
+    (hs : s ∈ aut.states) :
+    Reach aut t s :=
+  reach_back_of_rank_eq aut (Reach.step h (Reach.refl t)) hrk hs
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
 #print axioms reachRank_hdesc
 #print axioms reach_back_of_rank_eq
+#print axioms same_rank_arm_mutual
 
 end GkatCensus

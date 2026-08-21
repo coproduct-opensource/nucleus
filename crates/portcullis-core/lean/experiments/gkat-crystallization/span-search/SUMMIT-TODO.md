@@ -2671,3 +2671,29 @@ structure is now fully characterized by ONE Nat-valued function with
 four lemmas — the enumeration construction can work rank class by
 rank class, splitting classes into SCCs by mutual-reachability, with
 no additional graph machinery.
+
+## Iteration 93 — THE BLOCK CONSTRUCTOR (first try, zero errors)
+
+The composable unit for the census, all landed in one build:
+
+- `Supp_target` — support targets strengthen under implication (with
+  off-support discipline); the lemma that lets one prefix certificate
+  serve two composition contexts.
+- `forest_prefix_supp` / `forest_prefix_ok` — the interior-prefix
+  certificates extracted standalone (generic in the exit).
+- **`scc_block_schedP`** ([propext, Quot.sound-profile via parts]): a
+  single-exit SCC block — interiors (self ∨ later ∨ port, empty halts)
+  + port (interiors ∨ self ∨ P) — certified against an ARBITRARY
+  external support P. Proof: forest prefix + port_step_schedP composed
+  by Supp_append/SchedOk_append with Supp_target re-targeting.
+
+With P abstract, blocks compose freely: multiple SCCs per rank (P :=
+other-blocks ∨ lower — legitimized by same_rank_arm_mutual: same-rank
+arms are intra-SCC, so cross-block arms don't exist), and NESTING
+(inner blocks with P := outer-continuation). The census's assembly
+side is now a Lego kit: reachRank + blocks + append + 
+sched_assembly_roles.
+
+Remaining: the top-level Lego theorem (rank classes → block lists →
+full schedule family) and then the single risk locus: single-exit
+facts for canonical quotients of Thompson sums.
