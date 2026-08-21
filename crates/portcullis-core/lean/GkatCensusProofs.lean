@@ -5003,4 +5003,161 @@ theorem eqRHS_congr_of_select {S : Type} (aut : GAut S A T)
 #print axioms selectFull_transitionBranches
 #print axioms eqRHS_congr_of_select
 
+/-! ### CLASS-CONSTANT SOLUTIONS: the quotient's equations lift for free
+
+    This repository has been carrying TWO open hypotheses under two
+    names.  `GkatSumQuotient.SumQuotientSolvable` asks for a solution of
+    a behavioural QUOTIENT of the Thompson sum; the rewired-summit line
+    asks for same-side unification, that bisimilar states of ONE
+    automaton carry EquivBA-equal labels.  They are the same hypothesis,
+    and this section proves it.
+
+    The bridge is a labelling that is CONSTANT on bisimilarity classes —
+    a quotient solution, read back on the original state space.  Two
+    facts make the identification work, and the first is new:
+
+    * `class_constant_solves_of_reps`: a class-constant labelling that
+      satisfies the equations at ONE REPRESENTATIVE of each class
+      satisfies them EVERYWHERE.  So solving the quotient really is
+      enough; nothing is lost in reading the solution back.  This is what
+      `guardedFold_select_congr` was built for — bisimilar states select
+      the same action into bisimilar targets, and on a class-constant
+      labelling those targets carry LITERALLY EQUAL labels, so no
+      circularity arises.
+
+    * `unif_of_class_constant_solution` / `class_constant_solution_of_unif`:
+      given uniqueness of solutions (which
+      `certifiedThompson_solution_unique` supplies unconditionally for
+      Thompson automata), same-side unification holds IFF a
+      class-constant solution exists.
+
+    The consequence worth stating plainly: what remains of the open
+    problem is EXISTENTIAL, not coinductive.  There is nothing left to
+    prove about bisimulation; there is an expression to exhibit. -/
+
+private theorem equivBA_of_eq {e f : Exp A T} (h : e = f) : EquivBA e f := by
+  cases h
+  exact EquivBA.base (Equiv.refl _)
+
+/-- **Bisimilar states select equal labels — when the labelling is
+    class-constant.**  This is the non-circular use of bisimilarity: the
+    targets are merely bisimilar, but a class-constant labelling gives
+    them the SAME expression, so no inductive hypothesis is consumed. -/
+theorem select_congr_of_bisim {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T)
+    (hconst : ∀ u v, GkatPlanExistence.GenBisimilar aut u v → sol u = sol v)
+    {u v : S} (hb : GkatPlanExistence.GenBisimilar aut u v)
+    (X : Type) (W : T → X → Bool) (x : X) :
+    EquivBA
+      (selectFull W x (transitionBranches (aut.trans u) sol)
+        (.test (aut.hlt u)))
+      (selectFull W x (transitionBranches (aut.trans v) sol)
+        (.test (aut.hlt v))) := by
+  obtain ⟨R, hR, huv⟩ := hb
+  obtain ⟨hhlt, hfwd, hbwd⟩ := hR u v huv
+  rw [selectFull_transitionBranches, selectFull_transitionBranches,
+    GkatPlanExistence.firstMatch_gen W x (aut.trans u),
+    GkatPlanExistence.firstMatch_gen W x (aut.trans v)]
+  cases hu : firstMatch (GkatPlanExistence.genW T)
+      (fun t => W t x) (aut.trans u) with
+  | some qt =>
+      obtain ⟨q, u'⟩ := qt
+      obtain ⟨v', hv, hrel⟩ := hfwd (fun t => W t x) q u' hu
+      have hv' : firstMatch (GkatPlanExistence.genW T)
+          (fun t => W t x) (aut.trans v) = some (q, v') := hv
+      rw [hv']
+      show EquivBA (.seq (.act q) (sol u')) (.seq (.act q) (sol v'))
+      rw [hconst u' v' ⟨R, hR, hrel⟩]
+      exact EquivBA.base (Equiv.refl _)
+  | none =>
+      cases hv : firstMatch (GkatPlanExistence.genW T)
+          (fun t => W t x) (aut.trans v) with
+      | some qt =>
+          obtain ⟨q, v'⟩ := qt
+          obtain ⟨u', hu', _⟩ := hbwd (fun t => W t x) q v' hv
+          have hu'' : firstMatch (GkatPlanExistence.genW T)
+              (fun t => W t x) (aut.trans u) = some (q, u') := hu'
+          rw [hu''] at hu
+          simp at hu
+      | none =>
+          show EquivBA (.test (aut.hlt u) : Exp A T) (.test (aut.hlt v))
+          refine EquivBA.baTest ?_
+          intro Y W' y
+          rw [GkatPlanExistence.bval_gen W' y (aut.hlt u),
+            GkatPlanExistence.bval_gen W' y (aut.hlt v)]
+          exact hhlt (fun t => W' t y)
+
+/-- **THE QUOTIENT'S EQUATIONS LIFT.**  A class-constant labelling that
+    satisfies the system at one REPRESENTATIVE of each bisimilarity class
+    satisfies it at EVERY state.
+
+    So "solve the quotient" and "solve the automaton with a
+    class-constant labelling" are the same task.  Reading a quotient
+    solution back onto the original state space costs nothing. -/
+theorem class_constant_solves_of_reps {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) (rep : S → S)
+    (hrep : ∀ s, GkatPlanExistence.GenBisimilar aut s (rep s))
+    (hconst : ∀ u v, GkatPlanExistence.GenBisimilar aut u v → sol u = sol v)
+    (hreps : ∀ s, EquivBA (sol (rep s)) (GkatKleene.eqRHS aut sol (rep s))) :
+    ∀ s, EquivBA (sol s) (GkatKleene.eqRHS aut sol s) := fun s =>
+  EquivBA.trans (equivBA_of_eq (hconst s (rep s) (hrep s)))
+    (EquivBA.trans (hreps s)
+      (eqRHS_congr_of_select aut sol (rep s) s
+        (select_congr_of_bisim aut sol hconst
+          (GkatPlanExistence.GenBisimilar.symm (hrep s)))))
+
+/-- **Same-side unification FROM a class-constant solution.**  With
+    solution uniqueness in hand — which `certifiedThompson_solution_unique`
+    supplies for Thompson automata from the finite axioms alone — a
+    class-constant solution collapses the whole statement. -/
+theorem unif_of_class_constant_solution {S : Type}
+    (aut : GkatKleene.GAut S A T) (sol solQ : S → Exp A T)
+    (hsol : ∀ s, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (hsolQ : ∀ s, EquivBA (solQ s) (GkatKleene.eqRHS aut solQ s))
+    (huniq : ∀ l r : S → Exp A T,
+        (∀ s, EquivBA (l s) (GkatKleene.eqRHS aut l s)) →
+        (∀ s, EquivBA (r s) (GkatKleene.eqRHS aut r s)) →
+        ∀ s, EquivBA (l s) (r s))
+    (hconst : ∀ u v, GkatPlanExistence.GenBisimilar aut u v → solQ u = solQ v) :
+    ∀ u v, GkatPlanExistence.GenBisimilar aut u v →
+      EquivBA (sol u) (sol v) := fun u v hb =>
+  EquivBA.trans (huniq sol solQ hsol hsolQ u)
+    (EquivBA.trans (equivBA_of_eq (hconst u v hb))
+      (EquivBA.symm (huniq sol solQ hsol hsolQ v)))
+
+/-- **A class-constant solution FROM same-side unification.**  The
+    converse: under unification the standard labelling, restricted to
+    representatives, is itself a class-constant solution.  Together with
+    `unif_of_class_constant_solution` this is an equivalence — the
+    project's two open hypotheses are one. -/
+theorem class_constant_solution_of_unif {S : Type}
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (hsol : ∀ s, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (hunif : ∀ u v, GkatPlanExistence.GenBisimilar aut u v →
+      EquivBA (sol u) (sol v)) :
+    (∀ s, EquivBA (sol (GkatPlanExistence.bisimRep aut s))
+        (GkatKleene.eqRHS aut
+          (fun t => sol (GkatPlanExistence.bisimRep aut t)) s))
+      ∧ (∀ u v, GkatPlanExistence.GenBisimilar aut u v →
+          sol (GkatPlanExistence.bisimRep aut u)
+            = sol (GkatPlanExistence.bisimRep aut v)) := by
+  constructor
+  · intro s
+    refine EquivBA.trans (EquivBA.symm
+      (hunif s (GkatPlanExistence.bisimRep aut s)
+        (GkatPlanExistence.bisimRep_bisim aut s))) ?_
+    refine EquivBA.trans (hsol s) ?_
+    exact foldr_congr_equivBA (sol₁ := sol)
+      (sol₂ := fun t => sol (GkatPlanExistence.bisimRep aut t))
+      (aut.hlt s) (aut.trans s)
+      (fun e _ => hunif e.2.2 (GkatPlanExistence.bisimRep aut e.2.2)
+        (GkatPlanExistence.bisimRep_bisim aut e.2.2))
+  · intro u v hb
+    rw [GkatPlanExistence.bisimRep_coherent aut hb]
+
+#print axioms select_congr_of_bisim
+#print axioms class_constant_solves_of_reps
+#print axioms unif_of_class_constant_solution
+#print axioms class_constant_solution_of_unif
+
 end GkatCensus

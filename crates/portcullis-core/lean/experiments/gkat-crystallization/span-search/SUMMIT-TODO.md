@@ -7044,3 +7044,88 @@ hypothesis.
 **Process note, third occurrence.**  The `cd`-into-a-relative-path
 failure silently skipped this ledger append on the first attempt, exactly
 as recorded before.  Absolute paths for heredocs, always.
+
+---
+
+## Iteration 170 — THE TWO OPEN HYPOTHESES ARE ONE, AND THE QUOTIENT LIFTS FOR FREE
+
+**First, a correction to my own plan.**  I set out today to prove that
+`sol ∘ bisimRep` solves the automaton's system — which, with
+`certifiedThompson_solution_unique` (unconditional, finite axioms only),
+would close same-side unification outright.  **It does not work, and the
+failure is instructive.**  Comparing `eqRHS aut sol (σ s)` against
+`eqRHS aut (sol∘σ) s`, the branch targets are `u` on one side and `σ u'`
+on the other with `u ~ u'`, so `σ u = σ u'` and the gap is exactly
+`sol u ≡ sol (σ u)` — the conclusion, at a different state.  **Circular.**
+Moving the comparison to `eqRHS aut (sol∘σ) (σ s)` relocates the gap
+without closing it.  Recording this so it is not attempted a fourth time:
+**`sol ∘ bisimRep` solves IFF unification holds; it is not an
+independent route to it.**
+
+**Second, a duplication caught BEFORE proving it.**  I was about to
+formalize "same-side UNIF reduces to quotient solvability" as today's
+headline.  `GkatSumQuotient.completeness_of_sumQuotientSolvable` has been
+in this repo the whole time, with `SumQuotientSolvable` as a named `Prop`
+and the reduction proved.  That file's own header records this as its
+"fourth duplication".  I grepped first this time — 169's lesson applied
+one iteration later, which is the point of writing it down.
+
+**What is actually new today.**
+
+The repository has been carrying TWO open hypotheses under two names, and
+tracking them as separate work:
+  * `SumQuotientSolvable` — a solution for a behavioural QUOTIENT of the
+    Thompson sum;
+  * same-side UNIF — bisimilar states of ONE automaton carry
+    EquivBA-equal labels.
+
+**They are the same hypothesis.**  The bridge is a labelling CONSTANT on
+bisimilarity classes: a quotient solution, read back onto the original
+state space.
+
+* `class_constant_solves_of_reps` — **THE NEW LEMMA.**  A class-constant
+  labelling that satisfies the equations at ONE REPRESENTATIVE of each
+  class satisfies them at EVERY state.  So reading a quotient solution
+  back costs nothing, and "solve the quotient" is literally "solve the
+  automaton with a class-constant labelling".
+  This is what 169's `guardedFold_select_congr` was built for, and it is
+  the NON-CIRCULAR use of bisimilarity: the branch targets are merely
+  bisimilar, but on a class-constant labelling they carry LITERALLY EQUAL
+  expressions, so no inductive hypothesis is consumed.  Contrast the
+  failed route above, where the labelling was NOT class-constant and the
+  same step demanded the conclusion.
+* `select_congr_of_bisim` — bisimilar states select equal labels under a
+  class-constant labelling.  `[propext]` only.
+* `unif_of_class_constant_solution` — UNIF from a class-constant solution
+  plus solution uniqueness.  **No axioms at all.**
+* `class_constant_solution_of_unif` — the converse.  Together: an
+  equivalence.
+
+**The consequence, stated plainly.**  What remains of the open problem is
+**EXISTENTIAL, not coinductive.**  There is nothing further to prove
+about bisimulation, quotients, or reflection.  There is an expression to
+exhibit: a class-constant solution of the trimmed Thompson sum.  Every
+line of 167–170 has been converting coinductive-looking obligations into
+this one existence question, and it is now the whole of the remainder.
+
+**This also matches where the literature says the frontier is.**  Today's
+search: "a proper characterization of solvable automata would go a long
+way towards proving a completeness theorem for GKAT", and
+"well-nestedness is only a SUFFICIENT condition for the existence of a
+solution — automata that do admit a solution exist which are not
+well-nested."  So the field's open question is solvability, and the
+repository's measurement agrees: sum-quotient solvability held on
+9221/9245 = 99.7% of instances, against a 45.4% base rate.
+
+**Odds: ~58%, unchanged.**  Today did not move the frontier; it
+identified two frontiers as one and removed the last coinductive framing
+around it.  That is consolidation, not advance, and I decline to price it
+as advance — especially after three iterations of genuine progress, where
+the temptation to extrapolate is exactly when to stop.  The field's prior
+that this problem does not close still stands.
+
+**Method note.**  Two of today's three findings were about MY OWN plan
+rather than about GKAT: one route was circular, one target was already
+proved.  Both were caught by doing the analysis and the grep BEFORE
+writing Lean.  The prover would have caught the first eventually and
+never the second.
