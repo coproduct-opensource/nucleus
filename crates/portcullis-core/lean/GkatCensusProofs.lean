@@ -1941,4 +1941,118 @@ theorem unif_sum_of_wf (e f : Exp A T) [DecidableEq A]
 #print axioms unif_bisim_of_wf
 #print axioms unif_sum_of_wf
 
+/-! ## UNIF modulo cycles — the residue, formally isolated
+
+    `unif_of_wf` asks every arm to descend.  That is more than needed:
+    an arm is harmless as soon as UNIF ALREADY HOLDS AT ITS OWN TARGET,
+    whether or not it descends.  Weakening the hypothesis to that
+    disjunction turns "the cyclic case is what's left" from a plan into
+    a theorem, and localizes the residue as tightly as it goes: not
+    "arbitrary bisimilar pairs in a cyclic class", but "the targets of
+    the arms that stay inside a class". -/
+
+open Classical in
+/-- **UNIF MODULO CYCLES**: UNIF holds as soon as every arm either
+    strictly descends the class rank, or already satisfies UNIF at its
+    own target.  Strictly stronger than `unif_of_wf`. -/
+theorem unif_of_wf_mod_cycles {S : Type} [DecidableEq A]
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (hsolves : ∀ s : S, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (rank : S → Nat)
+    (hstep : ∀ s : S, ∀ e ∈ aut.trans s,
+      rank (GkatPlanExistence.bisimRep aut e.2.2)
+          < rank (GkatPlanExistence.bisimRep aut s)
+        ∨ EquivBA (sol e.2.2)
+          (sol (GkatPlanExistence.bisimRep aut e.2.2))) :
+    ∀ s : S, EquivBA (sol s)
+      (sol (GkatPlanExistence.bisimRep aut s)) := by
+  have hcons : ∀ u u' : S, GkatPlanExistence.GenBisimilar aut u u' →
+      EquivBA (sol (GkatPlanExistence.bisimRep aut u))
+        (sol (GkatPlanExistence.bisimRep aut u')) := by
+    intro u u' hb
+    rw [GkatPlanExistence.bisimRep_coherent aut hb]
+    exact EquivBA.base (Equiv.refl _)
+  intro s
+  refine (InvImage.wf (fun x => rank (GkatPlanExistence.bisimRep aut x))
+    Nat.lt_wfRel.wf).induction
+    (C := fun x => EquivBA (sol x)
+      (sol (GkatPlanExistence.bisimRep aut x))) s ?_
+  intro x ih
+  have hstep2 : EquivBA (GkatKleene.eqRHS aut sol x)
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t)) x) := by
+    refine eqRHS_congr_equivBA aut x ?_
+    intro e he
+    rcases hstep x e he with hlt | hu
+    · exact ih e.2.2 hlt
+    · exact hu
+  have hstep3 : EquivBA
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t)) x)
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t))
+        (GkatPlanExistence.bisimRep aut x)) :=
+    equation_transport aut (GkatPlanExistence.bisimRep_bisim aut x) _ hcons
+  have hstep4 : EquivBA
+      (GkatKleene.eqRHS aut
+        (fun t => sol (GkatPlanExistence.bisimRep aut t))
+        (GkatPlanExistence.bisimRep aut x))
+      (GkatKleene.eqRHS aut sol (GkatPlanExistence.bisimRep aut x)) := by
+    refine eqRHS_congr_equivBA aut _ ?_
+    intro e he
+    refine EquivBA.symm ?_
+    rcases hstep (GkatPlanExistence.bisimRep aut x) e he with hlt | hu
+    · refine ih e.2.2 ?_
+      rw [bisimRep_idem aut x] at hlt
+      exact hlt
+    · exact hu
+  exact EquivBA.trans (hsolves x)
+    (EquivBA.trans hstep2
+      (EquivBA.trans hstep3
+        (EquivBA.trans hstep4
+          (EquivBA.symm (hsolves (GkatPlanExistence.bisimRep aut x))))))
+
+open Classical in
+/-- Bisimilar states carry provably-equal labels, modulo cycles. -/
+theorem unif_bisim_of_wf_mod_cycles {S : Type} [DecidableEq A]
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (hsolves : ∀ s : S, EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (rank : S → Nat)
+    (hstep : ∀ s : S, ∀ e ∈ aut.trans s,
+      rank (GkatPlanExistence.bisimRep aut e.2.2)
+          < rank (GkatPlanExistence.bisimRep aut s)
+        ∨ EquivBA (sol e.2.2)
+          (sol (GkatPlanExistence.bisimRep aut e.2.2)))
+    {s t : S} (hb : GkatPlanExistence.GenBisimilar aut s t) :
+    EquivBA (sol s) (sol t) := by
+  refine EquivBA.trans
+    (unif_of_wf_mod_cycles aut sol hsolves rank hstep s) ?_
+  rw [GkatPlanExistence.bisimRep_coherent aut hb]
+  exact EquivBA.symm (unif_of_wf_mod_cycles aut sol hsolves rank hstep t)
+
+open Classical in
+/-- **THE RESIDUE, ON THE THOMPSON SUM**: completeness of a program pair
+    follows from UNIF at the in-class arm targets alone.  Everything
+    else — existence, rigidity, acyclic unification, trimming,
+    quotienting — is discharged. -/
+theorem unif_sum_of_wf_mod_cycles (e f : Exp A T) [DecidableEq A]
+    (rank : ((Option (GkatThompson.certifiedThompson A T e).State)
+      ⊕ (Option (GkatThompson.certifiedThompson A T f).State)) → Nat)
+    (hstep : ∀ s, ∀ arm ∈ (GkatTrim.SUMof A T e f).trans s,
+      rank (GkatPlanExistence.bisimRep (GkatTrim.SUMof A T e f) arm.2.2)
+          < rank (GkatPlanExistence.bisimRep (GkatTrim.SUMof A T e f) s)
+        ∨ EquivBA (stdSum e f arm.2.2)
+          (stdSum e f (GkatPlanExistence.bisimRep
+            (GkatTrim.SUMof A T e f) arm.2.2)))
+    {s t : _} (hb : GkatPlanExistence.GenBisimilar
+      (GkatTrim.SUMof A T e f) s t) :
+    EquivBA (stdSum e f s) (stdSum e f t) :=
+  unif_bisim_of_wf_mod_cycles _ (stdSum e f)
+    (fun x => sum_solves_std e f x (GkatDecide.sumof_exhaustive e f x))
+    rank hstep hb
+
+#print axioms unif_of_wf_mod_cycles
+#print axioms unif_bisim_of_wf_mod_cycles
+#print axioms unif_sum_of_wf_mod_cycles
+
 end GkatCensus

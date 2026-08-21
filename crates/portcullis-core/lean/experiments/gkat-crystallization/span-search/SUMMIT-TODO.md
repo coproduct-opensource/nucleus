@@ -3545,3 +3545,57 @@ strata.  What does NOT exist is a GENERAL construction of a schedule
 for an ARBITRARY cyclic class — every instance so far was built by
 hand against a specific witness automaton.  That, and only that, is
 the open problem now.
+
+## Iteration 116 — UNIF MODULO CYCLES; and iteration 114 overstated the RoleCovered obituary
+
+**Three new theorems, type-checked sorry-free** [propext,
+Classical.choice, Quot.sound]:
+
+* **`unif_of_wf_mod_cycles`** — UNIF holds as soon as every arm either
+  strictly descends the class rank OR ALREADY SATISFIES UNIF AT ITS
+  OWN TARGET.  Strictly stronger than `unif_of_wf` (115): the
+  descent hypothesis weakens to a disjunction, and the proof is the
+  same five-step chain with an `rcases` at each arm.
+* `unif_bisim_of_wf_mod_cycles`, `unif_sum_of_wf_mod_cycles` — the
+  bisimilar-pair and Thompson-sum corollaries.
+
+This turns "the cyclic case is what's left" from a plan into a
+THEOREM, and localizes the residue as tightly as it goes: not
+"arbitrary bisimilar pairs inside a cyclic class", but specifically
+"the targets of the arms that stay inside a class".
+
+**CORRECTION TO ITERATION 114.**  114 concluded that rigidity puts the
+whole `RoleCovered`/`StateRole` apparatus "off the critical path".
+That overstated it.  Rigidity forces the VALUE of any solution
+(everything is `EquivBA`-equal to `stdSum`); it says NOTHING about
+whether a solution is CONSTRUCTIBLE, and construction is the useful
+direction — `equivBA_of_quot_solvesBA` consumes ANY `qsol`, and
+`dagSol`/`slSol`/`saSol` build them outright by well-founded recursion.
+Rigidity and constructibility are compatible: `saSol` simply produces
+an expression that happens to be `EquivBA`-equal to `stdSum`.  The
+role route is alive; 114's obituary was wrong, in the same way 112's
+dead-state claim was wrong — reasoning about the machinery instead of
+running it.
+
+**WHAT IS ACTUALLY COVERED ALREADY.**  Re-reading the strata against
+this: the SINGLETON-SCC THEOREM (commit 050b7483) covers EVERY
+one-cycle automaton GENERALLY, not per-witness — multiple self-arms
+gather into one by `arm_commute` (u2/u3/u2/dneg) plus u5 right-
+distribution, so a class whose SCC is itself alone closes by `w3`
+regardless of arm count.  `dag_roles` covers acyclic.  So the residue
+is NOT "cyclic classes" in general — it is precisely **SCCs
+containing TWO OR MORE DISTINCT CLASSES, mutually reachable**.  That
+is exactly an n-unknown system with n ≥ 2, and exactly what the six
+hand-cracked strata were each doing by hand.
+
+**THE RESIDUE, FINAL FORM.**  A multi-class SCC gives k ≥ 2 mutually
+recursive unknowns.  `w3` is uniqueness for ONE unknown.  Closing the
+problem means simulating k-unknown uniqueness by k applications of
+one-unknown uniqueness — Gaussian elimination — with the substitution
+steps discharged by `equivBA_substA` (proven, zero axioms) and the
+productivity side conditions free (every arm contributes
+`.seq (.act a) _`, so self-reference is always action-guarded).  The
+machinery is `RTree`/`SchedOk`/`stepSubst`/`backSol`/`sched_solves`
+(iterations 73-96, all proven).  The gap is the GENERAL CONSTRUCTION
+of a schedule for an arbitrary multi-class SCC; every existing
+instance was built by hand against a named witness automaton.
