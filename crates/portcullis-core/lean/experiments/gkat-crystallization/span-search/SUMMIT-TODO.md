@@ -2078,3 +2078,35 @@ assumption on same-rank SCCs (no feedback vertex, no well-nestedness):
 Foundation laid this iteration: GkatElimProofs.lean with ELabAut,
 foldTLE/eqRHSEL, ERole (fold/salomaaE/equivFold analogues), the
 GAut → ELabAut embedding, and roles transfer.
+
+## Iteration 74 — THE SUBSTITUTION HOMOMORPHISM (zero axioms)
+
+Recon first: w3's side condition is DERIVATION-LEVEL
+(`Equiv (test (E e)) (test zero)`), and w3_ba likewise — so
+substitution transports it through the derivation itself. The
+GkatCyclicOrderedBridge "proof-graph substitution" is the separate
+cyclic-proof-system program, not reusable here.
+
+New in GkatElimProofs.lean, all **ZERO AXIOMS**, first try:
+- `substA (σ : A → Exp A' T)` — action substitution, guards untouched.
+- `bval_E_substA` — with semantically-productive images, the
+  empty-word guard is semantically unchanged (structural induction;
+  E(wh)/E(test) are alphabet-free).
+- `equiv_substA` — base `Equiv` maps into `EquivBA` under productive
+  substitution: 19-case induction; every axiom is its own image since
+  `substA` commutes with all constructors except `act`; the w3 case
+  re-derives its side condition as
+  `baTest (bval_E_substA) ⨾ trans (IH of the side derivation)` —
+  the side condition's own IH is exactly what's needed because
+  `substA` is the identity on tests.
+- **`equivBA_substA`** — EquivBA closed under productive action
+  substitution. THE elimination engine: closed forms substitute
+  through equations while preserving provability.
+
+This is also independently a STEELMAN asset (instantiating proven
+equivalences under action refinement).
+
+Next: the call-marker vehicle — equations as expressions over A ⊕ S
+(calls as actions), the one-step elimination lemma (solve state u,
+substitute via equivBA_substA), and the schedule induction down to
+WNAutE.

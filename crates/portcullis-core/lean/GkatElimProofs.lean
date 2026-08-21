@@ -97,4 +97,109 @@ theorem stateRole_of_eRole {S : Type} (aut : GAut S A T)
 #print axioms eqRHSEL_embed
 #print axioms stateRole_of_eRole
 
+/-! ## The substitution homomorphism
+
+    Gaussian elimination substitutes closed forms for call markers.
+    Provable equivalence is closed under action substitution, provided
+    every substituted image is strictly productive (semantically) — the
+    `w3`/`w3_ba` side conditions transport through `baTest` and a
+    `bval`-level computation of `E` under substitution. -/
+
+/-- Action substitution: replace each action by an expression; guards
+    untouched. -/
+def substA {A' : Type} (σ : A → Exp A' T) : Exp A T → Exp A' T
+  | .act a => σ a
+  | .test b => .test b
+  | .seq e f => .seq (substA σ e) (substA σ f)
+  | .ite b e f => .ite b (substA σ e) (substA σ f)
+  | .wh b e => .wh b (substA σ e)
+
+/-- `E` under substitution: with productive images, the empty-word
+    guard is semantically unchanged. -/
+theorem bval_E_substA {A' : Type} {σ : A → Exp A' T}
+    (hσ : ∀ (a : A) (X : Type) (W : T → X → Bool) (x : X),
+      bval W (E (σ a)) x = false) :
+    ∀ (e : Exp A T) (X : Type) (W : T → X → Bool) (x : X),
+      bval W (E (substA σ e)) x = bval W (E e) x := by
+  intro e
+  induction e with
+  | act a =>
+      intro X W x
+      show bval W (E (σ a)) x = false
+      exact hσ a X W x
+  | test b => intro X W x; rfl
+  | seq e f ihe ihf =>
+      intro X W x
+      show (bval W (E (substA σ e)) x && bval W (E (substA σ f)) x)
+        = (bval W (E e) x && bval W (E f) x)
+      rw [ihe X W x, ihf X W x]
+  | ite b e f ihe ihf =>
+      intro X W x
+      show ((bval W b x && bval W (E (substA σ e)) x)
+          || (!(bval W b x) && bval W (E (substA σ f)) x))
+        = ((bval W b x && bval W (E e) x)
+          || (!(bval W b x) && bval W (E f) x))
+      rw [ihe X W x, ihf X W x]
+  | wh b e ih => intro X W x; rfl
+
+/-- Base provable equivalence maps into `EquivBA` under productive
+    substitution (the `w3` side condition re-derives via `baTest`). -/
+theorem equiv_substA {A' : Type} {σ : A → Exp A' T}
+    (hσ : ∀ (a : A) (X : Type) (W : T → X → Bool) (x : X),
+      bval W (E (σ a)) x = false)
+    {e f : Exp A T} (h : Equiv e f) :
+    EquivBA (substA σ e) (substA σ f) := by
+  induction h with
+  | refl e => exact EquivBA.base (Equiv.refl _)
+  | symm _ ih => exact EquivBA.symm ih
+  | trans _ _ ih₁ ih₂ => exact EquivBA.trans ih₁ ih₂
+  | seq_c _ _ ih₁ ih₂ => exact EquivBA.seq_c ih₁ ih₂
+  | ite_c _ _ ih₁ ih₂ => exact EquivBA.ite_c ih₁ ih₂
+  | wh_c _ ih => exact EquivBA.wh_c ih
+  | u1 b e => exact EquivBA.base (Equiv.u1 b _)
+  | u2 b e f => exact EquivBA.base (Equiv.u2 b _ _)
+  | u3 b c e f g => exact EquivBA.base (Equiv.u3 b c _ _ _)
+  | u4 b e f => exact EquivBA.base (Equiv.u4 b _ _)
+  | u5 b e f g => exact EquivBA.base (Equiv.u5 b _ _ _)
+  | s1 e f g => exact EquivBA.base (Equiv.s1 _ _ _)
+  | s2 e => exact EquivBA.base (Equiv.s2 _)
+  | s3 e => exact EquivBA.base (Equiv.s3 _)
+  | s4 e => exact EquivBA.base (Equiv.s4 _)
+  | s5 e => exact EquivBA.base (Equiv.s5 _)
+  | w1 b e => exact EquivBA.base (Equiv.w1 b _)
+  | w2 b c e => exact EquivBA.base (Equiv.w2 b c _)
+  | w3 hE hg ihE ihg =>
+      refine EquivBA.w3_ba ?_ ihg
+      refine EquivBA.trans
+        (EquivBA.baTest (fun X W x => bval_E_substA hσ _ X W x)) ?_
+      exact ihE
+
+/-- **THE SUBSTITUTION HOMOMORPHISM**: `EquivBA` is closed under
+    productive action substitution. -/
+theorem equivBA_substA {A' : Type} {σ : A → Exp A' T}
+    (hσ : ∀ (a : A) (X : Type) (W : T → X → Bool) (x : X),
+      bval W (E (σ a)) x = false)
+    {e f : Exp A T} (h : EquivBA e f) :
+    EquivBA (substA σ e) (substA σ f) := by
+  induction h with
+  | base h => exact equiv_substA hσ h
+  | symm _ ih => exact EquivBA.symm ih
+  | trans _ _ ih₁ ih₂ => exact EquivBA.trans ih₁ ih₂
+  | seq_c _ _ ih₁ ih₂ => exact EquivBA.seq_c ih₁ ih₂
+  | ite_c _ _ ih₁ ih₂ => exact EquivBA.ite_c ih₁ ih₂
+  | wh_c _ ih => exact EquivBA.wh_c ih
+  | baTest h => exact EquivBA.baTest h
+  | ite_guard h => exact EquivBA.ite_guard h
+  | wh_guard h => exact EquivBA.wh_guard h
+  | s6 b c => exact EquivBA.s6 b c
+  | w3_ba hE hg ihE ihg =>
+      refine EquivBA.w3_ba ?_ ihg
+      refine EquivBA.trans
+        (EquivBA.baTest (fun X W x => bval_E_substA hσ _ X W x)) ?_
+      exact ihE
+
+#print axioms bval_E_substA
+#print axioms equiv_substA
+#print axioms equivBA_substA
+
 end GkatElim
