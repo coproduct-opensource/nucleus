@@ -2822,4 +2822,64 @@ theorem zero_of_emission_disjoint {X Y : Exp A T} {o i : BExp T}
 
 #print axioms zero_of_emission_disjoint
 
+/-! ## The homomorphism partner: UNIF for free, when π commutes
+
+    Iteration 129 localized the core difficulty to a structural
+    mismatch: canonicity compares two SOLUTIONS, while UNIF compares two
+    STATES of ONE solution.  The bridge between them is a second
+    solution family built from the first — and `solves_of_partner`
+    (iteration 123) builds one, but only by ASSUMING same-side UNIF.
+
+    There is a second, independent sufficient condition, and it needs no
+    UNIF at all: **if the partner map COMMUTES WITH THE STRUCTURE — a
+    functional bisimulation / coalgebra homomorphism — then `sol ∘ σ`
+    solves for free.**  Not up to `EquivBA`: the two equations are
+    LITERALLY EQUAL, because retargeting the arm list and reindexing the
+    solution are the same operation.  Canonicity then closes, giving
+    UNIF along σ outright.
+
+    That explains, retroactively, exactly why `solves_of_partner` needed
+    `hsame`: its π was only required to LAND on a bisimilar state, never
+    to commute.  Two sufficient conditions for the same conclusion, and
+    they trade against each other — commuting is a strong demand on π
+    but costs nothing else; landing-bisimilar is cheap but must be paid
+    for with same-side UNIF. -/
+
+/-- Retargeting an arm list and reindexing the solution are the same
+    operation. -/
+theorem foldTL_retarget {S : Type} (sol : S → Exp A T) (h : BExp T)
+    (σ : S → S) :
+    ∀ L : List (BExp T × A × S),
+      GkatPlanExistence.foldTL sol h
+          (L.map (fun e => (e.1, e.2.1, σ e.2.2)))
+        = GkatPlanExistence.foldTL (fun t => sol (σ t)) h L := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons e rest ih =>
+      exact congrArg
+        (fun x => Exp.ite e.1 (.seq (.act e.2.1) (sol (σ e.2.2))) x) ih
+
+open Classical in
+/-- **THE HOMOMORPHISM PARTNER**: if `σ` commutes with halts and arms,
+    then `sol ∘ σ` solves whenever `sol` does — with NO bisimilarity
+    hypothesis, NO same-side UNIF, and NO arm-closure.  The two
+    equations are literally equal, not merely equivalent. -/
+theorem solves_of_hom {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) (σ : S → S)
+    (hhlt : ∀ s, aut.hlt (σ s) = aut.hlt s)
+    (htrans : ∀ s, aut.trans (σ s)
+      = (aut.trans s).map (fun e => (e.1, e.2.1, σ e.2.2)))
+    (hsol : ∀ s, EquivBA (sol s) (GkatKleene.eqRHS aut sol s)) :
+    ∀ s, EquivBA (sol (σ s))
+      (GkatKleene.eqRHS aut (fun t => sol (σ t)) s) := by
+  intro s
+  refine EquivBA.trans (hsol (σ s)) ?_
+  rw [GkatPlanExistence.eqRHS_foldTL, GkatPlanExistence.eqRHS_foldTL,
+    hhlt, htrans, foldTL_retarget]
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms foldTL_retarget
+#print axioms solves_of_hom
+
 end GkatCensus

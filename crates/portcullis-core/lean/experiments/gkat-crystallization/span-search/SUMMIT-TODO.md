@@ -4952,3 +4952,62 @@ better shaped, not yet done, and explicitly not graded as bounded.
 2. **Same-side UNIF** — blocked on the two-states-vs-two-solutions
    mismatch (129), which remains the campaign's core difficulty.
 3. **Size induction** — descent holds; `wh` rung blocked on (2).
+
+## Iteration 131 — ★ THE HOMOMORPHISM PARTNER ★ — a second, UNIF-free way to build the second solution
+
+(Search note: the relevant literature question — when a partner map is
+a functional bisimulation, and what it costs — was already answered at
+iteration 123 (Grabmayer-Fokkink solution transfer; "π : A+B → A is a
+functional bisimulation only if A is already its own collapse").  That
+answer applies verbatim here, so this iteration reuses it rather than
+re-issuing the same query.)
+
+Iteration 129 localized the core difficulty to a structural mismatch:
+**canonicity compares two SOLUTIONS; UNIF compares two STATES of one
+solution.**  The bridge is a second solution family built from the
+first.  `solves_of_partner` (123) builds one — but only by ASSUMING
+same-side UNIF.  Today: **there is a second sufficient condition, and it
+needs no UNIF at all.**
+
+* `foldTL_retarget` (ZERO axioms) — retargeting an arm list and
+  reindexing the solution are the SAME operation.
+* **`solves_of_hom`** (ZERO axioms) — if `σ` commutes with halts and
+  arms (a functional bisimulation / coalgebra homomorphism), then
+  `sol ∘ σ` solves whenever `sol` does.  **Not up to `EquivBA` — the two
+  equations are LITERALLY EQUAL.**  No bisimilarity hypothesis, no
+  same-side UNIF, no arm-closure.
+
+With canonicity this closes immediately: `sol` and `sol ∘ σ` are two
+solutions of the same Thompson system, so they agree, giving
+`sol s ≈ sol (σ s)` — **UNIF along σ, outright.**
+
+**What this explains.**  It says exactly why `solves_of_partner` needed
+`hsame`: its π was only required to LAND on a bisimilar state, never to
+COMMUTE.  Two independent sufficient conditions for the same
+conclusion, trading against each other —
+
+| condition on π | extra cost |
+|---|---|
+| commutes with structure (homomorphism) | none |
+| merely lands bisimilar | same-side UNIF |
+
+**And the dichotomy is sharp.**  Per iteration 123's search, a partner
+map onto one side is a functional bisimulation only if that side is
+ALREADY ITS OWN COLLAPSE — no two distinct bisimilar states.  But if
+`e`'s automaton is collapsed, same-side UNIF for `e` is VACUOUS.  So the
+two conditions coincide at the boundary: **either `e` is collapsed (σ
+can commute, and same-side UNIF is empty), or it is not (σ cannot
+commute, and same-side UNIF is exactly the price).**  There is no third
+option, and no free lunch hiding between them.
+
+That is a genuine structural clarification rather than a route: it shows
+the campaign's remaining obligation is not an artifact of how
+`solves_of_partner` was set up, but the intrinsic cost of a
+non-collapsed side.  Same-side UNIF is load-bearing by necessity.
+
+**Route status — unchanged in substance, sharper in justification:**
+1. **S0** — algebra done; automaton half re-routed to labels (130);
+   needs `inG` + tightness.
+2. **Same-side UNIF** — now shown to be UNAVOIDABLE, not incidental:
+   it is precisely the price of a non-collapsed side.
+3. **Size induction** — descent holds; `wh` rung blocked on (2).
