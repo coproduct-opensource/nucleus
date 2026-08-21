@@ -9458,3 +9458,71 @@ field's prior that this problem does not close still stands.
 **Next.**  Enlarge along the OTHER axis: more pairs at depth 7-9 until the open
 SCC count is several times 250, and see whether the pattern holds there too.
 The NA=2 timeouts at 240k/depth 9+ are the immediate obstacle.
+
+---
+
+## 209 — THE SAMPLER IS SATURATED.  Switch to EXHAUSTIVE ENUMERATION.
+## Plus a correction to 205.
+
+**The random sampler is exhausted, and the numbers say so exactly.**
+
+    NA=4 depth 7,  4M pairs   1 761 720 quotient states, 1170 open SCCs
+    NA=4 depth 7, 16M pairs   1 761 720 quotient states, 1170 open SCCs   IDENTICAL
+    NA=2 depth 7, 16x pairs   open SCCs 104 -> 121                        1.16x
+    NA=4 depth 9,  4M pairs   858 open  (FEWER than depth 7's 1170)
+
+Sixteen million pairs give bit-identical results to four million: the generator
+has enumerated its reachable population and further sampling returns duplicates.
+This is the coverage-closure curve the testing literature describes, and it
+means **sampling expression pairs can no longer falsify anything.**  All of
+those runs are 0 failures, both ends of the lattice — but a saturated
+instrument reporting 100% is not evidence, it is the instrument's ceiling.
+
+**So change instrument: enumerate the AUTOMATA directly.**  Each state assigns,
+per atom, one of {halt, no transition, target} — `(k+2)^(k·NA)` automata,
+exhaustive for small `k`.  This cannot miss a small counterexample, because it
+looks at every one.
+
+**First run, and the correction it forced.**  Filtering by `nested` — on 205's
+reading that the nesting coequation CHARACTERIZES automata whose behaviour is
+an expression's — the enumeration immediately reported 80 unsolved automata at
+NA=2 k=3 and 102 at NA=3 k=2.  That looked like rules 7 through many.
+
+It was not.  Every one returns `eliminable=false` from the independent
+elimination oracle, and hand-checking the smallest confirms it: e.g.
+
+    q0: hl={a0,a1} st=[-,-,q1]     q1: hl={a1,a2} st=[q0,-,-]
+
+is `X0 = ite{a0,a1} 1 (p·X1)`, `X1 = ite{a1,a2} 1 (p·X0)` — two exits and no
+guard that can tell them apart.  It is not solvable, so the calculus failing on
+it is CORRECT, not a gap.
+
+**CORRECTION TO 205: `nested` is NECESSARY, not sufficient.**  205 wrote that
+the nesting coequation "characterizes automata exhibiting the behaviour of a
+GKAT expression" and used that to argue the canonical-quotient measurement was
+about covariety closure.  The covariety half stands — every quotient of a
+Thompson sum satisfies it, which is why that measurement was vacuous.  But
+`nested` as implemented ADMITS automata that are not solvable at all, so it
+cannot be used as a solvability oracle on automata that did not arise from
+expressions.  Filtering by `symbolic_eliminable_raw` instead is what the test
+requires.
+
+**With the correct filter, exhaustive enumeration finds NOTHING:**
+
+    NA=2 k=2:    256 automata   solvable-but-unsolved: 0
+    NA=2 k=3: 15 625 automata   solvable-but-unsolved: 0
+    NA=3 k=2:  4 096 automata   solvable-but-unsolved: 0
+
+Zero, over EVERY automaton of those shapes — not a sample of them.
+
+**Odds: 75%, up 2.**  Exhaustive beats saturated sampling: for the small cases
+the calculus is now verified complete against every automaton the elimination
+oracle calls solvable, which is a different KIND of evidence from any previous
+iteration's rates.  Held back from more by three things, all real: the
+exhaustive reach is only k <= 3 so far (k=4 at NA=2 is running), the filter is
+an ORACLE rather than a proof of solvability, and I had to correct a claim I
+published four iterations ago in the course of getting here — which is exactly
+the base rate one should apply to the claims not yet corrected.
+
+**Next.**  Finish k=4 at NA=2 and k=3 at NA=4; then push the exhaustive reach
+as far as compute allows, since it is now the only instrument that can falsify.

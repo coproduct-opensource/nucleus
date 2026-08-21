@@ -5842,6 +5842,106 @@ fn check_r206<const NA: usize>() {
         calculus_solves(&q, &[0, 1, 2, 3, 4], 9));
 }
 
+/// **EXHAUSTIVE ENUMERATION OF SMALL AUTOMATA** (iteration 209).
+///
+/// The random sampler is SATURATED: at NA=4 depth 7, 4M and 16M pairs give the
+/// identical 1 761 720 quotient states and the identical 1170 open SCCs, and
+/// NA=2 gains 1.16x open SCCs for 16x the pairs.  A saturated sampler cannot
+/// falsify anything, so sampling expression PAIRS is the wrong instrument now.
+///
+/// Enumerate the automata directly instead.  Each state assigns, per atom, one
+/// of: halt, no transition, or a target — `(k+2)^(k·NA)` automata, exhaustive
+/// for the small cases.  By the Schmid-Kappé-Kozen-Silva characterization
+/// `nested` holds exactly of automata whose behaviour is some GKAT expression's,
+/// so:
+///
+///     nested(a)  AND  the calculus cannot solve `a`   =   a rule-7 instance
+///
+/// This is a strictly stronger test than any amount of sampling: it cannot miss
+/// a small counterexample, because it looks at every one.
+fn exhaustive<const NA: usize>() {
+    let kmax: usize = std::env::var("PAD_EXH_K").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4);
+    for k in 2..=kmax {
+        let choices = k + 2;                       // halt | dead | k targets
+        let cells = k * NA;
+        let total: u64 = (choices as u64).pow(cells as u32);
+        let hits: Vec<u64> = (0..total).into_par_iter().filter(|&code| {
+            let mut a = Aut::<NA>::blank();
+            a.k = k as u8;
+            let mut c = code;
+            for s in 0..k {
+                for y in 0..NA {
+                    let d = (c % choices as u64) as usize;
+                    c /= choices as u64;
+                    if d == 0 { a.hl[s] |= 1 << y; }
+                    else if d == 1 { /* no transition, no halt */ }
+                    else { a.st[s][y] = (d - 1) as u8; }
+                }
+            }
+            // every state must be reachable from 0, else it is a smaller
+            // automaton already covered at a lower k
+            let mut seen = vec![false; k];
+            let mut stack = vec![0usize];
+            seen[0] = true;
+            while let Some(x) = stack.pop() {
+                for y in 0..NA {
+                    let t = a.st[x][y];
+                    if t == 0 { continue; }
+                    let t = (t - 1) as usize;
+                    if !seen[t] { seen[t] = true; stack.push(t); }
+                }
+            }
+            if !seen.iter().all(|&b| b) { return false; }
+            // ONLY SOLVABLE AUTOMATA.  `nested` alone is the WRONG filter here:
+            // run that way, this enumeration reported 80 "unsolved" automata at
+            // NA=2 k=3 and 102 at NA=3 k=2, and every one came back
+            // `eliminable=false` from the independent oracle — they are not
+            // solvable at all, so the calculus failing on them is correct
+            // behaviour, not a gap.  `nested` is NECESSARY, not sufficient, on
+            // automata that did not arise from expressions; 205's reading of
+            // the characterization was too strong.  Filter by the elimination
+            // oracle, which is the one that tracks actual solvability.
+            if !symbolic_eliminable_raw(&a) { return false; }
+            let sing = singleton_states(&a);
+            let solved = sccs_of(&a).iter().all(|c| c.len() < 2
+                || calculus_solves(&a, c, 6)
+                || calculus_solves(&a, &scc_with_context(&a, c, &sing), 6));
+            !solved
+        }).collect();
+        println!("  exhaustive NA={NA} k={k}: {total} automata; \
+            SOLVABLE (elimination oracle) but UNSOLVED by the calculus: {}", hits.len());
+        for &code in hits.iter().take(4) {
+            let mut a = Aut::<NA>::blank();
+            a.k = k as u8;
+            let mut c = code;
+            for s in 0..k {
+                for y in 0..NA {
+                    let d = (c % choices as u64) as usize;
+                    c /= choices as u64;
+                    if d == 0 { a.hl[s] |= 1 << y; } else if d != 1 {
+                        a.st[s][y] = (d - 1) as u8;
+                    }
+                }
+            }
+            // TWO EXPLANATIONS, and they must be told apart before this is
+            // reported as a finding: either these are genuine rule-7
+            // instances, or `nested` is not a faithful solvability oracle for
+            // automata that did not come from expressions.  The independent
+            // elimination oracle decides.
+            println!("    UNSOLVED code={code} (eliminable={}):",
+                symbolic_eliminable_raw(&a));
+            for s in 0..k {
+                let row: Vec<String> = (0..NA).map(|i| {
+                    let t = a.st[s][i];
+                    if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                }).collect();
+                println!("      q{s}: hl={:04b} st=[{}]", a.hl[s], row.join(","));
+            }
+        }
+    }
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -6866,6 +6966,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_CHECK_R206").is_ok() {
         check_r206::<NA>();
+        return;
+    }
+    if std::env::var("PAD_EXHAUST").is_ok() {
+        exhaustive::<NA>();
         return;
     }
     if std::env::var("PAD_NESTED_SANITY").is_ok() {
