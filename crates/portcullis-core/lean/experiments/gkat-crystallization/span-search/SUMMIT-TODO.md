@@ -5722,3 +5722,47 @@ against `chainloops_complete_free`'s template, the fourth against
 **Hardening tally**: two audits clean; two overclaims found and fixed;
 the repair for the second is now seven proved lemmas deep with only
 mechanical assembly left.
+
+## Iteration 145 — the last non-mechanical ingredient; the repair is now assembly-only
+
+The remaining mixed cases pair a collapsed side that is a pure TEST
+against a LIVE two-loop.  Three lemmas, **all ZERO AXIOMS**:
+
+* **`twoLoop_live_accepts`** — **a live two-loop accepts a two-action
+  string.**  Its three liveness hypotheses supply exactly the atoms
+  needed to build one: enter at an atom where both guards hold, leave
+  the inner loop where `c` fails, leave the outer loop where `b` fails.
+  The witness is `(a, [(q, a₂), (r, a₃)])`, constructed directly from
+  the `InLoop` constructors.
+* `test_no_action` — a test accepts no string that performs an action.
+  One projection; it was always there in `den_test` and never named.
+* **`live_twoLoop_ne_test`** — **a live two-loop is never
+  language-equivalent to a test.**
+
+**`twoloops_complete_free`'s ingredient set is now complete.**  Every
+branch of its case analysis resolves to a checked theorem:
+
+| branch | discharged by |
+|---|---|
+| both sides live | `twoloops_complete` |
+| side collapses to `1` / `0` / `¬b?`, other live | **`live_twoLoop_ne_test`** |
+| side collapses to an atomic loop, other live | **`no_overlap_vs_live_absurd`** |
+| both collapse to tests | `EquivBA.baTest` after transport |
+| both collapse to atomic loops | `atomicloops_complete` |
+
+with the collapses themselves supplied by `twoLoop_b_unsat`,
+`twoLoop_b_valid`, `twoLoop_c_valid`, `twoLoop_no_overlap`.
+
+**What remains is the case split itself** — mechanical, because no
+branch needs anything not already proved.  That is the same claim
+iterations 139-140 made prematurely and 141 had to retract; the
+difference now is that the retraction's cause (the no-overlap branch
+leaving the fragment) has been closed by an actual theorem rather than
+an estimate, and the test-vs-live branches have been closed too.
+
+**Ten lemmas deep.**  The hardening finding at 138 — that two of the six
+theorems carry hypotheses the ledger had been calling "unconditional" —
+has produced: four collapse lemmas, two guard/acceptance primitives that
+generalize past two-loops, and four vacuity results.  None of it is new
+mathematics; all of it was needed to say precisely what the six
+theorems prove.

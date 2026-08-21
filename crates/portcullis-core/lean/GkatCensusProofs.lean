@@ -3387,4 +3387,68 @@ theorem no_overlap_vs_live_absurd
 #print axioms atomicLoop_one_action
 #print axioms no_overlap_vs_live_absurd
 
+/-! ## The last non-mechanical ingredient: a live two-loop emits
+
+    The remaining assembly cases pair a collapsed side that is a pure
+    TEST against a LIVE two-loop.  A test accepts only action-free
+    strings, so the contradiction needs a witness that a live two-loop
+    accepts SOMETHING with an action — and its three liveness
+    hypotheses supply exactly the atoms to build one: enter where both
+    guards hold, leave the inner loop where `c` fails, leave the outer
+    loop where `b` fails. -/
+
+open Classical in
+/-- **A live two-loop accepts a two-action string.**  Enter at `a`
+    (both guards), exit the inner loop at `a₂` (`¬c`), exit the outer
+    loop at `a₃` (`¬b`). -/
+theorem twoLoop_live_accepts {Atom : Type} (V : T → Atom → Bool)
+    (b c : BExp T) (q r : A) (a a₂ a₃ : Atom)
+    (hb : GkatGS.bval V b a = true) (hc : GkatGS.bval V c a = true)
+    (hc₂ : GkatGS.bval V c a₂ = false)
+    (hb₃ : GkatGS.bval V b a₃ = false) :
+    GkatGS.den V (GkatTwoLoop.twoLoop b c q r) (a, [(q, a₂), (r, a₃)]) := by
+  have hinner : GkatGS.den V (.wh c (.act q) : Exp A T) (a, [(q, a₂)]) :=
+    GkatGS.InLoop.step a [(q, a₂)] [] hc ⟨a, a₂, rfl⟩
+      (GkatGS.InLoop.exit a₂ hc₂)
+  have hbody : GkatGS.den V (GkatTwoLoop.twoLoopBody c q r)
+      (a, [(q, a₂), (r, a₃)]) :=
+    ⟨[(q, a₂)], [(r, a₃)], rfl, hinner, ⟨a₂, a₃, rfl⟩⟩
+  exact GkatGS.InLoop.step a [(q, a₂), (r, a₃)] [] hb hbody
+    (GkatGS.InLoop.exit a₃ hb₃)
+
+open Classical in
+/-- A test accepts no string that performs an action. -/
+theorem test_no_action {Atom : Type} (V : T → Atom → Bool) (t : BExp T)
+    {a : Atom} {l : List (A × Atom)}
+    (h : GkatGS.den V (.test t : Exp A T) (a, l)) : l = [] := h.2
+
+open Classical in
+/-- **A live two-loop is never a test.**  With `twoLoop_live_accepts`
+    and `test_no_action`, the remaining mixed cases of
+    `twoloops_complete_free` close the same way the no-overlap case
+    does. -/
+theorem live_twoLoop_ne_test {b c : BExp T} {q r : A} (t : BExp T)
+    (hbc : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c α = true)
+    (hexitC : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = false)
+    (hexitB : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (GkatTwoLoop.twoLoop b c q r) (.test t)) :
+    False := by
+  obtain ⟨α, hb, hc⟩ := hbc
+  obtain ⟨α₂, hc₂⟩ := hexitC
+  obtain ⟨α₃, hb₃⟩ := hexitB
+  have hacc := twoLoop_live_accepts (GkatPlanExistence.genW T)
+    b c q r α α₂ α₃ hb hc hc₂ hb₃
+  have := test_no_action (GkatPlanExistence.genW T) t
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact nomatch this
+
+#print axioms twoLoop_live_accepts
+#print axioms test_no_action
+#print axioms live_twoLoop_ne_test
+
 end GkatCensus
