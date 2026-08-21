@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_L123").is_ok() {
+        l123_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_SUBCHART").is_ok() {
         subchart_test::<NA>(nguards as u8);
         return;
@@ -12145,6 +12149,126 @@ fn subchart_test<const NA: usize>(nguards: u8) {
         }
     }
     println!("  subchart_test NA={NA}: {n} Thompson automata; \
+        (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
+        (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
+}
+
+/// **LLEE'S ACTUAL CONDITIONS** (iteration 237), from the paper rather than
+/// reconstructed.  A loop sub-chart with start vertex `vₛ` must satisfy:
+///
+///   (L1) there is an infinite path from `vₛ`;
+///   (L2) EVERY infinite path from `vₛ` RETURNS to `vₛ` after a positive number
+///        of transitions;
+///   (L3) immediate termination is only permitted at `vₛ`  (`↓ ⊆ {vₛ}`).
+///
+/// **(L2) is the condition I never implemented across five formulations.**  It
+/// says `vₛ` CUTS EVERY CYCLE in the body — no cycle may avoid the head — which
+/// is exactly what forbids mutually nested loops, and 236 diagnosed dropping
+/// that as the cause of both soundness breaks.
+///
+/// (L3) is the halt condition tested since 228, in its guarded relativisation:
+/// Milner's `↓` is a state property while GKAT's `hlt` is a TEST, so "terminates"
+/// becomes "terminates within the loop's guard", i.e. `hlt(s) ∩ b = ∅` for body
+/// states.
+fn llee_subcharts_L123<const NA: usize>(g: &Aut<NA>) -> Vec<(usize, Vec<usize>, u8)> {
+    let mut out = Vec::new();
+    for c in sccs_of(g) {
+        if c.len() > 10 { continue; }
+        for mask in 1u32..(1u32 << c.len()) {
+            let body: Vec<usize> = c.iter().enumerate()
+                .filter(|(i, _)| mask >> i & 1 == 1).map(|(_, &s)| s).collect();
+            for &h in body.iter() {
+                // guard: atoms on which the body steps back into h  (L1: nonempty)
+                let mut gd: u8 = 0;
+                for &s in body.iter() {
+                    for y in 0..NA {
+                        if g.st[s][y] == (h + 1) as u8 { gd |= 1 << y; }
+                    }
+                }
+                if gd == 0 { continue; }
+                // (L2) every cycle in the body passes through h: the induced
+                // subgraph on body \ {h} must be ACYCLIC.
+                let rest: Vec<usize> = body.iter().copied().filter(|&s| s != h).collect();
+                let mut acyclic = true;
+                {
+                    let mut indeg: Vec<usize> = rest.iter().map(|&v| rest.iter()
+                        .filter(|&&u| (0..NA).any(|y| g.st[u][y] == (v + 1) as u8))
+                        .count()).collect();
+                    let mut removed = vec![false; rest.len()];
+                    let mut progress = true;
+                    while progress {
+                        progress = false;
+                        for i in 0..rest.len() {
+                            if removed[i] || indeg[i] != 0 { continue; }
+                            removed[i] = true; progress = true;
+                            for j in 0..rest.len() {
+                                if removed[j] { continue; }
+                                if (0..NA).any(|y| g.st[rest[i]][y] == (rest[j] + 1) as u8) {
+                                    indeg[j] -= 1;
+                                }
+                            }
+                        }
+                    }
+                    if removed.iter().any(|&r| !r) { acyclic = false; }
+                }
+                if !acyclic { continue; }
+                out.push((h, body.clone(), gd));
+            }
+        }
+    }
+    out
+}
+
+fn llee_L123<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    let cyclic = sccs_of(g).iter().any(|c| c.len() >= 2
+        || (0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8));
+    if !cyclic { return true; }
+    for (h, body, gd) in llee_subcharts_L123(g) {
+        // (L3), guarded: no body state terminates inside the loop's guard
+        if body.iter().any(|&s| g.hl[s] & gd != 0) { continue; }
+        let mut g2 = *g;
+        for &s in body.iter() {
+            for y in 0..NA {
+                if gd >> y & 1 == 1 && g2.st[s][y] == (h + 1) as u8 { g2.st[s][y] = 0; }
+            }
+        }
+        if g2.st == g.st { continue; }
+        if llee_L123(&g2, budget) { return true; }
+    }
+    false
+}
+
+fn l123_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xBE5466CF34E90C6C;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut a_ok, mut b_ok, mut l_not_s, mut s_not_l) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..40_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        let mut bud = 200_000usize;
+        let la = llee_L123(&a, &mut bud);
+        if la { a_ok += 1; }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let mut b2 = 200_000usize;
+            let lq = llee_L123(&qq, &mut b2);
+            if !la || lq { b_ok += 1; }
+            let solve = {
+                let sing = singleton_states(&qq);
+                sccs_of(&qq).iter().all(|c| c.len() < 2
+                    || calculus_solves(&qq, c, 6)
+                    || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
+            };
+            if lq && !solve { l_not_s += 1; }
+            if solve && !lq { s_not_l += 1; }
+        }
+    }
+    println!("  l123_test NA={NA}: {n} Thompson automata; \
         (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
         (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
 }

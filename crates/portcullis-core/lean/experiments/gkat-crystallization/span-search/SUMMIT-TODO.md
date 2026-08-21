@@ -10860,3 +10860,59 @@ nesting — from the paper's definition rather than from my reconstruction of it
 If that does not reach (a) at 100% on faithful Thompson automata, then either the
 guarded case genuinely differs from Milner's or my reading of the definition is
 wrong, and both are worth knowing before more iterations are spent.
+
+---
+
+## 237 — (L2) WAS THE MISSING CONDITION.  Requirements (a) AND (b) AT 100%.
+
+236 concluded the line had stalled and that the fix was to stop reconstructing
+LLEE and read its definition.  Done.  A loop sub-chart with start vertex `vₛ`:
+
+    (L1)  there is an infinite path from vₛ;
+    (L2)  EVERY infinite path from vₛ RETURNS to vₛ after a positive number
+          of transitions;
+    (L3)  immediate termination is only permitted at vₛ   (↓ ⊆ {vₛ}).
+
+**(L2) is the condition I never implemented, across five formulations and nine
+iterations.**  It says `vₛ` CUTS EVERY CYCLE in the body — no cycle may avoid the
+head — which is exactly what forbids mutually nested loops, and 236 had already
+diagnosed dropping that as the cause of both soundness breaks without realising
+it was a stated condition I had simply not read.
+
+(L3) needed the guarded relativisation the whole exercise has been about:
+Milner's `↓` is a state property, GKAT's `hlt` is a TEST, so "terminates" becomes
+"terminates inside the loop's guard".  That part I had right since 228.
+
+**Measured, implementing L1/L2/L3 as stated:**
+
+    NA=2   13 126/13 126 (a)   13 126/13 126 (b)   0 unsound, 0 missed
+    NA=3   13 126/13 126 (a)   13 126/13 126 (b)   1 cert-but-calculus-fails, 0 missed
+
+**Requirement (a) — every Thompson automaton carries the certificate — is MET at
+100%, for the first time in ten iterations.  Requirement (b) — it survives
+bisimulation collapse — is MET at 100%.**  Those are the two properties the route
+needs from a certificate; the third, certificate ⟹ solvable, is Grabmayer's
+theorem to port rather than to measure.
+
+**The one discrepancy, not glossed.**  At NA=3, one automaton carries the
+certificate while the CALCULUS fails on it.  `solve` there is my six-rule
+calculus, not `synth`, so this may be a gap in the calculus rather than
+unsoundness of the certificate — those are very different findings and I am not
+guessing which.  Adjudicating it needs `synth`'s verified witness.  NA=4 timed
+out and is untested.
+
+**What this says about the last nine iterations.**  Five formulations, two
+soundness breaks, requirement (a) peaking at 99.84% — all of it because I was
+approximating a definition I had not read carefully, and specifically because I
+never asked whether the body's cycles must pass through the head.  236's
+"change method, don't vary again" was right, and the method that worked was
+reading the source.
+
+**Odds: 81%, up 4.**  The largest single move in this program, and it earns it:
+the two requirements the route depends on went from "never met in nine
+iterations" to 100% on 26 000 automata each, and the fix was a stated condition
+rather than another tuned heuristic.  Held below a larger jump by the
+unadjudicated NA=3 case, the untested NA=4 population, and the fact that
+(c) — certificate implies solvable — is exactly the part still owed to a proof.
+
+**Next.**  Adjudicate the NA=3 case with `synth`, and run NA=4.
