@@ -4516,3 +4516,70 @@ real cases to discharge, and nothing in the repo currently does that.
    discharged in 124; general case open, needs the size induction.
 3. **The size induction** — structural interface built in 124, with the
    loop case corrected.
+
+## Iteration 126 — ★ THE LAST DEPENDENCY WAS ALREADY HALF-BUILT — it is S0, not a new problem ★
+
+Went to attack 125's isolated obligation (dead Thompson labels are
+provably zero) and first traced whether the repo had anything pointed
+at it.  It has a great deal, and the assessment changes materially.
+
+**`GkatNormalizationProofs.lean` was built for exactly this.**  Its own
+docstring: `outG g e` is "the OUTPUT GUARD of `g?·e` — the tightest test
+its accepted strings' last atoms satisfy", and `outG_emits` "lets
+emptiness propagate through `seq` (the continuation's input guard is the
+head's output guard), which is exactly what pruning and, **later,
+Thompson silent-freeness** need."  That is verbatim the crux case I
+identified: `X · test b ≈ 0` when `X`'s output atoms all falsify `b`.
+With `outG_emits` it is three moves — insert the output guard, conjoin,
+`s3`.
+
+And the file goes further than its own docstring claims (which warns
+pruning "does not descend into loop bodies"):
+
+* `outG_emits` — THE EMISSION THEOREM, unconditional for EVERY GKAT
+  program.
+* `prune_equiv` / **`prune_equiv_top`** — THE PRUNING THEOREM,
+  `e ≡ prune 1 e`, unconditional for EVERY GKAT program.
+* `guardedness_normalization` — every loop body may be replaced by a
+  strictly productive one.
+* `wh_emits_exit_all` — every loop provably emits its exit guard, NO
+  productivity hypothesis.
+* `wh_prune_body` — pruning DOES descend through loop bodies (the
+  docstring caveat is stale).
+
+**So the algebra half of the obligation is DONE and unconditional.**
+
+**And the remaining half is `NormalizationBridge` — S0, a hypothesis
+this repo named years ago.**  `NormalizationBridge : ∀ e, ∃ e',
+EquivBA e e' ∧ LiveSteps (certifiedThompson e').aut.toGAut`.  The
+witness is `prune 1 e`; `prune_equiv_top` already gives the `EquivBA`
+half unconditionally.  What is missing is purely automaton-level: that a
+PRUNED program's Thompson automaton has live steps.
+
+**Why that discharges 125's obligation outright.**  `solvesBA_trim_of_
+dead` needs dead labels to vanish only where they are USED — at the
+targets of arms.  So today's **`solvesBA_trim_of_dead_arms`** restates
+it in the per-arm form: only dead targets of arms matter, unreachable
+dead states in the carrier are irrelevant.  Under `LiveSteps` every
+firing step lands on a live state, so that hypothesis is discharged
+(modulo never-firing arms, whose guards are empty and which die by
+`guard_zero_test`).  `sum_liveSteps` already lifts liveness from both
+sides to the sum.
+
+**Net: the last dependency is not a new mathematical problem.**  It is
+S0, the oldest named hypothesis in this programme, whose ALGEBRA is
+finished and whose remaining content is the structural fact that
+pruning yields silent-free Thompson automata.  That is a bounded
+automaton-level induction over `prune`'s own recursion, against
+machinery (`outG`, `prune`, `wh_prune_body`) that already exists.
+
+**Route status — three pieces, all named, none hand-waved:**
+1. **S0 / `NormalizationBridge`** — algebra done (`prune_equiv_top`);
+   remaining: pruned ⟹ `LiveSteps`.  Bounded, structural.
+2. **Same-side UNIF** — canonical cause discharged (124); general case
+   open, needs the size induction.
+3. **The size induction** — interface built (124), loop case corrected.
+
+Honest caveat: (2) remains the genuinely open mathematics.  (1) moving
+from "unknown difficulty" to "known shape, existing machinery" is real
+but it is the piece the repo was always going to have to finish anyway.

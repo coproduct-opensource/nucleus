@@ -2628,4 +2628,41 @@ theorem solvesBA_trim_of_dead {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms solvesBA_trim_of_dead
 
+open Classical in
+/-- The per-arm form, which is the one an automaton-level liveness fact
+    can actually discharge: only the DEAD TARGETS OF ARMS matter, not
+    every dead state in the carrier.  Unreachable dead states with no
+    incoming arm are irrelevant. -/
+theorem solvesBA_trim_of_dead_arms {S : Type} (aut : GkatKleene.GAut S A T)
+    {sol : S → Exp A T}
+    (hwf1 : ∀ s ∈ aut.states, ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s) α = true →
+        GkatKleene.autStep (GkatPlanExistence.genW T) aut s α = none)
+    (hdead : ∀ s ∈ aut.states, ∀ e ∈ aut.trans s,
+      ¬ GkatPlanExistence.Live aut e.2.2 →
+        EquivBA (sol e.2.2) (.test .zero))
+    (hsol : GkatKleene.SolvesBA aut sol) :
+    GkatKleene.SolvesBA (GkatTrim.trimAut aut) sol := by
+  intro s hs
+  refine EquivBA.trans (hsol s hs) ?_
+  have hexcl : ∀ e ∈ aut.trans s,
+      GkatRingPlan.GuardEmpty (.and (aut.hlt s) e.1) := by
+    intro e he X W x
+    show (GkatGS.bval W (aut.hlt s) x && GkatGS.bval W e.1 x) = false
+    rw [GkatPlanExistence.bval_gen W x (aut.hlt s),
+      GkatPlanExistence.bval_gen W x e.1]
+    cases hh : GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s)
+        (fun u => W u x) with
+    | false => rfl
+    | true =>
+        rw [GkatTrim.firstMatch_none_all
+          (GkatPlanExistence.genW T) (hwf1 s hs _ hh) e he]
+        rfl
+  refine EquivBA.trans (EquivBA.symm (GkatTrim.not_zero_strip _)) ?_
+  refine EquivBA.trans
+    (GkatTrim.trim_fold_equiv aut (aut.trans s) .zero (hdead s hs) hexcl) ?_
+  exact GkatTrim.not_zero_strip _
+
+#print axioms solvesBA_trim_of_dead_arms
+
 end GkatCensus
