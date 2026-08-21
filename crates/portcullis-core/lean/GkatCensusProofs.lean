@@ -2378,4 +2378,121 @@ theorem loop_solution_closed {S : Type} (guard : BExp T)
 #print axioms loop_solutions_agree_of_finish
 #print axioms loop_solution_closed
 
+/-! ## The partner retraction: same-side UNIF ⟹ a solution of the whole
+
+    Iteration 122's conjecture, made precise and proved.  Instead of
+    solving the quotient, RETRACT the disjoint union onto ONE side: let
+    `π` send every state to a bisimilar state of a distinguished,
+    arm-closed subset `S₀` on which the solution is already known, and
+    on which `π` is the identity.  Then `sol ∘ π` solves EVERYTHING.
+
+    The proof is three links and the middle one is the point.  At `π u`
+    the family `sol ∘ π` agrees with `sol` LITERALLY — not up to
+    `EquivBA` — because `S₀` is arm-closed and `π` fixes `S₀`, so every
+    arm target of `π u` is already fixed.  That kills the usual
+    circularity: no UNIF is needed to rewrite the equation at `π u`.
+    Then `equation_transport` carries the equation from `π u` to `u`,
+    which is legitimate because `sol ∘ π` is class-consistent — and THAT
+    follows from same-side UNIF alone, since bisimilar `u, v` have
+    `π u ~ u ~ v ~ π v` with both partners inside `S₀`.
+
+    So the only genuinely new hypothesis is same-side UNIF on `S₀`. -/
+
+open Classical in
+/-- A partner-retracted family is class-consistent, given same-side
+    UNIF on the retract.  No solving, no canonicity — just transitivity
+    of bisimilarity. -/
+theorem partner_class_consistent {S : Type}
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (S₀ : S → Prop) (π : S → S)
+    (hmem : ∀ u, S₀ (π u))
+    (hbis : ∀ u, GkatPlanExistence.GenBisimilar aut u (π u))
+    (hsame : ∀ x y, S₀ x → S₀ y →
+      GkatPlanExistence.GenBisimilar aut x y → EquivBA (sol x) (sol y)) :
+    ∀ u v, GkatPlanExistence.GenBisimilar aut u v →
+      EquivBA (sol (π u)) (sol (π v)) := by
+  intro u v huv
+  exact hsame _ _ (hmem u) (hmem v)
+    (((hbis u).symm.trans huv).trans (hbis v))
+
+open Classical in
+/-- **THE PARTNER RETRACTION THEOREM**: if `S₀` is closed under arms,
+    `π` retracts every state onto a bisimilar element of `S₀` and fixes
+    `S₀`, `sol` solves on `S₀`, and same-side UNIF holds on `S₀`, then
+    `sol ∘ π` solves the WHOLE automaton.
+
+    Same-side UNIF is the only new input; everything else is structure.
+    This is the reduction iteration 122 conjectured, now a theorem. -/
+theorem solves_of_partner {S : Type} [DecidableEq A]
+    (aut : GkatKleene.GAut S A T) (sol : S → Exp A T)
+    (S₀ : S → Prop) (π : S → S)
+    (hclosed : ∀ s, S₀ s → ∀ e ∈ aut.trans s, S₀ e.2.2)
+    (hmem : ∀ u, S₀ (π u))
+    (hbis : ∀ u, GkatPlanExistence.GenBisimilar aut u (π u))
+    (hfix : ∀ s, S₀ s → π s = s)
+    (hsolves : ∀ s, S₀ s → EquivBA (sol s) (GkatKleene.eqRHS aut sol s))
+    (hsame : ∀ x y, S₀ x → S₀ y →
+      GkatPlanExistence.GenBisimilar aut x y → EquivBA (sol x) (sol y)) :
+    ∀ u, EquivBA (sol (π u))
+      (GkatKleene.eqRHS aut (fun t => sol (π t)) u) := by
+  have hcons := partner_class_consistent aut sol S₀ π hmem hbis hsame
+  intro u
+  have hstep1 : EquivBA (sol (π u)) (GkatKleene.eqRHS aut sol (π u)) :=
+    hsolves _ (hmem u)
+  have hstep2 : GkatKleene.eqRHS aut sol (π u)
+      = GkatKleene.eqRHS aut (fun t => sol (π t)) (π u) := by
+    refine GkatPlanExistence.eqRHS_congr aut (π u) ?_
+    intro e he
+    exact congrArg sol (hfix _ (hclosed _ (hmem u) e he)).symm
+  rw [hstep2] at hstep1
+  exact EquivBA.trans hstep1
+    (equation_transport aut (hbis u).symm _ hcons)
+
+open Classical in
+/-- **CROSS-SIDE UNIF FROM SAME-SIDE UNIF**, on the Thompson sum: with
+    a total partner map onto the left side, same-side UNIF there forces
+    every RIGHT-side internal state's canonical label to equal its
+    partner's.  The decomposition, discharged — modulo the partner map,
+    whose existence for dead states is the one remaining gap. -/
+theorem cross_unif_of_same_side (e f : Exp A T) [DecidableEq A]
+    (π : ((Option (GkatThompson.certifiedThompson A T e).State)
+        ⊕ (Option (GkatThompson.certifiedThompson A T f).State))
+      → ((Option (GkatThompson.certifiedThompson A T e).State)
+        ⊕ (Option (GkatThompson.certifiedThompson A T f).State)))
+    (hmem : ∀ u, ∃ x, π u = .inl x)
+    (hbis : ∀ u, GkatPlanExistence.GenBisimilar
+      (GkatTrim.SUMof A T e f) u (π u))
+    (hfix : ∀ x, π (.inl x) = .inl x)
+    (hsame : ∀ x y, GkatPlanExistence.GenBisimilar
+        (GkatTrim.SUMof A T e f) (.inl x) (.inl y) →
+      EquivBA (stdSum e f (.inl x)) (stdSum e f (.inl y))) :
+    ∀ s ∈ (GkatThompson.certifiedThompson A T f).aut.core.states,
+      EquivBA (stdSum e f (π (.inr (some s))))
+        ((GkatThompson.certifiedThompson A T f).standard s) := by
+  refine sum_solution_forced_right e f (sol := fun t => stdSum e f (π t))
+    (fun u _ => ?_)
+  refine solves_of_partner (GkatTrim.SUMof A T e f) (stdSum e f)
+    (fun z => ∃ x, z = .inl x) π ?_ ?_ hbis ?_ ?_ ?_ u
+  · rintro s ⟨x, rfl⟩ arm harm
+    have harm' : arm ∈
+        ((GkatThompson.certifiedThompson A T e).aut.toGAut.trans x).map
+          (fun t : BExp T × A
+              × Option (GkatThompson.certifiedThompson A T e).State =>
+            (t.1, t.2.1, (Sum.inl t.2.2 :
+              (Option (GkatThompson.certifiedThompson A T e).State)
+                ⊕ (Option (GkatThompson.certifiedThompson A T f).State)))) :=
+      harm
+    obtain ⟨y, _, hy2⟩ := List.mem_map.mp harm'
+    exact ⟨y.2.2, (congrArg (fun t => t.2.2) hy2).symm⟩
+  · exact hmem
+  · rintro s ⟨x, rfl⟩; exact hfix x
+  · rintro s ⟨x, rfl⟩
+    exact sum_solves_std e f _ (GkatDecide.sumof_exhaustive e f _)
+  · rintro x y ⟨a, rfl⟩ ⟨b, rfl⟩ hxy
+    exact hsame a b hxy
+
+#print axioms partner_class_consistent
+#print axioms solves_of_partner
+#print axioms cross_unif_of_same_side
+
 end GkatCensus

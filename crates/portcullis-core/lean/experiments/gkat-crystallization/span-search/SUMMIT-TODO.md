@@ -4326,3 +4326,73 @@ core, not the trim) and the size-induction bookkeeping (the two
 reductions must be shown to descend together).  Not yet a plan.  Next
 iteration should test the smallest nontrivial same-side case in Lean
 rather than reason about it further.
+
+## Iteration 123 — ★ THE PARTNER RETRACTION THEOREM ★ — the decomposition is proved
+
+Iteration 122 recorded a conjecture and flagged it as "to test, not to
+execute".  Tested, and it holds.  Three theorems:
+
+* **`partner_class_consistent`** (ZERO axioms) — a partner-retracted
+  family `sol ∘ π` is class-consistent, given same-side UNIF on the
+  retract.  Pure transitivity: `u ~ v` gives `π u ~ u ~ v ~ π v` with
+  both partners inside `S₀`.
+* **`solves_of_partner`** — **if `S₀` is closed under arms, `π`
+  retracts every state onto a bisimilar element of `S₀` and fixes `S₀`,
+  `sol` solves on `S₀`, and same-side UNIF holds on `S₀`, then
+  `sol ∘ π` solves the WHOLE automaton.**
+* **`cross_unif_of_same_side`** — on the Thompson sum: with a total
+  partner map onto the left side, same-side UNIF there forces every
+  right-side internal state's canonical label to equal its partner's.
+  **Cross-side UNIF from same-side UNIF.**
+
+**The mechanism, and why it escapes the usual circularity.**  Three
+links.  At `π u` the family `sol ∘ π` agrees with `sol` **literally,
+not up to `EquivBA`** — because `S₀` is arm-closed and `π` fixes `S₀`,
+so every arm target of `π u` is already a fixed point.  No UNIF is
+needed to rewrite the equation there; it is an equality, discharged by
+`eqRHS_congr`.  Then `equation_transport` carries the equation from
+`π u` to `u`, legitimate because `sol ∘ π` is class-consistent, and
+that comes from same-side UNIF alone.  Same-side UNIF is the ONLY new
+input; everything else is structure the repo already had.
+
+**LITERATURE CHECK, and it sharpens the claim.**  "Solve the target,
+pull back along π" is precedented and load-bearing: a map with
+`u ∼ π(u)` respecting transitions is a **functional bisimulation**
+(coalgebra homomorphism; p-morphism / bounded morphism / zig-zag
+morphism in modal logic), and solution-transfer along one is a
+workhorse of Grabmayer-Fokkink's 1-free completeness (LICS 2020) and
+Grabmayer's full Milner completeness (LICS 2022).  What has NO
+precedent is retracting onto ONE SIDE rather than onto the collapse.
+
+And the search names the reason: **π : A+B → A can only be a functional
+bisimulation if A is already its own collapse** — no two distinct
+bisimilar reachable states.  That would make the technique a special
+case, inheriting the same side condition.
+
+**But `solves_of_partner` does NOT require π to be a functional
+bisimulation.**  It never asks π to commute with transitions — only
+that `u ~ π u`, that π fixes `S₀`, and that `S₀` is arm-closed.  The
+collapsedness requirement is replaced by `hsame`: instead of FORBIDDING
+A from having distinct bisimilar states, we handle them ALGEBRAICALLY,
+by requiring their labels to be provably equal.  That is exactly the
+same-side UNIF hypothesis, and it is why the retraction works on a
+non-collapsed A.  So the technique is a genuine variant of the
+precedented one, with the side condition traded for a proof obligation
+— which is the trade this whole campaign is about.
+
+**REMAINING GAPS, both already named and neither closed.**
+1. **The partner map.**  `cross_unif_of_same_side` takes π as a
+   hypothesis.  `sreach_partner` supplies partners for REACHABLE states
+   under ULE; dead and unreachable states need not have one, and the
+   arm-closure/fixing conditions must be checked for whatever π is
+   built.  This is the dead-state gap in its current form.
+2. **Same-side UNIF itself.**  Now the sole mathematical input.  Per
+   122's addendum it EMBEDS cross-side UNIF (`ite c (p;q) (p;q')`), so
+   it is not simpler outright — the induction must be on SIZE, with
+   cross-side`(e,f)` → same-side`(e)` descending because
+   `|e| < |e| + |f|`, and same-side`(P)` → cross-side on strictly
+   smaller subterms.
+
+The route is now three named pieces: partner construction, same-side
+UNIF, and the size induction that ties them.  All three are stated;
+none is hand-waved; two are open.
