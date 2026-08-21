@@ -4022,3 +4022,46 @@ a class, members differ by guarded patches on atoms where one side
 halts and the other rejects, and `bisim_hlt_invariant` already says
 bisimilar states agree on halting — so the patches must be
 reconstructible from the bisimulation itself.
+
+## Iteration 120 — ★ THE GUARDED PATCH LEMMA ★ (zero axioms)
+
+Iteration 119's hand derivation `s0 ≈ ite α1 p s1` is now a GENERAL
+THEOREM, not a per-instance trick.  Three new results, **all zero
+axioms** — no choice, no propext, no Quot.sound:
+
+* **`patch_of_common_tail`** — if `X ≈ ite G Px Q` and `Y ≈ ite G Py Q`
+  (same guard, same tail), then `X ≈ ite G Px Y`.  Proof: `ite_c` with
+  hY, then `ite_else_restrict` at `G/G`, then `ite_guard` collapses
+  `¬G ∧ G` to `0`, then `ite_zero`.  Four moves.
+* `patch_symm` — the relation holds both ways: each side is the other
+  patched at `G`.
+* **`dispatch_patch`** — the automaton-level form: two states whose
+  dispatch lists share a common SUFFIX, whose leading guards agree, and
+  whose halts agree, satisfy `sol u ≈ ite g (a·sol t) (sol v)` under
+  ANY solution.  Exactly iteration 119's relation, for arbitrary
+  automata.
+
+**Why this matters.**  A patch relation costs NOTHING: no uniqueness,
+no productivity side condition, no elimination, no rank.  It relates
+two members of an SCC DIRECTLY.  That is precisely the currency the
+unification route trades in and the elimination route cannot use —
+elimination needs `prefix · unknown` shapes, whereas a patch is
+`ite G (something) unknown`, which is a dispatch arm, not a product.
+
+Both measured two-port SCCs (118, 119) have the patch shape: their two
+classes' dispatches agree except at ONE atom.  With `dispatch_patch`
+that agreement is now mechanically convertible into an `EquivBA` fact
+relating the two classes' labels, for free, in any instance where the
+dispatches line up.
+
+**Honest scope.**  This does NOT close two-port SCCs.  It converts one
+observed regularity into a reusable theorem, and it supplies exactly
+the kind of cheap inter-class relation the unification route needs.
+What is still missing is the step FROM patch relations TO UNIF: a
+patch says how two classes differ, not that a raw state agrees with
+its representative.  The bridge would be: patches compose along a
+bisimulation, and `bisim_hlt_invariant` already forces bisimilar states
+to agree on halting, so the guard region of a patch between bisimilar
+states should be provably empty — collapsing the patch to plain
+equality.  That is the next concrete target, and it is now a statement
+about `dispatch_patch`'s `g`, not about elimination at all.

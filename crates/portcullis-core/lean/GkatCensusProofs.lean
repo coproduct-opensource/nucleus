@@ -2152,4 +2152,80 @@ theorem elim_back {G : BExp T} {B P U V : Exp A T}
 #print axioms elim_reduces
 #print axioms elim_back
 
+/-! ## The guarded patch
+
+    Both measured two-port SCCs (iterations 118-119) have the same
+    shape: the two classes' dispatches agree except at ONE atom.  The
+    hand derivation for OPEN-SCC #3 produced `s0 ≈ ite α1 p s1` from
+    that agreement alone.  This section proves the general fact behind
+    it — two states whose equations share a common tail below a guard
+    differ by exactly one guarded patch — so the observation becomes a
+    reusable brick rather than a per-instance trick.
+
+    The point is that a patch relation costs NOTHING: it needs no
+    uniqueness, no productivity, no elimination.  It relates two
+    members of an SCC directly, which is what the unification route
+    wants and the elimination route cannot use. -/
+
+open Classical in
+/-- **THE GUARDED PATCH LEMMA**: if two expressions satisfy equations
+    that share a common tail `Q` below the same guard `G`, then each is
+    the other patched at `G`. -/
+theorem patch_of_common_tail {G : BExp T} {X Y Px Py Q : Exp A T}
+    (hX : EquivBA X (.ite G Px Q))
+    (hY : EquivBA Y (.ite G Py Q)) :
+    EquivBA X (.ite G Px Y) := by
+  refine EquivBA.trans hX (EquivBA.symm ?_)
+  refine EquivBA.trans
+    (EquivBA.ite_c (EquivBA.base (Equiv.refl Px)) hY) ?_
+  refine EquivBA.trans
+    (GkatFaithful.ite_else_restrict G G Px Py Q) ?_
+  refine EquivBA.ite_c (EquivBA.base (Equiv.refl Px)) ?_
+  refine EquivBA.trans
+    (EquivBA.ite_guard (b := .and (.not G) G) (c := .zero) ?_) ?_
+  · intro Z W v
+    show (!GkatGS.bval W G v && GkatGS.bval W G v) = false
+    cases GkatGS.bval W G v <;> rfl
+  · exact EquivBA.base (GkatFaithful.ite_zero Py Q)
+
+open Classical in
+/-- The patch is symmetric: each side is the other patched at `G`. -/
+theorem patch_symm {G : BExp T} {X Y Px Py Q : Exp A T}
+    (hX : EquivBA X (.ite G Px Q))
+    (hY : EquivBA Y (.ite G Py Q)) :
+    EquivBA X (.ite G Px Y) ∧ EquivBA Y (.ite G Py X) :=
+  ⟨patch_of_common_tail hX hY, patch_of_common_tail hY hX⟩
+
+open Classical in
+/-- **THE PATCH, AT THE AUTOMATON LEVEL**: two states whose dispatch
+    lists share a common suffix and whose halts agree satisfy the patch
+    relation under any solution — no hypotheses beyond solving.  This is
+    the general form of iteration 119's `s0 ≈ ite α1 p s1`. -/
+theorem dispatch_patch {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) {u v : S}
+    (hu : EquivBA (sol u) (GkatKleene.eqRHS aut sol u))
+    (hv : EquivBA (sol v) (GkatKleene.eqRHS aut sol v))
+    {g : BExp T} {a : A} {t : S} {common : List (BExp T × A × S)}
+    {py : BExp T} {ay : A} {ty : S}
+    (hlt : aut.hlt u = aut.hlt v)
+    (htu : aut.trans u = (g, a, t) :: common)
+    (htv : aut.trans v = (py, ay, ty) :: common)
+    (hg : py = g) :
+    EquivBA (sol u)
+      (.ite g (.seq (.act a) (sol t)) (sol v)) := by
+  subst hg
+  refine patch_of_common_tail
+      (Py := .seq (.act ay) (sol ty))
+      (Q := GkatPlanExistence.foldTL sol (aut.hlt v) common) ?_ ?_
+  · refine EquivBA.trans hu ?_
+    rw [GkatPlanExistence.eqRHS_foldTL, htu, hlt]
+    exact EquivBA.base (Equiv.refl _)
+  · refine EquivBA.trans hv ?_
+    rw [GkatPlanExistence.eqRHS_foldTL, htv]
+    exact EquivBA.base (Equiv.refl _)
+
+#print axioms patch_of_common_tail
+#print axioms patch_symm
+#print axioms dispatch_patch
+
 end GkatCensus
