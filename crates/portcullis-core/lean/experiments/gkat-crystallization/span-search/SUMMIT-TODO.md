@@ -3198,3 +3198,71 @@ sub-loop UNIF (class-internal consistency) + IH-unified exits.
 Completeness = UNIF at the starts via ule_iff_start_bisim. Then
 FiniteAxiomsCompleteBA. The final assembly is large but every
 constituent is now proven.
+
+## Iteration 112 — course-correction: the wiring target was mis-scoped
+
+Attempted to WIRE the assembled subsystem/extensionality bricks into a
+single closeable bridge theorem: define `stdSol := Sum.elim
+(initializedStandard e std_e) (initializedStandard f std_f)` on
+`SUMof A T e f`, set `qsol := stdSol` (or `stdSol ∘ bisimRep`), and
+try to derive `SolvesBA (bisimQuotAut (trimAut (SUMof e f))) qsol`
+from two hypotheses: (A) `SolvesBA (trimAut (SUMof e f)) stdSol`
+directly, and (B) UNIF as bisim-respecting `stdSol` (exactly
+`equation_transport`'s `hsol` shape). The `eqRHS_quot` reduction +
+`bisimRep` idempotence + a short new EquivBA-level `foldTL` branch-
+congruence lemma make the wiring FROM (A)+(B) TO the quotient-solves
+goal fully mechanical — no gap there.
+
+**But (A) is the wrong ask.** `sumof_exhaustive` proves `aut.states`
+for `SUMof A T e f` (hence `trimAut (SUMof A T e f)`, same `.states`
+field) is EXHAUSTIVE — literally every element of the carrier type,
+including every syntactically-dead/unreachable state Thompson
+construction produces (e.g. an `ite (test 0) p q` branch). Demanding
+`SolvesBA aut stdSol` at ALL of them forces `stdSol` — the ACTUAL
+canonical Thompson label, a fixed particular expression — to satisfy
+its OWN equation even at dead states, which resurfaces exactly the
+circularity flagged at `dead_thompson_label_eq_zero_of_complete`
+("any successful pruning proof must establish this special
+null-language case directly for Thompson labels" — proving a
+PARTICULAR canonical expression collapses to `.test .zero` is not
+free). This is the SAME dead-region trap iteration 108 already hit
+and routed around once (rank/hybrid-family → syntax-pair); framing
+the wiring through raw `SolvesBA` of `stdSol` reopens it needlessly.
+
+**The resolution, confirmed against `GkatDecomp.StateRole` /
+`dag_roles`**: `SolvesBA` is never the right target to hand-construct
+directly. `StateRole.fold` only demands `sol s = eqRHS aut sol s` for
+SOME `sol` — not that `sol` equal any particular canonical
+expression, let alone `.test .zero`, at any state. `dag_roles` gives
+this for FREE, by well-founded recursion on `StepRel`, for an entire
+ACYCLIC automaton (this is exactly `loopfree_complete`'s engine). The
+six existing completeness theorems all follow the same shape: a
+single `sol` built by well-founded recursion on a RANK (not raw
+`StepRel`, since real automata have cycles) that is `fold` off-cycle
+and `selfLoop`/`salomaaE`/`member`/`header` on-cycle — `reachRank`
+(Nat-valued, trivially well-founded) is exactly this ranking function,
+already built in the census layer. Dead/acyclic states, reachable or
+not, cost NOTHING under this scheme: they get `fold` automatically,
+with whatever closed form the recursion produces, never needing to
+equal `stdSol` or `.test .zero` or anything externally meaningful.
+
+**So the correctly-scoped remaining theorem is narrower than "solve
+the whole exhaustive state space" and narrower than my attempted
+`stdSol`+UNIF wiring**: it is exactly `RoleCovered` as originally
+stated — `StateRole` existence for canonical-quotient states inside a
+NONTRIVIAL SCC (same-`reachRank` mutually-reachable block spanning
+possibly both e's and f's automata), built via rank-based recursion
+whose EXIT continuations (lower rank, hence already assigned by the
+IH) feed as the `finish` parameter into `ParametricCanonicalBA` at
+each loop level through the subsystem lemmas (seq/loop/sum), with
+`equation_transport` + `sreach_partner` supplying the cross-side
+matching that lets a same-class member borrow another side's
+already-established local structure. This is IDENTICAL in content to
+what iterations 97-111 already targeted — this iteration's contribution
+is confirming (against `decomp_solves`/`dag_roles`, not just
+intuition) that the natural-looking `stdSol`-global-`SolvesBA` shortcut
+is a dead end, so the next iteration should build `qsol` via explicit
+rank-recursion + `StateRole` case dispatch (mirroring `slSol`/`saSol`'s
+existing pattern in GkatPlanExistenceProofs.lean) rather than via a
+`SolvesBA aut stdSol` hypothesis. No new theorem lands this iteration;
+this is a scoping correction that avoids a wasted future attempt.
