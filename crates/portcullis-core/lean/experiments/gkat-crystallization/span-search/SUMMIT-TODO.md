@@ -9975,3 +9975,57 @@ sides of the back edge.
 **Next.**  The `wh` step.  If it goes through, `seq` and `ite` should follow the
 same pattern; if it breaks, the break will name the missing rule, the way 201's
 and 206's resisters did.
+
+---
+
+## 218 — THE `wh` CASE, ANATOMISED.  Two definitional facts, and the residual named.
+
+**Two structural facts, both `rfl`:**
+
+    loop_state_eq     (wh b e)'s Thompson states ARE e's — `loopInitialized`
+                      adds back EDGES, never states
+    loop_standard_eq  std_loop s = std_body s ; wh b e
+
+The first is the one I did not expect: a loop's Thompson automaton has exactly
+the body's state set, with the back edge encoded as extra transitions guarded
+by `hlt_body ∧ b`.  Together they turn the `wh` step into a statement with no
+automaton construction left in it:
+
+    loop-bisimilar u, v  ⟹  std_body u · wh b e  ≡  std_body v · wh b e
+
+**And that is WEAKER than `std_body u ≡ std_body v`.**  The trailing loop may
+equalise labels the body keeps apart — which is precisely the trailing-suffix
+phenomenon rule 6 was proved for.  So the `wh` case is where rules 5 and 6 must
+earn their place, exactly as 217 predicted, and now for a structural reason
+rather than a hunch.
+
+**`thompsonUnif_wh_of_residual` splits the step and discharges the easy half.**
+When loop-bisimilar states are also BODY-bisimilar, the induction hypothesis
+plus `seq` congruence finishes immediately.  What remains is the residual:
+loop-bisimilar but NOT body-bisimilar.  That is possible because the loop's halt
+is `hlt_body ∧ ¬b`, so two states may differ in the body exactly where `b` holds
+and the back edge fires — the difference is confined to a region where both
+states restart the loop.
+
+So the remainder is now:
+
+    seq step        open
+    ite step        open
+    wh step         reduced to ONE residual case, easy half proved
+
+all carried as explicit hypotheses, still no `sorry` and no new axiom.
+
+**A census note, reported because it is a non-result.**  NA=2 k=4 (1 679 616
+automata) timed out at 900s even with 216's lookup-first gating.  That gating
+did not help, and the reason is informative: MOST 4-state NA=2 automata have
+behaviour expressible at size <= 10, so the table gate rarely fires and the
+calculus runs on nearly all of them.  Relaunched without a wall-clock limit.
+
+**Odds: 77%, held.**  Further reduction, no new mathematics.  A theorem does not
+become more likely to be true by being restated more precisely — but the
+residual case is now small enough to attack directly, and its shape says which
+of the six rules should close it.
+
+**Next.**  The residual: loop-bisimilar, not body-bisimilar.  Show the
+difference is confined to the `hlt_body ∧ b` region and that postcomposition
+with `wh b e` absorbs it — a rule-6-shaped argument.

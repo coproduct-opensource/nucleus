@@ -5820,4 +5820,51 @@ theorem thompsonUnif_of_steps
 #print axioms thompsonUnif_act
 #print axioms thompsonUnif_of_steps
 
+/-- **THE `wh` CASE, ANATOMISED.**  Two structural facts make this step
+    tractable, and both are definitional:
+
+    * `loopInitialized` keeps the body's state set EXACTLY — a loop adds back
+      EDGES, never states.  So `(.wh b e)`'s Thompson states ARE `e`'s.
+    * the loop's standard labelling is the body's, postcomposed with the loop:
+      `std_loop s = std_body s ; wh b e`.
+
+    Together they turn the `wh` step into: loop-bisimilar `u`, `v` must satisfy
+    `std_body u · wh b e ≡ std_body v · wh b e`.  Note this is WEAKER than
+    `std_body u ≡ std_body v` — the trailing loop may equalise labels the body
+    keeps apart, which is exactly the trailing-suffix phenomenon rule 6 was
+    proved for. -/
+theorem loop_state_eq (b : BExp T) (e : Exp A T) :
+    (GkatThompson.certifiedThompson A T (.wh b e)).State
+      = (GkatThompson.certifiedThompson A T e).State := rfl
+
+theorem loop_standard_eq (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State) :
+    (GkatThompson.certifiedThompson A T (.wh b e)).standard s
+      = .seq ((GkatThompson.certifiedThompson A T e).standard s) (.wh b e) := rfl
+
+/-- **The `wh` step, given the body case.**  When loop-bisimilar states are also
+    BODY-bisimilar, the induction hypothesis discharges the step immediately:
+    congruence of `seq` carries `std_body u ≡ std_body v` through the trailing
+    loop.  What this does NOT cover is the residual case — loop-bisimilar but
+    not body-bisimilar — which is possible because the loop's halt is
+    `hlt_body ∧ ¬b`, so two states may differ in the body exactly where `b`
+    holds and the back edge fires.  That residual is the real content of the
+    `wh` step, and it is isolated here as an explicit hypothesis. -/
+theorem thompsonUnif_wh_of_residual (b : BExp T) (e : Exp A T)
+    (ih : ThompsonUnif e)
+    (hresid : ∀ s₀ u v,
+      GkatPlanExistence.GenBisimilar (coreGAut (.wh b e) s₀) u v →
+      ¬ GkatPlanExistence.GenBisimilar (coreGAut e s₀) u v →
+      EquivBA (.seq ((GkatThompson.certifiedThompson A T e).standard u) (.wh b e))
+        (.seq ((GkatThompson.certifiedThompson A T e).standard v) (.wh b e))) :
+    ThompsonUnif (.wh b e) := by
+  intro s₀ u v hb
+  by_cases hbody : GkatPlanExistence.GenBisimilar (coreGAut e s₀) u v
+  · exact EquivBA.seq_c (ih s₀ u v hbody) (EquivBA.base (Equiv.refl _))
+  · exact hresid s₀ u v hb hbody
+
+#print axioms loop_state_eq
+#print axioms loop_standard_eq
+#print axioms thompsonUnif_wh_of_residual
+
 end GkatCensus
