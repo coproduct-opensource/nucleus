@@ -2428,4 +2428,427 @@ theorem selOthers_sub {S : Type} (sel : BExp T × RTree S A T → Bool) :
 #print axioms callsB_of_callOnly
 #print axioms selOthers_sub
 
+/-- Trees with no surviving calls have a halt leaf. -/
+theorem pruneT_none_hasHalt {S : Type} :
+    ∀ t : RTree S A T, pruneT t = none → haltFreeB t = false := by
+  intro t
+  induction t with
+  | halt h => intro _; rfl
+  | call e s => intro hp; exact nomatch hp
+  | br g l r ihl ihr =>
+      intro hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = none := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' => rw [hl, hr] at hpeq; exact nomatch hpeq
+          | none => rw [hl, hr] at hpeq; exact nomatch hpeq
+      | none =>
+          show (haltFreeB l && haltFreeB r) = false
+          rw [ihl hl]
+          rfl
+  | pre e t ih =>
+      intro hp
+      have hpeq : (pruneT t).map (RTree.pre e) = none := hp
+      cases ht : pruneT t with
+      | some t₀ => rw [ht] at hpeq; exact nomatch hpeq
+      | none => exact ih ht
+
+/-! ## THE SCC CONSTRUCTOR
+
+    One rank class = a DAG-with-self-loops of interiors plus a single
+    exit port.  Interiors close forest-style; the port closes through
+    the full pipeline: cascade → prune → gather → factor → Salomaa. -/
+
+open Classical in
+/-- The interior schedule of an SCC. -/
+noncomputable def sccIntSteps {S : Type} (aut : GAut S A T)
+    (ints : List S) : List (S × RTree S A T) :=
+  ints.map (fun s => (s, ssTree aut s))
+
+open Classical in
+/-- The port's cascaded branches. -/
+noncomputable def sccCasc {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (ints : List S) (o : S) : List (BExp T × RTree S A T) :=
+  (aut.trans o).map (fun e =>
+    (e.1, stepSubst (sccIntSteps aut ints) (.call (.act e.2.1) e.2.2)))
+
+/-- The selection: port-reaching, halt-free branches. -/
+def sccSel {S : Type} [DecidableEq S] (o : S) :
+    BExp T × RTree S A T → Bool :=
+  fun b => callsB o b.2 && haltFreeB b.2
+
+open Classical in
+/-- The port's closed tree. -/
+noncomputable def sccPortTree {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (ints : List S) (o : S) : RTree S A T :=
+  .pre (.wh (selGuard (sccSel o) ((sccCasc aut ints o).map pruneBranch))
+      (selBody (sccSel o) ((sccCasc aut ints o).map pruneBranch)))
+    (chainT (aut.hlt o)
+      (selOthers (sccSel o) ((sccCasc aut ints o).map pruneBranch)))
+
+open Classical in
+/-- **THE SCC CONSTRUCTOR**: interiors (self ∨ later ∨ port, empty
+    halts) plus a single port (interiors ∨ self ∨ descent) yield a
+    certified rank-class schedule. -/
+theorem scc_rank_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (rank : S → Nat) (r : Nat)
+    (ints : List S) (o : S)
+    (hpair : (ints ++ [o]).Pairwise (· ≠ ·))
+    (hrankAll : ∀ s ∈ ints ++ [o], rank s = r)
+    (hint : ∀ (L₁ : List S) (s : S) (L₂ : List S),
+      ints = L₁ ++ s :: L₂ → ∀ e ∈ aut.trans s,
+        e.2.2 = s ∨ e.2.2 ∈ L₂ ∨ e.2.2 = o)
+    (hhlt : ∀ s ∈ ints, GuardEmpty (aut.hlt s))
+    (hport : ∀ e ∈ aut.trans o,
+      e.2.2 ∈ ints ∨ e.2.2 = o ∨ rank e.2.2 < r) :
+    Supp (fun t => rank t < r)
+        (sccIntSteps aut ints ++ [(o, sccPortTree aut ints o)])
+      ∧ SchedOk (treeOf aut) []
+          (sccIntSteps aut ints ++ [(o, sccPortTree aut ints o)])
+      ∧ (∀ p ∈ sccIntSteps aut ints ++ [(o, sccPortTree aut ints o)],
+          rank p.1 = r)
+      ∧ (∀ s ∈ ints ++ [o], ∃ C,
+          (s, C) ∈ sccIntSteps aut ints
+            ++ [(o, sccPortTree aut ints o)]) := by
+  have hcross : ∀ a ∈ ints, a ≠ o := fun a ha =>
+    (pairwise_append_parts ints [o] hpair).1 a ha o
+      (List.mem_cons_self ..)
+  have hpairInts : ints.Pairwise (· ≠ ·) :=
+    pairwise_append_left ints [o] hpair
+  have hrankInts : ∀ s ∈ ints, rank s = r := fun s hs =>
+    hrankAll s (List.mem_append.mpr (Or.inl hs))
+  have hranko : rank o = r :=
+    hrankAll o (List.mem_append.mpr (Or.inr (List.mem_cons_self ..)))
+  -- interior closed trees: dead halts, support toward {o}
+  have hintDead : ∀ p ∈ sccIntSteps aut ints, DeadHalts p.2 := by
+    intro p hp
+    obtain ⟨s, hsL, hpe⟩ := List.mem_map.mp hp
+    rw [← hpe]
+    exact ssTree_deadHalts aut s (hhlt s hsL)
+  have hsuppO : ∀ (L₂ L₁ : List S), ints = L₁ ++ L₂ →
+      Supp (fun t => t = o)
+        (L₂.map (fun s => (s, ssTree aut s))) := by
+    intro L₂
+    induction L₂ with
+    | nil => intro _ _; exact Supp.nil
+    | cons s L₂' ih =>
+        intro L₁ hL
+        have hparts := pairwise_append_parts L₁ (s :: L₂')
+          (hL ▸ hpairInts)
+        cases hparts.2 with
+        | cons hhead htail =>
+            refine Supp.cons s (ssTree aut s) _ ?_ ?_ ?_
+              (ih (L₁ ++ [s]) (by rw [hL, List.append_assoc]; rfl))
+            · show CallOnly _
+                (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+              refine callOnly_armChain _ _ _ ?_
+              intro e he
+              obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+              rcases hint L₁ s L₂' hL e heL with h1 | h2 | h3
+              · exact absurd h1 hne
+              · exact Or.inl ⟨(e.2.2, ssTree aut e.2.2),
+                  List.mem_map.mpr ⟨e.2.2, h2, rfl⟩, rfl⟩
+              · exact Or.inr h3
+            · intro q hq
+              obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+              rw [← hqe]
+              exact hhead t htL
+            · exact hcross s (hL ▸ List.mem_append.mpr
+                (Or.inr (List.mem_cons_self ..)))
+  have hsuppOInts := hsuppO ints [] rfl
+  -- branch classification
+  have hbranchCO : ∀ e ∈ aut.trans o,
+      (e.2.2 ∈ ints ∨ e.2.2 = o) →
+      CallOnly (fun t => t = o)
+        (stepSubst (sccIntSteps aut ints)
+          (.call (.act e.2.1) e.2.2)) := by
+    intro e _ hcase
+    refine stepSubst_callOnly (sccIntSteps aut ints) hsuppOInts _ ?_
+    show (∃ q ∈ sccIntSteps aut ints, e.2.2 = q.1) ∨ e.2.2 = o
+    rcases hcase with h1 | h2
+    · exact Or.inl ⟨(e.2.2, ssTree aut e.2.2),
+        List.mem_map.mpr ⟨e.2.2, h1, rfl⟩, rfl⟩
+    · exact Or.inr h2
+  have hbranchLow : ∀ e ∈ aut.trans o, rank e.2.2 < r →
+      stepSubst (sccIntSteps aut ints)
+          (.call (.act e.2.1) e.2.2)
+        = .call (.act e.2.1) e.2.2 := by
+    intro e _ hlow
+    refine stepSubst_noop _ _ ?_
+    show CallOnly _ (RTree.call (.act e.2.1) e.2.2)
+    intro p hp
+    obtain ⟨s, hsL, hpe⟩ := List.mem_map.mp hp
+    rw [← hpe]
+    intro hc
+    rw [hc] at hlow
+    rw [hrankInts s hsL] at hlow
+    omega
+  have hcascDead : ∀ b ∈ sccCasc aut ints o, DeadHalts b.2 := by
+    intro b hb
+    obtain ⟨e, heL, hbe⟩ := List.mem_map.mp hb
+    rw [← hbe]
+    exact stepSubst_deadHalts (sccIntSteps aut ints) hintDead _
+      True.intro
+  have hselAll : ∀ b ∈ (sccCasc aut ints o).map pruneBranch,
+      sccSel o b = true → AllCalls o b.2 := by
+    intro b _ hs
+    have hs' := Bool.and_eq_true_iff.mp hs
+    exact allCalls_of_bools o b.2 hs'.1 hs'.2
+  have hothersCO : ∀ b ∈ selOthers (sccSel o)
+      ((sccCasc aut ints o).map pruneBranch),
+      CallOnly (fun t => rank t < r) b.2 := by
+    intro b hb
+    obtain ⟨hbin, hbsel⟩ := selOthers_sub (sccSel o) _ b hb
+    obtain ⟨b₀, hb₀, hbe⟩ := List.mem_map.mp hbin
+    obtain ⟨e, heL, hb₀e⟩ := List.mem_map.mp hb₀
+    rcases hport e heL with h1 | h2 | h3
+    · -- interior branch: selected or dead
+      have hco : CallOnly (fun t => t = o) b₀.2 := by
+        rw [← hb₀e]
+        exact hbranchCO e heL (Or.inl h1)
+      cases hpr : pruneT b₀.2 with
+      | some t' =>
+          exfalso
+          have hbr : pruneBranch b₀ = (b₀.1, t') := by
+            show (match pruneT b₀.2 with
+              | some t' => (b₀.1, t') | none => b₀) = _
+            rw [hpr]
+          rw [hbr] at hbe
+          have hsel : sccSel o b = true := by
+            rw [← hbe]
+            show (callsB o t' && haltFreeB t') = true
+            rw [callsB_of_callOnly o t'
+              (callOnly_pruneT b₀.2 t' hco hpr),
+              pruneT_haltFree b₀.2 t' hpr]
+            rfl
+          rw [hsel] at hbsel
+          exact nomatch hbsel
+      | none =>
+          have hbr : pruneBranch b₀ = b₀ := by
+            show (match pruneT b₀.2 with
+              | some t' => (b₀.1, t') | none => b₀) = _
+            rw [hpr]
+          rw [hbr] at hbe
+          rw [← hbe]
+          exact pruneT_none_noCalls _ b₀.2 hpr
+    · -- self branch: always selected (contradiction)
+      exfalso
+      have hnoop : b₀.2 = .call (.act e.2.1) o := by
+        rw [← hb₀e]
+        show stepSubst (sccIntSteps aut ints)
+          (.call (.act e.2.1) e.2.2) = _
+        rw [h2]
+        refine stepSubst_noop _ _ ?_
+        show CallOnly _ (RTree.call (.act e.2.1) o)
+        intro p hp
+        obtain ⟨s, hsL, hpe⟩ := List.mem_map.mp hp
+        rw [← hpe]
+        exact fun hc => (hcross s hsL) hc.symm
+      have hbr : pruneBranch b₀ = b₀ := by
+        show (match pruneT b₀.2 with
+          | some t' => (b₀.1, t') | none => b₀) = _
+        rw [hnoop]
+        show (b₀.1, RTree.call (.act e.2.1) o) = b₀
+        rw [← hnoop]
+      rw [hbr] at hbe
+      have hsel : sccSel o b = true := by
+        rw [← hbe]
+        show (callsB o b₀.2 && haltFreeB b₀.2) = true
+        rw [hnoop]
+        show (decide (o = o) && true) = true
+        rw [decide_eq_true rfl]
+        rfl
+      rw [hsel] at hbsel
+      exact nomatch hbsel
+    · -- descent branch
+      have hnoop : b₀.2 = .call (.act e.2.1) e.2.2 := by
+        rw [← hb₀e]
+        exact hbranchLow e heL h3
+      have hbr : pruneBranch b₀ = b₀ := by
+        show (match pruneT b₀.2 with
+          | some t' => (b₀.1, t') | none => b₀) = _
+        rw [hnoop]
+        show (b₀.1, RTree.call (.act e.2.1) e.2.2) = b₀
+        rw [← hnoop]
+      rw [hbr] at hbe
+      rw [← hbe, hnoop]
+      exact h3
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · -- Supp
+    have haux : ∀ (L₂ L₁ : List S), ints = L₁ ++ L₂ →
+        Supp (fun t => rank t < r)
+          ((L₂.map (fun s => (s, ssTree aut s)))
+            ++ [(o, sccPortTree aut ints o)]) := by
+      intro L₂
+      induction L₂ with
+      | nil =>
+          intro _ _
+          refine Supp.cons o (sccPortTree aut ints o) [] ?_ ?_ ?_
+            Supp.nil
+          · show CallOnly _ (chainT (aut.hlt o)
+              (selOthers (sccSel o)
+                ((sccCasc aut ints o).map pruneBranch)))
+            have hchain : ∀ (L : List (BExp T × RTree S A T)),
+                (∀ b ∈ L, CallOnly (fun t => rank t < r) b.2) →
+                CallOnly (fun t => (∃ q ∈ ([] :
+                    List (S × RTree S A T)), t = q.1)
+                  ∨ rank t < r) (chainT (aut.hlt o) L) := by
+              intro L
+              induction L with
+              | nil => intro _; exact True.intro
+              | cons b rest ihc =>
+                  intro hall
+                  exact ⟨callOnly_mono (fun t ht => Or.inr ht) _
+                    (hall b (List.mem_cons_self ..)),
+                    ihc (fun q hq => hall q
+                      (List.mem_cons_of_mem _ hq))⟩
+            exact hchain _ hothersCO
+          · intro q hq
+            exact nomatch hq
+          · rw [hranko]
+            omega
+      | cons s L₂' ih =>
+          intro L₁ hL
+          have hparts := pairwise_append_parts L₁ (s :: L₂')
+            (hL ▸ hpairInts)
+          cases hparts.2 with
+          | cons hhead htail =>
+              refine Supp.cons s (ssTree aut s) _ ?_ ?_ ?_
+                (ih (L₁ ++ [s]) (by rw [hL, List.append_assoc]; rfl))
+              · show CallOnly _
+                  (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+                refine callOnly_armChain _ _ _ ?_
+                intro e he
+                obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+                rcases hint L₁ s L₂' hL e heL with h1 | h2 | h3
+                · exact absurd h1 hne
+                · exact Or.inl ⟨(e.2.2, ssTree aut e.2.2),
+                    List.mem_append.mpr (Or.inl
+                      (List.mem_map.mpr ⟨e.2.2, h2, rfl⟩)), rfl⟩
+                · exact Or.inl ⟨(o, sccPortTree aut ints o),
+                    List.mem_append.mpr (Or.inr
+                      (List.mem_cons_self ..)), h3⟩
+              · intro q hq
+                rcases List.mem_append.mp hq with h1 | h2
+                · obtain ⟨t, htL, hqe⟩ := List.mem_map.mp h1
+                  rw [← hqe]
+                  exact hhead t htL
+                · rcases List.mem_cons.mp h2 with h3 | h4
+                  · rw [h3]
+                    exact hcross s (hL ▸ List.mem_append.mpr
+                      (Or.inr (List.mem_cons_self ..)))
+                  · exact nomatch h4
+              · rw [hrankInts s (hL ▸ List.mem_append.mpr
+                  (Or.inr (List.mem_cons_self ..)))]
+                omega
+    exact haux ints [] rfl
+  · -- SchedOk
+    have haux : ∀ (L₂ L₁ : List S), ints = L₁ ++ L₂ →
+        SchedOk (treeOf aut)
+          (L₁.map (fun s => (s, ssTree aut s)))
+          ((L₂.map (fun s => (s, ssTree aut s)))
+            ++ [(o, sccPortTree aut ints o)]) := by
+      intro L₂
+      induction L₂ with
+      | nil =>
+          intro L₁ hL
+          have hL₁ : L₁ = ints := by rw [hL, List.append_nil]
+          rw [hL₁]
+          refine ⟨?_, True.intro⟩
+          refine Or.inl ⟨selGuard (sccSel o)
+              ((sccCasc aut ints o).map pruneBranch),
+            .call (selBody (sccSel o)
+              ((sccCasc aut ints o).map pruneBranch)) o,
+            chainT (aut.hlt o) (selOthers (sccSel o)
+              ((sccCasc aut ints o).map pruneBranch)),
+            ?_, rfl, rfl⟩
+          intro sol
+          show EquivBA (resolveT sol (stepSubst
+            (sccIntSteps aut ints) (treeOf aut o))) _
+          rw [treeOf_chainT, stepSubst_chainT, List.map_map]
+          have hcomp : ((aut.trans o).map
+              ((fun b => (b.1, stepSubst (sccIntSteps aut ints) b.2))
+                ∘ (fun e => (e.1, RTree.call (.act e.2.1) e.2.2))))
+              = sccCasc aut ints o := rfl
+          rw [hcomp]
+          refine EquivBA.trans (chain_prune_congr sol (aut.hlt o)
+            (sccCasc aut ints o) hcascDead) ?_
+          exact port_gather sol o (sccSel o) (aut.hlt o)
+            ((sccCasc aut ints o).map pruneBranch) hselAll
+      | cons s L₂' ih =>
+          intro L₁ hL
+          have hparts := pairwise_append_parts L₁ (s :: L₂')
+            (hL ▸ hpairInts)
+          have hnoop : stepSubst
+              (L₁.map (fun t => (t, ssTree aut t)))
+              (treeOf aut s) = treeOf aut s := by
+            refine stepSubst_noop _ _ ?_
+            refine callOnly_treeOf aut _ s ?_
+            intro e he q hq
+            obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+            rcases hint L₁ s L₂' hL e he with h1 | h2 | h3
+            · rw [h1, ← hqe]
+              exact fun hc => (hparts.1 t htL s
+                (List.mem_cons_self ..)) hc.symm
+            · rw [← hqe]
+              exact fun hc => (hparts.1 t htL e.2.2
+                (List.mem_cons_of_mem _ h2)) hc.symm
+            · rw [h3, ← hqe]
+              exact fun hc => (hcross t (hL ▸ List.mem_append.mpr
+                (Or.inl htL))) hc.symm
+          constructor
+          · refine Or.inl ⟨gGuard s (aut.trans s),
+              .call (gBody s (aut.trans s)) s,
+              armChain (gOthers s (aut.trans s)) (aut.hlt s),
+              ?_, rfl, rfl⟩
+            intro sol
+            rw [hnoop, resolve_treeOf, eqRHS_foldTL]
+            show EquivBA _ (Exp.ite (gGuard s (aut.trans s))
+              (.seq (gBody s (aut.trans s)) (sol s))
+              (resolveT sol (armChain (gOthers s (aut.trans s))
+                (aut.hlt s))))
+            rw [resolve_armChain]
+            exact multi_gather sol (aut.hlt s) s (aut.trans s)
+          · have hres := ih (L₁ ++ [s])
+              (by rw [hL, List.append_assoc]; rfl)
+            show SchedOk (treeOf aut)
+              ((L₁.map (fun t => (t, ssTree aut t)))
+                ++ [(s, ssTree aut s)]) _
+            have hmap : (L₁.map (fun t => (t, ssTree aut t)))
+                ++ [(s, ssTree aut s)]
+              = (L₁ ++ [s]).map (fun t => (t, ssTree aut t)) := by
+              rw [List.map_append]
+              rfl
+            rw [hmap]
+            exact hres
+    exact haux ints [] rfl
+  · -- hrank
+    intro p hp
+    rcases List.mem_append.mp hp with h1 | h2
+    · obtain ⟨t, htL, hpe⟩ := List.mem_map.mp h1
+      rw [← hpe]
+      exact hrankInts t htL
+    · rcases List.mem_cons.mp h2 with h3 | h4
+      · rw [h3]
+        exact hranko
+      · exact nomatch h4
+  · -- coverage
+    intro s hs
+    rcases List.mem_append.mp hs with h1 | h2
+    · exact ⟨ssTree aut s, List.mem_append.mpr (Or.inl
+        (List.mem_map.mpr ⟨s, h1, rfl⟩))⟩
+    · rcases List.mem_cons.mp h2 with h3 | h4
+      · rw [h3]
+        exact ⟨sccPortTree aut ints o, List.mem_append.mpr
+          (Or.inr (List.mem_cons_self ..))⟩
+      · exact nomatch h4
+
+#print axioms pruneT_none_hasHalt
+#print axioms scc_rank_sched
+
 end GkatElim

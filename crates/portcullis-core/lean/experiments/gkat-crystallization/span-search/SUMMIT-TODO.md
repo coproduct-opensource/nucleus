@@ -2565,3 +2565,36 @@ ints++[o] enumeration; the port via
 treeOf_chainT → stepSubst_chainT → chain_prune_congr → port_gather
 (sel := callsB && haltFreeB) with tl := .call selBody o (the
 single-call-node trick). Then the mixed per-rank assembly.
+
+## Iteration 90 — ★ THE SCC CONSTRUCTOR ★ (port constructor complete)
+
+**`scc_rank_sched`** ([propext, Classical.choice, Quot.sound], ~350
+lines, three micro-fixes): a rank class shaped as ONE single-exit SCC —
+interiors whose same-rank arms are self ∨ later-interior ∨ port, with
+empty halts and no descents; a port whose arms are interiors ∨ self ∨
+descent — yields a certified schedule (Supp + SchedOk + rank-exactness
++ coverage), with explicit closed trees:
+
+- interiors: `ssTree` (multi_gather Salomaa, cascade no-op);
+- port: `sccPortTree` = `pre (wh selGuard selBody) (chainT hlt others)`
+  where the branches are the cascaded (`sccCasc`), pruned
+  (`pruneBranch`) port arms, selected by `sccSel = callsB && haltFreeB`.
+
+The port's SchedOk clause runs the full five-step pipeline in twelve
+lines: treeOf_chainT → stepSubst_chainT → List.map_map →
+chain_prune_congr → port_gather, with tl := `.call selBody o` (the
+single-call-node trick). The branch classification (hothersCO) is the
+long pole: interior-branches selected-or-dead, self-branches always
+selected, descent-branches untouched-and-lower.
+
+Fix notes: pruneBranch-fold on rewritten scrutinees needs pair-eta
+(`show (b₀.1, literal) = b₀; rw [← hnoop]`); avoid `subst` on
+`L₁ = ints` (eliminates the wrong side) — rw instead; `hc.symm` for
+target-vs-cross inequality direction.
+
+WITH FOREST + SCC CONSTRUCTORS, the census toolkit covers: acyclic
+classes, self-loop classes, and single-exit SCCs with DAG interiors —
+every shape in all six strata, now producible generically. Remaining
+for FiniteAxiomsCompleteBA: nested sub-SCCs (hierarchy — interior
+cycles among interiors), and the Thompson census (enumerations +
+shape facts from the minimal automaton structure of ULE pairs).
