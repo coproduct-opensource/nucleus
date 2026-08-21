@@ -472,9 +472,103 @@ theorem sreach_reach {S : Type} (aut : GkatKleene.GAut S A T) :
   | refl s => exact Reach.refl s
   | step hstep _ ih => exact Reach.step (step_arm aut hstep) ih
 
+/-! ## Right multiplication of parametric solutions
+
+    The hybrid-family resolution of the padding circularity: dead
+    sub-Thompsons supply their own parametric solutions at ANY
+    continuation.  Right multiplication is the generic step: a
+    parametric solution times `g` is a parametric solution at
+    `finish · g`. -/
+
+open Classical in
+private theorem guardedFold_fallback_congr
+    {branches : List (BExp T × Exp A T)} {f₁ f₂ : Exp A T}
+    (h : EquivBA f₁ f₂) :
+    EquivBA (GkatFaithful.guardedFold branches f₁)
+      (GkatFaithful.guardedFold branches f₂) := by
+  induction branches with
+  | nil => exact h
+  | cons b rest ih =>
+      exact EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ih
+
+open Classical in
+private theorem guardedFold_seq_right (g : Exp A T) :
+    ∀ (branches : List (BExp T × Exp A T)) (fallback : Exp A T),
+      EquivBA (.seq (GkatFaithful.guardedFold branches fallback) g)
+        (GkatFaithful.guardedFold
+          (branches.map (fun b => (b.1, .seq b.2 g)))
+          (.seq fallback g)) := by
+  intro branches
+  induction branches with
+  | nil => intro fallback; exact EquivBA.base (Equiv.refl _)
+  | cons b rest ih =>
+      intro fallback
+      show EquivBA (.seq (.ite b.1 b.2
+        (GkatFaithful.guardedFold rest fallback)) g) _
+      refine EquivBA.trans (EquivBA.symm
+        (EquivBA.base (Equiv.u5 b.1 b.2
+          (GkatFaithful.guardedFold rest fallback) g))) ?_
+      exact EquivBA.ite_c (EquivBA.base (Equiv.refl _)) (ih fallback)
+
+open Classical in
+private theorem guardedFold_map_congr {S : Type}
+    (F : Exp A T) (f₁ f₂ : (BExp T × A × S) → Exp A T) :
+    ∀ L : List (BExp T × A × S),
+      (∀ t ∈ L, EquivBA (f₁ t) (f₂ t)) →
+      EquivBA
+        (GkatFaithful.guardedFold (L.map (fun t => (t.1, f₁ t))) F)
+        (GkatFaithful.guardedFold (L.map (fun t => (t.1, f₂ t))) F) := by
+  intro L
+  induction L with
+  | nil => intro _; exact EquivBA.base (Equiv.refl _)
+  | cons t rest ih =>
+      intro hall
+      exact EquivBA.ite_c (hall t (List.mem_cons_self ..))
+        (ih (fun q hq => hall q (List.mem_cons_of_mem _ hq)))
+
+open Classical in
+/-- **RIGHT MULTIPLICATION**: parametric solutions compose with a
+    common continuation. -/
+theorem paramSolves_seq {S : Type}
+    (aut : GkatThompson.GSystem S A T) (sol : S → Exp A T)
+    (fin g : Exp A T)
+    (h : GkatThompson.ParamSolvesBA aut sol fin) :
+    GkatThompson.ParamSolvesBA aut (fun s => .seq (sol s) g)
+      (.seq fin g) := by
+  intro s hs
+  refine EquivBA.trans (EquivBA.seq_c (h s hs)
+    (EquivBA.base (Equiv.refl g))) ?_
+  show EquivBA (.seq (GkatFaithful.guardedFold
+      (GkatKleene.transitionBranches (aut.trans s) sol)
+      (GkatThompson.paramFallback (aut.hlt s) fin)) g) _
+  refine EquivBA.trans (guardedFold_seq_right g _ _) ?_
+  have hmap : (GkatKleene.transitionBranches (aut.trans s) sol).map
+      (fun b => (b.1, Exp.seq b.2 g))
+      = (aut.trans s).map (fun t =>
+          (t.1, .seq (.seq (.act t.2.1) (sol t.2.2)) g)) := by
+    show ((aut.trans s).map _).map _ = _
+    rw [List.map_map]
+    rfl
+  rw [hmap]
+  show EquivBA _ (GkatFaithful.guardedFold
+    ((aut.trans s).map (fun t =>
+      (t.1, .seq (.act t.2.1) (.seq (sol t.2.2) g))))
+    (GkatThompson.paramFallback (aut.hlt s) (.seq fin g)))
+  refine EquivBA.trans (guardedFold_map_congr _
+    (fun t => .seq (.seq (.act t.2.1) (sol t.2.2)) g)
+    (fun t => .seq (.act t.2.1) (.seq (sol t.2.2) g))
+    (aut.trans s)
+    (fun t _ => EquivBA.base
+      (Equiv.s1 (.act t.2.1) (sol t.2.2) g))) ?_
+  refine guardedFold_fallback_congr ?_
+  show EquivBA (.seq (.seq (.test (aut.hlt s)) fin) g)
+    (.seq (.test (aut.hlt s)) (.seq fin g))
+  exact EquivBA.base (Equiv.s1 (.test (aut.hlt s)) fin g)
+
 #print axioms sreach_partner
 #print axioms firstMatch_mem_of_some
 #print axioms step_arm
 #print axioms sreach_reach
+#print axioms paramSolves_seq
 
 end GkatCensus

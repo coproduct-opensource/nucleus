@@ -2901,3 +2901,38 @@ Unification route status: (3) partner plumbing CORE DONE. Remaining:
 (1) loop-scope ↔ SCC correspondence, (2) standard compositionality —
 both live inside the CertifiedThompson.seq/ite/loop construction
 proofs (next recon target), then (4) the rank-induction assembly.
+
+## Iteration 101 — compositionality confirmed + THE CIRCULARITY AND ITS RESOLUTION
+
+**Recon**: standard-solution compositionality (route item 2) is
+DEFINITIONAL — seq: left states get `(leftStandard s)·rightProgram`,
+right states inherit; loop: `(bodyStandard s)·(wh g program)`; ite:
+inherited. Every state's standard = local standard × context
+continuation, by construction. Item (2) closes by reading.
+
+**THE OBSTACLE FOUND**: ParametricCanonicalBA is ∀-listed-states, but
+Thompson automata have unreachable states (dead branches: syntactic
+`ite 0`, semantic contradictory guards). The partner family (needed
+for canonicity application) only exists on the reachable cone; padding
+unreachable states with `standard·F` is CIRCULAR (unreachable states
+can target reachable ones, whose unification is the conclusion).
+
+**THE RESOLUTION (hybrid family)**: unreachable regions of Thompson
+automata decompose into DEAD SUB-THOMPSONS with boundary
+continuations; their own certificates supply solutions at ANY
+continuation via right multiplication. The hybrid family — partner
+standards on the reachable cone, `(local dead standard)·(boundary
+value)` elsewhere — solves EVERYWHERE, no circularity: reachable
+states' targets are reachable (forward closure), dead states' values
+are free.
+
+**The generic step landed**: `paramSolves_seq` ([propext]) — a
+parametric solution right-multiplied by `g` is a parametric solution
+at `finish·g` (guardedFold_seq_right by u5-symm chain;
+guardedFold_map_congr + s1 re-association per branch; fallback s1).
+Plus guardedFold_fallback_congr / guardedFold_map_congr helpers.
+
+Remaining for the route: the dead-region decomposition (structural),
+the subsystem lemma (ambient equations of loop states = parametric
+equations — the seq/loop construction shapes), and the rank-induction
+assembly.
