@@ -3141,4 +3141,67 @@ theorem diverging_region_zero {D b : BExp T} {e : Exp A T}
 
 #print axioms diverging_region_zero
 
+/-! ## Degenerate-guard collapses for the two-loop program
+
+    Iteration 138's audit found that `twoloops_complete` and
+    `chordloops_complete` carry satisfiability hypotheses their four
+    siblings do not, so "unconditional" was the wrong word for them.
+    `chainloops_complete_free` shows the fix: handle degenerate guards
+    by case analysis instead of assuming them away.
+
+    These are the collapse lemmas that case analysis needs for
+    `twoLoop b c q r = wh b ((wh c (act q)); act r)`.  Each degenerate
+    guard sends the program to something already covered by an earlier
+    stratum, which is why the hypotheses are removable rather than
+    load-bearing. -/
+
+open Classical in
+/-- An unenterable outer guard makes the two-loop `skip`. -/
+theorem twoLoop_b_unsat (c : BExp T) (q r : A) {b : BExp T}
+    (h : ∀ α : T → Bool, GkatGS.bval (GkatPlanExistence.genW T) b α = false) :
+    EquivBA (GkatTwoLoop.twoLoop b c q r) (.test .one) :=
+  GkatChainFragment.wh_guard_semantic_zero _ h
+
+open Classical in
+/-- **When the two guards never hold together, the inner loop is
+    invisible** and the two-loop collapses to an ATOMIC loop — a program
+    already covered by `atomicloops_complete`.  This is the degenerate
+    case that looks like it might hide content and does not. -/
+theorem twoLoop_no_overlap {b c : BExp T} (q r : A)
+    (h : ¬ ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c α = true) :
+    EquivBA (GkatTwoLoop.twoLoop b c q r) (.wh b (.act r)) := by
+  have hbc : GuardImplies b (.not c) := by
+    intro X W x hb
+    show (!GkatGS.bval W c x) = true
+    rw [GkatPlanExistence.bval_gen W x c]
+    cases hc : GkatGS.bval (GkatPlanExistence.genW T) c (fun t => W t x) with
+    | false => rfl
+    | true =>
+        refine absurd ⟨fun t => W t x, ?_, hc⟩ h
+        rw [← GkatPlanExistence.bval_gen W x b]; exact hb
+  -- under `b`, the inner loop takes its exit branch immediately
+  have hinner : EquivBA (.seq (.test b) (.wh c (.act q)) : Exp A T)
+      (.seq (.test b) (.test .one)) := by
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (EquivBA.trans (EquivBA.base (Equiv.w1 c (.act q)))
+        (EquivBA.base (Equiv.u2 c _ (.test .one))))) ?_
+    exact GkatGuardedAlgebra.test_seq_ite_of_implies _ _ hbc
+  -- so the body agrees with `act r` under `b`
+  have hbody : EquivBA
+      (.seq (.test b) (.seq (.wh c (.act q)) (.act r)) : Exp A T)
+      (.seq (.test b) (.act r)) := by
+    refine EquivBA.trans
+      (EquivBA.symm (EquivBA.base (Equiv.s1 (.test b) (.wh c (.act q)) (.act r)))) ?_
+    refine EquivBA.trans (EquivBA.seq_c hinner (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (EquivBA.base (Equiv.s1 (.test b) (.test .one) (.act r))) ?_
+    exact EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (EquivBA.base (Equiv.s4 (.act r)))
+  exact GkatNormalization.wh_congr_under_guard
+    (EquivBA.base (Equiv.refl _)) hbody
+
+#print axioms twoLoop_b_unsat
+#print axioms twoLoop_no_overlap
+
 end GkatCensus
