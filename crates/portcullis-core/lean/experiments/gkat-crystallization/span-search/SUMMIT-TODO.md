@@ -3599,3 +3599,74 @@ machinery is `RTree`/`SchedOk`/`stepSubst`/`backSol`/`sched_solves`
 (iterations 73-96, all proven).  The gap is the GENERAL CONSTRUCTION
 of a schedule for an arbitrary multi-class SCC; every existing
 instance was built by hand against a named witness automaton.
+
+### Iteration 116 addendum — ★ the published obstruction is NAMED, and it is the one this repo already attacked ★
+
+The n-ary-from-unary search returned the single most calibrating
+result of the campaign.  From Kappé-Schmid-Silva (skip-free GKAT,
+arXiv 2301.11301) and the ICALP'21 coequations paper, verbatim:
+
+> "the case for general n does not seem to follow easily from the case
+> where n = 1.  The problem here is that, **unlike the analogous
+> situation for Kleene algebra, there is no general method to transform
+> a left-affine system with n+1 unknowns into one with n unknowns**,
+> even though this is possible in certain cases."
+
+> "The other axioms of GKAT contain the instantiation of (UA) for n=1,
+> which has so far been sufficient in all handwritten proofs of
+> equivalence that we know.  Yet (UA) seems to be necessary in both
+> known completeness proofs."
+
+And the MECHANISM they name for why elimination fails:
+
+> "replacing action symbols in a valid GKAT equation with arbitrary
+> GKAT expressions might yield an invalid equation"
+
+— i.e. **substitution, the step elimination depends on, is not sound
+in GKAT.**  In classical KA it is: matrices over a KA form a KA, the
+n-ary star is definable from the unary one, and Braibant-Pous
+mechanized exactly that reduction in Coq.  GKAT has no order, no
+matrices, and unsound substitution, so the classical route is closed
+three ways over.
+
+**THIS REPO'S POSITION ON THE NAMED MECHANISM.**  `equivBA_substA`
+(GkatElimProofs.lean:180, ZERO axioms, verified again this iteration)
+proves precisely the missing principle in restricted form:
+
+    σ : A → Exp A' T,  (∀ a X W x, bval W (E (σ a)) x = false)
+      → EquivBA e f → EquivBA (substA σ e) (substA σ f)
+
+Substitution IS sound when every replacement is PRODUCTIVE (never
+accepts the empty guarded string).  The `w3_ba` case is the one that
+matters and it goes through: the guardedness side condition transports
+via `baTest` + `bval_E_substA`.  So the general-unsoundness objection
+does not apply to productive substitutions, and elimination only ever
+substitutes into positions of the form `.seq (.act a) _`.  The
+remaining productivity worry — that an eliminated unknown's CLOSED
+form `(wh G BODY)·REST` need not itself be productive — is what the
+call-marker layer (`embedC`/`collapseC`/`equivBA_of_embed`, iteration
+73-78) was built for: calls map to `test 0`, which IS productive.
+
+**HONEST CALIBRATION.**  What this does NOT establish: sound
+substitution is a PREREQUISITE for an elimination method, not a
+method.  The authors' actual claim is the stronger "no general method
+to go from n+1 unknowns to n", and that stands unrefuted — having a
+sound substitution principle does not by itself produce the schedule.
+What it DOES establish, and this is genuinely new information for
+calibration: the specific mechanism the domain experts cite as the
+blocker is one this repo has a proven, axiom-free answer to, and the
+secondary obstruction they would hit next (unproductive closed forms)
+is one the repo anticipated and built the call-marker transport for.
+The campaign is not pushing against the published objection in
+ignorance of it; it is pushing at the exact joint the objection names,
+with the joint already loosened.
+
+Residue unchanged and now doubly confirmed from outside: a GENERAL
+construction of an elimination schedule for an arbitrary multi-class
+SCC.  Both this repo and the literature agree that is the whole
+problem.  The literature says no general method is known.  This repo
+has the substitution soundness, the productivity transport, the
+schedule soundness theorem (`sched_solves`), the assembly
+(`sched_assembly_roles`), the SCC constructors (`scc_rank_sched`,
+`scc_block_schedP`), and six worked instances — and lacks only the
+general schedule-existence construction.
