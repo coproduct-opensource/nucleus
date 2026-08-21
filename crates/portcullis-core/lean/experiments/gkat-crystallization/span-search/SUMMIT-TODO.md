@@ -5849,3 +5849,42 @@ one genuinely new piece.
 **Hardening status**: five of six theorems hypothesis-free; the sixth
 has its collapses proved, its landing stratum confirmed already free,
 and its `b`-conditions reduced from three to two.
+
+## Iteration 148 — the STRIDE invariant: a chain loop's action count is a multiple of its body
+
+Iteration 147 named the chord repair's one genuinely new piece as an
+ARITHMETIC vacuity.  Its core is now proved:
+
+* **`chain2_even`** [propext] — a loop with a two-action chain body
+  accepts only strings whose action count is EVEN.
+* **`chain3_mod`** [propext] — a three-action chain body forces counts
+  divisible by three.
+
+Both are two-line inductions on `InLoop`: the exit case contributes
+zero, each step contributes exactly the body's fixed length, and
+`Nat.add_mod_left` closes it.  **A chain loop has a STRIDE**, and its
+accepted lengths are the multiples of that stride.
+
+**That is exactly what separates a chain loop from a live chord.**  A
+live chord emits TWO actions on `¬c` iterations and THREE on `c` ones,
+so it accepts strings of both lengths — and no single stride absorbs
+both: 3 is not even, 2 is not a multiple of 3.  So each of the two
+mixed cases of `chordloops_complete_free` dies by an arithmetic
+mismatch rather than a structural one.
+
+**Tactic notes** (both cost a rebuild and are worth recording): the
+`InLoop` induction needs the guarded string GENERALIZED — inducting
+with the index fixed as `(a, l)` fails with "index in target's type is
+not a variable", so the statement must quantify over `gs` and conclude
+about `gs.2.length`.  And when the induction is set up via
+`have h' : InLoop … := h`, the inductive hypothesis carries the
+recursive premise as an argument, so the step case closes with
+`exact ih hrec` rather than `exact ih`.
+
+**Remaining for `chordloops_complete_free`**: the two acceptance
+witnesses (a live chord accepts a two-action string via a `¬c` entry
+and a three-action string via a `c` entry — same construction as
+`twoLoop_live_accepts`), the trichotomy in the shape of
+`twoLoop_trichotomy`, and the 3 × 3 assembly.  Every piece now has a
+worked precedent from the two-loop repair except the stride argument,
+which is proved above.

@@ -3666,4 +3666,66 @@ theorem chordLoop_collapse_chain2 (p x y : A) :
 #print axioms chordLoop_c_unsat
 #print axioms chordLoop_collapse_chain2
 
+/-! ## The action-count invariant: a chain loop has a fixed STRIDE
+
+    Iteration 147 named the chord repair's remaining piece as an
+    ARITHMETIC vacuity rather than a structural one.  Here is its core:
+    a loop whose body is a fixed chain of `k` actions accepts only
+    strings whose action count is a MULTIPLE OF `k`.  A live chord loop
+    emits two actions on `¬c` iterations and three on `c` ones, so it
+    accepts strings of both lengths — and neither stride can absorb
+    both.
+
+    The invariant is a two-line induction on `InLoop`: the exit case
+    contributes zero, and each step contributes exactly the body's
+    length. -/
+
+/-- A two-action chain body forces even action counts. -/
+theorem chain2_even {Atom : Type} (V : T → Atom → Bool) (b : BExp T)
+    (p y : A) {gs : GkatGS.GS A Atom}
+    (h : GkatGS.den V (.wh b (.seq (.act p) (.act y)) : Exp A T) gs) :
+    gs.2.length % 2 = 0 := by
+  have h' : GkatGS.InLoop V b
+      (GkatGS.den V (.seq (.act p) (.act y) : Exp A T)) gs := h
+  induction h' with
+  | exit a _ => rfl
+  | step a l1 rest _ hbody hrec ih =>
+      obtain ⟨m1, m2, hsp, ⟨u1, v1, h1⟩, ⟨u2, v2, h2⟩⟩ := hbody
+      have hm1 : m1 = [(p, v1)] := congrArg Prod.snd h1
+      have hm2 : m2 = [(y, v2)] := congrArg Prod.snd h2
+      have hsp' : l1 = m1 ++ m2 := hsp
+      have hl1 : l1.length = 2 := by
+        rw [hsp', hm1, hm2]; rfl
+      show (l1 ++ rest).length % 2 = 0
+      rw [List.length_append, hl1, Nat.add_mod_left]
+      exact ih hrec
+
+/-- A three-action chain body forces action counts divisible by three. -/
+theorem chain3_mod {Atom : Type} (V : T → Atom → Bool) (b : BExp T)
+    (p x y : A) {gs : GkatGS.GS A Atom}
+    (h : GkatGS.den V
+      (.wh b (.seq (.act p) (.seq (.act x) (.act y))) : Exp A T) gs) :
+    gs.2.length % 3 = 0 := by
+  have h' : GkatGS.InLoop V b
+      (GkatGS.den V (.seq (.act p) (.seq (.act x) (.act y)) : Exp A T))
+      gs := h
+  induction h' with
+  | exit a _ => rfl
+  | step a l1 rest _ hbody hrec ih =>
+      obtain ⟨m1, m2, hsp, ⟨u1, v1, h1⟩, hrest⟩ := hbody
+      obtain ⟨n1, n2, hsp2, ⟨u2, v2, h2⟩, ⟨u3, v3, h3⟩⟩ := hrest
+      have hm1 : m1 = [(p, v1)] := congrArg Prod.snd h1
+      have hn1 : n1 = [(x, v2)] := congrArg Prod.snd h2
+      have hn2 : n2 = [(y, v3)] := congrArg Prod.snd h3
+      have hsp' : l1 = m1 ++ m2 := hsp
+      have hsp2' : m2 = n1 ++ n2 := hsp2
+      have hl1 : l1.length = 3 := by
+        rw [hsp', hm1, hsp2', hn1, hn2]; rfl
+      show (l1 ++ rest).length % 3 = 0
+      rw [List.length_append, hl1, Nat.add_mod_left]
+      exact ih hrec
+
+#print axioms chain2_even
+#print axioms chain3_mod
+
 end GkatCensus
