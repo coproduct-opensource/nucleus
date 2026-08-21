@@ -912,4 +912,156 @@ theorem callOnly_armChain {S : Type} (P : S → Prop)
 #print axioms stepSubst_noop
 #print axioms resolve_armChain
 
+/-! ## Validation instance: the singleton-SCC stratum as a schedule
+
+    Every state's arms are self or strictly descending: each state is
+    its own one-step elimination (`multi_gather` rearranges, the
+    cascade is a no-op).  Re-derives the S2 stratum through the
+    generalized assembly — the certificate ergonomics check. -/
+
+open Classical in
+/-- The Salomaa closed tree of a singleton-SCC state. -/
+noncomputable def ssTree {S : Type} (aut : GAut S A T) (s : S) :
+    RTree S A T :=
+  .pre (.wh (gGuard s (aut.trans s)) (gBody s (aut.trans s)))
+    (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+
+open Classical in
+/-- **SINGLETON-SCC VIA SCHEDULES**: the S2 stratum re-derived through
+    the generalized assembly. -/
+theorem singleton_scc_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (rank : S → Nat) (enum : Nat → List S)
+    (henum_rank : ∀ r, ∀ s ∈ enum r, rank s = r)
+    (henum_pair : ∀ r, (enum r).Pairwise (· ≠ ·))
+    (hcover : ∀ s ∈ aut.states, s ∈ enum (rank s))
+    (hshape : ∀ s : S, ∀ e ∈ aut.trans s,
+      e.2.2 = s ∨ rank e.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  have hcallLow : ∀ (s : S),
+      CallOnly (fun t => rank t < rank s) (ssTree aut s) := by
+    intro s
+    show CallOnly _ (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+    refine callOnly_armChain _ _ _ ?_
+    intro e he
+    obtain ⟨heL, hne⟩ := gOthers_sub s (aut.trans s) e he
+    rcases hshape s e heL with h1 | h2
+    · exact absurd h1 hne
+    · exact h2
+  have hcallTree : ∀ (s : S),
+      CallOnly (fun t => t = s ∨ rank t < rank s) (treeOf aut s) := by
+    intro s
+    refine callOnly_treeOf aut _ s ?_
+    intro e he
+    rcases hshape s e he with h1 | h2
+    · exact Or.inl h1
+    · exact Or.inr h2
+  refine sched_assembly_roles aut rank
+    (fun r => (enum r).map (fun s => (s, ssTree aut s)))
+    ?_ ?_ ?_ ?_ ?_
+  · -- hdesc
+    intro s e he
+    rcases hshape s e he with h1 | h2
+    · rw [h1]
+      exact Nat.le_refl _
+    · omega
+  · -- hsupp
+    intro r
+    have haux : ∀ L : List S, (∀ s ∈ L, rank s = r) →
+        L.Pairwise (· ≠ ·) →
+        Supp (fun t => rank t < r)
+          (L.map (fun s => (s, ssTree aut s))) := by
+      intro L
+      induction L with
+      | nil => intro _ _; exact Supp.nil
+      | cons s L' ih =>
+          intro hranks hpair
+          cases hpair with
+          | cons hhead htail =>
+              refine Supp.cons s (ssTree aut s) _ ?_ ?_ ?_
+                (ih (fun t ht => hranks t (List.mem_cons_of_mem _ ht))
+                  htail)
+              · refine callOnly_mono ?_ _ (hcallLow s)
+                intro t ht
+                exact Or.inr (by
+                  rw [← hranks s (List.mem_cons_self ..)]
+                  exact ht)
+              · intro q hq
+                obtain ⟨t, htL, hqe⟩ := List.mem_map.mp hq
+                rw [← hqe]
+                exact hhead t htL
+              · rw [hranks s (List.mem_cons_self ..)]
+                omega
+    exact haux (enum r) (henum_rank r) (henum_pair r)
+  · -- hok
+    intro r
+    have haux : ∀ (L : List S) (closedPre : List (S × RTree S A T)),
+        (∀ s ∈ L, rank s = r) → L.Pairwise (· ≠ ·) →
+        (∀ p ∈ closedPre, rank p.1 = r) →
+        (∀ p ∈ closedPre, ∀ s ∈ L, p.1 ≠ s) →
+        SchedOk (treeOf aut) closedPre
+          (L.map (fun s => (s, ssTree aut s))) := by
+      intro L
+      induction L with
+      | nil => intro _ _ _ _ _; exact True.intro
+      | cons s L' ih =>
+          intro closedPre hranks hpair hpreR hpreNe
+          have hrs : rank s = r := hranks s (List.mem_cons_self ..)
+          cases hpair with
+          | cons hhead htail =>
+              constructor
+              · refine Or.inl ⟨gGuard s (aut.trans s),
+                  .call (gBody s (aut.trans s)) s,
+                  armChain (gOthers s (aut.trans s)) (aut.hlt s),
+                  ?_, rfl, rfl⟩
+                intro sol
+                have hnoop : stepSubst closedPre (treeOf aut s)
+                    = treeOf aut s := by
+                  refine stepSubst_noop closedPre (treeOf aut s) ?_
+                  refine callOnly_mono ?_ _ (hcallTree s)
+                  intro t ht p hp
+                  rcases ht with h1 | h2
+                  · rw [h1]
+                    exact (hpreNe p hp s (List.mem_cons_self ..)).symm
+                  · intro hc
+                    rw [hc, hpreR p hp] at h2
+                    rw [hrs] at h2
+                    omega
+                rw [hnoop, resolve_treeOf, eqRHS_foldTL]
+                show EquivBA _ (Exp.ite (gGuard s (aut.trans s))
+                  (.seq (gBody s (aut.trans s)) (sol s))
+                  (resolveT sol (armChain (gOthers s (aut.trans s))
+                    (aut.hlt s))))
+                rw [resolve_armChain]
+                exact multi_gather sol (aut.hlt s) s (aut.trans s)
+              · refine ih (closedPre ++ [(s, ssTree aut s)])
+                  (fun t ht => hranks t (List.mem_cons_of_mem _ ht))
+                  htail ?_ ?_
+                · intro p hp
+                  rcases List.mem_append.mp hp with h1 | h2
+                  · exact hpreR p h1
+                  · rcases List.mem_cons.mp h2 with h3 | h4
+                    · rw [h3]
+                      exact hrs
+                    · exact nomatch h4
+                · intro p hp t ht
+                  rcases List.mem_append.mp hp with h1 | h2
+                  · exact hpreNe p h1 t (List.mem_cons_of_mem _ ht)
+                  · rcases List.mem_cons.mp h2 with h3 | h4
+                    · rw [h3]
+                      exact hhead t ht
+                    · exact nomatch h4
+    exact haux (enum r) [] (henum_rank r) (henum_pair r)
+      (fun p hp => nomatch hp) (fun p hp => nomatch hp)
+  · -- hrank
+    intro r p hp
+    obtain ⟨t, htL, hpe⟩ := List.mem_map.mp hp
+    rw [← hpe]
+    exact henum_rank r t htL
+  · -- hcover
+    intro s hs
+    exact ⟨ssTree aut s, List.mem_map.mpr
+      ⟨s, hcover s hs, rfl⟩⟩
+
+#print axioms singleton_scc_sched
+
 end GkatElim

@@ -2294,3 +2294,31 @@ callOnly_armChain.
 Next: assemble the singleton-SCC schedule instance end-to-end (list
 plumbing: per-rank state lists, nodup hypothesis, coverage), then the
 census structure theorem.
+
+## Iteration 80 — VALIDATION: singleton-SCC re-derived via schedules
+
+**`singleton_scc_sched`** ([propext, Classical.choice, Quot.sound] —
+choice only from the classical gGuard/gBody gathering in ssTree): the
+S2 stratum (every cycle a self-loop) re-derived END-TO-END through
+`sched_assembly_roles`. The certificate ergonomics VALIDATE:
+
+- Closed trees: `ssTree s = pre (wh gGuard gBody) (armChain gOthers)`.
+- Rearrangement: `multi_gather` + `resolve_treeOf`/`resolve_armChain`
+  discharge the ∀-sol split hypothesis in four lines.
+- Cascade no-op: `stepSubst_noop` via the call-support analysis
+  (self-or-descending targets never hit same-rank peers).
+- Supp/SchedOk: clean list inductions over a per-rank enumeration
+  (`Pairwise (· ≠ ·)` destructured by constructor — no Nodup API
+  needed).
+
+Instance inputs: enum : Nat → List S with rank-exactness, pairwise-ne,
+coverage — the shape the census structure theorem must produce.
+
+Two tactic notes: `rw [h1]` on a ≤-goal needs an explicit
+`Nat.le_refl` (rfl-closing fails for ≤); rank contradictions want the
+rewrites chained INTO the hypothesis then omega.
+
+The pipeline GAut → schedules → roles is now proven navigable. Next:
+the census structure theorem — produce enumerations + schedules for
+canonical quotients (SINGLE-EXIT hierarchy; walked and chord cluster
+schedules as the next validation rungs).
