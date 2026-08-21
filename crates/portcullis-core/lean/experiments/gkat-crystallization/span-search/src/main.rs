@@ -4307,6 +4307,36 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
                     }));
                 }
             }
+            // RULE 5: HALT-IN-BODY LOOPIFICATION (iteration 201).  Plain
+            // LOOPIFY takes the loop guard to be the union of ALL branch
+            // masks, which is wrong for a state whose branches SPLIT between
+            // returning to `s` and leaving for another state: `wh` over the
+            // union never exits at the leaving atoms.  Take the guard to be
+            // only the RETURNING atoms and let the leaving branches become
+            // the trailing expression:
+            //
+            //     sol s := wh g_self (returning branches, X_s := 1)
+            //              ; dispatch(leaving branches, fallback)
+            //
+            // `halt_in_body_loopify` is what licenses this when the recursion
+            // sits inside a branch body whose sibling arm is a halt: the loop
+            // guard being false at the landing point subsumes that halt, so
+            // one trailing conditional serves as back-edge AND second exit.
+            let mut g_self = 0u8;
+            let mut self_br: Vec<(u8, Ex)> = Vec::new();
+            let mut out_br: Vec<(u8, Ex)> = Vec::new();
+            for (m, e) in br.iter() {
+                if ex_occurs(e, s) { g_self |= *m; self_br.push((*m, e.clone())); }
+                else { out_br.push((*m, e.clone())); }
+            }
+            // `g_self == g` is plain LOOPIFY, already proposed above.
+            if g_self != 0 && g_self != g {
+                let body = ex_subst(&ex_dispatch(&self_br, &Ex::Test(all)), s,
+                    &Ex::Test(all));
+                let tail = ex_dispatch(&out_br, &fb);
+                cands.push((all, Ex::Seq(
+                    Box::new(Ex::Wh(g_self, Box::new(body))), Box::new(tail))));
+            }
         }
         for (_pm, sol) in cands {
         if ex_occurs(&sol, s) { continue; }

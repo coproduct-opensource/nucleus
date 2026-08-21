@@ -9059,3 +9059,68 @@ it.  Five rules is still a finite calculus.
 generalisation of LOOPIFY rather than a fifth branch), then fix the OOM, then
 sample again.  The sampling loop is working: it is producing shapes faster than
 I can guess at them.
+
+---
+
+## 202 — THE SOLVER LEARNS RULE 5, AND THE FULL COLLAPSE CLOSES AT NA=3 AND NA=4.
+
+The literature's standard fix for a loop with several exits is a REGISTER that
+records which exit fired, examined after the loop — an auxiliary variable,
+exactly what GKAT forbids.  Every rule in this calculus is a register-free way
+to carry the same information; rule 5 carries it in a trailing conditional
+action.
+
+**What the solver was missing was one mask.**  Plain LOOPIFY takes the loop
+guard to be the union of ALL the state's branch masks.  That is wrong whenever
+a state's branches SPLIT between returning to itself and leaving for another
+state: `wh` over the union never exits at the leaving atoms.  For 201's
+resister, `q1` has `{a0,a2}` returning and `{a1}` leaving, so no proposal the
+solver could make was even the right shape.  The fix:
+
+    sol s := wh g_self (returning branches, X_s := 1)
+             ; dispatch(leaving branches, fallback)
+
+where `g_self` is the union of the masks of the branches whose body actually
+mentions `X_s`.
+
+**Tracing this by hand reproduces 201's derivation exactly**, `q1` then `q2`
+then `q0`, including the final step where `X0` appears nested inside
+`ite a0 (p·X0) 1` rather than at a tail.  `PAD_CHECK_R201` now reports the
+calculus solving the resister at depth 5 as well as 9.
+
+**What is proved and what is not.**  When `X_s` sits at the TAIL of the body,
+the construction is plain Salomaa elimination — `w3` at one unknown, long
+proved; the solver simply was not proposing that guard.  When `X_s` sits
+NESTED inside `ite c (P·X_s) 1` with the body landing outside the guard, it is
+`halt_in_body_loopify`, proved at 201.  Substituting `X_s := 1` under
+ARBITRARY deeper nesting is broader than either rule, and is NOT proved.  That
+gap is named here rather than papered over; it is the next Lean target.
+
+**Measured, 240 000 pairs (NA=3 at 120 000, where it does not yet OOM):**
+
+    NA=2   lattice-resistant 12/12    full-collapse open SCCs 102/104
+    NA=3   lattice-resistant 13/13    full-collapse open SCCs 190/190
+    NA=4   lattice-resistant 15/15    full-collapse open SCCs 250/250
+
+The middle column is unchanged; the right-hand column is the result.  At 200
+the full collapse at NA=4 stood at 214/250 and the calculus NEEDED the lattice
+search to make up the difference — 196's complementarity.  It no longer does at
+NA=3 or NA=4: the calculus alone now solves the full collapse outright.  That
+is a stronger statement than anything measured before, because the full
+collapse is a SINGLE canonical quotient, not an existential over the lattice.
+
+**Two residual failures at NA=2 (102/104).**  They are not lattice-resistant —
+all 12 of those fall — so a coarser quotient solves them and they were never
+dumped.  That is a REPORTING gap: `CALCULUS-RESISTANT` only prints inside the
+lattice-resistant branch, so a full-collapse failure that the lattice rescues
+is invisible.  Worth closing before the next sample; an unprinted failure is
+how 179's false finding happened.
+
+**Odds: 68%, up 2.**  The move is small and the reason is specific: the thing
+that improved is not "another rule covers another case" but that a SINGLE
+canonical quotient — no existential, no search over the lattice — is now solved
+outright on two of three populations.  SumQuotientSolvable only needs SOME
+quotient, so full-collapse coverage is strictly more than required.  Against
+it: NA=2 still has two holes, the arbitrary-nesting substitution the solver
+performs is broader than the two rules that justify it, and the field's prior
+that this problem does not close still stands.
