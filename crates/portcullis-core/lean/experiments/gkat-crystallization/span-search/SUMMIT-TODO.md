@@ -2473,3 +2473,25 @@ multi_gather over br-chains: partition top-level branches into
 port-reaching — factored via factor_spec after pruning — and others),
 then the constructor: interiors forest-style, port closes through
 cascade + prune + chain-gather + factor. Then the Thompson census.
+
+## Iteration 86 — THE CHAIN GATHER (zero axioms)
+
+**`port_gather`**: tree-level multi_gather. A top-level branch chain
+(`chainT`) partitions by a Bool selector into port-reaching branches —
+each factored by `factor_spec` and merged by `arms_merge` into ONE
+Salomaa arm `(selBody; sol o)` under the gathered guard `selGuard` —
+over the remainder chain (`selOthers`), with `arm_commute` pushing
+unselected branches through. Zero axioms. (Gotcha: if-unfold `have`s
+need `rfl` after `rw [hsel]` in BOTH polarities.)
+
+THE PORT-CONSTRUCTOR TOOLKIT IS NOW COMPLETE:
+cascade (stepSubst) → prune (pruneT + prune_resolve/prune_allCalls) →
+chain-gather (port_gather: selGuard/selBody/selOthers) →
+factor (factor_spec) → close (elim_close). Each step zero-axiom.
+
+Next: assemble THE PORT CONSTRUCTOR — the general SCC schedule
+(interiors forest-style with arms self ∨ later ∨ port; port closes via
+the five-step pipeline over its cascaded chain), subsuming the walked
+and chord instances as 1- and 2-interior cases. Then the Thompson
+census (enumerations from program structure) closes the remaining path
+to FiniteAxiomsCompleteBA.

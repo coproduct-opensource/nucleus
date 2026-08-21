@@ -1857,4 +1857,116 @@ theorem prune_allCalls {S : Type} (o : S) :
 #print axioms prune_resolve
 #print axioms prune_allCalls
 
+/-! ## The chain gather
+
+    Tree-level `multi_gather`: a top-level branch chain partitions by a
+    selector into port-reaching branches — factored and merged into one
+    Salomaa arm — and the rest.  `arms_merge`/`arm_commute` do the
+    shuffling once `factor_spec` has factored the selected subtrees. -/
+
+/-- A top-level branch chain. -/
+def chainT {S : Type} (h : BExp T) :
+    List (BExp T × RTree S A T) → RTree S A T
+  | [] => .halt h
+  | (g, t) :: rest => .br g t (chainT h rest)
+
+/-- The gathered guard of the selected branches. -/
+def selGuard {S : Type} (sel : BExp T × RTree S A T → Bool) :
+    List (BExp T × RTree S A T) → BExp T
+  | [] => .zero
+  | b :: rest =>
+      if sel b then .or b.1 (selGuard sel rest)
+      else .and (selGuard sel rest) (.not b.1)
+
+/-- The merged, factored body of the selected branches. -/
+def selBody {S : Type} (sel : BExp T × RTree S A T → Bool) :
+    List (BExp T × RTree S A T) → Exp A T
+  | [] => .test .zero
+  | b :: rest =>
+      if sel b then .ite b.1 (factorE b.2) (selBody sel rest)
+      else selBody sel rest
+
+/-- The unselected remainder. -/
+def selOthers {S : Type} (sel : BExp T × RTree S A T → Bool) :
+    List (BExp T × RTree S A T) → List (BExp T × RTree S A T)
+  | [] => []
+  | b :: rest =>
+      if sel b then selOthers sel rest
+      else b :: selOthers sel rest
+
+/-- **THE CHAIN GATHER**: selected port-reaching branches collect into
+    one factored Salomaa arm over the remainder chain. -/
+theorem port_gather {S : Type} (sol : S → Exp A T) (o : S)
+    (sel : BExp T × RTree S A T → Bool) (h : BExp T) :
+    ∀ L : List (BExp T × RTree S A T),
+      (∀ b ∈ L, sel b = true → AllCalls o b.2) →
+      EquivBA (resolveT sol (chainT h L))
+        (.ite (selGuard sel L) (.seq (selBody sel L) (sol o))
+          (resolveT sol (chainT h (selOthers sel L)))) := by
+  intro L
+  induction L with
+  | nil =>
+      intro _
+      exact EquivBA.symm (GkatDeadExitElim.ite_zero_guard _ _
+        (fun Z W v => rfl))
+  | cons b rest ih =>
+      intro hall
+      have ihr := ih (fun q hq hs => hall q (List.mem_cons_of_mem _ hq) hs)
+      cases hsel : sel b with
+      | true =>
+          have hgu : selGuard sel (b :: rest)
+              = .or b.1 (selGuard sel rest) := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          have hbo : selBody sel (b :: rest)
+              = .ite b.1 (factorE b.2) (selBody sel rest) := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          have hot : selOthers sel (b :: rest)
+              = selOthers sel rest := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          rw [hgu, hbo, hot]
+          show EquivBA (.ite b.1 (resolveT sol b.2)
+            (resolveT sol (chainT h rest))) _
+          refine EquivBA.trans (EquivBA.ite_c
+            (factor_spec sol o b.2
+              (hall b (List.mem_cons_self ..) hsel)) ihr) ?_
+          exact arms_merge b.1 (selGuard sel rest) (factorE b.2)
+            (selBody sel rest) (sol o)
+            (resolveT sol (chainT h (selOthers sel rest)))
+      | false =>
+          have hgu : selGuard sel (b :: rest)
+              = .and (selGuard sel rest) (.not b.1) := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          have hbo : selBody sel (b :: rest) = selBody sel rest := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          have hot : selOthers sel (b :: rest)
+              = b :: selOthers sel rest := by
+            show (if sel b then _ else _) = _
+            rw [hsel]
+            rfl
+          rw [hgu, hbo, hot]
+          show EquivBA (.ite b.1 (resolveT sol b.2)
+            (resolveT sol (chainT h rest))) _
+          refine EquivBA.trans (EquivBA.ite_c
+            (EquivBA.base (Equiv.refl _)) ihr) ?_
+          show EquivBA _ (.ite (.and (selGuard sel rest) (.not b.1))
+            (.seq (selBody sel rest) (sol o))
+            (.ite b.1 (resolveT sol b.2)
+              (resolveT sol (chainT h (selOthers sel rest)))))
+          exact arm_commute b.1 (selGuard sel rest)
+            (resolveT sol b.2)
+            (.seq (selBody sel rest) (sol o))
+            (resolveT sol (chainT h (selOthers sel rest)))
+
+#print axioms port_gather
+
 end GkatElim
