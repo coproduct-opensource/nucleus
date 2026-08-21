@@ -6579,3 +6579,42 @@ dependency is discharged (157–160), and the model is now cross-checked
 against every derivable fact the paper lists, plus a control that
 distinguishes the valid fragment of left distribution from the invalid
 one.
+
+## Iteration 162 — the published record catches up with the validation work
+
+Iterations 153–161 audited the trusted base, discharged the guard-
+transport question, and cross-checked the model by execution — and none
+of it had reached the artifact, which still described only the
+mathematics.  That gap mattered: **the validation is arguably the most
+credible part of the campaign**, and it existed only in a ledger.
+
+Added a **"How this is checked"** section, opening on the reason it
+exists — *a machine-checked corpus is exposed in one specific way: the
+prover verifies the proofs, never the prose around them* — and listing
+what was audited rather than assumed:
+
+* **the axioms** — all thirteen verbatim against the LaTeX source,
+  including U3's product guard and U5's orientation; no derivable fact
+  assumed; no `axiom` declarations.
+* **guard transport** — admissible, proved against a deliberately
+  weakened relation, with the note that the published route to it is
+  circular and a different U3 instantiation avoids that.
+* **the semantics** — proved equal to the paper's, with the reason it
+  matters stated: a stronger hypothesis would quietly make the theorems
+  cover fewer pairs.
+* **soundness** — proved for both layers, not cited.
+* **execution** — 12 of 12 derivable facts, plus the control separating
+  valid from invalid left distribution.
+
+And added iteration 154 to the corrections log as the sharpest entry:
+asserting a NEGATIVE derivability claim from inspection, writing it into
+the source as established, and being wrong — with the fix recorded as
+*build the weakened relation and let the prover answer*.
+
+**Why the corrections stay on a public page.**  A status document that
+lists only wins is not checkable.  Five entries now, each naming what
+was claimed, what was wrong, and what closed it.  The campaign's
+credibility rests more on those than on the theorem count — and
+iteration 154's entry is the one that best demonstrates the discipline,
+because it is a case where the ledger's own method caught the ledger's
+own error.
