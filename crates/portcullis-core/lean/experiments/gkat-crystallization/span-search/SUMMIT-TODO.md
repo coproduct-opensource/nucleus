@@ -11168,3 +11168,56 @@ understated.
 **Next.**  Decide between constructing the nested decomposition from the
 expression structure, and the explicit-head variant above.  The second is
 cheaper if the collapse tension resolves; measure that before committing.
+
+---
+
+## 243 — THE EXPLICIT-HEAD ROUTE REFUTES ITSELF.  You can have the head or the closure, not both.
+
+242 left two routes for `hsum`: construct the nested sub-chart decomposition from
+the expression structure, or use a Thompson variant that keeps an EXPLICIT head
+state for `wh` so that (L2)'s single start vertex exists canonically.  242 said
+measure the collapse tension before committing.  No measurement is needed — the
+second route refutes itself.
+
+**To un-inline the head, a body state that COMPLETES must return to the head
+consuming no action.**  The body finishing and the guard being re-tested is a
+single step in Milner's charts.  In GKAT it would be an EMPTY-STEP transition,
+and GKAT has none: every GKAT transition carries an action.  **That is precisely
+why `loopInitialized` inlines the head in the first place.**
+
+**So the explicit-head route does not buy a canonical head for free.**  It moves
+GKAT out of the PROPER-STEP case — where 223 measured collapse preserving the
+certificate 131 714 times out of 131 714, and where 224 confirmed from the paper
+that "for proper-step LLEE-charts, bisimulation collapse preserves LLEE" — and
+into the EMPTY-STEP case, where Grabmayer proved it does NOT and had to invent
+crystallization.
+
+**You can have the explicit head or the collapse-closure, not both.  That trade
+IS what his paper is about**, and this development has been sitting on the
+favourable side of it without understanding why.  The inlining that has made
+every (L2) formulation awkward for fifteen iterations is the same inlining that
+makes requirement (b) hold at 100%.
+
+**That resolves the choice.**  Route (i) — construct the nested decomposition
+from the expression structure — is the one to take.  For `wh b e` the outer
+body is `e`'s states and `e`'s own loops nest inside, so the decomposition is
+read off the expression, which is exactly the structure the induction already
+has.  The alternative is to import crystallization, which is strictly more work
+for a problem 223 says GKAT does not have.
+
+**What this is worth.**  A route eliminated by reasoning rather than by four
+iterations of implementing it — which, given that 228-236 were four iterations of
+implementing the wrong thing, is the lesson from that stretch actually being
+applied.  It also explains the architecture of the whole approach in this
+setting for the first time: the two requirements the route needs, (a) canonical
+structure and (b) collapse-stability, pull in opposite directions, and GKAT's
+constructor already chose (b).
+
+**Odds: 80%, held.**  Nothing proved, one route correctly eliminated, and a
+structural understanding of why the remaining one is the only one.  That is
+clarity, not progress.
+
+**Next.**  Route (i): define the nested decomposition as a function of the
+EXPRESSION — for `wh b e`, body = `e`'s states with `e`'s decomposition nested
+inside — and prove (L1)/(L2) for it by induction, where the induction hypothesis
+supplies the body's own decomposition.
