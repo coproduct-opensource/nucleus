@@ -2397,3 +2397,28 @@ Next: the census witness constructors — produce these abstract shapes
 (arm lists + emptiness + distinctness) from canonical quotients, per
 stratum first (re-deriving theorems 4–6 through schedules), then the
 general SINGLE-EXIT construction.
+
+## Iteration 83 — THE SIXTH THEOREM VIA THE GENERAL PIPELINE (first try)
+
+**`chordloops_complete_sched`** ([propext, Classical.choice,
+Quot.sound]): `chordloops_complete` re-derived END-TO-END through the
+generalized elimination — census facts (portarms/brancharms/midarms/
+hlts_empty/reps_distinct/census) instantiate `chord_three_sched` at
+the cleaned chord quotient; then decomp_solves → solvesBA_unclean →
+equivBA_of_quot_solvesBA. FIRST TRY.
+
+The bespoke `chord_assembly_roles` is now OFF the mainline: the
+general schedule machinery + the fragment census facts suffice. This
+is the full pipeline pattern for the census constructors:
+
+  fragment census facts (arm lists at reps + emptiness + distinctness
+  + census) → abstract shape instance → sched_assembly_roles →
+  summit reduction.
+
+The remaining work for FiniteAxiomsCompleteBA is now PURELY the census
+side: for an arbitrary ULE pair, produce (a) the quotient class
+structure (reps, distinctness, census — the general analogue of the
+chord's 10-case lemmas), (b) the cleaned arm lists at reps, (c) the
+schedule shape. (a)+(b) for arbitrary programs = the general census
+structure theorem (SINGLE-EXIT hierarchy + SCC machinery). The
+schedule-shape side (c) is DONE in general (SchedOk certificates).

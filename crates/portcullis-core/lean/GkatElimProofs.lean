@@ -14,6 +14,7 @@ namespace GkatElim
 
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatSumQuotient
 open GkatDecomp GkatPlanExistence GkatGuardedAlgebra GkatTrim GkatRingPlan
+open GkatLoopFree GkatDecide
 open GkatThreeLoop
 
 variable {A T : Type}
@@ -1405,5 +1406,75 @@ theorem chord_three_sched {S : Type} [DecidableEq S]
         (List.mem_cons_of_mem _ (List.mem_cons_self ..))⟩
 
 #print axioms chord_three_sched
+
+/-! ## The sixth theorem through the general pipeline
+
+    The census facts instantiate `chord_three_sched` at the cleaned
+    chord quotient — the bespoke chord assembly is no longer on the
+    mainline. -/
+
+open Classical in
+/-- **CHORD COMPLETENESS VIA SCHEDULES**: `chordloops_complete`
+    re-derived through the generalized elimination. -/
+theorem chordloops_complete_sched (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : UniformLanguageEquivalent (chordLoop b c p x y)
+      (chordLoop b' c' p' x' y')) :
+    EquivBA (chordLoop b c p x y) (chordLoop b' c' p' x' y') := by
+  have hstart : autLang (genW T)
+      (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+    = autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none) := by
+    rw [autLang_trimAut, autLang_trimAut]
+    show autLang (genW T) (sumGAut
+        (certifiedThompson A T (chordLoop b c p x y)).aut.toGAut
+        (certifiedThompson A T (chordLoop b' c' p' x' y')).aut.toGAut)
+        (Sum.inl none)
+      = autLang (genW T) (sumGAut
+        (certifiedThompson A T (chordLoop b c p x y)).aut.toGAut
+        (certifiedThompson A T (chordLoop b' c' p' x' y')).aut.toGAut)
+        (Sum.inr none)
+    rw [autLang_sum_inl, autLang_sum_inr,
+      certifiedThompson_start_language (chordLoop b c p x y),
+      certifiedThompson_start_language (chordLoop b' c' p' x' y')]
+    funext gs
+    exact propext (heq (T → Bool) (genW T) gs)
+  have hdist := chord_reps_distinct b c p x y b' c' p' x' y'
+    (⟨Classical.choose hentC, (Classical.choose_spec hentC).1⟩)
+    hexitC hexitB
+  obtain ⟨gX, aX, harmX, -⟩ := chord_midarms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' hstart
+  obtain ⟨g₁, g₂, a₁, a₂, harmP, -⟩ := chord_brancharms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' hstart
+  obtain ⟨gR, aR, harmR⟩ := chord_portarms b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' hstart
+  obtain ⟨hhP, hhX⟩ := chord_hlts_empty b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' hstart
+  have hstates : ∀ s ∈ (cleanAut (bisimQuotAut (trimAut
+      (chordSum b c p x y b' c' p' x' y')))).states,
+      s = chordRepX b c p x y b' c' p' x' y'
+        ∨ s = chordRepP b c p x y b' c' p' x' y'
+        ∨ s = chordRepR b c p x y b' c' p' x' y' := by
+    intro s hs
+    obtain ⟨t, ht, hrep⟩ := List.mem_map.mp hs
+    rcases chord_census b c p x y b' c' p' x' y' hentB hentC hexitC hexitB hexitC' hexitB' hstart t with h1 | h2 | h3
+    · exact Or.inr (Or.inr (hrep ▸ h1.symm ▸ rfl))
+    · exact Or.inr (Or.inl (hrep ▸ h2.symm ▸ rfl))
+    · exact Or.inl (hrep ▸ h3.symm ▸ rfl)
+  obtain ⟨qsol, hroles⟩ := chord_three_sched
+    (cleanAut (bisimQuotAut (trimAut (chordSum b c p x y b' c' p' x' y'))))
+    (chordRepX b c p x y b' c' p' x' y') (chordRepP b c p x y b' c' p' x' y') (chordRepR b c p x y b' c' p' x' y')
+    (fun h => hdist.2.2 h.symm) (fun h => hdist.2.1 h.symm)
+    (fun h => hdist.1 h.symm)
+    gX g₁ g₂ gR aX a₁ a₂ aR harmX harmP harmR hhX hhP hstates
+  exact equivBA_of_quot_solvesBA (chordLoop b c p x y)
+    (chordLoop b' c' p' x' y') heq
+    (solvesBA_unclean _ (decomp_solves _ _ hroles))
+
+#print axioms chordloops_complete_sched
 
 end GkatElim
