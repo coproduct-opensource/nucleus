@@ -5011,3 +5011,56 @@ non-collapsed side.  Same-side UNIF is load-bearing by necessity.
 2. **Same-side UNIF** — now shown to be UNAVOIDABLE, not incidental:
    it is precisely the price of a non-collapsed side.
 3. **Size induction** — descent holds; `wh` rung blocked on (2).
+
+## Iteration 132 — ★ THE `ite` RUNG OF THE SIZE INDUCTION, PROVED ★
+
+The size induction needs, at each constructor, that two states
+bisimilar in the COMPOSITE's automaton are bisimilar in the
+SUBPROGRAM's.  Iteration 128 REFUTED this for `wh` (the loop rewrites
+acceptance).  For `ite` the literature calls it immediate — summands
+are subcoalgebras.  Today it is proved rather than assumed:
+
+* **`firstMatch_map`** (ZERO axioms) — `firstMatch` commutes with
+  retargeting along ANY map.  The repo's existing `firstMatch_retarget`
+  is ENDO-typed (`S' → S'`) and therefore cannot cross `Sum.inl` or
+  `some`; this is the heterogeneous version those steps need.
+* `step_core` — a core state's step is a `firstMatch` over the core arm
+  list, retargeted by `some`.
+* `step_ite_inl` — a left-injected state's step in an `ite` is a
+  `firstMatch` over the SAME underlying list, retargeted by
+  `some ∘ Sum.inl`.
+* **`ite_bisim_reflect_inl`** — **`ite` REFLECTS BISIMILARITY into its
+  left branch.**  The relation "their left-injections are bisimilar in
+  the composite" is exhibited as a bisimulation on the subprogram; both
+  step directions go through in lockstep because both sides run
+  `firstMatch` over the same list, and the halts coincide
+  definitionally (`sumGSystem`'s `hlt` on `inl` IS the left's `hlt`).
+
+**Where this leaves the three rungs of the size induction:**
+
+| constructor | bisimilarity transfer | label assembly (127) |
+|---|---|---|
+| `ite` | **PROVED today** | proved |
+| `seq` | open | proved |
+| `wh`  | **REFUTED (128)** — needs a composite-level argument | proved |
+
+So the `ite` rung is complete end to end: transfer + assembly +
+`ite_same_side_cross_step`'s descent onto strictly smaller subprograms.
+That is one full constructor of the same-side induction closed, with no
+uniqueness axiom anywhere.
+
+**Honest position.**  `ite` was always going to be the easy rung, and
+closing it does not touch the two hard ones.  `wh` remains blocked by
+128's counterexample and 129's two-states-vs-two-solutions mismatch, and
+131 showed that mismatch is intrinsic rather than an artifact.  What
+today buys is that the induction is no longer three open rungs plus an
+unverified plan — it is one proved rung, one open, one needing a
+different technique, with the descent structure checked.
+
+**Route status:**
+1. **S0** — algebra done; automaton half re-routed to labels (130);
+   needs `inG` + tightness.
+2. **Same-side UNIF** — `ite` rung closed today; `seq` open; `wh`
+   needs the composite-level argument, which is the campaign's core.
+3. **Size induction** — descent proved (127), `ite` transfer proved
+   (132).

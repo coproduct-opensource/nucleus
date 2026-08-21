@@ -2882,4 +2882,146 @@ theorem solves_of_hom {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms foldTL_retarget
 #print axioms solves_of_hom
 
+/-! ## Bisimilarity transfer for `ite`: the size induction's easy rung
+
+    The size induction needs, at each constructor, that two states
+    bisimilar in the COMPOSITE's automaton are bisimilar in the
+    SUBPROGRAM's.  Iteration 128 refuted this for `wh` (the loop
+    rewrites acceptance).  For `ite` the literature calls it immediate —
+    summands are subcoalgebras — and here it is, proved.
+
+    The `ite` core is literally `sumGSystem`, so a left-injected state's
+    arms are the subprogram's arms retargeted through `Sum.inl` then
+    `some`, while the subprogram's own are retargeted through `some`
+    alone.  Both therefore run `firstMatch` over the SAME underlying
+    list, in lockstep, and the halts coincide definitionally. -/
+
+/-- `firstMatch` commutes with retargeting along ANY map — the existing
+    `firstMatch_retarget` is endo-typed (`S' → S'`) and cannot cross
+    `Sum.inl` or `some`. -/
+theorem firstMatch_map {S₁ S₂ Atom : Type} (V : T → Atom → Bool)
+    (x : Atom) (f : S₁ → S₂) :
+    ∀ L : List (BExp T × A × S₁),
+      GkatKleene.firstMatch V x (L.map (fun e => (e.1, e.2.1, f e.2.2)))
+        = (GkatKleene.firstMatch V x L).map (fun y => (y.1, f y.2)) := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd tl ih =>
+      obtain ⟨g, a, t⟩ := hd
+      show (if GkatGS.bval V g x then some (a, f t) else _)
+        = (if GkatGS.bval V g x then some (a, t) else _).map _
+      by_cases hg : GkatGS.bval V g x
+      · rw [if_pos hg, if_pos hg]; rfl
+      · rw [if_neg hg, if_neg hg]; exact ih
+
+/-- A core state's step, as a `firstMatch` over the core arm list. -/
+theorem step_core (P : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T P).State) (α : T → Bool) :
+    GkatKleene.autStep (GkatPlanExistence.genW T)
+        (GkatThompson.certifiedThompson A T P).aut.toGAut (some s) α
+      = (GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+          ((GkatThompson.certifiedThompson A T P).aut.core.trans s)).map
+        (fun y => (y.1, some y.2)) :=
+  firstMatch_map _ _ _ _
+
+/-- A left-injected state's step in an `ite`, over the SAME list. -/
+theorem step_ite_inl (c : BExp T) (p q : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T p).State) (α : T → Bool) :
+    GkatKleene.autStep (GkatPlanExistence.genW T)
+        (GkatThompson.certifiedThompson A T (.ite c p q)).aut.toGAut
+        (some (.inl s)) α
+      = (GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+          ((GkatThompson.certifiedThompson A T p).aut.core.trans s)).map
+        (fun y => (y.1, some (Sum.inl y.2))) := by
+  show GkatKleene.firstMatch _ α
+      (List.map (fun e => (e.1, e.2.1, (some e.2.2 : Option _)))
+        (List.map (fun e => (e.1, e.2.1, (Sum.inl e.2.2 :
+            (GkatThompson.certifiedThompson A T p).State
+              ⊕ (GkatThompson.certifiedThompson A T q).State)))
+          ((GkatThompson.certifiedThompson A T p).aut.core.trans s))) = _
+  rw [firstMatch_map, firstMatch_map]
+  cases GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+    ((GkatThompson.certifiedThompson A T p).aut.core.trans s) <;> rfl
+
+open Classical in
+/-- **`ite` REFLECTS BISIMILARITY into its left branch.** -/
+theorem ite_bisim_reflect_inl (c : BExp T) (p q : Exp A T)
+    {s t : (GkatThompson.certifiedThompson A T p).State}
+    (h : GkatPlanExistence.GenBisimilar
+      (GkatThompson.certifiedThompson A T (.ite c p q)).aut.toGAut
+      (some (.inl s)) (some (.inl t))) :
+    GkatPlanExistence.GenBisimilar
+      (GkatThompson.certifiedThompson A T p).aut.toGAut (some s) (some t) := by
+  refine ⟨fun x y => ∃ s' t', x = some s' ∧ y = some t' ∧
+      GkatPlanExistence.GenBisimilar
+        (GkatThompson.certifiedThompson A T (.ite c p q)).aut.toGAut
+        (some (.inl s')) (some (.inl t')), ?_, ⟨s, t, rfl, rfl, h⟩⟩
+  rintro x y ⟨s', t', rfl, rfl, hb⟩
+  obtain ⟨h1, h2, h3⟩ := GkatPlanExistence.genBisimilar_bisim _ _ _ hb
+  refine ⟨h1, ?_, ?_⟩
+  · intro α a u hstep
+    rw [step_core] at hstep
+    cases hfm : GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+        ((GkatThompson.certifiedThompson A T p).aut.core.trans s') with
+    | none => rw [hfm] at hstep; exact nomatch hstep
+    | some y =>
+        rw [hfm] at hstep
+        have hy := Option.some.inj hstep
+        have ha : y.1 = a := congrArg Prod.fst hy
+        have hu : some y.2 = u := congrArg Prod.snd hy
+        have hcs := h2 α a (some (Sum.inl y.2))
+          (by rw [step_ite_inl, hfm, ← ha]; rfl)
+        obtain ⟨v, hv, hbv⟩ := hcs
+        rw [step_ite_inl] at hv
+        cases hfm2 : GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+            ((GkatThompson.certifiedThompson A T p).aut.core.trans t') with
+        | none => rw [hfm2] at hv; exact nomatch hv
+        | some z =>
+            rw [hfm2] at hv
+            have hz := Option.some.inj hv
+            have hza : z.1 = a := congrArg Prod.fst hz
+            refine ⟨some z.2, ?_, ?_⟩
+            · rw [step_core, hfm2]
+              show some (z.1, some z.2) = some (a, some z.2)
+              rw [hza]
+            refine ⟨y.2, z.2, hu.symm, rfl, ?_⟩
+            have : some (Sum.inl z.2) = v := congrArg Prod.snd hz
+            rw [← this] at hbv
+            exact hbv
+  · intro α a u hstep
+    rw [step_core] at hstep
+    cases hfm : GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+        ((GkatThompson.certifiedThompson A T p).aut.core.trans t') with
+    | none => rw [hfm] at hstep; exact nomatch hstep
+    | some y =>
+        rw [hfm] at hstep
+        have hy := Option.some.inj hstep
+        have ha : y.1 = a := congrArg Prod.fst hy
+        have hu : some y.2 = u := congrArg Prod.snd hy
+        have hcs := h3 α a (some (Sum.inl y.2))
+          (by rw [step_ite_inl, hfm, ← ha]; rfl)
+        obtain ⟨v, hv, hbv⟩ := hcs
+        rw [step_ite_inl] at hv
+        cases hfm2 : GkatKleene.firstMatch (GkatPlanExistence.genW T) α
+            ((GkatThompson.certifiedThompson A T p).aut.core.trans s') with
+        | none => rw [hfm2] at hv; exact nomatch hv
+        | some z =>
+            rw [hfm2] at hv
+            have hz := Option.some.inj hv
+            have hza : z.1 = a := congrArg Prod.fst hz
+            refine ⟨some z.2, ?_, ?_⟩
+            · rw [step_core, hfm2]
+              show some (z.1, some z.2) = some (a, some z.2)
+              rw [hza]
+            refine ⟨z.2, y.2, rfl, hu.symm, ?_⟩
+            have : some (Sum.inl z.2) = v := congrArg Prod.snd hz
+            rw [← this] at hbv
+            exact hbv
+
+#print axioms firstMatch_map
+#print axioms step_core
+#print axioms step_ite_inl
+#print axioms ite_bisim_reflect_inl
+
 end GkatCensus
