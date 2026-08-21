@@ -5666,6 +5666,51 @@ fn check_r201<const NA: usize>() {
 /// if the sum satisfies it every quotient does), but it is also what a broken
 /// predicate that always returns `true` would look like.  Distinguish them by
 /// asking `nested` about automata NOT built from expressions at all.
+/// **THE LAST RESISTER, SOLVED** (iteration 206).  Pair #156950's collapse is
+/// the only SCC in 600 000 pairs the five-rule calculus cannot solve.  It is a
+/// 3-cycle with a halt-exit AND a continuation-exit:
+///
+///     d0: st=[c1,d2]   c1: hl=11 st=[-,-]   d2: st=[d3,d3]
+///     d3: st=[d0,c5]   c5: st=[c1,c5]
+///
+/// so `c1` is `1` and `c5 = wh{a1}(p) ; p`.  Rule 5 cannot reach it because the
+/// mid-body exit is `p ; c5`, an arbitrary continuation rather than a halt.
+///
+/// But `c5` ENDS in `p`, and the loop's own trailing expression is `p`.  Take
+/// the mid-body exit to be `p ; wh{a1}(p)` — which exits at `¬a1`, so the outer
+/// guard `a1` is then FALSE, the loop exits, and the shared trailing `p` fires,
+/// reconstituting `c5` exactly:
+///
+///     X = wh a1 ( p ; p ; ite a0 p (p ; wh a1 p) ) ; p
+///
+/// The mid-body exit need not be a halt.  It needs to LAND OUTSIDE THE GUARD
+/// and SHARE THE LOOP'S TRAILING SUFFIX.  That is rule 6.
+fn check_r206<const NA: usize>() {
+    if NA != 2 { println!("check_r206: needs NA=2"); return; }
+    let mut q = Aut::<NA>::blank();
+    q.k = 5;
+    q.hl[0] = 0b00; for (i, &t) in [2u8, 3].iter().enumerate() { q.st[0][i] = t; }
+    q.hl[1] = 0b11; for (i, &t) in [0u8, 0].iter().enumerate() { q.st[1][i] = t; }
+    q.hl[2] = 0b00; for (i, &t) in [4u8, 4].iter().enumerate() { q.st[2][i] = t; }
+    q.hl[3] = 0b00; for (i, &t) in [1u8, 5].iter().enumerate() { q.st[3][i] = t; }
+    q.hl[4] = 0b00; for (i, &t) in [2u8, 5].iter().enumerate() { q.st[4][i] = t; }
+    let p = || Ex::Act;
+    let seq = |x: Ex, y: Ex| Ex::Seq(Box::new(x), Box::new(y));
+    // X = wh a1 ( p ; p ; ite a0 p (p ; wh a1 p) ) ; p
+    let body = seq(p(), seq(p(), Ex::Ite(0b01, Box::new(p()),
+        Box::new(seq(p(), Ex::Wh(0b10, Box::new(p())))))));
+    let x0 = seq(Ex::Wh(0b10, Box::new(body)), p());
+    // c5 = wh a1 p ; p, for the external state, as a cross-check
+    let x4 = seq(Ex::Wh(0b10, Box::new(p())), p());
+    for n in [4usize, 6, 8, 10, 12] {
+        println!("  r206 at depth {n}: X(d0) {} ; X(c5) {}",
+            if ex_matches(&x0, &q, 0, n) { "MATCHES" } else { "differs" },
+            if ex_matches(&x4, &q, 4, n) { "MATCHES" } else { "differs" });
+    }
+    println!("  r206 calculus (depth 5): {}",
+        calculus_solves(&q, &[0, 2, 3], 5));
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -6667,6 +6712,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_CHECK_CAND").is_ok() {
         check_candidate::<NA>();
+        return;
+    }
+    if std::env::var("PAD_CHECK_R206").is_ok() {
+        check_r206::<NA>();
         return;
     }
     if std::env::var("PAD_NESTED_SANITY").is_ok() {

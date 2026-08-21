@@ -9341,3 +9341,66 @@ the problem does not close still stands.
 SCC has one halt-exit and one continuation-exit.  Extract a solution and
 language-check it — the `eliminable=true` oracle verdict is still unverified,
 and it is now the only asterisk on 544/544.
+
+---
+
+## 206 — RULE 6, AND THE LAST ASTERISK COMES OFF.
+
+204 left one unverified claim: pair #156950's canonical quotient was reported
+`eliminable=true` by an oracle whose ACCEPTANCE is not language-checked.  It
+was the only SCC in 600 000 pairs the five-rule calculus could not solve, and
+the only asterisk on 544/544.  Both are now gone.
+
+**Solving it by hand.**  The collapse is
+
+    d0: st=[c1,d2]   c1: hl=11 st=[-,-]   d2: st=[d3,d3]
+    d3: st=[d0,c5]   c5: st=[c1,c5]
+
+so `c1` is `1` and `c5 = wh{a1}(p) ; p`.  203 recorded this SCC as having "two
+exits to distinct external states"; 204 corrected half of that (`c1` is a
+halt).  The remaining obstruction was the OTHER exit, `p ; c5`, an arbitrary
+continuation that rule 5 cannot absorb because rule 5's mid-body exit must be a
+halt.
+
+The observation that closes it: **`c5` ends in `p`, and the loop's own trailing
+expression is `p`.**  Take the mid-body exit to be `p ; wh{a1}(p)`.  That exits
+at `¬a1`, so the outer guard is then FALSE, the loop exits, and the shared
+trailing `p` fires — reconstituting `c5` exactly:
+
+    X = wh a1 ( p ; p ; ite a0 p (p ; wh a1 p) ) ; p
+
+`PAD_CHECK_R206`: MATCHES at depths 4, 6, 8, 10, 12, for `d0` and for `c5`.
+The oracle was right, and now it is verified rather than trusted.  **544/544,
+no asterisk.**
+
+**RULE 6, proved in Lean, ZERO AXIOMS** (`trailing_suffix_shared`):
+
+    X ≡ ite g (D · ite c (P · X) (H · F)) F     and     H · ¬g ≡ H
+    ─────────────────────────────────────────────────────────────
+    X ≡ wh g (D · ite c P H) · F
+
+A mid-body exit need not be a halt.  It needs to LAND OUTSIDE THE GUARD and
+SHARE THE LOOP'S TRAILING SUFFIX.
+
+**Two things worth noting about its shape.**  First, `D` needs NO landing
+hypothesis, unlike rule 5: the else arm is discharged entirely by `H`'s own
+landing, since `H · ¬g ≡ H` lets `¬g` be carried across `H` to meet the
+unknown.  Second, **rule 5 is NOT a special case** — at `H = 1` the hypothesis
+`1 · ¬g ≡ 1` would force `g ≡ 0`.  The two rules are genuinely distinct: rule 5
+pays for its halt with a hypothesis on `D`, rule 6 pays for its continuation
+with a hypothesis on `H`.
+
+**Odds: 71%, up 1 — and the small size of that step is the point.**  For: the
+last known failure across 600 000 pairs is closed, verified by construction
+rather than by oracle, and the rule needed no new axiom and no auxiliary
+variable — still `w3_ba` at one unknown.  Against, and it is the same objection
+as at 201, now with more evidence behind it: the rule count has gone
+3 → 4 → 5 → 6 over roughly six iterations, one new rule per sample enlargement.
+205 removed the possibility of borrowing a completeness argument from the
+literature's characterization, so this calculus has to be complete on its own,
+and a calculus that grows a rule whenever it is stressed is not visibly
+converging.  What would change my mind is a sample enlargement that produces NO
+new rule.  That has not happened yet.
+
+**Next.**  Teach the solver rule 6, then enlarge the sample and see whether the
+pattern finally breaks.

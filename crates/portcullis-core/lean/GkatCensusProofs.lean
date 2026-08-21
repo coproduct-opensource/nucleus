@@ -5624,4 +5624,71 @@ theorem halt_in_body_loopify {g c : BExp T} {D P X : Exp A T}
 
 #print axioms halt_in_body_loopify
 
+/-- **RULE 6: TRAILING-SUFFIX SHARING.**
+
+    Iteration 206's resister — the only SCC in 600 000 census pairs the
+    five-rule calculus could not solve — is a 3-cycle carrying BOTH a
+    halt-exit and a continuation-exit.  Rule 5 cannot reach it: its mid-body
+    exit must be a halt, and here it is `p ; c5` with `c5 = wh{a1}(p) ; p`, an
+    arbitrary continuation.
+
+    The observation that closes it: `c5` ENDS in `p`, and the loop's own
+    trailing expression is `p`.  Take the mid-body exit to be `p ; wh{a1}(p)`,
+    which exits at `¬a1` — so the outer guard is then false, the loop exits,
+    and the SHARED trailing `p` fires, reconstituting `c5` exactly.
+
+    So a mid-body exit need not be a halt.  It needs to LAND OUTSIDE THE GUARD
+    and SHARE THE LOOP'S TRAILING SUFFIX:
+
+        X ≡ ite g (D · ite c (P · X) (H · F)) F     and     H · ¬g ≡ H
+        ─────────────────────────────────────────────────────────────
+        X ≡ wh g (D · ite c P H) · F
+
+    Note `D` needs NO landing hypothesis here, unlike `halt_in_body_loopify`:
+    the else arm is discharged entirely by `H`'s own landing, since `H · ¬g ≡ H`
+    lets `¬g` be carried across `H` to meet the unknown.  Rule 5 is NOT a
+    special case — at `H = 1` the hypothesis `1 · ¬g ≡ 1` would force `g ≡ 0` —
+    so the two rules are genuinely different, and rule 5 pays for its halt with
+    a hypothesis on `D` instead.
+
+    `w3_ba` at one unknown; no n-ary uniqueness, no auxiliary variable. -/
+theorem trailing_suffix_shared {g c : BExp T} {D P H F X : Exp A T}
+    (hprod : EquivBA
+      (.test (E (.seq D (.ite c P H))) : Exp A T) (.test .zero))
+    (hH : EquivBA (.seq H (.test (.not g))) H)
+    (hX : EquivBA X
+      (.ite g (.seq D (.ite c (.seq P X) (.seq H F))) F)) :
+    EquivBA X (.seq (.wh g (.seq D (.ite c P H))) F) := by
+  -- Outside the loop guard the unknown is its own exit: `¬g · X ≡ ¬g · F`.
+  have hXng : EquivBA (.seq (.test (.not g)) X)
+      (.seq (.test (.not g)) F) := by
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hX) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite (.not g) g _ _) ?_
+    refine EquivBA.trans
+      (EquivBA.ite_guard (GkatGuardedAlgebra.bnot_and_self g)) ?_
+    exact ite_zero_guard _ _
+  -- `H` lands outside the guard, so it carries `¬g` across to the unknown.
+  have hHX : EquivBA (.seq H X) (.seq H F) := by
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.symm hH) (EquivBA.base (Equiv.refl X))) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc _ _ _) ?_
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl H)) hXng) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc' _ _ _) ?_
+    exact EquivBA.seq_c hH (EquivBA.base (Equiv.refl F))
+  -- Sequencing the folded body with the unknown reproduces the equation's RHS.
+  have hbody : EquivBA (.seq (.seq D (.ite c P H)) X)
+      (.seq D (.ite c (.seq P X) (.seq H F))) := by
+    refine EquivBA.trans (GkatGuardedAlgebra.seq_assoc _ _ _) ?_
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (GkatGuardedAlgebra.ite_seq_right c P H X)) ?_
+    exact EquivBA.seq_c (EquivBA.base (Equiv.refl D))
+      (EquivBA.ite_c (EquivBA.base (Equiv.refl _)) hHX)
+  exact EquivBA.w3_ba hprod
+    (EquivBA.trans hX
+      (EquivBA.ite_c (EquivBA.symm hbody) (EquivBA.base (Equiv.refl F))))
+
+#print axioms trailing_suffix_shared
+
 end GkatCensus
