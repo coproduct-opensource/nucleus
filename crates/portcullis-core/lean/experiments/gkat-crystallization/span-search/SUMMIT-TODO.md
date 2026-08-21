@@ -2519,3 +2519,26 @@ Next: THE PORT CONSTRUCTOR — the schedule assembly threading the
 invariants (interiors: forest hypotheses + DeadHalts + no descents;
 port: the above chain) through the Supp/SchedOk inductions. The last
 constructor before the Thompson census.
+
+## Iteration 88 — cascade invariants + the selector (port constructor, chunk 1)
+
+New lemmas for the port constructor:
+- `ssTree_deadHalts` — forest closed trees have dead halts when the
+  state's halt is empty.
+- `stepSubst_deadHalts` — dead halts thread through cascades (zero ax).
+- **`stepSubst_callOnly`** ([propext]) — THE CASCADE SUPPORT COLLAPSE:
+  cascading a Supp-certified prefix over a tree whose calls lie in
+  prefix ∪ P leaves calls only in P. This is what makes the port's
+  cascaded branches CallOnly-port.
+- `callsB`/`haltFreeB` (Boolean selector) + `allCalls_of_bools` +
+  `callOnly_of_callsB` — the port_gather selector: selected = calls
+  all target the port AND halt-free (post-pruning).
+
+Gotchas: `▸` with a pair-equality cast needs the rw-at form;
+Bool-coerced equality in defs needs `show s = o` before
+`of_decide_eq_true` (the unifier won't reduce the Prop through the
+def).
+
+Chunk 2 next: `scc_rank_sched` — the per-rank SCC certificate
+(interiors forest-style + the port's five-step closing), then the
+mixed per-rank assembly.

@@ -2103,4 +2103,123 @@ theorem substT_deadHalts {S : Type} [DecidableEq S] (u : S)
 #print axioms chain_prune_congr
 #print axioms substT_deadHalts
 
+/-! ## Cascade invariants and the selector -/
+
+open Classical in
+/-- The Salomaa closed tree of a forest state has dead halts when its
+    own halt is empty. -/
+theorem ssTree_deadHalts {S : Type} (aut : GAut S A T) (s : S)
+    (h : GuardEmpty (aut.hlt s)) :
+    DeadHalts (ssTree aut s) := by
+  show DeadHalts (armChain (gOthers s (aut.trans s)) (aut.hlt s))
+  induction gOthers s (aut.trans s) with
+  | nil => exact h
+  | cons e rest ih => exact ⟨True.intro, ih⟩
+
+/-- Cascading dead-halt closed trees preserves dead halts. -/
+theorem stepSubst_deadHalts {S : Type} [DecidableEq S] :
+    ∀ (closed : List (S × RTree S A T)),
+      (∀ p ∈ closed, DeadHalts p.2) →
+      ∀ t : RTree S A T, DeadHalts t →
+        DeadHalts (stepSubst closed t) := by
+  intro closed
+  induction closed with
+  | nil => intro _ t ht; exact ht
+  | cons p rest ih =>
+      intro hall t ht
+      rw [stepSubst_cons]
+      exact ih (fun q hq => hall q (List.mem_cons_of_mem _ hq))
+        (substT p.1 p.2 t)
+        (substT_deadHalts p.1 p.2
+          (hall p (List.mem_cons_self ..)) t ht)
+
+/-- **CASCADE SUPPORT**: cascading a schedule prefix over a tree whose
+    calls lie in the prefix-or-`P` leaves calls only in `P` — the
+    `Supp`-driven collapse of the call support. -/
+theorem stepSubst_callOnly {S : Type} [DecidableEq S] {P : S → Prop} :
+    ∀ steps : List (S × RTree S A T), Supp P steps →
+      ∀ t : RTree S A T,
+        CallOnly (fun s => (∃ q ∈ steps, s = q.1) ∨ P s) t →
+        CallOnly P (stepSubst steps t) := by
+  intro steps
+  induction steps with
+  | nil =>
+      intro _ t ht
+      refine callOnly_mono ?_ t ht
+      intro s hs
+      rcases hs with ⟨q, hq, _⟩ | hP
+      · exact nomatch hq
+      · exact hP
+  | cons hd rest ih =>
+      intro hsupp t ht
+      obtain ⟨u, C⟩ := hd
+      cases hsupp with
+      | cons _ _ _ hC hne hP hrest =>
+          rw [stepSubst_cons]
+          refine ih hrest (substT u C t) ?_
+          refine callOnly_substT u C ?_ ?_ t ht
+          · exact hC
+          · intro s hs hsu
+            rcases hs with ⟨q, hq, hsq⟩ | hPs
+            · rcases List.mem_cons.mp hq with h1 | h2
+              · refine absurd ?_ hsu
+                rw [h1] at hsq
+                exact hsq
+              · exact Or.inl ⟨q, h2, hsq⟩
+            · exact Or.inr hPs
+
+/-- Boolean check: all calls target `o`. -/
+def callsB {S : Type} [DecidableEq S] (o : S) : RTree S A T → Bool
+  | .halt _ => true
+  | .call _ s => s = o
+  | .br _ l r => callsB o l && callsB o r
+  | .pre _ t => callsB o t
+
+/-- Boolean check: no halt leaves. -/
+def haltFreeB {S : Type} : RTree S A T → Bool
+  | .halt _ => false
+  | .call _ _ => true
+  | .br _ l r => haltFreeB l && haltFreeB r
+  | .pre _ t => haltFreeB t
+
+/-- Halt-free trees whose calls all target `o` are `AllCalls`. -/
+theorem allCalls_of_bools {S : Type} [DecidableEq S] (o : S) :
+    ∀ t : RTree S A T, callsB o t = true → haltFreeB t = true →
+      AllCalls o t := by
+  intro t
+  induction t with
+  | halt h => intro _ hf; exact nomatch hf
+  | call e s =>
+      intro hc _
+      show s = o
+      exact of_decide_eq_true hc
+  | br g l r ihl ihr =>
+      intro hc hf
+      have hc' := Bool.and_eq_true_iff.mp hc
+      have hf' := Bool.and_eq_true_iff.mp hf
+      exact ⟨ihl hc'.1 hf'.1, ihr hc'.2 hf'.2⟩
+  | pre e t ih => intro hc hf; exact ih hc hf
+
+/-- Trees whose calls all target `o` (Boolean form) call only `o`. -/
+theorem callOnly_of_callsB {S : Type} [DecidableEq S] (o : S) :
+    ∀ t : RTree S A T, callsB o t = true →
+      CallOnly (fun s => s = o) t := by
+  intro t
+  induction t with
+  | halt h => intro _; exact True.intro
+  | call e s =>
+      intro hc
+      show s = o
+      exact of_decide_eq_true hc
+  | br g l r ihl ihr =>
+      intro hc
+      have hc' := Bool.and_eq_true_iff.mp hc
+      exact ⟨ihl hc'.1, ihr hc'.2⟩
+  | pre e t ih => intro hc; exact ih hc
+
+#print axioms ssTree_deadHalts
+#print axioms stepSubst_deadHalts
+#print axioms stepSubst_callOnly
+#print axioms allCalls_of_bools
+
 end GkatElim
