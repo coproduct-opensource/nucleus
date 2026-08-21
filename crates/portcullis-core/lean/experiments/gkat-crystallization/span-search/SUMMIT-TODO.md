@@ -5343,3 +5343,61 @@ follow-up task identified.  Both overclaims were about *how results
 were described*, not about whether they hold — which is the failure
 mode a machine-checked corpus is most exposed to, since the prover
 never checks the prose.
+
+## Iteration 139 — the degenerate cases are collapses, confirmed both ways
+
+Acting on 138's named task: make `twoloops`/`chordloops` hypothesis-
+free by case analysis, using `chainloops_complete_free` as the template.
+Two collapse lemmas, **both ZERO AXIOMS**:
+
+* **`twoLoop_b_unsat`** — an unenterable outer guard makes the two-loop
+  `skip`.  Immediate from `wh_guard_semantic_zero`.
+* **`twoLoop_no_overlap`** — **when the two guards never hold together,
+  the inner loop is INVISIBLE and the two-loop collapses to an ATOMIC
+  loop** `wh b (act r)` — already covered by `atomicloops_complete`.
+  Under `b` the inner loop takes its exit branch immediately (`w1`
+  unroll, `u2` flip so the implication points the right way,
+  `test_seq_ite_of_implies`), the body therefore agrees with `act r`
+  under `b`, and `wh_congr_under_guard` lifts that to the loops.  This
+  was the degenerate case that looked like it might hide content, and
+  it does not — it lands in an earlier stratum.
+
+**The literature check confirms the diagnosis independently**, which is
+what settles whether 138's finding was cosmetic or substantive:
+
+* **Non-degeneracy is NOT assumed in the literature.**  Neither Smolka
+  et al. nor the coequations/completeness papers hypothesize satisfiable
+  guards; degeneracy is absorbed by the guarded-union axioms
+  (`e +₀ f = f`, `e +₁ f = e`), and case analysis on `b` is "routine
+  inside proofs, never a hypothesis".  So the four siblings' style is
+  the field's style and the two outliers are the anomaly.
+* **The collapse lemmas are one-liners**: `e^(0) = 1` from unrolling;
+  `e^(1)·f = 0` for productive `e` from the fixpoint axiom.
+* **Verdict, verbatim**: "removing satisfiability hypotheses is routine
+  bookkeeping, PROVIDED your fixpoint/uniqueness rule is available for
+  the `b=1` divergent case — that step is trivial but not free."
+
+This repo HAS that rule, and more than the minimum: `wh_one_zero`
+handles `b=1` outright, and iteration 135's `diverging_region_zero`
+generalizes it from the whole space to an arbitrary certified region.
+The one thing the field says you must have in hand, the campaign had
+already built for a different reason.
+
+* Also recorded, and useful for calibration: **"the real difficulty in
+  GKAT lives in PRODUCTIVITY (`E(e)=0`), not guard satisfiability — that
+  is where the axiomatization actually strains."**  Consistent with this
+  campaign's own experience: every hard step has turned on productivity
+  side conditions (`w3`'s guardedness, `equivBA_substA`'s productive
+  substitution, `elim_reduces`' action-headed prefixes), never on guard
+  degeneracy.
+
+**So 138's finding stands as a WORDING defect, not a mathematical one** —
+the hypotheses are removable and the removal is bookkeeping.  That is
+the honest grading: the overclaim was real and worth fixing, and the
+underlying theorems are not weaker than they looked.
+
+**Remaining for this task**: the other degenerate cases (`b` valid,
+`c` valid) and the assembly into `twoloops_complete_free`, then the same
+for `chordloops`.  Each collapse lands in an earlier stratum, so the
+assembly is a case split over already-proved results rather than new
+mathematics.
