@@ -9267,3 +9267,77 @@ canonical construction that holds on 544 of 544 pairs (543 by the calculus, one
 by oracle).  Against it: that last pair still needs a rule my calculus does not
 have, the oracle's acceptance is unverified, and the field's prior that this
 problem does not close still stands.
+
+---
+
+## 205 — THE NESTING COEQUATION IS NOT THE MISSING INGREDIENT.  A negative result.
+
+**The literature news that prompted this.**  The question well-nestedness left
+open — is it NECESSARY? — has been settled, and the answer is no: there is an
+automaton bisimilar to a Thompson construction that is not well-nested, and a
+non-well-nested automaton whose behaviour is still an expression's.  The
+COMPLETE characterization of automata exhibiting the behaviour of a GKAT
+expression is the NESTING COEQUATION, which forms a covariety
+(Schmid–Kappé–Kozen–Silva).
+
+That looked like a shortcut past this whole development.  If the canonical
+quotient always satisfies the nesting coequation, then an expression for it
+EXISTS by a known theorem, with no dependence on this five-rule calculus being
+complete.  So measure it.
+
+**Measured, and it holds everywhere:**
+
+    CANONICAL QUOTIENT SATISFIES THE NESTING COEQUATION
+      NA=2  239 831/239 831     NA=3  119 976/119 976     NA=4  239 954/239 954
+
+599 761 of 599 761.  No exceptions.
+
+**And then the base rate, which is why this is a negative result.**  The same
+predicate on the two quotients we did NOT choose:
+
+    raw Thompson sum          239 831/239 831, 119 976/119 976, 239 954/239 954
+    full bisimulation collapse   identical, to the pair
+
+100% everywhere.  The measurement distinguishes nothing.  **The reason is a
+theorem already in the notes: `Cov(W)` is a COVARIETY, closed under
+homomorphic images.  A Thompson sum satisfies the nesting coequation, a
+quotient is a homomorphic image, so EVERY quotient satisfies it — including
+every one in the lattice.**  Measuring it on canonical quotients was measuring
+covariety closure.
+
+**Non-vacuity, checked rather than assumed** (`PAD_NESTED_SANITY`).  A
+predicate that is always `true` looks identical to one that holds by theorem,
+so `nested` was put to automata NOT built from expressions — random transition
+tables at k = 3..6:
+
+    NA=2   216 / 247 / 591 / 724 violations per 20 000   (k = 3,4,5,6)
+    NA=3   134 / 144 / 483 / 608
+    NA=4    43 /  67 / 199 / 275
+
+It discriminates — weakly (1-4%), and more as k grows, but it is not constant.
+So the 100% on quotients is real covariety closure, not a broken predicate.
+
+**Why the shortcut fails, stated precisely.**  If "satisfies the nesting
+coequation ⟹ solvable" were enough for THIS target, the problem would already
+be closed, since every quotient satisfies it for free.  It is not, because the
+characterization gives SEMANTIC solvability — the state's behaviour is that of
+some expression — whereas the target needs a SYNTACTIC solution: a labelling
+satisfying the automaton's equations up to `EquivBA`, in the axiom system.
+Going from "both sides denote the same thing" to "both sides are provably
+equal" IS completeness, so using it here would be circular.
+
+**That gap is exactly what the five-rule calculus is for**, and this iteration
+is the first time the remainder has been located that precisely: not "which
+automata are solvable" (settled, by a covariety) but "which solvable automata
+admit a solution CONSTRUCTED from the finite axioms".
+
+**Odds: 70%, held.**  A tempting route was closed off, which is worth
+something, but no coverage changed and no theorem was proved.  The clarification
+is real: the field's characterization is settled and does not transfer, so
+nothing about this remainder can be borrowed from it.  The field's prior that
+the problem does not close still stands.
+
+**Next.**  Back to the syntactic gap: pair #156950's canonical quotient, whose
+SCC has one halt-exit and one continuation-exit.  Extract a solution and
+language-check it — the `eliminable=true` oracle verdict is still unverified,
+and it is now the only asterisk on 544/544.

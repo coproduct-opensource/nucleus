@@ -5659,6 +5659,39 @@ fn check_r201<const NA: usize>() {
     println!("  r201 calculus (depth 9): {}", calculus_solves(&q, &[0, 1, 2], 9));
 }
 
+/// **NON-VACUITY FOR `nested`** (iteration 205).  The census measured the
+/// nesting coequation holding on 599 761 of 599 761 canonical quotients — and
+/// on the raw Thompson sum and full collapse at the same 100% rate.  That is
+/// what a covariety predicts (`Cov(W)` is closed under homomorphic images, so
+/// if the sum satisfies it every quotient does), but it is also what a broken
+/// predicate that always returns `true` would look like.  Distinguish them by
+/// asking `nested` about automata NOT built from expressions at all.
+fn nested_sanity<const NA: usize>() {
+    let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    for &k in [3usize, 4, 5, 6].iter() {
+        let (mut yes, mut no) = (0usize, 0usize);
+        for _ in 0..20_000 {
+            let mut a = Aut::<NA>::blank();
+            a.k = k as u8;
+            for s in 0..k {
+                let r = rnd();
+                a.hl[s] = ((r >> 32) as u8) & ((1u16 << NA) - 1) as u8;
+                for y in 0..NA {
+                    let v = ((r >> (y * 5)) & 0x1f) as usize;
+                    // leave some atoms undefined, otherwise every state is total
+                    a.st[s][y] = if v % 4 == 0 { 0 } else { ((v % k) + 1) as u8 };
+                }
+                // a halt and a transition cannot share an atom
+                for y in 0..NA { if a.st[s][y] != 0 { a.hl[s] &= !(1 << y); } }
+            }
+            if nested(&a) { yes += 1; } else { no += 1; }
+        }
+        println!("  nested_sanity k={k}: satisfies {yes}, VIOLATES {no} (of {})",
+            yes + no);
+    }
+}
+
 fn scc_census<const NA: usize>(nguards: u8) {
     let npairs: usize = std::env::var("PAD_CENSUS_N").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(20_000);
@@ -5758,6 +5791,12 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_fail_scc = 0usize;
     let mut n_calc_skipped = 0usize;
     let mut n_canon = 0usize;
+    let mut n_canon_nested = 0usize;
+    let mut n_allcanon = 0usize;
+    let mut n_base = 0usize;
+    let mut n_base_sum_nested = 0usize;
+    let mut n_base_full_nested = 0usize;
+    let mut n_allcanon_nested = 0usize;
     let mut n_canon_ok = 0usize;
     let mut n_canon_skipped = 0usize;
     let mut n_canon_toobig = 0usize;
@@ -6153,6 +6192,25 @@ fn scc_census<const NA: usize>(nguards: u8) {
         // behavioural quotient with a solution — the full collapse is the top
         // of the lattice, not the whole of it.  For every pair the strata
         // leave open, ask whether ANY intermediate congruence is solvable.
+        // ALL-PAIRS canonical-nesting check.  The per-open-pair version below
+        // covers only the hard residue; the claim that matters is universal,
+        // so ask it of every language-equivalent pair the census generates.
+        if let Some((cb, cnb)) = start_congruence(&su, a.k as usize + 1) {
+            if let Some(cq) = quotient_by(&su, &cb, cnb) {
+                n_allcanon += 1;
+                if nested(&cq) { n_allcanon_nested += 1; }
+            }
+        }
+        // BASE RATE.  A near-universal property proves nothing about the
+        // canonical quotient, so measure the same predicate on the two
+        // quotients we did NOT choose: the raw Thompson sum (finest) and the
+        // full bisimulation collapse (coarsest).  If those violate the nesting
+        // coequation at a real rate and the canonical never does, the result
+        // is about the canonical quotient.  If they never violate it either,
+        // the measurement is vacuous and must be reported as such.
+        n_base += 1;
+        if nested(&su) { n_base_sum_nested += 1; }
+        if nested(&q) { n_base_full_nested += 1; }
         if pair_open {
             n_open_pairs += 1;
             // Only search the lattice when the FULL COLLAPSE already failed —
@@ -6178,6 +6236,30 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     None => n_canon_toobig += 1,
                     Some(cq) => {
                         n_canon += 1;
+                        // THE NESTING COEQUATION.  Schmid-Kappe-Kozen-Silva
+                        // settled the question well-nestedness left open: the
+                        // COMPLETE characterization of automata exhibiting the
+                        // behaviour of a GKAT expression is the nesting
+                        // coequation (a covariety), not well-nestedness, which
+                        // is strictly too restrictive.  So if the canonical
+                        // quotient satisfies it, an expression EXISTS for it —
+                        // by a known theorem, with no dependence on this
+                        // calculus being complete.  That makes this the single
+                        // most informative bit to measure per pair.
+                        if nested(&cq) { n_canon_nested += 1; }
+                        else {
+                            println!("  CANONICAL QUOTIENT VIOLATES THE NESTING COEQUATION (pair #{pairs_done}, k={}):",
+                                cq.k);
+                            for s in 0..(cq.k as usize) {
+                                let row: Vec<String> = (0..NA).map(|i| {
+                                    let t = cq.st[s][i];
+                                    if t == 0 { "-".to_string() }
+                                    else { format!("c{}", t - 1) }
+                                }).collect();
+                                println!("    c{s}: hl={:04b} st=[{}]", cq.hl[s],
+                                    row.join(","));
+                            }
+                        }
                         let sc = sccs_of(&cq);
                         if sc.iter().any(|c| c.len() >= 2 && !calculus_attempted(c)) {
                             n_canon_skipped += 1;
@@ -6289,6 +6371,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  SCCs NOT ATTEMPTED (larger than the size cap {}): {n_calc_skipped} — counted as UNKNOWN, not as failures",
         calc_max_scc());
     println!("  CANONICAL QUOTIENT (least congruence identifying the two starts) measured on {n_canon} open pairs; SOLVED by the calculus: {n_canon_ok}; skipped (over size cap) {n_canon_skipped}; too big to build {n_canon_toobig}; not behavioural {n_canon_nonbehav}");
+    println!("  CANONICAL QUOTIENT SATISFIES THE NESTING COEQUATION: open pairs {n_canon_nested}/{n_canon}; ALL pairs {n_allcanon_nested}/{n_allcanon}");
+    println!("  BASE RATE for the same predicate on quotients NOT chosen: raw Thompson sum {n_base_sum_nested}/{n_base}; full bisimulation collapse {n_base_full_nested}/{n_base}");
     println!("  OPEN PAIRS where the CALCULUS solves SOME quotient in the lattice: {n_open_calc_lattice} / {n_open_pairs}");
     println!("  [phases] total {:.1}s = lattice {:.1}s + calculus {:.1}s + absorption {:.1}s + rest {:.1}s",
         t_all.elapsed().as_secs_f64(), t_lat.as_secs_f64(), t_calc.as_secs_f64(),
@@ -6583,6 +6667,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_CHECK_CAND").is_ok() {
         check_candidate::<NA>();
+        return;
+    }
+    if std::env::var("PAD_NESTED_SANITY").is_ok() {
+        nested_sanity::<NA>();
         return;
     }
     if std::env::var("PAD_CHECK_R201").is_ok() {
