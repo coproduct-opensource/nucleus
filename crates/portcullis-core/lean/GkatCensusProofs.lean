@@ -3451,4 +3451,158 @@ theorem live_twoLoop_ne_test {b c : BExp T} {q r : A} (t : BExp T)
 #print axioms test_no_action
 #print axioms live_twoLoop_ne_test
 
+open Classical in
+/-- A non-degenerate atomic loop is never a test either. -/
+theorem live_atomicLoop_ne_test {b : BExp T} {r : A} (t : BExp T)
+    (hsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hexit : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (.wh b (.act r)) (.test t)) :
+    False := by
+  obtain ⟨α, hb⟩ := hsat
+  obtain ⟨α₁, hb₁⟩ := hexit
+  have hacc := atomicLoop_one_action (GkatPlanExistence.genW T) b r α α₁ hb hb₁
+  have := test_no_action (GkatPlanExistence.genW T) t
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact nomatch this
+
+open Classical in
+private theorem all_false_of_not_sat {b : BExp T}
+    (h : ¬ ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true) :
+    ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false := by
+  intro α
+  cases hb : GkatGS.bval (GkatPlanExistence.genW T) b α with
+  | false => rfl
+  | true => exact absurd ⟨α, hb⟩ h
+
+open Classical in
+private theorem all_true_of_not_exit {b : BExp T}
+    (h : ¬ ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false) :
+    ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true := by
+  intro α
+  cases hb : GkatGS.bval (GkatPlanExistence.genW T) b α with
+  | true => rfl
+  | false => exact absurd ⟨α, hb⟩ h
+
+open Classical in
+/-- **THE TWO-LOOP TRICHOTOMY**: every two-loop is provably a TEST, or
+    provably a NON-DEGENERATE ATOMIC LOOP, or LIVE.  This is the shape
+    that turns `twoloops_complete_free`'s case analysis from a
+    six-hypothesis scramble into a 3 × 3 table, with the four collapse
+    lemmas of iterations 139-140 doing the work and the atomic branch's
+    own degeneracies already pushed into the test branch. -/
+theorem twoLoop_trichotomy (b c : BExp T) (q r : A) :
+    (∃ t : BExp T, EquivBA (GkatTwoLoop.twoLoop b c q r) (.test t))
+    ∨ (∃ (b' : BExp T) (r' : A),
+        EquivBA (GkatTwoLoop.twoLoop b c q r) (.wh b' (.act r'))
+          ∧ (∃ α : T → Bool,
+              GkatGS.bval (GkatPlanExistence.genW T) b' α = true)
+          ∧ (∃ α : T → Bool,
+              GkatGS.bval (GkatPlanExistence.genW T) b' α = false))
+    ∨ ((∃ α : T → Bool,
+          GkatGS.bval (GkatPlanExistence.genW T) b α = true
+            ∧ GkatGS.bval (GkatPlanExistence.genW T) c α = true)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) c α = false)) := by
+  by_cases hbc : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c α = true
+  · by_cases hxb : ∃ α : T → Bool,
+        GkatGS.bval (GkatPlanExistence.genW T) b α = false
+    · by_cases hxc : ∃ α : T → Bool,
+          GkatGS.bval (GkatPlanExistence.genW T) c α = false
+      · exact Or.inr (Or.inr ⟨hbc, hxb, hxc⟩)
+      · -- `c` valid: the inner loop diverges, the whole thing is `¬b?`
+        exact Or.inl ⟨.not b, twoLoop_c_valid b q r
+          (all_true_of_not_exit hxc)⟩
+    · -- `b` valid: the outer loop diverges
+      exact Or.inl ⟨.zero, twoLoop_b_valid c q r
+        (all_true_of_not_exit hxb)⟩
+  · -- no overlap: an atomic loop, whose own degeneracies are tests
+    have hcol := twoLoop_no_overlap (b := b) (c := c) q r hbc
+    by_cases hsat : ∃ α : T → Bool,
+        GkatGS.bval (GkatPlanExistence.genW T) b α = true
+    · by_cases hexit : ∃ α : T → Bool,
+          GkatGS.bval (GkatPlanExistence.genW T) b α = false
+      · exact Or.inr (Or.inl ⟨b, r, hcol, hsat, hexit⟩)
+      · refine Or.inl ⟨.zero, EquivBA.trans hcol ?_⟩
+        refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
+        · intro X W x
+          rw [GkatPlanExistence.bval_gen W x b,
+            all_true_of_not_exit hexit (fun t => W t x)]
+          rfl
+        · exact GkatNormalization.wh_one_zero _
+    · exact Or.inl ⟨.one, EquivBA.trans hcol
+        (GkatChainFragment.wh_guard_semantic_zero _
+          (all_false_of_not_sat hsat))⟩
+
+#print axioms live_atomicLoop_ne_test
+#print axioms twoLoop_trichotomy
+
+private theorem ule_symm {e f : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent e f) :
+    GkatKleene.UniformLanguageEquivalent f e :=
+  fun X W gs => (h X W gs).symm
+
+open Classical in
+/-- **★ `twoloops_complete`, HYPOTHESIS-FREE ★** — the repair of the
+    overclaim found at iteration 138.  No satisfiability assumptions on
+    any guard; the six that `twoloops_complete` carries are discharged
+    by the trichotomy and the vacuity results.
+
+    Nine cases, each a proved theorem: tests compare by BA, atomic loops
+    by `atomicloops_complete`, live pairs by `twoloops_complete`, and
+    every mixed pair is impossible. -/
+theorem twoloops_complete_free (b₁ c₁ b₂ c₂ : BExp T) (q₁ r₁ q₂ r₂ : A)
+    (heq : GkatKleene.UniformLanguageEquivalent
+      (GkatTwoLoop.twoLoop b₁ c₁ q₁ r₁) (GkatTwoLoop.twoLoop b₂ c₂ q₂ r₂)) :
+    EquivBA (GkatTwoLoop.twoLoop b₁ c₁ q₁ r₁)
+      (GkatTwoLoop.twoLoop b₂ c₂ q₂ r₂) := by
+  rcases twoLoop_trichotomy b₁ c₁ q₁ r₁ with
+    ⟨t₁, h₁⟩ | ⟨a₁, s₁, h₁, hsat₁, hex₁⟩ | ⟨hbc₁, hxb₁, hxc₁⟩
+  · rcases twoLoop_trichotomy b₂ c₂ q₂ r₂ with
+      ⟨t₂, h₂⟩ | ⟨a₂, s₂, h₂, hsat₂, hex₂⟩ | ⟨hbc₂, hxb₂, hxc₂⟩
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatChainFragment.test_test_equiv
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq)))
+        (fun hu => live_atomicLoop_ne_test t₁ hsat₂ hex₂ hu)
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => live_twoLoop_ne_test t₁ hbc₂ hxc₂ hxb₂ hu)
+  · rcases twoLoop_trichotomy b₂ c₂ q₂ r₂ with
+      ⟨t₂, h₂⟩ | ⟨a₂, s₂, h₂, hsat₂, hex₂⟩ | ⟨hbc₂, hxb₂, hxc₂⟩
+    · exact absurd (GkatChainFragment.ule_congr_right h₂
+        (GkatChainFragment.ule_congr_left h₁ heq))
+        (fun hu => live_atomicLoop_ne_test t₂ hsat₁ hex₁ hu)
+    · exact EquivBA.trans h₁ (EquivBA.trans
+        (GkatAtomicLoop.atomicloops_complete _ _
+          (GkatAtomicLoop.AtomicLoops.wh a₁ s₁)
+          (GkatAtomicLoop.AtomicLoops.wh a₂ s₂)
+          (GkatChainFragment.ule_congr_right h₂
+            (GkatChainFragment.ule_congr_left h₁ heq)))
+        (EquivBA.symm h₂))
+    · exact absurd (GkatChainFragment.ule_congr_left h₁ heq)
+        (fun hu => no_overlap_vs_live_absurd hu hbc₂ hxb₂)
+  · rcases twoLoop_trichotomy b₂ c₂ q₂ r₂ with
+      ⟨t₂, h₂⟩ | ⟨a₂, s₂, h₂, hsat₂, hex₂⟩ | ⟨hbc₂, hxb₂, hxc₂⟩
+    · exact absurd (GkatChainFragment.ule_congr_right h₂ heq)
+        (fun hu => live_twoLoop_ne_test t₂ hbc₁ hxc₁ hxb₁ hu)
+    · exact absurd (ule_symm (GkatChainFragment.ule_congr_right h₂ heq))
+        (fun hu => no_overlap_vs_live_absurd hu hbc₁ hxb₁)
+    · exact GkatTwoLoop.twoloops_complete b₁ c₁ b₂ c₂ q₁ r₁ q₂ r₂
+        hxc₁ hxb₁ hbc₁ hxc₂ hxb₂ hbc₂ heq
+
+#print axioms twoloops_complete_free
+
 end GkatCensus

@@ -5766,3 +5766,42 @@ has produced: four collapse lemmas, two guard/acceptance primitives that
 generalize past two-loops, and four vacuity results.  None of it is new
 mathematics; all of it was needed to say precisely what the six
 theorems prove.
+
+## Iteration 146 — ★ `twoloops_complete_free` — THE OVERCLAIM IS REPAIRED ★
+
+**`twoloops_complete_free`** [propext, Classical.choice, Quot.sound]:
+completeness for two-loop programs with **NO satisfiability hypotheses
+on any guard**.  The six that `twoloops_complete` carries are gone.
+
+**`twoLoop_trichotomy`** is what made the assembly tractable: every
+two-loop is provably a TEST, or provably a NON-DEGENERATE ATOMIC LOOP,
+or LIVE — with the atomic branch's own degeneracies already pushed into
+the test branch.  That turns a six-hypothesis scramble into a 3 × 3
+table, and every one of the nine cells is a proved theorem:
+
+| | test | atomic | live |
+|---|---|---|---|
+| **test** | `test_test_equiv` | ✗ `live_atomicLoop_ne_test` | ✗ `live_twoLoop_ne_test` |
+| **atomic** | ✗ | `atomicloops_complete` | ✗ `no_overlap_vs_live_absurd` |
+| **live** | ✗ | ✗ | `twoloops_complete` |
+
+Six of the nine cells are IMPOSSIBLE, discharged by the vacuity results
+of iterations 144–145; the three diagonal cells are the earlier strata
+doing their job.  The assembly compiled on the first attempt.
+
+**Five of the six theorems are now hypothesis-free.**  `loopfree`,
+`atomicloops`, `gloops`, `chainloops_free`, and now `twoloops_free` take
+nothing beyond membership in their fragment and language equivalence.
+**Only `chordloops_complete` still carries side conditions** — and it
+has the same shape (shared-entry and exit-exists on `b` and `c`, both
+sides), so the same trichotomy-plus-vacuity pattern should apply, with
+`chordLoop`'s extra branch structure the only new work.
+
+**The hardening arc, closed for this theorem.**  Iteration 138 found
+that the ledger had been calling six theorems "unconditional" when two
+carried hypotheses.  Rather than only fixing the wording, the campaign
+went and removed the hypotheses: eleven lemmas across iterations
+139–146 — four collapses, two guard/acceptance primitives that
+generalize past two-loops, four vacuity results, and the trichotomy —
+none of them new mathematics, all of them needed to make the word
+"unconditional" true rather than merely retracted.
