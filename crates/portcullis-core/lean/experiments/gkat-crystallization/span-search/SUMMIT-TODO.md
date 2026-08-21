@@ -4635,3 +4635,54 @@ Per construction:
 The shape of the whole argument is now visible end to end, with one
 genuinely open lemma (`wh` bisimilarity transfer) and one bounded
 engineering task (S0).
+
+### Iteration 127 addendum — the loop transfer direction we need is the EASY one
+
+The bisimilarity-transfer search answered case (2) directly, and the
+answer favours the induction.
+
+**Standard results.**  (a) A coalgebra homomorphism preserves
+bisimilarity, and an INJECTIVE one (subcoalgebra inclusion) also
+REFLECTS it — so whenever the subautomaton is a genuine subcoalgebra,
+transfer is free both ways.  Coproducts of coalgebras are disjoint with
+mono injections.  (b) Thompson-style operators are definable by a
+distributive law (GSOS format), and bisimilarity is then automatically a
+CONGRUENCE for them — the general "congruence for automaton
+constructions" result.
+
+**Per case:**
+* **Sum / `ite`** — trivial, as expected: each summand is a subcoalgebra
+  of the disjoint union, so bisimilarity is preserved AND reflected.
+* **Loop** — no clean citable lemma, because the body is NOT a
+  subcoalgebra of the loop (feedback arms leave it).  But the two
+  directions split, and **the one this induction needs is the easy
+  one**: *loop-bisimilar ⟹ body-bisimilar by RESTRICTION* — body
+  transitions are contained in loop transitions, so the extra feedback
+  arms only ADD constraints.  The direction that requires a uniform-exit
+  hypothesis is body-bisimilar ⟹ loop-bisimilar, which the induction
+  does NOT use.
+* **Concat** — same argument under the same condition.
+
+**So the load-bearing case is de-risked**, and this is the first time in
+the campaign that a needed direction turned out to be the cheap one
+rather than the expensive one.
+
+**One complication this repo has that the generic statement does not**,
+recorded so the eventual proof does not assume it away: `loopInitialized`
+does not merely ADD arms, it also REWRITES the halt —
+`core.hlt state = body.core.hlt state ∧ ¬guard`.  So the body is not a
+sub-coalgebra even up to added transitions, and "restriction" is not
+literally available.  Loop-bisimilarity gives halt agreement only where
+`¬guard`; where `guard` holds, a body state that halts takes a FEEDBACK
+arm while one that does not takes a body arm or rejects, and matching
+those forces the body halts to agree anyway.  That is the argument to
+write, and it is a genuine argument rather than a restriction — but it
+is bounded and the shape is now known.
+
+**Route status, unchanged in structure and better in confidence:**
+1. S0 / `NormalizationBridge` — algebra done; pruned ⟹ `LiveSteps`
+   remaining.  Bounded.
+2. Same-side UNIF — canonical cause and assembly both discharged;
+   remaining content is bisimilarity transfer, whose needed direction is
+   now known to be the cheap one, with the halt-rewrite wrinkle named.
+3. The size induction — interface and descent step both exist.
