@@ -7394,3 +7394,76 @@ check and it takes one minute; it would have caught this before the commit.
 **Odds: ~45%, unchanged.**  Yesterday's number did not price the residue
 progress, so retracting it costs nothing.  Kosaraju's ceiling is genuinely
 informative but it closes a route rather than opening one.
+
+---
+
+## Iteration 175 — I RAN THE CENSUS, AND THE RESIDUE IS NOT WHAT 174 SAID
+
+Two iterations in a row I described the residue from memory of an old
+MEASUREMENTS.md entry.  Today I ran it.  Dump saved at
+`runs/open-scc-NA2-depth7-20k.txt`.
+
+**The measurement** (NA=2, semantic guards=4, depth≤7, 20000 pairs,
+3.4M generation tries):
+
+    pairs analysed              19998
+    FULLY covered by proved strata (fold + salomaaE)   19876  (99.4%)
+    quotient states             10540 — fold 9732, singleton-self 473,
+                                        in multi-state SCCs 335
+    multi-state SCCs            122 — walked-covered 107, **OPEN 15**
+    SAME-SIDE: automata measured 40000; NOT already minimal 39231 (98.1%)
+
+**EVERY ONE OF THE 15 OPEN SCCs HAS A BRANCHER.**  A brancher is a state
+with two DIFFERENT in-SCC successors (`st=[s2,s0]`).  Not one of the 15 is
+a two-distinct-exit loop; all 15 have `ports=1`.  The shape histogram
+confirms it: every `branchy` row is a `(size, branchy, halting, exits,
+branchers≥1)` entry, and the simple rows are all covered.
+
+**SO 174's CHARACTERIZATION WAS WRONG, AND I AM CORRECTING IT.**
+Iteration 174 concluded, from Kosaraju, that "non-subset halts and
+multi-member exit ports — two of the three residue shapes — are provably
+beyond any single-`wh` role theorem".  The Kosaraju argument itself is
+sound and the two theorems that retracted 173 stand.  What is wrong is the
+premise that those are the residue.  **They are not.**  At these
+parameters the residue is branchy cycles, and I took "the residue" from a
+remembered summary of an older run at different parameters instead of
+measuring.
+
+**And the branchy residue is NOT Kosaraju-blocked — it is expressible.**
+Take OPEN-SCC #1: `0 → 1`, `1 → {2, 0}`, `2 → {2, 1}`.  From state 1 both
+alternatives RETURN TO 1: via 2 (which self-loops, then back to 1) or via
+0 (straight back to 1).  That is one loop head whose body BRANCHES AND
+REJOINS — `wh G (ite g pathA pathB)` — a single `wh` with an `ite` body.
+Every one of the 15 has this shape.  Nothing needs unrolling, nothing
+needs auxiliary variables, and 174's "stop extending the role ladder" is
+therefore premature: the ladder's next rung is exactly the right move.
+
+**THE NEXT TARGET, PRECISELY.**  A role theorem for a single-port SCC
+whose walk from the port may BRANCH AND REJOIN — the branching arms being
+straight lines (possibly with self-loops) that reconverge at a cycle
+position.  `straight_line` and `chain_expand` already exist for the arms;
+what is new is the branch/rejoin algebra at the brancher, where `u5` and
+`multi_gather` have to commute an `ite` past the shared suffix.  This is
+the same shape as `chordloops_complete_free` (iteration ~94), which proved
+the CHORD case at the expression level — so the mathematics is precedented
+even though the automaton-level role theorem is not written.
+
+**Also found: the full 278-lib build has been failing on non-GKAT files
+the whole time.**  `CategoryProofs.lean` errors with `unknown namespace
+PortcullisCoreBridge` — collateral from a 2024 refactor that carved the
+IFC monitor out of portcullis-core.  Nothing imports it.  Restricting to
+the 191 GKAT libs: **385 jobs, ZERO errors, clean.**  So the GKAT cluster
+is intact and the "full build" noise I have been chasing for four
+iterations was never about this work.  The right check is
+`xargs lake build < gkat-libs`.
+
+**Odds: ~45%, unchanged.**  A measurement and a correction; the frontier
+moved sideways, not down.  What did improve is that the next target is now
+a named shape with 15 concrete instances on disk rather than a
+recollection.
+
+**Method note, and it is the third time this week.**  167–174 produced two
+wrong characterizations (173's "non-subset halts fall", 174's "the residue
+is Kosaraju-blocked"), both from reasoning about remembered data instead
+of the data.  **The census takes four minutes to run.  Run it before
+describing what is open.**
