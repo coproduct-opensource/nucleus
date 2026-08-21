@@ -3116,3 +3116,30 @@ dispatch) = eqRHSParam left (sol∘inl) (initRHSParam right ...).
 Next: assemble the seq-subsystem lemma from the bricks, then the loop-
 subsystem analogue (feedback arms factor by the same pattern), then
 the syntax-pair induction skeleton.
+
+## Iteration 109 — ★ THE SEQ SUBSYSTEM LEMMA ★
+
+**`seq_subsystem`** ([propext]): in a sequential composite, a left
+state's parametric equation IS the left system's parametric equation
+whose finish is the right system's initial dispatch —
+
+  eqRHSParam (seqGSystem Lc R) sol F (inl s)
+    ≡ eqRHSParam Lc (sol∘inl) (initRHSParam R (sol∘inr) F) s
+
+— fully parametric in the ambient continuation F, so it composes
+through arbitrarily nested contexts. Supporting (zero axioms):
+`guardedFold_append` (folds split over appends) and
+`guardedFold_guard_factor` (a guard conjoined onto every branch and
+the fallback halt factors out as a test prefix — s6/s1 base,
+test_seq_ite step). The assembly: split the composite branch list,
+factor the appended right-init part, done — three moves.
+
+(Tactic notes: transitionBranches must be map-unfolded EXPLICITLY in
+`show` for map_map to fire, and the show's lambdas need type
+ascriptions — equation-type elaboration cannot infer binder domains.)
+
+This is route item (1) half done: the seq case. Remaining subsystem
+cases: ite (same pattern, two sides guarded) and LOOP (feedback arms
+factor by the same guard_factor with hlt·guard·init decoration — the
+key case connecting SCCs to wrapped certificates). Then the
+syntax-pair induction skeleton.

@@ -1319,4 +1319,110 @@ theorem foldTL_guard_factor {S : Type} (sol : S → Exp A T)
 #print axioms foldTL_append
 #print axioms foldTL_guard_factor
 
+open Classical in
+/-- Guarded folds split over appends. -/
+theorem guardedFold_append (F : Exp A T) :
+    ∀ B₁ B₂ : List (BExp T × Exp A T),
+      GkatFaithful.guardedFold (B₁ ++ B₂) F
+        = GkatFaithful.guardedFold B₁
+            (GkatFaithful.guardedFold B₂ F) := by
+  intro B₁ B₂
+  induction B₁ with
+  | nil => rfl
+  | cons b rest ih =>
+      show Exp.ite b.1 b.2
+          (GkatFaithful.guardedFold (rest ++ B₂) F) = _
+      rw [ih]
+      rfl
+
+open Classical in
+/-- **PARAMETRIC GUARD FACTORING**: a guard conjoined onto every
+    branch and the fallback's halt factors out as a test prefix. -/
+theorem guardedFold_guard_factor (hG h : BExp T) (F : Exp A T) :
+    ∀ branches : List (BExp T × Exp A T),
+      EquivBA
+        (GkatFaithful.guardedFold
+          (branches.map (fun b => (.and hG b.1, b.2)))
+          (GkatThompson.paramFallback (.and hG h) F))
+        (.seq (.test hG)
+          (GkatFaithful.guardedFold branches
+            (GkatThompson.paramFallback h F))) := by
+  intro branches
+  induction branches with
+  | nil =>
+      show EquivBA (.seq (.test (.and hG h)) F)
+        (.seq (.test hG) (.seq (.test h) F))
+      refine EquivBA.trans (EquivBA.seq_c
+        (EquivBA.symm (EquivBA.s6 hG h))
+        (EquivBA.base (Equiv.refl F))) ?_
+      exact EquivBA.base (Equiv.s1 (.test hG) (.test h) F)
+  | cons b rest ih =>
+      show EquivBA (.ite (.and hG b.1) b.2
+        (GkatFaithful.guardedFold
+          (rest.map (fun b => (.and hG b.1, b.2)))
+          (GkatThompson.paramFallback (.and hG h) F))) _
+      refine EquivBA.trans (EquivBA.ite_c
+        (EquivBA.base (Equiv.refl _)) ih) ?_
+      exact EquivBA.symm (GkatGuardedAlgebra.test_seq_ite hG b.1 b.2
+        (GkatFaithful.guardedFold rest
+          (GkatThompson.paramFallback h F)))
+
+open Classical in
+/-- **THE SEQ SUBSYSTEM LEMMA**: in a sequential composite, a left
+    state's parametric equation is the left system's parametric
+    equation whose finish is the right system's initial dispatch —
+    fully parametric in the ambient continuation. -/
+theorem seq_subsystem {S₁ S₂ : Type}
+    (Lc : GkatThompson.GSystem S₁ A T)
+    (R : GkatThompson.InitializedGAut S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₁) :
+    EquivBA
+      (GkatThompson.eqRHSParam (GkatThompson.seqGSystem Lc R) sol F
+        (.inl s))
+      (GkatThompson.eqRHSParam Lc (fun t => sol (.inl t))
+        (GkatThompson.initRHSParam R (fun t => sol (.inr t)) F) s) := by
+  show EquivBA
+    (GkatFaithful.guardedFold
+      (GkatKleene.transitionBranches
+        ((Lc.trans s).map (fun tr =>
+          (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+         R.initTrans.map (fun tr =>
+          (.and (Lc.hlt s) tr.1, tr.2.1, Sum.inr tr.2.2))) sol)
+      (GkatThompson.paramFallback (.and (Lc.hlt s) R.initHlt) F))
+    _
+  have hsplit : GkatKleene.transitionBranches
+      ((Lc.trans s).map (fun tr =>
+        (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+       R.initTrans.map (fun tr =>
+        (.and (Lc.hlt s) tr.1, tr.2.1, Sum.inr tr.2.2))) sol
+      = GkatKleene.transitionBranches (Lc.trans s)
+          (fun t => sol (.inl t))
+        ++ (GkatKleene.transitionBranches R.initTrans
+            (fun t => sol (.inr t))).map
+          (fun b => (.and (Lc.hlt s) b.1, b.2)) := by
+    show (((Lc.trans s).map (fun tr : BExp T × A × S₁ =>
+        (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+       R.initTrans.map (fun tr : BExp T × A × S₂ =>
+        (BExp.and (Lc.hlt s) tr.1, tr.2.1, Sum.inr tr.2.2))).map
+        (fun t : BExp T × A × Sum S₁ S₂ =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2))))
+      = ((Lc.trans s).map (fun t : BExp T × A × S₁ =>
+          (t.1, Exp.seq (.act t.2.1) (sol (.inl t.2.2)))))
+        ++ ((R.initTrans.map (fun t : BExp T × A × S₂ =>
+          (t.1, Exp.seq (.act t.2.1) (sol (.inr t.2.2))))).map
+          (fun b : BExp T × Exp A T =>
+            (BExp.and (Lc.hlt s) b.1, b.2)))
+    rw [List.map_append, List.map_map, List.map_map, List.map_map]
+    rfl
+  rw [hsplit, guardedFold_append]
+  refine EquivBA.trans (guardedFold_fallback_congr
+    (guardedFold_guard_factor (Lc.hlt s) R.initHlt F
+      (GkatKleene.transitionBranches R.initTrans
+        (fun t => sol (.inr t))))) ?_
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms guardedFold_append
+#print axioms guardedFold_guard_factor
+#print axioms seq_subsystem
+
 end GkatCensus
