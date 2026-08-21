@@ -1538,4 +1538,232 @@ theorem gated_himp_subset {G C h0 hj : BExp T}
 #print axioms gated_exit_forced
 #print axioms gated_himp_subset
 
+
+/-! ## THE CHORDED CYCLE: a lap with one short-circuit back to the port
+
+    Iteration 175 dumped the 15 open SCCs; 176 showed all 15 are
+    T1/T2-reducible.  Reading their edge sets, THIRTEEN OF THE FIFTEEN are
+    one shape, in six variants:
+
+        a cycle through every member, plus ONE extra arm from one interior
+        position straight back to the port.
+
+    Concretely the modal instance (6 of 15) is `0→1, 1→0, 1→2, 2→0` with
+    the port halting: a long lap `0→1→2→0` and a chord `1→0` short-circuiting
+    it.  The others are the same with longer laps (`0→1→3→2→0`, `0→4→3→1→2→0`)
+    or the brancher deeper along the lap.
+
+    The algebra is the parked cycle's, with one extra alternative at the
+    chord position.  The chord arm ends at the port, so it is already
+    `something ; sol (m 0)`; `s2` turns the dead fallback into
+    `0 ; sol (m 0)` and `u5` factors the port solution out of BOTH
+    alternatives, exactly as it does out of a plain chain.  Everything
+    downstream — `park_absorb` on the halt arms, the `salomaaE` close at
+    the port — is unchanged.
+
+    So the chorded stratum costs one constructor case in the chain, one
+    case in the split, and `double_gather` in place of `multi_gather` at
+    the chord position. -/
+
+open Classical in
+/-- The chorded chain: the parked chain, with position `c` carrying one
+    extra arm straight back to the port. -/
+noncomputable def cChain (aut : GAut S A T) (m : Nat → S) (len c : Nat)
+    (term : Exp A T) : Nat → Nat → Exp A T
+  | 0, _ => term
+  | k + 1, j =>
+      if j = c then
+        .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (cChain aut m len c term k (j + 1)))
+          (.ite (gGuard (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))
+            (.seq (gBody (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))
+              term)
+            (.test (aut.hlt (m j))))
+      else
+        .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (cChain aut m len c term k (j + 1)))
+          (.test (aut.hlt (m j)))
+
+/-- The unfolding equation for `cChain`, with the position test intact.
+    `cChain` does not reduce under `whnf` because `j = c` is undecided for
+    variable `j`, so every proof rewrites with this rather than `show`. -/
+theorem cChain_succ (aut : GAut S A T) (m : Nat → S) (len c : Nat)
+    (term : Exp A T) (k j : Nat) :
+    cChain aut m len c term (k + 1) j =
+      (if j = c then
+        .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (cChain aut m len c term k (j + 1)))
+          (.ite (gGuard (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))
+            (.seq (gBody (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))
+              term)
+            (.test (aut.hlt (m j))))
+      else
+        .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (cChain aut m len c term k (j + 1)))
+          (.test (aut.hlt (m j)))) := rfl
+
+open Classical in
+/-- The chorded port solution: loop the whole chorded chain, exit on the
+    port halt. -/
+noncomputable def cPortE (aut : GAut S A T) (m : Nat → S) (len c : Nat) :
+    Exp A T :=
+  .seq (.wh (gGuard (m 1) (aut.trans (m 0)))
+      (.seq (gBody (m 1) (aut.trans (m 0)))
+        (cChain aut m len c (.test .one) (len - 1) 1)))
+    (.test (aut.hlt (m 0)))
+
+/-- **THE CHORDED SPLIT**: the port solution right-distributes out of the
+    chorded chain.  `u5` on the step arm as before, `u5` again on the
+    chord arm, `park_absorb` on every halt arm. -/
+theorem cChain_split (aut : GAut S A T) (m : Nat → S) (len c : Nat)
+    (himp : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hexcl : GuardImplies (aut.hlt (m 0))
+      (.not (gGuard (m 1) (aut.trans (m 0))))) :
+    ∀ k j, 1 ≤ j → j + k ≤ len →
+      EquivBA (cChain aut m len c (cPortE aut m len c) k j)
+        (.seq (cChain aut m len c (.test .one) k j)
+          (cPortE aut m len c)) := by
+  intro k
+  induction k with
+  | zero =>
+      intro j _ _
+      exact EquivBA.symm (EquivBA.base (Equiv.s4 (cPortE aut m len c)))
+  | succ k ih =>
+      intro j hj hle
+      rw [cChain_succ, cChain_succ]
+      by_cases hjc : j = c
+      · rw [if_pos hjc, if_pos hjc]
+        refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+          (EquivBA.base (Equiv.u5 _ _ _ (cPortE aut m len c)))
+        · refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+            (ih (j + 1) (by omega) (by omega))) ?_
+          exact seq_assoc' _ _ (cPortE aut m len c)
+        · refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+            (EquivBA.base (Equiv.u5 _ _ _ (cPortE aut m len c)))
+          · exact EquivBA.seq_c
+              (EquivBA.symm (seq_one
+                (gBody (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))))
+              (EquivBA.base (Equiv.refl _))
+          · exact park_absorb _ (himp j hj (by omega)) hexcl
+      · rw [if_neg hjc, if_neg hjc]
+        refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+          (EquivBA.base (Equiv.u5 _ _ _ (cPortE aut m len c)))
+        · refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+            (ih (j + 1) (by omega) (by omega))) ?_
+          exact seq_assoc' _ _ (cPortE aut m len c)
+        · exact park_absorb _ (himp j hj (by omega)) hexcl
+
+open Classical in
+/-- **THE CHORDED CYCLE THEOREM.**  A simple cycle through every member,
+    with ONE interior position carrying an extra arm straight back to the
+    port, is fully role-covered — the port a `salomaaE` state whose body
+    is the chorded chain, interiors `equivFold`s, the chord position an
+    `equivFold` gathered by `double_gather`.
+
+    This is the shape thirteen of the fifteen measured open SCCs have. -/
+theorem chorded_cycle_roles (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len c : Nat) (hlen : 2 ≤ len)
+    (hc1 : 1 ≤ c) (hc2 : c + 1 < len)
+    (hsol_int : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = cChain aut m len c (cPortE aut m len c) (len - j) j)
+    (hsol_port : sol (m 0) = cPortE aut m len c)
+    (hint_arms : ∀ j, 1 ≤ j → j < len → j ≠ c → ∀ e ∈ aut.trans (m j),
+      e.2.2 = nxtAt m len j)
+    (hchord_arms : ∀ e ∈ gOthers (nxtAt m len c) (aut.trans (m c)),
+      e.2.2 = m 0)
+    (hport_arms : ∀ e ∈ aut.trans (m 0), e.2.2 = m 1)
+    (himp : ∀ j, 1 ≤ j → j < len →
+      GuardImplies (aut.hlt (m j)) (aut.hlt (m 0)))
+    (hexcl : GuardImplies (aut.hlt (m 0))
+      (.not (gGuard (m 1) (aut.trans (m 0))))) :
+    ∀ j, j < len → StateRole aut sol (m j) := by
+  intro j hj
+  cases Nat.eq_zero_or_pos j with
+  | inl hzero =>
+      subst hzero
+      refine StateRole.salomaaE (gGuard (m 1) (aut.trans (m 0)))
+        (.seq (gBody (m 1) (aut.trans (m 0)))
+          (cChain aut m len c (.test .one) (len - 1) 1))
+        (.test (aut.hlt (m 0))) hsol_port ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (multi_gather sol (aut.hlt (m 0)) (m 1)
+        (aut.trans (m 0))) ?_
+      rw [gOthers_nil_of_all (m 1) (aut.trans (m 0)) hport_arms,
+          hsol_int 1 (Nat.le_refl 1) (by omega)]
+      refine EquivBA.trans (EquivBA.ite_c
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (cChain_split aut m len c himp hexcl (len - 1) 1
+            (Nat.le_refl 1) (by omega)))
+        (EquivBA.base (Equiv.refl _))) ?_
+      refine EquivBA.trans (EquivBA.ite_c
+        (seq_assoc' _ _ (cPortE aut m len c))
+        (EquivBA.base (Equiv.refl _))) ?_
+      rw [← hsol_port]
+      exact EquivBA.base (Equiv.refl _)
+  | inr hpos =>
+      refine StateRole.equivFold ?_
+      by_cases hjc : j = c
+      · -- the chord position
+        have hnx : nxtAt m len j = m (j + 1) := by
+          unfold nxtAt
+          rw [if_neg (show ¬ (j + 1 = len) by omega)]
+        have hstep : sol (m j)
+            = .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+              (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+                (sol (nxtAt m len j)))
+              (.ite (gGuard (m 0) (gOthers (nxtAt m len j) (aut.trans (m j))))
+                (.seq (gBody (m 0)
+                  (gOthers (nxtAt m len j) (aut.trans (m j)))) (sol (m 0)))
+                (.test (aut.hlt (m j)))) := by
+          rw [hsol_int j hpos hj,
+              show len - j = (len - (j + 1)) + 1 from by omega,
+              cChain_succ, if_pos hjc, hnx, hsol_port,
+              hsol_int (j + 1) (by omega) (by omega)]
+        rw [hstep, eqRHS_foldTL]
+        refine EquivBA.trans ?_ (EquivBA.symm
+          (double_gather sol (aut.hlt (m j)) (nxtAt m len j) (m 0)
+            (aut.trans (m j))))
+        have hchord' : ∀ e ∈ gOthers (nxtAt m len j) (aut.trans (m j)),
+            e.2.2 = m 0 := by rw [hjc]; exact hchord_arms
+        rw [gOthers_nil_of_all (m 0)
+          (gOthers (nxtAt m len j) (aut.trans (m j))) hchord']
+        exact EquivBA.base (Equiv.refl _)
+      · -- an ordinary chain position
+        have hstep : sol (m j)
+            = .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+              (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+                (sol (nxtAt m len j)))
+              (.test (aut.hlt (m j))) := by
+          rw [hsol_int j hpos hj,
+              show len - j = (len - (j + 1)) + 1 from by omega,
+              cChain_succ, if_neg hjc]
+          by_cases hj1 : j + 1 = len
+          · have hnx : sol (nxtAt m len j) = cPortE aut m len c := by
+              unfold nxtAt
+              rw [if_pos hj1]
+              exact hsol_port
+            rw [hnx, show len - (j + 1) = 0 from by omega]
+            rfl
+          · have hnx : sol (nxtAt m len j)
+                = cChain aut m len c (cPortE aut m len c) (len - (j + 1))
+                  (j + 1) := by
+              unfold nxtAt
+              rw [if_neg hj1]
+              exact hsol_int (j + 1) (by omega) (by omega)
+            rw [hnx]
+        rw [hstep, eqRHS_foldTL]
+        refine EquivBA.trans ?_ (EquivBA.symm
+          (multi_gather sol (aut.hlt (m j)) (nxtAt m len j) (aut.trans (m j))))
+        rw [gOthers_nil_of_all (nxtAt m len j) (aut.trans (m j))
+          (hint_arms j hpos hj hjc)]
+        exact EquivBA.base (Equiv.refl _)
+
+#print axioms cChain_split
+#print axioms chorded_cycle_roles
+
 end GkatCycle

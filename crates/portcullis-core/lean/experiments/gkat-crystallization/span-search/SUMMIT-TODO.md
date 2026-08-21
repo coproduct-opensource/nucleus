@@ -7525,3 +7525,68 @@ written against a specific instance.
 tells the next iteration exactly what to prove and rules out the
 obstruction 174 feared, which is worth a great deal procedurally and
 nothing probabilistically until the theorem exists.
+
+---
+
+## Iteration 177 — THE CHORDED CYCLE: the rung the measurement asked for
+
+175 dumped the 15 open SCCs; 176 proved all 15 reducible.  Today reads
+their edge sets and builds the rung.
+
+**THIRTEEN OF THE FIFTEEN ARE ONE SHAPE.**  Printing the edge sets:
+
+    x6  n=3  0→1, 1→0, 1→2, 2→0                halt at 0
+    x3  n=4  0→1, 1→0, 1→3, 3→2, 2→0           halt at 0
+    x1  n=4  0→3, 3→1, 1→0, 1→2, 2→0           halt at 0
+    x1  n=5  0→4, 4→3, 3→1, 1→0, 1→2, 2→0      halt at 0
+    x1  n=4  0→3, 3→2, 2→1, 1→3, 1→0           halt at 3
+    x1  n=3  0→1, 0→2, 1→0, 2→1                halt at 1
+    ---- the two that are not:
+    x1  n=3  0→1, 1→0, 1→2, 2→1, 2→2           halt at 0   (nested)
+    x1  n=3  0→2, 2→1, 1→0, 1→2                halt at 0   (nested)
+
+Every one of the first six is: **a cycle through every member, plus ONE
+extra arm from an interior position straight back to the port.**  A long
+lap with a chord short-circuiting it.  The chord always sits at a position
+`c` with `1 ≤ c` and `c + 1 < len` — checked instance by instance.
+
+**`GkatCycle.chorded_cycle_roles`** — proved, sorry-free,
+`[propext, Classical.choice, Quot.sound]`, with `cChain`, `cChain_succ`,
+`cPortE`, and `cChain_split`.
+
+The algebra is the parked cycle's with one extra alternative.  The chord
+arm ends at the port, so it is already `something ; sol (m 0)`; `s2` turns
+the dead fallback into `0 ; sol (m 0)` and `u5` factors the port solution
+out of BOTH alternatives exactly as it does out of a plain chain.
+Downstream is unchanged: `park_absorb` on the halt arms, `salomaaE` at the
+port.  At the chord position `double_gather` replaces `multi_gather` —
+gather the lap arm first, the chord arm from the remainder, and the rest
+is empty.
+
+**Cost, for the record: one constructor case in the chain, one case in the
+split, one gather swap.**  That is what 176's `self_gather_role` predicted
+— the role discharges itself once the solution has the right shape, and
+all the work was in defining `cChain`.
+
+**SCOPE, AND I AM NOT INFLATING IT.**  This is a CYCLE-LOCAL role theorem:
+it takes the closed forms as hypotheses (`hsol_int`, `hsol_port`), like
+`parked_cycle_roles` and `walked_cycle_roles` before it.  **The census
+count has NOT moved**, and will not until an ASSEMBLY theorem defines the
+solution by recursion — the `walked_assembly_roles` step.  What exists
+today is the cycle-local half of the rung, which is the half that contains
+the new mathematics.
+
+**Two instances remain unaddressed** (#1 and #2), and they are genuinely
+different: nested loops rather than a chord — an inner cycle inside the
+outer one.  Recorded so the next iteration does not discover it by
+surprise.
+
+**One Lean note worth keeping.**  `cChain` does not reduce under `whnf`,
+because `j = c` is undecided for a variable `j`, so `show` cannot unfold
+it.  Every proof rewrites with the explicit equation lemma `cChain_succ`
+(`:= rfl`) and then `if_pos`/`if_neg`.  This cost two build cycles to
+find; the pattern generalizes to any chain definition with a positional
+test.
+
+**Odds: ~45%, unchanged.**  A rung on a ladder whose top is still the
+existence question.  Progress is real and local.
