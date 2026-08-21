@@ -3842,3 +3842,107 @@ expressiveness-of-solutions is inapplicable by `sum_solves_std`.  What
 remains is the one this repo can still see clearly: the shape problem
 of 117 — and the measured data says it bites in ~1.8% of multi-state
 SCCs, all of size 2-3.  That is the whole remaining target.
+
+## Iteration 118 — ★ THE OPEN INSTANCES, RECOVERED AND ANALYSED ★
+
+Acting on 117's "next step is obvious": added an **OPEN-SCC dump** to
+`scc_census` in span-search/src/main.rs (additive, ~30 lines: prints
+every multi-state SCC no proved stratum covers, its port count, and
+the full quotient so exit targets are readable).  Then ran it.
+
+**MEASURED, NA=2** (30k language-equivalent pairs, depth ≤ 6, k ≤ 10):
+99.3% of pairs FULLY covered by proved strata.  17070 quotient states:
+15630 fold, 860 singleton-self, 580 in multi-state SCCs.  218
+multi-state SCCs: 195 walked-covered, **23 open**.  And the striking
+part: **ZERO multi-port SCCs.  Every shape in the histogram has
+halting-members + exit-arms ≤ 1.**  At two atoms, the two-port case
+the elimination step cannot handle SIMPLY DOES NOT OCCUR.
+
+**MEASURED, NA=4** (30k pairs, depth ≤ 8, k ≤ 12): 96.6% of pairs
+fully covered.  1021 multi-state SCCs: 1011 walked-covered, **10
+open**.  Multi-port DOES occur here — 4 dumps — so the phenomenon
+needs ≥ 3 atoms, which is why every earlier NA=2 sweep missed it.
+
+**WORKED ANALYSIS #1 — an "open" instance that is actually
+ELIMINABLE.**  OPEN-SCC #1 (pair #211, k=3, scc {0,1,2}, ports=1):
+
+    s0: hl=0110  st=[s1, -, -, s2]
+    s1: hl=0000  st=[s0,s0,s0,s0]
+    s2: hl=0000  st=[s1,s2,s2,s2]
+
+Eliminate s2 first.  Its equation is
+`s2 ≈ ite{1,2,3} (p·s2) (ite{0} (q·s1) (test 0))` — self-loop plus ONE
+exit, and **the fallback is `test 0`, DEAD**, since s2 does not halt.
+So `ite{0} (q·s1) (test 0) ≡ {0}?·q·s1` by dead-branch collapse, and
+`w3` gives `s2 ≈ ((wh{1,2,3} p)·{0}?·q)·s1` — **a PREFIX times s1**.
+That is exactly `elim_reduces`' hypothesis, so left-affineness
+survives.  Substituting into s0 turns its s2-arm into another s1-arm;
+both of s0's arms now target s1, and `arms_merge`/u5 fuse them into
+`s0 ≈ ite G (V·s1) (test{1,2})`.  Then `s1 ≈ t·s0` (all atoms, dead
+fallback), substitute, and s0 becomes a pure self-loop closed by one
+more `w3`.  **Fully eliminated, order s2 → s1 → s0.**
+
+So this instance is open only to the HARNESS's classifier, not to the
+mathematics — precisely what `GkatDeadExitElimProofs.lean` already
+warned ("the checker, not the mathematics, is the binding
+constraint").  Note what made it work: the DEAD FALLBACK.  A
+non-halting state's residual collapses to a prefix, which is the
+uniform-exit condition arriving for free.
+
+**WORKED ANALYSIS #2 — an instance that RESISTS BOTH ORDERS.**
+OPEN-SCC #3 (pair #14074, k=3, scc {0,1}, **ports=2**):
+
+    s0: hl=0000  st=[s1, X2, s0, X2]
+    s1: hl=0000  st=[s1,  -, s0, X2]        (q2: hl=1111, no arms)
+
+Eliminate s1: gather its atom-0 self-loop, `w3` gives
+`s1 ≈ (wh{0} a)·(ite{2} (b·s0) ({3}?·c))`.  The residual has TWO live
+targets — s0 AND the exit X2 — so it is NOT a prefix times one
+unknown.  Substituting into s0 puts s0 under guard `{2}` read AFTER
+`d·(wh{0}a)` has executed, and no axiom moves a guard left past an
+action.  Eliminate s0 instead: gather its atom-2 self-loop, `w3` gives
+`s0 ≈ (wh{2} f)·(ite{0} (d·s1) (…{1}?e…{3}?g…))` — again a live exit
+alongside the in-SCC target, and substituting into s1 fails the same
+way.  **Both orders break left-affineness.**
+
+This is the first CONCRETE, MEASURED instance of the hard shape, and
+its signature is exactly what 117 predicted: **two ports, each with a
+LIVE exit**, so no state's residual collapses to a prefix.  It is the
+census-level realization of iteration 96's `wh b (ite c (p; test d) q)`
+refutation.
+
+**WHAT THIS MEANS.**  The residue is now a concrete, exhibited
+automaton rather than a quantifier.  Three readings, and the ledger
+should not prejudge between them:
+1. A cleverer closing exists for two-port SCCs that this campaign has
+   not found (the six strata each found one for their shape — chord in
+   particular was two-position).
+2. Two-port SCCs need genuinely more than one-unknown uniqueness, and
+   this is the concrete seed of a negative result.
+3. Two-port SCCs of CANONICAL QUOTIENTS OF LANGUAGE-EQUIVALENT PAIRS
+   may be constrained in a way arbitrary two-port SCCs are not — the
+   NA=2 sweep found ZERO of them in 30000 pairs, which is evidence
+   this shape is rare and possibly structurally restricted.
+
+**LITERATURE, and it settles the expressiveness worry definitively.**
+The Böhm-Jacopini search returned: Kozen-Tseng's counterexample is a
+3-state REDUCED automaton (no nontrivial autobisimulation), and by
+their own Lemmas 1+5 **a quotient by a congruence is bisimilar to the
+original, hence guarded-string-equal — so every quotient of a
+while-program automaton IS equivalent to a while program, and the KT
+automaton is NOT a bisimulation quotient of any program automaton.**
+Böhm-Jacopini cannot bite a quotient-only construction at the level of
+behavior.  117's addendum-2 claim is confirmed by the source itself.
+Structurally quotients DO escape well-nestedness (ICALP'21 Fig. 4,
+8 states, v₁≡v₄ / v₃≡v₆) — that is the published evidence that killed
+the well-nestedness route, which this repo abandoned long ago.  Also:
+the real characterization of expressible behavior is ICALP'21's
+NESTING COEQUATION W (well-nestedness is sufficient, NOT necessary —
+refuted there), and no decidability result for while-expressibility
+appears to exist.
+
+**NEXT**: attack OPEN-SCC #3 directly.  It is two states, four atoms,
+fully written out above — small enough to settle by hand or by
+exhaustive search over closing strategies.  Settling it either yields
+the two-port closing (and with it, plausibly, the general method) or
+produces the campaign's first genuine negative result.
