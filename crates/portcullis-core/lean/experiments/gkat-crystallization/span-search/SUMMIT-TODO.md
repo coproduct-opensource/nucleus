@@ -6026,3 +6026,55 @@ without being checked.
 audits came back clean and two claims came back wrong, both of them
 about how results were *described* rather than whether they *held* — and
 that is exactly the exposure a machine-checked corpus has.
+
+## Iteration 152 — ★ `chordloops_complete_free`: ALL SIX THEOREMS ARE NOW HYPOTHESIS-FREE ★
+
+Iteration 150 recorded `hentC` — shared inner-guard entry — as the one
+condition that resisted, with a five-step derivation sketched but not
+claimed.  **It is derivable, and the sketch was the long way round.**
+
+* **`chord_three_at_c`** [propext] — a chord loop owes THREE actions
+  through a `c`-atom: at the post-`p` atom the branch guard holds, so
+  the body still owes `x` and `y`.
+* **`chord_shared_entry`** — if `c` and `c'` were disjoint, then at an
+  atom where `c` holds the OTHER side's branch guard FAILS, so that
+  side accepts a two-action string through it, while this side owes
+  three.  Contradiction.
+* **`chordloops_complete_free`** — the sixteen-case assembly with the
+  hypothesis gone.
+
+**Iteration 150's sketch forced all six action letters equal first, via
+four separate matchings, and only then reached a contradiction.  None
+of that is needed — no letters are matched at all.**  That is the
+second time in this campaign that formalizing SHORTENED a hand
+argument (iteration 144 was the first, cutting four steps to two).  The
+lesson is consistent enough now to state: informal reasoning here has
+systematically over-constrained the problem, reaching for equalities
+the machine turns out not to need.
+
+---
+
+### The hardening campaign, final
+
+| theorem | before iteration 138 | now |
+|---|---|---|
+| `loopfree_complete` | fragment only | unchanged |
+| `atomicloops_complete` | fragment only | unchanged |
+| `gloops_complete` | fragment only | unchanged |
+| `chainloops_complete_free` | fragment only | unchanged |
+| `twoloops_complete` | **+6 hypotheses** | **`_free` — 0** |
+| `chordloops_complete` | **+6 hypotheses** | **`_free` — 0** |
+
+**All six completeness theorems now assume nothing beyond membership in
+their named fragment and language equivalence.**  "Unconditional" — the
+word the ledger used for sixty iterations without checking it — is now
+true.
+
+Roughly thirty-five lemmas got it there, none of them new mathematics.
+Several outlived their purpose: `wh_den_nil` and
+`wh_guards_agree_of_ule` are general facts about loops, the stride
+invariants are general facts about chain bodies, and the two shape
+classifications are reusable normal forms.
+
+**Tactic note**: `by_contra` is Mathlib; this cluster is Mathlib-free.
+Use `refine Classical.byContradiction (fun h => ?_)`.

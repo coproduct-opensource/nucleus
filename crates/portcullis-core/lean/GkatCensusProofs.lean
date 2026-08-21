@@ -3952,21 +3952,117 @@ theorem chain3_ne_test {b : BExp T} {p x y : A} (t : BExp T)
 #print axioms chain2_ne_test
 #print axioms chain3_ne_test
 
+/-! ## `hentC` is derivable after all — and by a much shorter route
+
+    Iteration 150 sketched a five-step derivation of shared inner-guard
+    entry (all six action letters forced equal, then a mid-body halt
+    contradiction).  Working it properly collapses it to ONE step, and
+    the earlier sketch turns out to have been the long way round.
+
+    The observation: at a post-`p` atom where `c` HOLDS, a chord loop's
+    body owes TWO MORE actions, so it cannot accept a two-action string
+    through such an atom.  If `c` and `c'` were disjoint, the other side
+    — whose branch guard FAILS there — accepts exactly such a string.
+    No action letters need to be matched at all. -/
+
 open Classical in
-/-- **★ `chordloops_complete`, DOWN TO ONE HYPOTHESIS ★** — five of the
-    six satisfiability conditions are gone.  Only SHARED INNER-GUARD
-    ENTRY (`∃α, c ∧ c'`) remains, because it is the one condition that
-    guard agreement cannot supply: `b ≡ b'` follows from both sides
-    being loops, but `c` and `c'` sit INSIDE the bodies.
+/-- **A chord loop owes THREE actions through a `c`-atom.**  At the
+    post-`p` atom the branch guard holds, so the body still owes `x` and
+    `y`; two actions cannot suffice. -/
+theorem chord_three_at_c {Atom : Type} (V : T → Atom → Bool)
+    (b c : BExp T) (p x y : A) {gs : GkatGS.GS A Atom}
+    (h : GkatGS.den V (GkatThreeLoop.chordLoop b c p x y) gs)
+    {u : A} {a₁ : Atom} {tl : List (A × Atom)}
+    (hgs : gs.2 = (u, a₁) :: tl)
+    (hc : GkatGS.bval V c a₁ = true) :
+    3 ≤ gs.2.length := by
+  have h' : GkatGS.InLoop V b
+      (GkatGS.den V (GkatThreeLoop.chordBody c p x y)) gs := h
+  cases h' with
+  | exit a hb => exact nomatch (hgs : ([] : List (A × Atom)) = (u, a₁) :: tl)
+  | step a l1 rest _ hbody _ =>
+      obtain ⟨m1, m2, hsp, ⟨w0, w1, hp⟩, hite⟩ := hbody
+      have hm1 : m1 = [(p, w1)] := congrArg Prod.snd hp
+      have hsp' : l1 = m1 ++ m2 := hsp
+      have hcons : l1 ++ rest = (u, a₁) :: tl := hgs
+      have hw1 : w1 = a₁ := by
+        rw [hsp', hm1] at hcons
+        exact congrArg Prod.snd (List.head_eq_of_cons_eq hcons)
+      have hthen : GkatGS.den V (.seq (.act x) (.act y) : Exp A T)
+          (GkatGS.lastAtom a m1, m2) := by
+        rcases hite with ⟨_, hh⟩ | ⟨hf, _⟩
+        · exact hh
+        · exfalso
+          rw [hm1] at hf
+          have : GkatGS.bval V c w1 = false := hf
+          rw [hw1, hc] at this
+          exact nomatch this
+      obtain ⟨n1, n2, hsp2, ⟨_, v1, h1⟩, ⟨_, v2, h2⟩⟩ := hthen
+      have hn1 : n1 = [(x, v1)] := congrArg Prod.snd h1
+      have hn2 : n2 = [(y, v2)] := congrArg Prod.snd h2
+      have hm2 : m2 = n1 ++ n2 := hsp2
+      have hl1 : l1.length = 3 := by
+        rw [hsp', hm1, hm2, hn1, hn2]; rfl
+      show 3 ≤ (l1 ++ rest).length
+      rw [List.length_append, hl1]
+      exact Nat.le_add_right _ _
+
+#print axioms chord_three_at_c
+
+open Classical in
+/-- **★ SHARED INNER-GUARD ENTRY IS DERIVABLE ★** — the hypothesis
+    iteration 150 could not remove.  If `c` and `c'` were disjoint, then
+    at an atom where `c` holds the OTHER side's branch guard fails, so
+    that side accepts a two-action string through it — while this side,
+    whose guard holds there, still owes `x` and `y`.
+
+    Iteration 150's sketch forced all six action letters equal first.
+    That was the long way round: no letters need matching at all. -/
+theorem chord_shared_entry {b c b' c' : BExp T} {p x y p' x' y' : A}
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (GkatThreeLoop.chordLoop b c p x y)
+      (GkatThreeLoop.chordLoop b' c' p' x' y'))
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hcsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = true) :
+    ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) c α = true
+        ∧ GkatGS.bval (GkatPlanExistence.genW T) c' α = true := by
+  refine Classical.byContradiction (fun hno => ?_)
+  obtain ⟨γ, hcγ⟩ := hcsat
+  have hc'γ : GkatGS.bval (GkatPlanExistence.genW T) c' γ = false := by
+    cases hv : GkatGS.bval (GkatPlanExistence.genW T) c' γ with
+    | false => rfl
+    | true => exact absurd ⟨γ, hcγ, hv⟩ hno
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨δ, hbδ⟩ := hbex
+  have hga := wh_guards_agree_of_ule hule (T → Bool) (GkatPlanExistence.genW T)
+  have hb' : GkatGS.bval (GkatPlanExistence.genW T) b' α = true := by
+    rw [← hga α]; exact hb
+  have hb'δ : GkatGS.bval (GkatPlanExistence.genW T) b' δ = false := by
+    rw [← hga δ]; exact hbδ
+  have hacc := chordLoop_accepts_two (GkatPlanExistence.genW T)
+    b' c' p' x' y' α γ δ hb' hc'γ hb'δ
+  have h1 := (hule (T → Bool) (GkatPlanExistence.genW T) _).mpr hacc
+  have h3 : (3 : Nat) ≤ 2 :=
+    chord_three_at_c (GkatPlanExistence.genW T) b c p x y h1 rfl hcγ
+  exact absurd h3 (by decide)
+
+#print axioms chord_shared_entry
+
+open Classical in
+/-- **★ `chordloops_complete`, HYPOTHESIS-FREE ★** — all six
+    satisfiability conditions are gone.  Guard agreement supplies the
+    outer ones; `chord_shared_entry` supplies the inner one.
 
     Sixteen cases; every mixed one is impossible, and the diagonal is
     `test_test_equiv`, `chainloops_complete_free` (both collapse targets
     are `Chain2`), and `chordloops_complete`. -/
-theorem chordloops_complete_of_shared_entry
+theorem chordloops_complete_free
     (b c : BExp T) (p x y : A) (b' c' : BExp T) (p' x' y' : A)
-    (hentC : ∃ α : T → Bool,
-      GkatGS.bval (GkatPlanExistence.genW T) c α = true
-        ∧ GkatGS.bval (GkatPlanExistence.genW T) c' α = true)
     (heq : GkatKleene.UniformLanguageEquivalent
       (GkatThreeLoop.chordLoop b c p x y)
       (GkatThreeLoop.chordLoop b' c' p' x' y')) :
@@ -4040,10 +4136,12 @@ theorem chordloops_complete_of_shared_entry
         (fun hu => live_chord_ne_chain2 hbs₁ hcs₁ hbe₁ hu)
     · exact absurd (GkatChainFragment.ule_congr_right h₂ heq)
         (fun hu => live_chord_ne_chain3 hbs₁ hce₁ hbe₁ hu)
-    · obtain ⟨α, hb⟩ := hbs₁
+    · obtain ⟨α, hb⟩ := id hbs₁
       exact GkatThreeLoop.chordloops_complete b c p x y b' c' p' x' y'
-        ⟨α, hb, by rw [← hga α]; exact hb⟩ hentC hce₁ hbe₁ hce₂ hbe₂ heq
+        ⟨α, hb, by rw [← hga α]; exact hb⟩
+        (chord_shared_entry heq hbs₁ hbe₁ hcs₁) hce₁ hbe₁ hce₂ hbe₂ heq
 
-#print axioms chordloops_complete_of_shared_entry
+#print axioms chordloops_complete_free
+
 
 end GkatCensus
