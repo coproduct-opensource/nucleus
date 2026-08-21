@@ -2322,3 +2322,26 @@ The pipeline GAut → schedules → roles is now proven navigable. Next:
 the census structure theorem — produce enumerations + schedules for
 canonical quotients (SINGLE-EXIT hierarchy; walked and chord cluster
 schedules as the next validation rungs).
+
+## Iteration 81 — the pruning toolkit (zero axioms)
+
+Strategic analysis first (recorded): the chord/walked schedule
+instances hit dead interior halts inside cascaded trees — AllCalls
+fails syntactically — and the rearrangement clause must PRUNE them.
+Also identified the census theorem's real cost: general SCC/topological
+machinery (Mathlib-free graph theory); the practical route is witness
+constructors for the strata now, graph generality later.
+
+New (zero axioms): `halt_prune` (a dead-halt branch is its guard as a
+test prefix — the branch guard rides into the factored lap body,
+producing the wh_exit-style normal forms), `ite_true_collapse`
+(semantically-true guards select their branch; derivation via
+ite_restrict_else → kill ¬g by baTest+s2 → ite_zero_else →
+baTest(g≡1)+s4), and their tree-level wrappers
+resolve_halt_prune/resolve_true_collapse.
+
+Namespace note: GuardEmpty lives in GkatRingPlan (open added).
+
+Next: the walked 2-cycle schedule instance (one Salomaa interior + a
+port cascading through it, exercising factoring + pruning together),
+then the chord instance, then the census witness constructors.

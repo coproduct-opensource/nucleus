@@ -13,7 +13,7 @@ import GkatThreeLoopProofs
 namespace GkatElim
 
 open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatSumQuotient
-open GkatDecomp GkatPlanExistence GkatGuardedAlgebra GkatTrim
+open GkatDecomp GkatPlanExistence GkatGuardedAlgebra GkatTrim GkatRingPlan
 open GkatThreeLoop
 
 variable {A T : Type}
@@ -1063,5 +1063,66 @@ theorem singleton_scc_sched {S : Type} [DecidableEq S]
       ⟨s, hcover s hs, rfl⟩⟩
 
 #print axioms singleton_scc_sched
+
+/-! ## The pruning toolkit
+
+    Cascaded trees carry dead halt leaves (interior halts are
+    semantically empty) and trivially-true guards; the rearrangement
+    clauses prune them.  `halt_prune` turns a dead-halt branch into a
+    test prefix — the branch guard rides into the factored lap body,
+    exactly the `wh_exit`-style normal form. -/
+
+/-- A dead halt collapses to the branch guard as a test prefix. -/
+theorem halt_prune {h g : BExp T} (hemp : GuardEmpty h)
+    (X : Exp A T) :
+    EquivBA (.ite g X (.test h)) (.seq (.test g) X) := by
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.baTest (b := h) (c := .zero)
+      (fun Z W v => hemp Z W v))) ?_
+  exact GkatGuardedAlgebra.ite_zero_else g X
+
+/-- A semantically-true guard selects its branch. -/
+theorem ite_true_collapse {g : BExp T}
+    (htop : ∀ (Z : Type) (W : T → Z → Bool) (v : Z),
+      bval W g v = true)
+    (X Y : Exp A T) :
+    EquivBA (.ite g X Y) X := by
+  refine EquivBA.trans
+    (GkatGuardedAlgebra.ite_restrict_else g X Y) ?_
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.seq_c (EquivBA.baTest (b := .not g) (c := .zero)
+      (fun Z W v => by
+        show (!(bval W g v)) = false
+        rw [htop Z W v]
+        rfl))
+      (EquivBA.base (Equiv.refl Y)))) ?_
+  refine EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.base (Equiv.s2 Y))) ?_
+  refine EquivBA.trans (GkatGuardedAlgebra.ite_zero_else g X) ?_
+  refine EquivBA.trans (EquivBA.seq_c
+    (EquivBA.baTest (b := g) (c := .one)
+      (fun Z W v => htop Z W v))
+    (EquivBA.base (Equiv.refl X))) ?_
+  exact EquivBA.base (Equiv.s4 X)
+
+/-- Tree-level dead-halt pruning: a branch over a dead halt is the
+    guard-prefixed branch. -/
+theorem resolve_halt_prune {S : Type} {h g : BExp T}
+    (hemp : GuardEmpty h) (sol : S → Exp A T) (t : RTree S A T) :
+    EquivBA (resolveT sol (.br g t (.halt h)))
+      (resolveT sol (.pre (.test g) t)) :=
+  halt_prune hemp (resolveT sol t)
+
+/-- Tree-level true-guard pruning. -/
+theorem resolve_true_collapse {S : Type} {g : BExp T}
+    (htop : ∀ (Z : Type) (W : T → Z → Bool) (v : Z),
+      bval W g v = true)
+    (sol : S → Exp A T) (l r : RTree S A T) :
+    EquivBA (resolveT sol (.br g l r)) (resolveT sol l) :=
+  ite_true_collapse htop (resolveT sol l) (resolveT sol r)
+
+#print axioms halt_prune
+#print axioms ite_true_collapse
+#print axioms resolve_halt_prune
 
 end GkatElim
