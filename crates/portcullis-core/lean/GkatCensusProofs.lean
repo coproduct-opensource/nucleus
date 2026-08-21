@@ -6413,4 +6413,46 @@ theorem sum_isLayer_right {S₁ S₂ : Type}
 #print axioms sum_isLayer_left
 #print axioms sum_isLayer_right
 
+/-- **THE SUM OF TWO LAYERED AUTOMATA IS LAYERED** — the `ite` case of `hsum`.
+
+    By induction on both derivations.  When both are ACYCLIC the ranks combine
+    componentwise, which is sound precisely because 241 proved cycles never
+    cross the seam: a left state.s transitions stay left and a right state.s stay
+    right, so each transition decreases its own component.s rank.  When either
+    side is a LAYER, 248/249.s lifting lemmas carry it into the sum. -/
+theorem layered_sum {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (hL : Layered L) (hR : Layered R) :
+    Layered (GkatThompson.sumGSystem L R) := by
+  induction hL with
+  | acyclic h1 =>
+      induction hR with
+      | acyclic h2 =>
+          obtain ⟨r1, hr1⟩ := h1
+          obtain ⟨r2, hr2⟩ := h2
+          refine Layered.acyclic ⟨Sum.elim r1 r2, ?_⟩
+          rintro (x | y) tr htr
+          · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
+            obtain ⟨t, ht, rfl⟩ := htr
+            exact hr1 x t ht
+          · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
+            obtain ⟨t, ht, rfl⟩ := htr
+            exact hr2 y t ht
+      | layer hlay _ ih =>
+          exact Layered.layer (sum_isLayer_right _ _ _ hlay) ih
+  | layer hlay _ ih =>
+      exact Layered.layer (sum_isLayer_left _ _ _ hlay) ih
+
+#print axioms layered_sum
+
+/-- **THE `ite` CASE OF `hsum`.**  `iteInitialized`.s core IS `sumGSystem` of the
+    two branches, so this is `layered_sum` applied definitionally. -/
+theorem layered_ite (b : BExp T) (e f : Exp A T)
+    (he : Layered (GkatThompson.certifiedThompson A T e).aut.core)
+    (hf : Layered (GkatThompson.certifiedThompson A T f).aut.core) :
+    Layered (GkatThompson.certifiedThompson A T (.ite b e f)).aut.core :=
+  layered_sum _ _ he hf
+
+#print axioms layered_ite
+
 end GkatCensus

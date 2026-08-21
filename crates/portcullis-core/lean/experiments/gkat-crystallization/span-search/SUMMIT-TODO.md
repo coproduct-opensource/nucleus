@@ -11511,3 +11511,44 @@ a claim while leaving the route untouched.  Neither moves the estimate.
 
 **Next.**  `layered_sum` by induction on both derivations; then `layered_seq`
 with the one-way crossing handled.
+
+---
+
+## 250 — `layered_sum` AND `layered_ite` PROVED.  FOUR OF FIVE `hsum` CASES DONE.
+
+**`layered_sum`** — the sum of two layered automata is layered, by induction on
+both derivations:
+
+  * **acyclic / acyclic**: the ranks combine componentwise as `Sum.elim r₁ r₂`.
+    This is sound precisely because 241 proved cycles never cross the seam — a
+    left state's transitions stay left, a right state's stay right — so every
+    transition decreases its OWN component's rank.  241 was proved nine
+    iterations ago for exactly this moment.
+  * **layer on either side**: 248/249's lifting lemmas carry it into the sum, and
+    the induction hypothesis handles the base.
+
+**`layered_ite`** follows definitionally: `iteInitialized`'s core IS
+`sumGSystem` of the two branches.
+
+    layered_test / layered_act    base cases        PROVED  (247)
+    layered_wh                    the loop case     PROVED  (247)
+    layered_sum / layered_ite     the choice case   PROVED  (250)
+    layered_seq                   the sequence case  open
+    hsum                          assembly           open
+
+**Only `seq` remains, and 249 already flagged why it is not a repeat of `ite`.**
+`seqGSystem` is not `sumGSystem`: a LEFT state's transitions include the RIGHT
+half's ENTRY transitions, guarded by `left.hlt s`.  241's `seq_inr_closed` says
+the right half is closed, not that the left is — control crosses the seam
+one-way, when the left half halts.  So the componentwise rank does not transfer
+unchanged; it needs the crossing to be a DECREASE, which means ranking all left
+states above all right states.  That is available: `Sum.elim (fun x => r₁ x +
+maxR + 1) r₂` for a bound `maxR` on the right ranks.
+
+**Odds: 81%, held.**  Four of five cases, and the fifth has a known shape with a
+known fix.  But `hsum` is one of three obligations and `hcollapse`/`hsolve`
+remain untouched, so the estimate should not move until a whole obligation
+closes.
+
+**Next.**  `layered_seq` with the offset rank, then `hsum` by induction on the
+expression.
