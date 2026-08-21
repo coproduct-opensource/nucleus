@@ -556,4 +556,162 @@ theorem resolve_stepSubst {S : Type} [DecidableEq S]
 #print axioms backSol_ext
 #print axioms resolve_stepSubst
 
+/-! ## Schedule soundness
+
+    The forward-parametric certificate `Supp`: each closed tree calls
+    only strictly-later scheduled states or externals; states distinct
+    and off the external support.  Under it `backSol` solves every
+    scheduled state AS its closed tree; adding the per-step closing
+    certificate `SchedOk`, it solves every ORIGINAL equation. -/
+
+/-- The support certificate. -/
+inductive Supp {S : Type} (P : S → Prop) :
+    List (S × RTree S A T) → Prop where
+  | nil : Supp P []
+  | cons (u : S) (C : RTree S A T) (rest : List (S × RTree S A T))
+      (hC : CallOnly (fun s => (∃ q ∈ rest, s = q.1) ∨ P s) C)
+      (hne : ∀ q ∈ rest, u ≠ q.1)
+      (hP : ¬ P u)
+      (hrest : Supp P rest) : Supp P ((u, C) :: rest)
+
+/-- Every member's closed tree calls only schedule states or
+    externals. -/
+theorem supp_member {S : Type} (P : S → Prop) :
+    ∀ steps : List (S × RTree S A T), Supp P steps →
+      ∀ p ∈ steps,
+        CallOnly (fun s => (∃ q ∈ steps, s = q.1) ∨ P s) p.2 := by
+  intro steps
+  induction steps with
+  | nil => intro _ p hp; exact nomatch hp
+  | cons hd rest ih =>
+      intro hs p hp
+      cases hs with
+      | cons u C _ hC hne hP hrest =>
+          rcases List.mem_cons.mp hp with hph | hpr
+          · subst hph
+            refine callOnly_mono ?_ _ hC
+            intro s hs
+            rcases hs with ⟨q, hq, hsq⟩ | hPs
+            · exact Or.inl ⟨q, List.mem_cons_of_mem _ hq, hsq⟩
+            · exact Or.inr hPs
+          · refine callOnly_mono ?_ _ (ih hrest p hpr)
+            intro s hs
+            rcases hs with ⟨q, hq, hsq⟩ | hPs
+            · exact Or.inl ⟨q, List.mem_cons_of_mem _ hq, hsq⟩
+            · exact Or.inr hPs
+
+/-- **SOLVED AS CLOSED**: the solution value of every scheduled state
+    is its closed tree resolved against the full solution. -/
+theorem backSol_solves_closed {S : Type} [DecidableEq S]
+    (P : S → Prop) (ext : S → Exp A T) :
+    ∀ steps : List (S × RTree S A T), Supp P steps →
+      ∀ p ∈ steps,
+        backSol ext steps p.1 = resolveT (backSol ext steps) p.2 := by
+  intro steps
+  induction steps with
+  | nil => intro _ p hp; exact nomatch hp
+  | cons hd rest ih =>
+      intro hsupp p hp
+      obtain ⟨u, C⟩ := hd
+      cases hsupp with
+      | cons _ _ _ hC hne hP hrest =>
+          have hagree : ∀ s, ((∃ q ∈ rest, s = q.1) ∨ P s) →
+              backSol ext rest s = backSol ext ((u, C) :: rest) s := by
+            intro s hs
+            have hsu : s ≠ u := by
+              rcases hs with ⟨q, hq, hsq⟩ | hPs
+              · exact fun h => hne q hq (h.symm.trans hsq)
+              · exact fun h => hP (h ▸ hPs)
+            exact (backSol_ne ext u C rest s hsu).symm
+          rcases List.mem_cons.mp hp with hph | hpr
+          · subst hph
+            show backSol ext ((u, C) :: rest) u
+              = resolveT (backSol ext ((u, C) :: rest)) C
+            rw [backSol_head]
+            exact resolveT_congr hagree C hC
+          · have hp1 : p.1 ≠ u := fun h => hne p hpr h.symm
+            rw [backSol_ne ext u C rest p.1 hp1, ih hrest p hpr]
+            exact resolveT_congr hagree p.2
+              (supp_member P rest hrest p hpr)
+
+/-- The per-step closing certificate, threaded with the closed
+    prefix: each closed tree is the Salomaa closing of a top split of
+    the cascade-substituted equation, or (fold states) the substituted
+    equation itself. -/
+def SchedOk {S : Type} [DecidableEq S] (sys : S → RTree S A T) :
+    List (S × RTree S A T) → List (S × RTree S A T) → Prop
+  | _, [] => True
+  | closedPre, (u, C) :: rest =>
+      ((∃ G tl tr, stepSubst closedPre (sys u) = .br G tl tr
+          ∧ AllCalls u tl
+          ∧ C = .pre (.wh G (factorE tl)) tr)
+        ∨ C = stepSubst closedPre (sys u))
+      ∧ SchedOk sys (closedPre ++ [(u, C)]) rest
+
+/-- **SCHEDULE SOUNDNESS** (positioned form). -/
+theorem sched_solves_from {S : Type} [DecidableEq S]
+    (sys : S → RTree S A T) (P : S → Prop) (ext : S → Exp A T)
+    (full : List (S × RTree S A T)) (hsupp : Supp P full) :
+    ∀ (steps pre : List (S × RTree S A T)),
+      full = pre ++ steps → SchedOk sys pre steps →
+      ∀ p ∈ steps,
+        EquivBA (backSol ext full p.1)
+          (resolveT (backSol ext full) (sys p.1)) := by
+  intro steps
+  induction steps with
+  | nil => intro pre _ _ p hp; exact nomatch hp
+  | cons hd rest ih =>
+      intro pre hfull hok p hp
+      obtain ⟨u, C⟩ := hd
+      obtain ⟨hclose, hrestok⟩ := hok
+      rcases List.mem_cons.mp hp with hph | hpr
+      · subst hph
+        have hmemu : ((u, C) : S × RTree S A T) ∈ full := by
+          rw [hfull]
+          exact List.mem_append.mpr (Or.inr (List.mem_cons_self ..))
+        have hsolu : backSol ext full u
+            = resolveT (backSol ext full) C :=
+          backSol_solves_closed P ext full hsupp (u, C) hmemu
+        have hpresolved : ∀ q ∈ pre,
+            backSol ext full q.1 = resolveT (backSol ext full) q.2 := by
+          intro q hq
+          refine backSol_solves_closed P ext full hsupp q ?_
+          rw [hfull]
+          exact List.mem_append.mpr (Or.inl hq)
+        have hstep := resolve_stepSubst (backSol ext full) pre
+          hpresolved (sys u)
+        rcases hclose with ⟨G, tl, tr, hsplit, hall, hCform⟩ | hCfold
+        · have hsol : backSol ext full u
+              = .seq (.wh G (factorE tl))
+                (resolveT (backSol ext full) tr) := by
+            rw [hsolu, hCform]
+            rfl
+          have hclose' := elim_close (backSol ext full) u G tl tr
+            hall hsol
+          rw [show RTree.br G tl tr = stepSubst pre (sys u)
+            from hsplit.symm, hstep] at hclose'
+          exact hclose'
+        · rw [hsolu, hCfold, hstep]
+          exact EquivBA.base (Equiv.refl _)
+      · refine ih (pre ++ [(u, C)]) ?_ hrestok p hpr
+        rw [hfull]
+        rw [List.append_assoc]
+        rfl
+
+/-- **SCHEDULE SOUNDNESS**: a certified schedule's back-substitution
+    solution provably solves every scheduled state's original
+    equation. -/
+theorem sched_solves {S : Type} [DecidableEq S]
+    (sys : S → RTree S A T) (P : S → Prop) (ext : S → Exp A T)
+    (steps : List (S × RTree S A T)) (hsupp : Supp P steps)
+    (hok : SchedOk sys [] steps) :
+    ∀ p ∈ steps,
+      EquivBA (backSol ext steps p.1)
+        (resolveT (backSol ext steps) (sys p.1)) :=
+  sched_solves_from sys P ext steps hsupp steps [] rfl hok
+
+#print axioms supp_member
+#print axioms backSol_solves_closed
+#print axioms sched_solves
+
 end GkatElim

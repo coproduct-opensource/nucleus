@@ -2204,3 +2204,39 @@ solves every scheduled state's ORIGINAL equation (via
 resolve_stepSubst + elim_close + resolveT_congr with the support
 invariant), plus externals untouched. Then: bridge to ERole/StateRole,
 and the census side (SINGLE-EXIT hierarchy for canonical quotients).
+
+## Iteration 77b — ★ SCHEDULE SOUNDNESS ★ (the general elimination theorem)
+
+**`sched_solves`** (GkatElimProofs.lean, [propext] only, first try on
+the clean write): for ANY equation system `sys : S → RTree S A T`, any
+external support P/ext, and any schedule (list of (state, closed tree)
+pairs) certified by:
+
+- `Supp P steps` — forward-parametric support: each closed tree calls
+  only strictly-later scheduled states or externals; states distinct,
+  off the external support;
+- `SchedOk sys [] steps` — per-step closing: each closed tree is the
+  Salomaa closing `pre (wh G (factorE tl)) tr` of a top split
+  `br G tl tr` (with `AllCalls u tl`) of the CASCADE-SUBSTITUTED
+  equation — or, for fold states, the substituted equation itself —
+
+the back-substitution solution `backSol ext steps` PROVABLY (EquivBA)
+solves every scheduled state's ORIGINAL equation. One w3 per closing
+step; no uniqueness principle anywhere.
+
+Proof architecture: `supp_member` (member support weakening) →
+`backSol_solves_closed` (solved-as-closed, via resolveT_congr +
+backSol_ne agreement) → the positioned induction `sched_solves_from`
+(split-point over the full list; per step: solved-as-closed +
+resolve_stepSubst collapse the cascade, then elim_close or plain
+rewriting; List.append_assoc shifts the split).
+
+**What this means**: the assembly side of FiniteAxiomsCompleteBA is now
+REDUCED to schedule EXISTENCE — exhibiting, for each canonical
+quotient, an elimination order whose cascade-substituted equations
+split at the top (the two gather situations). The walked and chord
+assemblies become schedule instances. Remaining: (1) the GAut ↔ RTree
+system bridge (arms → trees, ERole/StateRole from sched_solves);
+(2) schedule existence for canonical quotients (SINGLE-EXIT hierarchy,
+the census side — the actual remaining mathematical content of the
+open problem); (3) the fragments as sanity instances.
