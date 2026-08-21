@@ -2294,4 +2294,88 @@ theorem loop_solutions_agree {S : Type} (guard : BExp T)
 #print axioms loop_solution_canonical
 #print axioms loop_solutions_agree
 
+/-! ## The re-entry hypothesis, discharged
+
+    `loop_solutions_agree` needs the two solutions' RE-ENTRY DISPATCHES
+    to agree, and those are built from the solutions themselves — the
+    same fixpoint, merely localized.  But `ParametricInitialBA`, which
+    sits in every certificate, already evaluates a re-entry dispatch:
+    for ANY parametric solution it equals `program · finish`.  Feeding
+    both solutions through it collapses the re-entry obligation to the
+    ambient continuations, and the fixpoint disappears entirely.
+
+    The result is an INDUCTIVE ENGINE: two solutions of a loop agree at
+    every body state as soon as their ambient continuations agree.
+    Agreement propagates inward, from a program's outside to its
+    innermost loop states, with no uniqueness axiom anywhere. -/
+
+open Classical in
+/-- **RE-ENTRY DISPATCHES AGREE WHEN CONTINUATIONS DO** — the fixpoint
+    in `loop_solutions_agree`'s hypothesis is not a fixpoint at all. -/
+theorem reentry_agree_of_finish {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (loopProgram : Exp A T)
+    (hinit : GkatThompson.ParametricInitialBA
+      (GkatThompson.loopInitialized guard body) loopProgram)
+    (sol₁ sol₂ : S → Exp A T) (F₁ F₂ : Exp A T)
+    (h₁ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₁ F₁)
+    (h₂ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₂ F₂)
+    (hF : EquivBA F₁ F₂) :
+    EquivBA
+      (GkatThompson.initRHSParam
+        (GkatThompson.loopInitialized guard body) sol₁ F₁)
+      (GkatThompson.initRHSParam
+        (GkatThompson.loopInitialized guard body) sol₂ F₂) :=
+  EquivBA.trans (hinit F₁ sol₁ h₁)
+    (EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hF)
+      (EquivBA.symm (hinit F₂ sol₂ h₂)))
+
+open Classical in
+/-- **THE INDUCTIVE ENGINE**: two parametric solutions of a Thompson
+    loop agree at EVERY body state as soon as their ambient
+    continuations agree.  No uniqueness axiom, no re-entry bookkeeping,
+    no fixpoint — agreement simply propagates inward. -/
+theorem loop_solutions_agree_of_finish {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T)
+    (bodyStd : S → Exp A T) (loopProgram : Exp A T)
+    (hcanon : GkatThompson.ParametricCanonicalBA body.core bodyStd)
+    (hinit : GkatThompson.ParametricInitialBA
+      (GkatThompson.loopInitialized guard body) loopProgram)
+    (sol₁ sol₂ : S → Exp A T) (F₁ F₂ : Exp A T)
+    (h₁ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₁ F₁)
+    (h₂ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₂ F₂)
+    (hF : EquivBA F₁ F₂) :
+    ∀ s ∈ body.core.states, EquivBA (sol₁ s) (sol₂ s) :=
+  loop_solutions_agree guard body bodyStd hcanon sol₁ sol₂ F₁ F₂ h₁ h₂
+    (reentry_agree_of_finish guard body loopProgram hinit
+      sol₁ sol₂ F₁ F₂ h₁ h₂ hF)
+
+open Classical in
+/-- The same collapse for the loop's own body labels: any parametric
+    solution at continuation `F` is pinned to `bodyStd s · (loop
+    program · F)` — the closed form named outright, with the re-entry
+    already evaluated. -/
+theorem loop_solution_closed {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T)
+    (bodyStd : S → Exp A T) (loopProgram : Exp A T)
+    (hcanon : GkatThompson.ParametricCanonicalBA body.core bodyStd)
+    (hinit : GkatThompson.ParametricInitialBA
+      (GkatThompson.loopInitialized guard body) loopProgram)
+    (sol : S → Exp A T) (F : Exp A T)
+    (hsol : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol F) :
+    ∀ s ∈ body.core.states,
+      EquivBA (sol s) (.seq (bodyStd s) (.seq loopProgram F)) := by
+  intro s hs
+  refine EquivBA.trans
+    (loop_solution_canonical guard body bodyStd hcanon sol F hsol s hs) ?_
+  exact EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (hinit F sol hsol)
+
+#print axioms reentry_agree_of_finish
+#print axioms loop_solutions_agree_of_finish
+#print axioms loop_solution_closed
+
 end GkatCensus

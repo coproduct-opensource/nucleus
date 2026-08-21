@@ -4201,3 +4201,70 @@ well-nestedness.
 status: discharge the per-loop re-entry agreement of
 `loop_solutions_agree` from bisimilarity of the loop headers.  What
 changed is that no alternative route remains to hedge with.
+
+## Iteration 122 — ★ THE RE-ENTRY FIXPOINT DISSOLVES ★ (an inductive engine)
+
+Iteration 121 closed with the residue "discharge the per-loop re-entry
+agreement of `loop_solutions_agree`", noting the re-entry dispatches
+are built from the solutions themselves, so the fixpoint remained —
+merely localized to one expression per loop.  **It is not a fixpoint at
+all.**  Three new theorems:
+
+* **`reentry_agree_of_finish`** (ZERO axioms) — two solutions' re-entry
+  dispatches agree whenever their ambient continuations do.  The proof
+  is three links, and the whole trick is that `ParametricInitialBA` —
+  sitting in every certificate since long before this campaign —
+  ALREADY EVALUATES a re-entry dispatch: for ANY parametric solution it
+  equals `program · finish`.  Feed both solutions through it and the
+  self-reference is gone; only `F₁ ≈ F₂` remains.
+* **`loop_solutions_agree_of_finish`** [propext] — **THE INDUCTIVE
+  ENGINE**: two parametric solutions of a Thompson loop agree at EVERY
+  body state as soon as their ambient continuations agree.  No
+  uniqueness axiom, no re-entry bookkeeping, no fixpoint.
+* `loop_solution_closed` [propext] — the closed form named outright:
+  any parametric solution at `F` is pinned to
+  `bodyStd s · (loopProgram · F)`, re-entry already evaluated.
+
+**Why this is the advance it looks like.**  Every previous formulation
+of the residue was self-referential in the way UA exists to discharge —
+that is what made the problem hard and what the field's pessimism is
+about.  `reentry_agree_of_finish` removes the self-reference from the
+loop case outright, using a fact the repo has had all along.  What
+replaces it is a straightforward implication: **agreement propagates
+INWARD**, from a program's outside toward its innermost loop states.
+That is an induction on nesting depth, not a fixpoint.
+
+**Honest scope, and it is a real limit.**  `loop_solutions_agree_of_
+finish` compares two solutions of the SAME loop — same guard, same
+body.  UNIF needs to compare `e`'s loop with `f`'s loop, which are
+DIFFERENT automata, and canonicity cannot bridge two different
+automata by itself.  So this discharges the SAME-SIDE half.
+
+**The decomposition this suggests, recorded but NOT yet verified**
+(three proposed next-targets in a row have dissolved on contact, so
+this is flagged as a conjecture to test, not a plan to execute):
+cross-side UNIF may reduce to SAME-SIDE UNIF plus a partner map.
+Sketch: define `sol_f(u) := std_e(partner u)` for `f`-states `u`; if
+that is a `ParamSolvesBA` of `f`'s core at finish 1, canonicity forces
+`std_e(partner u) ≈ std_f(u)`, which IS cross-side UNIF.  Checking the
+`ParamSolvesBA` obligation, bisimilarity matches `u`'s arms with
+`partner u`'s arms at the same actions and bisimilar targets, and the
+residual gap is `std_e(t_e) ≈ std_e(partner t_f)` for two BISIMILAR
+`e`-STATES — i.e. same-side UNIF within `e` alone.  If that holds, the
+cross-side problem is strictly reducible to a one-program problem,
+where full structural induction on syntax is available because
+`certifiedThompson` is defined by recursion on the program.
+
+**Known obstruction to that sketch, stated up front**: dead states.
+`partner` exists for reachable states (`sreach_partner`) but a dead
+`f`-state need not have a bisimilar `e`-partner, and `ParamSolvesBA`
+quantifies over ALL listed states.  Dead targets of live states would
+force comparing `std_e(dead)` with `std_f(dead)`, which is the
+`dead_thompson_label_eq_zero_of_complete` circularity.  Trimming is the
+usual answer but `ParametricCanonicalBA` speaks about the RAW core, not
+the trim.  So the sketch is not yet a route — it is a candidate whose
+one known gap is already identified.
+
+**Next**: test the sketch's same-side lemma directly — do bisimilar
+states of ONE program's Thompson automaton have provably equal standard
+labels?  Small enough to settle, and it is the load-bearing half.
