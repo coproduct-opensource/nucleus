@@ -10538,3 +10538,54 @@ loops is the easy part of LLEE working and the hard part untested.
 atoms on which back edges into it fire, remove those edges, recurse on the SCCs
 that fall out.  Re-run (a), (b), (c) — the target is (a) at 100% with (b) and
 (c) holding.
+
+---
+
+## 229 — RETRACTING 228's DIAGNOSIS.  The failures are not nesting.
+
+228 measured that `uniform_guard` holds on only ~90% of Thompson automata and
+asserted the failures are NESTED loops.  I asserted it; I did not measure it.
+Measuring it:
+
+                            NA=2   NA=3   NA=4
+    failing SCCs            1265   2173   2830
+      halt-inside-guard      657   1307   1861    ~52%
+      reject-inside-guard    554   1137   1679    ~44%
+      leave-inside-guard     146    264    351    ~12%
+      contain an inner loop    5     15     26    <1%
+
+**Nesting is under 1%.  The diagnosis was wrong.**
+
+**The real cause, which the algebra gives directly.**  In `wh b e` a body state's
+internally-moving atoms are `bodymove(s) ∪ (hlt(s) ∩ b)` — and `bodymove(s)` has
+NOTHING to do with `b`; it is wherever the body happens to step.  So the union
+over all states of the SCC is strictly LARGER than the real loop guard, and
+genuine loop-exit halts (`hlt ∩ ¬b`) land inside it whenever some other state
+steps there.  A loop state never halts inside its TRUE guard —
+`loop_core_hlt` guarantees exactly that — so all 657 halt-failures are an
+artifact of how I computed `b`, not a property of the automaton.
+
+**What that means for the fix.**  The guard must be read off the BACK EDGES —
+the transitions that restart the loop — not off all internal transitions.  And
+separating back edges from body edges is precisely what LLEE's transition
+labelling does: loop-entry transitions marked at levels.  So the missing content
+is not layering-as-nesting but the labelling that distinguishes a back edge from
+an ordinary step.  228's "bottom layer" framing was right about the shape and
+wrong about the mechanism.
+
+**What still stands, because it was measured rather than argued:** `uniform_guard`
+survives bisimulation collapse 100% (19 857/19 857, all three populations) and is
+SUFFICIENT for solvability (0 counterexamples in ~60 000).  Those results are
+unaffected — a condition being too strong does not make it unsound, and both are
+properties of the condition as implemented.
+
+**Odds: 80%, DOWN 1 — giving back 228's increase.**  Part of that +1 rested on
+expecting a layered definition to fix requirement (a); that expectation is now
+refuted, and the route to (a) runs through identifying back edges, which is
+strictly more work than adding levels to a condition I already had.  The two
+verified properties keep the route alive; the estimate of how far it is should
+not have moved on an unmeasured belief.
+
+**Next.**  Identify back edges structurally — for each SCC, find the entry set
+(the states a restart lands on) and take the guard from the transitions INTO it,
+rather than from every internal transition.  Then re-run (a), (b), (c).

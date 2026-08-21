@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_GUARD_DIAG").is_ok() {
+        guard_diag::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
         return;
@@ -11558,4 +11562,60 @@ fn llee_test<const NA: usize>(nguards: u8) {
         (a) uniform-guard holds on {thom}; (b) survives collapse {coll}; \
         (c) on collapses: agrees with solvable {agree}, \
         guard-but-UNsolvable {ug_not_sol}, solvable-but-NO-guard {sol_not_ug}");
+}
+
+/// **WHY DOES `uniform_guard` FAIL?** (iteration 229.)  228 asserted the ~10%
+/// failures are NESTED loops.  That was asserted, not measured, and the algebra
+/// suggests a plainer cause: at a body state the internally-moving atoms are
+/// `bodymove(s) ∪ (hlt(s) ∩ b)`, and BOTH parts vary per state, so demanding one
+/// uniform set across a whole SCC may be too strong regardless of nesting.
+/// Classify the failures instead of guessing.
+fn guard_diag<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xDEADBEEF_12345678;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut bad, mut by_halt, mut by_reject, mut by_leave, mut nested_scc) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..60_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        for c in sccs_of(&a) {
+            if c.len() < 2 || uniform_guard(&a, &c) { continue; }
+            bad += 1;
+            let inscc = |t: usize| c.contains(&t);
+            let mut b: u8 = 0;
+            for &s in c.iter() {
+                for y in 0..NA {
+                    let t = a.st[s][y];
+                    if t != 0 && inscc((t - 1) as usize) { b |= 1 << y; }
+                }
+            }
+            let (mut h, mut r, mut l) = (false, false, false);
+            for &s in c.iter() {
+                for y in 0..NA {
+                    if b >> y & 1 == 0 { continue; }
+                    if a.hl[s] >> y & 1 == 1 { h = true; continue; }
+                    let t = a.st[s][y];
+                    if t == 0 { r = true; }
+                    else if !inscc((t - 1) as usize) { l = true; }
+                }
+            }
+            if h { by_halt += 1; }
+            if r { by_reject += 1; }
+            if l { by_leave += 1; }
+            // NESTING TEST: does the SCC break into >1 nontrivial sub-SCC after
+            // removing SOME state's incoming edges?  A nested loop does.
+            let mut sub = a;
+            for &s in c.iter() {
+                for y in 0..NA {
+                    let t = sub.st[s][y];
+                    if t != 0 && !inscc((t - 1) as usize) { sub.st[s][y] = 0; }
+                }
+            }
+            let inner = sccs_of(&sub).iter().filter(|d| d.len() >= 2 && d.len() < c.len()).count();
+            if inner > 0 { nested_scc += 1; }
+        }
+    }
+    println!("  guard_diag NA={NA}: {bad} failing SCCs; \
+        cause halt-inside-guard {by_halt}, reject-inside {by_reject}, \
+        leave-inside {by_leave}; contain a proper inner loop (NESTED) {nested_scc}");
 }
