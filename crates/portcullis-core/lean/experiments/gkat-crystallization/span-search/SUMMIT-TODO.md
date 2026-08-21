@@ -8471,3 +8471,74 @@ made it correct but too slow to finish a population.  The attempt is
 discarded rather than committed half-working.  Porting it to Rust — inside
 the census, using the existing combinators — is both the mandate-compliant
 move and, on today's evidence, the faster one.
+
+---
+
+## Iteration 192 — THE SYMBOLIC ELIMINATOR, MIGRATED AND MADE TO WORK: 46/49 VERIFIED
+
+190 said the gated cases needed a solver and that it should be Rust inside the
+census.  Built, and the optimization that mattered was not the one I expected.
+
+**THE MIGRATION.**  `calculus_solves` in the census: an expression IR (`Ex`)
+with `Unk` for an unsolved SCC state and `Sub` for an oracle outside it, and a
+backtracking search over three rules —
+
+    SUBST     an equation with no self-occurrence is a definition; substitute
+    LOOPIFY   with a self-occurrence, propose `wh g (body[X := 1]) ; fallback`
+              — exactly `w3` when every branch ends in `X`, and iteration 188's
+              EXIT ABSORPTION when a branch instead runs a continuation that
+              terminates outside `g`
+    GATED     iteration 186: two unknowns agreeing off a region `r`
+
+**THE OPTIMIZATION THAT MATTERED.**  My first version realized each candidate
+as an automaton with the Thompson combinators and compared languages.  Every
+proposal came back **`overflow`** — composing oracles with `a_seq`/`a_wh` blows
+past `MAXK` after two or three steps.  The search was not being told "wrong",
+it was being told nothing, and it failed on instances I had solved BY HAND.
+
+Evaluating the DENOTATION instead — `ex_accepts`, straight recursion on
+guarded strings with unknowns read as their oracles — has no size limit and is
+exact.  That single change took NA=3 from 1/2 to 2/2 and NA=4 from 0/1 to 1/1.
+**A trace found it in one run after an hour of reasoning had not**; the verdict
+string I printed was the whole diagnosis.
+
+The same evaluation is also the pruning.  Any correct solution satisfies
+`sol_s[X_t := q@t] ≡ q@s`, so a proposal is checked THE MOMENT IT IS MADE and a
+wrong `LOOPIFY` dies with its subtree instead of at the leaf.  Runs that
+previously timed out at 900s now finish inside the census.
+
+**THE RESULT** (NA=2/3/4, depth<=7, 240000 pairs each):
+
+    NA=2   5 / 5    NA=3   20 / 21    NA=4   21 / 23     TOTAL 46 / 49
+
+**These are VERIFIED SOLUTIONS**, not preconditions: each is a constructed
+expression whose guarded-string language matches the quotient's on every string
+up to 5 actions, for every state of the SCC, with no unknown left in it.
+
+**AND THE HONEST CORRECTION THAT COMES WITH IT.**  Iterations 188 and 189
+reported "all 23 accounted for" and "69/69", and I labelled those a PRECONDITION
+rate at the time.  With a solver that actually constructs and checks, the rate
+is **46/49 — three resist.**  The precondition was a weaker signal than it
+looked, exactly as the label said, and now there is a number that means what it
+says.
+
+**THE THREE, dumped.**  All the same shape: two states with IDENTICAL
+transitions whose halt masks differ at exactly one atom, one ACCEPTING there and
+the other REJECTING (no step, no halt).
+
+    q0: hl=1100 st=[q0,q1,-,-]     q2: hl=1000 st=[q0,q1,-,-]
+    q1: hl=0000 st=[q2,q2,q2,q2]
+
+I found a real bug in the GATED rule while looking at them — the rewritten
+fallback was bare `X_v`, silently asserting `X_u ≡ X_v` and dropping the guard,
+where it should be `ite r (test (hl_u ∧ r)) X_v`.  Fixed, and **it did not
+change the count**: the three resist for some further reason.  Recording the
+fix as correct-but-not-the-cause rather than claiming it.
+
+**Odds: 60%, held.**  The verified rate went from 20/69 to 46/49, which is a
+much better instrument — and it also revealed three genuine resisters where the
+precondition count had said zero.  Those cancel.
+
+**NEXT: the three.**  They are small, dumped, and share one shape.  Either a
+fourth move handles them, or they are the first evidence that the calculus is
+incomplete.

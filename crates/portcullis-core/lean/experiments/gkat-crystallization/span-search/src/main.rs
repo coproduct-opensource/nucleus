@@ -4003,6 +4003,258 @@ fn absorption_verified<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize)
     Some(lang_eq(&prop, &entry_at(q, h), n))
 }
 
+
+// ---- the three-rule calculus, as a search (Rust; the Python attempt is retired)
+
+/// A candidate solution under construction.  `Unk` is an unsolved SCC state,
+/// `Sub` an oracle: the quotient entered at a state outside the SCC.
+#[derive(Clone, Debug)]
+enum Ex {
+    Test(u8),
+    Act,
+    Sub(usize),
+    Unk(usize),
+    Seq(Box<Ex>, Box<Ex>),
+    Ite(u8, Box<Ex>, Box<Ex>),
+    Wh(u8, Box<Ex>),
+}
+
+fn ex_occurs(e: &Ex, s: usize) -> bool {
+    match e {
+        Ex::Unk(t) => *t == s,
+        Ex::Seq(a, b) | Ex::Ite(_, a, b) => ex_occurs(a, s) || ex_occurs(b, s),
+        Ex::Wh(_, a) => ex_occurs(a, s),
+        _ => false,
+    }
+}
+
+/// Any unsolved SCC state still referenced?  At the leaf every reference must
+/// be gone — an expression naming an unknown is not a solution, however well
+/// its oracle reading happens to match.
+fn ex_occurs_any(e: &Ex, scc: &[usize]) -> bool {
+    scc.iter().any(|&t| ex_occurs(e, t))
+}
+
+fn ex_subst(e: &Ex, s: usize, r: &Ex) -> Ex {
+    match e {
+        Ex::Unk(t) if *t == s => r.clone(),
+        Ex::Seq(a, b) => Ex::Seq(Box::new(ex_subst(a, s, r)), Box::new(ex_subst(b, s, r))),
+        Ex::Ite(g, a, b) => Ex::Ite(*g, Box::new(ex_subst(a, s, r)), Box::new(ex_subst(b, s, r))),
+        Ex::Wh(g, a) => Ex::Wh(*g, Box::new(ex_subst(a, s, r))),
+        _ => e.clone(),
+    }
+}
+
+/// Does the candidate accept this guarded string?  Every REMAINING unknown is
+/// read as the oracle it must denote — the quotient entered at that state.
+///
+/// Evaluating the DENOTATION rather than building the expression's automaton
+/// is what makes the search work at all: composing oracles with the Thompson
+/// combinators blows past `MAXK` after two or three steps, and every proposal
+/// came back `overflow` instead of a verdict.  Denotationally there is no size
+/// limit, and the check is exact.
+///
+/// It is also the pruning: a correct solution satisfies `sol_s[X_t := q@t] ≡
+/// q@s`, so a proposal is checked THE MOMENT IT IS MADE and a wrong `LOOPIFY`
+/// dies with its subtree rather than at the leaf.
+fn ex_accepts<const NA: usize>(e: &Ex, q: &Aut<NA>, seq: &[usize]) -> bool {
+    match e {
+        Ex::Test(m) => seq.len() == 1 && bit(*m, seq[0]),
+        Ex::Act => seq.len() == 2,
+        Ex::Sub(i) | Ex::Unk(i) => accepts(&entry_at(q, *i), seq),
+        Ex::Seq(a, b) => (0..seq.len()).any(|i|
+            ex_accepts(a, q, &seq[..=i]) && ex_accepts(b, q, &seq[i..])),
+        Ex::Ite(g, a, b) =>
+            if bit(*g, seq[0]) { ex_accepts(a, q, seq) } else { ex_accepts(b, q, seq) },
+        Ex::Wh(g, a) => {
+            if !bit(*g, seq[0]) { return seq.len() == 1; }
+            (1..seq.len()).any(|i|
+                ex_accepts(a, q, &seq[..=i]) && ex_accepts(e, q, &seq[i..]))
+        }
+    }
+}
+
+fn ex_walk<const NA: usize>(e: &Ex, q: &Aut<NA>, s: usize, seq: &mut Vec<usize>,
+                            n: usize) -> bool {
+    if ex_accepts(e, q, seq) != accepts(&entry_at(q, s), seq) { return false; }
+    if seq.len() > n { return true; }
+    for x in 0..NA {
+        seq.push(x);
+        let ok = ex_walk(e, q, s, seq, n);
+        seq.pop();
+        if !ok { return false; }
+    }
+    true
+}
+
+/// Does the candidate denote exactly the quotient's language at `s`, on every
+/// guarded string of up to `n` actions?
+fn ex_matches<const NA: usize>(e: &Ex, q: &Aut<NA>, s: usize, n: usize) -> bool {
+    let mut seq: Vec<usize> = Vec::new();
+    for x in 0..NA {
+        seq.push(x);
+        let ok = ex_walk(e, q, s, &mut seq, n);
+        seq.pop();
+        if !ok { return false; }
+    }
+    true
+}
+
+fn ex_dispatch(branches: &[(u8, Ex)], fallback: &Ex) -> Ex {
+    let mut e = fallback.clone();
+    for (g, c) in branches.iter().rev() {
+        e = Ex::Ite(*g, Box::new(c.clone()), Box::new(e));
+    }
+    e
+}
+
+type Eqs = Vec<Option<(Vec<(u8, Ex)>, Ex)>>;
+
+/// The dispatch of SCC state `s`, as branches plus fallback.
+fn eq_of<const NA: usize>(q: &Aut<NA>, scc: &[usize], s: usize) -> (Vec<(u8, Ex)>, Ex) {
+    let mut br = Vec::new();
+    for a in 0..NA {
+        let t = q.st[s][a];
+        if t == 0 { continue; }
+        let tt = (t - 1) as usize;
+        let tail = if scc.contains(&tt) { Ex::Unk(tt) } else { Ex::Sub(tt) };
+        br.push((1u8 << a, Ex::Seq(Box::new(Ex::Act), Box::new(tail))));
+    }
+    (br, Ex::Test(q.hl[s]))
+}
+
+/// **LOOPIFY / GATED search.**  LOOPIFY proposes `wh g (body with the unknown
+/// replaced by `1`) ; fallback` — exactly `w3` when every branch ends in the
+/// unknown, and exit absorption when a branch instead runs a continuation that
+/// terminates outside `g`.  It is not sound unconditionally, so the language
+/// check at the leaf disposes of wrong proposals and the search backtracks.
+fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
+    sols: &mut Vec<Option<Ex>>, left: usize, depth: usize, budget: &mut usize,
+    n: usize, gated: u16) -> bool
+{
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    if left == 0 {
+        // resolve residual references, then verify every SCC state
+        let mut fin: Vec<Ex> = scc.iter().map(|&s| sols[s].clone().unwrap()).collect();
+        for _ in 0..=scc.len() {
+            for i in 0..fin.len() {
+                for j in 0..fin.len() {
+                    if i != j {
+                        let r = fin[j].clone();
+                        fin[i] = ex_subst(&fin[i], scc[j], &r);
+                    }
+                }
+            }
+        }
+        for (i, &s) in scc.iter().enumerate() {
+            if ex_occurs_any(&fin[i], scc) { return false; }
+            if !ex_matches(&fin[i], q, s, n) { return false; }
+        }
+        return true;
+    }
+    if depth == 0 { return false; }
+    // LOOPIFY
+    for &s in scc.iter() {
+        let (br, fb) = match &eq[s] { Some(x) => x.clone(), None => continue };
+        if br.is_empty() || ex_occurs(&fb, s) { continue; }
+        let mut g = 0u8;
+        for (m, _) in br.iter() { g |= *m; }
+        let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };
+        let plain = ex_dispatch(&br, &fb);
+        let selfref = ex_occurs(&plain, s);
+        // No self-occurrence: the equation is already a definition, so SUBSTITUTE.
+        // Wrapping a `wh` there would loop a body that never returns to `s`.
+        let sol = if !selfref {
+            plain
+        } else {
+            let body = ex_subst(&ex_dispatch(&br, &Ex::Test(0)), s, &Ex::Test(all));
+            Ex::Seq(Box::new(Ex::Wh(g, Box::new(body))), Box::new(fb))
+        };
+        if ex_occurs(&sol, s) { continue; }
+        // PRUNE AT THE PROPOSAL: read the remaining unknowns as their oracles
+        // and check this state's language now.
+        let kind = if selfref { "LOOPIFY" } else { "SUBST" };
+        let verdict = if ex_matches(&sol, q, s, n) { "ok" } else { "lang" };
+        if std::env::var("PAD_CALC_TRACE").is_ok() {
+            println!("      [calc] depth={depth} left={left} {kind}(X{s}) -> {verdict}");
+        }
+        if verdict != "ok" { continue; }
+        let mut eq2 = eq.clone();
+        eq2[s] = None;
+        for &u in scc.iter() {
+            if let Some((b, f)) = &eq[u] {
+                if u == s { continue; }
+                eq2[u] = Some((b.iter().map(|(m, c)| (*m, ex_subst(c, s, &sol))).collect(),
+                               ex_subst(f, s, &sol)));
+            }
+        }
+        sols[s] = Some(sol);
+        if calc_search(q, scc, &eq2, sols, left - 1, depth - 1, budget, n, gated) { return true; }
+        sols[s] = None;
+    }
+    // GATED
+    for &u in scc.iter() {
+        if eq[u].is_none() { continue; }
+        for &v in scc.iter() {
+            if u == v || eq[v].is_none() { continue; }
+            let mut r = 0u8;
+            let mut ndiff = 0usize;
+            for a in 0..NA {
+                if q.st[u][a] != q.st[v][a] || bit(q.hl[u], a) != bit(q.hl[v], a) {
+                    r |= 1 << a;
+                    ndiff += 1;
+                }
+            }
+            if ndiff >= NA { continue; }
+            let ui = match scc.iter().position(|&x| x == u) { Some(i) => i, None => continue };
+            if gated >> ui & 1 == 1 { continue; }
+            if std::env::var("PAD_CALC_TRACE").is_ok() {
+                println!("      [calc] depth={depth} left={left} GATED(X{u} <- X{v}, r={r:04b})");
+            }
+            let (br0, _) = eq_of(q, scc, u);
+            // Rebuilding from the ORIGINAL dispatch drops every substitution
+            // already made, so re-apply the solved unknowns — otherwise the
+            // rewritten equation reintroduces an eliminated unknown and the
+            // final resolution cycles.
+            let br: Vec<(u8, Ex)> = br0.into_iter()
+                .filter(|(m, _)| m & r != 0)
+                .map(|(m, c)| {
+                    let mut c2 = c;
+                    for &t in scc.iter() {
+                        if let Some(st) = &sols[t] { c2 = ex_subst(&c2, t, st); }
+                    }
+                    (m, c2)
+                })
+                .collect();
+            let mut eq2 = eq.clone();
+            // The fallback must KEEP THE GUARD.  Inside `r` the states differ,
+            // so `u` falls back to its OWN halt there (`0` when it neither
+            // steps nor halts); only outside `r` may `v` stand for it.  Writing
+            // the fallback as bare `X_v` drops the guard and silently asserts
+            // `X_u ≡ X_v` — which is exactly the three instances that resisted:
+            // identical transitions, halt masks differing at one atom, one
+            // accepting there and the other rejecting.
+            eq2[u] = Some((br, Ex::Ite(r, Box::new(Ex::Test(q.hl[u] & r)),
+                                          Box::new(Ex::Unk(v)))));
+            if calc_search(q, scc, &eq2, sols, left, depth - 1, budget, n,
+                gated | (1 << ui)) { return true; }
+        }
+    }
+    false
+}
+
+/// Does the three-rule calculus solve this SCC, with the answer LANGUAGE-CHECKED?
+fn calculus_solves<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize) -> bool {
+    let k = q.k as usize;
+    let mut eq: Eqs = vec![None; k];
+    for &s in scc.iter() { eq[s] = Some(eq_of(q, scc, s)); }
+    let mut sols: Vec<Option<Ex>> = vec![None; k];
+    if scc.len() > 5 { return false; }
+    let mut budget = 400_000usize;
+    calc_search(q, scc, &eq, &mut sols, scc.len(), 3 * scc.len() + 3, &mut budget, n, 0)
+}
+
 fn sccs_of<const NA: usize>(q: &Aut<NA>) -> Vec<Vec<usize>> {
     let k = q.k as usize;
     let mut order: Vec<usize> = Vec::new();
@@ -5079,6 +5331,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_res_reducible = 0usize;
     let mut n_res_multiexit = 0usize;
     let mut n_res_scc = 0usize;
+    let mut n_calculus = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
         // SAME-SIDE collapse measurement: is each program's OWN automaton
         // already its own bisimulation quotient?  Iteration 131's dichotomy
@@ -5431,6 +5684,19 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         n_gated_scc += 1;
                         println!("    gated identification applies on scc {c:?}");
                     }
+                    if calculus_solves(&q, &c, 5) {
+                        n_calculus += 1;
+                        println!("    THREE-RULE CALCULUS solves scc {c:?} (language-checked)");
+                    } else {
+                        println!("    CALCULUS-RESISTANT scc {c:?}:");
+                        for &s in c.iter() {
+                            let row: Vec<String> = (0..NA).map(|i| {
+                                let t = q.st[s][i];
+                                if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                            }).collect();
+                            println!("      q{s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
+                        }
+                    }
                     if let Some(ok) = absorption_verified(&q, &c, 7) {
                         n_absorb_shape += 1;
                         if ok { n_absorb_verified += 1; }
@@ -5451,6 +5717,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  pairs with an OPEN SCC in the FULL collapse: {n_open_pairs}; of those, SOLVABLE SOMEWHERE IN THE BISIMULATION LATTICE: {n_open_pairs_lattice}");
     println!("  lattice-resistant SCCs: gated-identification applicable {n_gated_scc}; of absorption shape {n_absorb_shape}, VERIFIED by construction {n_absorb_verified}");
     println!("  lattice-resistant SCCs: {n_res_scc} total; T1/T2-reducible {n_res_reducible}; MULTI-EXIT (Kosaraju) {n_res_multiexit}");
+    println!("  lattice-resistant SCCs SOLVED BY THE THREE-RULE CALCULUS (language-checked): {n_calculus} / {n_res_scc}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");
