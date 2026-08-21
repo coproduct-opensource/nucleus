@@ -9873,3 +9873,50 @@ firing).  The NA=3 figure from the same run is WITHDRAWN.
 
 **Next.**  NA=2 k=4 (1 679 616 automata) with the verified filter, and NA=3
 k<=3 now that its search actually runs.
+
+---
+
+## 216 — THE ENUMERATION DOES NOT DEPEND ON THE TARGET.  8x, and a route closed.
+
+**The observation.**  `synth` re-enumerated expressions from scratch for every
+automaton, which is why the exhaustive runs were compute-bound.  But an
+expression containing no `Sub`/`Unk` has a behaviour determined by `NA` alone —
+the target automaton is consulted only to compute the SIGNATURE TO MATCH, never
+to evaluate a candidate.  So enumerate ONCE into a table from
+behaviour-signature to representative expression, and "is this automaton
+solvable by an expression of size <= N" becomes a hash lookup: per-automaton
+cost falls from an exponential search to O(1) plus one verification.
+
+    NA=2, k <= 3:   54s  ->  6.8s        (table built in 0.2s)
+
+The table is small because observational dedup is doing real work: **2 677
+distinct behaviours at size <= 10**, against an astronomically larger raw
+expression count.
+
+**A route closed, honestly.**  If the behaviour table SATURATED — if raising
+the size bound stopped adding behaviours — then "not in the table" would become
+an UNCONDITIONAL negative rather than a size-bounded one, and every negative
+result this instrument has produced would strengthen.  Measured:
+
+    size <=  6      106 behaviours
+    size <=  8      523
+    size <= 10    2 677
+    size <= 12   13 897
+    size <= 14   68 484
+
+It does not saturate; it grows about 5x per +2 in size.  So `synth`'s negatives
+remain "no expression of size <= N", and that is a permanent property of this
+instrument, not a temporary compute limit.  Worth knowing rather than assuming:
+I had expected saturation and would have claimed unconditional negatives on it.
+
+**What this means for the standing results.**  Every negative reported by
+`synth` — the 720 phantoms at 214, the exhaustive zeros at 215 — stays exactly
+as strong as it was, and no stronger.  The gain here is reach, not certainty:
+the same claims can now be made over far more automata.
+
+**Odds: 77%, held.**  A pure instrument iteration: an 8x speedup and one
+hoped-for strengthening measured and refused.  Nothing about the mathematics
+moved.
+
+**Next.**  NA=2 k=4 (1 679 616 automata) with the table filter is running.  Then
+NA=3, now that per-automaton cost is a lookup.

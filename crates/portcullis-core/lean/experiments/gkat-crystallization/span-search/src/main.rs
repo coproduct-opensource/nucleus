@@ -5916,6 +5916,13 @@ fn check_r206<const NA: usize>() {
 fn exhaustive<const NA: usize>() {
     let kmax: usize = std::env::var("PAD_EXH_K").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(4);
+    // Built ONCE: the expression enumeration is independent of the target, so
+    // every automaton below decides solvability by a hash lookup instead of
+    // its own exponential search.
+    let t0 = std::time::Instant::now();
+    let table = synth_table::<NA>(synth_size(), seq_len(NA));
+    println!("  synth table: {} distinct behaviours at size <= {}, built in {:.1}s",
+        table.len(), synth_size(), t0.elapsed().as_secs_f64());
     for k in 2..=kmax {
         let choices = k + 2;                       // halt | dead | k targets
         let cells = k * NA;
@@ -5970,7 +5977,7 @@ fn exhaustive<const NA: usize>() {
             // WITNESS that this automaton is solvable while the calculus could
             // not solve it: a real counterexample.  It runs only on calculus
             // failures, which is why an exponential search is affordable.
-            synth(&a, 0, synth_size(), seq_len(NA)).is_some()
+            synth_lookup(&table, &a, 0, seq_len(NA)).is_some()
         }).collect();
         println!("  exhaustive NA={NA} k={k}: {total} automata; \
             SOLVABLE (witness from brute-force search) but UNSOLVED by the calculus: {}", hits.len());
@@ -6047,6 +6054,86 @@ fn all_seqs<const NA: usize>(l: usize) -> Vec<Vec<usize>> {
     }
     out.extend(cur);
     out
+}
+
+/// **THE ENUMERATION DOES NOT DEPEND ON THE TARGET** (iteration 216).
+///
+/// `synth` re-enumerates expressions from scratch for every automaton it is
+/// asked about, which is why the exhaustive runs are compute-bound.  But an
+/// expression containing no `Sub`/`Unk` has a behaviour determined by `NA`
+/// alone — the target automaton is consulted only to compute the SIGNATURE TO
+/// MATCH, never to evaluate a candidate.
+///
+/// So enumerate ONCE into a table from behaviour-signature to a representative
+/// expression, and "is this automaton solvable by an expression of size <= N"
+/// becomes a hash lookup.  Per-automaton cost drops from an exponential search
+/// to O(1) plus one verification.
+fn synth_table<const NA: usize>(maxsize: usize, l: usize) -> FxMap<u128, Ex> {
+    let seqs = all_seqs::<NA>(l);
+    assert!(seqs.len() <= 128,
+        "synth_table: {} guarded strings exceeds the 128-bit signature", seqs.len());
+    // Any automaton works as the evaluation context: candidates contain no
+    // `Sub`/`Unk`, so `ex_accepts` never consults it.
+    let dummy = Aut::<NA>::blank();
+    let sig = |e: &Ex| -> u128 {
+        let mut s: u128 = 0;
+        for (i, w) in seqs.iter().enumerate() {
+            if ex_accepts(e, &dummy, w) { s |= 1u128 << i; }
+        }
+        s
+    };
+    let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };
+    let mut table: FxMap<u128, Ex> = FxMap::default();
+    let mut levels: Vec<Vec<Ex>> = vec![Vec::new()];
+    let mut lvl1: Vec<Ex> = Vec::new();
+    for m in 0..=all {
+        let e = Ex::Test(m);
+        if table.insert(sig(&e), e.clone()).is_none() { lvl1.push(e); }
+    }
+    { let e = Ex::Act;
+      if table.insert(sig(&e), e.clone()).is_none() { lvl1.push(e); } }
+    levels.push(lvl1);
+    for n in 2..=maxsize {
+        let mut cur: Vec<Ex> = Vec::new();
+        for a in levels[n - 1].iter() {
+            for g in 1..=all {
+                let e = Ex::Wh(g, Box::new(a.clone()));
+                if table.insert(sig(&e), e.clone()).is_none() { cur.push(e); }
+            }
+        }
+        for i in 1..n - 1 {
+            let j = n - 1 - i;
+            if j == 0 || i >= levels.len() || j >= levels.len() { continue; }
+            for a in levels[i].iter() {
+                for b in levels[j].iter() {
+                    let mut cands =
+                        vec![Ex::Seq(Box::new(a.clone()), Box::new(b.clone()))];
+                    for g in 1..all {
+                        cands.push(Ex::Ite(g, Box::new(a.clone()), Box::new(b.clone())));
+                    }
+                    for e in cands {
+                        if table.insert(sig(&e), e.clone()).is_none() { cur.push(e); }
+                    }
+                }
+            }
+        }
+        levels.push(cur);
+    }
+    table
+}
+
+/// Solvability by table lookup: signature match, then a real language check at
+/// greater depth so a signature collision cannot produce a false witness.
+fn synth_lookup<const NA: usize>(table: &FxMap<u128, Ex>, q: &Aut<NA>,
+    start: usize, l: usize) -> Option<Ex>
+{
+    let seqs = all_seqs::<NA>(l);
+    let mut target: u128 = 0;
+    for (i, w) in seqs.iter().enumerate() {
+        if accepts_at(q, start, w) { target |= 1u128 << i; }
+    }
+    let e = table.get(&target)?;
+    if ex_matches(e, q, start, l + 3) { Some(e.clone()) } else { None }
 }
 
 /// **BRUTE-FORCE EXPRESSION SEARCH** (iteration 214) — the instrument 213 said
