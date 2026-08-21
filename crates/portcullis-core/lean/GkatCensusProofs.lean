@@ -2228,4 +2228,70 @@ theorem dispatch_patch {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms patch_symm
 #print axioms dispatch_patch
 
+/-! ## The loop-state solution is FORCED — and it is the shape
+    elimination could never build
+
+    Iteration 119 found that a two-port SCC reduces to a SINGLE-unknown
+    equation `x ≈ ite g P (W·(ite h (q·x) r))` that `w3` cannot close,
+    because `w3` needs the exit at the top and here it is reached only
+    after `W` runs.  Decoding the source programs the harness printed
+    shows what the actual solution looks like: NOT a freshly constructed
+    `wh`, but the ORIGINAL program's loop, re-used —
+    `(body residual) · (the loop's own re-entry)`.
+
+    That is exactly what `loop_subsystem` plus per-body canonicity
+    deliver, and this theorem states it: any parametric solution of a
+    loop's equations is FORCED, state by state, to that shape.
+    Elimination would have to invent the `wh`; canonicity hands it over.
+    This is the concrete mechanism behind 119's conclusion that the
+    unification route is strictly stronger than the elimination route. -/
+
+open Classical in
+/-- **THE LOOP-STATE SOLUTION IS FORCED**: every state inside a Thompson
+    loop has its solution pinned to `body-residual · the loop's own
+    re-entry dispatch`, for any ambient continuation `F`. -/
+theorem loop_solution_canonical {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (bodyStd : S → Exp A T)
+    (hcanon : GkatThompson.ParametricCanonicalBA body.core bodyStd)
+    (sol : S → Exp A T) (F : Exp A T)
+    (hsol : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol F) :
+    ∀ s ∈ body.core.states, EquivBA (sol s)
+      (.seq (bodyStd s)
+        (GkatThompson.initRHSParam
+          (GkatThompson.loopInitialized guard body) sol F)) := by
+  refine hcanon _ sol ?_
+  intro s hs
+  exact EquivBA.trans (hsol s hs) (loop_subsystem guard body sol F s)
+
+open Classical in
+/-- **TWO SOLUTIONS OF A LOOP AGREE**, without any uniqueness axiom:
+    both are forced to the same body-residual form, and their re-entry
+    dispatches are built from themselves.  The n-unknown uniqueness that
+    UA would supply, delivered for a Thompson loop by canonicity alone. -/
+theorem loop_solutions_agree {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (bodyStd : S → Exp A T)
+    (hcanon : GkatThompson.ParametricCanonicalBA body.core bodyStd)
+    (sol₁ sol₂ : S → Exp A T) (F₁ F₂ : Exp A T)
+    (h₁ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₁ F₁)
+    (h₂ : GkatThompson.ParamSolvesBA
+      (GkatThompson.loopInitialized guard body).core sol₂ F₂)
+    (hre : EquivBA
+      (GkatThompson.initRHSParam
+        (GkatThompson.loopInitialized guard body) sol₁ F₁)
+      (GkatThompson.initRHSParam
+        (GkatThompson.loopInitialized guard body) sol₂ F₂)) :
+    ∀ s ∈ body.core.states, EquivBA (sol₁ s) (sol₂ s) := by
+  intro s hs
+  refine EquivBA.trans
+    (loop_solution_canonical guard body bodyStd hcanon sol₁ F₁ h₁ s hs) ?_
+  refine EquivBA.trans
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hre) ?_
+  exact EquivBA.symm
+    (loop_solution_canonical guard body bodyStd hcanon sol₂ F₂ h₂ s hs)
+
+#print axioms loop_solution_canonical
+#print axioms loop_solutions_agree
+
 end GkatCensus

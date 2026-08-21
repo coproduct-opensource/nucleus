@@ -4065,3 +4065,72 @@ to agree on halting, so the guard region of a patch between bisimilar
 states should be provably empty — collapsing the patch to plain
 equality.  That is the next concrete target, and it is now a statement
 about `dispatch_patch`'s `g`, not about elimination at all.
+
+## Iteration 121 — ★ THE LOOP-STATE SOLUTION IS FORCED ★ + a correction to 120's stated target
+
+**FIRST, THE CORRECTION.**  Iteration 120 ended by proposing: "the
+guard region of a patch between BISIMILAR states should be provably
+empty, collapsing the patch to equality."  Checked before spending an
+iteration on it — **it is confused, on two counts.**
+
+* `dispatch_patch`'s hypothesis is that the two states share a LITERAL
+  common suffix of their dispatch lists (same list, hence the same
+  target states).  Bisimilar states in general share no such suffix;
+  their targets are bisimilar-but-DIFFERENT.  So `dispatch_patch` does
+  not even apply to the bisimilar case.
+* And for bisimilar `u, v` the difference is not a guard region at all.
+  By `bisim_hlt_invariant` they already agree on halting, and at every
+  atom they either both reject, both halt, or both do the SAME action
+  to bisimilar targets.  The gap is entirely "different targets that
+  ought to have equal labels" — which is `equation_transport`, i.e.
+  UNIF itself, not a guard to be emptied.
+
+So the patch lemma relates DISTINCT CLASSES inside one SCC (which is
+what both measured instances have), not bisimilar states.  Recorded
+because a wrong next-target is exactly the kind of thing this ledger
+exists to catch early; three iterations in a row (112, 114, 120) have
+now proposed a step that dissolved on contact, and the pattern is
+always the same — reasoning about machinery instead of running it.
+
+**WHAT THE PATCH ACTUALLY BUYS, restated.**  In the 119 instance,
+`s0 ≈ ite α1 p s1` expresses s0 with NO occurrence of s0 on the right.
+That IS an elimination — it performs the n→1 reduction the literature
+reports as missing, for free, with no productivity condition.  So the
+"no general method to go from n+1 unknowns to n" is answered whenever
+dispatches share a suffix.  **The obstruction was never the n→1 step.
+It is the FINAL 1-unknown closing**, which 119 showed lands outside
+`w3`'s shape.
+
+**SECOND, THE THEOREMS** (both [propext], first try):
+
+* **`loop_solution_canonical`** — every state inside a Thompson loop
+  has its solution FORCED to `bodyStd s · (the loop's own re-entry
+  dispatch)`, for ANY ambient continuation `F`.  Proof is two lines:
+  feed `hsol` through `loop_subsystem` to reindex the ambient equation
+  as the BODY's parametric equation at finish := the loop's own init
+  dispatch, then apply the body's `ParametricCanonicalBA`.
+* **`loop_solutions_agree`** — two parametric solutions of a loop agree
+  at every body state, given only that their re-entry dispatches agree.
+  **This is n-unknown uniqueness for a Thompson loop, with no UA** —
+  delivered by canonicity alone.
+
+**WHY THIS IS THE RIGHT SHAPE.**  Decoding the source programs the
+harness printed in 118-119 shows what the actual solution of a two-port
+SCC looks like: not a freshly constructed `wh`, but **the ORIGINAL
+program's loop, re-used** — `(body residual) · (the loop's re-entry)`.
+Elimination would have to INVENT that `wh` from the quotient's arms;
+canonicity HANDS IT OVER, because the quotient's SCC is (by
+`loop_subsystem`) the body system with a feedback finish.  That is the
+concrete mechanism behind 119's conclusion that unification strictly
+dominates elimination, and `loop_solution_canonical` is that mechanism
+stated as a theorem.
+
+**RESIDUE.**  `loop_solutions_agree` needs the two re-entry dispatches
+to agree — and those are built from the solutions themselves, so this
+is the same fixpoint, now localized to ONE expression per loop instead
+of one per state.  That is a genuine narrowing: the unknown is no
+longer "does every state agree with its representative" but "do the two
+sides' loop RE-ENTRY DISPATCHES agree", a single `EquivBA` obligation
+per loop.  Next: discharge it from bisimilarity of the loop headers,
+where `equation_transport` applies to ONE pair rather than to every
+in-class arm target.
