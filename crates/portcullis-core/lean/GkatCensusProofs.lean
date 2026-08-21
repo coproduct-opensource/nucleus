@@ -2773,4 +2773,53 @@ theorem solvesBA_trim_of_all_live {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms solvesBA_trim_of_all_live
 
+/-! ## Attacking S0 from the LABEL side: the emission scissors
+
+    Iteration 129's addendum graded S0's automaton half as a second open
+    problem, because deadness is an atom-indexed GREATEST FIXPOINT and
+    that defeats structural induction over states.  But the obligation
+    can also be met from the LABEL side, where this repo already has
+    half the machinery: `outG_emits` (GkatNormalizationProofs) proves
+    `g?·e ≡ g?·(e·(outG g e)?)` unconditionally — every GKAT program
+    provably EMITS its output guard.
+
+    The dead-label obligation's hard case is a product `X·Y` that is
+    empty even though neither factor is: every `X`-string ends at an
+    atom starting no `Y`-string.  That is exactly a guard-disjointness
+    statement — `outG X` disjoint from `Y`'s INPUT guard — and given
+    both emission facts it closes in six moves with no induction at all.
+
+    The theorem below is that closing step, taking both emissions as
+    hypotheses.  The output side is already supplied by `outG_emits`;
+    what it names as still missing is the DUAL, an input-guard emission
+    `Y ≡ (inG Y)?·Y`, which the repo does not yet have.  So this
+    converts "S0's automaton half" into "build `inG` and its admission
+    theorem", which IS a structural induction on expressions — the shape
+    that worked for `outG` — rather than one on an atom-indexed
+    greatest fixpoint over states. -/
+
+open Classical in
+/-- **THE EMISSION SCISSORS**: a product whose left factor's output
+    guard is disjoint from its right factor's input guard is provably
+    zero.  No induction, no uniqueness, no productivity — six moves. -/
+theorem zero_of_emission_disjoint {X Y : Exp A T} {o i : BExp T}
+    (hout : EquivBA X (.seq X (.test o)))
+    (hin : EquivBA Y (.seq (.test i) Y))
+    (hdisj : GkatRingPlan.GuardEmpty (.and o i)) :
+    EquivBA (.seq X Y) (.test .zero) := by
+  refine EquivBA.trans (EquivBA.seq_c hout hin) ?_
+  refine EquivBA.trans (EquivBA.base (Equiv.s1 X (.test o) _)) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.symm (EquivBA.base (Equiv.s1 (.test o) (.test i) Y)))) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.seq_c (EquivBA.s6 o i) (EquivBA.base (Equiv.refl Y)))) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.seq_c (GkatNormalization.guard_zero_test hdisj)
+      (EquivBA.base (Equiv.refl Y)))) ?_
+  refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl X))
+    (EquivBA.base (Equiv.s2 Y))) ?_
+  exact EquivBA.base (Equiv.s3 X)
+
+#print axioms zero_of_emission_disjoint
+
 end GkatCensus

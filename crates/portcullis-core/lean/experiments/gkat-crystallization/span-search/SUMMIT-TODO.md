@@ -4899,3 +4899,56 @@ half is the part that resists.
 2. **Same-side UNIF** — `ite`/sum trivial; `seq`/`wh` blocked on the
    two-states-vs-two-solutions mismatch (this iteration).
 3. **Size induction** — descent holds; `wh` rung blocked on (2).
+
+## Iteration 130 — ★ THE EMISSION SCISSORS ★ — S0 re-routed from states to labels
+
+**`zero_of_emission_disjoint`** (ZERO axioms, first try): a product
+`X·Y` whose left factor's OUTPUT guard is disjoint from its right
+factor's INPUT guard is provably `0`.  Six moves — `s1`, `s6`,
+`guard_zero_test`, `s2`, `s3` — no induction, no uniqueness, no
+productivity side condition.
+
+**Why this matters: it re-routes S0 around the thing that blocked it.**
+Iteration 129 graded S0's automaton half as a second open problem
+because deadness is an atom-indexed GREATEST FIXPOINT, which defeats
+structural induction over STATES.  But the dead-label obligation can be
+met from the LABEL side instead, and there the repo already holds half
+the machinery: `outG_emits` proves `g?·e ≡ g?·(e·(outG g e)?)`
+UNCONDITIONALLY for every GKAT program — every program provably emits
+its output guard.
+
+The obligation's hard case was always the product: `X·Y` empty though
+neither factor is, because every `X`-string ends at an atom starting no
+`Y`-string.  That is precisely guard-disjointness, and
+`zero_of_emission_disjoint` closes it outright once both emissions are
+available.
+
+**So S0's automaton half converts into: build `inG`, the DUAL of
+`outG`, with its admission theorem `Y ≡ (inG Y)?·Y`.**  That is a
+structural induction on EXPRESSIONS — the exact shape that already
+worked for `outG` — rather than one on an atom-indexed greatest fixpoint
+over states.  A different and much better-understood problem.
+
+**Not over-claiming, having done exactly that at iteration 126.**  Two
+things are genuinely open in this re-routing:
+1. **`inG` must be TIGHT, not merely sound.**  The reduction from
+   "composite empty" to "guards disjoint" needs both `outG` and `inG` to
+   be exact: if `α ∈ outG X` and `α ∈ inG Y` then the composite is
+   nonempty, so emptiness gives disjointness — but only if neither
+   over-approximates.  A sound-but-loose `inG` proves nothing here.
+2. **Loops are where `outG` is already loose.**  The normalization
+   file's own docstring says `outG` over-approximates a loop's output by
+   `1`.  `wh_emits_exit_all` gives the tight exit guard for loops, so
+   the material exists, but tightening `outG` at loops is real work and
+   the same question will arise for `inG`.
+
+So: S0's automaton half moves from "blocked by the wrong induction
+principle" to "needs a dual construction plus two tightness results" —
+better shaped, not yet done, and explicitly not graded as bounded.
+
+**Route status:**
+1. **S0** — algebra done; automaton half re-routed today from states to
+   labels; needs `inG` + tightness of `inG`/`outG` at loops.
+2. **Same-side UNIF** — blocked on the two-states-vs-two-solutions
+   mismatch (129), which remains the campaign's core difficulty.
+3. **Size induction** — descent holds; `wh` rung blocked on (2).
