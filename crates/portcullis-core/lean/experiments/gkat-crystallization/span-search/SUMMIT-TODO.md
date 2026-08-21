@@ -7799,3 +7799,64 @@ DRAWING A CONCLUSION FROM IT.**
 **Odds: ~45%, unchanged.**  A retraction that makes the measured picture
 better, not worse, and I decline to move the number on it — the existence
 question is about all quotients, not the ones a generator happens to reach.
+
+---
+
+## Iteration 181 — 180 USED THE WRONG CRITERION; the right one finds 3 blocked instances
+
+180's parser fix stands: the edges really were wrong, and every open SCC
+really is T1/T2-reducible.  **180's CONCLUSION from that does not stand.**
+I wrote "no measured instance is beyond the role ladder" on the strength of
+reducibility.  Reducibility is the wrong test.
+
+    REDUCIBILITY (Hecht-Ullman T1/T2) is about loop ENTRY — one header per
+    loop.
+    KOSARAJU's condition is about loop EXITS — a flowchart is a structured
+    program WITHOUT auxiliary variables iff no loop has two distinct exits.
+
+A graph can be reducible and still have two exits.  Testing entry and
+concluding about exits is a straight non-sequitur, and I made it.
+
+**MEASURED PROPERLY** (`classify_open_sccs.py`, in the repo).  An SCC's
+exits are its members that halt or carry an arm out of the SCC — the
+census's `ports`.  Over the 31 NA=4 open SCCs:
+
+    single exit state  28 / 31      MULTI-EXIT (Kosaraju-blocked)  3 / 31
+
+So there ARE measured instances beyond any variable-free nest of `wh`s —
+**3 of 2170 multi-state SCCs** — found by the right test.  179 claimed 1 in
+2170 by a broken parser; 180 claimed 0 by the wrong criterion; the answer
+is 3, and it took both errors to get here.
+
+**THE 28 REACHABLE ONES, rooted at their unique exit state:**
+
+    chords=1  at=(0,)        ->  7    the PORT itself branches
+    chords=1  at=(len-1,)    ->  5    chord at the LAST lap position
+    chords=2  at=(0,1)       -> 10
+    chords=2  at=(0,2)       ->  6
+
+Every one of them has `some chord to interior` — the extra arm targets a
+lap position, not the port.  **That is the difference from the stratum
+already proved.**  `chorded_cycle_roles` handles exactly one chord, from an
+interior position `1 ≤ c < len-1`, targeting the PORT.  None of the 28
+matches: they chord to interiors, at positions the theorem excludes, and
+over half carry two chords.
+
+**THE NEXT TARGET, now exactly specified: a lap with one arbitrary chord
+`c → d`.**  A backward chord (`d` before `c` in lap order) creates an inner
+loop nested inside the outer lap — two `w3` applications, inner then
+outer.  A forward chord is the two-laps shape already handled, rotated.
+Twelve of the 28 have one chord; the sixteen with two need it twice, so the
+one-chord theorem is the prerequisite either way.
+
+**Why I keep getting the residue characterization wrong.**  Four times now:
+173 (hypothesis pinned), 174 (residue misremembered), 179 (parser), 180
+(wrong criterion).  Every one was a claim ABOUT the measurement rather than
+a measurement.  The pattern is that I compute something adjacent to the
+question — reducibility instead of exits, a parsed graph instead of the raw
+dump — and then answer the question I meant to ask.  **State the criterion
+in the same words as the claim before running anything.**
+
+**Odds: ~45%, unchanged.**  Three Kosaraju-blocked instances in 2170 is a
+genuine, small, correctly-measured obstruction for the ladder — and the
+ladder was never the route to the general theorem anyway.
