@@ -5374,4 +5374,114 @@ theorem gated_rewrite_reject {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
 #print axioms gated_rewrite
 #print axioms gated_rewrite_reject
 
+/-! ### THE GATED RULE, CONSTRUCTIVELY
+
+    `gated_rewrite` is the ANALYTIC form: given a labelling that already
+    solves the system, two states agreeing off `d` are interchangeable in the
+    else arm.  That is the right statement for reasoning about a solution,
+    and the wrong one for BUILDING one — the calculus does not have a
+    solution yet, it is making one.
+
+    `gated_solves` is the constructive form.  It says: DEFINE `sol u` to be
+    `ite d D (sol v)`, where `D` agrees with `u`'s own equation on `d`; then
+    `sol u` satisfies `u`'s equation.  Nothing about the rest of the system
+    is assumed beyond `v` satisfying its own.
+
+    That is what the elimination loop needs at each GATED step, and it is the
+    last rule to have both forms. -/
+
+/-- Any expression splits on any region. -/
+private theorem split_on (d : BExp T) (e : Exp A T) :
+    EquivBA e (.ite d (.seq (.test d) e) (.seq (.test (.not d)) e)) :=
+  EquivBA.trans (EquivBA.symm (EquivBA.base (Equiv.u1 d e)))
+    (EquivBA.trans (EquivBA.base (Equiv.u4 d e e))
+      (GkatGuardedAlgebra.ite_restrict_else d (.seq (.test d) e) e))
+
+/-- …and the assertions come back off. -/
+private theorem unsplit (d : BExp T) (a b : Exp A T) :
+    EquivBA (.ite d (.seq (.test d) a) (.seq (.test (.not d)) b)) (.ite d a b) :=
+  EquivBA.trans
+    (EquivBA.symm
+      (GkatGuardedAlgebra.ite_restrict_else d (.seq (.test d) a) b))
+    (EquivBA.symm (EquivBA.base (Equiv.u4 d a b)))
+
+/-- Congruence in the THEN arm, with the guard available — the dual of
+    `ite_else_swap`, by `u4` on both sides. -/
+theorem ite_then_swap {g : BExp T} {a a' b : Exp A T}
+    (h : EquivBA (.seq (.test g) a) (.seq (.test g) a')) :
+    EquivBA (.ite g a b) (.ite g a' b) :=
+  EquivBA.trans (EquivBA.base (Equiv.u4 g a b))
+    (EquivBA.trans (EquivBA.ite_c h (EquivBA.base (Equiv.refl b)))
+      (EquivBA.symm (EquivBA.base (Equiv.u4 g a' b))))
+
+/-- **THE GATED RULE, CONSTRUCTIVELY.**  Define `sol u := ite d D (sol v)`
+    with `D` agreeing with `u`'s equation on `d`, where `u` and `v` select
+    EquivBA-equal expressions off `d`.  Then `sol u` SATISFIES `u`'s
+    equation — so the definition is a legitimate step of the elimination,
+    not merely an identity that holds once a solution exists.
+
+    In the rejecting case the caller takes `D := 0`, and `hD` is then the
+    statement that `u` rejects throughout `d`. -/
+theorem gated_solves {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (u v : S) (d : BExp T) (D : Exp A T)
+    (hsolv : EquivBA (sol v) (eqRHS aut sol v))
+    (hagree : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.not d) x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v))))
+    (hD : EquivBA (.seq (.test d) D) (.seq (.test d) (eqRHS aut sol u)))
+    (hu : sol u = .ite d D (sol v)) :
+    EquivBA (sol u) (eqRHS aut sol u) :=
+  EquivBA.trans (equivBA_of_eq hu)
+    (EquivBA.symm
+      (EquivBA.trans (split_on d (eqRHS aut sol u))
+        (EquivBA.trans
+          (EquivBA.ite_c (EquivBA.symm hD)
+            (EquivBA.trans
+              (eqRHS_congr_of_select_under aut sol u v (.not d) hagree)
+              (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+                (EquivBA.symm hsolv))))
+          (unsplit d D (sol v)))))
+
+#print axioms ite_then_swap
+#print axioms gated_solves
+
+/-- **THE GATED RULE AS A ROLE.**  `gated_solves` feeds straight into
+    `StateRole.equivFold`, so a GATED step is a role like any other and
+    `decomp_solves` assembles it with the rest.
+
+    That closes the SOUNDNESS half of the elimination loop.  Every rule now
+    has a constructive form producing a role for the state it assigns —
+
+        SUBST            definitional
+        LOOPIFY          `StateRole.salomaaE`, discharged by
+                         `salomaa_solution_exists`, with `exit_absorb` for
+                         the absorbing case
+        GATED            this
+
+    — and `decomp_solves` turns a full assignment of roles into `SolvesBA`.
+    What remains open is SUFFICIENCY: that the rules can always be applied
+    until every state is assigned.  Soundness is a packaging question and is
+    now finished; sufficiency is the mathematics. -/
+theorem gated_role {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
+    (u v : S) (d : BExp T) (D : Exp A T)
+    (hsolv : EquivBA (sol v) (eqRHS aut sol v))
+    (hagree : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.not d) x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v))))
+    (hD : EquivBA (.seq (.test d) D) (.seq (.test d) (eqRHS aut sol u)))
+    (hu : sol u = .ite d D (sol v)) :
+    GkatDecomp.StateRole aut sol u :=
+  GkatDecomp.StateRole.equivFold
+    (gated_solves aut sol u v d D hsolv hagree hD hu)
+
+#print axioms gated_role
+
 end GkatCensus

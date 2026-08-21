@@ -8651,3 +8651,56 @@ is a hint at the right measure rather than a proof).
 **Odds: 66%, held.**  A formalization step that adds no new mathematics — the
 rule was already understood and measured; today it is machine-checked.  The
 number moves when the loop or the sufficiency proof lands, not before.
+
+---
+
+## Iteration 195 — THE LOOP'S SOUNDNESS IS FINISHED; only SUFFICIENCY is left
+
+194 said the loop was unformalized and would need a decreasing measure.  That
+was the wrong diagnosis, and today's work says why: the loop has two halves,
+and only one of them is mathematics.
+
+**SOUNDNESS — now complete.**  Every rule has a CONSTRUCTIVE form producing a
+role for the state it assigns, and `decomp_solves` (already in the corpus)
+turns a full assignment of roles into `SolvesBA`:
+
+    SUBST      definitional
+    LOOPIFY    `StateRole.salomaaE`, discharged by `salomaa_solution_exists`,
+               with `exit_absorb` for the absorbing case
+    GATED      `gated_solves` → `gated_role`          ← today
+
+**The missing piece was the GATED rule's constructive form**, and the reason
+it was missing is worth recording.  `gated_rewrite` (194) says: GIVEN a
+labelling that already solves the system, two states agreeing off `d` are
+interchangeable in the else arm.  That is the right statement for reasoning
+about a solution and **the wrong one for building one** — the calculus does
+not have a solution yet, it is making one.
+
+`gated_solves` is the constructive form: DEFINE `sol u := ite d D (sol v)`
+with `D` agreeing with `u`'s own equation on `d`; then `sol u` SATISFIES
+`u`'s equation, assuming nothing about the rest of the system beyond `v`
+satisfying its own.  `split_on`, `ite_c`, `eqRHS_congr_of_select_under`,
+`unsplit` — four steps.  In the rejecting case the caller takes `D := 0` and
+`hD` becomes "`u` rejects throughout `d`".
+
+Also landed: `ite_then_swap`, the dual of `ite_else_swap`, **zero axioms**.
+
+**SO THE MEASURE 194 CALLED FOR IS NOT NEEDED.**  A decreasing measure would
+be needed to prove the loop TERMINATES.  But soundness does not require
+termination: if the loop stops with every state assigned, `decomp_solves`
+gives `SolvesBA` regardless of how it got there.  Termination only matters
+for the ALGORITHM, and the algorithm is Rust and measured.  194's "needs a
+decreasing measure" was reasoning about the wrong obligation.
+
+**WHAT IS ACTUALLY LEFT, and it is one sentence.**
+
+    SUFFICIENCY: on every behavioural quotient of a Thompson sum, the three
+    rules can be applied until every state is assigned.
+
+That is the whole remainder.  It is not a packaging question and no amount of
+Lean plumbing reaches it — it is the statement that a concrete calculus is
+complete for a concrete class, measured true on 99/99 hard instances across
+1.44 million pairs and proved for none.
+
+**Odds: 66%, held.**  Soundness closing is real progress and changes nothing
+about the odds: it was always the half that was going to close.
