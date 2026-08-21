@@ -7197,3 +7197,72 @@ stuck on — Fact 3 says it was the piece the LITERATURE was stuck on, and
 this development had already bought it for Thompson systems.  The
 existence question is untouched.  The field's prior that this problem
 does not close still stands.
+
+---
+
+## Iteration 172 — NO LADDER: the residue is the open question, and the odds come DOWN
+
+No Lean today.  Three findings, one of them about my own estimate.
+
+**FINDING 1 — no published result solves the class the remaining
+hypothesis lives in.**  Fetched the automata-learning paper (arXiv
+2204.14153, HTML).  **Corollary 4.10**: minimization of a normal
+G-coalgebra preserves the nesting coequation.  So the quotient we need
+IS in the nesting class — confirming 171's covariety reading from the
+other paper.  But the paper gives **no algorithm and no constructive
+proof that nesting-coequation automata are solvable**; it is about
+learning and minimization, not equation solving.  Combined with 171's
+finding that well-nestedness is not preserved by quotients, the position
+is:
+
+    well-nested          ⇒ solvable          (published)
+    well-nested          ⇏ closed under quotient   (published, Fig. 4)
+    nesting coequation   = expressible behaviours  (published)
+    nesting coequation   ⇒ solvable          NOBODY HAS PROVED THIS
+
+That last line is the whole of what is left here.  **There is no ladder
+from the literature.**  The reduction has landed on the open question
+itself, stated sharply — which is a real achievement and is also exactly
+why it is hard.
+
+**FINDING 2 — the concrete frontier is 44 instances, and it is already
+mapped.**  MEASUREMENTS.md (2026-08-20) has a sharper picture than I had
+been carrying: with `fold` + `salomaaE` + `walked_cycle_roles` +
+`walked_exit_cycle_roles`, coverage of multi-state SCCs is 2127/2171 =
+**98.0%**, leaving **44 open instances in 59947 pairs (0.07%)**, shaped
+as multi-member exit ports, non-subset halts, and genuine tree walks.
+That is the next stratum and it is a role-theorem-sized piece of work,
+not a one-sitting lemma.  Naming it here as the next target rather than
+starting it badly at the end of an iteration.
+
+**FINDING 3 — GkatCensusProofs is a LEAF.**  Nothing imports it
+(`grep -l '^import GkatCensusProofs' *.lean` is empty).  So
+`lake build GkatCensusProofs` — 69 jobs — is a COMPLETE check for the
+last six iterations' work, and the 278-lib full builds I have been
+launching in the background were never load-bearing for it.  Three of
+them were killed mid-run anyway.  Recording so I stop paying for a check
+that verifies nothing my changes could break.
+
+**THE ODDS COME DOWN: ~58% → ~45%.**
+
+I ran 46 → 52 → 58 over three iterations that each dissolved a standing
+obstruction.  That was extrapolation from the reducible part.  What
+Finding 1 establishes is that the part which has NOT fallen has no
+external ladder, and is precisely the field's open question.  The honest
+reading of the last six iterations is: the reduction got much sharper —
+which genuinely helps, since a crisp existential statement is more
+attackable than a coinductive tangle — while the core did not move at
+all.  Net, roughly back to where this window started.
+
+**A trend in how fast obstacles fall says nothing about the obstacle that
+has not fallen.**  I want that written down, because the three cheap wins
+made 58% feel earned at the time and it was not.  The field's prior that
+this problem does not close still stands, and nothing here has touched
+it.
+
+**Artifact refreshed** — https://claude.ai/code/artifact/ce815f05-bd9c-4e31-b6de-0ad16805e88a
+was ~35 iterations stale and materially misdescribed the state.  Now
+carries: the single remaining existential hypothesis, the collapse of the
+coinductive part (167–171, six theorems), the two new refutations
+(well-nestedness of the quotient; the circular read-back), and four new
+corrections including this odds revision.
