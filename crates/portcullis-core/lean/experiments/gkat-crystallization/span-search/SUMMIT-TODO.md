@@ -2345,3 +2345,29 @@ Namespace note: GuardEmpty lives in GkatRingPlan (open added).
 Next: the walked 2-cycle schedule instance (one Salomaa interior + a
 port cascading through it, exercising factoring + pruning together),
 then the chord instance, then the census witness constructors.
+
+## Iteration 82 — THE WALKED 2-CYCLE VIA SCHEDULES (cascade validated)
+
+**`walked_two_cycle_sched`** ([propext, Quot.sound] — leaner than the
+classical walked assembly, since literal arm lists avoid the classical
+gathering): an abstract 2-state automaton (interior with hoisted
+self-loop + exit, port feeding back, interior halt empty) is fully
+role-covered via `sched_assembly_roles` with rank ≡ 0 and the two-step
+schedule:
+
+- interior: syntactic top split (rearrangement is refl after the
+  treeOf rewrite), closes to `pre (wh c qa) (exit-branch)`;
+- port: the cascade substitutes the interior's closed tree into the
+  feedback arm; the rearrangement prunes the dead interior halt
+  (`halt_prune` — the ¬c exit-test rides into the lap) and the split
+  factors the lap `pa;((wh c qa);((test nc); ra))` — exactly the
+  twoLoop closed form, now produced by GENERAL machinery.
+
+Fix notes: CallOnly goals should be closed by direct anonymous
+constructors (defeq) — `show`-ing the unfolded Prop shape is fragile;
+`[] ++ l` needs a defeq `show` before rewriting stepSubst equations.
+
+Validated: multi-state cascades, pruning-in-rearrangement, factoring.
+Next: the chord 3-state instance (branch state = fold step mid-cascade
+— the remaining certificate pattern), then the census witness
+constructors for canonical quotients.

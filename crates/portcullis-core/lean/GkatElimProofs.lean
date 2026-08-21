@@ -1125,4 +1125,121 @@ theorem resolve_true_collapse {S : Type} {g : BExp T}
 #print axioms ite_true_collapse
 #print axioms resolve_halt_prune
 
+/-! ## Validation instance: the walked 2-cycle as a schedule
+
+    Interior with a hoisted self-loop and exit, port feeding back —
+    the first multi-state cascade: the interior closes by Salomaa, the
+    port's substituted lap prunes its dead interior halt and factors
+    into the `wh_exit`-style closed form. -/
+
+open Classical in
+/-- **THE WALKED 2-CYCLE VIA SCHEDULES**. -/
+theorem walked_two_cycle_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (i o : S) (hio : i ≠ o)
+    (c nc b : BExp T) (qa ra pa : A)
+    (hti : aut.trans i = [(c, qa, i), (nc, ra, o)])
+    (hto : aut.trans o = [(b, pa, i)])
+    (hhi : GuardEmpty (aut.hlt i))
+    (hstates : ∀ s ∈ aut.states, s = i ∨ s = o) :
+    ∃ sol : S → Exp A T, ∀ s ∈ aut.states, StateRole aut sol s := by
+  have htreei : treeOf aut i
+      = .br c (.call (.act qa) i)
+        (.br nc (.call (.act ra) o) (.halt (aut.hlt i))) := by
+    rw [treeOf_armChain, hti]
+    rfl
+  have htreeo : treeOf aut o
+      = .br b (.call (.act pa) i) (.halt (aut.hlt o)) := by
+    rw [treeOf_armChain, hto]
+    rfl
+  -- the closed trees
+  let Ci : RTree S A T :=
+    .pre (.wh c (.act qa))
+      (.br nc (.call (.act ra) o) (.halt (aut.hlt i)))
+  let tl' : RTree S A T :=
+    .pre (.act pa) (.pre (.wh c (.act qa))
+      (.pre (.test nc) (.call (.act ra) o)))
+  let Co : RTree S A T :=
+    .pre (.wh b (.seq (.act pa) (.seq (.wh c (.act qa))
+      (.seq (.test nc) (.act ra))))) (.halt (aut.hlt o))
+  refine sched_assembly_roles aut (fun _ => 0)
+    (fun r => match r with
+      | 0 => [(i, Ci), (o, Co)]
+      | _ + 1 => []) ?_ ?_ ?_ ?_ ?_
+  · -- hdesc
+    intro s e _
+    exact Nat.le_refl 0
+  · -- hsupp
+    intro r
+    match r with
+    | 0 =>
+        refine Supp.cons i Ci _ ?_ ?_ ?_ ?_
+        · exact ⟨Or.inl ⟨(o, Co), List.mem_cons_self .., rfl⟩,
+            True.intro⟩
+        · intro q hq
+          rcases List.mem_cons.mp hq with h1 | h2
+          · rw [h1]
+            exact hio
+          · exact nomatch h2
+        · omega
+        · refine Supp.cons o Co _ ?_ ?_ ?_ Supp.nil
+          · exact True.intro
+          · intro q hq
+            exact nomatch hq
+          · omega
+    | r + 1 => exact Supp.nil
+  · -- hok
+    intro r
+    match r with
+    | 0 =>
+        refine ⟨?_, ?_, True.intro⟩
+        · -- interior step: hoisted Salomaa split
+          refine Or.inl ⟨c, .call (.act qa) i,
+            .br nc (.call (.act ra) o) (.halt (aut.hlt i)),
+            ?_, rfl, rfl⟩
+          intro sol
+          show EquivBA (resolveT sol (treeOf aut i)) _
+          rw [htreei]
+          exact EquivBA.base (Equiv.refl _)
+        · -- port step: cascade, prune, factor
+          refine Or.inl ⟨b, tl', .halt (aut.hlt o), ?_, rfl, rfl⟩
+          intro sol
+          show EquivBA (resolveT sol
+            (stepSubst [(i, Ci)] (treeOf aut o)))
+            (resolveT sol (.br b tl' (.halt (aut.hlt o))))
+          have hsub : stepSubst [(i, Ci)] (treeOf aut o)
+              = .br b (.pre (.act pa) Ci) (.halt (aut.hlt o)) := by
+            show substT i Ci (treeOf aut o) = _
+            rw [htreeo]
+            show RTree.br b (if i = i then .pre (.act pa) Ci
+              else .call (.act pa) i) (.halt (aut.hlt o)) = _
+            rw [if_pos rfl]
+          rw [hsub]
+          show EquivBA
+            (.ite b (.seq (.act pa) (.seq (.wh c (.act qa))
+              (.ite nc (.seq (.act ra) (sol o))
+                (.test (aut.hlt i)))))
+              (.test (aut.hlt o)))
+            (.ite b (.seq (.act pa) (.seq (.wh c (.act qa))
+              (.seq (.test nc) (.seq (.act ra) (sol o)))))
+              (.test (aut.hlt o)))
+          refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+          refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+          refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+          exact halt_prune hhi (.seq (.act ra) (sol o))
+    | r + 1 => exact True.intro
+  · -- hrank
+    intro r p hp
+    match r, hp with
+    | 0, hp => rfl
+    | r + 1, hp => exact nomatch hp
+  · -- hcover
+    intro s hs
+    rcases hstates s hs with h1 | h2
+    · rw [h1]
+      exact ⟨Ci, List.mem_cons_self ..⟩
+    · rw [h2]
+      exact ⟨Co, List.mem_cons_of_mem _ (List.mem_cons_self ..)⟩
+
+#print axioms walked_two_cycle_sched
+
 end GkatElim
