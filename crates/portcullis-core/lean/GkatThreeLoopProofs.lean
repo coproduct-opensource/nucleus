@@ -1,4 +1,5 @@
 import GkatTwoLoopProofs
+import GkatDecideProofs
 
 /-! # The chord frontier: a mid-chain skippable inner loop
 
@@ -16,7 +17,7 @@ open GkatSyntax GkatGS GkatKleene GkatFaithful GkatThompson GkatSumQuotient
 open GkatDecomp GkatPlanExistence GkatGuardedAlgebra GkatResidue
 open GkatRingSupport GkatRingPlan GkatNormalization GkatTrim GkatCycle
 open GkatLoopFree GkatAtomicLoop GkatChainLoop GkatOrbit
-open GkatChainFragment GkatWalkedOrbit GkatTwoLoop
+open GkatChainFragment GkatWalkedOrbit GkatTwoLoop GkatDecide
 
 variable {A T : Type}
 
@@ -4729,5 +4730,49 @@ theorem chordLoops_solvable (b c : BExp T) (p x y : A)
   exact ⟨qsol, solvesBA_unclean _ (decomp_solves _ _ hroles)⟩
 
 #print axioms chordLoops_solvable
+
+open Classical in
+/-- **THE SIXTH THEOREM — CHORD COMPLETENESS**: uniformly equivalent
+    chord programs `wh b (p; ite c (x; y) y)` — the minimal shape BEYOND
+    the walked discipline, whose branch state maps per-atom onto two
+    forward cycle positions — are provably equivalent with the FINITE
+    axioms.  No n-ary uniqueness axiom; `w3` (one unknown) throughout. -/
+theorem chordloops_complete (b c : BExp T) (p x y : A)
+    (b' c' : BExp T) (p' x' y' : A)
+    (hentB : ∃ α : T → Bool, bval (genW T) b α = true
+      ∧ bval (genW T) b' α = true)
+    (hentC : ∃ α : T → Bool, bval (genW T) c α = true
+      ∧ bval (genW T) c' α = true)
+    (hexitC : ∃ α : T → Bool, bval (genW T) c α = false)
+    (hexitB : ∃ α : T → Bool, bval (genW T) b α = false)
+    (hexitC' : ∃ α : T → Bool, bval (genW T) c' α = false)
+    (hexitB' : ∃ α : T → Bool, bval (genW T) b' α = false)
+    (heq : UniformLanguageEquivalent (chordLoop b c p x y)
+      (chordLoop b' c' p' x' y')) :
+    EquivBA (chordLoop b c p x y) (chordLoop b' c' p' x' y') := by
+  have hstart : autLang (genW T)
+      (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inl none)
+    = autLang (genW T)
+        (trimAut (chordSum b c p x y b' c' p' x' y')) (Sum.inr none) := by
+    rw [autLang_trimAut, autLang_trimAut]
+    show autLang (genW T) (sumGAut
+        (certifiedThompson A T (chordLoop b c p x y)).aut.toGAut
+        (certifiedThompson A T (chordLoop b' c' p' x' y')).aut.toGAut)
+        (Sum.inl none)
+      = autLang (genW T) (sumGAut
+        (certifiedThompson A T (chordLoop b c p x y)).aut.toGAut
+        (certifiedThompson A T (chordLoop b' c' p' x' y')).aut.toGAut)
+        (Sum.inr none)
+    rw [autLang_sum_inl, autLang_sum_inr,
+      certifiedThompson_start_language (chordLoop b c p x y),
+      certifiedThompson_start_language (chordLoop b' c' p' x' y')]
+    funext gs
+    exact propext (heq (T → Bool) (genW T) gs)
+  obtain ⟨qsol, hq⟩ := chordLoops_solvable b c p x y b' c' p' x' y'
+    hentB hentC hexitC hexitB hexitC' hexitB' hstart
+  exact equivBA_of_quot_solvesBA (chordLoop b c p x y)
+    (chordLoop b' c' p' x' y') heq hq
+
+#print axioms chordloops_complete
 
 end GkatThreeLoop

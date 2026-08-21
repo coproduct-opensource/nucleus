@@ -2009,3 +2009,36 @@ Remaining for the SIXTH THEOREM `chordloops_complete`: the final bridge
 — relate chordSum to SUMof A T (chordLoop b c p x y) (chordLoop ...)
 (the certifiedThompson sum equivBA_of_quot_solvesBA expects) and derive
 heq from the ULE hypothesis; mirror the twoloops_complete endgame.
+
+## Iteration 72 — ★ THE SIXTH THEOREM: chordloops_complete ★
+
+**`chordloops_complete`** (GkatThreeLoopProofs.lean, axioms
+[propext, Classical.choice, Quot.sound]):
+
+  Uniformly equivalent chord programs `wh b (p; ite c (x; y) y)` are
+  provably equivalent with the FINITE axioms — under the nondegeneracy
+  sats (shared sat(b∧b′), shared sat(c∧c′), sat(¬c), sat(¬b), both
+  sides) — no n-ary uniqueness axiom, `w3` (one unknown) throughout.
+
+The chord program is the minimal shape BEYOND the walked discipline:
+its branch state maps per-atom onto TWO forward cycle positions. This
+was the located obstacle — the reason UA was believed necessary. It
+falls.
+
+Endgame details: `hstart` (trimmed-sum start-language equality) is
+extracted verbatim from `ule_iff_start_bisim`'s forward direction
+(autLang_trimAut ×2 → show at certifiedThompson form (defeq) →
+autLang_sum_inl/inr + certifiedThompson_start_language ×2 → funext +
+propext of the ULE hypothesis). Then chordLoops_solvable +
+`equivBA_of_quot_solvesBA` (chordSum ≡ SUMof definitionally). One
+import fix: GkatDecideProofs (autLang_sum_inl/inr) was not in the
+chain — added import + open GkatDecide.
+
+SIX UNCONDITIONAL COMPLETENESS THEOREMS, no UA:
+loopfree → atomicloops → gloops → chainloops_complete_free →
+twoloops_complete → **chordloops_complete**.
+
+Remaining campaign: generalize to FiniteAxiomsCompleteBA (arbitrary
+programs — hierarchical clusters, general census machinery); then
+STEELMAN HARDENING (statement kernel, model equivalence, cleanAutD,
+whole-chain de-choice, uleDec differential testing, claim wording).
