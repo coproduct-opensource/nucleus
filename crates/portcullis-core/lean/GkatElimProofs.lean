@@ -2851,4 +2851,261 @@ theorem scc_rank_sched {S : Type} [DecidableEq S]
 #print axioms pruneT_none_hasHalt
 #print axioms scc_rank_sched
 
+/-! ## Composition and the general port step
+
+    Nested sub-SCCs are handled compositionally: schedules concatenate
+    (`Supp_append`, `SchedOk_append`), and a port can close over ANY
+    certified prefix — not just forest interiors — via
+    `port_step_sched`.  Hierarchy = inner schedules composed under
+    outer ports. -/
+
+/-- Schedule elements are off the external support. -/
+theorem supp_not_P {S : Type} {P : S → Prop} :
+    ∀ steps : List (S × RTree S A T), Supp P steps →
+      ∀ p ∈ steps, ¬ P p.1 := by
+  intro steps
+  induction steps with
+  | nil => intro _ p hp; exact nomatch hp
+  | cons hd rest ih =>
+      intro hs p hp
+      cases hs with
+      | cons u C _ hC hne hP hrest =>
+          rcases List.mem_cons.mp hp with h1 | h2
+          · rw [h1]
+            exact hP
+          · exact ih hrest p h2
+
+/-- Support certificates compose across concatenation. -/
+theorem Supp_append {S : Type} {P : S → Prop} :
+    ∀ steps₁ steps₂ : List (S × RTree S A T),
+      Supp (fun t => (∃ q ∈ steps₂, t = q.1) ∨ P t) steps₁ →
+      Supp P steps₂ →
+      Supp P (steps₁ ++ steps₂) := by
+  intro steps₁
+  induction steps₁ with
+  | nil => intro steps₂ _ h₂; exact h₂
+  | cons hd rest ih =>
+      intro steps₂ h₁ h₂
+      cases h₁ with
+      | cons u C _ hC hne hP hrest =>
+          refine Supp.cons u C _ ?_ ?_ ?_ (ih steps₂ hrest h₂)
+          · refine callOnly_mono ?_ _ hC
+            intro s hs
+            rcases hs with ⟨q, hq, hsq⟩ | h2
+            · exact Or.inl ⟨q, List.mem_append.mpr (Or.inl hq), hsq⟩
+            · rcases h2 with ⟨q, hq, hsq⟩ | hPs
+              · exact Or.inl ⟨q,
+                  List.mem_append.mpr (Or.inr hq), hsq⟩
+              · exact Or.inr hPs
+          · intro q hq
+            rcases List.mem_append.mp hq with h1 | h2
+            · exact hne q h1
+            · intro hc
+              exact hP (Or.inl ⟨q, h2, hc⟩)
+          · intro hPu
+            exact hP (Or.inr hPu)
+
+/-- Closing certificates compose across concatenation. -/
+theorem SchedOk_append {S : Type} [DecidableEq S]
+    (sys : S → RTree S A T) :
+    ∀ (steps₁ steps₂ pre : List (S × RTree S A T)),
+      SchedOk sys pre steps₁ →
+      SchedOk sys (pre ++ steps₁) steps₂ →
+      SchedOk sys pre (steps₁ ++ steps₂) := by
+  intro steps₁
+  induction steps₁ with
+  | nil =>
+      intro steps₂ pre _ h₂
+      rw [List.append_nil] at h₂
+      exact h₂
+  | cons hd rest ih =>
+      intro steps₂ pre h₁ h₂
+      obtain ⟨hclause, hrest⟩ := h₁
+      refine ⟨hclause, ?_⟩
+      refine ih steps₂ (pre ++ [hd]) hrest ?_
+      show SchedOk sys ((pre ++ [hd]) ++ rest) steps₂
+      rw [List.append_assoc]
+      exact h₂
+
+open Classical in
+/-- The port's cascaded branches over an arbitrary prefix. -/
+noncomputable def genCasc {S : Type} [DecidableEq S] (aut : GAut S A T)
+    (steps : List (S × RTree S A T)) (o : S) :
+    List (BExp T × RTree S A T) :=
+  (aut.trans o).map (fun e =>
+    (e.1, stepSubst steps (.call (.act e.2.1) e.2.2)))
+
+open Classical in
+/-- The port's closed tree over an arbitrary prefix. -/
+noncomputable def genPortTree {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (steps : List (S × RTree S A T)) (o : S) :
+    RTree S A T :=
+  .pre (.wh (selGuard (sccSel o) ((genCasc aut steps o).map pruneBranch))
+      (selBody (sccSel o) ((genCasc aut steps o).map pruneBranch)))
+    (chainT (aut.hlt o)
+      (selOthers (sccSel o) ((genCasc aut steps o).map pruneBranch)))
+
+open Classical in
+/-- **THE GENERAL PORT STEP**: a port closes over ANY certified,
+    dead-halted, port-supported prefix. -/
+theorem port_step_sched {S : Type} [DecidableEq S]
+    (aut : GAut S A T) (rank : S → Nat) (r : Nat)
+    (steps : List (S × RTree S A T)) (o : S)
+    (hsuppO : Supp (fun t => t = o) steps)
+    (hdead : ∀ p ∈ steps, DeadHalts p.2)
+    (hpre_rank : ∀ p ∈ steps, rank p.1 = r)
+    (hranko : rank o = r)
+    (hport : ∀ e ∈ aut.trans o,
+      (∃ q ∈ steps, e.2.2 = q.1) ∨ e.2.2 = o ∨ rank e.2.2 < r) :
+    Supp (fun t => rank t < r) [(o, genPortTree aut steps o)]
+      ∧ SchedOk (treeOf aut) steps [(o, genPortTree aut steps o)] := by
+  have hnoto : ∀ p ∈ steps, p.1 ≠ o := supp_not_P steps hsuppO
+  have hbranchCO : ∀ e ∈ aut.trans o,
+      ((∃ q ∈ steps, e.2.2 = q.1) ∨ e.2.2 = o) →
+      CallOnly (fun t => t = o)
+        (stepSubst steps (.call (.act e.2.1) e.2.2)) := by
+    intro e _ hcase
+    refine stepSubst_callOnly steps hsuppO _ ?_
+    show (∃ q ∈ steps, e.2.2 = q.1) ∨ e.2.2 = o
+    exact hcase
+  have hbranchLow : ∀ e ∈ aut.trans o, rank e.2.2 < r →
+      stepSubst steps (.call (.act e.2.1) e.2.2)
+        = .call (.act e.2.1) e.2.2 := by
+    intro e _ hlow
+    refine stepSubst_noop _ _ ?_
+    show CallOnly _ (RTree.call (.act e.2.1) e.2.2)
+    intro p hp hc
+    rw [hc, hpre_rank p hp] at hlow
+    omega
+  have hcascDead : ∀ b ∈ genCasc aut steps o, DeadHalts b.2 := by
+    intro b hb
+    obtain ⟨e, heL, hbe⟩ := List.mem_map.mp hb
+    rw [← hbe]
+    exact stepSubst_deadHalts steps hdead _ True.intro
+  have hselAll : ∀ b ∈ (genCasc aut steps o).map pruneBranch,
+      sccSel o b = true → AllCalls o b.2 := by
+    intro b _ hs
+    have hs' := Bool.and_eq_true_iff.mp hs
+    exact allCalls_of_bools o b.2 hs'.1 hs'.2
+  have hothersCO : ∀ b ∈ selOthers (sccSel o)
+      ((genCasc aut steps o).map pruneBranch),
+      CallOnly (fun t => rank t < r) b.2 := by
+    intro b hb
+    obtain ⟨hbin, hbsel⟩ := selOthers_sub (sccSel o) _ b hb
+    obtain ⟨b₀, hb₀, hbe⟩ := List.mem_map.mp hbin
+    obtain ⟨e, heL, hb₀e⟩ := List.mem_map.mp hb₀
+    rcases hport e heL with h1 | h2 | h3
+    · have hco : CallOnly (fun t => t = o) b₀.2 := by
+        rw [← hb₀e]
+        exact hbranchCO e heL (Or.inl h1)
+      cases hpr : pruneT b₀.2 with
+      | some t' =>
+          exfalso
+          have hbr : pruneBranch b₀ = (b₀.1, t') := by
+            show (match pruneT b₀.2 with
+              | some t' => (b₀.1, t') | none => b₀) = _
+            rw [hpr]
+          rw [hbr] at hbe
+          have hsel : sccSel o b = true := by
+            rw [← hbe]
+            show (callsB o t' && haltFreeB t') = true
+            rw [callsB_of_callOnly o t'
+              (callOnly_pruneT b₀.2 t' hco hpr),
+              pruneT_haltFree b₀.2 t' hpr]
+            rfl
+          rw [hsel] at hbsel
+          exact nomatch hbsel
+      | none =>
+          have hbr : pruneBranch b₀ = b₀ := by
+            show (match pruneT b₀.2 with
+              | some t' => (b₀.1, t') | none => b₀) = _
+            rw [hpr]
+          rw [hbr] at hbe
+          rw [← hbe]
+          exact pruneT_none_noCalls _ b₀.2 hpr
+    · exfalso
+      have hnoop : b₀.2 = .call (.act e.2.1) o := by
+        rw [← hb₀e]
+        show stepSubst steps (.call (.act e.2.1) e.2.2) = _
+        rw [h2]
+        refine stepSubst_noop _ _ ?_
+        show CallOnly _ (RTree.call (.act e.2.1) o)
+        intro p hp hc
+        exact (hnoto p hp) hc.symm
+      have hbr : pruneBranch b₀ = b₀ := by
+        show (match pruneT b₀.2 with
+          | some t' => (b₀.1, t') | none => b₀) = _
+        rw [hnoop]
+        show (b₀.1, RTree.call (.act e.2.1) o) = b₀
+        rw [← hnoop]
+      rw [hbr] at hbe
+      have hsel : sccSel o b = true := by
+        rw [← hbe]
+        show (callsB o b₀.2 && haltFreeB b₀.2) = true
+        rw [hnoop]
+        show (decide (o = o) && true) = true
+        rw [decide_eq_true rfl]
+        rfl
+      rw [hsel] at hbsel
+      exact nomatch hbsel
+    · have hnoop : b₀.2 = .call (.act e.2.1) e.2.2 := by
+        rw [← hb₀e]
+        exact hbranchLow e heL h3
+      have hbr : pruneBranch b₀ = b₀ := by
+        show (match pruneT b₀.2 with
+          | some t' => (b₀.1, t') | none => b₀) = _
+        rw [hnoop]
+        show (b₀.1, RTree.call (.act e.2.1) e.2.2) = b₀
+        rw [← hnoop]
+      rw [hbr] at hbe
+      rw [← hbe, hnoop]
+      exact h3
+  constructor
+  · refine Supp.cons o (genPortTree aut steps o) [] ?_ ?_ ?_ Supp.nil
+    · show CallOnly _ (chainT (aut.hlt o)
+        (selOthers (sccSel o) ((genCasc aut steps o).map pruneBranch)))
+      have hchain : ∀ (L : List (BExp T × RTree S A T)),
+          (∀ b ∈ L, CallOnly (fun t => rank t < r) b.2) →
+          CallOnly (fun t => (∃ q ∈ ([] :
+              List (S × RTree S A T)), t = q.1)
+            ∨ rank t < r) (chainT (aut.hlt o) L) := by
+        intro L
+        induction L with
+        | nil => intro _; exact True.intro
+        | cons b rest ihc =>
+            intro hall
+            exact ⟨callOnly_mono (fun t ht => Or.inr ht) _
+              (hall b (List.mem_cons_self ..)),
+              ihc (fun q hq => hall q (List.mem_cons_of_mem _ hq))⟩
+      exact hchain _ hothersCO
+    · intro q hq
+      exact nomatch hq
+    · rw [hranko]
+      omega
+  · refine ⟨?_, True.intro⟩
+    refine Or.inl ⟨selGuard (sccSel o)
+        ((genCasc aut steps o).map pruneBranch),
+      .call (selBody (sccSel o)
+        ((genCasc aut steps o).map pruneBranch)) o,
+      chainT (aut.hlt o) (selOthers (sccSel o)
+        ((genCasc aut steps o).map pruneBranch)),
+      ?_, rfl, rfl⟩
+    intro sol
+    show EquivBA (resolveT sol (stepSubst steps (treeOf aut o))) _
+    rw [treeOf_chainT, stepSubst_chainT, List.map_map]
+    have hcomp : ((aut.trans o).map
+        ((fun b => (b.1, stepSubst steps b.2))
+          ∘ (fun e => (e.1, RTree.call (.act e.2.1) e.2.2))))
+        = genCasc aut steps o := rfl
+    rw [hcomp]
+    refine EquivBA.trans (chain_prune_congr sol (aut.hlt o)
+      (genCasc aut steps o) hcascDead) ?_
+    exact port_gather sol o (sccSel o) (aut.hlt o)
+      ((genCasc aut steps o).map pruneBranch) hselAll
+
+#print axioms supp_not_P
+#print axioms Supp_append
+#print axioms SchedOk_append
+#print axioms port_step_sched
+
 end GkatElim

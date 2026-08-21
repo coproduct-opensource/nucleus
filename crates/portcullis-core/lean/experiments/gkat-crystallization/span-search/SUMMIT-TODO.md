@@ -2598,3 +2598,32 @@ every shape in all six strata, now producible generically. Remaining
 for FiniteAxiomsCompleteBA: nested sub-SCCs (hierarchy — interior
 cycles among interiors), and the Thompson census (enumerations +
 shape facts from the minimal automaton structure of ULE pairs).
+
+## Iteration 91 — HIERARCHY ARCHITECTURE: composition + the general port step
+
+**`Supp_append`** / **`SchedOk_append`** ([propext]): schedules
+concatenate — the left segment certified against (right-states ∨ P),
+the right against P; distinctness and off-support facts for the left
+segment come FREE from its own Supp (the hP field carries both).
+Plus `supp_not_P` (schedule states are off the external support).
+
+**`port_step_sched`** ([propext, Quot.sound] — leaner than
+scc_rank_sched, no classical gathering): a port closes over ANY
+certified prefix — hypotheses are just: the prefix Supp-supports
+toward {o}, its trees are dead-halted, its states are at rank r, and
+the port's arms hit prefix-states ∨ self ∨ lower. Produces the
+single-step Supp + SchedOk with `genPortTree` (the sccPortTree
+generalized to arbitrary prefixes). The entire scc_rank_sched branch
+classification transplants verbatim with steps-membership replacing
+interior-membership.
+
+NESTED HIERARCHY IS NOW A COMPOSITION PATTERN: inner-SCC schedules
+(built by the same constructors, supported toward their sub-ports)
+compose under outer ports via Supp_append/SchedOk_append +
+port_step_sched. No new closing mathematics needed — arbitrary
+loop-nesting depth is handled by iterating the port step.
+
+Remaining for FiniteAxiomsCompleteBA: THE THOMPSON CENSUS alone —
+enumerations + shape facts from minimal-automaton structure (the
+single open risk: multi-exit mutual cycles, believed unrealizable).
+Then: STEELMAN HARDENING.
