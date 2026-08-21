@@ -4157,7 +4157,11 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
     // LOOPIFY
     for &s in scc.iter() {
         let (br, fb) = match &eq[s] { Some(x) => x.clone(), None => continue };
-        if br.is_empty() || ex_occurs(&fb, s) { continue; }
+        // An equation with NO branches is still an equation — after a GATED
+        // rewrite of a state that only REJECTS on the differing atom, the
+        // branches are empty and the whole content is in the fallback.
+        // Skipping those is what made the last three instances unreachable.
+        if ex_occurs(&fb, s) { continue; }
         let mut g = 0u8;
         for (m, _) in br.iter() { g |= *m; }
         let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };

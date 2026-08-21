@@ -8542,3 +8542,61 @@ precondition count had said zero.  Those cancel.
 **NEXT: the three.**  They are small, dumped, and share one shape.  Either a
 fourth move handles them, or they are the first evidence that the calculus is
 incomplete.
+
+---
+
+## Iteration 193 — 99/99: the calculus solves every measured resistant instance
+
+192 left three resisters and said either a fourth move handles them or the
+calculus is incomplete.  **Neither: it was one condition in the search.**
+
+**THE BUG.**  A GATED rewrite of a state that only REJECTS on the differing
+atom produces an equation with NO BRANCHES — all its content is in the
+fallback.  `LOOPIFY`/`SUBST` skipped equations with an empty branch list.
+One `br.is_empty() ||`, and exactly that shape was unreachable.
+
+**THE SHAPE, worked by hand first** (which is how the condition was found —
+the derivation existed, so the search had to be wrong):
+
+    q0: hl=1100 st=[q0,q1,-,-]      q2: hl=1000 st=[q0,q1,-,-]
+    q1: hl=0000 st=[q2,q2,q2,q2]
+
+`q0` and `q2` have IDENTICAL transitions, differing only at `a2` where `q0`
+ACCEPTS and `q2` REJECTS.  GATED gives `X2 = ite a2 0 X0`, which is CLOSED.
+Substituting and rewriting `ite a2 0 X0 ≡ test(¬a2) ; X0` puts BOTH step
+branches in `… ; X0` form, and `w3` closes it.
+
+**THE RESULT — six populations, 240000 pairs each:**
+
+    NA=2 depth<=7    5 / 5      NA=2 depth<=10    3 / 3
+    NA=3 depth<=7   21 / 21     NA=3 depth<=10   26 / 26
+    NA=4 depth<=7   23 / 23     NA=4 depth<=10   21 / 21
+    -----------------------------------------------------
+    TOTAL                                       99 / 99
+
+**Every lattice-resistant SCC in ~1.44 million pairs is solved, and every
+solution is CONSTRUCTED AND LANGUAGE-CHECKED** — not a precondition, not an
+applicability rate.  Three atom counts, two expression depths.
+
+**What this is, and what it is not.**  It is: a three-rule calculus —
+elimination, gated identification, exit absorption — that solves every hard
+instance a large generator produces, with each answer verified.  It is not:
+a proof that it always does.  The gap between "every measured instance" and
+"every instance" is the same gap this problem has had for 193 iterations,
+and no amount of measurement closes it.
+
+**Odds: 60% → 66%.**  The instrument that produced 46/49 yesterday now
+produces 99/99, and the difference was a search bug rather than mathematics
+— so the evidence is about the calculus, not about my patience with it.
+Two things keep this from going higher: the calculus has no sufficiency
+proof, and none of it is in Lean yet.  Both are nameable next steps, which
+is itself worth something.
+
+**NEXT, and now the whole remainder in two lines:**
+
+1. **Formalize the calculus in Lean** — `gated_unknown_identification` and
+   `exit_absorb` exist; what is missing is the elimination loop as a theorem
+   about systems rather than a search over instances.
+2. **Prove sufficiency**: every behavioural quotient of a Thompson sum is
+   solved by these three rules.  That is the last statement standing between
+   this development and `SumQuotientSolvable`, hence completeness.
