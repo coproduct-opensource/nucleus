@@ -4813,21 +4813,24 @@ fn scc_census<const NA: usize>(nguards: u8) {
         .and_then(|v| v.parse().ok()).unwrap_or(10);
     let mut st0: u64 = 0x5EEDCAFE12345678;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
-    let mut buckets: FxMap<Vec<u8>, Vec<Aut<NA>>> = FxMap::default();
-    let mut pairs: Vec<(Aut<NA>, Aut<NA>)> = Vec::new();
+    // keep the GENERATING EXPRESSION alongside each automaton: when a census
+    // instance turns out to be open, the two source programs are the fastest
+    // route to understanding it (their canonical labels are candidate solutions).
+    let mut buckets: FxMap<Vec<u8>, Vec<(Aut<NA>, String)>> = FxMap::default();
+    let mut pairs: Vec<(Aut<NA>, Aut<NA>, String, String)> = Vec::new();
     let mut tries = 0usize;
     while pairs.len() < npairs && tries < 50_000_000 {
         tries += 1;
-        if let Some((a, _ae, _ap)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
+        if let Some((a, ae, _ap)) = genexp::<NA>(&mut rnd, depth, nguards, kmax) {
             if (a.k as usize) < kmin || (a.k as usize) > kmax { continue; }
             let c = match canon(&a) { Some(c) => c, None => continue };
             let beh = behaviour(&c);
             let v = buckets.entry(beh).or_default();
-            if v.iter().any(|x| *x == c) { continue; }
-            for x in v.iter() {
-                if pairs.len() < npairs { pairs.push((*x, c)); }
+            if v.iter().any(|(x, _)| *x == c) { continue; }
+            for (x, xe) in v.iter() {
+                if pairs.len() < npairs { pairs.push((*x, c, xe.clone(), ae.clone())); }
             }
-            if v.len() < 8 { v.push(c); }
+            if v.len() < 8 { v.push((c, ae.clone())); }
         }
     }
     println!("SCC CENSUS (NA={NA}, depth<={depth}, k in [{kmin},{kmax}]): {} pairs over {} tries",
@@ -4844,7 +4847,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut open_dumps = 0usize;
     let mut n_walked_scc = 0usize;
     let mut n_open_scc = 0usize;
-    for (a, b) in pairs.iter() {
+    for (a, b, aexp, bexp) in pairs.iter() {
         let su = match sum_core(a, b) { Some(s) => s, None => continue };
         let k = su.k as usize;
         // liveness fixpoint (Live in the Lean sense: nonempty language)
@@ -5036,6 +5039,9 @@ fn scc_census<const NA: usize>(nguards: u8) {
                         }).collect();
                         println!("    state {s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
                     }
+                    println!("    -- source programs (language-equivalent pair):");
+                    println!("       e = {aexp}");
+                    println!("       f = {bexp}");
                     // the whole quotient, so the exit targets X* are readable too
                     println!("    -- full quotient:");
                     for s in 0..(q.k as usize) {

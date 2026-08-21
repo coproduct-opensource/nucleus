@@ -3946,3 +3946,79 @@ fully written out above — small enough to settle by hand or by
 exhaustive search over closing strategies.  Settling it either yields
 the two-port closing (and with it, plausibly, the general method) or
 produces the campaign's first genuine negative result.
+
+## Iteration 119 — ★ THE TWO-PORT INSTANCE, SOLVED BY HAND — AND IT SAYS ELIMINATION IS THE WRONG TOOL ★
+
+Extended the census dump to retain and print the GENERATING
+EXPRESSIONS for each open instance (buckets now carry `(Aut, String)`,
+pairs carry both source programs).  With the actual programs in hand,
+OPEN-SCC #3 can be worked all the way through by hand.
+
+**The instance, fully reduced.**  Exit target `X2` halts on every atom
+with no arms, so `X2 ≈ test 1` and every `p·X2 ≈ p`.  Writing atoms
+α0..α3:
+
+    s0 ≈ [α0] p·s1 + [α1] p + [α2] p·s0 + [α3] p
+    s1 ≈ [α0] p·s1 + [α2] p·s0 + [α3] p          (rejects α1)
+
+Gather s1's α0 self-loop and close by `w3`:
+`s1 ≈ W·R` with `W := wh α0 p`, `R := ite α2 (p·s0) (ite α3 p 0)`.
+Substituting into s0 and noticing that s0's tail below α1 IS `R`:
+
+    s0 ≈ ite α0 (p·W·R) (ite α1 p R)
+    s1 ≈ ite α0 (p·W·R) R              (w1-unroll of W·R, via u5)
+
+**They differ ONLY in the α1 branch**, which yields a clean derived
+relation worth recording in its own right:
+
+    ★ s0 ≈ ite α1 p s1 ★
+
+(check: α1 → p on both readings; α0 → p·W·R both; α2 → p·s0 both;
+α3 → p both).  So the two members of a two-port SCC differ by a single
+GUARDED PATCH — one atom's worth of behaviour.  If that generalizes,
+two-port SCC members are never far apart, which is a structural handle
+the campaign has not had.
+
+**And now the obstruction, in its sharpest possible form.**
+Substituting back gives a SINGLE-UNKNOWN equation:
+
+    s0 ≈ ite α1 p ( W · ( ite α2 (p·s0) (α3?·p) ) )
+
+One unknown, one occurrence, everything else closed.  And `w3` still
+cannot close it — because `w3` requires `x ≈ ite G (BODY·x) REST`, with
+the exit REST at the TOP, whereas here the exit `α3?·p` is reached only
+AFTER `W` has run.  **This is a loop with an exit in the middle of its
+body.**  Not a multi-unknown problem at all — a single-unknown problem
+outside `w3`'s shape.
+
+That is the crispest statement of the residue the campaign has
+produced: not "n unknowns need n-ary uniqueness", but **"one unknown
+can already sit outside unary uniqueness's shape, because GKAT's loop
+construct has exactly one exit and its guard is read at the top."**
+
+**THE STRATEGIC CONCLUSION, and it redirects the campaign.**  The
+language of this instance IS expressible — the harness printed the two
+source programs that generate it (both are `wh`-programs over two
+tests; recorded in the dump).  So a solution EXISTS as syntax; what
+fails is reaching it BY ELIMINATION.  Since `sum_solves_std`
+(iteration 114) already proves the solution exists and exhibits it as
+the canonical labelling, and `sum_solution_rigid` pins every solution
+to that one class, **the elimination route is strictly weaker than the
+unification route here**: elimination tries to CONSTRUCT what
+canonicity already HANDS us.
+
+So iteration 116's correction ("the RoleCovered route is alive") should
+be sharpened once more: the role/schedule route is alive but is NOT the
+one that closes two-port SCCs.  For those, the move is to stop
+constructing and start transporting — use `ParametricCanonicalBA` on
+the SOURCE programs together with the subsystem lemmas, which is
+exactly the machinery iterations 100-111 built and 114-116 sharpened.
+
+**Revised residue.**  Prove UNIF at in-class arm targets
+(`unif_of_wf_mod_cycles`' remaining hypothesis) for two-port SCCs, via
+per-side canonicity rather than elimination.  The derived patch
+relation `s0 ≈ ite α1 p s1` suggests the shape of the argument: within
+a class, members differ by guarded patches on atoms where one side
+halts and the other rejects, and `bisim_hlt_invariant` already says
+bisimilar states agree on halting — so the patches must be
+reconstructible from the bisimulation itself.
