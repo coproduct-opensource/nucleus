@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_EXISTS").is_ok() {
+        exists_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_LAYERED").is_ok() {
         layered_test::<NA>(nguards as u8);
         return;
@@ -11888,6 +11892,73 @@ fn layered_test<const NA: usize>(nguards: u8) {
     }
     println!("  layered_test NA={NA}: {n} Thompson automata; \
         (a) layered-LLEE holds on {a_ok}; (b) survives collapse {b_ok}; \
+        (c) agrees with solvable {agree}, LLEE-but-UNsolvable {l_not_s}, \
+        solvable-but-no-LLEE {s_not_l}");
+}
+
+/// **LLEE AS AN EXISTENTIAL OVER LABELLINGS** (iteration 233).
+///
+/// 232's test committed to one elimination order — innermost-first natural
+/// loops of a particular DFS — which made it a sound SUFFICIENT test rather than
+/// a decision procedure, and explained both its shortfalls at once: it reports
+/// failure whenever the canonical labelling fails, even when another labelling
+/// would succeed.
+///
+/// LLEE asks whether SOME valid labelling exists, so search: at each step, try
+/// eliminating ANY eligible loop, and succeed if any order runs to an acyclic
+/// graph.  A loop is eligible when no state of its body halts inside its own
+/// guard — the `loop_core_hlt` condition — and eliminating it removes its back
+/// edges, after which loops that were not DFS-natural before may become so.
+fn llee_exists<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    let loops = natural_loops(g);
+    if loops.is_empty() { return true; }
+    for (h, body, b) in loops.iter() {
+        if body.iter().any(|&s| g.hl[s] & b != 0) { continue; }   // ineligible
+        let mut g2 = *g;
+        for &s in body.iter() {
+            for y in 0..NA {
+                if b >> y & 1 == 0 { continue; }
+                if g2.st[s][y] == (*h + 1) as u8 { g2.st[s][y] = 0; }
+            }
+        }
+        if g2.st == g.st { continue; }                            // no progress
+        if llee_exists(&g2, budget) { return true; }
+    }
+    false
+}
+
+fn exists_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x082EFA98EC4E6C89;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut a_ok, mut b_ok, mut agree, mut l_not_s, mut s_not_l) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..40_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        let mut bud = 20_000usize;
+        let la = llee_exists(&a, &mut bud);
+        if la { a_ok += 1; }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let mut bud2 = 20_000usize;
+            let lq = llee_exists(&qq, &mut bud2);
+            if !la || lq { b_ok += 1; }
+            let solve = {
+                let sing = singleton_states(&qq);
+                sccs_of(&qq).iter().all(|c| c.len() < 2
+                    || calculus_solves(&qq, c, 6)
+                    || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
+            };
+            if lq == solve { agree += 1; }
+            else if lq { l_not_s += 1; } else { s_not_l += 1; }
+        }
+    }
+    println!("  exists_test NA={NA}: {n} Thompson automata; \
+        (a) LLEE-exists holds on {a_ok}; (b) survives collapse {b_ok}; \
         (c) agrees with solvable {agree}, LLEE-but-UNsolvable {l_not_s}, \
         solvable-but-no-LLEE {s_not_l}");
 }

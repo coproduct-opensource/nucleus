@@ -10699,3 +10699,55 @@ shown to hold at 100% on Thompson automata, which is requirement (a).
 **Next.**  Layered elimination: compute the loop-nesting forest, eliminate
 innermost loops first, and read each outer guard on the reduced graph.  Target
 is (a) at 100%, with (b) collapse-stability and (c) sufficiency re-checked.
+
+---
+
+## 233 — THE EXISTENTIAL BARELY HELPS.  A structural mismatch I have been glossing.
+
+232 blamed its shortfalls on committing to one labelling and named the fix:
+search over elimination orders instead.  Done — at each step try eliminating ANY
+eligible loop, succeed if any order reaches an acyclic graph.
+
+                                NA=2                 NA=3
+    (a) LLEE-exists holds   13 227/13 248 99.84%     99.28%
+    (b) survives collapse   13 201/13 248 99.65%     99.31%
+    (c) LLEE-but-UNSOLVABLE        0                    0
+        solvable-but-no-LLEE      53                  145
+
+**Sufficiency holds a fourth time — 0 counterexamples.**  But the existential
+bought about 0.05 percentage points, not the missing 0.16, and **(a) is still
+not 100%.**  232's diagnosis was therefore only a small part of the story.
+
+**Three refinements, 94% -> 99% -> 99.84%, never closing, each trading one
+defect for another.  That pattern indicts the model, not the implementation —
+and there is a mismatch I have been glossing over since 224.**
+
+**Milner's charts have PLAIN ACTION transitions.  GKAT's have GUARDED ones.**
+LLEE was designed where a transition is `s -a-> t`; in GKAT it is
+`s -(g,a)-> t`, and a state's behaviour is a decision list over atoms.  Every
+condition I have written — "no state of the body halts inside the guard" — is my
+own guess at what LLEE's "no successful termination mid-loop" becomes when
+transitions carry tests.  The measurements say that guess is close (99.8%) and
+not right.  I should have flagged this at 224 when I wrote "only the GKAT
+translation is missing": the translation is not a formality, it is the content.
+
+**What survives regardless.**  Across four independent formulations —
+`uniform_guard`, natural-loop guards, layered elimination, and now the
+existential — the SUFFICIENCY direction has never once failed: a graph-only
+certificate that succeeds always yields a solvable automaton, over ~200 000
+automata cumulatively.  That direction is not in doubt.  It is completeness on
+Thompson automata, requirement (a), that resists.
+
+**Odds: 79%, DOWN 1.**  Three iterations of refinement have not reached
+requirement (a), and the reason now looks structural rather than incidental:
+LLEE's conditions are stated for unguarded charts and I have been guessing their
+guarded analogue. That is a larger gap than "port the definition", which is how
+224 priced it, and the price should come down accordingly.  The route is not
+refuted — sufficiency and 223's collapse measurement both stand — but it is
+further away than I said.
+
+**Next.**  Stop guessing the guarded analogue and derive it: take
+`loopInitialized` and `seqGSystem` and read off what IS true of every Thompson
+chart's loops, rather than proposing conditions and testing them.  The
+construction is in the repo; the conditions should be extracted from it, not
+invented.
