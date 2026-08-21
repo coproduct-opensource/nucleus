@@ -10244,3 +10244,71 @@ the one hand-checked instance dissolved completely rather than partially.
 **Next.**  The minimised k=4 rerun.  If it returns 0, the 132 are explained and
 the exhaustive result stands at k<=4.  If it returns anything, those are real
 and hand-checking them is the next iteration.
+
+---
+
+## 224 — THE ROUTE, CONFIRMED FROM THE SOURCE.  LLEE IS THE MISSING STRUCTURE.
+
+223's caveat is discharged, and the answer is stronger than the caveat asked
+for.  From Grabmayer's paper directly:
+
+> "For proper-step LLEE-charts, bisimulation collapse preserves LLEE.  However,
+> when empty-step transitions are present, LLEE-1-charts are not closed under
+> bisimulation collapse."
+
+> "all provable solutions of a guarded LLEE-1-chart are Mil-provably equal"
+
+and every prechart with LLEE ADMITS a solution — existence, not merely
+uniqueness.  So my inference at 223 was right for the right reason: GKAT
+transitions all carry actions, GKAT is the proper-step case, and the certificate
+survives collapse.  The 0-in-131 714 measurement now has a proof behind it
+rather than a hypothesis.
+
+**But the important thing is the chain this exposes:**
+
+    Thompson(e) has LLEE                    structural, by construction
+    LLEE ⟹ a solution EXISTS                existence, not just uniqueness
+    proper-step ⟹ LLEE survives collapse    the fact just confirmed
+    ────────────────────────────────────────────────────────────────────
+    the collapse of a Thompson sum is solvable
+      ⟹ SumQuotientSolvable ⟹ completeness
+
+Every link is PROVED in the regular-expression setting.  What is missing is the
+GKAT translation of each, not the ideas.  And it explains, after the fact, why
+six rules kept sufficing: **they are the GKAT loop-elimination moves, and LLEE
+is the structural condition under which elimination is guaranteed to terminate
+with a solution.**  I derived rules 5 and 6 from resisters without knowing they
+were instances of a known elimination discipline.
+
+**What this replaces.**  217's plan was an induction on expressions with three
+open steps, and 219-221 established that its `wh` step is genuinely hard and
+that the obvious strengthening is false.  The LLEE route does not need that
+induction: LLEE is proved for Thompson charts structurally, and then the
+collapse is handled by a CLOSURE theorem rather than by re-doing the induction
+on the quotient.  That is exactly the step 217's plan had no answer for.
+
+**The translation risk, stated up front.**  GKAT's notion of termination is not
+Milner's.  A GKAT loop body TERMINATES in order to iterate — halting is how
+`wh b e` returns to its head — whereas LLEE's condition is that "no successful
+termination can occur mid-loop".  Those may or may not line up; if they do not,
+the LLEE definition needs a guarded analogue and the closure proof may not
+transfer.  This is the thing to check first, and it is checkable before any Lean
+is written.
+
+**Meanwhile, what the exhaustive data already says.**  At k<=4, NA=2, over all
+1 695 497 automata, minimised, both directions verified: solvable-but-unsolved =
+0.  Since every calculus success carries a language-checked witness, the
+converse is automatic.  **So on that population the six-rule calculus IS the
+solvability characterization, exactly** — the thing the GKAT literature says
+"would go a long way".  Empirically, on a bounded population, but exactly.
+
+**Odds: 79%, up 1.**  A confirmed route with every link already proved somewhere
+is worth more than another measurement, and it arrives precisely where 221 left
+the induction stuck.  Only +1 because the translation risk above is real and
+unassessed, and because a route being proved elsewhere has, in this session,
+twice not survived contact with my setting (205's characterization, 220's
+parametric IH).
+
+**Next.**  Check the termination mismatch: does LLEE's "no successful
+termination mid-loop" have a guarded analogue that GKAT's Thompson charts
+satisfy?  Measure it on Thompson automata before writing any Lean.
