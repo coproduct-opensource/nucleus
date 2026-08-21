@@ -2495,4 +2495,77 @@ theorem cross_unif_of_same_side (e f : Exp A T) [DecidableEq A]
 #print axioms solves_of_partner
 #print axioms cross_unif_of_same_side
 
+/-! ## Standard-label projections: the interface for the size induction
+
+    Same-side UNIF is now the sole mathematical input, and by iteration
+    122's addendum it must be attacked by induction on program SIZE.
+    That induction needs to read a compound program's standard labels
+    off its subprograms' — and every such projection is DEFINITIONAL,
+    because `certifiedThompson` is a structural recursion and each
+    constructor's certificate carries the obvious labelling.
+
+    Recording them as named `rfl` lemmas so the induction can cite them
+    instead of unfolding constructors, and so the ONE fact the
+    literature names as the canonical cause of same-side bisimilarity —
+    duplicated subterms, `ite c p p` — is discharged outright. -/
+
+/-- The left branch of an `ite` keeps its own labels. -/
+theorem ite_standard_inl (c : BExp T) (p q : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T p).State) :
+    (GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inl s)
+      = (GkatThompson.certifiedThompson A T p).standard s := rfl
+
+/-- The right branch of an `ite` keeps its own labels. -/
+theorem ite_standard_inr (c : BExp T) (p q : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T q).State) :
+    (GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inr s)
+      = (GkatThompson.certifiedThompson A T q).standard s := rfl
+
+/-- The left factor of a `seq` keeps its own labels. -/
+theorem seq_standard_inl (p q : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T p).State) :
+    (GkatThompson.certifiedThompson A T (.seq p q)).standard (.inl s)
+      = .seq ((GkatThompson.certifiedThompson A T p).standard s) q := rfl
+
+/-- A loop's labels are its body's labels FOLLOWED BY THE LOOP ITSELF.
+    `loopInitialized` adds no states, but the labelling is not the
+    body's verbatim: a body state's continuation includes re-entering
+    the loop.  (Checked — the naive `= bodyStandard s` is NOT
+    definitional, which is exactly the feedback showing up in the
+    labelling rather than only in the arms.) -/
+theorem wh_standard (g : BExp T) (b : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T b).State) :
+    (GkatThompson.certifiedThompson A T (.wh g b)).standard s
+      = .seq ((GkatThompson.certifiedThompson A T b).standard s)
+        (.wh g b) := rfl
+
+/-- **THE CANONICAL CAUSE OF SAME-SIDE BISIMILARITY IS FREE**: the two
+    branches of a duplicated conditional carry LITERALLY EQUAL labels.
+    The literature (position automata are non-reduced; partial-derivative
+    automata are their bisimulation quotients) names duplicated subterms
+    as the canonical source of distinct-but-bisimilar states in one
+    expression's automaton — and for standard labels it costs nothing. -/
+theorem dup_branch_standard_eq (c : BExp T) (p : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T p).State) :
+    (GkatThompson.certifiedThompson A T (.ite c p p)).standard (.inl s)
+      = (GkatThompson.certifiedThompson A T (.ite c p p)).standard (.inr s) :=
+  rfl
+
+open Classical in
+/-- Consequently same-side UNIF is immediate for duplicated branches,
+    at any pair of corresponding states. -/
+theorem dup_branch_unif (c : BExp T) (p : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T p).State) :
+    EquivBA
+      ((GkatThompson.certifiedThompson A T (.ite c p p)).standard (.inl s))
+      ((GkatThompson.certifiedThompson A T (.ite c p p)).standard (.inr s)) :=
+  EquivBA.base (Equiv.refl _)
+
+#print axioms ite_standard_inl
+#print axioms ite_standard_inr
+#print axioms seq_standard_inl
+#print axioms wh_standard
+#print axioms dup_branch_standard_eq
+#print axioms dup_branch_unif
+
 end GkatCensus

@@ -4396,3 +4396,65 @@ precedented one, with the side condition traded for a proof obligation
 The route is now three named pieces: partner construction, same-side
 UNIF, and the size induction that ties them.  All three are stated;
 none is hand-waved; two are open.
+
+## Iteration 124 — the size-induction interface, and the dead-state gap gets an answer from the literature
+
+**Six new lemmas** (all `rfl`, [propext, Quot.sound] from the ambient
+`certifiedThompson` definitions) giving the structural interface the
+size induction on same-side UNIF needs:
+
+* `ite_standard_inl` / `ite_standard_inr` — an `ite`'s branches keep
+  their own subprogram's labels, verbatim.
+* `seq_standard_inl` — a `seq`'s left factor's label is its own label
+  followed by the right program.
+* `wh_standard` — **and here the naive statement is FALSE.**  A loop
+  adds no states, so `standard s = bodyStandard s` looks right; it is
+  NOT definitional and does not hold.  The truth is
+  `standard s = bodyStandard s · (wh g b)` — the feedback shows up in
+  the LABELLING, not only in the arms.  Worth having found by building
+  it rather than assuming it; a size induction that assumed the naive
+  form would have silently mis-stated its own inductive hypothesis.
+* **`dup_branch_standard_eq` / `dup_branch_unif`** — the two branches of
+  a DUPLICATED conditional `ite c p p` carry LITERALLY EQUAL labels, so
+  same-side UNIF there is `rfl`.  The literature names duplicated
+  subterms as the canonical cause of distinct-but-bisimilar states in
+  one expression's automaton (position automata are non-reduced;
+  partial-derivative automata are their bisimulation quotients).  For
+  standard labels that cause costs nothing.  The canonical case of the
+  remaining input is discharged.
+
+**THE DEAD-STATE GAP — the literature's verdict, and it is useful.**
+Searched for whether a labelling on the accessible/live part extends to
+the whole automaton.  Answer: **no clean extension theorem exists, and
+none is expected.**  In coalgebra the canonical normalization is
+simple-quotient-then-least-subcoalgebra, yielding a WELL-POINTED
+coalgebra (Adámek-Milius-Moss-Sousa) — and the accessible part is a
+CORREFLECTION, so a labelling on `Reach(B)` is unique but does NOT
+canonically extend to `B`.  Extension is a genuine extra obligation,
+not a functorial freebie.
+
+And GKAT/KAT proofs never prove "dead ⟹ labelled 0" by extension —
+they NORMALIZE IT AWAY: dead states are found by a separate backward
+reachability pass and their incoming arms rewritten to immediate
+rejection, so the labelling is only ever defined on a trimmed automaton
+whose language semantics is provably unchanged.  **That is what breaks
+the circularity**, and it is exactly what this repo's `trimAut` /
+`solvesBA_untrim` already do.
+
+**Consequence for the route.**  The recommendation is explicit: if the
+surrounding argument needs the untrimmed automaton, do NOT extend the
+labelling — prove a TRANSPORT lemma instead and reformulate over
+trimmed automata only.  This repo currently has the tension in exactly
+that shape: `ParametricCanonicalBA` speaks about the RAW Thompson core,
+while bisimilarity and the partner map live on `trimAut`.  So the
+partner gap (iteration 123's gap 1) is not a hole to be plugged by
+cleverness — it is a signal that the canonicity interface should be
+re-based onto the trim.  That is a concrete, bounded engineering task
+on machinery that already exists, not a new mathematical unknown.
+
+**Route status.**  Three named pieces: (1) partner construction — now
+understood as "re-base canonicity onto the trim", with `solvesBA_untrim`
+as the existing half; (2) same-side UNIF — canonical cause discharged
+today, general case open; (3) the size induction — its structural
+interface now exists, with `wh_standard` correcting the shape of the
+loop case before it could mislead.
