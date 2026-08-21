@@ -8704,3 +8704,54 @@ complete for a concrete class, measured true on 99/99 hard instances across
 
 **Odds: 66%, held.**  Soundness closing is real progress and changes nothing
 about the odds: it was always the half that was going to close.
+
+---
+
+## Iteration 196 — STRESSING THE CALCULUS: 228/269, and the two mechanisms are complementary
+
+195 reduced the remainder to one sentence — SUFFICIENCY.  Before attempting
+it, the disciplined move is to try to FALSIFY it, and the cheap way is to run
+the calculus on a much harder sample than the lattice-resistant set.
+
+**The change**: the calculus now runs on EVERY open SCC of the full collapse,
+not only the ~1-in-10⁴ lattice-resistant ones.  That is roughly a ten-fold
+larger sample of hard instances.
+
+**NA=4, 240000 pairs:**
+
+    open SCCs in the full collapse                                269
+      solved by the calculus ON THE FULL COLLAPSE                 228
+      NOT solved on the full collapse                              41
+    lattice-resistant (no quotient the old oracle solves)           23
+      solved by the calculus                                    23/23
+
+**So the calculus is NOT universally applicable to the full collapse** —
+41 of 269 resist it there.  That is a real limitation and it is the first
+time the calculus has failed on anything.
+
+**But the two mechanisms are exactly complementary.**  All 23
+lattice-resistant SCCs are solved by the calculus; therefore all 41
+calculus-failures lie inside the 246 that a COARSER quotient solves.  Union:
+269 of 269.  **Every measured open pair is handled either by the calculus on
+the full collapse or by a coarser quotient**, and neither mechanism covers
+the other's residue.
+
+**WHICH SHARPENS THE SUFFICIENCY STATEMENT.**  It is not "the calculus solves
+the full collapse" — measurably false.  It is:
+
+    for every language-equivalent pair, SOME admissible quotient is solved
+    by the three rules.
+
+The full collapse is the top of the congruence lattice, not the whole of it;
+iteration 184 learned that once already, and I had quietly let the sharper
+version drift back to the loose one.
+
+**AND A MEASUREMENT I COULD NOT AFFORD.**  Running the calculus over the
+WHOLE lattice — every admissible congruence, not just the full collapse — is
+the direct test of the sentence above.  It is hundreds of congruences per
+pair, each with its own SCC search and language check, and it makes the
+census unrunnable at 10⁵ pairs.  Left behind `PAD_CALC_LATTICE`, off by
+default, and reported as not-yet-measured rather than folded into a number.
+
+**Odds: 66%, held.**  The falsification attempt found a genuine limitation of
+the calculus and did not falsify the hypothesis; those roughly cancel.

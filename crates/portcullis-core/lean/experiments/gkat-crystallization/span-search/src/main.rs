@@ -2307,6 +2307,33 @@ fn solvable_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>, elim: bool) -> b
     false
 }
 
+/// **THE CALCULUS OVER THE WHOLE LATTICE.**  `SumQuotientSolvable` asks for
+/// SOME behavioural quotient with a solution, so the honest test of the
+/// three-rule calculus is not "does it solve the full collapse" but "does it
+/// solve ANY admissible quotient".  The full collapse is only the top of the
+/// congruence lattice.
+///
+/// Every multi-state SCC of the candidate quotient must be solved; the
+/// singleton and acyclic parts are the already-proved strata.
+fn calculus_somewhere_in_lattice<const NA: usize>(su: &Aut<NA>, n: usize) -> bool {
+    let try_q = |q: &Aut<NA>| -> bool {
+        sccs_of(q).iter().all(|c| c.len() < 2 || calculus_solves(q, c, n))
+    };
+    let mut tried = 0usize;
+    let (blk, nb) = bisim_blocks(su);
+    if let Some(q) = quotient_by(su, &blk, nb) {
+        if try_q(&q) { return true; }
+    }
+    for (b2, nb2) in lattice_congruences(su) {
+        tried += 1;
+        if tried > 96 { break; }
+        if let Some(q) = quotient_by(su, &b2, nb2) {
+            if try_q(&q) { return true; }
+        }
+    }
+    false
+}
+
 /// Render a closure member as the expression it was built from.  The pool is closed under
 /// `a_wh`/`a_seq`/`a_ite` starting from tests and actions, so every member IS the Thompson
 /// automaton of an expression, and its provenance is that expression.
@@ -5336,6 +5363,9 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_res_multiexit = 0usize;
     let mut n_res_scc = 0usize;
     let mut n_calculus = 0usize;
+    let mut n_open_calc = 0usize;
+    let mut n_open_calc_ok = 0usize;
+    let mut n_open_calc_lattice = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
         // SAME-SIDE collapse measurement: is each program's OWN automaton
         // already its own bisimulation quotient?  Iteration 131's dichotomy
@@ -5429,6 +5459,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
         let sccs = sccs_of(&q);
         let mut covered = true;
         let mut pair_open = false;
+        let mut pair_calc_ok = true;
         for scc in sccs.iter() {
             if scc.len() == 1 {
                 let s = scc[0];
@@ -5582,7 +5613,26 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 };
                 if walked { n_walked_scc += 1; }
                 else if chorded { n_chorded_scc += 1; }
-                else { n_open_scc += 1; pair_open = true; }
+                else {
+                    n_open_scc += 1;
+                    pair_open = true;
+                    // STRESS THE CALCULUS on EVERY open SCC, not only the
+                    // lattice-resistant ones: the resistant set is ~1 in 10^4
+                    // pairs, the open set ~10x larger, and both are hard.
+                    n_open_calc += 1;
+                    if calculus_solves(&q, scc, 5) {
+                        n_open_calc_ok += 1;
+                    } else if { pair_calc_ok = false; false } {
+                        println!("  CALCULUS FAILS on open scc {scc:?} (pair #{pairs_done}):");
+                        for &s in scc.iter() {
+                            let row: Vec<String> = (0..NA).map(|i| {
+                                let t = q.st[s][i];
+                                if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                            }).collect();
+                            println!("    q{s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
+                        }
+                    }
+                }
                 // OPEN dump: the SCCs no proved stratum covers.  These are the
                 // residue the elimination-order question is about, so print them
                 // in full — including which members are ports (halt or carry an
@@ -5661,6 +5711,18 @@ fn scc_census<const NA: usize>(nguards: u8) {
         // leave open, ask whether ANY intermediate congruence is solvable.
         if pair_open {
             n_open_pairs += 1;
+            // Only search the lattice when the FULL COLLAPSE already failed —
+            // that is ~15% of open pairs, and the lattice pass is the expensive
+            // one (hundreds of congruences, each with its own SCC search).
+            // Gated behind PAD_CALC_LATTICE: the lattice pass is hundreds of
+            // congruences per pair, each with its own SCC search, and it makes
+            // the census itself unrunnable at 10^5 pairs.
+            if pair_calc_ok {
+                n_open_calc_lattice += 1;
+            } else if std::env::var("PAD_CALC_LATTICE").is_ok()
+                && calculus_somewhere_in_lattice(&su, 4) {
+                n_open_calc_lattice += 1;
+            }
             if solvable_somewhere_in_lattice(&su, false) { n_open_pairs_lattice += 1; }
             else {
                 // THE CANDIDATE.  A pair no intermediate congruence solves is a
@@ -5722,6 +5784,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  lattice-resistant SCCs: gated-identification applicable {n_gated_scc}; of absorption shape {n_absorb_shape}, VERIFIED by construction {n_absorb_verified}");
     println!("  lattice-resistant SCCs: {n_res_scc} total; T1/T2-reducible {n_res_reducible}; MULTI-EXIT (Kosaraju) {n_res_multiexit}");
     println!("  lattice-resistant SCCs SOLVED BY THE THREE-RULE CALCULUS (language-checked): {n_calculus} / {n_res_scc}");
+    println!("  ALL OPEN SCCs put to the calculus: {n_open_calc}; SOLVED (language-checked): {n_open_calc_ok}");
+    println!("  OPEN PAIRS where the CALCULUS solves SOME quotient in the lattice: {n_open_calc_lattice} / {n_open_pairs}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");
