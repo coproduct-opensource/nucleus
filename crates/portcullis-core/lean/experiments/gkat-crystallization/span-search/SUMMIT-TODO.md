@@ -10187,3 +10187,60 @@ differ in the body exactly where the body halts and the guard holds, and there
 BOTH restart the loop.  That is a statement about the body's halt region, not
 about arbitrary continuations — so the right strengthening quantifies over
 REDIRECTIONS, with the continuation DETERMINED by the redirection, not free.
+
+---
+
+## 222 — 132 "COUNTEREXAMPLES" AT k=4, AND WHY THEY ARE NON-MINIMALITY ARTIFACTS.
+## Plus: the literature's open questions are, verbatim, this project's.
+
+**The literature first, because it reframes the odds.**  Kappé–Schmid–Silva,
+*A Complete Inference System for Skip-free GKAT* (ESOP 2023).  Skip-free
+excludes programs that can terminate WITHOUT executing an action:
+
+    e ::= 0 | p | e₁ +_b e₂ | e₁·e₂ | e₁^(b) e₂
+
+On that fragment the axiomatization is **purely equational — no guardedness side
+condition at all**, with `x^(b) y = x(x^(b) y) +_b y` unconditioned, proved by
+reduction to Grabmayer–Fokkink one-free regular expressions.  And on the full
+language they write that the questions "whether (UA) can be derived from the
+other GKAT axioms and whether the non-algebraic side condition can be removed"
+**remain open**.  Those are this project's two questions, stated by the people
+who posed them.  It is worth knowing that the target is the field's live
+problem and not a gap in my reading — and equally worth knowing that skip-free
+does NOT hand it over: it buys equational completeness by excluding exactly the
+immediate-termination behaviour that makes the general case hard.
+
+**Then the census delivered 132 apparent counterexamples**, k=4, NA=2, over all
+1 679 616 automata — and with the SOUND filter (`synth`, a verified witness),
+not the discredited oracle.  Under any earlier iteration that is the headline.
+
+**It is not, and hand-checking the first one shows why.**  `code=159545`:
+
+    q0: st=[q3,q2]   q1: hl={a1} st=[q1,-]   q2: st=[q1,q0]   q3: hl={a1} st=[q1,-]
+
+`q1` and `q3` are LITERALLY IDENTICAL, so `q1 ~ q3`; then `q0 ~ q2` by symmetry,
+and the automaton collapses to two states solved by `wh a1 p ; p ; wh a0 p`.
+The calculus fails only because it sees `Sub(q1)` and `Sub(q3)` as DISTINCT
+OPAQUE ORACLES.  That is non-minimality, not a gap in the rules.
+
+**And the enumeration was testing the wrong objects.**  The target theorem
+quantifies over behavioural QUOTIENTS of Thompson sums, which are
+bisimulation-minimal by construction.  A raw enumerated automaton is not.  So
+the exhaustive test has been strictly harder than the theorem all along — in a
+way that manufactures failures.  Minimising before the calculus runs:
+
+    NA=2 k=2:    256 automata   0
+    NA=2 k=3: 15 625 automata   0      (unchanged — these were already minimal)
+    NA=2 k=4: 1 679 616         re-running
+
+**Odds: 76%, held.**  Two things pulling opposite ways and cancelling.  Against:
+I have now had to explain away a counterexample count for the second time, and
+"the instrument was testing something harder than the theorem" is a comfortable
+thing to conclude — it is right here, but it is the kind of conclusion that
+needs the minimised rerun to confirm it, which is pending.  For: the literature
+confirms the target is the field's open question rather than a misreading, and
+the one hand-checked instance dissolved completely rather than partially.
+
+**Next.**  The minimised k=4 rerun.  If it returns 0, the 132 are explained and
+the exhaustive result stands at k<=4.  If it returns anything, those are real
+and hand-checking them is the next iteration.

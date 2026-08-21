@@ -5963,6 +5963,18 @@ fn exhaustive<const NA: usize>() {
             // either test may gate the other.  Gate on the lookup: an automaton
             // whose behaviour is not in the table is not known solvable and can
             // never be a counterexample, whatever the calculus does with it.
+            // MINIMISE FIRST.  The target theorem is about behavioural
+            // QUOTIENTS of Thompson sums, which are bisimulation-minimal by
+            // construction; a raw enumerated automaton is not.  That
+            // difference is not cosmetic: at k=4 the un-minimised run reported
+            // 132 "counterexamples", and the first one hand-checked
+            // (code=159545) has q1 and q3 literally identical, so q1 ~ q3 and
+            // then q0 ~ q2, collapsing to two states solved by
+            // `wh a1 p ; p ; wh a0 p`.  The calculus failed only because it
+            // sees `Sub(q1)` and `Sub(q3)` as DISTINCT OPAQUE ORACLES — an
+            // artifact of non-minimality, not a gap in the rules.
+            let a = match bisim_blocks(&a) { (blk, nb) =>
+                match quotient_by(&a, &blk, nb) { Some(q) => q, None => return false } };
             let sccs = sccs_of(&a);
             if !sccs.iter().any(|c| c.len() >= 2) { return false; }
             // Solvability by CONSTRUCTION, not by an oracle.  Both oracles
