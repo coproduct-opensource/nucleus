@@ -1288,4 +1288,177 @@ theorem walked_assembly_roles (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms walked_assembly_roles
 
+/-! ## Non-subset halts: the parked cycle with a GATED port exit
+
+    `parked_cycle_roles` requires every interior halt to be a SUBSET of the
+    port's halt guard.  The SCC census names that condition as one of three
+    shapes in the residue: 44 open instances in 59947 pairs, split between
+    multi-member exit ports, NON-SUBSET HALTS, and genuine tree walks.
+
+    The subset condition is not a technicality.  A GKAT loop exits at one
+    place, on one test, so a cycle whose interiors halt outside the port's
+    halt has a second, independent exit — and the trailing `test` after the
+    loop cannot tell which exit was taken, because "which position" is not a
+    test.  That is the real content of the condition.
+
+    But the trailing test does not have to be the port's halt.  Let it be an
+    arbitrary `C` that COVERS every interior halt.  Then parking absorbs as
+    before, and the only new obligation is that `C` agree with the port's
+    halt WHERE THE LOOP ACTUALLY EXITS — on `¬G`.  Inside `G` the two may
+    differ freely, because the loop never stops there to look.
+
+    So `GuardImplies (hlt (m j)) (hlt (m 0))` weakens to
+    `GuardImplies (hlt (m j)) C` plus one masking equation.  That is the same
+    move as the masking lemma: a difference confined to a region the program
+    never observes costs nothing.  `parked_cycle_roles` is the special case
+    `C := aut.hlt (m 0)`, where the masking equation is reflexivity. -/
+
+/-- Congruence in the else arm, with the guard available (`ite_restrict_else`
+    on both sides). -/
+private theorem ite_else_congr_under {g : BExp T} {u v v' : Exp A T}
+    (h : EquivBA (.seq (.test (.not g)) v) (.seq (.test (.not g)) v')) :
+    EquivBA (.ite g u v) (.ite g u v') :=
+  EquivBA.trans (ite_restrict_else g u v)
+    (EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl u)) h)
+      (EquivBA.symm (ite_restrict_else g u v')))
+
+/-- Two else-arm TESTS that agree off the guard are interchangeable. -/
+private theorem ite_else_test_gated {g h0 C : BExp T} (u : Exp A T)
+    (hagree : ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+      bval W (.and (.not g) h0) y = bval W (.and (.not g) C) y) :
+    EquivBA (.ite g u (.test h0) : Exp A T) (.ite g u (.test C)) :=
+  ite_else_congr_under
+    (EquivBA.trans (EquivBA.s6 (.not g) h0)
+      (EquivBA.trans (EquivBA.baTest hagree)
+        (EquivBA.symm (EquivBA.s6 (.not g) C))))
+
+open Classical in
+/-- The parked port solution with an arbitrary exit test. -/
+noncomputable def parkedPortG (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    (C : BExp T) : Exp A T :=
+  .seq (.wh (gGuard (m 1) (aut.trans (m 0)))
+      (.seq (gBody (m 1) (aut.trans (m 0)))
+        (pChain aut m len (.test .one) (len - 1) 1)))
+    (.test C)
+
+/-- `parkedPortE` is the special case where the exit test is the port halt. -/
+theorem parkedPortG_hlt (aut : GAut S A T) (m : Nat → S) (len : Nat) :
+    parkedPortG aut m len (aut.hlt (m 0)) = parkedPortE aut m len := rfl
+
+/-- **THE GATED PARKED SPLIT**: identical to `pChain_split`, with every
+    interior halt parked under `C` instead of under the port's own halt. -/
+theorem pChain_split_gated (aut : GAut S A T) (m : Nat → S) (len : Nat)
+    (C : BExp T)
+    (himp : ∀ j, 1 ≤ j → j < len → GuardImplies (aut.hlt (m j)) C)
+    (hexcl : GuardImplies C (.not (gGuard (m 1) (aut.trans (m 0))))) :
+    ∀ c j, 1 ≤ j → j + c ≤ len →
+      EquivBA (pChain aut m len (parkedPortG aut m len C) c j)
+        (.seq (pChain aut m len (.test .one) c j)
+          (parkedPortG aut m len C)) := by
+  intro c
+  induction c with
+  | zero =>
+      intro j _ _
+      exact EquivBA.symm (EquivBA.base (Equiv.s4 (parkedPortG aut m len C)))
+  | succ c ih =>
+      intro j hj hle
+      show EquivBA
+        (.ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (pChain aut m len (parkedPortG aut m len C) c (j + 1)))
+          (.test (aut.hlt (m j))))
+        (.seq (.ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+          (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+            (pChain aut m len (.test .one) c (j + 1)))
+          (.test (aut.hlt (m j)))) (parkedPortG aut m len C))
+      refine EquivBA.trans (EquivBA.ite_c ?_ ?_)
+        (EquivBA.base (Equiv.u5 _ _ _ (parkedPortG aut m len C)))
+      · refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (ih (j + 1) (by omega) (by omega))) ?_
+        exact seq_assoc' _ _ (parkedPortG aut m len C)
+      · exact park_absorb _ (himp j hj (by omega)) hexcl
+
+open Classical in
+/-- **THE GATED PARKED CYCLE THEOREM.**  A simple cycle whose interior halts
+    are subsets of an ARBITRARY exit test `C` — not necessarily of the port's
+    own halt — is fully role-covered, provided `C` excludes the port's step
+    guard and agrees with the port halt OFF that guard.
+
+    The last hypothesis is the whole of the weakening.  Where the loop can
+    still step, `C` and the port halt may disagree without consequence: the
+    loop never stops there, so the difference is unobservable.  Taking
+    `C := aut.hlt (m 0)` makes it reflexivity and recovers
+    `parked_cycle_roles`. -/
+theorem parked_cycle_roles_gated (aut : GAut S A T) (sol : S → Exp A T)
+    (m : Nat → S) (len : Nat) (hlen : 2 ≤ len) (C : BExp T)
+    (hsol_int : ∀ j, 1 ≤ j → j < len →
+      sol (m j) = pChain aut m len (parkedPortG aut m len C) (len - j) j)
+    (hsol_port : sol (m 0) = parkedPortG aut m len C)
+    (hint_arms : ∀ j, 1 ≤ j → j < len → ∀ e ∈ aut.trans (m j),
+      e.2.2 = nxtAt m len j)
+    (hport_arms : ∀ e ∈ aut.trans (m 0), e.2.2 = m 1)
+    (himp : ∀ j, 1 ≤ j → j < len → GuardImplies (aut.hlt (m j)) C)
+    (hexcl : GuardImplies C (.not (gGuard (m 1) (aut.trans (m 0)))))
+    (hport : ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+      bval W (.and (.not (gGuard (m 1) (aut.trans (m 0)))) (aut.hlt (m 0))) y
+        = bval W (.and (.not (gGuard (m 1) (aut.trans (m 0)))) C) y) :
+    ∀ j, j < len → StateRole aut sol (m j) := by
+  intro j hj
+  cases Nat.eq_zero_or_pos j with
+  | inl hzero =>
+      subst hzero
+      refine StateRole.salomaaE (gGuard (m 1) (aut.trans (m 0)))
+        (.seq (gBody (m 1) (aut.trans (m 0)))
+          (pChain aut m len (.test .one) (len - 1) 1))
+        (.test C) hsol_port ?_
+      rw [eqRHS_foldTL]
+      refine EquivBA.trans (multi_gather sol (aut.hlt (m 0)) (m 1)
+        (aut.trans (m 0))) ?_
+      rw [gOthers_nil_of_all (m 1) (aut.trans (m 0)) hport_arms,
+          hsol_int 1 (Nat.le_refl 1) (by omega)]
+      refine EquivBA.trans (ite_else_test_gated _ hport) ?_
+      refine EquivBA.trans (EquivBA.ite_c
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+          (pChain_split_gated aut m len C himp hexcl (len - 1) 1
+            (Nat.le_refl 1) (by omega)))
+        (EquivBA.base (Equiv.refl _))) ?_
+      refine EquivBA.trans (EquivBA.ite_c
+        (seq_assoc' _ _ (parkedPortG aut m len C))
+        (EquivBA.base (Equiv.refl _))) ?_
+      rw [← hsol_port]
+      exact EquivBA.base (Equiv.refl _)
+  | inr hpos =>
+      refine StateRole.equivFold ?_
+      have hstep : sol (m j)
+          = .ite (gGuard (nxtAt m len j) (aut.trans (m j)))
+            (.seq (gBody (nxtAt m len j) (aut.trans (m j)))
+              (sol (nxtAt m len j)))
+            (.test (aut.hlt (m j))) := by
+        rw [hsol_int j hpos hj,
+            show len - j = (len - (j + 1)) + 1 from by omega]
+        by_cases hj1 : j + 1 = len
+        · have : sol (nxtAt m len j) = parkedPortG aut m len C := by
+            unfold nxtAt
+            rw [if_pos hj1]
+            exact hsol_port
+          rw [this, show len - (j + 1) = 0 from by omega]
+          rfl
+        · have : sol (nxtAt m len j)
+              = pChain aut m len (parkedPortG aut m len C) (len - (j + 1))
+                (j + 1) := by
+            unfold nxtAt
+            rw [if_neg hj1]
+            exact hsol_int (j + 1) (by omega) (by omega)
+          rw [this]
+          rfl
+      rw [hstep, eqRHS_foldTL]
+      refine EquivBA.trans ?_ (EquivBA.symm
+        (multi_gather sol (aut.hlt (m j)) (nxtAt m len j) (aut.trans (m j))))
+      rw [gOthers_nil_of_all (nxtAt m len j) (aut.trans (m j))
+        (hint_arms j hpos hj)]
+      exact EquivBA.base (Equiv.refl _)
+
+#print axioms pChain_split_gated
+#print axioms parked_cycle_roles_gated
+
 end GkatCycle

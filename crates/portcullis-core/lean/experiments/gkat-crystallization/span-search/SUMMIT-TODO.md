@@ -7266,3 +7266,67 @@ carries: the single remaining existential hypothesis, the collapse of the
 coinductive part (167–171, six theorems), the two new refutations
 (well-nestedness of the quotient; the circular read-back), and four new
 corrections including this odds revision.
+
+---
+
+## Iteration 173 — INTO THE RESIDUE: non-subset halts fall to the masking idea
+
+172 named the concrete frontier: 44 open SCC instances in 59947 pairs,
+shaped as multi-member exit ports, NON-SUBSET HALTS, and tree walks.
+Today takes the second of the three.
+
+**Why the subset condition is real, and where it isn't.**
+`parked_cycle_roles` requires every interior halt to be a SUBSET of the
+port's halt guard.  That is not a technicality.  A GKAT loop exits at ONE
+place on ONE test, so a cycle whose interiors halt outside the port's halt
+has a second, independent exit — and the trailing `test` after the loop
+cannot tell which exit was taken, because "which position" is not a test.
+That is the honest content of the condition, and it is why the shape sits
+in the residue.
+
+**But the trailing test does not have to be the port's halt.**  Let it be
+an arbitrary `C` covering every interior halt.  Parking absorbs exactly as
+before (`park_absorb` was already general in its `c`; only its call sites
+were specialized).  The one new obligation is that `C` agree with the port
+halt WHERE THE LOOP ACTUALLY EXITS — on `¬G`.  Inside `G` the two may
+differ freely: **the loop never stops there to look.**
+
+    himp   : ∀ j, GuardImplies (hlt (m j)) C          -- was: ⟹ hlt (m 0)
+    hexcl  : GuardImplies C (¬ portStepGuard)
+    hport  : ¬G ∧ hlt (m 0)  =  ¬G ∧ C                -- the whole weakening
+
+`GkatCycle.parked_cycle_roles_gated`, with `pChain_split_gated` and
+`parkedPortG`.  `parkedPortG aut m len (aut.hlt (m 0)) = parkedPortE`
+definitionally (`parkedPortG_hlt`, `rfl`), so `parked_cycle_roles` is the
+special case where `hport` is reflexivity.  Nothing is lost and the old
+theorem is untouched.
+
+**This is the masking idea, transplanted.**  167–168 established that a
+difference confined to a region the program never observes costs nothing,
+and paid for it with `seq_mask_of_dead_region`.  Here the unobserved
+region is `G` — where the loop is still stepping — and the payment is one
+`ite`-else congruence under the guard.  The recent abstract work reaching
+the concrete census residue in one iteration is the first evidence that
+167–172 bought something operational rather than only something tidy.
+
+**A FOURTH DUPLICATION, found while writing this.**  168's `gate_else`
+(in GkatCensusProofs) is `GkatGuardedAlgebra.ite_restrict_else`, which has
+been in the corpus the whole time — I used the pre-existing one here.
+That is four in five days: `guardedFold_fallback_congr`,
+`completeness_of_sumQuotientSolvable` (caught), `eqRHS_hom` +
+`GAutHom.lift_solvesBA`, and now `ite_restrict_else`.  Every one is a
+small guarded-algebra utility.  **The corpus has a guarded-algebra utility
+file (`GkatGuardedAlgebraProofs.lean`, ~30 theorems); READ ITS THEOREM
+LIST before deriving anything of that shape.**  That is a concrete
+procedure, which the previous three resolutions to "grep better" were not.
+
+**Scope, stated plainly.**  This closes one of three residue shapes at the
+CYCLE-LOCAL level.  It does not touch multi-member exit ports or tree
+walks, and it does not re-run the census — so the 44 has NOT been
+re-measured and I am not claiming a new coverage number.  What is claimed
+is a strictly more general theorem, machine-checked, subsuming the old
+one.
+
+**Odds: ~45%, unchanged.**  One residue shape of three, at one level of a
+multi-level argument, with the top-level existence question untouched.
+Yesterday's recalibration stands.
