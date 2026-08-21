@@ -9573,3 +9573,70 @@ sensitive to a harness constant nobody had reason to examine.
 **Next.**  The k=4 NA=2 enumeration (1 679 616 automata) is running.  Then k=3
 at NA=4, and push the exhaustive reach as far as compute allows — it is the
 only instrument left that can falsify.
+
+---
+
+## 211 — THE LITERATURE NAMES THE FAMILY I FOUND, AND A NECESSARY CONDITION FALLS OUT.
+
+**The unsolvable automata 209 found are the KNOWN unsolvable family.**  The
+GKAT literature describes them exactly:
+
+> "there is no condition that terminates the loop: on one branch, a certain
+> atom resumes the loop while another terminates execution, whereas on the
+> other branch this is reversed"
+
+and warns that adding a `twostate` operator only climbs an INFINITE HIERARCHY
+of such automata, each inexpressible in terms of the last.  209's smallest
+instance —
+
+    q0: hl={a0,a1} st=[-,-,q1]     q1: hl={a1,a2} st=[q0,-,-]
+
+— is precisely that: `a2` resumes at `q0` and terminates at `q1`; `a0`
+terminates at `q0` and resumes at `q1`.  I derived that by hand without knowing
+the family existed, and the elimination oracle rejected all 102 of them.  Three
+independent routes agreeing is the best validation the filter has had.
+
+**The infinite hierarchy is NOT a threat to this target**, and it is worth
+saying why: it concerns the EXPRESSIVENESS of the language — which automata are
+denotable at all — whereas the remainder here quantifies only over automata
+that ARE solvable, being quotients of Thompson sums.  The hierarchy is a reason
+the solvability FILTER is essential, not a reason the problem is unclosable.
+
+**A necessary condition for 2-state loops, verified exhaustively.**  The
+literature says a proper characterization of solvable automata "would go a long
+way".  For a strongly connected `{u,v}`, write `C_u` for the atoms at `u` that
+continue and `H_u` for those that halt.  A loop headed at `u` must take `C_u`
+as its guard; the body runs, arrives at `v`, and must exit on `H_v` — which can
+only happen if the head's guard is already false there.  So:
+
+    solvable  ⟹  H_v ∩ C_u = ∅   or   H_u ∩ C_v = ∅
+
+Tested against the elimination oracle over EVERY strongly connected 2-state
+automaton:
+
+    NA=2     49 automata   agree 47 (95.9%)   false negatives 0
+    NA=3  1 369 automata   agree 1135 (82.9%) false negatives 0
+    NA=4 30 625 automata   agree 21227 (69.3%) false negatives 0
+
+**Zero false negatives in 32 043 automata**: the predicate NEVER calls
+unsolvable something the oracle solves.  So it is a genuine NECESSARY
+condition, and it is exactly the literature's informally stated obstruction,
+now checked rather than described.
+
+**It is NOT sufficient, and the gap grows with the atom count** — 2, 234, 9398
+automata pass the predicate and are still unsolvable (agreement falls 96% → 83%
+→ 69%).  So there are further obstructions this condition does not see, and
+more atoms means more of them.  A one-sided condition is a real but partial
+result; I am not going to call it a characterization.
+
+**Also: the k=4 guard was in the wrong place.**  210's size guard checked
+AFTER `ex_subst`, but the blowup happens INSIDE the substitution — which is why
+k=4 kept dying with the guard installed and I twice mistook the death for a
+timeout.  Substituting `occ` occurrences of a term of size `n_r` into one of
+size `n_i` gives `n_i + occ·(n_r−1)`, so it is now bounded BEFORE anything is
+built.  Census re-verified at 104/104 and 250/250; k=4 relaunched.
+
+**Odds: 75%, held.**  The literature agreement is reassuring about the
+instrument, not about the conjecture, and the necessary condition is one-sided
+with a gap that widens as atoms increase.  Nothing this iteration made the
+remainder smaller.

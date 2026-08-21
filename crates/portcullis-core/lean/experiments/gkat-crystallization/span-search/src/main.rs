@@ -4205,6 +4205,16 @@ fn ex_size(e: &Ex, cap: usize) -> usize {
     n
 }
 
+/// How many times the unknown `s` occurs — the multiplier in a substitution.
+fn ex_count(e: &Ex, s: usize) -> usize {
+    match e {
+        Ex::Unk(t) if *t == s => 1,
+        Ex::Seq(a, b) | Ex::Ite(_, a, b) => ex_count(a, s) + ex_count(b, s),
+        Ex::Wh(_, a) => ex_count(a, s),
+        _ => 0,
+    }
+}
+
 /// `e = H ; f`  ⟹  `H`.  Sequences are right-nested, so the suffix is found by
 /// walking the right spine.
 fn strip_suffix(e: &Ex, f: &Ex) -> Option<Ex> {
@@ -4394,8 +4404,18 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
                 for j in 0..fin.len() {
                     if i != j {
                         let r = fin[j].clone();
+                        // PRE-check, not post-check.  Testing the size AFTER
+                        // `ex_subst` is too late — the blowup happens INSIDE
+                        // the substitution, which is why the k=4 run kept dying
+                        // even with a guard in place.  Substituting `occ`
+                        // occurrences of a term of size `n_r` into one of size
+                        // `n_i` yields `n_i + occ*(n_r-1)`, so bound that
+                        // before building anything.
+                        let n_i = ex_size(&fin[i], EX_CAP);
+                        let n_r = ex_size(&r, EX_CAP);
+                        let occ = ex_count(&fin[i], scc[j]);
+                        if n_i + occ * n_r > EX_CAP { return false; }
                         fin[i] = ex_subst(&fin[i], scc[j], &r);
-                        if ex_size(&fin[i], EX_CAP) > EX_CAP { return false; }
                     }
                 }
             }
@@ -5980,6 +6000,72 @@ fn exhaustive<const NA: usize>() {
     }
 }
 
+/// **A CANDIDATE CHARACTERIZATION OF SOLVABLE 2-STATE LOOPS** (iteration 211).
+///
+/// The GKAT literature describes the unsolvable family exactly: "there is no
+/// condition that terminates the loop: on one branch, a certain atom resumes
+/// the loop while another terminates execution, whereas on the other branch
+/// this is reversed" — and warns that adding a `twostate` operator only climbs
+/// an INFINITE HIERARCHY of such automata.  It also says a proper
+/// characterization of SOLVABLE automata "would go a long way" towards
+/// completeness.
+///
+/// For a strongly connected 2-state automaton `{u,v}` write `C_u` for the atoms
+/// at `u` that continue (transition to `v`), `H_u` for those that halt.  A
+/// while-loop with head `u` must take `C_u` as its guard; the body runs `p`,
+/// arrives at `v`, and must RETURN on `C_v` and EXIT on `H_v`.  The exit can
+/// only happen if the head's guard is already false there:
+///
+///     solvable-with-head-u   iff   H_v ∩ C_u = ∅
+///
+/// so the candidate characterization is `H_v ∩ C_u = ∅  OR  H_u ∩ C_v = ∅`,
+/// the disjunction being the choice of which state heads the loop.  The
+/// literature's unsolvable example is exactly the case where BOTH intersections
+/// are non-empty.
+///
+/// Tested against `symbolic_eliminable_raw` over EVERY 2-state automaton.
+fn characterize<const NA: usize>() {
+    let choices = 2 + 2;
+    let cells = 2 * NA;
+    let total: u64 = (choices as u64).pow(cells as u32);
+    let (mut agree, mut n, mut fp, mut fnn) = (0u64, 0u64, 0u64, 0u64);
+    let mut fp_ex: Vec<u64> = Vec::new();
+    let mut fn_ex: Vec<u64> = Vec::new();
+    for code in 0..total {
+        let mut a = Aut::<NA>::blank();
+        a.k = 2;
+        let mut c = code;
+        for s in 0..2 {
+            for y in 0..NA {
+                let d = (c % choices as u64) as usize;
+                c /= choices as u64;
+                if d == 0 { a.hl[s] |= 1 << y; }
+                else if d != 1 { a.st[s][y] = (d - 1) as u8; }
+            }
+        }
+        // strongly connected: 0 -> 1 and 1 -> 0 must both occur
+        let goes = |x: usize, t: usize| (0..NA).any(|y| a.st[x][y] == (t + 1) as u8);
+        if !(goes(0, 1) && goes(1, 0)) { continue; }
+        let cont = |x: usize, t: usize| -> u8 {
+            (0..NA).fold(0u8, |m, y|
+                if a.st[x][y] == (t + 1) as u8 { m | 1 << y } else { m })
+        };
+        let (c0, c1) = (cont(0, 1), cont(1, 0));
+        let (h0, h1) = (a.hl[0], a.hl[1]);
+        let pred = (h1 & c0) == 0 || (h0 & c1) == 0;
+        let truth = symbolic_eliminable_raw(&a);
+        n += 1;
+        if pred == truth { agree += 1; }
+        else if pred && !truth { if fp_ex.len() < 3 { fp_ex.push(code); } fp += 1; }
+        else { if fn_ex.len() < 3 { fn_ex.push(code); } fnn += 1; }
+    }
+    println!("  characterize NA={NA}: {n} strongly connected 2-state automata; \
+        predicate agrees with the elimination oracle {agree} ({:.2}%)",
+        100.0 * agree as f64 / n.max(1) as f64);
+    println!("    predicate says SOLVABLE, oracle says not: {fp}  (examples {fp_ex:?})");
+    println!("    predicate says UNSOLVABLE, oracle says solvable: {fnn}  (examples {fn_ex:?})");
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -7008,6 +7094,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_CHARACTERIZE").is_ok() {
+        characterize::<NA>();
         return;
     }
     if std::env::var("PAD_NESTED_SANITY").is_ok() {
