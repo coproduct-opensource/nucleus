@@ -2110,3 +2110,40 @@ Next: the call-marker vehicle — equations as expressions over A ⊕ S
 (calls as actions), the one-step elimination lemma (solve state u,
 substitute via equivBA_substA), and the schedule induction down to
 WNAutE.
+
+## Iteration 75 — the call-marker transport layer (zero axioms again)
+
+THE ARCHITECTURE LOCKED during analysis: the naive plan (substitute
+closed forms for calls via the homomorphism) is blocked because closed
+forms are NOT productive (port tails halt), and equivBA_substA demands
+productive images. The fix that dissolves it:
+
+- All elimination derivations live over the call alphabet A ⊕ S (calls
+  = trailing actions; right-linearity keeps every w3 body call-free,
+  so those derivations exist at the call level).
+- The FINAL per-state facts have CALL-FREE endpoints (full
+  back-substitution), i.e. both sides are `embedC` images.
+- ONE transport brings them home: `collapseC` (real actions restored,
+  stray calls ↦ `test zero` — strictly productive since E(test 0) = 0,
+  and A may even be empty). Substitution composition + identity give
+  `collapse_embed`, and `equivBA_of_embed` follows from the
+  homomorphism with the trivially-productive collapse.
+- Inside the elimination, substitution steps are SYNTACTIC
+  (substA_comp — no provability transport needed): resolving the
+  u-substituted equation equals resolving the original once
+  sol u := resolve(closed form of u), by pure composition of
+  substitutions.
+
+New (all ZERO axioms, first try): `embedC`, `substA_comp`, `substA_id`,
+`collapseC`, `collapse_embed`, `equivBA_of_embed`.
+
+Lit note: Grabmayer's crystallization for Milner's system and the
+formalized unique-solution theorems (1712.09402) are the nearest
+neighbours — both work modulo bisimilarity with unique-solution
+RULES; our elimination avoids uniqueness entirely (existence-side
+only, w3 per step).
+
+Next: the elimination step itself — CallSys := S → Exp (A ⊕ S) T
+right-linear; gather-calls lemma (merge u-calls into Salomaa form at
+call level); elimStep + the descending-recursion solution; the
+schedule induction; then the roles bridge to GAut quotients.

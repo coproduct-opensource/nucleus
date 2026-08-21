@@ -202,4 +202,88 @@ theorem equivBA_substA {A' : Type} {σ : A → Exp A' T}
 #print axioms equiv_substA
 #print axioms equivBA_substA
 
+/-! ## Call markers and the transport layer
+
+    Elimination derivations live over the extended alphabet `A ⊕ S` —
+    calls are trailing actions.  Right-linearity keeps every `w3` body
+    call-free, but the FINAL per-state facts have call-free endpoints
+    outright, so ONE transport with the trivially productive
+    substitution (calls ↦ `test zero`, which is strictly productive:
+    `E(test 0) = 0`) brings them to `Exp A T`.  No reasoning about the
+    productivity of closed forms is ever needed. -/
+
+/-- Embed a flat expression into the call alphabet. -/
+def embedC {S : Type} : Exp A T → Exp (Sum A S) T :=
+  substA (fun a => .act (Sum.inl a))
+
+/-- Substitution composes syntactically. -/
+theorem substA_comp {A' A'' : Type} (σ : A → Exp A' T)
+    (τ : A' → Exp A'' T) :
+    ∀ e : Exp A T, substA τ (substA σ e) = substA (fun a => substA τ (σ a)) e := by
+  intro e
+  induction e with
+  | act a => rfl
+  | test b => rfl
+  | seq e f ihe ihf =>
+      show Exp.seq (substA τ (substA σ e)) (substA τ (substA σ f)) = _
+      rw [ihe, ihf]
+      rfl
+  | ite b e f ihe ihf =>
+      show Exp.ite b (substA τ (substA σ e)) (substA τ (substA σ f)) = _
+      rw [ihe, ihf]
+      rfl
+  | wh b e ih =>
+      show Exp.wh b (substA τ (substA σ e)) = _
+      rw [ih]
+      rfl
+
+/-- The identity substitution. -/
+theorem substA_id : ∀ e : Exp A T, substA (fun a => .act a) e = e := by
+  intro e
+  induction e with
+  | act a => rfl
+  | test b => rfl
+  | seq e f ihe ihf =>
+      show Exp.seq (substA _ e) (substA _ f) = _
+      rw [ihe, ihf]
+  | ite b e f ihe ihf =>
+      show Exp.ite b (substA _ e) (substA _ f) = _
+      rw [ihe, ihf]
+  | wh b e ih =>
+      show Exp.wh b (substA _ e) = _
+      rw [ih]
+
+/-- The collapse substitution: real actions restored, stray calls
+    killed (they never occur in the transported endpoints). -/
+def collapseC {S : Type} : Sum A S → Exp A T :=
+  fun a => match a with
+    | Sum.inl a => .act a
+    | Sum.inr _ => .test .zero
+
+/-- Collapsing an embedding is the identity. -/
+theorem collapse_embed {S : Type} :
+    ∀ e : Exp A T, substA (collapseC (S := S)) (embedC (S := S) e) = e := by
+  intro e
+  show substA collapseC (substA (fun a => .act (Sum.inl a)) e) = e
+  rw [substA_comp]
+  exact substA_id e
+
+/-- **THE TRANSPORT**: call-level equivalence of embedded expressions
+    is flat equivalence. -/
+theorem equivBA_of_embed {S : Type} {e f : Exp A T}
+    (h : EquivBA (embedC (S := S) e) (embedC (S := S) f)) :
+    EquivBA e f := by
+  have h2 := equivBA_substA (σ := collapseC (S := S)) ?_ h
+  · rw [collapse_embed, collapse_embed] at h2
+    exact h2
+  · intro a X W x
+    cases a with
+    | inl a => rfl
+    | inr s => rfl
+
+#print axioms substA_comp
+#print axioms substA_id
+#print axioms collapse_embed
+#print axioms equivBA_of_embed
+
 end GkatElim
