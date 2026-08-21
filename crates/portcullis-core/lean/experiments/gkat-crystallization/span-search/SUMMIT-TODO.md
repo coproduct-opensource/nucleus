@@ -3012,3 +3012,30 @@ layer-bridging friction, now precisely located.
 Next: the residual-preservation lemma for cleaned dispatches (the
 constructor's core), then the ClassesOk constructor from GAutBisim +
 cleanedness, then the subsystem lemma.
+
+## Iteration 105 — ★ CONTEXTUAL DISPATCH EXTENSIONALITY ★ (zero errors)
+
+**The cleanedness fix was itself refuted** during design: shadowed
+REGIONS of surviving arms are unconstrained by dispatch matching even
+in cleaned lists ([(p,a,X),(q,a,Y)] vs [(p,a,X),(q∧¬p,a,Y)] — matched,
+cleaned, residual-mismatched inside p). The true design: CONTEXTUAL —
+guard agreement is only ever needed UNDER the accumulated dispatch
+context, which the zip threads as a test prefix and strengthens by
+each entry's negation. Works on RAW lists — the cleanedness
+dependency vanishes entirely (a simplification!).
+
+Landed, zero errors on first build:
+- `test_ite_split` — (test C); ite G X Y ≡ ite (C∧G) X
+  ((test (C∧¬G)); Y): the context-tightening split
+  (test_seq_ite + ite_restrict_else + s6/baTest).
+- `CtxOk` — the context-threaded certificate (nil case IS the residual
+  bridge under the final context).
+- **`dispatch_ext_ctx`** — the contextual zip: class_gather both
+  sides, split, ite_guard under context (Boolean case on C), the else
+  re-tests via baTest and recurses on the strengthened context.
+
+The supply side (next): `residual_firstMatch_ctx` — under the
+accumulated context, the stripped residual's firstMatch equals the
+full dispatch's — converting full-dispatch bisim agreement into
+per-entry under-context guard agreement. Then the ClassesOk/CtxOk
+constructor from GAutBisim closes the extensionality chapter.

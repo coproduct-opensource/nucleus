@@ -802,6 +802,117 @@ theorem pointwise_of_genW {b c : BExp T}
   rw [GkatPlanExistence.bval_gen W x b, GkatPlanExistence.bval_gen W x c]
   exact h (fun t => W t x)
 
+/-! ## Contextual dispatch extensionality
+
+    Residual guard agreement holds only UNDER the accumulated dispatch
+    context (shadowed regions of surviving arms are unconstrained), so
+    the zip threads the context as a test prefix: each entry's guards
+    agree under the context, and the recursion strengthens it by the
+    entry's negation.  Works on RAW lists — no cleanedness. -/
+
+open Classical in
+/-- Context-threaded ite splitting: the else inherits the tightened
+    context. -/
+theorem test_ite_split (C G : BExp T) (X Y : Exp A T) :
+    EquivBA (.seq (.test C) (.ite G X Y))
+      (.ite (.and C G) X (.seq (.test (.and C (.not G))) Y)) := by
+  refine EquivBA.trans
+    (GkatGuardedAlgebra.test_seq_ite C G X Y) ?_
+  refine EquivBA.trans
+    (GkatGuardedAlgebra.ite_restrict_else (.and C G) X
+      (.seq (.test C) Y)) ?_
+  refine EquivBA.ite_c (EquivBA.base (Equiv.refl X)) ?_
+  refine EquivBA.trans (EquivBA.symm
+    (EquivBA.base (Equiv.s1 (.test (.not (.and C G))) (.test C) Y))) ?_
+  refine EquivBA.seq_c ?_ (EquivBA.base (Equiv.refl Y))
+  refine EquivBA.trans (EquivBA.s6 (.not (.and C G)) C) ?_
+  refine EquivBA.baTest ?_
+  intro Z W x
+  show (!(GkatGS.bval W C x && GkatGS.bval W G x)
+      && GkatGS.bval W C x)
+    = (GkatGS.bval W C x && !(GkatGS.bval W G x))
+  cases GkatGS.bval W C x <;> cases GkatGS.bval W G x <;> rfl
+
+open Classical in
+/-- The context-threaded class certificate: per-entry guard agreement
+    UNDER the context; the recursion strengthens the context by the
+    entry guard's negation; the nil case is the residual bridge. -/
+def CtxOk {S₁ S₂ : Type} [DecidableEq A]
+    (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T)
+    (h₁ h₂ : BExp T) :
+    BExp T → List ((S₁ → Bool) × (S₂ → Bool) × A × Exp A T)
+    → List (BExp T × A × S₁) → List (BExp T × A × S₂) → Prop
+  | C, [], L₁, L₂ =>
+      EquivBA (.seq (.test C) (GkatPlanExistence.foldTL sol₁ h₁ L₁))
+        (.seq (.test C) (GkatPlanExistence.foldTL sol₂ h₂ L₂))
+  | C, e :: rest, L₁, L₂ =>
+      ((∀ (X : Type) (W : T → X → Bool) (x : X),
+          GkatGS.bval W C x = true →
+          GkatGS.bval W (gGuardPC e.1 e.2.2.1 L₁) x
+            = GkatGS.bval W (gGuardPC e.2.1 e.2.2.1 L₂) x)
+        ∧ (∀ q ∈ L₁, e.1 q.2.2 = true → q.2.1 = e.2.2.1 →
+            EquivBA (sol₁ q.2.2) e.2.2.2)
+        ∧ (∀ q ∈ L₂, e.2.1 q.2.2 = true → q.2.1 = e.2.2.1 →
+            EquivBA (sol₂ q.2.2) e.2.2.2))
+      ∧ CtxOk sol₁ sol₂ h₁ h₂
+          (.and C (.not (gGuardPC e.1 e.2.2.1 L₁))) rest
+          (gOthersPC e.1 e.2.2.1 L₁) (gOthersPC e.2.1 e.2.2.1 L₂)
+
+open Classical in
+/-- **CONTEXTUAL DISPATCH EXTENSIONALITY**: matched dispatches are
+    equivalent under a context, with guard agreement required only
+    inside it. -/
+theorem dispatch_ext_ctx {S₁ S₂ : Type} [DecidableEq A]
+    (sol₁ : S₁ → Exp A T) (sol₂ : S₂ → Exp A T)
+    (h₁ h₂ : BExp T) :
+    ∀ (entries : List ((S₁ → Bool) × (S₂ → Bool) × A × Exp A T))
+      (C : BExp T)
+      (L₁ : List (BExp T × A × S₁)) (L₂ : List (BExp T × A × S₂)),
+      CtxOk sol₁ sol₂ h₁ h₂ C entries L₁ L₂ →
+      EquivBA (.seq (.test C) (GkatPlanExistence.foldTL sol₁ h₁ L₁))
+        (.seq (.test C) (GkatPlanExistence.foldTL sol₂ h₂ L₂)) := by
+  intro entries
+  induction entries with
+  | nil =>
+      intro C L₁ L₂ hok
+      exact hok
+  | cons e rest ih =>
+      intro C L₁ L₂ hok
+      obtain ⟨P₁, P₂, a, V⟩ := e
+      obtain ⟨⟨hguard, hV₁, hV₂⟩, hrest⟩ := hok
+      refine EquivBA.trans (EquivBA.seq_c
+        (EquivBA.base (Equiv.refl (.test C)))
+        (class_gather sol₁ h₁ P₁ a V L₁ hV₁)) ?_
+      refine EquivBA.trans ?_ (EquivBA.symm
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl (.test C)))
+          (class_gather sol₂ h₂ P₂ a V L₂ hV₂)))
+      refine EquivBA.trans (test_ite_split C (gGuardPC P₁ a L₁)
+        (.seq (.act a) V)
+        (GkatPlanExistence.foldTL sol₁ h₁ (gOthersPC P₁ a L₁))) ?_
+      refine EquivBA.trans ?_ (EquivBA.symm
+        (test_ite_split C (gGuardPC P₂ a L₂) (.seq (.act a) V)
+          (GkatPlanExistence.foldTL sol₂ h₂ (gOthersPC P₂ a L₂))))
+      refine EquivBA.trans (EquivBA.ite_guard
+        (b := .and C (gGuardPC P₁ a L₁))
+        (c := .and C (gGuardPC P₂ a L₂)) ?_) ?_
+      · intro Z W x
+        show (GkatGS.bval W C x && _) = (GkatGS.bval W C x && _)
+        cases hC : GkatGS.bval W C x
+        · rfl
+        · rw [hguard Z W x hC]
+      · refine EquivBA.ite_c (EquivBA.base (Equiv.refl _)) ?_
+        refine EquivBA.trans ?_ (EquivBA.seq_c
+          (EquivBA.baTest (b := .and C (.not (gGuardPC P₁ a L₁)))
+            (c := .and C (.not (gGuardPC P₂ a L₂))) ?_)
+          (EquivBA.base (Equiv.refl _)))
+        · exact ih (.and C (.not (gGuardPC P₁ a L₁)))
+            (gOthersPC P₁ a L₁) (gOthersPC P₂ a L₂) hrest
+        · intro Z W x
+          show (GkatGS.bval W C x && !_) = (GkatGS.bval W C x && !_)
+          cases hC : GkatGS.bval W C x
+          · rfl
+          · rw [hguard Z W x hC]
+
 #print axioms sreach_partner
 #print axioms firstMatch_mem_of_some
 #print axioms step_arm
@@ -811,5 +922,7 @@ theorem pointwise_of_genW {b c : BExp T}
 #print axioms gGuardPC_firstMatch
 #print axioms dispatch_ext_class
 #print axioms pointwise_of_genW
+#print axioms test_ite_split
+#print axioms dispatch_ext_ctx
 
 end GkatCensus
