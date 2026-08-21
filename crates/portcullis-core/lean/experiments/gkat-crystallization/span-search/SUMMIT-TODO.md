@@ -6860,3 +6860,90 @@ this entry as more than it says.
 problem does not close.  Today removed an obstruction I had been carrying
 as structural; it did not touch the size induction, which is still the
 mountain.
+
+---
+
+## Iteration 168 — MASKING NEEDS NO CERTIFICATE, AND THE SAME-BRANCHES CASE FALLS
+
+Yesterday's masking lemma shipped with a hypothesis: a region `r` on which
+`F` is provably zero, with `diverging_region_zero` named as the intended
+supplier and the S0 divergence region named as the link.  **That was one
+step too timid, and today's first act is to retract it.**
+
+The region is not something to search for.  It is already determined by
+the two exit tests: **take `r := c ∧ ¬d`, the region where they disagree.**
+If the two composites are language-equal at all, then `test (c ∧ ¬d) ; F`
+has empty language — the hypothesis says exactly that — and
+`nullLanguage_complete` turns empty language into a proof of `0` from the
+finite axioms.  The dead-region hypothesis discharges ITSELF.
+
+`GkatCensus.seq_mask_complete`:
+
+    UniformLanguageEquivalent (test c ; F) (test d ; F)
+      →  EquivBA (test c ; F) (test d ; F)
+
+Unconditional.  No side condition, no expressibility question about
+"where `F` is dead", **and no appeal to the S0 divergence region after
+all** — yesterday's claimed link between the two open pieces was real
+mathematics but the wrong direction: S0 is not needed here.  Recording
+that as a correction, not a refinement.
+
+Supporting: `den_test_seq` (a leading test just gates `F` at the start
+atom) and `mask_region_empty` (the disagreement region is uniformly
+empty).  Axioms `[propext, Classical.choice, Quot.sound]`, inherited
+entirely from `nullLanguage_complete` — the same profile as the six
+completeness theorems.
+
+**Then the second half: the fallback is only observed where every guard
+fails.**  `guardedFold_congr_fallback` (yesterday) demands the two
+fallbacks be equal EVERYWHERE.  A label never asks that much: the
+fallback is the state's EXIT, taken only at atoms where no transition
+guard fires.  So:
+
+* `fallbackRegion B` — every guard of `B` false.
+* `ite_else_congr_gated` — the else arm need only agree UNDER `¬g`
+  (U2 flips, U4 asserts, `¬¬g = g` flips back).
+* `seq_test_guardedFold` — an assertion pushes through a whole fold,
+  conjoining onto every guard, via `test_seq_ite` (the valid test-only
+  fragment of left distribution — full left distribution is refuted, and
+  is a standing negative control in the smoke tests).
+* `guardedFold_congr_fallback_gated` — the honest congruence.  Proved by
+  a RELATIVIZED induction: the statement carries an accumulated assertion
+  `r`, each `ite` contributes its own `¬g` to it, and
+  `test_seq_guard_congr` re-associates.  The un-relativized statement
+  does NOT go through — the inductive hypothesis is strictly too weak,
+  which is why yesterday's version had the blanket hypothesis.
+
+Composing the two halves:
+
+**`label_mask_complete_gated` — THE SAME-BRANCHES CASE OF SAME-SIDE
+UNIFICATION.**  Two states of one automaton that agree on every
+transition carry provably equal labels as soon as their exits are
+language-equivalent on the region where the exit is actually taken.  No
+minimality, no productivity, no certificate, no uniqueness axiom.
+
+Six new theorems; four report NO axioms at all, two carry
+`nullLanguage_complete`'s profile.  `lake build GkatCensusProofs` clean,
+first try, both halves.
+
+**What remains, stated without inflation.**  Same-side UNIF still needs
+the case where the two states' TRANSITION LISTS differ — the size
+induction, untouched by today.  What today removes is the halt/exit
+dimension of the problem entirely: exits can now be reconciled whenever
+the languages permit, so the induction only ever has to fight about
+transitions.  That is a real narrowing of the remaining work, not a
+solution to it.
+
+**Odds: ~52%**, up from 46.  Two consecutive iterations have found the
+standing obstruction cheaper than advertised, and the second one showed
+the first was still overpricing it.  The mountain is unmoved; the foothills
+are gone.  The field's prior that this problem does not close still stands
+and I am not claiming otherwise.
+
+**Method note, and it is the same one as yesterday, sharper.**  Yesterday
+I asked "what does the refutation cost?" and got a certificate.  Today I
+asked "who pays the certificate?" and the answer was: the hypothesis
+already did.  **When a lemma ships with a side condition, ask whether the
+theorem's own hypothesis already implies it before going looking for a
+supplier.**  I have now over-priced this same obstruction twice in two
+days.

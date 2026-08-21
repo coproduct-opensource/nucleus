@@ -4463,4 +4463,271 @@ theorem label_mask_of_dead_region (branches : List (BExp T × Exp A T))
 #print axioms guardedFold_congr_fallback
 #print axioms label_mask_of_dead_region
 
+/-! ### MASKING NEEDS NO CERTIFICATE: the dead region is `c ∧ ¬d`
+
+    Iteration 167 left the masking lemma with a hypothesis — a region `r`
+    on which `F` is provably zero — and named `diverging_region_zero` as
+    the intended supplier.  That was one step too timid.  The region is
+    not something to be searched for or certified separately: it is
+    already determined by the two exit tests themselves.
+
+    Take `r := c ∧ ¬d`, the region where the exits DISAGREE.  If the two
+    composites are language-equal at all, then `test (c ∧ ¬d) ; F` has
+    empty language outright — the hypothesis says so directly — and
+    `nullLanguage_complete` turns empty language into a proof of `0` from
+    the finite axioms.  The dead-region hypothesis discharges itself.
+
+    So masking is UNCONDITIONAL: language equivalence of two test-gated
+    copies of the same continuation is provable, full stop.  This closes
+    the halt-only case of same-side unification with no side condition,
+    no expressibility question about "where `F` is dead", and no appeal
+    to the S0 divergence region after all. -/
+
+/-- A test in front of `F` gates `F` at the start atom and nothing else. -/
+private theorem den_test_seq {X : Type} (W : T → X → Bool) (c : BExp T)
+    (F : Exp A T) (α : X) (w : List (A × X)) :
+    GkatGS.den W (.seq (.test c) F) (α, w)
+      ↔ (GkatGS.bval W c α = true ∧ GkatGS.den W F (α, w)) := by
+  constructor
+  · intro h
+    obtain ⟨l1, l2, hsplit, hc, hF⟩ := h
+    obtain ⟨hcv, hl1⟩ := hc
+    subst hl1
+    have hw : w = l2 := hsplit
+    subst hw
+    exact ⟨hcv, hF⟩
+  · intro h
+    exact ⟨[], w, rfl, ⟨h.1, rfl⟩, h.2⟩
+
+/-- **The disagreement region is uniformly empty.**  If `test c ; F` and
+    `test d ; F` accept the same guarded strings, then no guarded string
+    at all survives `test (c ∧ ¬d) ; F` — at such an atom the first
+    composite reduces to `F` and the second to nothing. -/
+private theorem mask_region_empty {c d : BExp T} {F : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent
+      (.seq (.test c) F : Exp A T) (.seq (.test d) F)) :
+    GkatThompson.UniformExpLempty
+      (.seq (.test (.and c (.not d))) F : Exp A T) := by
+  intro X W gs
+  obtain ⟨α, w⟩ := gs
+  intro hmem
+  obtain ⟨hcd, hF⟩ := (den_test_seq W _ F α w).mp hmem
+  have hcd' : (GkatGS.bval W c α && !(GkatGS.bval W d α)) = true := hcd
+  have hc : GkatGS.bval W c α = true := by
+    revert hcd'
+    cases GkatGS.bval W c α
+    · intro hh; exact Bool.noConfusion hh
+    · intro _; rfl
+  have hd : GkatGS.bval W d α = false := by
+    revert hcd'
+    rw [hc]
+    cases GkatGS.bval W d α
+    · intro _; rfl
+    · intro hh; exact Bool.noConfusion hh
+  have h2 := (h X W (α, w)).mp ((den_test_seq W c F α w).mpr ⟨hc, hF⟩)
+  have h3 := (den_test_seq W d F α w).mp h2
+  rw [hd] at h3
+  exact Bool.noConfusion h3.1
+
+/-- **MASKING, UNCONDITIONALLY.**  Two test-gated copies of the same
+    continuation that are language-equivalent are provably equal — from
+    the finite axioms, with W3 entering only inside
+    `nullLanguage_complete` and the n-ary uniqueness axiom nowhere.
+
+    This is the halt-only case of same-side unification, closed.  Two
+    states of one automaton that agree on every transition and differ
+    only in their halt test carry provably equal labels the moment their
+    languages agree; the difference they carry is confined, by the
+    language hypothesis itself, to atoms where the continuation is dead,
+    and a dead continuation is provably `0`. -/
+theorem seq_mask_complete {c d : BExp T} {F : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent
+      (.seq (.test c) F : Exp A T) (.seq (.test d) F)) :
+    EquivBA (.seq (.test c) F : Exp A T) (.seq (.test d) F) := by
+  have hcd : EquivBA (.seq (.test c) F : Exp A T)
+      (.seq (.test (.and c d)) F) := by
+    refine seq_mask_of_dead_region
+      (GkatNullLanguage.nullLanguage_complete _ (mask_region_empty h)) ?_
+    intro X W x
+    show (!(GkatGS.bval W c x && !(GkatGS.bval W d x)) && GkatGS.bval W c x)
+      = (!(GkatGS.bval W c x && !(GkatGS.bval W d x))
+          && (GkatGS.bval W c x && GkatGS.bval W d x))
+    cases GkatGS.bval W c x <;> cases GkatGS.bval W d x <;> rfl
+  have hdc : EquivBA (.seq (.test d) F : Exp A T)
+      (.seq (.test (.and c d)) F) := by
+    refine seq_mask_of_dead_region
+      (GkatNullLanguage.nullLanguage_complete _
+        (mask_region_empty (fun X W gs => (h X W gs).symm))) ?_
+    intro X W x
+    show (!(GkatGS.bval W d x && !(GkatGS.bval W c x)) && GkatGS.bval W d x)
+      = (!(GkatGS.bval W d x && !(GkatGS.bval W c x))
+          && (GkatGS.bval W c x && GkatGS.bval W d x))
+    cases GkatGS.bval W c x <;> cases GkatGS.bval W d x <;> rfl
+  exact EquivBA.trans hcd (EquivBA.symm hdc)
+
+/-- The label-level form: same branches, language-equivalent exits, one
+    provable equality.  No hypothesis beyond language equivalence. -/
+theorem label_mask_complete (branches : List (BExp T × Exp A T))
+    {c d : BExp T} {F : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent
+      (.seq (.test c) F : Exp A T) (.seq (.test d) F)) :
+    EquivBA (guardedFold branches (.seq (.test c) F))
+      (guardedFold branches (.seq (.test d) F)) :=
+  guardedFold_congr_fallback branches (seq_mask_complete h)
+
+#print axioms seq_mask_complete
+#print axioms label_mask_complete
+
+/-! ### THE FALLBACK IS ONLY OBSERVED WHERE EVERY GUARD FAILS
+
+    `guardedFold_congr_fallback` asks the two fallbacks to be equal
+    everywhere.  That is far more than a label needs: the fallback of a
+    state is its EXIT, reached only at atoms where no transition guard
+    fires.  Two states may therefore have wildly different exits and
+    still be provably equal, as long as they agree on the fallback
+    region.
+
+    `fallbackRegion B` names that region — every guard of `B` false — and
+    `guardedFold_congr_fallback_gated` proves the fold only depends on
+    the fallback there.  The proof is a relativized induction: each `ite`
+    contributes its own `¬g` to the accumulated assertion, pushed inward
+    by `test_seq_ite` (the valid test-only fragment of left distribution)
+    and re-associated by `test_seq_guard_congr`.
+
+    Composed with `seq_mask_complete`, this gives the same-branches case
+    of same-side unification outright. -/
+
+/-- The region where a guarded fold reaches its fallback. -/
+def fallbackRegion : List (BExp T × Exp A T) → BExp T
+  | [] => .one
+  | br :: tl => .and (.not br.1) (fallbackRegion tl)
+
+/-- **Congruence in the ELSE arm, with the guard available.**  The else
+    arm of `ite g` is only entered when `g` fails, so it need only agree
+    UNDER `¬g`.  U2 flips, U4 asserts, `¬¬g = g` flips back. -/
+theorem ite_else_congr_gated {g : BExp T} {u v v' : Exp A T}
+    (h : EquivBA (.seq (.test (.not g)) v) (.seq (.test (.not g)) v')) :
+    EquivBA (.ite g u v) (.ite g u v') :=
+  EquivBA.trans (gate_else g u v)
+    (EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl u)) h)
+      (EquivBA.symm (gate_else g u v')))
+
+/-- An assertion pushes through a whole guarded fold: it conjoins itself
+    onto every branch guard and survives into the fallback. -/
+theorem seq_test_guardedFold (h : BExp T) :
+    ∀ (B : List (BExp T × Exp A T)) (fb : Exp A T),
+      EquivBA (.seq (.test h) (guardedFold B fb))
+        (guardedFold (B.map (fun br => (.and h br.1, br.2)))
+          (.seq (.test h) fb))
+  | [], _ => EquivBA.base (Equiv.refl _)
+  | br :: tl, fb =>
+      EquivBA.trans
+        (GkatGuardedAlgebra.test_seq_ite h br.1 br.2 (guardedFold tl fb))
+        (EquivBA.ite_c (EquivBA.base (Equiv.refl br.2))
+          (seq_test_guardedFold h tl fb))
+
+/-- The relativized induction: under an assertion `r`, a guarded fold
+    depends on its fallback only where `r` holds and every guard fails. -/
+private theorem fold_fallback_gated_aux (B : List (BExp T × Exp A T)) :
+    ∀ (r : BExp T) (fb₁ fb₂ : Exp A T),
+      EquivBA (.seq (.test (.and r (fallbackRegion B))) fb₁)
+        (.seq (.test (.and r (fallbackRegion B))) fb₂) →
+      EquivBA (.seq (.test r) (guardedFold B fb₁))
+        (.seq (.test r) (guardedFold B fb₂)) := by
+  induction B with
+  | nil =>
+      intro r fb₁ fb₂ h
+      have hconv : ∀ (Y : Type) (W : T → Y → Bool) (x : Y),
+          GkatGS.bval W r x = GkatGS.bval W (.and r .one) x := by
+        intro Y W x
+        show GkatGS.bval W r x = (GkatGS.bval W r x && true)
+        cases GkatGS.bval W r x <;> rfl
+      exact EquivBA.trans (GkatGuardedAlgebra.test_seq_guard_congr fb₁ hconv)
+        (EquivBA.trans h (EquivBA.symm
+          (GkatGuardedAlgebra.test_seq_guard_congr fb₂ hconv)))
+  | cons br tl ih =>
+      intro r fb₁ fb₂ h
+      obtain ⟨g, u⟩ := br
+      have key : ∀ fb : Exp A T,
+          EquivBA (.seq (.test r) (guardedFold ((g, u) :: tl) fb))
+            (.ite (.and r g) u (.seq (.test r) (guardedFold tl fb))) :=
+        fun fb => GkatGuardedAlgebra.test_seq_ite r g u (guardedFold tl fb)
+      refine EquivBA.trans (key fb₁) (EquivBA.trans ?_ (EquivBA.symm (key fb₂)))
+      refine ite_else_congr_gated ?_
+      have merge : ∀ fb : Exp A T,
+          EquivBA (.seq (.test (.not (.and r g)))
+              (.seq (.test r) (guardedFold tl fb)))
+            (.seq (.test (.and r (.not g))) (guardedFold tl fb)) := by
+        intro fb
+        refine EquivBA.trans
+          (GkatGuardedAlgebra.test_seq_merge _ _ (guardedFold tl fb)) ?_
+        refine GkatGuardedAlgebra.test_seq_guard_congr _ ?_
+        intro Y W x
+        show (!(GkatGS.bval W r x && GkatGS.bval W g x) && GkatGS.bval W r x)
+          = (GkatGS.bval W r x && !(GkatGS.bval W g x))
+        cases GkatGS.bval W r x <;> cases GkatGS.bval W g x <;> rfl
+      refine EquivBA.trans (merge fb₁)
+        (EquivBA.trans ?_ (EquivBA.symm (merge fb₂)))
+      refine ih (.and r (.not g)) fb₁ fb₂ ?_
+      have hassoc : ∀ (Y : Type) (W : T → Y → Bool) (x : Y),
+          GkatGS.bval W (.and (.and r (.not g)) (fallbackRegion tl)) x
+            = GkatGS.bval W (.and r (.and (.not g) (fallbackRegion tl))) x := by
+        intro Y W x
+        show ((GkatGS.bval W r x && !(GkatGS.bval W g x))
+            && GkatGS.bval W (fallbackRegion tl) x)
+          = (GkatGS.bval W r x
+            && (!(GkatGS.bval W g x) && GkatGS.bval W (fallbackRegion tl) x))
+        cases GkatGS.bval W r x <;> cases GkatGS.bval W g x <;>
+          cases GkatGS.bval W (fallbackRegion tl) x <;> rfl
+      exact EquivBA.trans (GkatGuardedAlgebra.test_seq_guard_congr fb₁ hassoc)
+        (EquivBA.trans h (EquivBA.symm
+          (GkatGuardedAlgebra.test_seq_guard_congr fb₂ hassoc)))
+
+/-- **Fallback congruence, gated.**  A guarded fold depends on its
+    fallback ONLY on the region where every guard fails.  This is the
+    honest form of `guardedFold_congr_fallback`, whose blanket hypothesis
+    asks for far more than a label ever observes. -/
+theorem guardedFold_congr_fallback_gated (B : List (BExp T × Exp A T))
+    {fb₁ fb₂ : Exp A T}
+    (h : EquivBA (.seq (.test (fallbackRegion B)) fb₁)
+      (.seq (.test (fallbackRegion B)) fb₂)) :
+    EquivBA (guardedFold B fb₁) (guardedFold B fb₂) :=
+  have hconv : ∀ (Y : Type) (W : T → Y → Bool) (x : Y),
+      GkatGS.bval W (fallbackRegion B) x
+        = GkatGS.bval W (.and .one (fallbackRegion B)) x :=
+    fun _ _ _ => rfl
+  have hone : EquivBA (.seq (.test (.and .one (fallbackRegion B))) fb₁)
+      (.seq (.test (.and .one (fallbackRegion B))) fb₂) :=
+    EquivBA.trans (EquivBA.symm
+        (GkatGuardedAlgebra.test_seq_guard_congr fb₁ hconv))
+      (EquivBA.trans h (GkatGuardedAlgebra.test_seq_guard_congr fb₂ hconv))
+  EquivBA.trans (EquivBA.symm (GkatGuardedAlgebra.one_seq _))
+    (EquivBA.trans (fold_fallback_gated_aux B .one fb₁ fb₂ hone)
+      (GkatGuardedAlgebra.one_seq _))
+
+/-- **THE SAME-BRANCHES CASE OF SAME-SIDE UNIFICATION.**  Two states of
+    one automaton that agree on every transition carry provably equal
+    labels as soon as their exits are language-equivalent ON THE REGION
+    WHERE THE EXIT IS ACTUALLY TAKEN.
+
+    Nothing else is assumed: no minimality, no productivity, no
+    dead-region certificate, no uniqueness axiom.  The n-ary UA is
+    nowhere; W3 enters only inside `nullLanguage_complete`. -/
+theorem label_mask_complete_gated (B : List (BExp T × Exp A T))
+    {c d : BExp T} {F : Exp A T}
+    (h : GkatKleene.UniformLanguageEquivalent
+      (.seq (.test (.and (fallbackRegion B) c)) F : Exp A T)
+      (.seq (.test (.and (fallbackRegion B) d)) F)) :
+    EquivBA (guardedFold B (.seq (.test c) F))
+      (guardedFold B (.seq (.test d) F)) := by
+  refine guardedFold_congr_fallback_gated B ?_
+  refine EquivBA.trans (GkatGuardedAlgebra.test_seq_merge _ c F) ?_
+  exact EquivBA.trans (seq_mask_complete h)
+    (EquivBA.symm (GkatGuardedAlgebra.test_seq_merge _ d F))
+
+#print axioms ite_else_congr_gated
+#print axioms seq_test_guardedFold
+#print axioms guardedFold_congr_fallback_gated
+#print axioms label_mask_complete_gated
+
 end GkatCensus
