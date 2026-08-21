@@ -11221,3 +11221,58 @@ clarity, not progress.
 EXPRESSION — for `wh b e`, body = `e`'s states with `e`'s decomposition nested
 inside — and prove (L1)/(L2) for it by induction, where the induction hypothesis
 supplies the body's own decomposition.
+
+---
+
+## 244 — (L2′) PER-SCC FAILS TOO.  But the failure hands over the right formulation.
+
+243 chose route (i) and 242 showed there is no canonical single head.  Working
+`wh c (ite b p q)` by hand shows why: its body has TWO entry states, and after
+inlining both have edges to both, so the GRAPH carries three cycles where the
+EXPRESSION has one loop.  **Inlining does not merely remove Milner's head — it
+multiplies one loop into one cycle per entry atom.**
+
+So the natural guarded analogue looked like (L2′): every cycle passes through the
+ENTRY SET rather than through a vertex.  That set is determined by the graph, so
+no search is needed.  Measured:
+
+    NA=2   892/1412 loop SCCs   63%
+    NA=3  1273/2061             62%
+    NA=4  1591/2565             62%
+
+**Refuted, and for the same reason one level up: an SCC contains a whole NEST of
+loops.**  An inner `wh` and its enclosing `wh` merge into ONE strongly connected
+component once the outer's back edges connect everything, so no single entry set
+cuts all the cycles either.  Every per-SCC formulation — head (242), entry set
+(244) — fails for this one reason, which is why 237's working version needed
+subset enumeration and proper-subset bodies.
+
+**But the failure identifies the right formulation, and the lemma for it is
+already proved.**  The condition must be applied PER LAYER, and `loop_core_trans`
+(`rfl`, iteration 220) says exactly what removing a layer leaves:
+
+    trans of (wh b e)  =  trans of e  ++  the back edges
+
+**So deleting a layer's back edges returns PRECISELY `e`'s own Thompson
+automaton.**  The obligation after eliminating the outer layer is therefore not a
+fresh acyclicity check — it is the INDUCTION HYPOTHESIS, applied to `e`.  That is
+what an induction on the expression is for, and it is the first formulation in
+this stretch that does not require searching the graph at all: the layers ARE the
+`wh` nesting of the expression.
+
+**The shape of `hsum` is now determined:**
+
+    seq, ite    create no loops                                PROVED   (241)
+    wh   (L3)   no body state halts inside the loop's guard    PROVED   (240)
+    wh   layer  removing its back edges yields e's automaton   `rfl`    (220)
+    wh   (L1)   an infinite path leaves the layer              open
+    induction   assemble the above over the expression         open
+
+**Odds: 80%, held.**  A formulation refuted at 62% and replaced by one built on a
+lemma already in hand.  Nothing proved this iteration, but the remaining
+obligations no longer mention graph search — which is what made every previous
+formulation unprovable rather than merely unproved.
+
+**Next.**  State the layered certificate as a function of the EXPRESSION and
+prove `hsum` by induction, with `loop_core_trans` discharging the layer step and
+the IH discharging the body.

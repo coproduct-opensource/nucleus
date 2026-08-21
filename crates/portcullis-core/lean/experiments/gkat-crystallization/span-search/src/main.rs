@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_L2P").is_ok() {
+        l2prime_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_HEADS").is_ok() {
         head_census::<NA>(nguards as u8);
         return;
@@ -12393,4 +12397,79 @@ fn head_census<const NA: usize>(nguards: u8) {
         0:{} 1:{} 2:{} 3:{} 4:{} 5:{} 6:{} 7+:{}; \
         an ENTRY state is a valid head in {entry_is_head}/{entry_known}",
         hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]);
+}
+
+/// **(L2′): EVERY CYCLE PASSES THROUGH THE ENTRY SET** (iteration 244).
+///
+/// 242 found no canonical single head, and working `wh c (ite b p q)` by hand
+/// shows why: its body has TWO entry states, and after inlining both have edges
+/// to both, so the graph carries three cycles where the expression has ONE loop.
+/// Inlining does not merely remove Milner's head — it MULTIPLIES a loop into one
+/// cycle per entry atom.
+///
+/// So the guarded analogue of (L2) is not "every infinite path returns to a
+/// vertex `vₛ`" but "every infinite path returns to the ENTRY SET" — the states
+/// a restart can land on.  That set is DETERMINED by the graph (no search): the
+/// states of the SCC reachable from outside it, including from the initial
+/// pseudostate.  Concretely, (L2′) says `SCC \ E` is acyclic.
+fn l2prime_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xC0AC29B7C97C50DD;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut ok, mut cn, mut cok) = (0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..40_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        let check = |q: &Aut<NA>, dump: bool| -> (usize, usize) {
+            let (mut tot, mut good) = (0, 0);
+            for c in sccs_of(q) {
+                if c.len() < 2 { continue; }
+                tot += 1;
+                // entry set: states of the SCC targeted from outside it
+                let mut e: Vec<usize> = Vec::new();
+                for y in 0..NA {
+                    let t = q.it[y];
+                    if t != 0 && c.contains(&((t - 1) as usize)) { e.push((t - 1) as usize); }
+                }
+                for s in 0..(q.k as usize) {
+                    if c.contains(&s) { continue; }
+                    for y in 0..NA {
+                        let t = q.st[s][y];
+                        if t != 0 && c.contains(&((t - 1) as usize)) { e.push((t - 1) as usize); }
+                    }
+                }
+                // (L2'): C \ E is acyclic
+                let rest: Vec<usize> = c.iter().copied().filter(|s| !e.contains(s)).collect();
+                let mut indeg: Vec<usize> = rest.iter().map(|&v| rest.iter()
+                    .filter(|&&u| (0..NA).any(|y| q.st[u][y] == (v + 1) as u8)).count())
+                    .collect();
+                let mut removed = vec![false; rest.len()];
+                let mut prog = true;
+                while prog {
+                    prog = false;
+                    for i in 0..rest.len() {
+                        if removed[i] || indeg[i] != 0 { continue; }
+                        removed[i] = true; prog = true;
+                        for j in 0..rest.len() {
+                            if removed[j] { continue; }
+                            if (0..NA).any(|y| q.st[rest[i]][y] == (rest[j] + 1) as u8) {
+                                indeg[j] -= 1;
+                            }
+                        }
+                    }
+                }
+                if removed.iter().all(|&r| r) { good += 1; }
+                else if dump { println!("    (L2') FAILS on scc {c:?}, entry set {e:?}"); }
+            }
+            (tot, good)
+        };
+        let (t, g) = check(&a, shown < 2 && { shown += 1; true });
+        n += t; ok += g;
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let (t2, g2) = check(&qq, false); cn += t2; cok += g2;
+        }
+    }
+    println!("  l2prime_test NA={NA}: {n} loop SCCs; (L2') holds on {ok}; \
+        after collapse {cok}/{cn}");
 }
