@@ -5239,3 +5239,54 @@ explicitly **not graded as bounded**.
    **This is the campaign's core and is untouched.**
 3. **Size induction** — descent proved (127); `ite` transfer proved
    (132).
+
+## Iteration 136–137 — consolidation, and the first STEELMAN finding
+
+**Published a status artifact** consolidating the campaign: six
+unconditional theorems, the ten load-bearing reduction results with
+their axiom profiles, four refutations, the measured census, the
+corrections log, and the field context.  The corrections are on the
+page deliberately — a status document that lists only wins is not
+checkable, and this campaign's credibility rests on four routes having
+died with recorded reasons.
+
+**Then the queued STEELMAN HARDENING campaign, started.**
+
+* **`sorry` audit across the whole GKAT cluster: CLEAN.**  Every match
+  for `sorry`/`admit` is the English word "admit" in prose or the phrase
+  "sorry-free" in a docstring.  No proof hole anywhere.
+* **Axiom audit of all seven headline results**: `loopfree_complete`,
+  `atomicloops_complete`, `gloops_complete`, `chainloops_complete_free`,
+  `twoloops_complete`, `chordloops_complete`, `uleDec` — all at exactly
+  **`[propext, Classical.choice, Quot.sound]`**, Lean's three standard
+  axioms, none with `sorryAx`.
+* **★ FIRST HARDENING FINDING — a claim in the repo was imprecise. ★**
+  `uleDec`'s docstring read "decidable — computably, with no choice",
+  and its axiom profile reports `Classical.choice`.  Investigated rather
+  than assumed either way, and BOTH halves turn out to be true of
+  different things:
+  - the DECISION PROCEDURE really is computable and choice-free — Lean
+    accepts the `def` without `noncomputable`, so the `Decidable` DATA
+    runs;
+  - the CORRECTNESS ARGUMENT is classical — the proof that the
+    computable `trimAutD`/`genBisimilarDec` pipeline agrees with the
+    `Classical.choose`-based `trimAut` goes through choice.
+
+  The docstring conflated algorithm with proof.  Rewritten to state
+  both precisely and to name where the choice enters.  **The same
+  imprecision had already propagated into the published artifact** ("
+  computably, choice-free") and was corrected there too.
+
+That is exactly what the hardening campaign exists to catch: not a
+broken proof, but a claim that says more than the proof supports.  One
+found on the first pass.
+
+**Literature check**: nothing new on the core question — no GKAT
+completeness result, no UA elimination beyond skip-free, no post-thesis
+Pham preprint.  Two items worth cataloguing that were not in the
+ledger: a **cyclic proof system for GKAT** (arXiv 2405.07505, 2024),
+which SIDESTEPS the axiomatic-completeness question via cyclic proofs
+rather than answering it, and GKAT automata learning (arXiv 2204.14153).
+Also confirmed: the coalgebraic side of Smolka et al. was verified in
+**Coq**, and **no Lean or Isabelle GKAT formalization exists** — this
+cluster still appears to be the only one.

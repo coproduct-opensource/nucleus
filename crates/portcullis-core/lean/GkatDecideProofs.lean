@@ -149,7 +149,16 @@ theorem ule_iff_start_bisim (e f : Exp A T) :
     rw [← h1, ← h2, hU]
 
 /-- **THE EQUIVALENCE DECIDER**: uniform language equivalence of GKAT
-    programs is decidable — computably, with no choice. -/
+    programs is decidable, and the decision procedure is COMPUTABLE —
+    Lean accepts this `def` without `noncomputable`, so the `Decidable`
+    DATA is choice-free and runs.
+
+    Its CORRECTNESS ARGUMENT is not: `#print axioms uleDec` reports
+    `[propext, Classical.choice, Quot.sound]`, because the proof that
+    the computable `trimAutD`/`genBisimilarDec` pipeline agrees with the
+    `Classical.choose`-based `trimAut` goes through choice.  Algorithm
+    choice-free, proof classical — the two claims are separate and only
+    the first is about running the decider. -/
 def uleDec [DecidableEq T] [DecidableEq A] (e f : Exp A T) :
     Decidable (UniformLanguageEquivalent e f) :=
   letI := thompsonDecEq e
