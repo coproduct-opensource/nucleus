@@ -286,4 +286,132 @@ theorem equivBA_of_embed {S : Type} {e f : Exp A T}
 #print axioms collapse_embed
 #print axioms equivBA_of_embed
 
+/-! ## Right-linear trees
+
+    The elimination's equation carrier: guarded branching over
+    call-free prefixes, with calls at the leaves.  Substituting a
+    state's closed tree for its calls is SYNTACTIC (resolution
+    commutes, `resolve_substT`); collecting a single-target subtree
+    into `prefix ; call` form is the `u5`-factoring
+    (`factor_spec` — the abstract `hPfactor`). -/
+
+/-- A right-linear equation tree: halts, prefixed calls, guarded
+    branches, and prefixes. -/
+inductive RTree (S A T : Type) where
+  | halt (h : BExp T)
+  | call (e : Exp A T) (s : S)
+  | br (g : BExp T) (l r : RTree S A T)
+  | pre (e : Exp A T) (t : RTree S A T)
+
+/-- Resolve a tree against a solution assignment. -/
+def resolveT {S : Type} (sol : S → Exp A T) : RTree S A T → Exp A T
+  | .halt h => .test h
+  | .call e s => .seq e (sol s)
+  | .br g l r => .ite g (resolveT sol l) (resolveT sol r)
+  | .pre e t => .seq e (resolveT sol t)
+
+/-- Every leaf calls `u` (no halts): the single-target condition. -/
+def AllCalls {S : Type} (u : S) : RTree S A T → Prop
+  | .halt _ => False
+  | .call _ s => s = u
+  | .br _ l r => AllCalls u l ∧ AllCalls u r
+  | .pre _ t => AllCalls u t
+
+/-- The factored prefix of a single-target tree. -/
+def factorE {S : Type} : RTree S A T → Exp A T
+  | .halt _ => .test .zero
+  | .call e _ => e
+  | .br g l r => .ite g (factorE l) (factorE r)
+  | .pre e t => .seq e (factorE t)
+
+/-- **THE FACTORING LEMMA**: a single-target tree resolves to its
+    factored prefix followed by the target — the generalized
+    `hPfactor`, by `u5`-distribution and association. -/
+theorem factor_spec {S : Type} (sol : S → Exp A T) (u : S) :
+    ∀ (t : RTree S A T), AllCalls u t →
+      EquivBA (resolveT sol t) (.seq (factorE t) (sol u)) := by
+  intro t
+  induction t with
+  | halt h => intro hc; exact absurd hc (fun h => h)
+  | call e s =>
+      intro hc
+      have hs : s = u := hc
+      rw [hs]
+      exact EquivBA.base (Equiv.refl _)
+  | br g l r ihl ihr =>
+      intro hc
+      refine EquivBA.trans (EquivBA.ite_c (ihl hc.1) (ihr hc.2)) ?_
+      exact EquivBA.base (Equiv.u5 g (factorE l) (factorE r) (sol u))
+  | pre e t ih =>
+      intro hc
+      refine EquivBA.trans
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl e)) (ih hc)) ?_
+      exact EquivBA.symm (EquivBA.base (Equiv.s1 e (factorE t) (sol u)))
+
+/-- Substitute a closed tree for every call to `u`. -/
+def substT {S : Type} [DecidableEq S] (u : S) (C : RTree S A T) :
+    RTree S A T → RTree S A T
+  | .halt h => .halt h
+  | .call e s => if s = u then .pre e C else .call e s
+  | .br g l r => .br g (substT u C l) (substT u C r)
+  | .pre e t => .pre e (substT u C t)
+
+/-- **SUBSTITUTION IS SYNTACTICALLY SOUND**: if the assignment
+    already solves `u` as its closed tree, substituting the tree
+    changes nothing under resolution — pure equality, no derivation. -/
+theorem resolve_substT {S : Type} [DecidableEq S] (sol : S → Exp A T)
+    (u : S) (C : RTree S A T) (hu : sol u = resolveT sol C) :
+    ∀ t : RTree S A T, resolveT sol (substT u C t) = resolveT sol t := by
+  intro t
+  induction t with
+  | halt h => rfl
+  | call e s =>
+      by_cases hs : s = u
+      · show resolveT sol (if s = u then .pre e C else .call e s) = _
+        rw [if_pos hs, hs]
+        show Exp.seq e (resolveT sol C) = Exp.seq e (sol u)
+        rw [hu]
+      · show resolveT sol (if s = u then .pre e C else .call e s) = _
+        rw [if_neg hs]
+  | br g l r ihl ihr =>
+      show Exp.ite g (resolveT sol (substT u C l))
+          (resolveT sol (substT u C r)) = _
+      rw [ihl, ihr]
+      rfl
+  | pre e t ih =>
+      show Exp.seq e (resolveT sol (substT u C t)) = _
+      rw [ih]
+      rfl
+
+#print axioms factor_spec
+#print axioms resolve_substT
+
+/-- **THE CLOSING STEP**: if a state's equation splits at the top into
+    a single-target self part under guard `G` and a rest, then the
+    Salomaa closed form — the factored lap wrapped in `wh`, followed by
+    the rest — solves the equation.  One `w3`-power step (via
+    `salomaa_solution_exists`), the factoring lemma, and congruence. -/
+theorem elim_close {S : Type} (sol : S → Exp A T) (u : S) (G : BExp T)
+    (tl rest : RTree S A T) (hall : AllCalls u tl)
+    (hsol : sol u = .seq (.wh G (factorE tl)) (resolveT sol rest)) :
+    EquivBA (sol u) (resolveT sol (.br G tl rest)) := by
+  show EquivBA (sol u)
+    (.ite G (resolveT sol tl) (resolveT sol rest))
+  refine EquivBA.trans ?_ (EquivBA.ite_c
+    (EquivBA.symm (factor_spec sol u tl hall))
+    (EquivBA.base (Equiv.refl _)))
+  have h1 : EquivBA (sol u)
+      (.seq (.wh G (factorE tl)) (resolveT sol rest)) := by
+    rw [hsol]
+    exact EquivBA.base (Equiv.refl _)
+  refine EquivBA.trans h1 ?_
+  refine EquivBA.trans (EquivBA.base
+    (salomaa_solution_exists G (factorE tl) (resolveT sol rest))) ?_
+  refine EquivBA.ite_c ?_ (EquivBA.base (Equiv.refl _))
+  refine EquivBA.seq_c (EquivBA.base (Equiv.refl _)) ?_
+  rw [← hsol]
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms elim_close
+
 end GkatElim

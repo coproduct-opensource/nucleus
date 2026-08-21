@@ -2147,3 +2147,36 @@ Next: the elimination step itself — CallSys := S → Exp (A ⊕ S) T
 right-linear; gather-calls lemma (merge u-calls into Salomaa form at
 call level); elimStep + the descending-recursion solution; the
 schedule induction; then the roles bridge to GAut quotients.
+
+## Iteration 76 — RTree: the elimination calculus core (all zero axioms)
+
+Deep design first (recorded): general trees admit exactly TWO gather
+situations — (i) hoisted self-calls (top-level br guards; pre-of-call
+chains collapse by s1) → arm-level Salomaa; (ii) single-target
+subtrees (every leaf calls u) → u5-factoring. The schedule's job is to
+arrange every elimination into (i)/(ii). Working conjecture for the
+census side (SINGLE-EXIT): every SCC of a canonical quotient of a
+Thompson automaton carries its halting/descending arms at a single
+class (the port) — true in all six strata; syntactic SCCs exit only
+via their loop header; to be proven or hypothesized at the general
+theorem. Interior sub-SCCs (nested loops) handle hierarchically:
+innermost close to single-target calls, cascading outward.
+
+New in GkatElimProofs.lean (ALL ZERO AXIOMS, first try):
+- `RTree` (halt / call / br / pre) + `resolveT` — the right-linear
+  equation carrier.
+- `AllCalls` + `factorE` + **`factor_spec`** — the generalized
+  hPfactor: a single-target tree resolves to its factored prefix
+  followed by the target (u5 + s1 induction).
+- `substT` + **`resolve_substT`** — substituting a state's closed tree
+  for its calls is SYNTACTICALLY sound (pure Eq, given the assignment
+  solves the state as that tree). No derivation transport mid-pipeline.
+- **`elim_close`** — the closing step: equation `br G tl rest` with
+  single-target tl is solved by `(wh G (factorE tl)); resolveT rest` —
+  one salomaa_solution_exists + factoring + congruence.
+
+The elimination calculus now has: transport (equivBA_of_embed),
+factoring, syntactic substitution, and closing. Next: the schedule —
+a per-SCC elimination order + the induction assembling ERole/StateRole
+coverage for automata satisfying SINGLE-EXIT hierarchy; then the
+census bridge to canonical quotients.
