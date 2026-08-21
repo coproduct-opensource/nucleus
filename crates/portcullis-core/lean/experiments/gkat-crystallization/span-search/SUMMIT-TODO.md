@@ -8929,3 +8929,51 @@ whether the set is complete.  What would move the number is the Rust solver
 learning the fourth rule and the resistant counts going to zero again at
 scale — that is the next measurement, and it is a real one, because 197
 showed a larger sample finds what a smaller one misses.
+
+---
+
+## Iteration 200 — THE SOLVER LEARNS THE FOURTH RULE, and the resister closes
+
+199 proved entry restriction in Lean and said the real test was teaching it to
+the solver and re-measuring.  Done.
+
+**THE IMPLEMENTATION is one generalization, not a fourth branch.**  LOOPIFY
+already proposed `wh g (body with X_s := 1) ; fallback`.  Entry restriction is
+the same construction with two parameters:
+
+    sol s := test P ; wh g (body with X_s := test P) ; test F
+
+`P` is the region the loop head may be reached in — asserted BEFORE the loop
+and again wherever the body returns — and `F` is the trailing test, which may
+then be WIDENED past `s`'s own halt to cover a mid-body exit that
+`exit_absorb` cannot reach.  **Plain LOOPIFY is `P = all`, `F = hl(s)`**, so
+one construction covers both rules, exactly as the Lean says (`exit_absorb` is
+the vacuous-restriction case of `entry_restricted_trailing`).
+
+The candidate set is deliberately tiny: `P` is everything or `s`'s live atoms;
+`F` is `s`'s halt mask alone or widened by one atom outside the guard.  Four
+to ten proposals per state.  The language check disposes of wrong guesses, and
+a small guess-and-check beats analysing which invariant is needed — which is
+also how the loop-invariant literature does it.
+
+**THE MEASUREMENT** (240 000 pairs each, post-parallel sample):
+
+    NA=2   lattice-resistant SCCs solved   12 / 12
+    NA=4   lattice-resistant SCCs solved   15 / 15      (was 14 / 15)
+    NA=3   8 / 8 at 60 000,  13 / 13 at 120 000
+
+**197's resister closes**, and nothing else regressed.  Open SCCs solved on
+the full collapse at NA=4 went 213 -> 214.
+
+**A performance note, unresolved.**  NA=3 at 240 000 pairs still runs past
+400s while NA=2 and NA=4 finish in 5-6s.  It is not generation — NA=3 needs
+117 tries per pair against NA=4's 76, so at most 1.5x — and it completes fine
+at 120 000.  Something is superlinear in the analysis at NA=3 specifically.
+Recorded as open rather than guessed at; the last two times I guessed at this
+harness's hot spot I was wrong.
+
+**Odds: 66%, held.**  A rule I already had, now mechanised, closing an instance
+I already knew it closed.  The evidence about SUFFICIENCY is unchanged: four
+rules cover everything measured, and there is still no theorem that four
+suffice.  What 197 taught is that a bigger sample finds new shapes, so the
+honest next move is a bigger sample — not another rule.

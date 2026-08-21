@@ -4265,12 +4265,50 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
         let selfref = ex_occurs(&plain, s);
         // No self-occurrence: the equation is already a definition, so SUBSTITUTE.
         // Wrapping a `wh` there would loop a body that never returns to `s`.
-        let sol = if !selfref {
-            plain
+        //
+        // With a self-occurrence, the proposal is LOOPIFY — and iteration 199's
+        // ENTRY RESTRICTION generalizes it with two parameters:
+        //
+        //     sol s := test P ; wh g (body with X_s := test P) ; test F
+        //
+        // `P` is the region the loop head is allowed to be reached in, asserted
+        // BEFORE the loop and again wherever the body returns; `F` is the
+        // trailing test, which may then be WIDENED past `s`'s own halt to cover
+        // a mid-body exit that `exit_absorb` cannot reach.  Plain LOOPIFY is
+        // `P = all`, `F = hl(s)`, so one construction covers both rules.
+        //
+        // The candidate set is deliberately tiny — `P` is either everything or
+        // `s`'s live atoms, `F` is `s`'s halt mask alone or widened by one atom
+        // outside the guard — because the language check disposes of wrong
+        // guesses and a small guess-and-check beats an analysis of which
+        // invariant is needed.
+        let live = q.hl[s] | g;
+        let mut cands: Vec<(u8, Ex)> = Vec::new();
+        if !selfref {
+            cands.push((all, plain.clone()));
         } else {
-            let body = ex_subst(&ex_dispatch(&br, &Ex::Test(0)), s, &Ex::Test(all));
-            Ex::Seq(Box::new(Ex::Wh(g, Box::new(body))), Box::new(fb))
-        };
+            let base = ex_dispatch(&br, &Ex::Test(0));
+            for &p_mask in [all, live].iter() {
+                let body = ex_subst(&base, s, &Ex::Test(p_mask));
+                let mut fs: Vec<Ex> = vec![fb.clone()];
+                if p_mask != all {
+                    for a in 0..NA {
+                        if g >> a & 1 == 1 { continue; }
+                        if let Ex::Test(m) = fb {
+                            fs.push(Ex::Test(m | (1 << a)));
+                        }
+                    }
+                }
+                for f in fs {
+                    let loop_ = Ex::Seq(Box::new(Ex::Wh(g, Box::new(body.clone()))),
+                        Box::new(f));
+                    cands.push((p_mask, if p_mask == all { loop_ } else {
+                        Ex::Seq(Box::new(Ex::Test(p_mask)), Box::new(loop_))
+                    }));
+                }
+            }
+        }
+        for (_pm, sol) in cands {
         if ex_occurs(&sol, s) { continue; }
         // PRUNE AT THE PROPOSAL: read the remaining unknowns as their oracles
         // and check this state's language now.
@@ -4300,6 +4338,7 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
         sols[s] = Some(sol);
         if calc_search(q, scc, &eq2, sols, left - 1, depth - 1, budget, n, gated, memo) { return true; }
         sols[s] = None;
+        }
     }
     // GATED
     for &u in scc.iter() {
