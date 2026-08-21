@@ -6201,4 +6201,66 @@ theorem sum_inr_closed {S₁ S₂ : Type}
 #print axioms sum_inl_closed
 #print axioms sum_inr_closed
 
+/-! ### The `wh` layer, characterised
+
+244 established that every PER-SCC formulation of (L2) fails — an SCC holds a
+whole nest of loops — and that the working formulation is PER LAYER, with
+`loop_core_trans` (`rfl`, 220) supplying the layer step:
+
+    trans of (wh b e)  =  trans of e  ++  the back edges
+
+so removing a layer's back edges returns exactly `e`'s own automaton, and the
+remaining obligation is the induction hypothesis.
+
+What that leaves is to characterise the back edges themselves.  A note on why
+this must be done at the automaton level: `Cert` is a predicate on AUTOMATA, not
+expressions, because `hcollapse` applies it to the quotient — which has no
+expression.  So `Cert` is the existential over layered decompositions (what
+iteration 237 tests, at 100% for `hsum` and `hcollapse`), and `hsum`'s proof
+EXHIBITS the witness from the expression structure. -/
+
+/-- **EVERY BACK EDGE OF A `wh` LAYER LIES INSIDE THE LAYER'S GUARD.**
+
+    The transitions `loopInitialized` appends carry guard
+    `hlt_body s ∧ (b ∧ gᵢ)`, which implies `b`.  So the layer's guard is `b`
+    itself — determined by the expression, not recovered from the graph.
+
+    This is the fact nine iterations of measurement (228-236) were trying to
+    reconstruct from transition data, and 234 concluded must be "tied to graph
+    structure" after a free guard search broke soundness.  Read off the
+    construction it is immediate: the guard is the `wh`'s own test. -/
+theorem wh_backedge_guard_implies (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State)
+    (tr : BExp T × A × (GkatThompson.certifiedThompson A T e).State)
+    (h : tr ∈ ((GkatThompson.certifiedThompson A T e).aut.initTrans.map
+      (fun t => (BExp.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
+        (BExp.and b t.1), t.2)))) :
+    GuardImplies tr.1 b := by
+  simp only [List.mem_map] at h
+  obtain ⟨t, _, rfl⟩ := h
+  intro X W x hx
+  simp only [GkatGS.bval] at hx ⊢
+  cases hb : GkatGS.bval W b x
+  · rw [hb] at hx; simp at hx
+  · rfl
+
+#print axioms wh_backedge_guard_implies
+
+/-- And dually, the layer's halt is disjoint from its guard — 240's `wh_loop_L3`
+    restated as the pair of facts a layer needs: back edges INSIDE the guard,
+    halts OUTSIDE it.  Together these say the guard `b` separates "iterate" from
+    "leave" at every state of the layer, which is the guarded form of "you exit a
+    loop only at its head". -/
+theorem wh_layer_separates (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State) :
+    GuardImplies ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt s)
+        (.not b)
+      ∧ ∀ tr ∈ ((GkatThompson.certifiedThompson A T e).aut.initTrans.map
+          (fun t => (BExp.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
+            (BExp.and b t.1), t.2))),
+        GuardImplies tr.1 b :=
+  ⟨wh_loop_halt_implies b e s, fun tr h => wh_backedge_guard_implies b e s tr h⟩
+
+#print axioms wh_layer_separates
+
 end GkatCensus

@@ -11276,3 +11276,49 @@ formulation unprovable rather than merely unproved.
 **Next.**  State the layered certificate as a function of the EXPRESSION and
 prove `hsum` by induction, with `loop_core_trans` discharging the layer step and
 the IH discharging the body.
+
+---
+
+## 245 — THE `wh` LAYER IS FULLY CHARACTERISED.  The guard was never in the graph.
+
+244 established the per-layer formulation and left the back edges to be
+characterised.  Done, and both halves proved first try:
+
+    wh_backedge_guard_implies   every appended back edge carries guard
+                                `hlt_body s ∧ (b ∧ gᵢ)`, hence implies `b`
+    wh_layer_separates          back edges INSIDE the guard, halts OUTSIDE it
+
+Together: **the guard `b` separates "iterate" from "leave" at every state of the
+layer** — the guarded form of "you exit a loop only at its head", proved outright
+rather than measured at 100%.
+
+**And the guard is `b`, the `wh`'s own test — determined by the EXPRESSION, not
+recovered from the graph.**  That is the fact iterations 228-236 spent nine
+attempts trying to reconstruct from transition data: `uniform_guard` took it from
+all internal transitions (wrong, 229), natural loops took it from back edges
+(99.84%, 231), a free search over guards broke soundness (234) and concluded it
+"must stay tied to graph structure".  It never was in the graph.  It is written
+in the expression, and `loopInitialized` puts it into every back edge it appends.
+
+**A note on why `Cert` cannot be defined over expressions**, recorded because it
+is tempting and wrong: `hcollapse` applies `Cert` to the QUOTIENT, which has no
+expression.  So `Cert` must be the existential over layered decompositions —
+what 237 tests, at 100% for both `hsum` and `hcollapse` — and `hsum`'s proof
+EXHIBITS the witness from the expression structure.  Defining `Cert` inductively
+over `Exp` would make `hsum` trivial and `hcollapse` unstatable.
+
+**`hsum` now stands at:**
+
+    seq, ite    create no loops                              PROVED  (241)
+    wh   layer  back edges in the guard, halts outside it    PROVED  (245)
+    wh   layer  removing back edges yields e's automaton     `rfl`   (220)
+    wh   (L1)   an infinite path leaves the layer            open
+    induction   assemble the above over the expression       open
+
+**Odds: 80%, held.**  The layer is characterised and the guard question — nine
+iterations of it — is closed by reading the construction.  But (L1) and the
+assembly remain, and `hcollapse` and `hsolve` have not been touched.  Real, and
+too small to move the number.
+
+**Next.**  (L1) for the layer, then the induction that assembles these into
+`hsum`.
