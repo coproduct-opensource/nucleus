@@ -1288,30 +1288,37 @@ theorem walked_assembly_roles (aut : GAut S A T) (rank : S → Nat)
 
 #print axioms walked_assembly_roles
 
-/-! ## Non-subset halts: the parked cycle with a GATED port exit
+/-! ## The parked cycle with a GATED port exit
 
     `parked_cycle_roles` requires every interior halt to be a SUBSET of the
     port's halt guard.  The SCC census names that condition as one of three
     shapes in the residue: 44 open instances in 59947 pairs, split between
     multi-member exit ports, NON-SUBSET HALTS, and genuine tree walks.
 
-    The subset condition is not a technicality.  A GKAT loop exits at one
-    place, on one test, so a cycle whose interiors halt outside the port's
-    halt has a second, independent exit — and the trailing `test` after the
-    loop cannot tell which exit was taken, because "which position" is not a
-    test.  That is the real content of the condition.
+    NOTE, and read it before the theorem: this section was FIRST WRITTEN as
+    though it admitted non-subset interior halts.  **That was wrong.**
+    `gated_exit_forced` and `gated_himp_subset`, at the end of this file,
+    prove it wrong: the exclusion and agreement hypotheses together PIN the
+    "arbitrary" exit test to `¬G ∧ hlt (m 0)`, so the subset condition on
+    interior halts survives unchanged.
 
-    But the trailing test does not have to be the port's halt.  Let it be an
-    arbitrary `C` that COVERS every interior halt.  Then parking absorbs as
-    before, and the only new obligation is that `C` agree with the port's
-    halt WHERE THE LOOP ACTUALLY EXITS — on `¬G`.  Inside `G` the two may
-    differ freely, because the loop never stops there to look.
+    What this section actually buys is the removal of the ORIGINAL `hexcl`
+    — the requirement that the PORT's own halt exclude the port's step
+    guard.  Under the gated form the port halt may overlap its step guard
+    freely; only its restriction to `¬G` is ever used.  Real, and much
+    smaller than first advertised.
 
-    So `GuardImplies (hlt (m j)) (hlt (m 0))` weakens to
-    `GuardImplies (hlt (m j)) C` plus one masking equation.  That is the same
-    move as the masking lemma: a difference confined to a region the program
-    never observes costs nothing.  `parked_cycle_roles` is the special case
-    `C := aut.hlt (m 0)`, where the masking equation is reflexivity. -/
+    The larger claim could not have been true, and the reason is a theorem
+    rather than an accident.  Kosaraju: a flowchart is reducible to a
+    structured program WITHOUT auxiliary variables iff it contains no loop
+    with two distinct exits.  GKAT has no auxiliary variables, and a cycle
+    with two incomparable halts IS a loop with two distinct exits.  No
+    single `wh` expresses it, whatever the parking algebra does.  That
+    shape needs unrolling or state duplication — a different automaton —
+    not a better role theorem.
+
+    `parked_cycle_roles` remains the special case `C := aut.hlt (m 0)`,
+    where the agreement hypothesis is reflexivity. -/
 
 /-- Congruence in the else arm, with the guard available (`ite_restrict_else`
     on both sides). -/
@@ -1379,16 +1386,17 @@ theorem pChain_split_gated (aut : GAut S A T) (m : Nat → S) (len : Nat)
       · exact park_absorb _ (himp j hj (by omega)) hexcl
 
 open Classical in
-/-- **THE GATED PARKED CYCLE THEOREM.**  A simple cycle whose interior halts
-    are subsets of an ARBITRARY exit test `C` — not necessarily of the port's
-    own halt — is fully role-covered, provided `C` excludes the port's step
-    guard and agrees with the port halt OFF that guard.
+/-- **THE GATED PARKED CYCLE THEOREM.**  A simple cycle whose interior
+    halts are subsets of an exit test `C` that excludes the port's step
+    guard and agrees with the port halt off that guard is fully
+    role-covered.
 
-    The last hypothesis is the whole of the weakening.  Where the loop can
-    still step, `C` and the port halt may disagree without consequence: the
-    loop never stops there, so the difference is unobservable.  Taking
-    `C := aut.hlt (m 0)` makes it reflexivity and recovers
-    `parked_cycle_roles`. -/
+    `C` LOOKS free and is not: `gated_exit_forced` shows the last two
+    hypotheses pin it to `¬G ∧ hlt (m 0)`, and `gated_himp_subset` shows
+    the interior halts are therefore STILL below the port's halt.  The
+    genuine content is that the PORT's halt no longer has to exclude its
+    own step guard — only its restriction to `¬G` is used.  Taking
+    `C := aut.hlt (m 0)` recovers `parked_cycle_roles`. -/
 theorem parked_cycle_roles_gated (aut : GAut S A T) (sol : S → Exp A T)
     (m : Nat → S) (len : Nat) (hlen : 2 ≤ len) (C : BExp T)
     (hsol_int : ∀ j, 1 ≤ j → j < len →
@@ -1460,5 +1468,74 @@ theorem parked_cycle_roles_gated (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms pChain_split_gated
 #print axioms parked_cycle_roles_gated
+
+/-! ## CORRECTION (iteration 174): the gated exit test is FORCED
+
+    Iteration 173 shipped `parked_cycle_roles_gated` and described it as
+    admitting NON-SUBSET interior halts.  That description is wrong, and
+    the two theorems below are the proof rather than an argument.
+
+    `hexcl` and `hport` together PIN `C` to `¬G ∧ hlt (m 0)`: there is no
+    freedom in the "arbitrary" exit test at all.  Consequently `himp`
+    still forces `hlt (m j) ⟹ hlt (m 0)`, exactly as the ungated theorem
+    did.  Non-subset halts are NOT covered.
+
+    What the gated theorem actually drops is the ORIGINAL `hexcl`, which
+    required the PORT's own halt to exclude the port's step guard.  Under
+    the gated form the port halt may overlap its step guard freely; only
+    its restriction to `¬G` is used.  That is a real generalization, and a
+    much smaller one than was claimed.
+
+    Why the larger claim could not have been true, from the literature:
+    Kosaraju's theorem says a flowchart is reducible to a structured
+    program WITHOUT auxiliary variables iff it contains no loop with two
+    distinct exits.  GKAT has no auxiliary variables.  A cycle with two
+    incomparable halts is precisely a loop with two distinct exits, so no
+    amount of massaging a SINGLE `wh` can express it — the ceiling is a
+    theorem, not a shortfall in the parking algebra.  Coverage for that
+    shape has to come from unrolling or state duplication, which changes
+    the automaton, not from a better role theorem. -/
+
+/-- **THE GATED EXIT TEST IS FORCED.**  `C` is not a free parameter: the
+    exclusion and agreement hypotheses pin it to `¬G ∧ h₀`. -/
+theorem gated_exit_forced {G C h0 : BExp T}
+    (hexcl : GuardImplies C (.not G))
+    (hport : ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+      bval W (.and (.not G) h0) y = bval W (.and (.not G) C) y) :
+    ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+      bval W C y = bval W (.and (.not G) h0) y := by
+  intro Y W y
+  have hp : ((!bval W G y) && bval W h0 y)
+      = ((!bval W G y) && bval W C y) := hport Y W y
+  have hx : bval W C y = true → (!bval W G y) = true := hexcl Y W y
+  show bval W C y = ((!bval W G y) && bval W h0 y)
+  revert hp hx
+  cases bval W G y <;> cases bval W h0 y <;> cases bval W C y <;>
+    intro hp hx <;>
+      first
+        | rfl
+        | exact Bool.noConfusion hp
+        | exact Bool.noConfusion (hx rfl)
+
+/-- **SO THE SUBSET CONDITION SURVIVES.**  Under the gated hypotheses the
+    interior halts are still below the port's halt.  Iteration 173's claim
+    that non-subset halts fall is retracted by this theorem. -/
+theorem gated_himp_subset {G C h0 hj : BExp T}
+    (hexcl : GuardImplies C (.not G))
+    (hport : ∀ (Y : Type) (W : T → Y → Bool) (y : Y),
+      bval W (.and (.not G) h0) y = bval W (.and (.not G) C) y)
+    (himp : GuardImplies hj C) :
+    GuardImplies hj h0 := by
+  intro Y W y hy
+  have h1 := himp Y W y hy
+  have h2 := gated_exit_forced hexcl hport Y W y
+  rw [h1] at h2
+  have h2' : true = ((!bval W G y) && bval W h0 y) := h2
+  revert h2'
+  cases bval W G y <;> cases bval W h0 y <;> intro h2' <;>
+    first | rfl | exact Bool.noConfusion h2'
+
+#print axioms gated_exit_forced
+#print axioms gated_himp_subset
 
 end GkatCycle

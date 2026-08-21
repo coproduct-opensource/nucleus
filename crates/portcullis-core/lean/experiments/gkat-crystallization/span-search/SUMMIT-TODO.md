@@ -7330,3 +7330,67 @@ one.
 **Odds: ~45%, unchanged.**  One residue shape of three, at one level of a
 multi-level argument, with the top-level existence question untouched.
 Yesterday's recalibration stands.
+
+---
+
+## Iteration 174 — RETRACTION: 173 did NOT cover non-subset halts, and Kosaraju says nothing local can
+
+**Iteration 173's headline is wrong and I am retracting it in Lean, not in
+prose.**
+
+`parked_cycle_roles_gated` was described as admitting NON-SUBSET interior
+halts, on the strength of replacing `GuardImplies (hlt (m j)) (hlt (m 0))`
+with `GuardImplies (hlt (m j)) C` for an "arbitrary" exit test `C`.  `C`
+is not arbitrary.  Two theorems, both zero axioms:
+
+* `gated_exit_forced` — `hexcl : C ⟹ ¬G` and
+  `hport : ¬G ∧ hlt (m 0) = ¬G ∧ C` together PIN `C ≡ ¬G ∧ hlt (m 0)`.
+  There is no freedom in the parameter at all.
+* `gated_himp_subset` — therefore `himp` still forces
+  `hlt (m j) ⟹ hlt (m 0)`.  **The subset condition survives unchanged.**
+
+What 173 actually bought: the ORIGINAL `hexcl`, requiring the PORT's own
+halt to exclude the port's step guard, is gone.  The port halt may now
+overlap its step guard freely; only its restriction to `¬G` is used.  A
+real generalization, and a much smaller one than announced.  The section
+header and both docstrings in `GkatCycleProofs.lean` have been rewritten
+to say so — the source must not carry the false claim, which is the whole
+of the iteration-154 lesson.
+
+**And the larger claim could never have been true.**  Today's search
+surfaced Kosaraju's theorem in the form that settles it: *a flowchart is
+reducible to a structured program WITHOUT auxiliary variables iff it
+contains no loop with two distinct exits.*  GKAT has no auxiliary
+variables.  A cycle with two incomparable halts IS a loop with two
+distinct exits.  **So no single `wh` expresses it, whatever the parking
+algebra does.**
+
+That is the most useful thing today produced, and it is a route closure,
+not a lemma:
+
+  **THE ROLE LADDER HAS A CEILING, AND TWO OF THE THREE RESIDUE SHAPES ARE
+  ABOVE IT.**  "Non-subset halts" and "multi-member exit ports" are both
+  loops with two distinct exits.  No amount of further parking, gating, or
+  walking machinery reaches them, because the obstruction is Kosaraju's
+  and not the algebra's.  Coverage there has to come from UNROLLING or
+  STATE DUPLICATION — changing the automaton — which is exactly what the
+  span era's un-sharing did, and what the span-era ledger recorded as
+  covering 100% of its measured residue.  **Stop extending the role
+  ladder; the next move on the residue is un-sharing.**
+
+**How this failure happened, precisely.**  I introduced a parameter,
+observed that the hypothesis mentioning it was formally weaker, and
+described the theorem by that hypothesis — without checking whether the
+OTHER hypotheses constrained the parameter.  They pinned it completely.
+The Lean was correct throughout; only the reading was wrong.  Fourth time
+in this campaign that the prose outran the proof (112, 139, 154, 173), and
+the first where the error was in a claim I made the same day I proved the
+theorem.
+
+**A generalization is only as weak as its WHOLE hypothesis set.  Before
+describing a new parameter as free, solve for it.**  That is a mechanical
+check and it takes one minute; it would have caught this before the commit.
+
+**Odds: ~45%, unchanged.**  Yesterday's number did not price the residue
+progress, so retracting it costs nothing.  Kosaraju's ceiling is genuinely
+informative but it closes a route rather than opening one.
