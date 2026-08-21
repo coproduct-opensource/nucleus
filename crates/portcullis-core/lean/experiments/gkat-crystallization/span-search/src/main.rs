@@ -4841,6 +4841,7 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut multi_hist: FxMap<(usize, bool, usize, usize, usize), usize> = FxMap::default();
     let mut multi_examples: Vec<String> = Vec::new();
     let mut multi_port_dumps = 0usize;
+    let mut open_dumps = 0usize;
     let mut n_walked_scc = 0usize;
     let mut n_open_scc = 0usize;
     for (a, b) in pairs.iter() {
@@ -5009,6 +5010,42 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     })
                 };
                 if walked { n_walked_scc += 1; } else { n_open_scc += 1; }
+                // OPEN dump: the SCCs no proved stratum covers.  These are the
+                // residue the elimination-order question is about, so print them
+                // in full — including which members are ports (halt or carry an
+                // external arm), since a port count >= 2 is exactly the case
+                // `elim_reduces`' uniform-exit side condition rules out.
+                if !walked && open_dumps < 40 {
+                    open_dumps += 1;
+                    let nports = scc.iter().filter(|&&s| {
+                        q.hl[s] != 0 || (0..NA).any(|i| {
+                            let t = q.st[s][i];
+                            t != 0 && !inscc((t - 1) as usize)
+                        })
+                    }).count();
+                    println!("  OPEN-SCC #{open_dumps} (pair #{pairs_done}, quotient k={}, scc {:?}, ports={nports}):",
+                        q.k, scc);
+                    for &s in scc.iter() {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = q.st[s][i];
+                            if t == 0 { "-".to_string() }
+                            else {
+                                let t = (t - 1) as usize;
+                                if inscc(t) { format!("s{t}") } else { format!("X{t}") }
+                            }
+                        }).collect();
+                        println!("    state {s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
+                    }
+                    // the whole quotient, so the exit targets X* are readable too
+                    println!("    -- full quotient:");
+                    for s in 0..(q.k as usize) {
+                        let row: Vec<String> = (0..NA).map(|i| {
+                            let t = q.st[s][i];
+                            if t == 0 { "-".to_string() } else { format!("{}", t - 1) }
+                        }).collect();
+                        println!("       q{s}: hl={:04b} st=[{}]", q.hl[s], row.join(","));
+                    }
+                }
                 *multi_hist.entry((scc.len(), simple, n_halting, n_exit_arms, branchers))
                     .or_insert(0) += 1;
                 if multi_examples.len() < 5 {
