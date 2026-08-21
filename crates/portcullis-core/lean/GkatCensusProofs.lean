@@ -3816,4 +3816,140 @@ theorem live_chord_ne_chain3 {b c : BExp T} {p x y : A}
 #print axioms live_chord_ne_chain2
 #print axioms live_chord_ne_chain3
 
+open Classical in
+/-- **A chord loop with a usable outer guard is never a test.**  Only
+    the OUTER guard's non-degeneracy is needed: whichever way the branch
+    guard falls at the post-`p` atom, some action-carrying string is
+    accepted. -/
+theorem live_chord_ne_test {b c : BExp T} {p x y : A} (t : BExp T)
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (GkatThreeLoop.chordLoop b c p x y) (.test t)) :
+    False := by
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨α₂, hb₂⟩ := hbex
+  cases hcv : GkatGS.bval (GkatPlanExistence.genW T) c α₂ with
+  | true =>
+      have hacc := chordLoop_accepts_three (GkatPlanExistence.genW T)
+        b c p x y α α₂ α₂ α₂ hb hcv hb₂
+      have := test_no_action (GkatPlanExistence.genW T) t
+        ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+      exact nomatch this
+  | false =>
+      have hacc := chordLoop_accepts_two (GkatPlanExistence.genW T)
+        b c p x y α α₂ α₂ hb hcv hb₂
+      have := test_no_action (GkatPlanExistence.genW T) t
+        ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+      exact nomatch this
+
+open Classical in
+/-- **THE CHORD TETRACHOTOMY**: every chord loop is provably a TEST, or
+    a TWO-STRIDE chain loop, or a THREE-STRIDE chain loop, or LIVE —
+    with the outer guard's degeneracies already pushed into the test
+    branch, so the chain branches carry a usable guard.
+
+    Note the chain branches are both `Chain2` bodies, so they are
+    absorbed by `chainloops_complete_free`, which is already free of
+    side conditions. -/
+theorem chordLoop_tetrachotomy (b c : BExp T) (p x y : A) :
+    (∃ t : BExp T, EquivBA (GkatThreeLoop.chordLoop b c p x y) (.test t))
+    ∨ (EquivBA (GkatThreeLoop.chordLoop b c p x y)
+          (.wh b (.seq (.act p) (.act y)))
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = false))
+    ∨ (EquivBA (GkatThreeLoop.chordLoop b c p x y)
+          (.wh b (.seq (.act p) (.seq (.act x) (.act y))))
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = false))
+    ∨ ((∃ α : T → Bool,
+          GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) c α = true)
+        ∧ (∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) c α = false)) := by
+  by_cases hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true
+  · by_cases hbex : ∃ α : T → Bool,
+        GkatGS.bval (GkatPlanExistence.genW T) b α = false
+    · by_cases hcsat : ∃ α : T → Bool,
+          GkatGS.bval (GkatPlanExistence.genW T) c α = true
+      · by_cases hcex : ∃ α : T → Bool,
+            GkatGS.bval (GkatPlanExistence.genW T) c α = false
+        · exact Or.inr (Or.inr (Or.inr ⟨hbsat, hbex, hcsat, hcex⟩))
+        · exact Or.inr (Or.inr (Or.inl
+            ⟨chordLoop_c_valid b p x y (all_true_of_not_exit hcex),
+              hbsat, hbex⟩))
+      · exact Or.inr (Or.inl
+          ⟨chordLoop_c_unsat b p x y (all_false_of_not_sat hcsat),
+            hbsat, hbex⟩)
+    · refine Or.inl ⟨.zero, ?_⟩
+      refine EquivBA.trans (EquivBA.wh_guard (c := .one) ?_) ?_
+      · intro X W v
+        rw [GkatPlanExistence.bval_gen W v b,
+          all_true_of_not_exit hbex (fun t => W t v)]
+        rfl
+      · exact GkatNormalization.wh_one_zero _
+  · exact Or.inl ⟨.one, GkatChainFragment.wh_guard_semantic_zero _
+      (all_false_of_not_sat hbsat)⟩
+
+#print axioms live_chord_ne_test
+#print axioms chordLoop_tetrachotomy
+
+open Classical in
+/-- A two-stride chain loop with a usable guard accepts a two-action
+    string, hence is never a test. -/
+theorem chain2_ne_test {b : BExp T} {p y : A} (t : BExp T)
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (.wh b (.seq (.act p) (.act y))) (.test t)) :
+    False := by
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨α₂, hb₂⟩ := hbex
+  have hacc : GkatGS.den (GkatPlanExistence.genW T)
+      (.wh b (.seq (.act p) (.act y)) : Exp A T) (α, [(p, α₂), (y, α₂)]) :=
+    GkatGS.InLoop.step α [(p, α₂), (y, α₂)] [] hb
+      ⟨[(p, α₂)], [(y, α₂)], rfl, ⟨α, α₂, rfl⟩, ⟨α₂, α₂, rfl⟩⟩
+      (GkatGS.InLoop.exit α₂ hb₂)
+  have := test_no_action (GkatPlanExistence.genW T) t
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact nomatch this
+
+open Classical in
+/-- A three-stride chain loop with a usable guard is never a test. -/
+theorem chain3_ne_test {b : BExp T} {p x y : A} (t : BExp T)
+    (hbsat : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = true)
+    (hbex : ∃ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) b α = false)
+    (hule : GkatKleene.UniformLanguageEquivalent
+      (.wh b (.seq (.act p) (.seq (.act x) (.act y)))) (.test t)) :
+    False := by
+  obtain ⟨α, hb⟩ := hbsat
+  obtain ⟨α₂, hb₂⟩ := hbex
+  have hacc : GkatGS.den (GkatPlanExistence.genW T)
+      (.wh b (.seq (.act p) (.seq (.act x) (.act y))) : Exp A T)
+      (α, [(p, α₂), (x, α₂), (y, α₂)]) :=
+    GkatGS.InLoop.step α [(p, α₂), (x, α₂), (y, α₂)] [] hb
+      ⟨[(p, α₂)], [(x, α₂), (y, α₂)], rfl, ⟨α, α₂, rfl⟩,
+        ⟨[(x, α₂)], [(y, α₂)], rfl, ⟨α₂, α₂, rfl⟩, ⟨α₂, α₂, rfl⟩⟩⟩
+      (GkatGS.InLoop.exit α₂ hb₂)
+  have := test_no_action (GkatPlanExistence.genW T) t
+    ((hule (T → Bool) (GkatPlanExistence.genW T) _).mp hacc)
+  exact nomatch this
+
+#print axioms chain2_ne_test
+#print axioms chain3_ne_test
+
 end GkatCensus

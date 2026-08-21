@@ -5927,3 +5927,49 @@ hypothesis-free; the sixth has its collapses proved, its landing
 stratum confirmed already free, its `b`-conditions halved by
 `wh_guards_agree_of_ule`, and now both of its mixed-case vacuities
 discharged.
+
+## Iteration 150 — the chord vacuity set is COMPLETE; and `hentC` is the one hypothesis that resists
+
+Four more lemmas, three at **ZERO AXIOMS**:
+
+* **`live_chord_ne_test`** — a chord loop with a usable OUTER guard is
+  never a test.  Only the outer guard's non-degeneracy is needed:
+  whichever way the branch guard falls at the post-`p` atom, one of the
+  two acceptance witnesses fires.
+* **`chain2_ne_test`**, **`chain3_ne_test`** — the chain-loop collapse
+  targets are not tests either, once their guard is usable.
+* **`chordLoop_tetrachotomy`** — every chord loop is provably a TEST, a
+  TWO-STRIDE chain loop, a THREE-STRIDE chain loop, or LIVE, with the
+  outer guard's degeneracies already pushed into the test branch so the
+  chain branches carry a usable guard.
+
+**The 4 × 4 assembly is now fully covered except one cell**, and that
+cell is worth stating carefully.
+
+**`hentC` does not follow from the per-side liveness conditions.**
+`chordloops_complete` needs SHARED inner-guard entry — `∃α, c ∧ c'` —
+and the tetrachotomy's live branch gives only `c` satisfiable and `c'`
+satisfiable SEPARATELY.  Guard agreement rescues the outer guards
+(`wh_guards_agree_of_ule` gives `b ≡ b'`, so shared entry on `b` and
+both exit conditions collapse to satisfiability plus refutability of a
+single guard) — but `c` and `c'` are INNER guards of the two sides and
+no such agreement applies.
+
+So the honest current statement of the chord repair is **six
+satisfiability hypotheses reduced to ONE**, not to zero.
+
+**`hentC` does look derivable, and the sketch is recorded rather than
+claimed.**  Assume `c` and `c'` disjoint.  At a post-`p` atom where both
+fail, both sides emit their tail action, forcing `y = y'`.  At an atom
+where `c` holds (so `c'` fails), side 1 emits three actions while side 2
+emits two, and matching them forces `x = y` and then `y = p`; symmetric
+reasoning on the `c'` side forces all six action letters equal.  With a
+single letter throughout, side 2 accepts a two-action string at an atom
+where the outer guard next fails, while side 1 is mid-body after two
+actions and cannot halt — contradiction.  Several steps, each of the
+shape already proved above, but not yet written.
+
+**Hardening status**: five of six theorems hypothesis-free; the sixth
+reduced from six hypotheses to one, with every mixed case of its
+assembly discharged and the residual hypothesis identified precisely
+along with a route to removing it.
