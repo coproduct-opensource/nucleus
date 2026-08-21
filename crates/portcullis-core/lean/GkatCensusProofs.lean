@@ -5691,4 +5691,52 @@ theorem trailing_suffix_shared {g c : BExp T} {D P H F X : Exp A T}
 
 #print axioms trailing_suffix_shared
 
+/-- **THE 2-STATE LOOP WITH A GUARD-DISJOINT MID-BODY HALT.**
+
+    Read a 2-state loop as an equation at its head `u`: guard `g = C_u` (the
+    atoms continuing there), body `D` reaching `v`, continuation test
+    `c = C_v`, back-edge action `P`, and — in the else arm — a HALT with region
+    `h = H_v`:
+
+        X ≡ ite g (D · ite c (P · X) (h · F)) F
+
+    Iteration 211 verified exhaustively, over all 32 043 strongly connected
+    2-state automata at NA = 2, 3, 4 with zero exceptions, that solvability
+    REQUIRES `H_v ∩ C_u = ∅` — which says exactly `h ⟹ ¬g`.  And that is
+    verbatim `trailing_suffix_shared`'s hypothesis `H · ¬g ≡ H` at `H = test h`:
+    a test already implying `¬g` is unchanged by asserting `¬g` after it.  So
+    the measured necessary condition IS the hypothesis rule 6 needs, and the
+    loop closes with no new axiom.
+
+    **This is NOT completeness at two states, and the reason is worth keeping.**
+    An earlier draft of this docstring claimed it was.  Working rule 6's
+    CONCLUSION through the same shape refutes that: the solution
+    `wh g (D · ite c P (test h)) · F` puts the trailing `F` after the loop, so a
+    mid-body exit at an atom of `H_v` must still pass `F = test H_u`.  That
+    needs `H_v ⊆ H_u`, strictly stronger than `H_v ∩ C_u = ∅` (halts and
+    transitions being disjoint at `u`, the former implies the latter).  Measured
+    at iteration 212, `H_v ⊆ H_u ∨ H_u ⊆ H_v` also has zero false negatives in
+    those 32 043 automata — so it too is necessary — and it raises agreement
+    with the solvability oracle from 96/83/69% to 96/90/85% at NA = 2/3/4.
+
+    Both conditions remain merely NECESSARY: 138 automata at NA=3 and 4 454 at
+    NA=4 satisfy the refined one and are still unsolvable.  Further
+    obstructions exist that neither sees.  What this theorem gives is one
+    sufficient case, arrived at by deriving its hypothesis from a measurement
+    rather than by guessing. -/
+theorem two_state_solvable {g c h : BExp T} {D P F X : Exp A T}
+    (hprod : EquivBA
+      (.test (E (.seq D (.ite c P (.test h)))) : Exp A T) (.test .zero))
+    (himp : GuardImplies h (.not g))
+    (hX : EquivBA X
+      (.ite g (.seq D (.ite c (.seq P X) (.seq (.test h) F))) F)) :
+    EquivBA X (.seq (.wh g (.seq D (.ite c P (.test h)))) F) := by
+  -- `h ⟹ ¬g` is exactly rule 6's landing hypothesis for `H = test h`.
+  have hH : EquivBA (.seq (.test h) (.test (.not g)) : Exp A T) (.test h) :=
+    EquivBA.trans (EquivBA.s6 h (.not g))
+      (EquivBA.baTest (GkatGuardedAlgebra.band_of_implies himp))
+  exact trailing_suffix_shared hprod hH hX
+
+#print axioms two_state_solvable
+
 end GkatCensus

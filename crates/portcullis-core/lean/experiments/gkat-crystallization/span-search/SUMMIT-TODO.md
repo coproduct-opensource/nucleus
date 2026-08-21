@@ -9640,3 +9640,55 @@ built.  Census re-verified at 104/104 and 250/250; k=4 relaunched.
 instrument, not about the conjecture, and the necessary condition is one-sided
 with a gap that widens as atoms increase.  Nothing this iteration made the
 remainder smaller.
+
+---
+
+## 212 — A THEOREM, AND THE OVERCLAIM I CAUGHT IN ITS OWN DOCSTRING.
+
+**`two_state_solvable`, proved in Lean, zero axioms.**  Read a 2-state loop as
+an equation at its head `u` — guard `g = C_u`, body `D` reaching `v`,
+continuation test `c = C_v`, back-edge `P`, and in the else arm a HALT with
+region `h = H_v`:
+
+    X ≡ ite g (D · ite c (P · X) (h · F)) F
+
+211's exhaustively measured necessary condition `H_v ∩ C_u = ∅` says exactly
+`h ⟹ ¬g`, and THAT IS VERBATIM rule 6's hypothesis `H · ¬g ≡ H` at
+`H = test h`.  The measurement handed the proof its hypothesis.
+
+**I first wrote that up as "completeness at two states".  It is not, and
+checking my own claim is what showed it.**  Rule 6's CONCLUSION is
+`wh g (D · ite c P (test h)) · F` — the trailing `F` sits AFTER the loop, so a
+mid-body exit at an atom of `H_v` must still pass `F = test H_u`.  That needs
+`H_v ⊆ H_u`, which is strictly stronger than `H_v ∩ C_u = ∅` (halts and
+transitions are disjoint at `u`, so the former implies the latter).  The
+theorem is true; the claim around it was not.
+
+**The refined condition, measured the same way:**
+
+                       211: H_v ∩ C_u = ∅      212: H_v ⊆ H_u ∨ H_u ⊆ H_v
+    NA=2     49            95.9%                      95.9%
+    NA=3  1 369            82.9%                      89.9%
+    NA=4 30 625            69.3%                      85.5%
+    false negatives           0                          0
+
+Zero false negatives for BOTH, in all 32 043 automata — so the refined
+condition is also necessary, and it is markedly tighter, closing about half the
+gap at NA=4.  Deriving it from the shape of an already-proved rule's CONCLUSION,
+rather than from the shape of its hypothesis, is what found it.
+
+**Still only necessary.**  138 automata at NA=3 and 4 454 at NA=4 satisfy the
+refined condition and remain unsolvable, so obstructions exist that neither
+condition sees.  A characterization would need those too.
+
+**Odds: 76%, up 1.**  A small, real gain: the first theorem in this development
+whose hypothesis was DERIVED FROM A MEASUREMENT rather than guessed, and a
+necessary condition tightened by reading a proved rule's conclusion back
+against the data.  Not more, because the headline I nearly published —
+completeness at two states — turned out to be false on inspection, and the
+remaining gap at NA=4 is still 4 454 automata wide.
+
+**Next.**  Find the obstruction the refined condition misses: take the NA=3
+false positives (138 of them, small enough to inspect) and look for what they
+share.  Whatever it is, it is the next necessary condition — and by 212's
+pattern, plausibly the next rule's hypothesis.

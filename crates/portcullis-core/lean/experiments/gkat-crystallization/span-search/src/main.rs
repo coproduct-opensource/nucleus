@@ -6052,7 +6052,15 @@ fn characterize<const NA: usize>() {
         };
         let (c0, c1) = (cont(0, 1), cont(1, 0));
         let (h0, h1) = (a.hl[0], a.hl[1]);
-        let pred = (h1 & c0) == 0 || (h0 & c1) == 0;
+        // 211's predicate: the mid-body halt must lie outside the head's guard.
+        let _weak = (h1 & c0) == 0 || (h0 & c1) == 0;
+        // REFINED (212).  Working rule 6's conclusion through the 2-state shape
+        // shows more is needed.  `wh C_u (p ; ite C_v q (test H_v)) ; test H_u`
+        // puts the TRAILING test after the loop, so a mid-body exit at an atom
+        // of `H_v` must still pass `test H_u` — i.e. `H_v ⊆ H_u`.  That implies
+        // `H_v ∩ C_u = ∅` (halts and transitions are disjoint at `u`), so it is
+        // strictly stronger, and it should account for 211's false positives.
+        let pred = (h1 & !h0) == 0 || (h0 & !h1) == 0;
         let truth = symbolic_eliminable_raw(&a);
         n += 1;
         if pred == truth { agree += 1; }
