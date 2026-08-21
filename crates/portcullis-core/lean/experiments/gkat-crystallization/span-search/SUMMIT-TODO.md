@@ -10751,3 +10751,60 @@ further away than I said.
 chart's loops, rather than proposing conditions and testing them.  The
 construction is in the repo; the conditions should be extracted from it, not
 invented.
+
+---
+
+## 234 — SEARCHING THE GUARD BREAKS SOUNDNESS.  Seven iterations, requirement (a) unmet.
+
+233 said to derive the condition rather than guess it.  Derived, from
+`loopInitialized`: the only edges a loop adds are back edges guarded by
+`hlt_body(s) ∧ guard ∧ gᵢ`, and its halt is `hlt_body(s) ∧ ¬guard`.  So back
+edges lie inside the guard and halts outside it — **the condition tested since
+228 is the right one.**  What is approximate is the graph-level RECOVERY of
+which edges are back edges and what the guard is; an added back edge is
+indistinguishable from a body edge when the body has a similar one.  233 searched
+elimination ORDERS but always took the guard from the natural loop.  So search
+the guard too.
+
+                                NA=2      NA=3
+    (a) holds on              99.76%    99.58%      no improvement
+    (b) survives collapse     99.53%    99.21%
+    (c) cert-but-UNSOLVABLE        0         1      <- soundness BROKE
+        solvable-but-no-cert        52        89
+
+**Two findings, and the second is the one that counts.**
+
+**(1) Guard-identification was not the defect** — (a) did not improve, so the
+~0.2% of Thompson automata failing the certificate fail for some other reason.
+
+**(2) Searching the guard BREAKS SUFFICIENCY.**  Across `uniform_guard`,
+natural-loop guards, layered elimination, and the order-existential — four
+formulations, ~200 000 automata — a certificate that succeeded ALWAYS yielded a
+solvable automaton.  Letting the guard range freely admits certificates that
+correspond to no real loop, and one certified an UNSOLVABLE automaton.  **The
+guard is not free to choose; it must stay tied to graph structure.**  That is a
+useful boundary: it says the certificate's guard is DETERMINED, not existential,
+even though the loop decomposition is existential.
+
+**Seven iterations (228-234) on the certificate, and requirement (a) has never
+been met.**  Each refinement improved something and left the target unreached,
+and this one regressed the direction that had been invariant.  That is worth
+stating without dressing.
+
+**The check I should run before an eighth attempt:** are my Rust constructors
+(`a_seq`, `a_ite`, `a_wh`) actually faithful to the Lean `certifiedThompson`?
+Every (a) measurement assumes they are.  If `a_seq` merges a state the Lean
+construction keeps distinct, or omits a pseudostate, then the automata I have
+been calling Thompson charts are not, and a persistent ~0.2% failure rate is
+exactly what that would look like.  This should have been verified at 228,
+before seven iterations were spent testing conditions against them.
+
+**Odds: 78%, DOWN 1.**  A soundness break plus no progress on the target, over
+a stretch that has now consumed seven iterations.  The route's load-bearing
+facts are untouched — 223's collapse measurement, and sufficiency for the four
+structurally-tied formulations — so this is a cost of execution, not a refutation.
+But an estimate that does not move after seven unproductive iterations is not
+tracking anything.
+
+**Next.**  Verify `a_seq`/`a_ite`/`a_wh` against `certifiedThompson` before
+proposing anything further.

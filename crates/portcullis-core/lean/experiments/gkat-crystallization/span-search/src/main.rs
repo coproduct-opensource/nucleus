@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_GUARDSEARCH").is_ok() {
+        guardsearch_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_EXISTS").is_ok() {
         exists_test::<NA>(nguards as u8);
         return;
@@ -11961,4 +11965,83 @@ fn exists_test<const NA: usize>(nguards: u8) {
         (a) LLEE-exists holds on {a_ok}; (b) survives collapse {b_ok}; \
         (c) agrees with solvable {agree}, LLEE-but-UNsolvable {l_not_s}, \
         solvable-but-no-LLEE {s_not_l}");
+}
+
+/// **SEARCH THE GUARD TOO** (iteration 234).
+///
+/// Derived from `loopInitialized` rather than guessed: the ONLY edges a loop
+/// adds are back edges guarded by `hlt_body(s) ∧ guard ∧ gᵢ`, and the loop's
+/// halt is `hlt_body(s) ∧ ¬guard`.  So back edges lie INSIDE the guard and halts
+/// lie OUTSIDE it — which is the condition tested since 228.  The condition is
+/// right.  What is approximate is the graph-level RECOVERY of which edges are
+/// back edges and what the guard is: an added back edge is indistinguishable
+/// from a body edge whenever the body has a similar one.
+///
+/// 233 searched elimination ORDERS but always took the guard to be the atoms of
+/// the natural loop's back edges.  Search the guard as well: for each loop
+/// header, try every candidate guard `b`, designate as back edges exactly the
+/// edges into the header at atoms of `b`, and require no body state to halt
+/// inside `b`.
+fn llee_guard_search<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    let loops = natural_loops(g);
+    if loops.is_empty() { return true; }
+    let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };
+    for (h, body, _) in loops.iter() {
+        for b in 1..=all {
+            // the guard must cover at least one edge into the header
+            let mut fires = false;
+            for &s in body.iter() {
+                for y in 0..NA {
+                    if b >> y & 1 == 1 && g.st[s][y] == (*h + 1) as u8 { fires = true; }
+                }
+            }
+            if !fires { continue; }
+            if body.iter().any(|&s| g.hl[s] & b != 0) { continue; }
+            let mut g2 = *g;
+            for &s in body.iter() {
+                for y in 0..NA {
+                    if b >> y & 1 == 0 { continue; }
+                    if g2.st[s][y] == (*h + 1) as u8 { g2.st[s][y] = 0; }
+                }
+            }
+            if g2.st == g.st { continue; }
+            if llee_guard_search(&g2, budget) { return true; }
+        }
+    }
+    false
+}
+
+fn guardsearch_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xBE5466CF34E90C6C;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut a_ok, mut b_ok, mut l_not_s, mut s_not_l) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..30_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        let mut bud = 60_000usize;
+        let la = llee_guard_search(&a, &mut bud);
+        if la { a_ok += 1; }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let mut b2 = 60_000usize;
+            let lq = llee_guard_search(&qq, &mut b2);
+            if !la || lq { b_ok += 1; }
+            let solve = {
+                let sing = singleton_states(&qq);
+                sccs_of(&qq).iter().all(|c| c.len() < 2
+                    || calculus_solves(&qq, c, 6)
+                    || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
+            };
+            if lq && !solve { l_not_s += 1; }
+            if solve && !lq { s_not_l += 1; }
+        }
+    }
+    println!("  guardsearch_test NA={NA}: {n} Thompson automata; \
+        (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
+        (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
 }
