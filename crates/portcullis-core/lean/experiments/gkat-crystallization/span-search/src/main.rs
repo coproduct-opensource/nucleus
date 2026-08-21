@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_ENTRY_GUARD").is_ok() {
+        entry_guard_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_GUARD_DIAG").is_ok() {
         guard_diag::<NA>(nguards as u8);
         return;
@@ -11618,4 +11622,80 @@ fn guard_diag<const NA: usize>(nguards: u8) {
     println!("  guard_diag NA={NA}: {bad} failing SCCs; \
         cause halt-inside-guard {by_halt}, reject-inside {by_reject}, \
         leave-inside {by_leave}; contain a proper inner loop (NESTED) {nested_scc}");
+}
+
+/// **THE GUARD, READ OFF THE ENTRY EDGES** (iteration 230).
+///
+/// 229 showed the union over INTERNAL transitions is the wrong guard: a body's
+/// own steps happen at atoms unrelated to the loop guard.  The right one comes
+/// from `loopInitialized`, where the loop's ENTRY transitions (from outside) and
+/// its BACK EDGES are the same list — `body.initTrans` — guarded by `b`.  They
+/// land on the same targets, so the guard is recoverable from the graph as:
+///
+///     b := the atoms on which the SCC is entered from OUTSIDE it
+///          (including from the initial pseudostate)
+///
+/// and `loop_core_hlt` (`rfl`, 220) then predicts, sharply: **no state of a loop
+/// halts at an atom inside its entry guard**, because a loop's halt is
+/// `hlt_body ∧ ¬b`.  Falsifiable, and it should hold on EVERY Thompson
+/// automaton if the reading is right.
+fn entry_guard<const NA: usize>(q: &Aut<NA>, scc: &[usize]) -> u8 {
+    let inscc = |t: usize| scc.contains(&t);
+    let mut b: u8 = 0;
+    for y in 0..NA {
+        // from the initial pseudostate
+        let t = q.it[y];
+        if t != 0 && inscc((t - 1) as usize) { b |= 1 << y; }
+        // from any state outside the SCC
+        for s in 0..(q.k as usize) {
+            if inscc(s) { continue; }
+            let t = q.st[s][y];
+            if t != 0 && inscc((t - 1) as usize) { b |= 1 << y; }
+        }
+    }
+    b
+}
+
+fn entry_guard_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x243F6A8885A308D3;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut sccs_n, mut ok, mut empty_b, mut coll_ok, mut coll_n) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..60_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        let check = |q: &Aut<NA>| -> (usize, usize, usize) {
+            let (mut n, mut good, mut eb) = (0, 0, 0);
+            for c in sccs_of(q) {
+                if c.len() < 2 { continue; }
+                n += 1;
+                let b = entry_guard(q, &c);
+                if b == 0 { eb += 1; }
+                if c.iter().all(|&s| q.hl[s] & b == 0) { good += 1; }
+            }
+            (n, good, eb)
+        };
+        let (n, g, eb) = check(&a);
+        sccs_n += n; ok += g; empty_b += eb;
+        if g < n && shown < 3 {
+            shown += 1;
+            println!("    ENTRY-GUARD VIOLATED, k={}:", a.k);
+            for s in 0..(a.k as usize) {
+                let row: Vec<String> = (0..NA).map(|i| {
+                    let t = a.st[s][i];
+                    if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                }).collect();
+                println!("      q{s}: hl={:03b} st=[{}]", a.hl[s], row.join(","));
+            }
+        }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(q) = quotient_by(&a, &blk, nb) {
+            let (n2, g2, _) = check(&q);
+            coll_n += n2; coll_ok += g2;
+        }
+    }
+    println!("  entry_guard_test NA={NA}: {sccs_n} loop SCCs; \
+        no-halt-inside-entry-guard holds on {ok}; entry guard empty on {empty_b}; \
+        after collapse {coll_ok}/{coll_n}");
 }

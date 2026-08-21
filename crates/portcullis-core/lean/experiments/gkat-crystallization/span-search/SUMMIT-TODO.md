@@ -10589,3 +10589,58 @@ not have moved on an unmeasured belief.
 **Next.**  Identify back edges structurally — for each SCC, find the entry set
 (the states a restart lands on) and take the guard from the transitions INTO it,
 rather than from every internal transition.  Then re-run (a), (b), (c).
+
+---
+
+## 230 — SCC IS NOT A LOOP.  Second guard-reading falsified, and the reason is now clear.
+
+229 said the guard must come from the BACK EDGES, not from all internal
+transitions.  `loopInitialized` makes that readable off the graph: a loop's
+entry transitions (from outside) and its back edges are the SAME list,
+`body.initTrans`, guarded by `b`, landing on the same targets.  So take
+
+    b := the atoms on which an SCC is entered from outside it
+
+and `loop_core_hlt` predicts sharply that **no state of a loop halts inside its
+entry guard**, since a loop's halt is `hlt_body ∧ ¬b`.  Falsifiable, and it
+should hold on every Thompson automaton.
+
+**It does not.**
+
+    NA=2   2039 / 2146 loop SCCs   (95%)
+    NA=3   2915 / 3085             (94%)
+    NA=4   3669 / 3901             (94%)
+
+**The counterexample says exactly what is wrong.**
+
+    q0: st=[q2,q2]   q1: st=[q2,q2]   q2: st=[q4,q4]
+    q3: st=[q4,q4]   q4: hl={a1} st=[q1,-]
+
+The SCC is `{q1,q2,q4}`, entered from `q0` — which is outside it — on BOTH
+atoms, while `q4` halts on `a1`.  So the entry guard is not the loop guard,
+because `q0` is not entering the loop at the loop's entry.  **The SCC is not a
+single `wh` body.**
+
+**That is the same error as 229's, one level up, and it names the real
+constraint: AN SCC IS NOT A LOOP.**  The loop structure is strictly finer than
+the SCC decomposition — a single strongly connected component can span more than
+one loop construct, and no assignment of one guard per SCC can be right.  Both
+attempts failed for this reason and only this reason.
+
+**And it is exactly why LLEE labels TRANSITIONS rather than components.**  Its
+certificate assigns loop-entry markings at levels to individual edges, which is
+the granularity the structure actually has.  I have now established by two
+falsifications what the paper's definition encodes by construction.
+
+**Odds: 80%, held.**  The route — certificate plus closure — is untouched; what
+moved is my model of the certificate, from "a guard per SCC" to "a labelling per
+transition", which is what the precedent uses.  Not lowered, because the two
+verified facts that make the route worth pursuing are unaffected: `uniform_guard`
+is collapse-stable (100%) and sufficient for solvability (0 counterexamples in
+~60 000).  Not raised, because two iterations produced no forward progress, only
+a corrected model.
+
+**Next.**  Transition-level labelling: for each SCC compute a loop-nesting
+forest (Havlak/Ramalingam), read a guard PER LOOP rather than per SCC, and check
+`loop_core_hlt`'s prediction against that.  If the prediction holds at 100% on
+Thompson automata, that labelling is the certificate.
