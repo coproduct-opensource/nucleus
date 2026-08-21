@@ -10808,3 +10808,55 @@ tracking anything.
 
 **Next.**  Verify `a_seq`/`a_ite`/`a_wh` against `certifiedThompson` before
 proposing anything further.
+
+---
+
+## 236 — THE SUB-CHART GENERATOR IS NARROWER, NOT BROADER.  This line has stalled.
+
+235 localised the residual to the candidate generator and prescribed enumerating
+LLEE's loop sub-charts directly: a body `B` with an entry `h ∈ B` such that every
+edge into `B` from outside targets `h`.
+
+                            NA=2      NA=3
+    (a) holds on          99.15%    98.37%      WORSE than natural loops
+    (b) survives collapse 99.96%    99.81%      better
+    (c) cert-but-UNSOLVABLE     0         1     soundness broke again
+        solvable-but-no-cert     2         6
+
+**(a) got worse, and budget was not the reason** — raising it from 40 000 to
+2 000 000 changed nothing (2670/2693 both times), so the failures are genuine
+for this generator.  **The generator is NARROWER, not broader**: requiring
+single entry EXCLUDES the multi-entry natural loops the DFS version allowed.  I
+prescribed it as a broadening and implemented a restriction.
+
+**And soundness broke at NA=3 for the second time in three iterations** — 234's
+guard search and now this.
+
+**Standing back, because nine iterations warrant it.**  Five certificate
+formulations since 228: `uniform_guard`, natural-loop guards, layered
+elimination, order-existential, guard-search, sub-charts.  Requirement (a) peaked
+at **99.84% with the FIRST and simplest**, and every variation since has been
+neutral or worse, twice at the cost of soundness.  That is not a search
+converging; it is a search wandering.
+
+**What I think is actually wrong.**  Grabmayer's LLEE is a LABELLING with a
+descent condition — transitions marked as loop-entries at natural-number levels,
+with descent into a loop accompanied by a decrease, and loops never mutually
+nested.  Every formulation I have written drops the descent/level bookkeeping and
+keeps only the halt condition.  The two soundness breaks are exactly what
+dropping "loops never mutually nested" would produce: a certificate accepting a
+decomposition that no consistent layering admits.  I have been approximating a
+definition rather than implementing it.
+
+**Odds: 77%, DOWN 1.**  Nine iterations, requirement (a) never met, best result
+from the first attempt, two soundness regressions.  The route's load-bearing
+facts still stand — 223's collapse measurement and sufficiency for the
+structurally-tied formulations — but my ability to execute this particular step
+is the thing being measured now, and it is measuring badly.
+
+**Next, and it should be a change of method, not another variation.**  Implement
+LLEE's actual labelling — levels on transitions, descent condition, no mutual
+nesting — from the paper's definition rather than from my reconstruction of it.
+If that does not reach (a) at 100% on faithful Thompson automata, then either the
+guarded case genuinely differs from Milner's or my reading of the definition is
+wrong, and both are worth knowing before more iterations are spent.

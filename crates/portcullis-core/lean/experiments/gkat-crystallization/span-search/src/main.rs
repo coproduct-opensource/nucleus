@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_SUBCHART").is_ok() {
+        subchart_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_GUARDSEARCH").is_ok() {
         guardsearch_test::<NA>(nguards as u8);
         return;
@@ -12042,6 +12046,105 @@ fn guardsearch_test<const NA: usize>(nguards: u8) {
         }
     }
     println!("  guardsearch_test NA={NA}: {n} Thompson automata; \
+        (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
+        (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
+}
+
+/// **LOOP SUB-CHARTS, ENUMERATED DIRECTLY** (iteration 236).
+///
+/// 235 localised the residual to the candidate GENERATOR: DFS natural loops are
+/// strictly narrower than LLEE's loop sub-charts, and 233/234 both searched over
+/// natural loops, so both ranged over the wrong axis.
+///
+/// LLEE's notion: a loop sub-chart is a body `B` with an entry `h ∈ B` such that
+/// every edge into `B` from OUTSIDE `B` targets `h` — single entry, but `B` need
+/// not be what a DFS discovers.  Enumerate those directly (subsets of each SCC),
+/// take the guard from the edges of `B` back into `h`, require no state of `B` to
+/// halt inside it, eliminate, recurse.
+fn loop_subcharts<const NA: usize>(g: &Aut<NA>) -> Vec<(usize, Vec<usize>, u8)> {
+    let k = g.k as usize;
+    let mut out = Vec::new();
+    for c in sccs_of(g) {
+        if c.len() > 12 { continue; }
+        for mask in 1u32..(1u32 << c.len()) {
+            let b: Vec<usize> = c.iter().enumerate()
+                .filter(|(i, _)| mask >> i & 1 == 1).map(|(_, &s)| s).collect();
+            for &h in b.iter() {
+                // single entry: every edge from outside B into B lands on h
+                let mut ok = true;
+                for s in 0..k {
+                    if b.contains(&s) { continue; }
+                    for y in 0..NA {
+                        let t = g.st[s][y];
+                        if t == 0 { continue; }
+                        let t = (t - 1) as usize;
+                        if b.contains(&t) && t != h { ok = false; }
+                    }
+                }
+                if !ok { continue; }
+                // guard: atoms on which B steps back into h
+                let mut gd: u8 = 0;
+                for &s in b.iter() {
+                    for y in 0..NA {
+                        if g.st[s][y] == (h + 1) as u8 { gd |= 1 << y; }
+                    }
+                }
+                if gd == 0 { continue; }
+                out.push((h, b.clone(), gd));
+            }
+        }
+    }
+    out
+}
+
+fn llee_subchart<const NA: usize>(g: &Aut<NA>, budget: &mut usize) -> bool {
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    if sccs_of(g).iter().all(|c| c.len() < 2
+        && !(0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8)) { return true; }
+    for (h, body, gd) in loop_subcharts(g) {
+        if body.iter().any(|&s| g.hl[s] & gd != 0) { continue; }
+        let mut g2 = *g;
+        for &s in body.iter() {
+            for y in 0..NA {
+                if gd >> y & 1 == 1 && g2.st[s][y] == (h + 1) as u8 { g2.st[s][y] = 0; }
+            }
+        }
+        if g2.st == g.st { continue; }
+        if llee_subchart(&g2, budget) { return true; }
+    }
+    false
+}
+
+fn subchart_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x452821E638D01377;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut a_ok, mut b_ok, mut l_not_s, mut s_not_l) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    for _ in 0..8_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        let mut bud = 2_000_000usize;
+        let la = llee_subchart(&a, &mut bud);
+        if la { a_ok += 1; }
+        let (blk, nb) = bisim_blocks(&a);
+        if let Some(qq) = quotient_by(&a, &blk, nb) {
+            let mut b2 = 2_000_000usize;
+            let lq = llee_subchart(&qq, &mut b2);
+            if !la || lq { b_ok += 1; }
+            let solve = {
+                let sing = singleton_states(&qq);
+                sccs_of(&qq).iter().all(|c| c.len() < 2
+                    || calculus_solves(&qq, c, 6)
+                    || calculus_solves(&qq, &scc_with_context(&qq, c, &sing), 6))
+            };
+            if lq && !solve { l_not_s += 1; }
+            if solve && !lq { s_not_l += 1; }
+        }
+    }
+    println!("  subchart_test NA={NA}: {n} Thompson automata; \
         (a) holds on {a_ok}; (b) survives collapse {b_ok}; \
         (c) cert-but-UNsolvable {l_not_s}, solvable-but-no-cert {s_not_l}");
 }
