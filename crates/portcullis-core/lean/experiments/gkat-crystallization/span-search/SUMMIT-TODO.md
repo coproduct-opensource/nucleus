@@ -3039,3 +3039,27 @@ accumulated context, the stripped residual's firstMatch equals the
 full dispatch's — converting full-dispatch bisim agreement into
 per-entry under-context guard agreement. Then the ClassesOk/CtxOk
 constructor from GAutBisim closes the extensionality chapter.
+
+## Iteration 106 — STRIPPING IS INVISIBLE BELOW THE CONTEXT (zero axioms)
+
+**`firstMatch_gOthersPC`**: when a (class, action) entry's gathered
+guard is false at an atom, removing its arms leaves the dispatch
+unchanged there — the residual's firstMatch IS the full dispatch's.
+Clean double induction over the arm list with Boolean or/and-not
+decompositions of the gathered guard.
+
+This is the last analytical piece of the extensionality chapter: the
+chain is now
+  bisim step agreement (per atom, full dispatches)
+  → [firstMatch_gOthersPC, iterated] residual agreement under context
+  → [gGuardPC_firstMatch] under-context gathered-guard equality
+  → [pointwise_of_genW on C∧G] all-valuation form
+  → [CtxOk] certificate
+  → [dispatch_ext_ctx] equation equivalence.
+
+Remaining: THE CONSTRUCTOR assembly (bisim + class-consistent sol →
+CtxOk over the concatenated entry list, residuals emptying, halts by
+bisim_hlt_invariant + s6/baTest, then strip the test-1 prefix) —
+yielding THE EQUATION TRANSPORT THEOREM: bisimilar states' equations
+are EquivBA-equal under class-consistent solutions. Then the
+subsystem lemma and the rank induction.

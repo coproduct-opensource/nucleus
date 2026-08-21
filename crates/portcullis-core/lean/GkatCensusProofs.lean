@@ -925,4 +925,87 @@ theorem dispatch_ext_ctx {S₁ S₂ : Type} [DecidableEq A]
 #print axioms test_ite_split
 #print axioms dispatch_ext_ctx
 
+open Classical in
+/-- **STRIPPING IS INVISIBLE BELOW THE CONTEXT**: when a (class,
+    action) entry's gathered guard is false at an atom, removing its
+    arms does not change the dispatch there — the residual's first
+    match is the full dispatch's.  The supply-side bridge from
+    full-dispatch bisimulation agreement to per-entry under-context
+    agreement. -/
+theorem firstMatch_gOthersPC {S : Type} [DecidableEq A]
+    {Atom : Type} (V₀ : T → Atom → Bool) (x : Atom)
+    (P : S → Bool) (a : A) :
+    ∀ L : List (BExp T × A × S),
+      GkatGS.bval V₀ (gGuardPC P a L) x = false →
+      GkatKleene.firstMatch V₀ x (gOthersPC P a L)
+        = GkatKleene.firstMatch V₀ x L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons hd rest ih =>
+      intro hfalse
+      obtain ⟨g, b, u⟩ := hd
+      have hunf : GkatKleene.firstMatch V₀ x ((g, b, u) :: rest)
+          = if GkatGS.bval V₀ g x = true then some (b, u)
+            else GkatKleene.firstMatch V₀ x rest := rfl
+      by_cases hu : P u = true ∧ b = a
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .or g (gGuardPC P a rest) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        have hot : gOthersPC P a ((g, b, u) :: rest)
+            = gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_pos hu]
+        rw [hgu] at hfalse
+        have hfalse' : (GkatGS.bval V₀ g x
+            || GkatGS.bval V₀ (gGuardPC P a rest) x) = false := hfalse
+        have hg : GkatGS.bval V₀ g x = false := by
+          cases hb : GkatGS.bval V₀ g x
+          · rfl
+          · rw [hb] at hfalse'
+            exact nomatch hfalse'
+        have hrest : GkatGS.bval V₀ (gGuardPC P a rest) x = false := by
+          rw [hg] at hfalse'
+          cases hb : GkatGS.bval V₀ (gGuardPC P a rest) x
+          · rfl
+          · rw [hb] at hfalse'
+            exact nomatch hfalse'
+        rw [hot, hunf, if_neg (by rw [hg]; exact Bool.false_ne_true)]
+        exact ih hrest
+      · have hgu : gGuardPC P a ((g, b, u) :: rest)
+            = .and (gGuardPC P a rest) (.not g) := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        have hot : gOthersPC P a ((g, b, u) :: rest)
+            = (g, b, u) :: gOthersPC P a rest := by
+          show (if P u = true ∧ b = a then _ else _) = _
+          rw [if_neg hu]
+        rw [hgu] at hfalse
+        have hfalse' : (GkatGS.bval V₀ (gGuardPC P a rest) x
+            && !(GkatGS.bval V₀ g x)) = false := hfalse
+        rw [hot]
+        have hunf2 : GkatKleene.firstMatch V₀ x
+            ((g, b, u) :: gOthersPC P a rest)
+          = if GkatGS.bval V₀ g x = true then some (b, u)
+            else GkatKleene.firstMatch V₀ x (gOthersPC P a rest) := rfl
+        rw [hunf2, hunf]
+        by_cases hg : GkatGS.bval V₀ g x = true
+        · rw [if_pos hg, if_pos hg]
+        · rw [if_neg hg, if_neg hg]
+          have hgf : GkatGS.bval V₀ g x = false := by
+            cases hb : GkatGS.bval V₀ g x
+            · rfl
+            · exact absurd hb hg
+          have hrest : GkatGS.bval V₀ (gGuardPC P a rest) x
+              = false := by
+            rw [hgf] at hfalse'
+            have : (GkatGS.bval V₀ (gGuardPC P a rest) x && true)
+                = false := hfalse'
+            rw [Bool.and_true] at this
+            exact this
+          exact ih hrest
+
+#print axioms firstMatch_gOthersPC
+
 end GkatCensus
