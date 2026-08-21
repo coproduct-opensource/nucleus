@@ -2789,3 +2789,33 @@ ThompsonCertificateBA machinery, with mid-halt states as test-prefixed
 calls. The syntactic structure theorem should compile e's certificate
 into schedule clauses directly — reusing the mountain of Thompson
 uniqueness work instead of re-deriving lap structure.
+
+## Iteration 97 — CERTIFICATE RECON + the quotient-equation bridge
+
+**Recon payoff — ParametricCanonicalBA is the master key**: the
+Thompson certificates already prove per-program
+uniqueness-WITHOUT-UA: `∀ finish sol, ParamSolvesBA aut sol finish →
+∀ state, EquivBA (sol state) ((standard state); finish)` — any
+parametric solution factors through the standard one. Plus
+StandardSolvesBA (= ParamSolvesBA at finish := 1), InitHaltDisjointBA,
+InitTargetsListed. The census verification clauses should be derived
+FROM canonicity rather than re-proving unroll identities.
+
+**Compilation design sharpened**: every Thompson state's closed tree
+is a PREFIX-CALL CHAIN — mid-states: `.call (finish-the-lap expr,
+inner loops inlined whole) (outermost port)`; ports:
+`.pre (wh g FULLBODY) (continuation-call)`. Nested loops form ONE SCC
+whose states ALL call the outermost port directly, so SCC schedules
+are trivial in shape: [non-port states, any order] ++ [port]. The
+whole difficulty concentrates in the self-close verification clauses,
+to be discharged via the certificate lemmas.
+
+**First transport brick**: `eqRHS_quot` ([Classical.choice] only) —
+the canonical quotient's equation at ANY carrier state is the
+underlying automaton's equation with the solution precomposed by
+bisimRep. (Tactic note: list inductions over projected arm lists need
+the generalized-aux + foldTL-folded `show` forms, or `rw [ih]` misses.)
+
+Next: the compilation skeleton — per-program schedule data (the
+prefix-call trees from the syntax tree) and the wh-case verification
+clause via canonicity.

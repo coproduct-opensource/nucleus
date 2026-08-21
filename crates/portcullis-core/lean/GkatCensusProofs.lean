@@ -190,6 +190,47 @@ theorem bisim_hlt_invariant {S : Type} (aut : GkatKleene.GAut S A T)
         = GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt t) α :=
   (GkatPlanExistence.genBisimilar_bisim aut s t h).1
 
+open Classical in
+/-- **QUOTIENT EQUATIONS ARE REP-COMPOSED SUM EQUATIONS**: the
+    canonical quotient's equation at any carrier state is the
+    underlying automaton's equation with the solution precomposed by
+    the representative map — the bridge every census transport rides. -/
+theorem eqRHS_quot {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) (s : S) :
+    GkatKleene.eqRHS (GkatPlanExistence.bisimQuotAut aut) sol s
+      = GkatKleene.eqRHS aut
+          (fun t => sol (GkatPlanExistence.bisimRep aut t)) s := by
+  rw [GkatPlanExistence.eqRHS_foldTL, GkatPlanExistence.eqRHS_foldTL]
+  show GkatPlanExistence.foldTL sol (aut.hlt s)
+      ((aut.trans s).map (fun e =>
+        (e.1, e.2.1, GkatPlanExistence.bisimRep aut e.2.2)))
+    = GkatPlanExistence.foldTL
+        (fun t => sol (GkatPlanExistence.bisimRep aut t))
+        (aut.hlt s) (aut.trans s)
+  have haux : ∀ L : List (BExp T × A × S),
+      GkatPlanExistence.foldTL sol (aut.hlt s)
+        (L.map (fun e =>
+          (e.1, e.2.1, GkatPlanExistence.bisimRep aut e.2.2)))
+      = GkatPlanExistence.foldTL
+          (fun t => sol (GkatPlanExistence.bisimRep aut t))
+          (aut.hlt s) L := by
+    intro L
+    induction L with
+    | nil => rfl
+    | cons e rest ih =>
+        show Exp.ite e.1 (.seq (.act e.2.1)
+            (sol (GkatPlanExistence.bisimRep aut e.2.2)))
+          (GkatPlanExistence.foldTL sol (aut.hlt s)
+            (rest.map (fun e =>
+              (e.1, e.2.1, GkatPlanExistence.bisimRep aut e.2.2))))
+          = Exp.ite e.1 (.seq (.act e.2.1)
+            (sol (GkatPlanExistence.bisimRep aut e.2.2)))
+          (GkatPlanExistence.foldTL
+            (fun t => sol (GkatPlanExistence.bisimRep aut t))
+            (aut.hlt s) rest)
+        rw [ih]
+  exact haux (aut.trans s)
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
@@ -197,5 +238,6 @@ theorem bisim_hlt_invariant {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms reach_back_of_rank_eq
 #print axioms same_rank_arm_mutual
 #print axioms bisim_hlt_invariant
+#print axioms eqRHS_quot
 
 end GkatCensus
