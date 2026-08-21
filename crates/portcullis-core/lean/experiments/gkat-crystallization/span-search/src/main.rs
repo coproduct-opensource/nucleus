@@ -4086,6 +4086,7 @@ enum Ex {
 static CALC_NODES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static CALC_ACCEPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static CALC_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CALC_SKIPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[inline]
 fn bump(c: &std::sync::atomic::AtomicUsize) {
     c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4422,13 +4423,31 @@ fn calc_search<const NA: usize>(q: &Aut<NA>, scc: &[usize], eq: &Eqs,
 }
 
 /// Does the three-rule calculus solve this SCC, with the answer LANGUAGE-CHECKED?
+/// Largest SCC the calculus search will attempt.  Raised from the hard-coded 5
+/// at iteration 203; `PAD_CALC_MAXSCC` overrides.  The search is exponential in
+/// SCC size, so this trades runtime for coverage — but a skipped SCC must be
+/// reported as skipped, not as a failure.
+fn calc_max_scc() -> usize {
+    std::env::var("PAD_CALC_MAXSCC").ok().and_then(|v| v.parse().ok()).unwrap_or(7)
+}
+
+/// Whether the calculus will even try this SCC — the caller's guard, so that
+/// "too big to attempt" is never silently folded into "the calculus failed".
+fn calculus_attempted(scc: &[usize]) -> bool { scc.len() <= calc_max_scc() }
+
 fn calculus_solves<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize) -> bool {
     let k = q.k as usize;
     let mut eq: Eqs = vec![None; k];
     for &s in scc.iter() { eq[s] = Some(eq_of(q, scc, s)); }
     let mut sols: Vec<Option<Ex>> = vec![None; k];
     bump(&CALC_CALLS);
-    if scc.len() > 5 { return false; }
+    // SIZE CAP.  This used to be a bare `if scc.len() > 5 { return false }`,
+    // so an SCC too big to attempt was reported as a calculus FAILURE — the
+    // rates published up to 202 were deflated by SCCs that were never tried
+    // at all.  `calculus_attempted` is now the caller's guard, and the cap is
+    // raised and tunable; anything over it must be counted as SKIPPED, never
+    // as failed.
+    if scc.len() > calc_max_scc() { bump(&CALC_SKIPPED); return false; }
     let mut budget = 400_000usize;
     let mut memo: FxMap<u64, bool> = FxMap::default();
     calc_search(q, scc, &eq, &mut sols, scc.len(), 3 * scc.len() + 3, &mut budget, n, 0,
@@ -5656,6 +5675,10 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_res_scc = 0usize;
     let mut n_calculus = 0usize;
     let mut n_open_calc = 0usize;
+    let mut n_fail_scc = 0usize;
+    let mut n_calc_skipped = 0usize;
+    let mut n_fail_exits = 0usize;
+    let mut n_fail_multiexit = 0usize;
     let mut n_open_calc_ok = 0usize;
     let mut n_open_calc_lattice = 0usize;
     // Coarse phase timers.  Three earlier optimization passes on this harness
@@ -5918,6 +5941,17 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     // STRESS THE CALCULUS on EVERY open SCC, not only the
                     // lattice-resistant ones: the resistant set is ~1 in 10^4
                     // pairs, the open set ~10x larger, and both are hard.
+                    // An SCC too big to attempt is SKIPPED, not failed — see
+                    // `calculus_attempted`.  Folding the two together is what
+                    // made 202's NA=2 rate read 102/104 when one of the two
+                    // "failures" had never been tried.  A skip is UNKNOWN, so
+                    // it is excluded from the denominator and the pair is
+                    // conservatively not counted as calculus-solved.
+                    if !calculus_attempted(scc) {
+                        n_calc_skipped += 1;
+                        pair_calc_ok = false;
+                        continue;
+                    }
                     n_open_calc += 1;
                     let t0 = std::time::Instant::now();
                     let calc_ok = std::env::var("PAD_NO_CALC").is_ok()
@@ -5925,8 +5959,30 @@ fn scc_census<const NA: usize>(nguards: u8) {
                     t_calc += t0.elapsed();
                     if calc_ok {
                         n_open_calc_ok += 1;
-                    } else if { pair_calc_ok = false; false } {
-                        println!("  CALCULUS FAILS on open scc {scc:?} (pair #{pairs_done}):");
+                    } else {
+                        // ALWAYS printed.  This dump used to sit behind
+                        // `else if { pair_calc_ok = false; false }` — a block
+                        // evaluating to `false`, so only the side effect ran
+                        // and every full-collapse calculus failure was
+                        // invisible.  That is exactly the shape of bug that
+                        // produced 179's false finding, so it prints
+                        // unconditionally now, dump flag or not.
+                        pair_calc_ok = false;
+                        // KOSARAJU'S CONDITION, measured at the point of
+                        // failure: a loop with two distinct exits cannot be
+                        // structured without NODE SPLITTING.  Splitting a node
+                        // is un-collapsing — descending the bisimulation
+                        // lattice to a FINER quotient — which is exactly the
+                        // freedom `SumQuotientSolvable`'s existential grants.
+                        // If every full-collapse failure is multi-exit, that is
+                        // an explanation for the complementarity 196 measured,
+                        // not just a restatement of it.
+                        n_fail_exits += exit_states(&q, scc);
+                        n_fail_scc += 1;
+                        if exit_states(&q, scc) > 1 { n_fail_multiexit += 1; }
+                        println!("  CALCULUS FAILS on open scc {scc:?} (pair #{pairs_done}): \
+                            exits={} reducible={}",
+                            exit_states(&q, scc), t1t2_reducible(&q, scc));
                         for &s in scc.iter() {
                             let row: Vec<String> = (0..NA).map(|i| {
                                 let t = q.st[s][i];
@@ -6107,6 +6163,9 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  lattice-resistant SCCs: {n_res_scc} total; T1/T2-reducible {n_res_reducible}; MULTI-EXIT (Kosaraju) {n_res_multiexit}");
     println!("  lattice-resistant SCCs SOLVED BY THE THREE-RULE CALCULUS (language-checked): {n_calculus} / {n_res_scc}");
     println!("  ALL OPEN SCCs put to the calculus: {n_open_calc}; SOLVED (language-checked): {n_open_calc_ok}");
+    println!("  FULL-COLLAPSE calculus failures: {n_fail_scc}; MULTI-EXIT (Kosaraju) {n_fail_multiexit}; total exit states {n_fail_exits}");
+    println!("  SCCs NOT ATTEMPTED (larger than the size cap {}): {n_calc_skipped} — counted as UNKNOWN, not as failures",
+        calc_max_scc());
     println!("  OPEN PAIRS where the CALCULUS solves SOME quotient in the lattice: {n_open_calc_lattice} / {n_open_pairs}");
     println!("  [phases] total {:.1}s = lattice {:.1}s + calculus {:.1}s + absorption {:.1}s + rest {:.1}s",
         t_all.elapsed().as_secs_f64(), t_lat.as_secs_f64(), t_calc.as_secs_f64(),

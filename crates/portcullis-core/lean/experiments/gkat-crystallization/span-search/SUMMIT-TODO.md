@@ -9124,3 +9124,77 @@ quotient, so full-collapse coverage is strictly more than required.  Against
 it: NA=2 still has two holes, the arbitrary-nesting substitution the solver
 performs is broader than the two rules that justify it, and the field's prior
 that this problem does not close still stands.
+
+---
+
+## 203 — TWO HARNESS BUGS BEHIND THE "FAILURES", AND WHAT SURVIVES THEM.
+
+The field's own frontier, restated by a 2025 Bucknell thesis: a uniqueness
+theorem for solutions of Thompson-generated automata is in hand ("any two
+solutions of the same automaton are provably equal"), and that is described as
+opening a direction toward completeness.  That is exactly this development's
+`certifiedThompson_solution_unique`.  Uniqueness is settled; EXISTENCE is the
+open half, here and there.
+
+**Bug 1 — the failure dump was dead code.**  The full-collapse calculus failure
+report sat behind
+
+    } else if { pair_calc_ok = false; false } {
+
+a condition block evaluating to `false`, so only the side effect ran and the
+dump never executed.  Every full-collapse failure since the counter was added
+has been invisible.  This is the same shape of bug as 179's, which produced a
+published false finding, so it now prints unconditionally — dump flag or not.
+
+**Bug 2 — "failure" included "never attempted".**  `calculus_solves` opened
+with a bare `if scc.len() > 5 { return false; }`.  An SCC too large to try was
+returned as a FAILURE and counted as one.  Every rate published up to 202 was
+deflated by SCCs the calculus never looked at.  Now `calculus_attempted` is the
+caller's guard, the cap is raised to 7 and tunable via `PAD_CALC_MAXSCC`, and
+skips are reported separately as UNKNOWN and excluded from the denominator.
+
+**Corrected measurement (240 000 pairs; NA=3 at 120 000):**
+
+    NA=2   103/104      NA=3   190/190      NA=4   250/250
+    SCCs not attempted at cap 7: 0, 0, 0
+
+202's NA=2 figure of 102/104 was wrong in my favour and against it at once: one
+of the two "failures" was a six-state SCC that was never tried, and it solves
+immediately once the cap allows it.  **The improvement from 102/104 to 103/104
+is a harness fix, not mathematics.**  Nothing about the calculus changed.
+
+**A hypothesis raised, refuted, and then un-refuted — worth recording because
+the middle step was the honest one.**  Kosaraju: a loop with two distinct exits
+cannot be structured without NODE SPLITTING.  Node splitting is un-collapsing —
+descending the bisimulation lattice to a FINER quotient — which is exactly the
+freedom `SumQuotientSolvable`'s existential grants.  If every full-collapse
+failure were multi-exit, that would EXPLAIN 196's complementarity rather than
+restate it.  Measuring it immediately produced a counterexample (`exits=1`),
+which killed the hypothesis — and then the cap fix showed that counterexample
+was the un-attempted six-state SCC, not a real single-exit failure.
+
+**Where that leaves the claim: ONE instance.**  The sole surviving
+full-collapse failure in 600 000 pairs is the NA=2 3-cycle
+
+    q0: st=[q1,q2]   q2: st=[q3,q3]   q3: st=[q0,q4]
+
+with `exits=2`, no halts anywhere, and its two exits leaving to DIFFERENT
+external states.  By hand, every rotation fails identically: head `q0` gives
+guard `a1` and body `p·p·ite a0 p (p·Y4)`, but after `p·Y4` control has left
+for `Y4` and the loop re-tests `a1` regardless; head `q3` mirrors it; head `q2`
+has no test at all so the guard is everything and the loop never exits.  Rule 5
+does not apply — its sibling arm must be a HALT, and here it is `p·Y4`, an
+arbitrary continuation.  It is lattice-solvable, as the complementarity
+predicts.  **n=1 is not evidence for the Kosaraju explanation; it is one
+instance consistent with it.**  Say so plainly.
+
+**Odds: 68%, held.**  Deliberately not raised.  The headline numbers improved,
+but every point of that improvement came from fixing my own instrumentation,
+and two measurement bugs in one iteration is evidence that the published rates
+have been noisier than claimed.  What genuinely improved is the reporting
+floor: failures now print, and skips can no longer masquerade as failures.
+
+**Next.**  The Kosaraju explanation is worth testing properly, which needs many
+more full-collapse failures than one — so: raise the cap further, sample
+harder, and count exits on every failure.  If it holds at n in the dozens, it
+converts the complementarity from a measured coincidence into a reason.
