@@ -5218,4 +5218,93 @@ theorem unique_of_surjective_hom {S Q : Type}
 
 #print axioms unique_of_surjective_hom
 
+/-! ### GATED UNKNOWN IDENTIFICATION — the elimination move that was missing
+
+    Iteration 185 exhibited a pair whose every admissible quotient has a
+    two-exit SCC, and showed classical elimination stalls on it: after
+    `w3` closes one unknown, the other occurs in BOTH branches.  Iteration
+    186 solved it anyway, by a move classical Gaussian elimination does
+    not have.
+
+    Ordinary elimination SUBSTITUTES an unknown's definition.  The move
+    below REWRITES ONE UNKNOWN AS ANOTHER on a region where their
+    dispatches agree.  In the resistant instance the two loop states
+    differ only at a single atom; off that atom they select identically,
+    so under `¬a0` one may stand for the other, and the equation
+
+        X₁ = ite a0 (p ; X₂) X₁      (trivially)
+
+    becomes
+
+        X₁ = ite a0 (p ; X₂) X₀      (by the gated rewrite)
+
+    which IS a Salomaa equation in `X₁` with `X₀` as its exit — and `w3`
+    closes it.  The two-exit obstruction dissolves because the second exit
+    was never a separate exit; it was the same exit reached through a
+    state that agrees off one atom.
+
+    The engine is the relativized selection congruence proved in
+    iteration 169 (`fold_select_under`), which has been sitting private in
+    this file since then.  It is exposed here at the automaton level. -/
+
+/-- **SELECTION CONGRUENCE, RELATIVIZED.**  Two states whose dispatches
+    select EquivBA-equal expressions THROUGHOUT A REGION have
+    EquivBA-equal right-hand sides under that region's assertion.
+
+    The unrelativized form (`eqRHS_congr_of_select`) needs agreement at
+    every atom; this needs it only where the assertion holds. -/
+theorem eqRHS_congr_of_select_under {S : Type} (aut : GAut S A T)
+    (sol : S → Exp A T) (u v : S) (r : BExp T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W r x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v)))) :
+    EquivBA (.seq (.test r) (eqRHS aut sol u))
+      (.seq (.test r) (eqRHS aut sol v)) := by
+  rw [eqRHS_eq_guardedFold, eqRHS_eq_guardedFold]
+  exact fold_select_under _ _ _ _ r h
+
+/-- **GATED UNKNOWN IDENTIFICATION.**  In a solved system, two states
+    whose dispatches agree throughout a region are interchangeable under
+    that region's assertion — so an occurrence of one inside a branch
+    guarded by the region may be replaced by the other.
+
+    This is the elimination move classical Gaussian elimination lacks: it
+    does not unfold a definition, it identifies two unknowns where they
+    cannot be told apart.  Iteration 186's resistant instance is solved by
+    exactly one application. -/
+theorem gated_unknown_identification {S : Type} (aut : GAut S A T)
+    (sol : S → Exp A T) (u v : S) (r : BExp T)
+    (hsol : ∀ s, EquivBA (sol s) (eqRHS aut sol s))
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W r x = true →
+        EquivBA
+          (selectFull W x (transitionBranches (aut.trans u) sol)
+            (.test (aut.hlt u)))
+          (selectFull W x (transitionBranches (aut.trans v) sol)
+            (.test (aut.hlt v)))) :
+    EquivBA (.seq (.test r) (sol u)) (.seq (.test r) (sol v)) :=
+  EquivBA.trans
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (hsol u))
+    (EquivBA.trans (eqRHS_congr_of_select_under aut sol u v r h)
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.symm (hsol v))))
+
+/-- The rewrite the move licenses: an else arm may be replaced by anything
+    the region `¬g` cannot distinguish from it.  Combined with
+    `gated_unknown_identification` at `r := ¬g`, this is the whole step. -/
+theorem ite_else_swap {g : BExp T} {u v v' : Exp A T}
+    (h : EquivBA (.seq (.test (.not g)) v) (.seq (.test (.not g)) v')) :
+    EquivBA (.ite g u v) (.ite g u v') :=
+  EquivBA.trans (GkatGuardedAlgebra.ite_restrict_else g u v)
+    (EquivBA.trans (EquivBA.ite_c (EquivBA.base (Equiv.refl u)) h)
+      (EquivBA.symm (GkatGuardedAlgebra.ite_restrict_else g u v')))
+
+#print axioms eqRHS_congr_of_select_under
+#print axioms gated_unknown_identification
+#print axioms ite_else_swap
+
 end GkatCensus

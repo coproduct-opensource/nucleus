@@ -8118,3 +8118,68 @@ is worth more than a percentage, and I decline to move the number until the
 question above is answered either way.  It cuts both directions: settling
 it "yes" restores the route, settling it "no" kills a reduction the project
 has carried since the span era.
+
+---
+
+## Iteration 186 — THE RESISTANT PAIR IS SOLVABLE; the missing elimination move, found
+
+185 posed the sharpest question the campaign has had: does the 3-state
+system of the one lattice-resistant pair have a GKAT solution at all?
+**It does.**
+
+    X1 = wh a0 (p;p) ; X0
+    X2 = p ; X1
+    X0 = wh ¬a3 (ite (a0∨a1) p (p;p ; wh a0 (p;p))) ; test a3
+
+Verified semantically before claiming: all three closed forms have exactly
+the automaton's languages on every guarded string of up to 8 actions —
+12863 / 14592 / 15488 strings, exact set equality, no discrepancy either
+way.  (The first run appeared to disagree; the enumeration bounds were
+mismatched by one atom.  Checked and fixed before drawing the conclusion —
+the parser lesson from 180, applied in time this once.)
+
+**THE MOVE CLASSICAL ELIMINATION LACKS.**  `X0` and `X1` differ ONLY at
+atom `a0`: off `a0` both send `a1 → X0`, `a2 → X2`, and halt on `a3`.  So
+
+    test ¬a0 ; X1  ≡  test ¬a0 ; X0
+
+is PROVABLE — their dispatches select identically throughout `¬a0`.  Then
+the trivial `X1 = ite a0 (p;X2) X1` becomes `X1 = ite a0 (p;X2) X0` by
+rewriting the else arm, which is only ever observed on `¬a0`.  **That is a
+Salomaa equation in `X1` with `X0` as its exit**, and `w3` closes it.
+Substituting back turns `X0`'s equation into a Salomaa equation too.
+
+Ordinary Gaussian elimination SUBSTITUTES an unknown's DEFINITION.  This
+move IDENTIFIES TWO UNKNOWNS on a region that cannot tell them apart.
+**The two-exit obstruction dissolves because the second exit was never
+separate** — it was the same exit reached through a state that agrees off
+one atom.
+
+**LANDED IN LEAN** (`GkatCensusProofs.lean`, sorry-free):
+
+* `eqRHS_congr_of_select_under` — selection congruence, RELATIVIZED: two
+  states selecting EquivBA-equal expressions throughout a region have
+  EquivBA-equal right-hand sides under that region's assertion.
+* `gated_unknown_identification` — the move itself, on a solved system.
+* `ite_else_swap` — the rewrite it licenses.  **Zero axioms.**
+
+**The engine was already here.**  `fold_select_under`, the relativized
+selection congruence, has been private in this file since iteration 169,
+proved for a different purpose.  It is exactly what the new move needs.
+That is the second time this month a needed tool turned out to be already
+in the corpus; the difference is that this time I went looking.
+
+**CONSEQUENCE, stated exactly.**  `SumQuotientSolvable` SURVIVES this
+instance.  What failed was `symbolic_eliminable_raw` — a sufficient method
+for finding a solution, not a complete one, which is precisely the caveat
+185 attached to it.  So the measured picture is now:
+
+    NA=4, 60000 pairs: 59993 analysed; ZERO known-unsolvable instances
+
+**Odds: 45% → 52%.**  This is the first move in this window that changed
+what I believe about the hypothesis rather than about the measurement.  A
+concrete candidate counterexample was produced, examined, and DISSOLVED,
+and the reason it dissolved is a general mechanism now in Lean rather than
+an accident of this instance.  I am not going higher: one instance is one
+instance, the general existence question is untouched, and the field's
+prior that this problem does not close still stands.
