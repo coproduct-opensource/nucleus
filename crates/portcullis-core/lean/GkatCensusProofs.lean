@@ -3062,4 +3062,83 @@ theorem zero_of_prune_zero {X Y : Exp A T} {g : BExp T}
 
 #print axioms zero_of_prune_zero
 
+/-! ## The loop case of dead-label-zero, by divergence region
+
+    Iteration 134 localized S0's fixpoint to loop INPUT guards: "from
+    which atoms does this loop diverge" is a greatest fixpoint, not a
+    structural property.  But the fixpoint need not be COMPUTED — it can
+    be supplied as a parameter and CERTIFIED by two guard implications,
+    and then the loop's deadness on it is provable outright.
+
+    Given a region `D` with (i) `D ⊆ b` — the loop never exits inside
+    `D` — and (ii) `outG D e ⊆ D` — one pass of the body stays inside
+    `D` — the loop provably diverges on `D`.  Unroll by `w1`, kill the
+    exit arm by (i), emit the output guard by `outG_emits`, re-absorb it
+    into `D` by (ii), and the result is `X ≈ BODY · X` with NO exit
+    branch — a Salomaa equation whose fallback is `0`.  One `w3` closes
+    it, and `s3` collapses `(wh 1 BODY)·0` to `0`.
+
+    So the greatest fixpoint becomes a CERTIFICATE rather than a
+    construction: whoever knows the divergence region hands over two
+    implications, and the algebra does the rest with no UA. -/
+
+open Classical in
+/-- **DIVERGENCE REGIONS ARE PROVABLY ZERO**: a loop that cannot exit
+    inside `D` and whose body maps `D` back into `D` is provably `0` on
+    `D` — the loop case of the dead-label obligation, with the fixpoint
+    supplied as a certificate. -/
+theorem diverging_region_zero {D b : BExp T} {e : Exp A T}
+    (hprod : GkatRingPlan.GuardEmpty (E e))
+    (hDb : GuardImplies D b)
+    (hstable : GuardImplies (GkatNormalization.outG D e) D) :
+    EquivBA (.seq (.test D) (.wh b e) : Exp A T) (.test .zero) := by
+  have hX : EquivBA (.seq (.test D) (.wh b e) : Exp A T)
+      (.seq (.seq (.test D) (.seq e (.test (GkatNormalization.outG D e))))
+        (.seq (.test D) (.wh b e))) := by
+    -- unroll, then kill the exit arm using D ⊆ b
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (EquivBA.base (Equiv.w1 b e))) ?_
+    refine EquivBA.trans
+      (GkatGuardedAlgebra.test_seq_ite_of_implies _ _ hDb) ?_
+    -- D?·(e·W) : emit the output guard, then re-absorb it into D
+    refine EquivBA.trans
+      (EquivBA.symm (EquivBA.base (Equiv.s1 (.test D) e (.wh b e)))) ?_
+    refine EquivBA.trans (EquivBA.seq_c
+      (GkatNormalization.outG_emits e D) (EquivBA.base (Equiv.refl _))) ?_
+    refine EquivBA.trans (EquivBA.base
+      (Equiv.s1 (.test D) (.seq e (.test (GkatNormalization.outG D e)))
+        (.wh b e))) ?_
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (EquivBA.trans (EquivBA.base
+          (Equiv.s1 e (.test (GkatNormalization.outG D e)) (.wh b e)))
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl e))
+          (EquivBA.symm (GkatTrim.test_absorb_left hstable (.wh b e)))))) ?_
+    refine EquivBA.symm (EquivBA.trans
+      (EquivBA.base (Equiv.s1 (.test D)
+        (.seq e (.test (GkatNormalization.outG D e)))
+        (.seq (.test D) (.wh b e))))
+      (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+        (EquivBA.base (Equiv.s1 e
+          (.test (GkatNormalization.outG D e))
+          (.seq (.test D) (.wh b e))))))
+  -- a Salomaa equation with no exit: w3 closes it against 0
+  have hprodBody : EquivBA
+      (.test (E (.seq (.test D)
+        (.seq e (.test (GkatNormalization.outG D e))))) : Exp A T)
+      (.test .zero) := by
+    refine EquivBA.baTest ?_
+    intro Y W x
+    show (GkatGS.bval W D x
+        && (GkatGS.bval W (E e) x
+          && GkatGS.bval W (GkatNormalization.outG D e) x))
+      = GkatGS.bval W (.zero : BExp T) x
+    rw [hprod Y W x]
+    cases GkatGS.bval W D x <;> rfl
+  refine EquivBA.trans (EquivBA.w3_ba (b := .one) (f := (.test .zero : Exp A T)) hprodBody ?_) ?_
+  · refine EquivBA.trans hX ?_
+    exact EquivBA.symm (GkatElim.ite_true_collapse (fun _ _ _ => rfl) _ _)
+  · exact EquivBA.base (Equiv.s3 _)
+
+#print axioms diverging_region_zero
+
 end GkatCensus

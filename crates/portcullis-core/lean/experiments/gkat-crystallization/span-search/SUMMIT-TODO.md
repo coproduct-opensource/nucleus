@@ -5183,3 +5183,59 @@ same difficulty, better-positioned.
    reflection (128, 133) and routed to subsystem canonicity, where the
    two-states-vs-two-solutions mismatch (129, intrinsic per 131) stands.
 3. **Size induction** — descent proved; `ite` transfer proved.
+
+## Iteration 135 — ★ DIVERGENCE REGIONS ARE PROVABLY ZERO ★ — the fixpoint becomes a CERTIFICATE
+
+Iteration 134 localized S0's remaining difficulty to loop INPUT guards:
+"from which atoms does this loop diverge" is a greatest fixpoint, not a
+structural property, and that is what defeats every induction tried.
+
+**`diverging_region_zero`**: given a region `D` with
+
+    (i)  `D ⊆ b`                — the loop never exits inside `D`
+    (ii) `outG D e ⊆ D`         — one pass of the body stays inside `D`
+
+and a strictly productive body, **`D?·(wh b e) ≈ 0`**, provably, with no
+uniqueness axiom.
+
+**The proof, and why it closes.**  Unroll by `w1`; kill the exit arm
+with (i) via `test_seq_ite_of_implies`; emit the body's output guard by
+`outG_emits`; re-absorb it into `D` with (ii) via `test_absorb_left`.
+What comes out is
+
+    X ≈ (D? · e · (outG D e)?) · X
+
+— a Salomaa equation **with no exit branch at all**.  Wrap it as
+`ite 1 (BODY·X) 0` (`ite_true_collapse`), apply `w3` once, and `s3`
+collapses `(wh 1 BODY)·0` to `0`.
+
+**Why this is the right shape.**  The fixpoint is not COMPUTED — it is
+SUPPLIED, and certified by two guard implications.  Whoever knows the
+divergence region hands over `D` plus (i) and (ii), and the algebra does
+the rest.  That converts the obstruction from "prove a coinductive
+property by structural induction" (impossible, per 129/134) into
+"exhibit a witness and check two implications" — and checking a guard
+implication is decidable, not a proof obligation of the same kind.
+
+This also subsumes the repo's existing `wh_one_zero` /
+`productive_while_true_eq_zero` (take `D := 1`, `b := 1`), generalizing
+them from the whole-space case to an arbitrary certified region.
+
+**Honest scope, having over-graded S0 twice already.**  This does NOT
+prove S0.  It proves the loop case of the dead-label obligation GIVEN a
+region.  What remains for S0 is that the divergence region EXISTS as a
+`BExp` and that its two implications hold — plausible, since a loop's
+divergence set is a fixpoint over the finitely-generated Boolean algebra
+of the program's own tests and therefore stabilizes, but not proved and
+explicitly **not graded as bounded**.
+
+**Route status:**
+1. **S0** — algebra done; dead-label obligation's LOOP case now
+   discharged given a certified divergence region (today); what remains
+   is exhibiting that region.
+2. **Same-side UNIF** — `ite` rung closed (132); `seq`/`wh` refuted for
+   reflection (128, 133), routed to subsystem canonicity, where the
+   two-states-vs-two-solutions mismatch (129, intrinsic per 131) stands.
+   **This is the campaign's core and is untouched.**
+3. **Size induction** — descent proved (127); `ite` transfer proved
+   (132).
