@@ -4583,3 +4583,55 @@ machinery (`outG`, `prune`, `wh_prune_body`) that already exists.
 Honest caveat: (2) remains the genuinely open mathematics.  (1) moving
 from "unknown difficulty" to "known shape, existing machinery" is real
 but it is the piece the repo was always going to have to finish anyway.
+
+## Iteration 127 — the same-side induction: assembly is FREE, all content is BISIMILARITY TRANSFER
+
+Four new lemmas, each a single congruence step on top of iteration
+124's label projections:
+
+* `wh_same_side_step` — body-label agreement lifts to the loop
+  (`std = bodyStd · (wh g b)`, so one `seq_c`).
+* `ite_same_side_inl_step` — same-branch agreement lifts verbatim.
+* **`ite_same_side_cross_step`** — CROSS-branch: a same-side instance
+  for `ite c p q` consumes a CROSS-side instance for `(p, q)`, on
+  strictly smaller subprograms.  This is the descent that makes the
+  size induction well-founded, and it is now a theorem rather than a
+  remark.
+* `seq_same_side_inl_step` — agreement lifts through the appended right
+  program.
+
+**The point is what they COST: nothing.**  Every constructor's label is
+its subprogram's label placed in a fixed context, so agreement lifts by
+one congruence.  The size induction's ASSEMBLY half is therefore free,
+and that localizes the remaining difficulty exactly:
+
+> **All remaining content of same-side UNIF is BISIMILARITY TRANSFER** —
+> that two states bisimilar in a COMPOSITE's automaton are bisimilar in
+> the SUBPROGRAM's automaton.
+
+Per construction:
+* **`ite` / sum** — immediate; the summands do not interact, and
+  `autLang_sum_inl/inr` already give the language halves.
+* **`seq`** — awkward: a left state's arms leave into the right
+  automaton when the left halts, so composite-bisimilarity of two left
+  states is not obviously left-bisimilarity.
+* **`wh` — the real question.**  `loopInitialized` adds feedback arms
+  that BOTH states must match, so loop-bisimilarity is a priori neither
+  weaker nor stronger than body-bisimilarity.  The induction needs
+  **loop ⟹ body**.  Plausible sketch: loop arms are body arms plus
+  feedback decorated by `body.core.hlt`, and matching the feedback
+  forces the halt guards to agree, after which the body arms must match
+  on their own — but this is NOT yet checked, and per the standing
+  lesson it is recorded as a sketch, not a step.
+
+**Route status.**  Three pieces, all named:
+1. **S0 / `NormalizationBridge`** — algebra done unconditionally
+   (`prune_equiv_top`); remaining: pruned ⟹ `LiveSteps`.  Bounded.
+2. **Same-side UNIF** — canonical cause discharged (124); assembly
+   discharged (today); remaining content is exactly bisimilarity
+   transfer, with `wh` the load-bearing case.
+3. **The size induction** — interface and descent step now both exist.
+
+The shape of the whole argument is now visible end to end, with one
+genuinely open lemma (`wh` bisimilarity transfer) and one bounded
+engineering task (S0).

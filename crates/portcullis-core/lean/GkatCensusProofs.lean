@@ -2665,4 +2665,79 @@ theorem solvesBA_trim_of_dead_arms {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms solvesBA_trim_of_dead_arms
 
+/-! ## The same-side induction: assembly is free, content is transfer
+
+    With the standard-label projections of iteration 124 in hand, the
+    ASSEMBLY half of a size induction on same-side UNIF costs nothing —
+    each constructor's label is its subprogram's label in a fixed
+    context, so agreement lifts by one `seq_c`.  The lemmas below are
+    each a single congruence step.
+
+    That is worth recording precisely because it localizes the
+    difficulty: **all remaining content of same-side UNIF is
+    BISIMILARITY TRANSFER** — knowing that two states bisimilar in a
+    COMPOSITE's automaton are bisimilar in the SUBPROGRAM's automaton.
+    For the sum (`ite`) that is immediate, the summands not interacting.
+    For the loop it is the real question: `loopInitialized` adds
+    feedback arms that both states must match, so loop-bisimilarity is a
+    priori neither weaker nor stronger than body-bisimilarity, and the
+    induction needs loop ⟹ body. -/
+
+open Classical in
+/-- Loop case, assembly half: body-label agreement lifts to the loop. -/
+theorem wh_same_side_step (g : BExp T) (b : Exp A T)
+    {s t : (GkatThompson.certifiedThompson A T b).State}
+    (h : EquivBA ((GkatThompson.certifiedThompson A T b).standard s)
+      ((GkatThompson.certifiedThompson A T b).standard t)) :
+    EquivBA
+      ((GkatThompson.certifiedThompson A T (.wh g b)).standard s)
+      ((GkatThompson.certifiedThompson A T (.wh g b)).standard t) := by
+  rw [wh_standard, wh_standard]
+  exact EquivBA.seq_c h (EquivBA.base (Equiv.refl _))
+
+open Classical in
+/-- `ite`, same branch: branch-label agreement lifts verbatim. -/
+theorem ite_same_side_inl_step (c : BExp T) (p q : Exp A T)
+    {s t : (GkatThompson.certifiedThompson A T p).State}
+    (h : EquivBA ((GkatThompson.certifiedThompson A T p).standard s)
+      ((GkatThompson.certifiedThompson A T p).standard t)) :
+    EquivBA
+      ((GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inl s))
+      ((GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inl t)) := by
+  rw [ite_standard_inl, ite_standard_inl]
+  exact h
+
+open Classical in
+/-- `ite`, CROSS branch: this is where a same-side instance consumes a
+    CROSS-side instance on strictly smaller subprograms — the descent
+    that makes the size induction well-founded. -/
+theorem ite_same_side_cross_step (c : BExp T) (p q : Exp A T)
+    {s : (GkatThompson.certifiedThompson A T p).State}
+    {t : (GkatThompson.certifiedThompson A T q).State}
+    (h : EquivBA ((GkatThompson.certifiedThompson A T p).standard s)
+      ((GkatThompson.certifiedThompson A T q).standard t)) :
+    EquivBA
+      ((GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inl s))
+      ((GkatThompson.certifiedThompson A T (.ite c p q)).standard (.inr t)) := by
+  rw [ite_standard_inl, ite_standard_inr]
+  exact h
+
+open Classical in
+/-- `seq`, left factor: agreement lifts through the appended right
+    program. -/
+theorem seq_same_side_inl_step (p q : Exp A T)
+    {s t : (GkatThompson.certifiedThompson A T p).State}
+    (h : EquivBA ((GkatThompson.certifiedThompson A T p).standard s)
+      ((GkatThompson.certifiedThompson A T p).standard t)) :
+    EquivBA
+      ((GkatThompson.certifiedThompson A T (.seq p q)).standard (.inl s))
+      ((GkatThompson.certifiedThompson A T (.seq p q)).standard (.inl t)) := by
+  rw [seq_standard_inl, seq_standard_inl]
+  exact EquivBA.seq_c h (EquivBA.base (Equiv.refl _))
+
+#print axioms wh_same_side_step
+#print axioms ite_same_side_inl_step
+#print axioms ite_same_side_cross_step
+#print axioms seq_same_side_inl_step
+
 end GkatCensus
