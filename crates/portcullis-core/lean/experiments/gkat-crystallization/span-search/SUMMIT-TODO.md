@@ -2446,3 +2446,30 @@ per SCC: interiors forest-schedule, port closes through the cascade
 with pruning+factoring — the walked/chord instances generalized to
 arbitrary interior DAGs), then the Thompson census (produce the
 enumerations from program structure).
+
+## Iteration 85 — THE PRUNING MACHINE (zero axioms)
+
+The general port constructor needs to clean dead interior halts at
+ARBITRARY depth in cascaded trees (the hand-pruning of the walked and
+chord instances generalized). New, all zero axioms first try:
+
+- `DeadHalts` — every halt leaf semantically empty.
+- `pruneT : RTree → Option RTree` — dead subtrees collapse; a pruned
+  sibling's guard rides in as a test prefix (`pre (test g)` /
+  `pre (test ¬g)`); `none` = entirely dead.
+- `dead_resolve` — fully dead trees resolve to `test 0` (u1 for
+  both-dead branches, s3 under prefixes).
+- **`prune_resolve`** — pruning preserves resolution (ite_zero_else /
+  ite_zero_then at the mixed branches).
+- **`prune_allCalls`** — pruning a port-targeted (CallOnly (· = o))
+  tree yields `AllCalls o` — ready for `factor_spec`.
+
+Proof-shape note: the `match pruneT l, pruneT r with ...` equations
+need explicit `show`-normalized rewrites per case pair (12 cases per
+lemma but fully mechanical).
+
+Remaining for the PORT CONSTRUCTOR: the chain-gather (tree-level
+multi_gather over br-chains: partition top-level branches into
+port-reaching — factored via factor_spec after pruning — and others),
+then the constructor: interiors forest-style, port closes through
+cascade + prune + chain-gather + factor. Then the Thompson census.

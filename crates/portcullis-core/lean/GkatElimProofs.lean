@@ -1634,4 +1634,227 @@ theorem forest_class_sched {S : Type} [DecidableEq S]
 
 #print axioms forest_class_sched
 
+/-! ## The pruning machine
+
+    Cascaded port trees carry dead interior halts at arbitrary depth.
+    `pruneT` removes them wholesale: dead subtrees collapse, their
+    sibling guards ride in as test prefixes.  A pruned dead-halt tree
+    whose calls all target the port is `AllCalls` — ready for
+    factoring. -/
+
+/-- Every halt leaf is semantically dead. -/
+def DeadHalts {S : Type} : RTree S A T → Prop
+  | .halt h => GuardEmpty h
+  | .call _ _ => True
+  | .br _ l r => DeadHalts l ∧ DeadHalts r
+  | .pre _ t => DeadHalts t
+
+/-- Prune dead halts; `none` when the whole tree is dead. -/
+def pruneT {S : Type} : RTree S A T → Option (RTree S A T)
+  | .halt _ => none
+  | .call e s => some (.call e s)
+  | .br g l r =>
+      match pruneT l, pruneT r with
+      | some l', some r' => some (.br g l' r')
+      | some l', none => some (.pre (.test g) l')
+      | none, some r' => some (.pre (.test (.not g)) r')
+      | none, none => none
+  | .pre e t => (pruneT t).map (.pre e)
+
+/-- A fully dead tree resolves to failure. -/
+theorem dead_resolve {S : Type} (sol : S → Exp A T) :
+    ∀ t : RTree S A T, DeadHalts t → pruneT t = none →
+      EquivBA (resolveT sol t) (.test .zero) := by
+  intro t
+  induction t with
+  | halt h =>
+      intro hd _
+      exact EquivBA.baTest (fun Z W v => hd Z W v)
+  | call e s => intro _ hp; exact nomatch hp
+  | br g l r ihl ihr =>
+      intro hd hp
+      show EquivBA (.ite g (resolveT sol l) (resolveT sol r)) _
+      cases hl : pruneT l with
+      | some l' =>
+          exfalso
+          cases hr : pruneT r with
+          | some r' =>
+              rw [show pruneT (.br g l r)
+                = some (.br g l' r') from by
+                  show (match pruneT l, pruneT r with
+                    | some l', some r' => some (RTree.br g l' r')
+                    | some l', none => some (.pre (.test g) l')
+                    | none, some r' => some (.pre (.test (.not g)) r')
+                    | none, none => none) = _
+                  rw [hl, hr]] at hp
+              exact nomatch hp
+          | none =>
+              rw [show pruneT (.br g l r)
+                = some (.pre (.test g) l') from by
+                  show (match pruneT l, pruneT r with
+                    | some l', some r' => some (RTree.br g l' r')
+                    | some l', none => some (.pre (.test g) l')
+                    | none, some r' => some (.pre (.test (.not g)) r')
+                    | none, none => none) = _
+                  rw [hl, hr]] at hp
+              exact nomatch hp
+      | none =>
+          cases hr : pruneT r with
+          | some r' =>
+              exfalso
+              rw [show pruneT (.br g l r)
+                = some (.pre (.test (.not g)) r') from by
+                  show (match pruneT l, pruneT r with
+                    | some l', some r' => some (RTree.br g l' r')
+                    | some l', none => some (.pre (.test g) l')
+                    | none, some r' => some (.pre (.test (.not g)) r')
+                    | none, none => none) = _
+                  rw [hl, hr]] at hp
+              exact nomatch hp
+          | none =>
+              refine EquivBA.trans (EquivBA.ite_c
+                (ihl hd.1 hl) (ihr hd.2 hr)) ?_
+              exact EquivBA.base (Equiv.u1 g (.test .zero))
+  | pre e t ih =>
+      intro hd hp
+      show EquivBA (.seq e (resolveT sol t)) _
+      cases ht : pruneT t with
+      | some t' =>
+          exfalso
+          rw [show pruneT (.pre e t) = some (.pre e t') from by
+            show (pruneT t).map _ = _
+            rw [ht]
+            rfl] at hp
+          exact nomatch hp
+      | none =>
+          refine EquivBA.trans (EquivBA.seq_c
+            (EquivBA.base (Equiv.refl e)) (ih hd ht)) ?_
+          exact EquivBA.base (Equiv.s3 e)
+
+/-- **PRUNE SPEC**: pruning preserves resolution. -/
+theorem prune_resolve {S : Type} (sol : S → Exp A T) :
+    ∀ (t t' : RTree S A T), DeadHalts t → pruneT t = some t' →
+      EquivBA (resolveT sol t) (resolveT sol t') := by
+  intro t
+  induction t with
+  | halt h => intro t' _ hp; exact nomatch hp
+  | call e s =>
+      intro t' _ hp
+      have := Option.some.inj hp
+      rw [← this]
+      exact EquivBA.base (Equiv.refl _)
+  | br g l r ihl ihr =>
+      intro t' hd hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = some t' := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              exact EquivBA.ite_c (ihl l' hd.1 hl) (ihr r' hd.2 hr)
+          | none =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              show EquivBA (.ite g (resolveT sol l) (resolveT sol r))
+                (.seq (.test g) (resolveT sol l'))
+              refine EquivBA.trans (EquivBA.ite_c (ihl l' hd.1 hl)
+                (dead_resolve sol r hd.2 hr)) ?_
+              exact GkatGuardedAlgebra.ite_zero_else g
+                (resolveT sol l')
+      | none =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              show EquivBA (.ite g (resolveT sol l) (resolveT sol r))
+                (.seq (.test (.not g)) (resolveT sol r'))
+              refine EquivBA.trans (EquivBA.ite_c
+                (dead_resolve sol l hd.1 hl) (ihr r' hd.2 hr)) ?_
+              exact GkatGuardedAlgebra.ite_zero_then g
+                (resolveT sol r')
+          | none =>
+              rw [hl, hr] at hpeq
+              exact nomatch hpeq
+  | pre e t ih =>
+      intro t' hd hp
+      have hpeq : (pruneT t).map (RTree.pre e) = some t' := hp
+      cases ht : pruneT t with
+      | some t₀ =>
+          rw [ht] at hpeq
+          have := Option.some.inj hpeq
+          rw [← this]
+          exact EquivBA.seq_c (EquivBA.base (Equiv.refl e))
+            (ih t₀ hd ht)
+      | none =>
+          rw [ht] at hpeq
+          exact nomatch hpeq
+
+/-- **PRUNED TREES FACTOR**: pruning a port-targeted tree yields
+    `AllCalls`. -/
+theorem prune_allCalls {S : Type} (o : S) :
+    ∀ (t t' : RTree S A T), CallOnly (fun s => s = o) t →
+      pruneT t = some t' → AllCalls o t' := by
+  intro t
+  induction t with
+  | halt h => intro t' _ hp; exact nomatch hp
+  | call e s =>
+      intro t' hc hp
+      have := Option.some.inj hp
+      rw [← this]
+      exact hc
+  | br g l r ihl ihr =>
+      intro t' hc hp
+      have hpeq : (match pruneT l, pruneT r with
+          | some l', some r' => some (RTree.br g l' r')
+          | some l', none => some (.pre (.test g) l')
+          | none, some r' => some (.pre (.test (.not g)) r')
+          | none, none => none) = some t' := hp
+      cases hl : pruneT l with
+      | some l' =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              exact ⟨ihl l' hc.1 hl, ihr r' hc.2 hr⟩
+          | none =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              exact ihl l' hc.1 hl
+      | none =>
+          cases hr : pruneT r with
+          | some r' =>
+              rw [hl, hr] at hpeq
+              have := Option.some.inj hpeq
+              rw [← this]
+              exact ihr r' hc.2 hr
+          | none =>
+              rw [hl, hr] at hpeq
+              exact nomatch hpeq
+  | pre e t ih =>
+      intro t' hc hp
+      have hpeq : (pruneT t).map (RTree.pre e) = some t' := hp
+      cases ht : pruneT t with
+      | some t₀ =>
+          rw [ht] at hpeq
+          have := Option.some.inj hpeq
+          rw [← this]
+          exact ih t₀ hc ht
+      | none =>
+          rw [ht] at hpeq
+          exact nomatch hpeq
+
+#print axioms dead_resolve
+#print axioms prune_resolve
+#print axioms prune_allCalls
+
 end GkatElim
