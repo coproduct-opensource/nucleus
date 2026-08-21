@@ -6397,6 +6397,70 @@ fn characterize<const NA: usize>() {
     println!("    of the {fp} false positives, {fp_dead} have a DEAD atom (neither halt nor transition) at some state");
 }
 
+/// **IS THE `wh` RESIDUAL EVEN NON-EMPTY?** (iteration 219.)
+///
+/// 218 reduced the `wh` induction step to one residual case: states that are
+/// bisimilar in the LOOP automaton but not in the BODY.  Working out when that
+/// can happen: `loopInitialized` differs from the body ONLY at atoms where
+/// `hlt_body(s)` holds and the guard `b` holds — there the body HALTS while the
+/// loop takes the back edge.  So the residual needs an atom at which `b` holds
+/// and exactly ONE of the two states halts in the body, with the back-edge
+/// target loop-bisimilar to where the other state goes.
+///
+/// If no such pair ever exists, loop-bisimilarity EQUALS body-bisimilarity, the
+/// residual hypothesis is vacuous, and the `wh` step follows from the induction
+/// hypothesis alone — the case would be closed.  So measure it before proving
+/// anything.  `a_wh` matches `loopInitialized` exactly (same state count,
+/// `hl ∧ ¬g`, back edge to the body's initial transition), so the harness can
+/// decide this directly.
+fn wh_residual<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x1234_5678_9ABC_DEF0;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let all: u8 = if NA >= 8 { 0xFF } else { ((1u16 << NA) - 1) as u8 };
+    let (mut tried, mut residual, mut coarser) = (0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..400_000 {
+        let body = match genexp::<NA>(&mut rnd, 4, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if body.k < 2 { continue; }
+        let g = (rnd() % (all as u64 + 1)) as u8;
+        if g == 0 || g == all { continue; }
+        let loop_ = a_wh(g, &body);
+        tried += 1;
+        let (bb, _) = bisim_blocks(&body);
+        let (bl, _) = bisim_blocks(&loop_);
+        let k = body.k as usize;
+        let mut found = false;
+        for u in 0..k {
+            for v in (u + 1)..k {
+                if bl[u] == bl[v] && bb[u] != bb[v] { found = true; }
+            }
+        }
+        if found {
+            residual += 1;
+            if shown < 3 {
+                shown += 1;
+                println!("    RESIDUAL: guard={g:03b}, body k={}", body.k);
+                for s in 0..k {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = body.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                    }).collect();
+                    println!("      body q{s}: hl={:03b} st=[{}]  bodyblk={} loopblk={}",
+                        body.hl[s], row.join(","), bb[s], bl[s]);
+                }
+            }
+        }
+        // Does the loop ever merge at all beyond what the body merges?
+        let nb = (0..k).map(|s| bb[s]).collect::<std::collections::BTreeSet<_>>().len();
+        let nl = (0..k).map(|s| bl[s]).collect::<std::collections::BTreeSet<_>>().len();
+        if nl < nb { coarser += 1; }
+    }
+    println!("  wh_residual NA={NA}: {tried} loops tested; \
+        loop-bisimilar-but-not-body-bisimilar pairs found in {residual}; \
+        loop partition strictly coarser in {coarser}");
+}
+
 fn nested_sanity<const NA: usize>() {
     let mut st0: u64 = 0xA5A5_1234_DEAD_BEEF;
     let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
@@ -7425,6 +7489,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_EXHAUST").is_ok() {
         exhaustive::<NA>();
+        return;
+    }
+    if std::env::var("PAD_WH_RESIDUAL").is_ok() {
+        wh_residual::<NA>(nguards as u8);
         return;
     }
     if std::env::var("PAD_SYNTH").is_ok() {

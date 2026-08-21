@@ -10029,3 +10029,62 @@ of the six rules should close it.
 **Next.**  The residual: loop-bisimilar, not body-bisimilar.  Show the
 difference is confined to the `hlt_body ∧ b` region and that postcomposition
 with `wh b e` absorbs it — a rule-6-shaped argument.
+
+---
+
+## 219 — THE `wh` RESIDUAL IS NON-EMPTY.  The shortcut is closed.
+
+218 left the `wh` step reduced to one residual: states bisimilar in the LOOP
+automaton but not in the BODY.  If that residual were EMPTY — if
+loop-bisimilarity always equalled body-bisimilarity — the hypothesis would be
+vacuous and the `wh` case would follow from the induction hypothesis alone.
+Measure before proving.
+
+**Derivation first.**  `loopInitialized` differs from the body at exactly one
+place: atoms where `hlt_body(s)` holds AND the guard `b` holds, where the body
+HALTS and the loop takes the back edge instead.  So a residual pair needs an
+atom at which `b` holds and exactly ONE of the two states halts in the body,
+with the back-edge target loop-bisimilar to wherever the other state goes.
+
+**Measured** (`PAD_WH_RESIDUAL`; `a_wh` matches `loopInitialized` exactly — same
+state count, `hl ∧ ¬g`, back edge to the body's initial transition):
+
+    NA=2    61 441 loops    residual pairs in 3 892     (6.3%)
+    NA=3    92 130          4 631                       (5.0%)
+    NA=4   107 650          3 975                       (3.7%)
+
+**Non-empty, and not rare.**  The `wh` step genuinely needs the residual
+argument.
+
+**The smallest example, which shows the mechanism.**  NA=2, guard `a1`, body:
+
+    q0: hl={a0}      a1 -> q0          body block 0,  loop block 0
+    q2: hl={a0,a1}   (no transitions)  body block 2,  loop block 0
+
+In the BODY they differ: at `a1`, `q0` continues and `q2` halts.  In the LOOP,
+`q2`'s halt sits under the guard, so it becomes a BACK EDGE to the body's entry
+— which lands at `q0`.  The two states become indistinguishable only because
+the loop restarts.  Their labels are `std_B(q0) · wh a1 e` and
+`std_B(q2) · wh a1 e`, and the trailing loop is what absorbs the difference:
+precisely the trailing-suffix shape rule 6 was proved for, arrived at from the
+Thompson construction rather than from a census resister.
+
+**A consistency check that passed:** "residual pair exists" and "loop partition
+strictly coarser" have IDENTICAL counts in all three populations (3892/3892,
+4631/4631, 3975/3975), as they must — each implies the other.  Two independent
+counters agreeing exactly is weak evidence the instrument is wired right, and
+after this session's record that is worth having.
+
+**Odds: 76%, DOWN 1.**  A hoped-for shortcut is closed: the `wh` case needs new
+mathematics, not just the induction hypothesis.  That is genuine evidence the
+induction is harder than 217 hoped, and it should cost something.  What it does
+not do is make the statement less likely TRUE — the residual pairs all look like
+rule-6 absorptions, and rule 6 is already proved.
+
+**Next.**  The residual claim: `u ~_loop v` with the difference confined to the
+`hlt_body ∧ b` region implies `std_B(u) · wh b e ≡ std_B(v) · wh b e`.  The
+route I can see is a class-constant solution for the LOOP automaton plus
+`certifiedThompson_solution_unique`; the obstacle is that
+`class_constant_solves_of_reps` wants unification at successors, which is what
+is being proved.  Whether the loop's structure supplies a well-founded order
+there is the next question.
