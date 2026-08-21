@@ -7477,7 +7477,7 @@ question that decides whether the role ladder can reach it, and answers it
 with a test rather than an eyeball.
 
 **THE TEST.**  Hecht–Ullman T1/T2, run over the 15 dumped open SCCs
-(`analyze_open_sccs.py`, now in the repo so it is re-runnable).  T1 drops a
+(Hecht-Ullman T1/T2, now a census check).  T1 drops a
 self-loop; T2 merges a non-header node having a unique predecessor into
 that predecessor; a flow graph is reducible iff T1/T2 collapse it to a
 single node.
@@ -7817,7 +7817,7 @@ reducibility.  Reducibility is the wrong test.
 A graph can be reducible and still have two exits.  Testing entry and
 concluding about exits is a straight non-sequitur, and I made it.
 
-**MEASURED PROPERLY** (`classify_open_sccs.py`, in the repo).  An SCC's
+**MEASURED PROPERLY** (the census's exit-state counter).  An SCC's
 exits are its members that halt or carry an arm out of the SCC — the
 census's `ports`.  Over the 31 NA=4 open SCCs:
 
@@ -8311,7 +8311,7 @@ remainder has had that form.
 the odds cautiously because it was one generator's output.  Today: three
 more populations, chosen to differ in the parameters that matter.
 
-`check_moves.py` (in the repo) decides, per resistant instance, which move
+the census's move classifiers decides, per resistant instance, which move
 applies — gated identification if two SCC states differ on a PROPER subset
 of atoms, exit absorption if the escape continuation's halt atoms lie
 outside the head's step guard and inside its halt mask.
@@ -8364,7 +8364,7 @@ construct-and-verify over all 69, or the sufficiency theorem.
 full solutions constructed and language-verified for exactly two instances.
 Today closes that gap for the absorption half.
 
-**`verify_absorption.py`** (in the repo) builds the solution the absorption
+**the census's `absorption_verified`** builds the solution the absorption
 move prescribes and checks it against the automaton:
 
     X_h = wh g (p ; <o's dispatch: back-to-h ↦ p, escape to w ↦ p ; X_w>)
@@ -8408,3 +8408,66 @@ use the gated rewrite when stuck.  That is a small symbolic eliminator
 over 2–3 unknowns with oracle languages for everything outside the SCC —
 a real build, and the right one, so it gets its own iteration rather than
 the tail of this one.
+
+---
+
+## Iteration 191 — RUST-ONLY TOOLING (mandate), and every resistant SCC is MULTI-EXIT
+
+**A standing mandate arrived mid-iteration: tooling is Rust, never Python.**
+Recorded in memory as `rust-only-tooling`.  All six analysis scripts added
+during 176–190 are retired, and the checks they performed now live in the
+census itself, where the automata are already in hand:
+
+    absorption_verified   builds `wh g (p ; <o's dispatch>) ; test trail`
+                          from the a_test/a_act/a_seq/a_ite/a_wh combinators,
+                          with escape continuations taken as the quotient
+                          entered at the target, and compares guarded-string
+                          languages to 7 actions
+    gated_applicable      two SCC states differing on a PROPER subset of atoms
+    t1t2_reducible        Hecht-Ullman, on the SCC
+    exit_states           SCC members that halt or step out — Kosaraju's count
+
+**This is strictly better than the port would have been.**  The scripts
+parsed the census's own text dump; the Rust checks read the automaton
+directly.  That removes the parsing step entirely — and a silent
+block-boundary bug in exactly that step produced iteration 179's published
+false finding.  A whole class of error is gone rather than translated.
+
+**The Rust checks REPRODUCE the retired scripts' numbers exactly:**
+
+    NA=2  gated 0   absorption 5, verified 5
+    NA=3  gated 13  absorption 8, verified 8
+    NA=4  gated 18  absorption 5, verified 5
+
+(NA=2 reads 5 rather than the scripts' 4 because the Rust pass scans every
+SCC of the quotient, not only the largest — one more instance of the shape,
+and it verifies.)
+
+**AND A NEW FACT, free from the new counters:**
+
+    lattice-resistant SCCs, NA=3: 21 total; T1/T2-reducible 21; MULTI-EXIT 21
+    lattice-resistant SCCs, NA=4: 23 total; T1/T2-reducible 23; MULTI-EXIT 23
+
+**EVERY lattice-resistant SCC is MULTI-EXIT, and every one is reducible.**
+That is the sharpest structural statement the census has produced.  It says
+the two new moves are aimed exactly where they should be: multi-exit is
+precisely what defeats plain elimination, reducibility is precisely what
+says a nest of loops could exist, and the resistant set is the intersection.
+It also retires any lingering worry that the resistant instances are
+irreducible monsters — none is.
+
+**Two older span-era generators (`emit_cert.py`, `emit_ring.py`, ~1000
+lines) are retired rather than ported**: nothing references them, their
+Lean output is already committed, and the ring/cert pilot route they served
+was superseded long ago.  Git history keeps them if that judgement is wrong.
+
+**Odds: 60%, held.**  A tooling migration and one structural observation;
+the mathematics did not move.
+
+**Note on what did NOT get finished.**  The general symbolic eliminator for
+the 49 gated cases was attempted this iteration and does not work yet: the
+search finds a candidate, and moving the language check inside the search
+made it correct but too slow to finish a population.  The attempt is
+discarded rather than committed half-working.  Porting it to Rust — inside
+the census, using the existing combinators — is both the mandate-compliant
+move and, on today's evidence, the faster one.

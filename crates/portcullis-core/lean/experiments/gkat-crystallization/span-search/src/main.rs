@@ -3831,6 +3831,178 @@ fn min_classes<const NA: usize>(a: &Aut<NA>) -> usize {
 }
 
 /// SCCs of a quotient's transition graph (Kosaraju on <= MAXK states).
+
+// ---- absorption verification (Rust; replaces the retired Python checker) ----
+
+/// The same automaton, entered at core state `s`.
+fn entry_at<const NA: usize>(q: &Aut<NA>, s: usize) -> Aut<NA> {
+    let mut a = *q;
+    a.ih = q.hl[s];
+    a.it = q.st[s];
+    a
+}
+
+/// Does `a` accept the guarded string whose atom sequence is `seq`?
+fn accepts<const NA: usize>(a: &Aut<NA>, seq: &[usize]) -> bool {
+    let mut idx: Option<usize> = None;
+    for (i, &x) in seq.iter().enumerate() {
+        let (hl, st) = match idx {
+            None => (a.ih, a.it),
+            Some(s) => (a.hl[s], a.st[s]),
+        };
+        if i + 1 == seq.len() {
+            return bit(hl, x);
+        }
+        let t = st[x];
+        if t == 0 {
+            return false;
+        }
+        idx = Some((t - 1) as usize);
+    }
+    false
+}
+
+fn lang_walk<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>, seq: &mut Vec<usize>,
+                              n: usize) -> bool {
+    if accepts(a, seq) != accepts(b, seq) {
+        return false;
+    }
+    if seq.len() > n {
+        return true;
+    }
+    for x in 0..NA {
+        seq.push(x);
+        let ok = lang_walk(a, b, seq, n);
+        seq.pop();
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// Guarded-string language equality up to `n` actions.
+fn lang_eq<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>, n: usize) -> bool {
+    let mut seq: Vec<usize> = Vec::new();
+    for x in 0..NA {
+        seq.push(x);
+        let ok = lang_walk(a, b, &mut seq, n);
+        seq.pop();
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// **Hecht-Ullman T1/T2**: drop self-loops, merge a non-header node having a
+/// unique predecessor into it; the flow graph is REDUCIBLE iff this collapses
+/// it to a single node.  Reducibility is about loop ENTRY, and is NOT the same
+/// as Kosaraju's exit condition (iteration 181 conflated them once).
+fn t1t2_reducible<const NA: usize>(q: &Aut<NA>, scc: &[usize]) -> bool {
+    let n = scc.len();
+    let mut edge = vec![vec![false; n]; n];
+    for (i, &u) in scc.iter().enumerate() {
+        for a in 0..NA {
+            let t = q.st[u][a];
+            if t == 0 { continue; }
+            if let Some(j) = scc.iter().position(|&x| x == (t - 1) as usize) {
+                edge[i][j] = true;
+            }
+        }
+    }
+    let mut live: Vec<bool> = vec![true; n];
+    let mut count = n;
+    loop {
+        let mut changed = false;
+        for i in 0..n { if live[i] && edge[i][i] { edge[i][i] = false; changed = true; } }
+        for i in 1..n {
+            if !live[i] { continue; }
+            let preds: Vec<usize> = (0..n).filter(|&j| live[j] && edge[j][i]).collect();
+            if preds.len() != 1 { continue; }
+            let p = preds[0];
+            edge[p][i] = false;
+            for j in 0..n { if edge[i][j] && j != i { edge[p][j] = true; } }
+            for j in 0..n { edge[j][i] = false; }
+            live[i] = false;
+            count -= 1;
+            changed = true;
+            break;
+        }
+        if !changed || count == 1 { break; }
+    }
+    count == 1
+}
+
+/// The SCC members that leave it — halt, or step outside.  Kosaraju: a loop
+/// with two DISTINCT exits is no structured program without auxiliary
+/// variables, and GKAT has none.
+fn exit_states<const NA: usize>(q: &Aut<NA>, scc: &[usize]) -> usize {
+    scc.iter().filter(|&&s| {
+        q.hl[s] != 0 || (0..NA).any(|a| {
+            let t = q.st[s][a];
+            t != 0 && !scc.contains(&((t - 1) as usize))
+        })
+    }).count()
+}
+
+/// **GATED IDENTIFICATION, applicability.**  Two states of the SCC whose
+/// dispatches differ on a PROPER subset of atoms — then on the region where
+/// they agree one may stand for the other (iteration 186).
+fn gated_applicable<const NA: usize>(q: &Aut<NA>, scc: &[usize]) -> bool {
+    for (i, &u) in scc.iter().enumerate() {
+        for &v in scc.iter().skip(i + 1) {
+            let mut diff = 0usize;
+            for a in 0..NA {
+                if q.st[u][a] != q.st[v][a] || bit(q.hl[u], a) != bit(q.hl[v], a) {
+                    diff += 1;
+                }
+            }
+            if diff < NA { return true; }
+        }
+    }
+    false
+}
+
+/// **EXIT ABSORPTION, constructed and checked.**  For a two-state SCC `{h, o}`
+/// with `h` the unique halting member stepping only to `o`, build
+///
+///     X_h = wh g (p ; <o's dispatch: back-to-h -> p, escape to w -> p ; w>)
+///           ; test trail
+///
+/// with escape continuations taken as the quotient entered at `w`, and compare
+/// languages with the quotient entered at `h`.  `None` when the shape does not
+/// apply or a combinator overflows `MAXK`.
+fn absorption_verified<const NA: usize>(q: &Aut<NA>, scc: &[usize], n: usize)
+    -> Option<bool>
+{
+    if scc.len() != 2 { return None; }
+    let heads: Vec<usize> = scc.iter().cloned().filter(|&s| q.hl[s] != 0).collect();
+    if heads.len() != 1 { return None; }
+    let h = heads[0];
+    let o = if scc[0] == h { scc[1] } else { scc[0] };
+    let mut g = 0u8;
+    for i in 0..NA {
+        let t = q.st[h][i];
+        if t == 0 { continue; }
+        if (t - 1) as usize != o { return None; }
+        g |= 1 << i;
+    }
+    if g == 0 { return None; }
+    let p = a_act::<NA>();
+    let mut disp = a_test::<NA>(q.hl[o]);
+    for i in 0..NA {
+        let t = q.st[o][i];
+        if t == 0 { continue; }
+        let tt = (t - 1) as usize;
+        let cont = if tt == h { p } else { a_seq(&p, &entry_at(q, tt))? };
+        disp = a_ite(1 << i, &cont, &disp)?;
+    }
+    let body = a_seq(&p, &disp)?;
+    let prop = a_seq(&a_wh(g, &body), &a_test::<NA>(q.hl[h]))?;
+    Some(lang_eq(&prop, &entry_at(q, h), n))
+}
+
 fn sccs_of<const NA: usize>(q: &Aut<NA>) -> Vec<Vec<usize>> {
     let k = q.k as usize;
     let mut order: Vec<usize> = Vec::new();
@@ -4901,6 +5073,12 @@ fn scc_census<const NA: usize>(nguards: u8) {
     let mut n_chorded_scc = 0usize;
     let mut n_open_pairs = 0usize;
     let mut n_open_pairs_lattice = 0usize;
+    let mut n_absorb_shape = 0usize;
+    let mut n_absorb_verified = 0usize;
+    let mut n_gated_scc = 0usize;
+    let mut n_res_reducible = 0usize;
+    let mut n_res_multiexit = 0usize;
+    let mut n_res_scc = 0usize;
     for (a, b, aexp, bexp) in pairs.iter() {
         // SAME-SIDE collapse measurement: is each program's OWN automaton
         // already its own bisimulation quotient?  Iteration 131's dichotomy
@@ -5243,6 +5421,23 @@ fn scc_census<const NA: usize>(nguards: u8) {
                 println!("    nesting coequation: {}; total: {}", nested(&su), total_aut(&su));
                 println!("    e = {aexp}");
                 println!("    f = {bexp}");
+                // EXIT ABSORPTION, constructed and language-checked in Rust
+                for c in sccs_of(&q) {
+                    if c.len() < 2 { continue; }
+                    n_res_scc += 1;
+                    if t1t2_reducible(&q, &c) { n_res_reducible += 1; }
+                    if exit_states(&q, &c) > 1 { n_res_multiexit += 1; }
+                    if gated_applicable(&q, &c) {
+                        n_gated_scc += 1;
+                        println!("    gated identification applies on scc {c:?}");
+                    }
+                    if let Some(ok) = absorption_verified(&q, &c, 7) {
+                        n_absorb_shape += 1;
+                        if ok { n_absorb_verified += 1; }
+                        println!("    exit absorption on scc {c:?}: {}",
+                            if ok { "VERIFIED" } else { "MISMATCH" });
+                    }
+                }
             }
         }
         if covered { pairs_covered += 1; }
@@ -5254,6 +5449,8 @@ fn scc_census<const NA: usize>(nguards: u8) {
     println!("  quotient states: {n_states}; fold: {n_fold}; singleton-self: {n_self}; in multi-state SCCs: {n_multi}");
     println!("  multi-state SCCs: walked-covered (walked_cycle_roles): {n_walked_scc}; chorded-covered (chorded_assembly_roles): {n_chorded_scc}; OPEN: {n_open_scc}");
     println!("  pairs with an OPEN SCC in the FULL collapse: {n_open_pairs}; of those, SOLVABLE SOMEWHERE IN THE BISIMULATION LATTICE: {n_open_pairs_lattice}");
+    println!("  lattice-resistant SCCs: gated-identification applicable {n_gated_scc}; of absorption shape {n_absorb_shape}, VERIFIED by construction {n_absorb_verified}");
+    println!("  lattice-resistant SCCs: {n_res_scc} total; T1/T2-reducible {n_res_reducible}; MULTI-EXIT (Kosaraju) {n_res_multiexit}");
     let mut hist: Vec<_> = multi_hist.into_iter().collect();
     hist.sort_by(|x, y| y.1.cmp(&x.1));
     println!("  multi-state SCC shapes (size, cycle-kind, halting-members, exit-arms, branchers) -> count:");
