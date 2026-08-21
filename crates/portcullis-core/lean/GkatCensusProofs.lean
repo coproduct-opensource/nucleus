@@ -1425,4 +1425,66 @@ theorem seq_subsystem {S₁ S₂ : Type}
 #print axioms guardedFold_guard_factor
 #print axioms seq_subsystem
 
+open Classical in
+/-- **THE LOOP SUBSYSTEM LEMMA**: a wrapped state's parametric
+    equation is the BODY's parametric equation whose finish is the
+    loop's own initial dispatch — re-enter through the feedback or
+    exit through the ambient continuation.  The statement that makes
+    an SCC the body system with a feedback finish, connecting quotient
+    cycles to the wrapped certificates canonicity speaks about. -/
+theorem loop_subsystem {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T)
+    (sol : S → Exp A T) (F : Exp A T) (s : S) :
+    EquivBA
+      (GkatThompson.eqRHSParam
+        (GkatThompson.loopInitialized guard body).core sol F s)
+      (GkatThompson.eqRHSParam body.core sol
+        (GkatThompson.initRHSParam
+          (GkatThompson.loopInitialized guard body) sol F) s) := by
+  show EquivBA
+    (GkatFaithful.guardedFold
+      (GkatKleene.transitionBranches
+        (body.core.trans s ++
+         body.initTrans.map (fun tr =>
+          (BExp.and (body.core.hlt s) (BExp.and guard tr.1),
+            tr.2.1, tr.2.2))) sol)
+      (GkatThompson.paramFallback
+        (.and (body.core.hlt s) (.not guard)) F))
+    _
+  have hsplit : GkatKleene.transitionBranches
+      (body.core.trans s ++
+       body.initTrans.map (fun tr =>
+        (BExp.and (body.core.hlt s) (BExp.and guard tr.1),
+          tr.2.1, tr.2.2))) sol
+      = GkatKleene.transitionBranches (body.core.trans s) sol
+        ++ (GkatKleene.transitionBranches
+            (body.initTrans.map (fun tr =>
+              (BExp.and guard tr.1, tr.2.1, tr.2.2))) sol).map
+          (fun b => (.and (body.core.hlt s) b.1, b.2)) := by
+    show ((body.core.trans s ++
+        body.initTrans.map (fun tr : BExp T × A × S =>
+          (BExp.and (body.core.hlt s) (BExp.and guard tr.1),
+            tr.2.1, tr.2.2))).map
+        (fun t : BExp T × A × S =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2))))
+      = ((body.core.trans s).map (fun t : BExp T × A × S =>
+          (t.1, Exp.seq (.act t.2.1) (sol t.2.2))))
+        ++ (((body.initTrans.map (fun tr : BExp T × A × S =>
+            (BExp.and guard tr.1, tr.2.1, tr.2.2))).map
+            (fun t : BExp T × A × S =>
+              (t.1, Exp.seq (.act t.2.1) (sol t.2.2)))).map
+          (fun b : BExp T × Exp A T =>
+            (BExp.and (body.core.hlt s) b.1, b.2)))
+    rw [List.map_append, List.map_map, List.map_map, List.map_map]
+    rfl
+  rw [hsplit, guardedFold_append]
+  refine EquivBA.trans (guardedFold_fallback_congr
+    (guardedFold_guard_factor (body.core.hlt s) (.not guard) F
+      (GkatKleene.transitionBranches
+        (body.initTrans.map (fun tr =>
+          (BExp.and guard tr.1, tr.2.1, tr.2.2))) sol))) ?_
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms loop_subsystem
+
 end GkatCensus

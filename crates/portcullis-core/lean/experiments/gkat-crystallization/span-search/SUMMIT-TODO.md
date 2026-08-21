@@ -3143,3 +3143,29 @@ cases: ite (same pattern, two sides guarded) and LOOP (feedback arms
 factor by the same guard_factor with hlt·guard·init decoration — the
 key case connecting SCCs to wrapped certificates). Then the
 syntax-pair induction skeleton.
+
+## Iteration 110 — ★ THE LOOP SUBSYSTEM LEMMA ★ (first try)
+
+**`loop_subsystem`** ([propext]): a wrapped state's parametric
+equation is the BODY's parametric equation whose finish is the loop's
+OWN initial dispatch —
+
+  eqRHSParam (loopInitialized g body).core sol F s
+    ≡ eqRHSParam body.core sol
+        (initRHSParam (loopInitialized g body) sol F) s
+
+— re-enter through the feedback or exit through the ambient
+continuation. THE statement that makes an SCC "the body system with a
+feedback finish": quotient cycles now connect directly to the wrapped
+certificates that ParametricCanonicalBA speaks about. The proof is
+seq_subsystem's three moves verbatim — the feedback decoration
+(hlt·(guard·init)) factors through guardedFold_guard_factor with
+hG := body-halt, h := ¬guard, and the residual inner fold is
+DEFINITIONALLY the wrapped automaton's initRHSParam.
+
+Subsystem chapter: seq ✓ loop ✓ — remaining: ite (no appended arms —
+expected near-trivial retag) and the initial-state variants. Then the
+syntax-pair induction skeleton: UNIF(e,f) by strong induction on
+|e|+|f|, with canonicity + subsystem lemmas at each loop level,
+equation transport for cross-side steps, and sub-loop UNIF instances
+for class-internal consistency.
