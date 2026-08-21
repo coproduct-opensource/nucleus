@@ -8755,3 +8755,68 @@ default, and reported as not-yet-measured rather than folded into a number.
 
 **Odds: 66%, held.**  The falsification attempt found a genuine limitation of
 the calculus and did not falsify the hypothesis; those roughly cancel.
+
+---
+
+## Iteration 197 — OPTIMIZATION PASS: 6x, and it was the phase I had not measured
+
+**Instrumented first, per the standing lesson, and it paid for the fourth
+time.**  I assumed the three-rule calculus was the cost and spent two changes
+on it: `accepts_at` (walking from a state instead of copying a 320-byte `Aut`
+per oracle leaf) and a verdict memo keyed on a structural hash of the
+proposal.  The memo cut `ex_accepts` from **124 million to 50 million** calls
+per 60 000 pairs, preserved every solved count — and moved the wall clock by
+nothing.
+
+Phase timers said why:
+
+    [phases] total 0.1s = lattice 0.0s + calculus 0.1s + absorption 0.0s
+
+**The entire analysis was 0.1s of a 9s run.**  The other 8.9s was PAIR
+GENERATION — and it was the only serial phase in a program that is parallel
+everywhere else, which is where the previous three passes on this harness
+each found their win.
+
+**The fix**: draw one seed per try serially (nanoseconds, keeps the draw order
+deterministic), map the batch through `genexp` → `canon` → `behaviour` in
+parallel with rayon, merge into the buckets serially.
+
+    NA=3, 60 000 pairs      9.0s  ->  1.5s     (6.2x)
+    NA=2, 240 000 pairs     timeout (>550s)  ->  4.6s
+    NA=4, 240 000 pairs     timeout (>550s)  ->  6.1s
+
+**CAVEAT, stated plainly**: the sample is NOT bit-identical to previous runs —
+each try now uses its own xorshift stream seeded from the serial one.  Rates
+are comparable; specific instance dumps are not.  Earlier passes on this
+harness preserved outputs exactly, and this one does not.
+
+**AND THE FIRST INSTANCE NEITHER MECHANISM HANDLES.**  On the new sample,
+NA=4 at 240 000 pairs:
+
+    lattice-resistant SCCs solved by the calculus: 14 / 15
+
+The one that resists:
+
+    q2: hl=1000 st=[q3,q3,-,-]        halts a3; steps a0,a1 -> q3
+    q3: hl=0001 st=[-,-,q2,-]         halts a0; steps a2 -> q2
+
+**Two exit states, and neither exit can be absorbed.**  Head the loop at q2:
+its guard is `{a0,a1}`, and q3's accept sits at `a0` — INSIDE the guard, so
+the loop continues where it should stop.  Head it at q3: guard `{a2}`, q2's
+accept at `a3` is outside it so the loop does exit — but the trailing test is
+then `a0`, which fails at `a3`.  Absorption needs the exit atom outside the
+guard AND inside the trailing test, and no rotation gives both.
+
+This pair is **lattice-resistant and calculus-resistant** — the first instance
+in the campaign that neither mechanism covers.  It is a CANDIDATE, on the same
+terms as iteration 185's: resistance is not a proof of unsolvability, and 186
+dissolved the last such candidate with a move that did not exist yet.
+
+**Odds: 66% -> 62%.**  A 6x faster instrument found, in its first larger
+sample, an instance the calculus does not solve.  That is the correct
+direction for the evidence to move, and it is small because one candidate is
+one candidate — 185 produced one and it turned out solvable.
+
+**NEXT: settle it**, exactly as 185/186 settled the last one.  Either a fourth
+move handles it — and the two-exit analysis above says what that move must do
+— or it is the counterexample.
