@@ -4300,6 +4300,28 @@ private def ga : Exp Act T2 := .act 0
 #eval @decide _ (GkatDecide.uleDec (.seq ea (.ite cc fa (.test .zero)))
   (.ite cc (.seq ea fa) (.seq ea (.test .zero))))
 
+/-! ### Does same-side unification have NON-TRIVIAL content?
+
+    Iteration 164 measured that ~97% of Thompson automata have distinct
+    bisimilar states, so same-side UNIF is never vacuous in practice.
+    But bisimilar does not mean HARD: iteration 124 showed duplicated
+    subterms give LITERALLY EQUAL labels, where UNIF is `rfl`.
+
+    The discriminating question is whether a pair can be language-equal
+    with SYNTACTICALLY DIFFERENT labels.  Bisimilar states have
+    language-equal labels, so `uleDec` on the labels plus decidable
+    syntactic equality answers it — no separate bisimilarity decision.
+
+    (Counting such pairs across a whole automaton is too slow to run at
+    elaboration time — `uleDec` rebuilds and trims a Thompson sum per
+    pair.  A single decisive witness suffices.) -/
+
+-- The witness: inside `ite b (p ; (q +_b q)) (p ; q)`, the two post-`p`
+-- continuations are `q +_b q` and `q`.  Language-equal, syntactically
+-- different — so same-side unification is NOT always `rfl`.
+#eval @decide _ (GkatDecide.uleDec (.ite t0 pb pb : Exp Act Tst) pb)  -- true
+#eval decide ((.ite t0 pb pb : Exp Act Tst) = pb)                     -- false
+
 end DecideSmoke
 
 end GkatCensus

@@ -6741,3 +6741,43 @@ The pattern is the same one this campaign keeps meeting from a different
 direction: a check that appears to pass because it never ran.  Same
 family as an axiom profile nobody printed, or a use-count repeated
 rather than grepped.
+
+## Iteration 166 — same-side UNIF is not always `rfl`, and the frequency question hits a tooling wall
+
+Iteration 164's follow-up: of the ubiquitous bisimilar state pairs, how
+many have SYNTACTICALLY DIFFERENT labels?  Those need real proof; the
+rest are `rfl` (iteration 124).
+
+**The scale measurement failed, and the reason is worth recording.**
+Counting such pairs across an automaton means calling `uleDec` on every
+pair of labels — and each call rebuilds and trims a Thompson SUM and
+decides bisimilarity on it.  At elaboration time that exceeded a
+ten-minute budget on four small expressions, one containing a loop.
+**`uleDec` is decidable but not cheap**, and elaboration-time `#eval` is
+the wrong place to run a census.  Killed it rather than let it run.
+
+**A single decisive witness does the qualitative job.**  Inside
+`ite b (p ; (q +_b q)) (p ; q)`, the two post-`p` continuations are
+`q +_b q` and `q`.  Executed:
+
+* `uleDec (q +_b q) q` → **true** (language-equal)
+* `(q +_b q) = q` → **false** (syntactically different)
+
+So **same-side unification is not always `rfl`** — there really are
+bisimilar state pairs whose labels differ syntactically.  Iteration 124
+discharged the duplicated-subterm case; this shows that case is not the
+only one, which is what 164 left open.
+
+**Honest limits of the witness.**  It is EASY: the two labels differ by
+U1, one axiom.  It establishes that the trivial case is not exhaustive,
+NOT that hard cases are common — and iteration 122 already showed
+same-side UNIF can embed an arbitrary cross-side instance, so hard cases
+certainly exist.  What stays unmeasured is the DISTRIBUTION: what
+fraction of bisimilar label pairs need more than a couple of axioms.
+
+**What that measurement would need**: the Rust census harness with the
+Thompson labelling threaded through, so equivalence is decided by the
+fast automaton path rather than by re-elaborating Lean per pair.  That
+is a real piece of work and is now the named next experiment — with the
+performance reason for doing it there rather than in Lean recorded, so
+the next attempt does not repeat today's dead end.
