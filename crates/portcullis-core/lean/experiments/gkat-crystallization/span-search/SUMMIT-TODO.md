@@ -8880,3 +8880,52 @@ moved it: a concrete candidate counterexample was produced, examined, and
 dissolved by a mechanism that generalizes rather than a trick that fits.
 Twice now the candidate has fallen; that is a pattern worth noticing and not
 yet worth trusting.
+
+---
+
+## Iteration 199 — ENTRY RESTRICTION IS IN LEAN, and it is a loop invariant
+
+198 solved the new resister by hand and named the general lemma.  Proved,
+first try, and with **ZERO AXIOMS** — no `propext`, no choice.
+
+**`GkatCensus.entry_restricted_trailing`:**
+
+    hprod : E(B) ≡ 0                         -- w3's productivity side condition
+    hB    : B ; test R  ≡  B                 -- the body always ends inside R
+    hF    : ¬(R∧g) ∧ R ∧ F₁  =  ¬(R∧g) ∧ R ∧ F₂
+    ⊢  test R ; wh g B ; test F₁  ≡  test R ; wh g B ; test F₂
+
+**The algebra is a loop invariant, in the Hoare sense**, and today's search
+made that explicit: establishment is the pre-guard `test R`, preservation is
+`hB`, and the postcondition is exactly `R ∧ ¬g` — which is why two trailing
+tests agreeing there are interchangeable.  I had been calling this
+"pre-guarding and asserting"; it is the oldest idea in program verification,
+arriving from the other direction.
+
+**The proof is `w3` used for UNIQUENESS, not construction.**  Both sides
+satisfy the same Salomaa equation — `Y ≡ ite (R∧g) (B ; Y) (test (R∧F₁))` —
+once `R` is carried through the body by `s1` and `hB`, and once the second
+side's fallback is swapped by `ite_else_swap` on the region where the
+hypothesis holds.  `w3_ba` then identifies them.  Five steps.
+
+**ALL FOUR RULES ARE NOW IN LEAN:**
+
+    elimination        self_gather_role / StateRole.salomaaE   (w3)
+    exit absorption    exit_absorb                             (zero axioms)
+    gated rewrite      gated_solves / gated_role
+    entry restriction  entry_restricted_trailing               (zero axioms)
+
+and `exit_absorb` is the vacuous-restriction case of the last, so the two
+loop rules are one rule with a parameter.
+
+**WHAT IS LEFT is unchanged and is still one sentence**: SUFFICIENCY — that
+on every behavioural quotient of a Thompson sum the rules can be applied
+until every state is assigned.  Four rules now instead of three, which is
+weaker evidence for sufficiency, not stronger: each new rule is a case the
+previous set could not reach.
+
+**Odds: 66%, held.**  Formalizing a rule I already had adds no evidence about
+whether the set is complete.  What would move the number is the Rust solver
+learning the fourth rule and the resistant counts going to zero again at
+scale — that is the next measurement, and it is a real one, because 197
+showed a larger sample finds what a smaller one misses.

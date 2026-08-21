@@ -5484,4 +5484,60 @@ theorem gated_role {S : Type} (aut : GAut S A T) (sol : S → Exp A T)
 
 #print axioms gated_role
 
+/-! ### ENTRY RESTRICTION — the fourth rule
+
+    Iteration 197 found the first SCC neither the lattice nor the calculus
+    handles; 198 solved it by hand and checked the answer.  The move is:
+    PRE-GUARD the loop and ASSERT at the end of its body, so that the
+    trailing test can be WIDENED to cover a mid-body exit that exit
+    absorption cannot reach.
+
+    The algebra behind it is a loop invariant, in the Hoare sense.  If the
+    body always terminates inside a region `R` and the loop is ENTERED
+    inside `R`, then `R` holds at every arrival at the loop head, so the
+    trailing test is only ever evaluated on `R ∧ ¬g` — and any two trailing
+    tests agreeing there are interchangeable.
+
+    `exit_absorb` (188) is the case where the restriction is vacuous.  This
+    is the first of the four rules whose Lean form was not already in the
+    corpus. -/
+
+/-- **ENTRY RESTRICTION.**  Under a body that preserves `R` and an entry
+    inside `R`, the trailing test after the loop only ever sees `R ∧ ¬g`.
+
+    Proved by `w3`: both sides satisfy the SAME Salomaa equation once `R` is
+    carried through the body, so uniqueness identifies them.  `hprod` is
+    `w3`'s productivity side condition on the body. -/
+theorem entry_restricted_trailing {g R F₁ F₂ : BExp T} {B : Exp A T}
+    (hprod : EquivBA (.test (E B) : Exp A T) (.test .zero))
+    (hB : EquivBA (.seq B (.test R)) B)
+    (hF : ∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W (.and (.not (.and R g)) (.and R F₂)) x
+          = GkatGS.bval W (.and (.not (.and R g)) (.and R F₁)) x) :
+    EquivBA (.seq (.test R) (.seq (.wh g B) (.test F₁)))
+      (.seq (.test R) (.seq (.wh g B) (.test F₂))) := by
+  have step : ∀ F : BExp T,
+      EquivBA (.seq (.test R) (.seq (.wh g B) (.test F)))
+        (.ite (.and R g)
+          (.seq B (.seq (.test R) (.seq (.wh g B) (.test F))))
+          (.test (.and R F))) := by
+    intro F
+    refine EquivBA.trans (EquivBA.seq_c (EquivBA.base (Equiv.refl _))
+      (EquivBA.base (salomaa_solution_exists g B (.test F)))) ?_
+    refine EquivBA.trans (GkatGuardedAlgebra.test_seq_ite R g _ _) ?_
+    refine EquivBA.ite_c ?_ (EquivBA.s6 R F)
+    refine EquivBA.trans
+      (EquivBA.seq_c (EquivBA.symm hB) (EquivBA.base (Equiv.refl _))) ?_
+    exact EquivBA.base (Equiv.s1 B (.test R) _)
+  have h1 := EquivBA.w3_ba hprod (step F₁)
+  have h2 := EquivBA.w3_ba hprod
+    (EquivBA.trans (step F₂)
+      (ite_else_swap
+        (EquivBA.trans (EquivBA.s6 (.not (.and R g)) (.and R F₂))
+          (EquivBA.trans (EquivBA.baTest hF)
+            (EquivBA.symm (EquivBA.s6 (.not (.and R g)) (.and R F₁)))))))
+  exact EquivBA.trans h1 (EquivBA.symm h2)
+
+#print axioms entry_restricted_trailing
+
 end GkatCensus
