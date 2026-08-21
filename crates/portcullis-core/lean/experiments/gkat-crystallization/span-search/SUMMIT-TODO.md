@@ -8049,3 +8049,72 @@ defined by a choice — the full collapse — that the hypothesis never
 required.  The harness contained the correction the whole time, in a
 function with a comment stating it.  **When a measurement defines the work,
 check that it measures the object the HYPOTHESIS names.**
+
+---
+
+## Iteration 185 — THE RESISTANT PAIR, WORKED OUT: every admissible quotient is two-exit
+
+184 found exactly one pair in 59993 that no quotient in the bisimulation
+lattice solves, and said the next step was to settle it.  Settled far
+enough to be decisive about the ROUTE.
+
+**FIRST: it is not a search-budget artefact.**  Re-ran the lattice search
+at caps 512, 4096 and 65536.  **30/31 at every cap.**  The enumeration is
+not the limit.
+
+**SECOND: this pair has EXACTLY TWO admissible quotients, and both are
+MULTI-EXIT.**  Computed and cross-checked by hand and by script
+(`runs/lattice-resistant-analysis.md`):
+
+    principal congruence of (start_e ~ start_f)   4 states, SCC exits at 2
+    full bisimulation collapse                    3 states, SCC exits at 2
+
+Nothing lies between — merging any other pair of blocks would identify a
+halting state with a non-halting one, which is not a congruence.  **So for
+this pair the lattice offers no escape at all.**  184's reading, that a
+coarser quotient dissolves the multi-exit shape, holds for 30 of the 31 and
+provably fails for this one.
+
+**THIRD: why elimination fails, in three lines.**  With `A = a0∨a1`,
+`B = a2`, `C = a3` and `E = p;p`, the collapse is
+
+    X0 = ite A (p;X0) (ite B (p;X2) (test C))
+    X2 = p;X1
+    X1 = ite (a0∨a2) (p;X2) (ite a1 (p;X0) (test C))
+
+`X2` goes trivially, `w3` closes `X0`, and substituting leaves
+
+    X1 = ite (a0∨a2) (E;X1) (ite a1 (p; wh A p; ite B (E;X1) (test C)) (test C))
+
+**`X1` occurs in BOTH branches**, the second behind an action, so it is not
+a top-level guarded self-call and `w3` does not apply.  Eliminating `X1`
+first leaves `X0` doubled by the same symmetry.  This is the two-exit
+obstruction in its smallest form: the loop is leavable from `X0` on `C` and
+from `X1` on `C`, and which exit is taken is not a test at the head.
+
+**WHAT IT ESTABLISHES, precisely.**  All three blocks' languages ARE
+expressible — each contains a Thompson state of `e` or `f`, whose label is
+an expression — and the quotient satisfies the nesting coequation.  So this
+is no counterexample to expressibility.  **It is an obstruction to the
+ROUTE**: `SumQuotientSolvable` is consumed by producing a solution and then
+invoking uniqueness, and here a solution cannot be produced by elimination
+from any admissible quotient.  It is **not yet** a refutation of the
+hypothesis, because elimination is sufficient for finding a solution and
+not necessary.
+
+**THE OPEN QUESTION THIS INSTANCE POSES**, which is now the sharpest
+statement of the whole campaign's remainder:
+
+    Does the 3-state system above have a solution in GKAT expressions at
+    all — by any means, not only by elimination?
+
+If yes, the route survives and elimination needs strengthening.  If no,
+**`SumQuotientSolvable` is FALSE** and the reduction chain that rests on it
+dies — while completeness itself would remain open, since `e ≡ f` may still
+be derivable by other means.
+
+**Odds: ~45%, held.**  A concrete, minimal, fully characterized obstruction
+is worth more than a percentage, and I decline to move the number until the
+question above is answered either way.  It cuts both directions: settling
+it "yes" restores the route, settling it "no" kills a reduction the project
+has carried since the span era.

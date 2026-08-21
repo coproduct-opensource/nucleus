@@ -2233,7 +2233,8 @@ fn lattice_congruences<const NA: usize>(su: &Aut<NA>) -> Vec<([usize; MAXK], usi
     // that way instead of enumerating 2^pairs subsets.  The old code enumerated subsets and
     // returned EMPTY above 12 pairs — a hard search cutoff that silently gave those systems no
     // quotients at all, which is exactly the kind of limit that looks like an obstruction.
-    let cap = 512usize;
+    let cap: usize = std::env::var("PAD_LATTICE_CAP").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(512);
     let mut seeds: Vec<Vec<(usize, usize)>> = Vec::new();
     let mut push = |c: ([usize; MAXK], usize), sd: Vec<(usize, usize)>,
                     out: &mut Vec<([usize; MAXK], usize)>,
