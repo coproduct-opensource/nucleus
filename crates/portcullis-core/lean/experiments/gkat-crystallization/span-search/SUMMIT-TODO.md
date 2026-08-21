@@ -6291,3 +6291,57 @@ What remains of the queued STEELMAN list: edge cases (empty `T`, empty
 `A`), and a differential-testing harness for `uleDec` against a
 reference implementation.  Both are finite and neither touches the open
 mathematics.
+
+## Iteration 156 — the decider is EXECUTED, not just proved
+
+Every audit in 153–155 was about STATEMENTS: are the axioms the
+paper's, is the Boolean layer faithful, is the hypothesis's semantics
+the right one.  None of them tests COMPUTATION.  `uleDec` is a genuine
+decision procedure — Lean accepts it without `noncomputable` — so it
+can be RUN, and running it exercises the whole stack (Thompson
+construction, trimming, bisimilarity quotient, decidable equality)
+against expected answers in a way a proof about those same definitions
+structurally cannot.
+
+**Ten smoke tests, all correct**, now in the file as regression checks:
+
+| test | expected | got |
+|---|---|---|
+| `p ≟ p` | true | ✓ |
+| `p ≟ q` (distinct actions) | false | ✓ |
+| `p +_b p ≟ p` (U1) | true | ✓ |
+| `1? ≟ p` (test vs action) | false | ✓ |
+| `p^(0) ≟ 1?` (**W5**) | true | ✓ |
+| `p^(1) ≟ 0?` (**W6**, divergence is empty) | true | ✓ |
+| `p·1? ≟ p` (S5) | true | ✓ |
+| `p·0? ≟ 0?` (S3) | true | ✓ |
+| `p +_b q ≟ p +_{¬¬b} q` (guard BA-equality) | true | ✓ |
+| `p +_b q ≟ q +_b p` (branches swapped) | **false** | ✓ |
+
+**Three of these are load-bearing rather than decorative.**
+
+* **W5 and W6 are Figure-2 DERIVABLE facts** — the paper's `e^{(0)} ≡ 1`
+  and `e^{(1)} ≡ 0`.  Neither is an axiom here, so the decider agreeing
+  with them is independent evidence that the model computes the paper's
+  semantics.  W6 in particular checks that a productive loop which never
+  exits denotes the EMPTY language, which is the subtlest point in the
+  whole guarded-string model and the one iteration 135's
+  `diverging_region_zero` is about.
+* **The last two are negative controls.**  A decider that always
+  answered "true" would pass seven of these; it fails on distinct
+  actions, on test-vs-action, and on swapped branches.  The
+  swapped-branch case is the sharpest: `p +_b q` and `q +_b p` have the
+  same subterms and differ only in order, so it catches a model that
+  had lost track of which branch the guard selects.
+* **The `¬¬b` case** confirms guard Boolean-equality is respected by the
+  MODEL, which is the semantic counterpart of iteration 154's
+  guard-position congruence question.  If the model did not identify
+  BA-equal guards, `sound_BA` could not hold — and here it is,
+  computed.
+
+**STEELMAN list status.**  Trusted base (axioms, Boolean layer, model,
+hypothesis semantics) audited across 153–155; executable validation done
+today.  What remains queued is edge cases (empty `T`, empty `A`) — and
+note the theorems are polymorphic in both, so Lean has already checked
+them there; what an edge-case pass would add is NON-VACUITY evidence,
+not soundness.

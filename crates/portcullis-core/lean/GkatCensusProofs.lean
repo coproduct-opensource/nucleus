@@ -4207,4 +4207,45 @@ theorem ule_iff_generic (e f : Exp A T) :
 
 #print axioms ule_iff_generic
 
+/-! ## Executable smoke tests for the decider
+
+    Every audit so far has been about STATEMENTS.  These check
+    COMPUTATION: `uleDec` is a genuine decision procedure, so it can be
+    RUN, and running it exercises the whole stack — Thompson
+    construction, trimming, bisimilarity — against expected answers a
+    proof about those same definitions could not catch. -/
+
+section DecideSmoke
+
+abbrev Tst := Fin 1
+abbrev Act := Fin 2
+
+private def t0 : BExp Tst := .prim 0
+private def pa : Exp Act Tst := .act 0
+private def pb : Exp Act Tst := .act 1
+
+-- reflexive: an action equals itself
+#eval @decide _ (GkatDecide.uleDec pa pa)                        -- expect true
+-- distinct actions differ
+#eval @decide _ (GkatDecide.uleDec pa pb)                        -- expect false
+-- U1 idempotence, semantically
+#eval @decide _ (GkatDecide.uleDec (.ite t0 pa pa) pa)           -- expect true
+-- a test is not an action
+#eval @decide _ (GkatDecide.uleDec (.test .one) pa)              -- expect false
+-- W5: a loop whose guard never holds is skip
+#eval @decide _ (GkatDecide.uleDec (.wh .zero pa) (.test .one))  -- expect true
+-- W6: a productive loop that never exits has EMPTY language
+#eval @decide _ (GkatDecide.uleDec (.wh .one pa) (.test .zero))  -- expect true
+-- S5: e·1 = e
+#eval @decide _ (GkatDecide.uleDec (.seq pa (.test .one)) pa)    -- expect true
+-- S3: e·0 = 0
+#eval @decide _ (GkatDecide.uleDec (.seq pa (.test .zero)) (.test .zero)) -- expect true
+-- guard negation is invisible: b and ¬¬b
+#eval @decide _ (GkatDecide.uleDec (.ite t0 pa pb)
+  (.ite (.not (.not t0)) pa pb))                                 -- expect true
+-- but swapping the branches is NOT invisible
+#eval @decide _ (GkatDecide.uleDec (.ite t0 pa pb) (.ite t0 pb pa)) -- expect false
+
+end DecideSmoke
+
 end GkatCensus
