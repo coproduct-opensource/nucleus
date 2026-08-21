@@ -3741,3 +3741,49 @@ Next: attack the ordering question — either construct an order for an
 arbitrary multi-class SCC, or find a witness SCC where no order works
 (which would be the first genuine negative result of the campaign and
 would explain the field's pessimism concretely).
+
+### Iteration 117 addendum — the diagnosis was already in the repo, and there is MEASURED data
+
+Honesty check after committing: `GkatDeadExitElimProofs.lean` (the
+two-state-SCC section, predating this whole campaign) already contains
+the diagnosis 117 presents as new, in one sentence:
+
+> "The dead fallback is what makes this work and is not a convenience:
+> with a live fallback the factored form is `ite B (U·y) fb`, and
+> substituting puts `y` under a choice inside a product — the nesting
+> left-distributivity cannot undo."
+
+That is exactly `elim_reduces`'s side condition and exactly the
+guard-after-action argument.  So 117 independently re-derived a fact
+this repo had already written down.  What 117 genuinely adds is the
+GENERAL, zero-axiom statement of the step (`elim_to_prefix` /
+`elim_affine_step` / `elim_reduces` / `elim_back`, none of which were
+stated in general form before — `elim_scc2` is the size-2 instance),
+plus the reframing to the ORDERING question.  Recording the overlap
+because the ledger's value depends on it being trustworthy.
+
+**THE MEASURED DATA, which is the real find.**  The same file records
+harness measurements over start-merged quotients:
+
+* 85.7% have ALL-SINGLETON SCCs — fully covered by the singleton-SCC
+  theorem (050b7483).
+* 14.3% contain a multi-state SCC — **all measured ones of size 2 or
+  3** — and **98.2% of those eliminate anyway**.
+* 24.6% are linear chains (`chain_solves`).
+
+So the residue is not "multi-class SCCs" in the abstract: it is the
+measured ~1.8% of multi-state SCCs that did NOT eliminate under the
+harness's mechanism.  That is a concrete, finite, already-observed
+target — far better than a universally-quantified conjecture.
+
+**NEXT STEP, and it is now obvious**: recover the non-eliminating
+instances from the harness.  Either (a) they all fall to an
+elimination ORDER the harness never tried (it eliminates greedily, and
+`elim_reduces` shows exits are computed against the ALREADY-ELIMINATED
+remainder, so order matters and the harness may simply have picked
+badly) — in which case the ordering question has a constructive
+answer; or (b) one of them provably admits NO order, which would be
+the campaign's first genuine negative result and would concretely
+explain the field's pessimism.  Both outcomes are valuable and the
+experiment is cheap.  Note also the measured sizes are 2 and 3 only,
+so a full case analysis at k=2 and k=3 may settle it outright.
