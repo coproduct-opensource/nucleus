@@ -178,11 +178,24 @@ theorem same_rank_arm_mutual {S : Type} (aut : GAut S A T) {s t : S}
     Reach aut t s :=
   reach_back_of_rank_eq aut (Reach.step h (Reach.refl t)) hrk hs
 
+open Classical in
+/-- **HALT INVARIANCE**: bisimilar states agree on halting behaviour at
+    the generic valuation — exit patterns are language-invariant, so
+    quotient merges preserve exit positions (a halting class never
+    absorbs a silent state). -/
+theorem bisim_hlt_invariant {S : Type} (aut : GkatKleene.GAut S A T)
+    {s t : S} (h : GkatPlanExistence.GenBisimilar aut s t) :
+    ∀ α : T → Bool,
+      GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt s) α
+        = GkatGS.bval (GkatPlanExistence.genW T) (aut.hlt t) α :=
+  (GkatPlanExistence.genBisimilar_bisim aut s t h).1
+
 #print axioms reachRank_le
 #print axioms reachRank_eq
 #print axioms reachRank_lt
 #print axioms reachRank_hdesc
 #print axioms reach_back_of_rank_eq
 #print axioms same_rank_arm_mutual
+#print axioms bisim_hlt_invariant
 
 end GkatCensus

@@ -2724,3 +2724,35 @@ quotients, no more scheduling mathematics.
 Next: the census facts for quotients of Thompson sums — starting with
 the SINGLE-EXIT structure theorem (syntactic Thompson SCCs exit only
 at loop headers; quotient pairing preserves it).
+
+## Iteration 95 — halt invariance + THE CENSUS ENDGAME DESIGN
+
+**`bisim_hlt_invariant`**: bisimilar states agree on halting behaviour
+at the generic valuation (GAutBisim's first component surfaced). Exit
+patterns are language-invariant: a halting class never absorbs a
+silent state.
+
+**THE DESIGN** (worked through the rotation example): for e = wh b (p;q)
+and rotated f = p; wh b (q;p), the SCC-pairing danger (two exit classes
+in one merged SCC) DOES NOT ARISE: ε/halt-visibility separates every
+head-class from every mid-class (heads accept halt-words, mids are
+silent), so the two syntactic SCCs stay disjoint in the quotient, each
+its own block. GENERAL PRINCIPLE: quotient merges preserve exit
+positions; merged SCCs have matched ports.
+
+The formal route to the census facts:
+1. THE SYNTACTIC STRUCTURE THEOREM: for every program e,
+   certifiedThompson e admits a hierarchy of single-exit blocks —
+   structural induction over the Thompson construction (act/test:
+   empty; seq/ite: block unions + rank shifts; wh: new port over the
+   body's blocks). "Compile e to its schedule."
+2. QUOTIENT TRANSPORT: rep-classes' arms are a member's arms
+   retargeted (bisimQuotAut trans-of-rep); the quotient schedule =
+   dedup of the syntactic schedules of BOTH summands; merge-robustness
+   from halt invariance + reachRank (merged states have equal
+   languages ⟹ matched block positions).
+3. Feed scc_block_schedP / composition / sched_assembly_roles.
+
+Steps 1 and 2 are the remaining work — multi-iteration but now fully
+specified; no scheduling mathematics remains, only Thompson structure
+and rep-class bookkeeping.
