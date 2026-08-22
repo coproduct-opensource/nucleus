@@ -21060,3 +21060,53 @@ The substance of 443 is unaffected — the target's status is what
 `GkatUniquenessFrontierProofs` says, and I had not established it in 404-442. But
 the diagnosis was wrong: I was not misled by a stale note, I simply never checked
 the problem's status at all, which is worse and worth recording as such.
+
+## 444 — SYNTHESIS: the census's "span search" IS the frontier's guard-pullback witness search.
+
+Web search: exhausted (200/200).
+
+443 pointed at the non-standard-model route. Reading `GkatHardFrontierProofs`
+first connected thirty iterations of census work to the corpus's own frontier:
+
+> "The pullback decomposition proves a positive syntactic result: **a definable
+> guard-pullback witness is sufficient to reduce `UA₂` to `UA₁`.** A tempting
+> converse would infer such a witness merely from uniqueness of every productive
+> two-state system. **That converse is false** already in the standard
+> guarded-string model … any successful converse must be proof-theoretic and
+> stronger than semantic uniqueness: it must extract a *uniform derivation/closed
+> form*, not merely know that solutions agree."
+
+**So the reduction of UA₂ to W3 needs a WITNESS, and the witness does not always
+exist.** `indexed_cycle_semantic_unique` extends the point: semantic UAₙ and
+syntactic pullback-based elimination **diverge at every arity**.
+
+**And this harness has been measuring exactly that object.** Its `pullback` and
+"span" search are the guard-pullback witness search. The default census reports:
+
+```
+forced quotient representable : 273 / 273
+SPAN FOUND                    : 219
+NO span (k <= 4)              : 54
+refinement test on 54 uncoverable pullbacks (MAXK=16) → still 54
+```
+
+**54 of 273 crux pairs admit no witness, and allowing 16 states instead of 4 does
+not reduce that number.** The open case is non-empty, robust to refinement, and
+already quantified — it is 20% of the crux pairs.
+
+**What this reorganises.** The chain is now legible end to end:
+UA₂ → W3 needs a guard-pullback witness (positive, syntactic); witnesses fail to
+exist for 54 measured pairs; semantic uniqueness holds anyway
+(`two_state_semantic_uniqueness`), so the gap is derivability; and the standard
+model cannot witness independence (`productivity_is_necessary`). My 404-442
+peel work sat orthogonal to all of it.
+
+**Odds: 25%, unchanged.** This is synthesis, not new mathematics. It is mildly
+negative — the open case survives a 16-state refinement — and mildly positive —
+the target is now a specific, enumerated set of 54 objects rather than a vague
+frontier. The field's prior that this problem does not close still stands.
+
+**Next.** Take the 54 directly: for one of them, determine whether the missing
+witness is missing because no guard is definable, or because the search space
+(MAXK=16, k ≤ 4 sources) is still too small. That distinction decides whether the
+conjecture is false or the search is.
