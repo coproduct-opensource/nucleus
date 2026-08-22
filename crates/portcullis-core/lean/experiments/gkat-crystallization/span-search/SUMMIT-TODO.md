@@ -12543,3 +12543,48 @@ program has lived since 218.
 `IsLayer sys base b dom`, build one for `sys`.  The shape is
 `sol_sys s = wh b (…) ; sol_base s`, which is `salomaa_solution_exists` plus the
 guard bookkeeping rules 5 and 6 already carry.
+
+---
+
+## 272 — `hsolve`'s LAYER CASE: the algebra exists, but only for THOMPSON-shaped layers.
+
+Looked for what the layer case needs before writing it, and found most of it
+already proved — with one gap that matters.
+
+**What exists.**  `StateRole.salomaaE` is exactly the shape a layer state wants:
+
+    sol s = seq (wh G BODY) rest      with   eqRHS ≈ ite G (seq BODY (sol s)) rest
+
+and `decomp_solves` consumes it.  More: `loop_subsystem`, `seq_subsystem` and
+`sum_subsystem_inl/inr` — all proved in this file — ARE the layer algebra, stated
+parametrically over a trailing continuation.  `loop_subsystem` says a loop's
+equation reduces to the BODY's equation with the loop itself as the trailing
+continuation, which is precisely "solve the base, then append the loop".
+
+**And 218's `loop_standard_eq` says what the layer solution looks like:**
+`std_loop s = std_body s ; wh b e` — the loop expression is appended AFTER the
+base solution and is THE SAME for every state of the layer.  Not `wh b BODY_s`
+per state, which is what I would have written: the back edge does not return to
+`s`, it returns to the layer's ENTRY, so the loop is global to the layer.
+
+**The gap.**  Those lemmas are stated for the Thompson CONSTRUCTORS —
+`loopInitialized`, `seqGSystem`, `sumGSystem` — not for an abstract `IsLayer`.
+`hsolve` has to apply to the QUOTIENT's layers, which are not Thompson-shaped.
+So the algebra is proved for the wrong objects, and generalising it to `IsLayer`
+is the actual work.
+
+**That said, the shape is now known rather than guessed:**
+
+    sol_sys s := sol_base s ; W     where  W = wh b E,  E the layer's entry
+                                    expression, SHARED across the layer
+
+which is what `salomaaE` needs and what `loop_subsystem` proves in the concrete
+case.
+
+**Odds: 86%, held.**  Finding that the algebra exists is worth something;
+finding it is attached to the concrete constructors rather than to `IsLayer`
+cancels it.  No proof, so no movement.
+
+**Next.**  Generalise `loop_subsystem` from `loopInitialized` to `IsLayer` — the
+statement is the same, and 246's insight that a layer is a DIFFERENCE between
+two automata is what should let the proof go through without the constructor.
