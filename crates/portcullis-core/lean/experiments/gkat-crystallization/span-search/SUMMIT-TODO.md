@@ -15167,3 +15167,40 @@ more than the two minutes this took.**
 **Next.**  What property must a quotient have for the decomposition to work, and
 can one with that property always be constructed?  That is a better-posed
 question than any asked since 319.
+
+---
+
+## 331 — BLOCKS FOR FREE: THE REACHABLE CLOSURE OF ANYTHING IS CLOSED.
+
+330 reframed the question from "does the collapse decompose?" to "what shape of
+decomposition can we always arrange?".  The natural answer is **not the
+EXPRESSION's shape** — that is what 319–329 kept fighting — but the quotient's
+own **SCC CONDENSATION**: solve bottom-up, giving each strongly connected region
+the ones below it as a block.
+
+Two things make it attractive.  329 shows such a block cannot cut a cycle in
+half.  And the blocks come for free: **the set of states reachable from ANY set
+is closed** (`reachClosure_closed`, with `Reaches.snoc`), so **every down-set of
+the condensation is a legal block with no further argument**.  Both axiom-free.
+
+**Why this is a better frame than the expression one.**  The expression's shape
+imposes blocks (a `seq`'s right half, an `ite`'s branch) that the quotient has
+no reason to respect — which is exactly what 319 found and 320/321/328 measured.
+The condensation's blocks are defined BY the quotient, so they respect it by
+construction.  Choosing the decomposition to fit the object rather than the
+object's history is the move 330's freedom makes available.
+
+**The obstacle, named so it is not rediscovered.**  Exits from a strongly
+connected region into the block are what `LayeredOn.seq` is FOR — its entry
+points into the block by design (305/306).  But `SeqLayer`'s shape demands those
+exits be ONE SHARED LIST gated by each state's own halt.  Arbitrary exits from
+an SCC are not of that shape.  In a Thompson automaton they are, since they come
+from `seq` constructions; **whether they survive quotienting is the next
+measurement.**
+
+**Odds: 98%, HELD.**  A cleaner frame with its enabling lemmas proved and its
+obstacle named — but the obstacle is the same KIND that has cost the last twelve
+iterations, and I will not price it before measuring.
+
+**Next.**  Do the SCC exits of a quotient have the `SeqLayer` shape — one shared
+halt-gated entry list?

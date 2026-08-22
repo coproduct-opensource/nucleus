@@ -10871,4 +10871,52 @@ theorem closed_scc_saturated {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms closed_reaches
 #print axioms closed_scc_saturated
 
+
+/-! ### 331 — BLOCKS FOR FREE: THE REACHABLE CLOSURE OF ANYTHING IS CLOSED
+
+    330 established the quotient is ours to CHOOSE, which reframes the question
+    from "does the collapse decompose?" to "what shape of decomposition can we
+    always arrange?".  The natural answer is not the EXPRESSION's shape — that
+    is what 319-329 kept fighting — but the quotient's own **SCC CONDENSATION**:
+    solve bottom-up, giving each strongly connected region the ones below it as
+    a block.
+
+    Two things make that attractive.  329 already shows such a block cannot cut a
+    cycle in half.  And the blocks themselves come for free: **the set of states
+    reachable from ANY set is closed**, so every down-set of the condensation is
+    a legal block with no further argument.  That is this lemma, plus the `snoc`
+    it needs.
+
+    **The obstacle, named so it is not rediscovered.**  Exits from a strongly
+    connected region into the block are what `LayeredOn.seq` is FOR — its entry
+    points into the block by design (305/306) — but `SeqLayer`'s shape demands
+    those exits be ONE SHARED list gated by each state's own halt.  Arbitrary
+    exits from an SCC are not of that shape.  In a Thompson automaton they are,
+    since they come from `seq` constructions; whether they survive quotienting
+    is the next thing to measure. -/
+theorem Reaches.snoc {S : Type} {sys : GkatThompson.GSystem S A T} :
+    ∀ {u s t : S}, Reaches sys u s →
+      (∃ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r ∧ r.2 = t) →
+      Reaches sys u t := by
+  intro u s t h
+  induction h with
+  | refl s => intro hstep; exact Reaches.step hstep (Reaches.refl t)
+  | step hst _ ih => intro hstep; exact Reaches.step hst (ih hstep)
+
+/-- **THE REACHABLE CLOSURE OF ANY SET IS CLOSED.**  So every down-set of the
+    SCC condensation is a legal block, with no argument beyond this. -/
+theorem reachClosure_closed {S : Type} (sys : GkatThompson.GSystem S A T)
+    (X : S → Prop) :
+    ∀ s, (∃ u, X u ∧ Reaches sys u s) →
+      ∀ (Y : Type) (W : T → Y → Bool) (x : Y) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r →
+          ∃ u, X u ∧ Reaches sys u r.2 := by
+  intro s hs Y W x r hfm
+  obtain ⟨u, hu, hru⟩ := hs
+  exact ⟨u, hu, Reaches.snoc hru ⟨Y, W, x, r, hfm, rfl⟩⟩
+
+#print axioms Reaches.snoc
+#print axioms reachClosure_closed
+
 end GkatCensus
