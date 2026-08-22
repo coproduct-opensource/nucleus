@@ -10980,6 +10980,53 @@ theorem layeredOn_region {S : Type} {sys mid base : GkatThompson.GSystem S A T}
 #print axioms layeredOn_region
 
 
+/-- **The region move, with its side conditions discharged.**  After the exits are
+peeled into `mid` and one loop layer into `base`, what `layeredOn_region` still
+demands is that the region be *closed in `mid`* and that `base` be acyclic on it.
+Both are properties of the peeled system, not of the expression that built it. -/
+theorem layeredOn_region_closed {S : Type} {sys mid base : GkatThompson.GSystem S A T}
+    {P : S → Prop} {h₀ b : BExp T} {entry loopEntry : List (BExp T × A × S)}
+    (hseq : SeqLayer sys mid h₀ entry (fun s => ¬ P s))
+    (hentryP : ∀ tr ∈ entry, P tr.2.2)
+    (hloop : LoopLayerOn mid base b loopEntry (fun s => ¬ P s))
+    (hin : ∀ s, ¬ P s → ∀ tr ∈ mid.trans s, ¬ P tr.2.2)
+    (hwit : ∃ t, ¬ P t)
+    (hacyc : ∃ rank : S → Nat, ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X)
+      (r : A × S), GkatKleene.firstMatch W x (base.trans s) = some r →
+        P r.2 ∨ rank r.2 < rank s) :
+    LayeredOn sys P := by
+  refine layeredOn_region hseq hentryP hloop (fun tr htr => Or.inl ?_)
+    (fun s hs tr htr => Or.inl ?_) (LayeredOn.acyclic hacyc)
+  · obtain ⟨t, ht⟩ := hwit
+    refine hin t ht (BExp.and (base.hlt t) (BExp.and b tr.1), tr.2) ?_
+    rw [hloop.trans_eq t ht]
+    exact List.mem_append.mpr (Or.inr (List.mem_map.mpr ⟨tr, htr, rfl⟩))
+  · refine hin s hs tr ?_
+    rw [hloop.trans_eq s hs]
+    exact List.mem_append.mpr (Or.inl htr)
+
+/-- **The singleton region.**  94.5% of the non-trivial regions the census finds
+are ONE state with a self-loop.  There `base` is empty at the region, so both
+side conditions of `layeredOn_region_closed` collapse: nothing is left to be
+acyclic about, and closure is vacuous. -/
+theorem layeredOn_singleton_region {S : Type} {sys mid base : GkatThompson.GSystem S A T}
+    {P : S → Prop} {t : S} {h₀ b : BExp T} {entry loopEntry : List (BExp T × A × S)}
+    (hreg : ∀ s, ¬ P s → s = t) (hnt : ¬ P t)
+    (hseq : SeqLayer sys mid h₀ entry (fun s => ¬ P s))
+    (hentryP : ∀ tr ∈ entry, P tr.2.2)
+    (hloop : LoopLayerOn mid base b loopEntry (fun s => ¬ P s))
+    (hself : ∀ tr ∈ loopEntry, tr.2.2 = t)
+    (htrim : base.trans t = []) :
+    LayeredOn sys P := by
+  refine layeredOn_region hseq hentryP hloop (fun tr htr => Or.inl ?_)
+    (fun s hs tr htr => ?_) (LayeredOn.acyclic ⟨fun _ => 0, fun s hs X W x r hfm => ?_⟩)
+  · rw [hself tr htr]; exact hnt
+  · rw [hreg s hs, htrim] at htr; cases htr
+  · rw [hreg s hs, htrim] at hfm
+    have hnone : GkatKleene.firstMatch W x ([] : List (BExp T × A × S)) = none := rfl
+    rw [hnone] at hfm
+    exact (Option.some_ne_none r hfm.symm).elim
+
 /-- **The condensation induction.**  Let `lvl` be a level function on states that
 never increases along a step — a topological numbering of the SCC condensation.
 If each single level can be solved in isolation (with every *other* level as its
@@ -11052,9 +11099,45 @@ theorem solves_of_levels {S : Type} {sys : GkatThompson.GSystem S A T}
       (fun _ => Exp.test BExp.zero) F (fun _ ht _ => ht.elim) with
   | ⟨sol, _, hout⟩ => ⟨sol, fun s => hout s (fun h => h)⟩
 
+/-- The block of `layeredOn_of_levels`'s region hypothesis is `lvl s ≠ n`, so its
+complement arrives double-negated.  Level equality is decidable, so stripping it
+costs nothing — in particular it does NOT pull in `choice`. -/
+theorem level_dom {S : Type} (lvl : S → Nat) (n : Nat) (s : S)
+    (h : ¬ (lvl s ≠ n)) : lvl s = n :=
+  Decidable.not_not.mp h
+
+/-- **The singleton level, assembled.**  This is the form the induction consumes:
+one level of the condensation, occupied by a single self-looping state, peeled
+into `mid` (exits) and `base` (the loop) and discharged.  Nothing here mentions
+the expression that built the automaton. -/
+theorem layeredOn_level_singleton {S : Type} {sys mid base : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (n : Nat) {t : S} {h₀ b : BExp T}
+    {entry loopEntry : List (BExp T × A × S)}
+    (hlt : lvl t = n) (huniq : ∀ s, lvl s = n → s = t)
+    (hseq : SeqLayer sys mid h₀ entry (fun s => ¬ (lvl s ≠ n)))
+    (hentryP : ∀ tr ∈ entry, lvl tr.2.2 ≠ n)
+    (hloop : LoopLayerOn mid base b loopEntry (fun s => ¬ (lvl s ≠ n)))
+    (hself : ∀ tr ∈ loopEntry, tr.2.2 = t)
+    (htrim : base.trans t = []) :
+    LayeredOn sys (fun s => lvl s ≠ n) :=
+  layeredOn_singleton_region
+    (fun s hs => huniq s (level_dom lvl n s hs)) (fun h => h hlt)
+    hseq hentryP hloop hself htrim
+
+/-- `hregion` is quantified over ALL `n`, including levels no state occupies.
+Those are free: the complement of the block is empty. -/
+theorem layeredOn_level_empty {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (n : Nat) (hno : ∀ s, lvl s ≠ n) :
+    LayeredOn sys (fun s => lvl s ≠ n) :=
+  LayeredOn.acyclic ⟨fun _ => 0, fun s hs => absurd (hno s) hs⟩
+
 #print axioms layeredOn_of_levels
 #print axioms layeredOn_empty_of_levels
 #print axioms solves_of_levels
+#print axioms layeredOn_region_closed
+#print axioms layeredOn_singleton_region
+#print axioms layeredOn_level_singleton
+#print axioms layeredOn_level_empty
 
 
 end GkatCensus

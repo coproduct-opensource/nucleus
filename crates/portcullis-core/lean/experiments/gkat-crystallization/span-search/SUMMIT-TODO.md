@@ -15341,3 +15341,54 @@ of `split` ever used.
 
 **Next.** Discharge `hregion` for the single-cycle region — 99.9% of the mass and
 the shape `layeredOn_region` was built for.
+
+## 335 — the region hypothesis discharged for the shape that carries 94.5% of it
+
+334 reduced everything to `hregion : ∀ n, LayeredOn sys (fun s => lvl s ≠ n)`.
+335 discharges it for the shapes the census says dominate, and fixes the
+instantiability defect that would have made the reduction ornamental.
+
+**`layeredOn_region_closed`** — the general region, side conditions named as
+properties of the *peeled* system rather than of the expression that built it:
+
+- `hin : ∀ s, ¬P s → ∀ tr ∈ mid.trans s, ¬ P tr.2.2` — the region is closed in
+  `mid`, i.e. after the exits have been peeled;
+- `hacyc` — `base` is acyclic on the region, i.e. after one loop layer is peeled.
+
+Both of `layeredOn_region`'s awkward hypotheses (`hle`, `hlc`) follow from `hin`,
+because `LoopLayerOn.trans_eq` puts `base.trans s` and the gated `loopEntry`
+inside `mid.trans s`: `List.mem_append.mpr` on the left for one, on the right
+composed with `List.mem_map.mpr` for the other.
+
+**`layeredOn_singleton_region`** — one state with a self-loop. `base.trans t = []`
+collapses both side conditions at once: nothing is left to be acyclic about and
+closure is vacuous. **Axiom-free** — not even `propext`.
+
+**`layeredOn_level_singleton` / `layeredOn_level_empty`** — the two forms the
+induction actually consumes, both axiom-free. The empty level is free (the
+complement of the block is empty), and `hregion` quantifies over all `n`, so it
+had to be said.
+
+**The instantiability fix.** `hregion`'s block is `lvl s ≠ n`, so its complement
+arrives **double-negated** — exactly the defect 307 caught, where a theorem is
+true, proved, and unusable. `level_dom` strips it via `Decidable.not_not`, which
+for `Nat` equality costs nothing and in particular does **not** pull in `choice`.
+`layeredOn_level_singleton` therefore takes `huniq : ∀ s, lvl s = n → s = t` in
+the positive form a caller can actually supply.
+
+**Why the singleton peel has no side condition.** Atoms at a singleton region
+partition into halt `H`, self-loop `L`, exit `X`. The chain forces
+`base.hlt = ⊤`, `b = L`, `mid.hlt = ⊤ ∧ ¬L = H ∪ X`, `h₀ = H`, and
+`sys.hlt = mid.hlt ∧ h₀ = H` — consistent with no constraint left over. Guard
+order does not matter either: `L` and `X` are disjoint, so `firstMatch` sees the
+same thing whichever list is appended first.
+
+**What is NOT covered.** The 53 regions of size ≥ 2 (5.5%). A simple cycle is
+fine under `layeredOn_region_closed` — peel exits, peel one back-edge, the
+remainder is a path. The single richer region (a self-loop nested in a 2-cycle)
+runs into the shared-entry shape 332 measured: `LoopLayerOn`'s `entry` is
+appended at EVERY region state, so a loop belonging to one state still has to
+appear, syntactically, in the other's transition list.
+
+**Next.** The multi-state cycle: instantiate `layeredOn_region_closed` with the
+rank that a peeled simple cycle admits.
