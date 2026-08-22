@@ -11797,6 +11797,79 @@ theorem sreaches_of_semReaches {S : Type} (aut : GkatKleene.GAut S A T) {u v : S
 
 #print axioms sreaches_of_semReaches
 
+/-- Semantic reachability composes. -/
+theorem SemReaches.trans {S : Type} {aut : GkatKleene.GAut S A T} {u v w : S}
+    (h1 : SemReaches aut u v) : SemReaches aut v w → SemReaches aut u w := by
+  induction h1 with
+  | refl _ => exact fun h => h
+  | step hstep _ ih => exact fun h => SemReaches.step hstep (ih h)
+
+/-- Reachability stays inside the state list — `UniformWF`'s second conjunct,
+iterated. -/
+theorem semReaches_mem {S : Type} {aut : GkatKleene.GAut S A T}
+    (hwf : GkatKleene.UniformWF aut) {u v : S} (hu : u ∈ aut.states)
+    (h : SemReaches aut u v) : v ∈ aut.states := by
+  induction h with
+  | refl _ => exact hu
+  | step hstep _ ih =>
+      obtain ⟨X, W, x, q, hq⟩ := hstep
+      exact ih ((hwf X W).2 _ hu x q _ hq)
+
+/-- **The chain, built.**  From a quotient round trip `p ⇝ p` and a source state
+over `p`, iterate the lift.  The subtype carries the invariant `mapState = p`, so
+each step can lift again; `Classical.choose` turns the lift's existential into a
+function, which is the dependent choice 379 flagged. -/
+noncomputable def liftChain {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p : Q}
+    (hpp : SemReaches quot p p) (u0 : S) (h0 : π.mapState u0 = p) :
+    Nat → { u : S // π.mapState u = p }
+  | 0 => ⟨u0, h0⟩
+  | n + 1 =>
+      let prev := liftChain π hpp u0 h0 n
+      ⟨Classical.choose (sem_path_lifts π hpp prev.1 prev.2),
+        (Classical.choose_spec (sem_path_lifts π hpp prev.1 prev.2)).2⟩
+
+theorem liftChain_step {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p : Q}
+    (hpp : SemReaches quot p p) (u0 : S) (h0 : π.mapState u0 = p) (n : Nat) :
+    SemReaches aut (liftChain π hpp u0 h0 n).1 (liftChain π hpp u0 h0 (n + 1)).1 :=
+  (Classical.choose_spec (sem_path_lifts π hpp
+    (liftChain π hpp u0 h0 n).1 (liftChain π hpp u0 h0 n).2)).1
+
+/-- **356's argument, assembled.**  A source state over `p` lies on a source
+CYCLE — mutually reachable with a later point of the chain, which the round trip
+guarantees passes over `p` again.  Every ingredient is now a theorem:
+`sem_path_lifts` builds the chain, `sreaches_of_semReaches` moves it to the
+relation `reachLevel` understands, and `exists_mutual_along_chain` finds the
+mutual pair by descent rather than pigeonhole. -/
+theorem exists_source_cycle_over {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut) {p : Q}
+    (hpp : SemReaches quot p p) (u0 : S) (h0 : π.mapState u0 = p)
+    (hu0 : u0 ∈ aut.states) :
+    ∃ u v : S, π.mapState u = p ∧ π.mapState v = p ∧
+      SemReaches aut u v ∧
+      SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } v u := by
+  obtain ⟨n, hn⟩ := exists_mutual_along_chain
+    { states := aut.states, hlt := aut.hlt, trans := aut.trans }
+    (fun n => (liftChain π hpp u0 h0 n).1)
+    (fun n => by
+      induction n with
+      | zero => exact hu0
+      | succ k ih =>
+          exact semReaches_mem hwf ih (liftChain_step π hpp u0 h0 k))
+    (fun n => sreaches_of_semReaches aut (liftChain_step π hpp u0 h0 n))
+  exact ⟨(liftChain π hpp u0 h0 n).1, (liftChain π hpp u0 h0 (n + 1)).1,
+    (liftChain π hpp u0 h0 n).2, (liftChain π hpp u0 h0 (n + 1)).2,
+    liftChain_step π hpp u0 h0 n, hn⟩
+
+#print axioms SemReaches.trans
+#print axioms semReaches_mem
+#print axioms exists_source_cycle_over
+
 end LevelExistence
 
 #print axioms reachLevel_mono

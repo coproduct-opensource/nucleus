@@ -17698,3 +17698,46 @@ turn each lift's existential into a function `g : Nat → S`.
 statement itself; assembly can still fail.
 
 **Next.** The assembly, with dependent choice.
+
+## 380 — 356's argument, assembled
+
+```lean
+theorem exists_source_cycle_over (π) (hwf : UniformWF aut) {p : Q}
+    (hpp : SemReaches quot p p) (u0 : S) (h0 : π.mapState u0 = p)
+    (hu0 : u0 ∈ aut.states) :
+    ∃ u v, π.mapState u = p ∧ π.mapState v = p ∧
+      SemReaches aut u v ∧ SReaches ⟨aut.states, aut.hlt, aut.trans⟩ v u
+```
+
+*A quotient round trip lifts to a source **cycle**.* If a quotient state `p`
+returns to itself, then some source state over `p` is mutually reachable with a
+later one — a genuine cycle upstairs, not merely a path.
+
+Every ingredient is a theorem rather than an appeal:
+
+| | |
+|---|---|
+| `SemReaches.trans` | round trips compose · axiom-free |
+| `semReaches_mem` | reachability stays in the state list, from `UniformWF`'s second conjunct · axiom-free |
+| `liftChain` / `liftChain_step` | the chain, with a **subtype** carrying `mapState = p` so each step can lift again, and `Classical.choose` supplying 379's dependent choice |
+| `sem_path_lifts` (379) | each round trip lifts |
+| `sreaches_of_semReaches` (379) | moves the chain to the relation `reachLevel` understands |
+| `exists_mutual_along_chain` (377) | finds the mutual pair by **descent**, not pigeonhole |
+
+All compiled first try; the assembly is `[propext, choice, Quot.sound]`, and the
+`choice` is exactly the dependent choice, appearing where 379 predicted it would.
+
+**What this does and does not settle.** It settles the shape 354–356 kept
+failing on: a downstairs cycle really does produce an upstairs cycle, with the
+lifting done by construction rather than by a hand-wave about bisimilarity. What
+it does not yet expose is the **midpoint** — for 356's actual claim (two distinct
+blocks of one quotient SCC have preimages in a common source SCC) the cycle must
+be seen to pass over `b₂`, and the current statement quantifies that away. The
+lift follows the round trip `b₁ ⇝ b₂ ⇝ b₁`, so the midpoint is there; stating it
+means giving `sem_path_lifts` a composite form that returns it.
+
+**Odds: 97%, unchanged.** The hard machinery is done and the remaining step is to
+expose something the construction already produces — but I have been wrong about
+"just plumbing" before, so it stays at 97 until it compiles.
+
+**Next.** The midpoint form of the lift, and then 356's claim proper.
