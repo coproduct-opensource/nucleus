@@ -18441,3 +18441,39 @@ predicate, and its rank. What remains is `seq`/`ite` (no new cycles) and writing
 the induction itself.
 
 **Next.** `seq`/`ite`, then the induction.
+
+## 397 — `seq` and `ite` create no cycles across the halves
+
+- **`seq_right_stays`** — in `seqGSystem`, a right-half state never reaches a
+  left-half one. The construction lets `inl → inr` (the left half enters the
+  right's entry, gated by the left's halt) but there is no edge back.
+- **`seq_no_mixed_component`** — so the two can never be mutually reachable, and
+  no component of a `seq` spans the halves.
+- **`sum_left_stays` / `sum_no_mixed_component`** — the `ite` case is stronger
+  still: `sumGSystem` sends each half only to itself, so neither direction
+  crosses.
+
+That is exactly why `seq` and `ite` carry no content in the induction: their
+components ARE the sub-automata's components, so the hypothesis applies unchanged.
+
+**The induction's four cases now all have their structural support:**
+
+| case | |
+|---|---|
+| `test` | `State := Empty` — no states, no components |
+| `act` | `State := Unit`, stepping to the continuation — no self-loop |
+| `seq`, `ite` | components inherited (397) |
+| `wh` | back-edges agree, halt blocks back-edges, nesting separated, rank prescribed (393-396) |
+
+**What is left is writing it.** Stating the property over `certifiedThompson` and
+running the recursion is a substantial piece of Lean in another file's idiom —
+`CertifiedThompson` carries a `State`, an `aut`, a `standard` solution, a
+`certificate` and a `structural` field, and the property has to be threaded
+through all five at each constructor. That is work, not discovery, but it is not
+small and I have not started it.
+
+**Odds: 96%, unchanged.** Every case's structural content is proved; none of the
+induction is.
+
+**Next.** The induction itself — starting with how to state the property over
+`CertifiedThompson` so the recursion typechecks.

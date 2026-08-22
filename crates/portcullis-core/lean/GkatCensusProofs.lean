@@ -12410,6 +12410,70 @@ theorem loop_halt_blocks_all_backedges {S X : Type} (W : T → X → Bool) (x : 
 #print axioms guard_false_of_loop_halt
 #print axioms loop_halt_blocks_all_backedges
 
+/-! ### `seq` and `ite` create no cycles across the halves
+
+`sumGSystem` (the `ite` case) sends `inl` states only to `inl` and `inr` only to
+`inr`: the halves are disjoint, so every component lies in one of them.
+
+`seqGSystem` (the `seq` case) allows `inl → inr` — the left half's states can
+enter the right half's entry, gated by the left's halt — but **never `inr →
+inl`**.  So no cycle spans the halves either, and again every component lies in
+one half.
+
+That is why the induction's `seq` and `ite` cases carry no content: their
+components are the sub-automata's components, and the hypothesis applies. -/
+theorem seq_right_stays {S₁ S₂ : Type} (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.InitializedGAut S₂ A T) {s : S₂} {t : Sum S₁ S₂}
+    (h : SReaches (GkatThompson.seqGSystem left right) (Sum.inr s) t) :
+    ∃ s' : S₂, t = Sum.inr s' := by
+  generalize hst : (Sum.inr s : Sum S₁ S₂) = st at h
+  induction h generalizing s with
+  | refl _ => exact ⟨s, hst.symm⟩
+  | @step a b c hstep _ ih =>
+      obtain ⟨g, q, hmem⟩ := hstep
+      subst hst
+      have hb : ∃ s', b = Sum.inr s' := by
+        obtain ⟨e, _, heq⟩ := List.mem_map.mp hmem
+        exact ⟨e.2.2, (congrArg (fun p => p.2.2) heq).symm⟩
+      obtain ⟨s'', hs''⟩ := hb
+      exact ih (s := s'') hs''.symm
+
+#print axioms seq_right_stays
+
+/-- **No component of a `seq` spans the halves.**  A right-half state never
+reaches a left-half one, so the two can never be mutually reachable. -/
+theorem seq_no_mixed_component {S₁ S₂ : Type} (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.InitializedGAut S₂ A T) {s : S₂} {u : S₁}
+    (h : SReaches (GkatThompson.seqGSystem left right) (Sum.inr s) (Sum.inl u)) :
+    False := by
+  obtain ⟨s', hs'⟩ := seq_right_stays left right h
+  cases hs'
+
+/-- The `ite` case is stronger still: `sumGSystem` sends each half only to
+itself, so neither direction crosses. -/
+theorem sum_left_stays {S₁ S₂ : Type} (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.GSystem S₂ A T) {u : S₁} {t : Sum S₁ S₂}
+    (h : SReaches (GkatThompson.sumGSystem left right) (Sum.inl u) t) :
+    ∃ u' : S₁, t = Sum.inl u' := by
+  generalize hst : (Sum.inl u : Sum S₁ S₂) = st at h
+  induction h generalizing u with
+  | refl _ => exact ⟨u, hst.symm⟩
+  | @step a b c hstep _ ih =>
+      obtain ⟨g, q, hmem⟩ := hstep
+      subst hst
+      obtain ⟨e, _, heq⟩ := List.mem_map.mp hmem
+      exact ih (u := e.2.2) (congrArg (fun p => p.2.2) heq)
+
+theorem sum_no_mixed_component {S₁ S₂ : Type} (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.GSystem S₂ A T) {u : S₁} {s : S₂}
+    (h : SReaches (GkatThompson.sumGSystem left right) (Sum.inl u) (Sum.inr s)) :
+    False := by
+  obtain ⟨u', hu'⟩ := sum_left_stays left right h
+  cases hu'
+
+#print axioms seq_no_mixed_component
+#print axioms sum_no_mixed_component
+
 end LevelExistence
 
 #print axioms reachLevel_mono
