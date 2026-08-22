@@ -2365,6 +2365,7 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut regions, mut two_exit, mut share_loop, mut src_two) = (0, 0, 0, 0);
     let mut single_header = 0usize;
+    let (mut headerless, mut headerless_vacuous) = (0usize, 0usize);
     let mut shown = 0usize;
     for a in &pool {
         let (blk, nb) = bisim_blocks(a);
@@ -2402,7 +2403,38 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                     for u in comp.iter().copied() { if seen[u] == 0 { dfs(&q, &comp, h, u, &mut seen, &mut acyclic); } }
                     if acyclic { headed = true; break; }
                 }
-                if headed { single_header += 1; }
+                if headed { single_header += 1; } else {
+                    headerless += 1;
+                    // Does the single-header fact even get USED here?  It is needed
+                    // only if two states of the region back-edge at the same atom.
+                    // Under every rank ordering, is there such an atom?
+                    let m2 = comp.len();
+                    let mut perm2: Vec<usize> = (0..m2).collect();
+                    let mut needs = true;
+                    loop {
+                        let mut rank2 = [0usize; MAXK];
+                        for (i, &pi) in perm2.iter().enumerate() { rank2[comp[pi]] = i; }
+                        let mut pair = false;
+                        for x in 0..NA {
+                            let n = comp.iter().filter(|&&u| {
+                                let tv = q.st[u][x];
+                                tv != 0 && {
+                                    let t = (tv - 1) as usize;
+                                    comp.contains(&t) && rank2[t] >= rank2[u]
+                                }
+                            }).count();
+                            if n >= 2 { pair = true; }
+                        }
+                        if !pair { needs = false; break; }
+                        if !next_perm(&mut perm2) { break; }
+                    }
+                    if !needs { headerless_vacuous += 1; }
+                    if headerless <= 2 {
+                        println!("  HEADERLESS region {comp:?} — two simultaneous back-edges \
+                                  unavoidable: {needs}");
+                        println!("    {}", show_aut("quot ", &q));
+                    }
+                }
             }
             for x in 0..NA {
                 let exiters: Vec<usize> = comp.iter().copied().filter(|&u| {
@@ -2454,6 +2486,9 @@ fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     println!("  SINGLE HEADER: {single_header} of {regions} regions have a state whose \
               removal from the edge set leaves the region acyclic — so every cycle passes \
               through ONE state, and every back-edge points at it");
+    println!("  HEADERLESS: {headerless} regions with no single header; of those, \
+              {headerless_vacuous} admit an ordering with NO atom carrying two \
+              simultaneous back-edges (so the single-header fact is not needed there)");
     println!("  {two_exit} (region, atom) pairs where TWO OR MORE blocks exit at once");
     println!("  {share_loop} of those have all exiting blocks sharing a source loop \
               (355's fact)");

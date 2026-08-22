@@ -16975,3 +16975,49 @@ named, which is not the same as handled.
 
 **Next.** The 2 irreducible regions — whether agreement there has a reason, or
 whether the route needs to exclude them.
+
+## 365 — the 2-region residue, read off the examples
+
+364 left exactly two regions with no single header. Printed, they are the same
+automaton up to swapping the two states:
+
+```
+quot k=2 | q0: hl=100 st=[q0,q1,-] | q1: hl=000 st=[q0,q1,-]
+```
+
+**Both states have IDENTICAL transition rows.** On atom 0 both step to `q0`; on
+atom 1 both step to `q1`; on atom 2 neither steps — `q0` halts there and `q1` is
+dead. They are distinct blocks only because they differ in **halting**, which is
+enough to keep them non-bisimilar while leaving their successors identical.
+
+That explains everything 364 found about them:
+
+* **no single header** — every state has a self-loop, so removing either leaves
+  the other's cycle intact; genuinely irreducible, not an artefact;
+* **two simultaneous back-edges unavoidable** (0 of 2 regions admit an ordering
+  avoiding it) — both states step intra-region at every stepping atom;
+* **agreement holds anyway** — trivially, because the rows are equal.
+
+So the three parts of `LevelAgreementActive` now each have a reason on the
+measured class:
+
+| part | reason | coverage |
+|---|---|---|
+| exits agree | at most one block exits per atom | 695/695 |
+| back-edges agree | single header, all back-edges point at it | 693/695 |
+| back-edges agree | identical transition rows | the remaining 2/695 |
+
+**What that is worth, precisely.** Every region in the census now has a
+structural reason rather than a bare count. But the third row rests on **two
+examples**, and two examples is an observation, not a law — a headerless region
+whose states had *different* rows would break it, and nothing here shows such a
+region cannot exist. The census is bounded (≤4 core states, 3 atoms), and
+irreducibility is not rare in the wider population: 11 139 Thompson automata are
+irreducible.
+
+**Odds: 97%, unchanged.** The residue is explained, not eliminated. Explaining
+two cases by inspection is the weakest kind of evidence in this whole stretch,
+and I would rather say so than let "every region has a reason" stand unqualified.
+
+**Next.** Whether a headerless region can have states with differing rows — a
+search, not an inspection.
