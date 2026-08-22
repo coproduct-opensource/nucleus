@@ -12838,6 +12838,84 @@ theorem firstMatch_peel_shared_weak {S X : Type} (W : T → X → Bool) (x : X)
 #print axioms firstMatch_shared_exit_weak
 #print axioms firstMatch_peel_shared_weak
 
+/-- `shared_flatMap` on the weak hypothesis: agreement is only demanded where the
+state is active. -/
+theorem shared_flatMap_weak {S X : Type} (W : T → X → Bool) (x : X)
+    (states : List S) (part : S → List (BExp T × A × S)) (rawHlt : S → BExp T)
+    (hagree0 : ∀ s ∈ states, ∀ s' ∈ states, ∀ tr ∈ part s',
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W (rawHlt s) x = true →
+        GkatKleene.firstMatch W x (part s) = some tr.2) :
+    ∀ s ∈ states,
+      (∀ tr ∈ states.flatMap part, GkatGS.bval W tr.1 x = true →
+        GkatGS.bval W (rawHlt s) x = true →
+          GkatKleene.firstMatch W x (part s) = some tr.2) ∧
+      (∀ tr ∈ part s, GkatGS.bval W tr.1 x = true →
+        ∃ tr' ∈ states.flatMap part, GkatGS.bval W tr'.1 x = true) := by
+  intro s hs
+  constructor
+  · intro tr htr hb hact
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hagree0 s hs s' hs' tr hmem hb hact
+  · intro tr htr hb
+    exact ⟨tr, List.mem_flatMap.mpr ⟨s, hs, htr⟩, hb⟩
+
+/-- **The level's transition agreement, on the weak hypothesis.**  Same
+conclusion as `firstMatch_peel_level`; the gate premises are replaced by the two
+definitional facts (`b` covers the shared guards, `rawHlt a` covers `a`'s own
+non-raw guards) and agreement is conditioned on activity. -/
+theorem firstMatch_peel_level_weak {S X : Type} (W : T → X → Bool) (x : X)
+    (states : List S) (L : S → List (BExp T × A × S))
+    (rawHlt : S → BExp T) (b : BExp T)
+    (p q : S → (BExp T × A × S) → Bool)
+    (hactL : ∀ a ∈ states, ∀ tr ∈ (disjoin (L a)).filter (fun tr => !p a tr && q a tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W (rawHlt a) x = true)
+    (hactE : ∀ a ∈ states, ∀ tr ∈ (disjoin (L a)).filter (fun tr => !p a tr && !q a tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W (rawHlt a) x = true)
+    (hbL : ∀ c ∈ states, ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && q c tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W b x = true)
+    (hbE : ∀ c ∈ states, ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && !q c tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W b x = false)
+    (hagreeL : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && q c tr),
+        GkatGS.bval W tr.1 x = true → GkatGS.bval W (rawHlt a) x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (L a)).filter (fun tr => !p a tr && q a tr)) = some tr.2)
+    (hagreeE : ∀ a ∈ states, ∀ c ∈ states,
+      ∀ tr ∈ (disjoin (L c)).filter (fun tr => !p c tr && !q c tr),
+        GkatGS.bval W tr.1 x = true → GkatGS.bval W (rawHlt a) x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (L a)).filter (fun tr => !p a tr && !q a tr)) = some tr.2) :
+    ∀ s ∈ states,
+      GkatKleene.firstMatch W x (L s)
+        = GkatKleene.firstMatch W x
+            (((disjoin (L s)).filter (p s)
+               ++ (states.flatMap (fun s' =>
+                    (disjoin (L s')).filter (fun tr => !p s' tr && q s' tr))).map
+                      (fun tr => (BExp.and (rawHlt s) (BExp.and b tr.1), tr.2)))
+              ++ (states.flatMap (fun s' =>
+                    (disjoin (L s')).filter (fun tr => !p s' tr && !q s' tr))).map
+                      (fun tr => (BExp.and (BExp.and (rawHlt s) (BExp.not b)) tr.1, tr.2))) := by
+  intro s hs
+  obtain ⟨hagL, hbkL⟩ :=
+    shared_flatMap_weak W x states
+      (fun s' => (disjoin (L s')).filter (fun tr => !p s' tr && q s' tr)) rawHlt
+      (fun a ha c hc tr htr hb hact => hagreeL a ha c hc tr htr hb hact) s hs
+  obtain ⟨hagE, hbkE⟩ :=
+    shared_flatMap_weak W x states
+      (fun s' => (disjoin (L s')).filter (fun tr => !p s' tr && !q s' tr)) rawHlt
+      (fun a ha c hc tr htr hb hact => hagreeE a ha c hc tr htr hb hact) s hs
+  refine firstMatch_peel_shared_weak W x (L s) (rawHlt s) b (p s) (q s) _ _
+    (hactL s hs) ?_ hagL hbkL (hactE s hs) ?_ hagE hbkE
+  · intro tr htr hb
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hbL s' hs' tr hmem hb
+  · intro tr htr hb
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hbE s' hs' tr hmem hb
+
+#print axioms shared_flatMap_weak
+#print axioms firstMatch_peel_level_weak
+
 end SharedList
 
 #print axioms firstMatch_some_guard
@@ -13438,6 +13516,61 @@ theorem solvesBA_of_levelAgreement {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms haltDeterministic_of_uniformWF
 #print axioms solvesBA_of_levelAgreement
+
+/-- **343's condition, in the form that is actually satisfiable.**  Agreement is
+demanded only of states that are *active* at the atom — neither raw nor dead,
+which is exactly what `peelRawHlt` tests, and exactly the set 343 measured over.
+359 showed the unconditional version is false for 98% of multi-state regions. -/
+def LevelAgreementActive {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+    ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n, ∀ r : A × S,
+      GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some r →
+      GkatGS.bval W (peelRawHlt aut lvl rank a) x = true →
+      GkatKleene.firstMatch W x (nonRaw aut lvl rank a) = some r
+
+/-- `hactive`, from the definition of `peelRawHlt` alone: a firing non-raw entry
+of `a` puts its own guard into the disjunction. -/
+theorem peelRawHlt_of_nonRaw {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat) (a : S)
+    (tr : BExp T × A × S) (htr : tr ∈ nonRaw aut lvl rank a)
+    (hb : GkatGS.bval W tr.1 x = true) :
+    GkatGS.bval W (peelRawHlt aut lvl rank a) x = true := by
+  show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt a) x) = true
+  refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+  exact (bval_bigOr_true W x _).mpr ⟨tr.1, List.mem_map.mpr ⟨tr, htr, rfl⟩, hb⟩
+
+/-- The loop and exit parts are sublists of the non-raw part. -/
+theorem mem_nonRaw_of_loop {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (a : S) (tr : BExp T × A × S)
+    (htr : tr ∈ (disjoin (aut.trans a)).filter
+      (fun tr => !rawPred lvl rank a tr && loopPred lvl a tr)) :
+    tr ∈ nonRaw aut lvl rank a :=
+  List.mem_filter.mpr ⟨(List.mem_filter.mp htr).1,
+    ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).1⟩
+
+theorem mem_nonRaw_of_exit {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (a : S) (tr : BExp T × A × S)
+    (htr : tr ∈ (disjoin (aut.trans a)).filter
+      (fun tr => !rawPred lvl rank a tr && !loopPred lvl a tr)) :
+    tr ∈ nonRaw aut lvl rank a :=
+  List.mem_filter.mpr ⟨(List.mem_filter.mp htr).1,
+    ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).1⟩
+
+/-- `hbL`, from the definition of `peelBs` alone: a firing loop entry of any level
+state is one of the disjuncts. -/
+theorem peelBs_of_loop {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat) (n : Nat)
+    (c : S) (hc : c ∈ levelStates aut lvl n) (tr : BExp T × A × S)
+    (htr : tr ∈ (disjoin (aut.trans c)).filter
+      (fun tr => !rawPred lvl rank c tr && loopPred lvl c tr))
+    (hb : GkatGS.bval W tr.1 x = true) :
+    GkatGS.bval W (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x = true :=
+  (bval_bigOr_true W x _).mpr
+    ⟨tr.1, List.mem_map.mpr ⟨tr, List.mem_flatMap.mpr ⟨c, hc, htr⟩, rfl⟩, hb⟩
+
+#print axioms peelRawHlt_of_nonRaw
+#print axioms peelBs_of_loop
 
 end Instantiation
 

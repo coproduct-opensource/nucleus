@@ -16783,3 +16783,46 @@ evidence the diagnosis was right, not that the theorem is fixed.
 
 **Next.** Thread the weak lemmas up through `firstMatch_peel_level` and restate
 `LevelAgreement` in the active form.
+
+## 361 — threading the weak form up: three of four premises are definitional
+
+`shared_flatMap_weak` and `firstMatch_peel_level_weak` carry 360's repair up to
+the level, with the same conclusion as `firstMatch_peel_level` and every
+agreement premise conditioned on activity.
+
+**`LevelAgreementActive`** replaces 352's predicate:
+
+```lean
+firstMatch W x (nonRaw c) = some r →
+  bval W (peelRawHlt a) x = true →        -- ← `a` is ACTIVE at this atom
+    firstMatch W x (nonRaw a) = some r
+```
+
+The precondition is exactly right, and it is worth saying why rather than
+asserting it. `peelRawHlt a` is the disjunction of `a`'s non-raw guards with its
+halt test, so — because `disjoin` makes guards exclusive and `HaltDeterministic`
+separates halting from stepping — it is true at an atom **iff `a` is neither raw
+nor dead there**. That is precisely the set 343 measured over, so the predicate
+and the measurement are now the same statement. 359's fault was that they were
+not.
+
+**Three of the four weak premises need no agreement at all** — they follow from
+the definitions:
+
+| premise | source |
+|---|---|
+| `hactL`, `hactE` | `peelRawHlt_of_nonRaw` — a firing non-raw entry puts its own guard in the disjunction |
+| `hbL` | `peelBs_of_loop` — a firing loop entry of any level state is one of `peelBs`'s disjuncts |
+| `hbE` | still needs agreement (it is `gateE`'s content) |
+
+with `mem_nonRaw_of_loop` / `mem_nonRaw_of_exit` as the sublist facts. All
+`[propext, Quot.sound]`.
+
+**Still to do**: `hbE` and the two agreement premises from
+`LevelAgreementActive`, then `peelAut_trans_agrees_weak` and a repaired capstone.
+Until those land, 352 is still vacuous for multi-state regions — the repair is
+three steps in, not finished.
+
+**Odds: 97%, unchanged.**
+
+**Next.** `hbE` from `LevelAgreementActive`, then the capstone.
