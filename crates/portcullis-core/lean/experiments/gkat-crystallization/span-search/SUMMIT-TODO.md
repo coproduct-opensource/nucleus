@@ -13708,3 +13708,58 @@ exactly where 283 found a real mismatch.  Not pricing it until it compiles.
 **Next.**  `layeredOn_pushforward` by induction, with the acyclic case taking
 the bisimulation (264's argument, relativised to a block) and the sequence and
 loop cases taking 289 and 296.
+
+---
+
+## 297 — TWO RETRACTIONS, AND THE ACYCLIC PUSHFORWARD VIA THE BISIMULATION.
+
+### Retraction 1 — `Nat.find`.
+
+296 claimed `Nat.find` is in scope in this file, citing four occurrences.  **All
+four are inside DOC COMMENTS**, and one of them says the opposite: `Nat.find`
+does NOT exist here (no Mathlib).  Confirmed by compiling
+`example (h : ∃ n : Nat, n > 3) : Nat := Nat.find h` → `unknown constant`.  The
+minimum must come from `minOf1`/`minOfList` (6831-6884), which is exactly why
+264 built them.  The claim came from a grep that did not separate code from
+prose.
+
+### Retraction 2 — the build cache.
+
+Asked whether the Lean compile is optimally cached, I answered "as bad as it can
+be — zero oleans, 61 121 lines re-elaborated per check".  **That was wrong**, and
+wrong from a bad glob: I looked in `.lake/build/lib/*.olean`; the path is
+`.lake/build/lib/lean/`.  Measured:
+
+    lake env lean GkatCensusProofs.lean   2.8s     (what this loop runs)
+    lake build GkatCensusProofs (no edit) 0.9s
+    oleans present                        290
+
+Caching is essentially optimal: all 66 imports load from `.olean`, and the 2.8s
+is elaboration of the 9k-line file being edited — unavoidable without splitting
+it.  No 61k-line re-elaboration was ever happening.
+
+### The theorem.
+
+295 needed the representative RANK-MINIMAL, which one global representative
+cannot be for every acyclic node at once.  **The bisimulation removes the need**:
+define `rank'` as the minimum rank over a class's LISTED preimages OUTSIDE the
+block, take the preimage ACHIEVING it, and push the step backwards to THAT
+preimage rather than to the representative.
+
+The block downstairs is "SOME listed preimage lies in the block", which agrees
+with 295's `P ∘ rep` whenever the representative prefers the block (287).  The
+disjunction falls to a case split on whether the step's target is in the block —
+and in the branch where it is not, the target is a legitimate member of its own
+class's minimising set, so `rank'` decreases.
+
+`fibreOut`, `fibreOut_le`, `fibreOut_achieved`, `acyclic_bisim_pushforward`.
+Compiled first try.
+
+**Odds: 99%, HELD.**  The case 295 and 296 could not reach is proved, but this
+iteration also produced two false claims of my own — both from reading a grep
+instead of the thing itself.  Neither touched a proof; both would have misled
+the next step.
+
+**Next.**  `layeredOn_pushforward` by induction: acyclic by 297, sequence by 289,
+loop by 296 — with the block downstairs stated uniformly as "some listed
+preimage lies in the block".

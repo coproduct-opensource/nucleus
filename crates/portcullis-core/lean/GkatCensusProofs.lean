@@ -9028,4 +9028,110 @@ theorem loopLayerOn_pushforward_rep {S S' : Type}
 
 #print axioms loopLayerOn_pushforward_rep
 
+
+section AcyclicBisimPush
+open Classical
+
+/-! ### 297 — THE ACYCLIC PUSHFORWARD VIA THE BISIMULATION
+
+    **Retracting 296.**  296 claimed `Nat.find` is in scope in this file, citing
+    four occurrences.  All four are inside DOC COMMENTS, and one of them says
+    the opposite: `Nat.find` does NOT exist here (no Mathlib).  The minimum must
+    come from `minOf1`/`minOfList` (6831-6884), which is exactly why 264 built
+    them.  The claim was made from a grep that did not distinguish code from
+    prose.
+
+    With that corrected, here is the case 295 could not reach.  295 needed the
+    representative to be RANK-MINIMAL, which a single global representative
+    cannot be for every acyclic node at once.  The bisimulation removes the
+    need: define `rank'` as the minimum rank over a class's LISTED preimages
+    OUTSIDE the block, take the preimage ACHIEVING it, and push the step
+    backwards to that preimage rather than to the representative.
+
+    The block downstairs is "SOME listed preimage lies in the block", which
+    agrees with 295's `P ∘ rep` whenever the representative prefers the block
+    (287).  The two halves of the disjunction then fall to a case split on
+    whether the step's target is in the block — and, crucially, in the branch
+    where it is NOT, the target is a legitimate member of its own class's
+    minimising set, so `rank'` decreases. -/
+private noncomputable def fibreOut {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat) (f : S → S') (c : S') : List Nat :=
+  (sys.states.filter (fun s => decide (f s = c ∧ ¬ P s))).map rank
+
+private theorem fibreOut_le {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat) (f : S → S') (c : S') (s : S)
+    (hmem : s ∈ sys.states) (hf : f s = c) (hP : ¬ P s) :
+    minOfList (fibreOut sys P rank f c) ≤ rank s := by
+  refine minOfList_le _ (rank s) ?_
+  refine List.mem_map.2 ⟨s, ?_, rfl⟩
+  exact List.mem_filter.2 ⟨hmem, by simp [hf, hP]⟩
+
+private theorem fibreOut_achieved {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat) (f : S → S') (c : S') (s : S)
+    (hmem : s ∈ sys.states) (hf : f s = c) (hP : ¬ P s) :
+    ∃ s₀, s₀ ∈ sys.states ∧ f s₀ = c ∧ ¬ P s₀ ∧
+      rank s₀ = minOfList (fibreOut sys P rank f c) := by
+  have hne : fibreOut sys P rank f c ≠ [] := by
+    intro hnil
+    have : rank s ∈ fibreOut sys P rank f c :=
+      List.mem_map.2 ⟨s, List.mem_filter.2 ⟨hmem, by simp [hf, hP]⟩, rfl⟩
+    rw [hnil] at this
+    exact absurd this (by simp)
+  obtain ⟨s₀, hs₀, hrk⟩ := List.mem_map.1 (minOfList_mem _ hne)
+  obtain ⟨hmem₀, hcond⟩ := List.mem_filter.1 hs₀
+  have hcond' : f s₀ = c ∧ ¬ P s₀ := by simpa using hcond
+  exact ⟨s₀, hmem₀, hcond'.1, hcond'.2, hrk⟩
+
+/-- **THE ACYCLIC CASE OF THE PUSHFORWARD, VIA THE BISIMULATION.** -/
+theorem acyclic_bisim_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s)
+    (f : S → S') (rep : S' → S)
+    (hrep : ∀ c, f (rep c) = c) (hrepmem : ∀ c, rep c ∈ sys.states)
+    (htargets : ∀ s ∈ sys.states, ∀ tr ∈ sys.trans s, tr.2.2 ∈ sys.states)
+    (hbisim : ∀ s t : S, f s = f t → ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x (sys.trans s)).map (fun q => (q.1, f q.2))
+        = (GkatKleene.firstMatch W x (sys.trans t)).map (fun q => (q.1, f q.2)))
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ c, sys'.trans c
+      = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+    LayeredOn sys' (fun c => ∃ s, s ∈ sys.states ∧ f s = c ∧ P s) := by
+  refine LayeredOn.acyclic ⟨fun c => minOfList (fibreOut sys P rank f c), ?_⟩
+  intro c hc X W x r hfm
+  -- `rep c` is a listed preimage outside the block, so the minimising set is nonempty
+  have hrepP : ¬ P (rep c) := fun hP => hc ⟨rep c, hrepmem c, hrep c, hP⟩
+  obtain ⟨s₀, hs₀mem, hs₀f, hs₀P, hs₀rk⟩ :=
+    fibreOut_achieved sys P rank f c (rep c) (hrepmem c) (hrep c) hrepP
+  -- transport the step from `rep c` to the minimiser `s₀`
+  rw [htrans, firstMatch_map] at hfm
+  have hb := hbisim (rep c) s₀ (by rw [hrep c, hs₀f]) X W x
+  rw [hfm] at hb
+  cases hfm0 : GkatKleene.firstMatch W x (sys.trans s₀) with
+  | none => rw [hfm0] at hb; exact absurd hb.symm (by simp)
+  | some qt =>
+      rw [hfm0] at hb
+      have hrq : r = (qt.1, f qt.2) := by
+        simp only [Option.map_some] at hb
+        exact Option.some.inj hb
+      subst hrq
+      by_cases hPq : P qt.2
+      · refine Or.inl ⟨qt.2, ?_, rfl, hPq⟩
+        obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (sys.trans s₀) qt.1 qt.2 hfm0
+        exact htargets s₀ hs₀mem (g, qt.1, qt.2) hg
+      · rcases hstep s₀ hs₀P X W x qt hfm0 with hP | hlt
+        · exact absurd hP hPq
+        · refine Or.inr ?_
+          obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (sys.trans s₀) qt.1 qt.2 hfm0
+          have hqmem : qt.2 ∈ sys.states :=
+            htargets s₀ hs₀mem (g, qt.1, qt.2) hg
+          calc minOfList (fibreOut sys P rank f (f qt.2))
+              ≤ rank qt.2 := fibreOut_le sys P rank f _ qt.2 hqmem rfl hPq
+            _ < rank s₀ := hlt
+            _ = minOfList (fibreOut sys P rank f c) := hs₀rk
+
+#print axioms acyclic_bisim_pushforward
+
+end AcyclicBisimPush
+
 end GkatCensus
