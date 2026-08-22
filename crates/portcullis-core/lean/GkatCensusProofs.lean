@@ -11539,6 +11539,36 @@ theorem reachLevel_scc {S : Type} (sys : GkatThompson.GSystem S A T) {s t : S}
   countReach_pointwise sys s t (fun _ hu => hst.trans hu) sys.states hlvl s hs
     (SReaches.refl s)
 
+/-- **Mutual reachability collapses the level.**  If `u` reaches `v` and `v`
+reaches `u` they sit at the same `reachLevel` — no SCC computation, just the two
+containments of reachable sets.  This is the fact that kills 354's apparent
+circularity: to show two source loops connected in BOTH directions are the same
+loop, one never has to lift a cycle state by state. -/
+theorem reachLevel_eq_of_mutual {S : Type} (sys : GkatThompson.GSystem S A T)
+    {u v : S} (huv : SReaches sys u v) (hvu : SReaches sys v u) :
+    reachLevel sys u = reachLevel sys v :=
+  Nat.le_antisymm
+    (countReach_mono sys v u (fun w hw => hvu.trans hw) sys.states)
+    (countReach_mono sys u v (fun w hw => huv.trans hw) sys.states)
+
+/-- The contrapositive, in the form 354 needs: states at DIFFERENT levels are
+never mutually reachable, so an edge each way between two regions forces them to
+be one region. -/
+theorem not_mutual_of_level_ne {S : Type} (sys : GkatThompson.GSystem S A T)
+    {u v : S} (h : reachLevel sys u ≠ reachLevel sys v) :
+    ¬ (SReaches sys u v ∧ SReaches sys v u) :=
+  fun ⟨huv, hvu⟩ => h (reachLevel_eq_of_mutual sys huv hvu)
+
+/-- Reachability composes along a transition, in the syntactic form the peel
+uses: a single edge plus reachability from its target. -/
+theorem sreaches_of_mem {S : Type} (sys : GkatThompson.GSystem S A T)
+    {s : S} {tr : BExp T × A × S} (htr : tr ∈ sys.trans s) {u : S}
+    (h : SReaches sys tr.2.2 u) : SReaches sys s u :=
+  SReaches.step ⟨tr.1, tr.2.1, htr⟩ h
+
+#print axioms reachLevel_eq_of_mutual
+#print axioms not_mutual_of_level_ne
+
 end LevelExistence
 
 #print axioms reachLevel_mono

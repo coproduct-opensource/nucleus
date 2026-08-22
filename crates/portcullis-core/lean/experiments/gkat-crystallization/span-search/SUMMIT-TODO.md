@@ -16446,3 +16446,60 @@ chain is silent unless the tail is checked.
 
 **Next.** Step 2 without the circularity — likely by strengthening what is lifted
 from "reaches" to something bisimulation already respects.
+
+## 355 — the circularity was mine, not the problem's
+
+354 called step 2's proof circular. It is not — the circularity came from trying
+to lift a downstairs cycle **state by state**, when only **SCC-level
+reachability** is needed:
+
+> if source loop `C₁` has an edge into `C₂` and `C₂` has an edge back into `C₁`,
+> then `C₁` and `C₂` are mutually reachable, hence the same loop.
+
+No cycle has to be lifted; two independent edges suffice, and they come from the
+two directions of the downstairs cycle separately. In Lean, with 339's
+`reachLevel` doing the work of an SCC computation:
+
+```lean
+theorem reachLevel_eq_of_mutual (huv : SReaches sys u v) (hvu : SReaches sys v u) :
+    reachLevel sys u = reachLevel sys v
+```
+
+— two applications of `countReach_mono` and `Nat.le_antisymm`, nothing more.
+Plus `not_mutual_of_level_ne`, the contrapositive in the form 354 wants, and
+`sreaches_of_mem`.
+
+**How much ground that covers, measured.**
+
+```
+42 584 blocks in non-trivial quotient SCCs
+   902 (2.118%) have a preimage spanning MORE THAN ONE source loop (max 3)
+```
+
+So the argument as proved covers **97.88%** of blocks — every block whose
+preimage lies in a single source loop. And 902 is exactly the number of merged
+SCCs from 354, confirming what that iteration found: each merge lives inside one
+block.
+
+**The case split, and what is still measured.**
+
+* **two distinct blocks in one SCC** — SCC-level reachability forces their source
+  loops to intersect, so they share a loop and a single exit continuation.
+  *Proved, for blocks lying in one source loop each.*
+* **within one block** — all preimages are bisimilar, so they agree on
+  everything, exits included. *Trivial.*
+
+What is **not** closed is the interaction: a multi-loop block sitting beside
+another block in the same SCC. There the forward lift ends at some `v ∈ b₂` and
+the backward lift starts at some `v' ∈ b₂` with `v ≠ v'`, and closing it needs
+reachability transported along bisimilarity — which lands back downstairs. The
+measurement says the bad shape (`cross`) never occurs, 0 of 41 885, but that case
+is measured, not proved.
+
+**Odds: 98%, unchanged.** A self-inflicted obstacle was removed, which is not the
+same as progress on the problem. The honest ledger is: one case proved, one case
+trivial, one case measured.
+
+**Next.** The interaction case — whether a multi-loop block can be forced to
+share a loop with its SCC neighbours, or whether that needs a genuinely different
+argument.

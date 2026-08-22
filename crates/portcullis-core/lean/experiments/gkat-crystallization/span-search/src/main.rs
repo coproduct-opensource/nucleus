@@ -2303,6 +2303,7 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut qsccs, mut merged, mut merged_conflict) = (0usize, 0usize, 0usize);
     let mut cross_loop = 0usize;
+    let (mut blocks_seen, mut blocks_multi, mut blocks_max) = (0usize, 0usize, 0usize);
     let mut spanmax = 0usize;
     let mut first_merge: Option<String> = None;
     for a in &pool {
@@ -2355,6 +2356,21 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                 }
                 if cross { cross_loop += 1; }
             }
+            // How much ground does the SCC-level-reachability proof cover?  It
+            // assumes each block's preimage lies in ONE source loop.  Count the
+            // blocks for which that fails.
+            for &b in &comp {
+                let mut cs: Vec<usize> = Vec::new();
+                for u in 0..k {
+                    if blk[u] != b { continue; }
+                    let ci = scomp[u];
+                    if ci == usize::MAX || !snontriv[ci] { continue; }
+                    if !cs.contains(&ci) { cs.push(ci); }
+                }
+                blocks_seen += 1;
+                if cs.len() > 1 { blocks_multi += 1; }
+                if cs.len() > blocks_max { blocks_max = cs.len(); }
+            }
             if spans.len() >= 2 {
                 merged += 1;
                 // does the merged SCC have two different exit targets at one atom?
@@ -2387,6 +2403,10 @@ fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
               source loops (the only shape that could bring two exit continuations together)");
     println!("  of those merged SCCs, {merged_conflict} have two different exit targets \
               at one atom (this is the number that would break the structural argument)");
+    println!("  PROOF COVERAGE: {blocks_seen} blocks in non-trivial quotient SCCs, \
+              {blocks_multi} of them ({:.3}%) have a preimage spanning MORE THAN ONE source \
+              loop (max {blocks_max}) — the case the SCC-reachability argument does not cover",
+        100.0 * blocks_multi as f64 / blocks_seen.max(1) as f64);
     match first_merge {
         None => println!("  no merge anywhere: the collapse never fuses two loops into one SCC, \
                           so a region keeps its single exit continuation"),
