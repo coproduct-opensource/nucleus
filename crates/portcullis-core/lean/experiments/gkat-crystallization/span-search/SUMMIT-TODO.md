@@ -13268,3 +13268,52 @@ warning is the specific reason it should.
 **Next.**  The induction for "the quotient is `LayeredL`", starting with what a
 quotient does to the `sum`/`seq` constructors — the case the literature says is
 the hard one.
+
+---
+
+## 287 — WHAT A QUOTIENT DOES TO `sum` AND `seq`, AND THE OPENING IT LEAVES.
+
+286 left one statement open — the quotient is `LayeredL` — and named the
+`sum`/`seq` constructors as the hard part.  They are hard for a concrete reason:
+**the quotient of a sum is not a sum of quotients.**  In the architecture the
+whole POINT of the sum is that the two expressions' start states are bisimilar,
+so the collapse merges ACROSS the halves and the `inl`/`inr` partition is
+destroyed.
+
+**But it is not destroyed symmetrically, and that is the opening.**  Choose
+representatives that PREFER one block.  Then a class containing a member of the
+preferred block gets a representative IN that block; so if the block was closed
+under transitions upstairs, the classes with a representative in it are closed
+downstairs.  **A quotient turns a two-block automaton into a two-block
+automaton — one block closed, the other feeding into it — even though it does
+not turn a SUM into a sum.**
+
+And that is exactly the structure `sum` and `seq` already have:
+`sum_inr_closed` and `seq_inr_closed` (both proved, 247) say the right half is
+closed, and nothing else about either constructor is used by
+`layeredL_has_solution` beyond the equations that closure justifies.
+
+**Proved this iteration.**  `quotient_closed_block` — the general fact, needing
+neither the section property nor minimality, only that the representative choice
+prefers the block.  `preferringRep` with `preferringRep_prefers` and
+`preferringRep_section` — such a choice always EXISTS (classically), and is
+still a section.  All zero-`sorry`.
+
+**What this does NOT yet give.**  Replacing `sum`/`seq` by a single `split`
+constructor ("a partition into two blocks, edges one way, both layered") needs
+`layeredL_has_solution` to handle it, and the non-closed block is NOT an
+automaton on its own — its transitions leave into the closed block.  Solving it
+means solving a system with EXTERNAL continuations, per-target rather than the
+single trailing `finish` that `eqRHSParam` carries.  That generalisation is new
+work and is not estimated yet.  It is the honest reason this iteration does not
+move the number.
+
+**Odds: 96%, HELD.**  A structural opening for the case the literature calls
+hard, with its three enabling lemmas machine-checked — but the generalisation
+they enable is unbuilt, and I have learned not to price unbuilt generalisations.
+The field's prior that the problem does not close still stands.
+
+**Next.**  Generalise the solution machinery from a single trailing `finish` to
+per-target external continuations, which is what a `split` constructor needs;
+then `split` replaces `sum`/`seq` and `quotient_closed_block` carries it through
+the collapse.

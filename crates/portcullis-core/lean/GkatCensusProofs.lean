@@ -8107,4 +8107,83 @@ theorem thompson_has_solution_via_layers (e : Exp A T) :
 
 #print axioms layeredL_has_solution
 
+
+/-! ### 287 — WHAT A QUOTIENT DOES TO `sum` AND `seq`
+
+    286 left one statement open — the quotient is `LayeredL` — and named the
+    `sum`/`seq` constructors as the hard part.  They are hard for a concrete
+    reason: **the quotient of a sum is not a sum of quotients.**  In the
+    architecture the whole POINT of the sum is that the two expressions' start
+    states are bisimilar, so the collapse merges ACROSS the halves and the
+    partition into `inl`/`inr` is destroyed.
+
+    But it is not destroyed symmetrically, and that is the opening.  Choose
+    representatives that PREFER one block.  Then:
+
+      * a class containing a member of the preferred block gets a representative
+        IN that block;
+      * so if the block was closed under transitions upstairs, the classes with
+        a representative in it are closed downstairs.
+
+    So a quotient turns a two-block automaton into a two-block automaton — with
+    one block closed and the other feeding into it — even though it does not
+    turn a SUM into a sum.  That is exactly the structure `sum` and `seq`
+    already have: `sum_inr_closed` and `seq_inr_closed` (both proved) say the
+    right half is closed, and nothing else about either constructor is used by
+    `layeredL_has_solution` beyond the equations that closure justifies.
+
+    This is the general fact, and it needs neither `hrep` nor minimality — only
+    that the representative choice prefers the block. -/
+theorem quotient_closed_block {S Q : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop)
+    (hclosed : ∀ s, P s → ∀ tr ∈ sys.trans s, P tr.2.2)
+    (q : S → Q) (rep : Q → S)
+    (hpref : ∀ (c : Q) (t : S), q t = c → P t → P (rep c))
+    (Qsys : GkatThompson.GSystem Q A T)
+    (htrans : ∀ c, Qsys.trans c = (sys.trans (rep c)).map
+      (fun tr => (tr.1, tr.2.1, q tr.2.2))) :
+    ∀ c : Q, P (rep c) → ∀ tr ∈ Qsys.trans c, P (rep tr.2.2) := by
+  intro c hc tr htr
+  rw [htrans] at htr
+  simp only [List.mem_map] at htr
+  obtain ⟨tr₀, htr₀, rfl⟩ := htr
+  exact hpref (q tr₀.2.2) tr₀.2.2 rfl (hclosed (rep c) hc tr₀ htr₀)
+
+section PreferringRep
+open Classical
+
+/-- A preferring representative choice EXISTS whenever the block is decidable —
+    take a member of the block if the class has one, and anything otherwise.
+    Stated with `Classical.choice`, so no decidability is actually needed. -/
+noncomputable def preferringRep {S Q : Type} (P : S → Prop)
+    (q : S → Q) (rep₀ : Q → S) : Q → S :=
+  fun c => if h : ∃ t, q t = c ∧ P t then Classical.choose h else rep₀ c
+
+theorem preferringRep_prefers {S Q : Type} (P : S → Prop)
+    (q : S → Q) (rep₀ : Q → S) :
+    ∀ (c : Q) (t : S), q t = c → P t → P (preferringRep P q rep₀ c) := by
+  intro c t hq hP
+  have hex : ∃ t, q t = c ∧ P t := ⟨t, hq, hP⟩
+  show P (if h : ∃ t, q t = c ∧ P t then Classical.choose h else rep₀ c)
+  rw [dif_pos hex]
+  exact (Classical.choose_spec hex).2
+
+/-- And it is still a section, on classes that have a member of the block. -/
+theorem preferringRep_section {S Q : Type} (P : S → Prop)
+    (q : S → Q) (rep₀ : Q → S) (hrep₀ : ∀ c, q (rep₀ c) = c) :
+    ∀ c : Q, q (preferringRep P q rep₀ c) = c := by
+  intro c
+  show q (if h : ∃ t, q t = c ∧ P t then Classical.choose h else rep₀ c) = c
+  by_cases hex : ∃ t, q t = c ∧ P t
+  · rw [dif_pos hex]
+    exact (Classical.choose_spec hex).1
+  · rw [dif_neg hex]
+    exact hrep₀ c
+
+#print axioms quotient_closed_block
+#print axioms preferringRep_prefers
+#print axioms preferringRep_section
+
+end PreferringRep
+
 end GkatCensus
