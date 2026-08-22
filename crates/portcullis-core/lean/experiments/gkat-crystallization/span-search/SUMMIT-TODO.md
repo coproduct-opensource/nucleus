@@ -14847,3 +14847,42 @@ measurement is consistent with it.
 **Next.**  Weaken `LayeredOn.loop`'s entry condition to "outside the block or
 behaviourally zero", and re-prove the loop case of `layeredOn_has_solution` with
 the `≈ 0` targets discharged by `fold_congr_step`.
+
+---
+
+## 323 — A STUCK STATE'S SOLUTION IS ZERO, AND THAT IS THE WEAKENING.
+
+322 measured that every SPLIT entry list has only NON-PRODUCTIVE targets in the
+block, and argued the requirement weakens to "outside the block OR behaviourally
+zero".  Here is the fact that makes it sound.
+
+`LayeredOn.loop`'s entry condition exists so that, at a non-block state, the
+family `stdL · F` and the actual `sol` agree at every target.  **They agree at a
+target where BOTH are zero** — and a target that cannot move and cannot halt
+forces exactly that of ANY solution: its equation collapses to
+`paramFallback 0 F`, which is `0 ; F`, which is `0` by `s2`.
+
+`stuck_solution_zero` — **NO AXIOMS AT ALL** — and `zero_targets_agree`, which
+needs no hypothesis about the block whatsoever.
+
+**So the offending targets need no new constructor.**  They need the congruence
+to be `EquivBA` rather than syntactic — which `fold_congr_step` (292) already
+provides — plus these two lemmas to supply the `≈ 0` facts.  **The
+list-versus-selection trade for the FOURTH time, and always in the same
+direction: 283, 292, 299, 323.**  At this point it is not a trick but the
+grain of the material: *a guarded fold is what it selects, and any hypothesis
+phrased about what it LISTS is stronger than the proof needs.*
+
+**Scope, stated.**  The lemma covers a state that is IMMEDIATELY stuck.  322's
+non-productive states are more general — one may reach a stuck state after
+several steps — and that generalisation is a separate induction along the
+productivity ordering.  Not needed until the plumbing demands it, and 322's
+first example was immediately stuck.
+
+**Odds: 97%, HELD.**  The enabling lemma for the weakening is proved and free of
+axioms; the weakening itself is not yet threaded through `LayeredOn.loop` and
+`layeredOn_has_solution`.
+
+**Next.**  Thread it: weaken the constructor's entry field to admit stuck
+targets, and re-prove the loop case with `guardedFold_trans_congr` replaced by
+`fold_congr_step` and the stuck targets discharged by 323.

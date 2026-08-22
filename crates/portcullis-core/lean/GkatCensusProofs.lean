@@ -10583,4 +10583,60 @@ theorem quotient_layered_wh'' (b : BExp T) (e : Exp A T) {Q : Type}
 
 end QuotWitCases
 
+
+/-! ### 323 — A STUCK STATE'S SOLUTION IS ZERO, AND THAT IS THE WEAKENING
+
+    322 measured that every SPLIT entry list has only NON-PRODUCTIVE targets in
+    the block, and argued the requirement should weaken from
+
+        every entry target lies outside the block
+
+    to
+
+        every entry target lies outside the block OR is behaviourally zero.
+
+    Here is the fact that makes the weakening sound.  `LayeredOn.loop`'s entry
+    condition exists so that, at a non-block state, the family `stdL · F` and the
+    actual `sol` agree at every target.  **They agree at a target where BOTH are
+    zero**, and a target that cannot move and cannot halt forces exactly that of
+    ANY solution: its equation collapses to `paramFallback 0 F`, which is
+    `0 ; F`, which is `0` by `s2`.
+
+    So the offending targets need no special constructor — they need the
+    congruence to be `EquivBA` rather than syntactic, which `fold_congr_step`
+    (292) already provides, plus this lemma to supply the two `≈ 0` facts.  **The
+    list-versus-selection trade once more**, and for the fourth time in the same
+    direction: 283, 292, 299, now 323.
+
+    Stated for a state that is IMMEDIATELY stuck.  322's non-productive states
+    are more general — one may reach a stuck state after several steps — and
+    that generalisation is a separate induction along the productivity ordering,
+    not needed until the plumbing demands it. -/
+theorem stuck_solution_zero {S : Type} (sys : GkatThompson.GSystem S A T)
+    (sol : S → Exp A T) (F : Exp A T) (t : S)
+    (htr : sys.trans t = [])
+    (hhl : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (sys.hlt t) x = false)
+    (heq : EquivBA (sol t) (GkatThompson.eqRHSParam sys sol F t)) :
+    EquivBA (sol t) (.test .zero) := by
+  refine EquivBA.trans heq ?_
+  show EquivBA (guardedFold (transitionBranches (sys.trans t) sol)
+    (GkatThompson.paramFallback (sys.hlt t) F)) _
+  rw [htr]
+  show EquivBA (Exp.seq (Exp.test (sys.hlt t)) F) _
+  refine EquivBA.trans (EquivBA.seq_c
+    (EquivBA.baTest (c := BExp.zero) (fun X W x => hhl X W x))
+    (EquivBA.base (Equiv.refl F))) ?_
+  exact EquivBA.base (Equiv.s2 F)
+
+/-- Two solutions that are both zero at a target agree there — which is all the
+    congruence needs, and needs no hypothesis about the block at all. -/
+theorem zero_targets_agree {S : Type} (sol sol' : S → Exp A T) (t : S)
+    (h : EquivBA (sol t) (.test .zero)) (h' : EquivBA (sol' t) (.test .zero)) :
+    EquivBA (sol t) (sol' t) :=
+  EquivBA.trans h (EquivBA.symm h')
+
+#print axioms stuck_solution_zero
+#print axioms zero_targets_agree
+
 end GkatCensus
