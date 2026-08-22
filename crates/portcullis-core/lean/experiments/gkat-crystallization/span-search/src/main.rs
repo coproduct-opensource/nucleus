@@ -3297,6 +3297,8 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     for (i, a) in exprs.iter().enumerate() { byb.entry(behaviour(a)).or_default().push(i); }
     let mut classes = 0usize;
     let (mut pairs, mut pb_ok, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize);
+    let mut skipped_big = 0usize;
+    let mut maxcomp = 0usize;
     let (mut red_sat, mut red_uns, mut irr_sat, mut irr_uns) = (0usize, 0usize, 0usize, 0usize);
     let mut first_bad: Option<String> = None;
     'outer: for (_k, idxs) in byb.iter() {
@@ -3310,7 +3312,10 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                 let p = match canon(&p) { Some(v) => v, None => continue };
                 pb_ok += 1;
                 let k = p.k as usize;
-                if k == 0 || k > 7 { continue; }
+                if k == 0 || k > MAXK { continue; }
+                // 428: the cutoff was on the WHOLE automaton, but the rank search
+                // decomposes per COMPONENT — a 12-state pullback whose components
+                // are all size <= 3 is cheap.  Skip only genuinely big components.
                 // reachMask levels
                 let mut lvl = vec![0usize; k];
                 for u in 0..k {
@@ -3328,10 +3333,16 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                     lvl[u] = m;
                 }
                 let mut levels = lvl.clone(); levels.sort_unstable(); levels.dedup();
+                for &n in &levels {
+                    let c = (0..k).filter(|&u| lvl[u] == n).count();
+                    if c > maxcomp { maxcomp = c; }
+                }
                 let mut all_ok = true;
+                let mut too_big = false;
                 for &n in &levels {
                     let comp: Vec<usize> = (0..k).filter(|&u| lvl[u] == n).collect();
                     if comp.len() < 2 { continue; }
+                    if comp.len() > 8 { too_big = true; break; }
                     let mut perm: Vec<usize> = (0..comp.len()).collect();
                     let mut lok = false;
                     loop {
@@ -3357,6 +3368,7 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                     }
                     if !lok { all_ok = false; break; }
                 }
+                if too_big { skipped_big += 1; continue; }
                 let red = reducible(&p);
                 if all_ok { sat += 1; if red { red_sat += 1 } else { irr_sat += 1 } }
                 else {
@@ -3374,6 +3386,8 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     println!("  equivalent pairs tried              : {}   pullbacks formed: {}", pairs, pb_ok);
     println!("  LevelAgreementActive SATISFIABLE    : {}", sat);
     println!("  UNSATISFIABLE (no rank)             : {}", unsat);
+    println!("  skipped, a component > 8 states     : {}   (largest component seen: {})",
+        skipped_big, maxcomp);
     println!("    reducible   : {:5} sat / {:5} unsat", red_sat, red_uns);
     println!("    irreducible : {:5} sat / {:5} unsat", irr_sat, irr_uns);
     if let Some(b) = first_bad { println!("  first refuter: {}", b); }

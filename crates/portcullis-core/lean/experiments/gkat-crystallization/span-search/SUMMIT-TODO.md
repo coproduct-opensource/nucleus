@@ -20220,3 +20220,53 @@ this program already.
 **Next.** Close the coverage gap: raise the state bound past 7 with a smarter
 rank search, and re-run — the untested 34% is where 425's size predictor says
 the failures are.
+
+## 428 — coverage gap closed, and the result is WEAKER than 427 read it: max component = 2.
+
+Web search: exhausted (200/200).
+
+427 left 34% of the pullbacks untested and I named closing that gap as the next
+step. The gap was my own bug: the cutoff `k > 7` was on the WHOLE automaton, but
+the rank search decomposes per COMPONENT, so a 12-state pullback whose components
+are all size 2 is cheap. Making the cutoff per-component:
+
+| | G=3, D=3 |
+|---|---|
+| pullbacks formed | 50,000 |
+| `LevelAgreementActive` satisfiable | **50,000** |
+| unsatisfiable | **0** |
+| skipped (component > 8) | **0** |
+| **largest component seen** | **2** |
+
+**Full coverage — and the last row destroys most of the result's value.** Every
+component in all 50,000 pullbacks has at most TWO states. 425's best failure
+predictor is SCC size ≥ 3, and it **never occurs in this population**. So the
+sweep cannot exhibit the failure mode it was built to look for, and "50,000 with
+no refuter" is close to uninformative about the regime that matters.
+
+**I read 427 too favourably.** I reported 33,073 clean as evidence the
+architecture survives, flagged the untested 34% as the caveat, and picked up five
+points. The real caveat was not the skipped third — it was that the tested
+two-thirds were structurally trivial in exactly the dimension under test. The
+cross-tab in 425 had already named component size as the predictor; I should
+have checked the population's component sizes before crediting the zero.
+
+**Why the population is shallow.** A pullback of two equivalent automata is a
+product restricted to the bisimulation, so its components are no larger than the
+originals'. Depth-3 expressions have small loops, and `D=4` does not finish —
+the enumeration explodes before producing anything. So the buildable
+distinct-pair population simply has no large components.
+
+**What survives from 427.** The structural point is independent of component
+size and still stands: 413's refuter reaches the hypothesis only via `e = f`
+(426), and `e = f` is where the conclusion is free by reflexivity. That remains
+a real observation about how the hypothesis is stated.
+
+**Odds: 55% → 52%.** Giving back most of 427's five points. The degeneracy
+observation survives; the 50,000-sample evidence does not, because the sample
+cannot contain the failure. Three points, not zero, because the degeneracy point
+is genuine and independent.
+
+**Next.** Get large components deliberately: construct equivalent pairs whose
+loop bodies have three or more states — pair a loop against its unrolling, which
+W1 makes equivalent by construction — and test those directly.
