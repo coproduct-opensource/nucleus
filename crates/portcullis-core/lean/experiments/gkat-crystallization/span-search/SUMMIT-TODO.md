@@ -18113,3 +18113,40 @@ nothing this iteration made it more likely to be true.
 
 **Next.** Make `SourceSccHeaded` intrinsic — a source level chosen without the
 quotient — then the GKAT induction.
+
+## 389 — a source component maps into one quotient level
+
+388 left the source condition stated with a level **borrowed from the quotient**.
+Making it intrinsic needs one fact, and this iteration proves it.
+
+- **`semReaches_image`** (axiom-free) — reachability pushes DOWN to the quotient.
+  The easy direction, and the one the lift never needed; `autStep_eq` again.
+- **`quotMask_eq_of_source_mutual`** — mutually reachable source states have
+  mutually reachable images, and mutual reachability forces equal masks
+  (`level_const_of_mutual`). So **a source component maps into a single quotient
+  level**, and the source's own `reachMask` refines the pullback.
+
+**Why that is what the reduction needs.** With the source's own level, an edge
+inside a source component is intrinsically "intra-level"; by the above it is then
+also intra-level downstairs. So *intrinsically raw ⟹ raw under the pullback*,
+hence *non-raw under the pullback ⟹ intrinsically non-raw*, hence **active under
+the pullback ⟹ active intrinsically** — and headedness stated with the intrinsic
+level is the stronger statement, which implies the one 388 needs.
+
+**A wrinkle, found before claiming the reduction.** `rawPred` indexes the rank by
+the level *value*: `rank (lvl s) t < rank (lvl s) s`. Both uses sit at the same
+`lvl s`, so a single comparison is coherent — but comparing the intrinsic and
+pulled-back level functions changes *which* `rank n` is consulted, and the two
+need not agree. The implication above therefore holds as stated only for a rank
+that ignores its level index (`fun _ u => rank₀ u`).
+
+That is a mild restriction — a rank only ever has to order states within one
+region — but it is a restriction, and stating the reduction without it would have
+been wrong. I have not yet imposed it, so the reduction is *analysed*, not
+*proved*.
+
+**Odds: 96%, unchanged.** Two lemmas and a precise account of what remains
+between them and the intrinsic form.
+
+**Next.** Impose the level-independent rank and finish the reduction to an
+intrinsic `SourceSccHeaded`.

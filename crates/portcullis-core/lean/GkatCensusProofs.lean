@@ -12183,6 +12183,43 @@ theorem semReaches_of_sreaches {S : Type} (aut : GkatKleene.GAut S A T)
 
 #print axioms semReaches_of_sreaches
 
+/-- Reachability pushes DOWN to the quotient — the easy direction, and the one
+the lift did not need.  `autStep_eq` again. -/
+theorem semReaches_image {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {u w : S}
+    (h : SemReaches aut u w) : SemReaches quot (π.mapState u) (π.mapState w) := by
+  induction h with
+  | refl s => exact SemReaches.refl _
+  | @step s t u hstep _ ih =>
+      obtain ⟨X, W, x, q, hq⟩ := hstep
+      refine SemReaches.step ⟨X, W, x, q, ?_⟩ ih
+      have h2 := π.autStep_eq W s x
+      rw [hq] at h2
+      exact h2.symm
+
+/-- **A source component maps into ONE quotient level.**  Mutually reachable
+source states have mutually reachable images, and mutual reachability forces
+equal masks — so the source's own `reachMask` refines the pullback of the
+quotient's.
+
+This is what lets the source condition be stated with the source's OWN level
+rather than one borrowed from downstairs. -/
+theorem quotMask_eq_of_source_mutual {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {u w : S}
+    (h1 : SemReaches aut u w) (h2 : SemReaches aut w u) :
+    reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState u)
+      = reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState w) :=
+  level_const_of_mutual
+    (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans))
+    (reachMask_mono (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans))
+    (sreaches_of_semReaches quot (semReaches_image π h1))
+    (sreaches_of_semReaches quot (semReaches_image π h2))
+
+#print axioms semReaches_image
+#print axioms quotMask_eq_of_source_mutual
+
 end LevelExistence
 
 #print axioms reachLevel_mono
