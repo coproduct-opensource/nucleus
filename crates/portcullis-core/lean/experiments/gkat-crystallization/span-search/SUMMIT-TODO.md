@@ -20533,3 +20533,51 @@ small to contain a failure.
 **Next.** Take one of the 12 REDUCIBLE failures — the rarest and therefore
 sharpest class, since irreducibility is not available as an excuse — and
 determine whether any quotient of that pair satisfies the hypothesis.
+
+## 434 — all 400 failures are rescued by the MINIMAL quotient. The witness was the problem, not the hypothesis.
+
+Web search: exhausted (200/200).
+
+433 called its 400 refuters "the first confirmed non-degenerate refutation in
+this program". They were all on the FORCED pullback. The hypothesis is
+`∃ quot …`, so I ran the existential check 430 established, on every one:
+
+| | count |
+|---|---|
+| `LevelAgreementActive` unsatisfiable on the forced pullback | 400 |
+| **rescued by the bisimulation collapse** | **400** |
+| **survive both extremal quotients** | **0** |
+| of those, reducible | **0** |
+
+**Every single failure is an artefact of testing the wrong witness.** 433's
+refutation is withdrawn. Across 23,619 non-degenerate pullbacks — including 1,306
+with a component ≥ 3 and 6,740 irreducible — there is **not one pair** for which
+the hypothesis fails.
+
+**And the contrast with 430 is informative.** There, on the W1-degenerate
+population, the collapse rescued only 54 of 168 and 114 survived. Here, on the
+non-degenerate population, it rescues 400 of 400. The pairs that resist are
+exactly the ones built from an axiom identity — which 431 already showed the
+route never needs. **Degeneracy and irrescuability coincide.**
+
+**This is actionable, not just reassuring.** The bisimulation-MINIMAL quotient is
+the right witness for the existential, and it worked in every case where the
+forced pullback did not. A proof should instantiate `∃ quot` with the minimal
+automaton rather than the pullback — and 433's two predictors (component size,
+irreducibility) predict where the pullback fails, not where the hypothesis fails.
+
+**On my own volatility.** The odds in this program have gone
+96 → 82 → 87 → 88 → 72 → 45 → 40 → 45 → 50 → 52 → 55 → 52 → 45 → 50 → 55 → 45 →
+and now up again. Every swing had a real measurement behind it, but the amplitude
+is too large for what single census runs can support: three of the last five
+reversals were sample-size or wrong-witness artefacts, not mathematics. I am
+capping further moves at ±5 unless a Lean proof lands or a counterexample
+survives every quotient.
+
+**Odds: 45% → 55%.** The only confirmed refutations left are axiom-degenerate,
+and the natural witness discharges everything else. The field's prior that this
+problem does not close still stands.
+
+**Next.** Prove it rather than measure it: `∃ quot` instantiated at the
+bisimulation-minimal automaton, with `LevelAgreementActive` derived from
+minimality — the census says that is the theorem.

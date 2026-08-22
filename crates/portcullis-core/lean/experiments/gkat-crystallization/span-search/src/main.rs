@@ -3511,6 +3511,8 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     let mut skipped_big = 0usize;
     let mut maxcomp = 0usize;
     let (mut big_pairs, mut big_sat, mut big_uns) = (0usize, 0usize, 0usize);
+    let (mut resc, mut doom, mut red_doom) = (0usize, 0usize, 0usize);
+    let mut first_red_doom: Option<String> = None;
     let mut first_big: Option<String> = None;
     let (mut red_sat, mut red_uns, mut irr_sat, mut irr_uns) = (0usize, 0usize, 0usize, 0usize);
     let mut first_bad: Option<String> = None;
@@ -3604,6 +3606,28 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                 else {
                     unsat += 1;
                     if red { red_uns += 1 } else { irr_uns += 1 }
+                    // 434: the hypothesis is existential.  Try the other extremal
+                    // quotient (the bisimulation collapse) on every failure, and
+                    // report the REDUCIBLE survivors separately -- those are the
+                    // sharpest, since irreducibility is not available as an excuse.
+                    let (blk, nb) = bisim_blocks(&p);
+                    let rescued = if nb < p.k as usize {
+                        match quotient_by(&p, &blk, nb).and_then(|q| canon(&q)) {
+                            Some(q) => laa_satisfiable(&q) == Some(true),
+                            None => false,
+                        }
+                    } else { false };
+                    if rescued { resc += 1 } else {
+                        doom += 1;
+                        if red {
+                            red_doom += 1;
+                            if first_red_doom.is_none() {
+                                first_red_doom = Some(format!(
+                                    "collapsible={} maxcomp={} {}",
+                                    nb < p.k as usize, mx_here, show_aut("P", &p)));
+                            }
+                        }
+                    }
                     if first_bad.is_none() {
                         first_bad = Some(format!("reducible={} {}", red, show_aut("P", &p)));
                     }
@@ -3618,6 +3642,11 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     println!("  UNSATISFIABLE (no rank)             : {}", unsat);
     println!("  skipped, a component > 8 states     : {}   (largest component seen: {})",
         skipped_big, maxcomp);
+    println!("  --- existential check on every failure (434) ---");
+    println!("  rescued by the bisimulation collapse : {}", resc);
+    println!("  survive BOTH extremal quotients      : {}", doom);
+    println!("    of those, REDUCIBLE                : {}", red_doom);
+    if let Some(b) = first_red_doom { println!("    sharpest artefact: {}", b); }
     println!("  --- the untested regime (component >= 3) ---");
     println!("  pullbacks with a component >= 3     : {}", big_pairs);
     println!("    satisfiable                       : {}", big_sat);
