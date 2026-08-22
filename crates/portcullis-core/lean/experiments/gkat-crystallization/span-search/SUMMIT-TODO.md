@@ -12651,3 +12651,62 @@ condition structurally, because the entry transitions live at `vₛ`; I have to
 state it as a hypothesis, because in GKAT the return is fused into each state's
 own edge list.  Independent confirmation that the missing condition is the right
 one rather than an artifact of my encoding.
+
+---
+
+## 274 — 272's SHAPE WAS WRONG, AND THE RIGHT ONE IS A NORMAL FORM (PROVED).
+
+**The correction.**  272 read 218's `loop_standard_eq` as saying a layer's
+solution is `sol_sys s := sol_base s ; W`.  **That is FALSE for a layer sitting
+inside a SEQUENCE.**  Take `seq (wh b e) f`.  At a left state `inl s` the true
+solution is
+
+    (e-solution at s) ; W ; (f-solution)
+
+whereas `sol_base (inl s) ; W` is `(e-solution at s) ; (f-solution) ; W`.
+**`W` is INSERTED where the layer's back edges sit, not APPENDED at the end.**
+218's shape is the special case `post = []` — exactly what `wh` gives, which is
+what made the misreading invisible.
+
+**What this kills.**  The layer lemma cannot have `loop_subsystem`'s form
+("`base`'s equation with a different trailing continuation"), because `post`
+sits between the insertion point and the end.  273's plan — generalise
+`loop_subsystem` to `IsLayer` — was aiming at a statement that is not true.
+
+**What is true, and is now PROVED: `layer_normal_form`.**
+
+```
+EquivBA (eqRHSParam sys sol F s)
+        (guardedFold (tb pre sol
+                      ++ tb (extra gated by b) sol
+                      ++ tb (post gated by ¬b) sol)
+                     (paramFallback (sys.hlt s) F))
+```
+
+The layer rewrites a state's decision list into `pre`, then `b`-gated back
+edges, then `¬b`-gated tail.  **Stated for an ABSTRACT split — no `IsLayer`
+field beyond `split`, and no Thompson constructor anywhere.**  This is what 273
+was reaching for, in the form that survives `seq`.
+
+**Proved by SELECTION** (`guardedFold_select_congr`, 233): two guarded decision
+lists are `EquivBA` as soon as their first-matches agree at every world.  Here
+they agree SYNTACTICALLY — gating `extra` by `b` changes no guard's value (its
+guards already imply `b`), and gating `post` by `¬b` reproduces `post'` exactly,
+which is precisely what `RestrictedTo` says.  No case analysis on the automaton.
+Three new private lemmas: `selectFull_append`, `selectFull_gate_implies`,
+`selectFull_restricted`.  Axioms: `propext, Classical.choice, Quot.sound` — the
+cluster's standard set, **no `sorryAx`**.
+
+**Note the entry condition was NOT needed for this.**  273's shared-entry list
+is required to IDENTIFY the `b`-branch across states as one loop `wh b E`; it is
+not required to SPLIT the equation.  The eighth migration therefore stands, but
+it now comes AFTER a lemma that is already proved without it, rather than being
+a prerequisite for one that was mis-stated.
+
+**Odds: 87%** (+1).  A machine-checked lemma on the layer path, and a false
+shape removed before it could cost a migration.  The field's prior that the
+problem does not close still stands.
+
+**Next.**  Fold the `b`-gated and `¬b`-gated blocks into `ite b (entry fold)
+(base's tail)` via `ite_guardedFold_partition`, which turns the normal form into
+the loop-shaped statement `hsolve` consumes.

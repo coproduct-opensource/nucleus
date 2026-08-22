@@ -7102,4 +7102,113 @@ theorem acyclic_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms acyclic_has_solution
 
+
+/-! ### 274 — THE LAYER NORMAL FORM
+
+    **A correction to 272 first.**  272 read 218's `loop_standard_eq` as saying
+    the layer's solution is `sol_sys s := sol_base s ; W`.  That is FALSE for a
+    layer sitting inside a SEQUENCE.  Take `seq (wh b e) f`.  At a left state
+    `inl s` the true solution is
+
+        (e-solution at s) ; W ; (f-solution)
+
+    whereas `sol_base (inl s) ; W` is `(e-solution at s) ; (f-solution) ; W`.
+    **`W` is INSERTED where the layer's back edges sit, not APPENDED at the
+    end.**  218's shape is the special case `post = []`, which is exactly what
+    `wh` gives and what made the misreading invisible.
+
+    So the layer lemma cannot have the form "`base`'s equation with a different
+    trailing continuation" — `loop_subsystem`'s form — because `post` sits
+    between the insertion point and the end.  What IS true is a NORMAL FORM: the
+    layer rewrites a state's decision list into `pre`, then `b`-gated back
+    edges, then `¬b`-gated tail.  That is this lemma, and it holds for an
+    ABSTRACT `IsLayer` with no constructor in sight.
+
+    The proof is by SELECTION (`guardedFold_select_congr`, 233): two guarded
+    decision lists are `EquivBA` as soon as their first-matches agree at every
+    world.  Here they agree SYNTACTICALLY — gating `extra` by `b` changes no
+    guard's value (its guards already imply `b`), and gating `post` by `¬b`
+    reproduces `post'` exactly (that is what `RestrictedTo` says).  No case
+    analysis on the automaton, and no axioms. -/
+private theorem selectFull_append {X : Type} (W : T → X → Bool) (x : X)
+    (R : List (BExp T × Exp A T)) (fb : Exp A T) :
+    ∀ L : List (BExp T × Exp A T),
+      selectFull W x (L ++ R) fb = selectFull W x L (selectFull W x R fb)
+  | [] => rfl
+  | br :: tl => by
+      cases hb : GkatGS.bval W br.1 x
+      · simp only [List.cons_append, selectFull, hb]
+        exact selectFull_append W x R fb tl
+      · simp only [List.cons_append, selectFull, hb]
+
+/-- Gating a branch by a guard it already implies changes no selection. -/
+private theorem selectFull_gate_implies {S X : Type} (W : T → X → Bool) (x : X)
+    (b : BExp T) (sol : S → Exp A T) (k : Exp A T) :
+    ∀ l : List (BExp T × A × S), (∀ tr ∈ l, GuardImplies tr.1 b) →
+      selectFull W x
+          (transitionBranches (l.map (fun tr => (BExp.and b tr.1, tr.2))) sol) k
+        = selectFull W x (transitionBranches l sol) k
+  | [], _ => rfl
+  | tr :: tl, h => by
+      have hb : GkatGS.bval W (BExp.and b tr.1) x = GkatGS.bval W tr.1 x := by
+        have himp := h tr (List.mem_cons_self ..)
+        show (GkatGS.bval W b x && GkatGS.bval W tr.1 x) = GkatGS.bval W tr.1 x
+        cases htr : GkatGS.bval W tr.1 x
+        · cases GkatGS.bval W b x <;> rfl
+        · rw [himp X W x htr]; rfl
+      cases hv : GkatGS.bval W tr.1 x
+      · simp only [List.map_cons, transitionBranches, selectFull, hb, hv]
+        exact selectFull_gate_implies W x b sol k tl
+            (fun t ht => h t (List.mem_cons_of_mem _ ht))
+      · simp only [List.map_cons, transitionBranches, selectFull, hb, hv]
+
+/-- `RestrictedTo` IS `¬b`-gating, read through selection. -/
+private theorem selectFull_restricted {S X : Type} (W : T → X → Bool) (x : X)
+    {b : BExp T} (sol : S → Exp A T) (k : Exp A T) :
+    ∀ {post post' : List (BExp T × A × S)}, RestrictedTo b post post' →
+      selectFull W x (transitionBranches post' sol) k
+        = selectFull W x
+            (transitionBranches
+              (post.map (fun tr => (BExp.and (BExp.not b) tr.1, tr.2))) sol) k := by
+  intro post post' h
+  induction h with
+  | nil => rfl
+  | @cons g g' a q l l' hg _ ih =>
+      have hval : GkatGS.bval W g' x
+          = GkatGS.bval W (BExp.and (BExp.not b) g) x := by
+        rw [hg X W x]; rfl
+      cases h2 : GkatGS.bval W (BExp.and (BExp.not b) g) x
+      · simp only [List.map_cons, transitionBranches, selectFull, hval, h2]
+        exact ih
+      · simp only [List.map_cons, transitionBranches, selectFull, hval, h2]
+
+/-- **THE LAYER NORMAL FORM.**  Stated for an abstract split — no `IsLayer`
+    field is used beyond `split`, and no Thompson constructor appears. -/
+theorem layer_normal_form {S : Type} {sys : GkatThompson.GSystem S A T}
+    {b : BExp T} (sol : S → Exp A T) (F : Exp A T) (s : S)
+    (pre extra post post' : List (BExp T × A × S))
+    (hsys : sys.trans s = pre ++ extra ++ post')
+    (hg : ∀ tr ∈ extra, GuardImplies tr.1 b)
+    (hr : RestrictedTo b post post') :
+    EquivBA (GkatThompson.eqRHSParam sys sol F s)
+      (guardedFold
+        (transitionBranches pre sol
+          ++ transitionBranches (extra.map (fun tr => (BExp.and b tr.1, tr.2))) sol
+          ++ transitionBranches
+              (post.map (fun tr => (BExp.and (BExp.not b) tr.1, tr.2))) sol)
+        (GkatThompson.paramFallback (sys.hlt s) F)) := by
+  simp only [GkatThompson.eqRHSParam, hsys]
+  refine guardedFold_select_congr _ _ _ _ ?_
+  intro X W x
+  have e1 : transitionBranches (pre ++ extra ++ post') sol
+      = transitionBranches pre sol ++ transitionBranches extra sol
+        ++ transitionBranches post' sol := by
+    simp only [transitionBranches, List.map_append]
+  rw [e1, selectFull_append, selectFull_append, selectFull_append,
+    selectFull_append, selectFull_restricted W x sol _ hr,
+    selectFull_gate_implies W x b sol _ extra hg]
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms layer_normal_form
+
 end GkatCensus
