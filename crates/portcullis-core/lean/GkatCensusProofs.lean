@@ -9244,4 +9244,64 @@ theorem saturation_disjoint {S S' : Type} (f : S → S') (P C : S → Prop)
 #print axioms saturated_or
 #print axioms saturation_disjoint
 
+
+/-! ### 301 — SATURATION DIES AT THE TOP-LEVEL SUM; BUILD THE DERIVATION DOWNSTAIRS
+
+    **The negative first.**  299 and 300 developed saturation as the way to make
+    every block a union of classes.  Test it where it matters.  In the
+    completeness application `sys = sumGSystem L R` with `start_L ~ start_R`, so
+    by bisimulation EVERY REACHABLE `L`-state is bisimilar to some `R`-state.
+    The top-level split takes `C = R`'s states; its saturation therefore
+    contains every reachable state, and "solve `C'` given the rest" IS the
+    original problem.  **Saturation destroys the top-level split exactly in the
+    case the whole programme is about.**  299 and 300's lemmas stay true and
+    stay useful; the STRATEGY of saturating a `sum`'s split does not.
+
+    **And the fix is to stop pushing derivations forward at all.**  A quotient's
+    blocks are SETS OF CLASSES, so they are saturated for free — the entire
+    condition 298 derived is vacuous downstairs.  So build `Q`'s derivation
+    DIRECTLY, using 287's preferring representative to supply the split:
+    the classes with an `inl` representative are closed, so they are a legal
+    `C`, and the two obligations that remain are about `L` and `R` separately —
+    **structurally smaller expressions, which is a well-founded recursion where
+    saturation was a circular one.**
+
+    This is that first step: the top-level split, downstairs. -/
+theorem sum_quotient_layered_of_split {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (q : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hpref : ∀ (c : Q) (t : Sum S₁ S₂), q t = c → (∃ u, t = .inl u) →
+      ∃ u, rep c = .inl u)
+    (Qsys : GkatThompson.GSystem Q A T)
+    (htrans : ∀ c, Qsys.trans c = ((GkatThompson.sumGSystem L R).trans (rep c)).map
+      (fun tr => (tr.1, tr.2.1, q tr.2.2)))
+    (hleft : LayeredOn Qsys (fun c => ¬ ∃ u, rep c = Sum.inl u))
+    (hrest : LayeredOn Qsys (fun c => ∃ u, rep c = Sum.inl u)) :
+    LayeredOn Qsys (fun _ => False) := by
+  have hclosedUp : ∀ t : Sum S₁ S₂, (∃ u, t = .inl u) →
+      ∀ tr ∈ (GkatThompson.sumGSystem L R).trans t, ∃ u, tr.2.2 = .inl u := by
+    intro t ht tr htr
+    obtain ⟨u, rfl⟩ := ht
+    have hmem : tr ∈ (L.trans u).map (fun x => (x.1, x.2.1, Sum.inl x.2.2)) := htr
+    simp only [List.mem_map] at hmem
+    obtain ⟨x, _, rfl⟩ := hmem
+    exact ⟨x.2.2, rfl⟩
+  have hlist := quotient_closed_block (GkatThompson.sumGSystem L R)
+    (fun t => ∃ u, t = .inl u) hclosedUp q rep hpref Qsys htrans
+  have hclosed' : ∀ c : Q, (∃ u, rep c = Sum.inl u) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+      GkatKleene.firstMatch W x (Qsys.trans c) = some r →
+        ∃ u, rep r.2 = Sum.inl u := by
+    intro c hc X W x r hfm
+    obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (Qsys.trans c) r.1 r.2 (by
+      rw [← hfm])
+    exact hlist c hc (g, r.1, r.2) hg
+  have heq : (fun c : Q => ∃ u, rep c = Sum.inl u)
+      = (fun s : Q => False ∨ ∃ u, rep s = Sum.inl u) := by
+    funext s
+    exact propext ⟨Or.inr, fun h => h.elim (fun x => x.elim) id⟩
+  exact LayeredOn.split (fun _ h => h.elim) hclosed' hleft (heq ▸ hrest)
+
+#print axioms sum_quotient_layered_of_split
+
 end GkatCensus

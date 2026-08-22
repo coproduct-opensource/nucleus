@@ -13913,3 +13913,48 @@ axiom-free; the other is the hard one and I said so when I split them.
 well-founded recursion or a circularity: the saturated block is strictly
 LARGER than the original, so the obvious induction on block size runs the WRONG
 WAY — find the measure that decreases, or find that none does.
+
+---
+
+## 301 — SATURATION DIES AT THE TOP-LEVEL SUM.  BUILD THE DERIVATION DOWNSTAIRS.
+
+### The negative.
+
+299 and 300 developed SATURATION as the way to make every block a union of
+classes.  Tested where it matters, it fails.  In the completeness application
+`sys = sumGSystem L R` with `start_L ~ start_R`, so by bisimulation **every
+reachable `L`-state is bisimilar to some `R`-state**.  The top-level split takes
+`C = R`'s states; its saturation therefore contains EVERY REACHABLE STATE, and
+"solve `C'` given the rest" IS the original problem.
+
+**Saturation destroys the top-level split exactly in the case the whole
+programme is about.**  299 and 300's lemmas stay true and stay useful — the
+saturation of a closed set is closed, saturatedness is invariant, disjointness
+survives — but the STRATEGY of saturating a `sum`'s split is dead.  Two
+iterations spent on a route that was circular where it counted.
+
+### The redirect, and why it is better.
+
+**Stop pushing derivations forward.**  A quotient's blocks are SETS OF CLASSES,
+so they are saturated for free — 298's condition is VACUOUS downstairs.  Build
+`Q`'s derivation directly, using 287's preferring representative for the split:
+the classes with an `inl` representative are closed, so they are a legal `C`,
+and the two remaining obligations are about `L` and `R` SEPARATELY.  Those are
+structurally smaller expressions — **a well-founded recursion where saturation
+was a circular one.**
+
+`sum_quotient_layered_of_split`: the top-level split, downstairs.  Reduces
+`LayeredOn Q ∅` to the two component obligations, with closure supplied by 287
+and converted from list form to `firstMatch` form through
+`firstMatch_mem_of_some`.  `propext, Quot.sound`.
+
+**Odds: 98%, HELD.**  A dead strategy identified by testing it against the case
+that matters rather than by inspection, and replaced by one whose recursion is
+well-founded on expression structure.  That is worth what the two lost
+iterations cost, and no more.
+
+**Next.**  The two component obligations: `LayeredOn Q (classes with an inl rep)`
+— solve the R-only classes given the L-classes — and its mirror.  The first is
+about the image of `R` restricted to classes with no `L`-partner, and 287's
+argument shows that region's complement is closed in `R`, so the recursion has
+somewhere to go.
