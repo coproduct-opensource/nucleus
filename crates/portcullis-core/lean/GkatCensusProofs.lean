@@ -8409,4 +8409,65 @@ theorem seqLayer_pushforward_rep {S S' : Type}
 #print axioms seq_seqLayer
 #print axioms seqLayer_pushforward_rep
 
+
+/-! ### 290 — THE SUM'S QUOTIENT, END TO END (RELATIVELY ACYCLIC COMPLEMENT)
+
+    287 and 288 are the two halves of the `sum` case and were proved separately.
+    Here they meet.  Take a quotient of `sumGSystem L R` whose representatives
+    PREFER the left half.  Then:
+
+      * the classes with a left representative form a CLOSED block (287), because
+        `inl` is closed upstairs and the preference transports that;
+      * a solution on the block extends over the complement (288), as soon as
+        the complement is acyclic RELATIVE to the block.
+
+    So the quotient is solvable.  This is the first end-to-end statement about
+    the collapse in the whole series: quotient in, solution out, no hypothesis
+    about the quotient beyond how its dynamics is read off representatives.
+
+    **The restriction, and it is the honest one.**  The complement must be
+    RELATIVELY ACYCLIC.  A loop in the complement is not covered, and cannot be
+    by simply relativising `loopLayer_has_solution`: 284's construction needs
+    the base's solutions to have the form `std s ; W`, and a state whose run can
+    EXIT into the block does not have that form — the exit branch carries no
+    `W`.  That is not an artifact.  In a Thompson automaton a loop's body never
+    escapes except through the halt-gate, which is exactly why `LoopLayer` is
+    TOTAL; a collapse that merges a loop-body state with an outside state can
+    destroy that, and it is precisely the failure the literature records for
+    LLEE with empty-step transitions.  **The relatively-acyclic complement is
+    the case where no such merge has happened.** -/
+theorem sum_quotient_has_solution {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (q : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hpref : ∀ (c : Q) (t : Sum S₁ S₂), q t = c → (∃ u, t = .inl u) →
+      ∃ u, rep c = .inl u)
+    (sys' : GkatThompson.GSystem Q A T)
+    (htrans : ∀ c, sys'.trans c = ((GkatThompson.sumGSystem L R).trans (rep c)).map
+      (fun tr => (tr.1, tr.2.1, q tr.2.2)))
+    (sol₀ : Q → Exp A T)
+    (h₀ : ∀ c ∈ sys'.states, (∃ u, rep c = .inl u) →
+      EquivBA (sol₀ c) (GkatThompson.eqRHSParam sys' sol₀ (.test .one) c))
+    (rank : Q → Nat)
+    (hstep : ∀ c, ¬ (∃ u, rep c = .inl u) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+      GkatKleene.firstMatch W x (sys'.trans c) = some r →
+        (∃ u, rep r.2 = .inl u) ∨ rank r.2 < rank c) :
+    ∃ sol : Q → Exp A T, ∀ c ∈ sys'.states,
+      EquivBA (sol c) (GkatThompson.eqRHSParam sys' sol (.test .one) c) := by
+  have hclosedUp : ∀ t : Sum S₁ S₂, (∃ u, t = .inl u) →
+      ∀ tr ∈ (GkatThompson.sumGSystem L R).trans t, ∃ u, tr.2.2 = .inl u := by
+    intro t ht tr htr
+    obtain ⟨u, rfl⟩ := ht
+    show ∃ v, tr.2.2 = Sum.inl v
+    have : tr ∈ (L.trans u).map (fun x => (x.1, x.2.1, Sum.inl x.2.2)) := htr
+    simp only [List.mem_map] at this
+    obtain ⟨x, _, rfl⟩ := this
+    exact ⟨x.2.2, rfl⟩
+  exact split_acyclic_has_solution sys' (fun c => ∃ u, rep c = .inl u)
+    (quotient_closed_block (GkatThompson.sumGSystem L R)
+      (fun t => ∃ u, t = .inl u) hclosedUp q rep hpref sys' htrans)
+    sol₀ h₀ rank hstep
+
+#print axioms sum_quotient_has_solution
+
 end GkatCensus

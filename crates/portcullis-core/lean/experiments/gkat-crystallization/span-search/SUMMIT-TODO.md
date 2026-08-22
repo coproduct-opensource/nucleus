@@ -13417,3 +13417,53 @@ field's prior that the problem does not close still stands.
 **Next.**  The `sum` case under a quotient: assemble `quotient_closed_block` and
 `preferringRep` into the induction step, using that a quotient of a two-block
 automaton is a two-block automaton even when it is not a sum.
+
+---
+
+## 290 — THE SUM'S QUOTIENT, END TO END — AND THE EXACT SHAPE OF WHAT IS LEFT.
+
+`sum_quotient_has_solution`.  Take a quotient of `sumGSystem L R` whose
+representatives PREFER the left half.  Then the classes with a left
+representative form a CLOSED block (287 — `inl` is closed upstairs and the
+preference transports it), and a solution on that block extends over the
+complement (288) as soon as the complement is acyclic RELATIVE to the block.
+So the quotient is solvable.
+
+**This is the first end-to-end statement about the collapse in the series:
+quotient in, solution out, with no hypothesis about the quotient beyond how its
+dynamics is read off representatives.**  Compiled first try.
+
+### The restriction, and why it is not bureaucratic
+
+The complement must be RELATIVELY ACYCLIC.  A loop in the complement is not
+covered — and cannot be covered by simply relativising 284.  Working out why is
+the substantive part of this iteration:
+
+284's construction sets `sol := std s ; W`, and that requires the base's
+solutions to HAVE the form `std s ; W`.  A state whose run can EXIT into the
+block does not: the exit branch carries no `W`, because leaving the layer for a
+closed block means the loop never fires again.  So the entry fold is no longer
+`D ; W` and `entryFold_seq` does not apply.
+
+**And that is not an artifact of the encoding.**  In a Thompson automaton a
+loop's body NEVER escapes except through the halt-gate — which is exactly why
+`LoopLayer` is stated TOTAL, and why 277's `post = []` was forced.  A collapse
+that merges a loop-body state with an outside state destroys that property, and
+**this is precisely the failure the literature records: LLEE with EMPTY-STEP
+transitions is not closed under bisimulation collapse** (279), repaired there
+only by a new construction (crystallization).  GKAT's halt-gated back edges are
+on the empty-step side of that line.
+
+So the relatively-acyclic complement is exactly the case where NO SUCH MERGE HAS
+HAPPENED, and the remaining case is exactly the one the literature says needs
+more than a preservation argument.
+
+**Odds: 98%, HELD.**  A positive end-to-end result on the collapse, against a
+now-precise identification of the one case that is genuinely hard and is known
+to be hard.  Those cancel.  The field's prior that the problem does not close
+still stands, and this iteration is the sharpest statement yet of why.
+
+**Next.**  The loop-in-the-complement case — either by finding that GKAT's
+determinism rules out the destructive merge (the automata here are deterministic
+per atom, unlike the process graphs the counterexamples live in), or by porting
+the crystallization repair.
