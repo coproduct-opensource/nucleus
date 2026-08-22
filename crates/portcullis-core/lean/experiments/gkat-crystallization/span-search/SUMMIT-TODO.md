@@ -11736,3 +11736,52 @@ number should move when `hsum` closes, not when its prerequisites do.
 
 **Next.**  `layered_seq`'s layer case with the new shape, then `hsum` by
 induction on the expression.
+
+---
+
+## 255 — THE SYNTACTIC SHAPE BREAKS ON ASSOCIATIVITY.  252 was right, with a bound.
+
+254's shape got `layered_seq`'s layer case statable.  Working it through, it does
+not close, and the reason is exact.  At `inl s`, writing `L` for the layered left
+half and `L'` for its base:
+
+    sys's trailing init guards        (L'.hlt s ∧ ¬b) ∧ tr.1
+    POST.map restrict's init guards    ¬b ∧ (L'.hlt s ∧ tr.1)
+
+**Semantically equal, syntactically different** — they differ by associativity
+and commutativity of `∧`.  `sys` gets its guard from `L.hlt s = L'.hlt s ∧ ¬b`
+being substituted into `seqGSystem`'s `L.hlt s ∧ tr.1`; the shape's `restrict`
+conjoins `¬b` on the OUTSIDE.  Nothing in the list structure is wrong: `pre`,
+`extra` and `post` line up exactly, lengths and targets match.  Only the guard
+TERMS differ.
+
+**So 252's instinct was right, and this bounds how right.**  It concluded
+`IsLayer` must be semantic; 253/254 kept it syntactic to protect the rank proofs,
+which was also right — those survived the migration untouched.  The resolution is
+neither: **the LIST STRUCTURE stays syntactic, and only the GUARDS go semantic.**
+
+    split : ∀ s, dom s → ∃ pre extra post post',
+      base.trans s = pre ++ post
+      sys.trans s  = pre ++ extra ++ post'
+      every guard in `extra` implies `b`
+      post' matches post pointwise: same targets, and each guard EQUIVALENT
+        (not equal) to `¬b ∧` the corresponding one
+
+Rank proofs decompose membership through `pre`/`extra`/`post'` exactly as now, so
+they are untouched again; the AC problem disappears because `bval` equality is
+insensitive to it.
+
+**Not landed, for the reason 253 gave and 254 vindicated**: it changes the field
+again, and a half-migration would leave every downstream theorem typechecking
+against a shape that is no longer proved.  The pointwise relation also needs
+defining Mathlib-free — this cluster has no `List.Forall₂` — which is a small
+recursive definition, not a one-liner.
+
+**Odds: 81%, held.**  Second shape failure in the `seq` case, but the first was
+diagnosed and fixed and this one is diagnosed with a fix specified.  The pattern
+across 248, 252 and 255 is consistent and now well understood: every attempt to
+state a layer purely on syntax has broken at the point where guards are
+manipulated rather than merely carried.
+
+**Next.**  Define the pointwise guard-equivalence relation, migrate `IsLayer` to
+the hybrid shape in one pass, then `layered_seq`.
