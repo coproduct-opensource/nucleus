@@ -3275,6 +3275,59 @@ fn allrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// W1 makes these equivalent, and `B` carries a copy of `e` outside the loop, so
 /// the pullback's components track `e`'s size.  Equivalence is CHECKED
 /// (`behaviour(A) == behaviour(B)`) rather than assumed — a non-vacuity gate.
+/// 430: `LevelAgreementActive` with `reachMask` levels, searched over all ranks.
+/// Returns `None` when a component is too big to search, else `Some(satisfiable)`.
+fn laa_satisfiable<const NA: usize>(p: &Aut<NA>) -> Option<bool> {
+    let k = p.k as usize;
+    if k == 0 || k > MAXK { return None; }
+    let mut lvl = vec![0usize; k];
+    for u in 0..k {
+        let mut sr = vec![false; k]; sr[u] = true;
+        let mut st = vec![u];
+        while let Some(v) = st.pop() {
+            for x in 0..NA {
+                if p.st[v][x] == 0 { continue; }
+                let t = (p.st[v][x] - 1) as usize;
+                if !sr[t] { sr[t] = true; st.push(t); }
+            }
+        }
+        let mut m = 0usize;
+        for w in 0..k { if sr[w] { m |= 1 << w; } }
+        lvl[u] = m;
+    }
+    let mut levels = lvl.clone(); levels.sort_unstable(); levels.dedup();
+    for &n in &levels {
+        let comp: Vec<usize> = (0..k).filter(|&u| lvl[u] == n).collect();
+        if comp.len() < 2 { continue; }
+        if comp.len() > 8 { return None; }
+        let mut perm: Vec<usize> = (0..comp.len()).collect();
+        let mut lok = false;
+        loop {
+            let mut rank = [0usize; MAXK];
+            for (i2, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i2; }
+            let mut agree = true;
+            for x in 0..NA {
+                let mut outs: Vec<Option<usize>> = Vec::new();
+                for &u in &comp {
+                    let tv = p.st[u][x];
+                    let halts = (p.hl[u] >> x) & 1 == 1;
+                    let isact = if tv == 0 { halts } else {
+                        let t = (tv - 1) as usize;
+                        !(lvl[t] == lvl[u] && rank[t] < rank[u])
+                    };
+                    if !isact { continue; }
+                    outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                }
+                if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+            }
+            if agree { lok = true; break; }
+            if !next_perm(&mut perm) { break; }
+        }
+        if !lok { return Some(false); }
+    }
+    Some(true)
+}
+
 fn unrollpair<const NA: usize>(nguards: u8, maxdepth: usize) {
     fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
         if d == 0 {
@@ -3305,6 +3358,7 @@ fn unrollpair<const NA: usize>(nguards: u8, maxdepth: usize) {
     let one = a_test::<NA>((1u8 << NA) - 1);          // the guard true at every atom
     let (mut tried, mut equiv, mut tested, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut comp_hist = [0usize; 10];
+    let (mut rescued_cnt, mut doomed_cnt, mut collapsible) = (0usize, 0usize, 0usize);
     let mut first_bad: Option<String> = None;
     for e in &base {
         for g in 0..nguards {
@@ -3375,8 +3429,21 @@ fn unrollpair<const NA: usize>(nguards: u8, maxdepth: usize) {
             tested += 1;
             if all_ok { sat += 1 } else {
                 unsat += 1;
+                // 430: the hypothesis is EXISTENTIAL.  A valid quotient may merge
+                // only bisimilar states, so the candidates above the forced
+                // pullback are its further bisimulation collapses.  Try that one.
+                let (blk, nb) = bisim_blocks(&p);
+                let rescued = if nb < p.k as usize {
+                    match quotient_by(&p, &blk, nb).and_then(|q| canon(&q)) {
+                        Some(q) => laa_satisfiable(&q) == Some(true),
+                        None => false,
+                    }
+                } else { false };
+                if rescued { rescued_cnt += 1 } else { doomed_cnt += 1 }
+                if nb < p.k as usize { collapsible += 1 }
                 if first_bad.is_none() {
-                    first_bad = Some(format!("g={} maxcomp={} {}", g, mx, show_aut("P", &p)));
+                    first_bad = Some(format!("g={} maxcomp={} collapsible={} {}",
+                        g, mx, nb < p.k as usize, show_aut("P", &p)));
                 }
             }
         }
@@ -3388,6 +3455,9 @@ fn unrollpair<const NA: usize>(nguards: u8, maxdepth: usize) {
     println!("  LevelAgreementActive satisfiable     : {}", sat);
     println!("  UNSATISFIABLE                        : {}", unsat);
     println!("  max-component histogram (index=size) : {:?}", comp_hist);
+    println!("  of the UNSAT: further-collapsible     : {}", collapsible);
+    println!("  of the UNSAT: RESCUED by the collapse : {}", rescued_cnt);
+    println!("  of the UNSAT: no quotient rescues     : {}", doomed_cnt);
     if let Some(b) = first_bad { println!("  first refuter: {}", b); }
 }
 

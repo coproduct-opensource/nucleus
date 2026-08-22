@@ -20327,3 +20327,47 @@ this problem does not close still stands.
 **Next.** Test the existential directly: for the 168 failing pairs, enumerate
 OTHER behavioural quotients of the sum and check whether any satisfies
 `LevelAgreementActive`.
+
+## 430 — the existential is REAL and rescues a third. 114 survive.
+
+Web search: exhausted (200/200).
+
+429 flagged the standing limitation of every measurement since 417: the
+hypothesis is `∃ quot …`, and I had only ever tested the FORCED pullback. A valid
+quotient may merge only bisimilar states, so the candidates above the pullback
+are its further bisimulation collapses. Tested that, on the 168 refuters:
+
+| | count |
+|---|---|
+| `LevelAgreementActive` unsatisfiable on the forced pullback | 168 |
+| of those, further-collapsible | **168** |
+| **rescued by the bisimulation collapse** | **54** |
+| not rescued | **114** |
+
+**The caveat was worth raising: a third of the failures are an artefact of
+testing the wrong quotient.** Every one of the 168 admits a coarser valid
+quotient, and 32% of them satisfy the hypothesis there. Any conclusion drawn from
+forced pullbacks alone — including several of mine since 417 — carries that error
+bar.
+
+**But it does not rescue the result.** 114 of 5,126 pairs (2.2%) fail on both the
+forced pullback and its full collapse. The refutation survives the existential
+at a third of its former size.
+
+**Why the collapse is the strongest single alternative, and what is still
+untested.** Valid quotients form a lattice between the sum and the minimal
+automaton; I tested the two ends. Intermediate quotients have MORE states than
+the collapse, hence potentially larger components, and the failure predictor
+(425) is component size — so they are a priori worse candidates, not better.
+That is an argument, not a measurement: **the intermediate quotients remain
+untested**, and I have been wrong twice recently about what a population does or
+does not contain.
+
+**Odds: 45%, unchanged.** The existential turned out to matter — which vindicates
+raising it rather than asserting a refutation — and turned out not to matter
+enough to change the conclusion. Those cancel exactly. The field's prior that
+this problem does not close still stands.
+
+**Next.** Characterise the 114 survivors: they are the sharpest artefacts this
+program has produced — small, verified-equivalent, non-degenerate pairs on which
+the architecture fails under both extremal quotients.
