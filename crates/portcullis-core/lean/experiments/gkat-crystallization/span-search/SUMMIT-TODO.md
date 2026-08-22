@@ -12110,3 +12110,51 @@ iterations ago, only better understood.
 
 **Next.**  Decide (a) vs (b) by attempting `layered_sum`'s acyclic case under (a)
 and the disjointness invariant under (b) for one constructor each.
+
+---
+
+## 263 — ROUTE (a) CHOSEN AND LANDED.  `acyclic` now speaks the bisimulation's language.
+
+262 left a choice: (a) restate `acyclic` on `autStep`/`firstMatch` edges, or
+(b) prove list-membership and first-matching coincide via a mutual-disjointness
+invariant.  **Decided by checking what each can reuse**, not by preference:
+
+  * **(b)** needs a new invariant — "a Thompson state's transition guards are
+    mutually disjoint" — proved through all five constructors.  It IS true (`ite`
+    splits on `g`/`¬g`, `seq` gets it from `InitHaltDisjoint`, `wh` inherits),
+    but nothing in the repo records it.
+  * **(a)** needs `firstMatch` to commute with `map` and `append` — and
+    `GkatKleeneProofs` has ALL of it already: `firstMatch_append_none`,
+    `firstMatch_append_some`, `firstMatch_map_target_to`,
+    `firstMatch_map_guard_target`.
+
+So (a) is both the more honest notion AND the cheaper one.  Landed.
+
+**The bridge that made it cheap** is `firstMatch_mem_of_some` (sitting in this
+file since long before): a first-matching step yields LIST MEMBERSHIP of that
+transition.  So the crossing case of `layered_seq_acyclic` — where the step
+enters the right half and its target must be shown listed — keeps its old
+argument verbatim.  Only the cases that follow a step needed rewriting.
+
+**Zero errors, no `sorryAx`, `thompson_layered` still proved.**  Six migrations
+now: 248 domain, 254 shape, 256 syntax/semantics, 258 states, 261/262
+listed-states, 263 firstMatch — every one forced by attempting the next case.
+
+**What this unblocks.**  `Layered.acyclic` and `GAutBisim` now speak the same
+language, which is what 261's argument needed: define `rank' q` as the minimum
+rank over `q`'s preimages via `Nat.find`; for `q → q'` take the minimising
+preimage and lift the step through the bisimulation.  The type mismatch that
+blocked it is gone.
+
+    hsum       PROVED                                    258
+    hcollapse  acyclic case now formalisable             open
+               layer case                                open
+    hsolve                                               open
+
+**Odds: 85%, up 1.**  A decision made on evidence rather than taste, and the
+migration it required landed whole and first-try after the analysis.  The
+acyclic case of `hcollapse` has a complete argument AND, now, a statement it can
+be written against.  Only +1: it is still unwritten, and the layer case of
+`hcollapse` — the pairwise connect-through-to induction — is untouched.
+
+**Next.**  `hcollapse`'s acyclic case, written against the new definition.
