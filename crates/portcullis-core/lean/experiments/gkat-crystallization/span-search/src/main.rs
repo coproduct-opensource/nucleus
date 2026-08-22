@@ -3759,16 +3759,37 @@ fn d4hunt<const NA: usize>(nguards: u8) {
     let (mut built, mut hits) = (0usize, 0usize);
     let mut hit_langs: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     let mut first_hit: Option<String> = None;
+    let (mut pb_sat, mut pb_uns, mut pb_und, mut pb_none) = (0usize, 0usize, 0usize, 0usize);
+    let mut first_pb: Option<String> = None;
     let mut consider = |c: Option<Aut<NA>>, built: &mut usize, hits: &mut usize,
                         hit_langs: &mut std::collections::HashSet<Vec<u8>>,
-                        first_hit: &mut Option<String>| {
+                        first_hit: &mut Option<String>,
+                        pb_sat: &mut usize, pb_uns: &mut usize,
+                        pb_und: &mut usize, pb_none: &mut usize,
+                        first_pb: &mut Option<String>| {
         let c = match c.and_then(|x| canon(&x)) { Some(v) => v, None => return };
         *built += 1;
         let b = behaviour(&c);
         if let Some(known) = refute.get(&b) {
             if &c != known {
                 *hits += 1;
-                hit_langs.insert(b);
+                hit_langs.insert(b.clone());
+                // 439: the existential's OTHER end.  The forced pullback is the
+                // LEAST-merged valid quotient (identifying the starts and closing
+                // under transitions determines the merge); the bisimulation
+                // minimal is the most-merged.  438 refuted at the minimal --
+                // test the pullback for the same pair.
+                match pullback(&c, known).and_then(|q| canon(&q)) {
+                    Some(pb) => match laa_satisfiable(&pb) {
+                        Some(true) => { *pb_sat += 1;
+                            if first_pb.is_none() {
+                                *first_pb = Some(format!("PULLBACK SATISFIES: {}", show_aut("PB", &pb)));
+                            } }
+                        Some(false) => *pb_uns += 1,
+                        None => *pb_und += 1,
+                    },
+                    None => *pb_none += 1,
+                }
                 if first_hit.is_none() {
                     *first_hit = Some(format!("{}   vs known {}",
                         show_aut("NEW", &c), show_aut("OLD", known)));
@@ -3778,20 +3799,30 @@ fn d4hunt<const NA: usize>(nguards: u8) {
     };
     for e in &d3 {
         for g in 0..nguards {
-            consider(Some(a_wh::<NA>(g, e)), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+            consider(Some(a_wh::<NA>(g, e)), &mut built, &mut hits, &mut hit_langs, &mut first_hit,
+                &mut pb_sat, &mut pb_uns, &mut pb_und, &mut pb_none, &mut first_pb);
         }
         for l in &leaves {
-            consider(a_seq::<NA>(e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
-            consider(a_seq::<NA>(l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+            consider(a_seq::<NA>(e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit,
+                &mut pb_sat, &mut pb_uns, &mut pb_und, &mut pb_none, &mut first_pb);
+            consider(a_seq::<NA>(l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit,
+                &mut pb_sat, &mut pb_uns, &mut pb_und, &mut pb_none, &mut first_pb);
             for g in 0..nguards {
-                consider(a_ite::<NA>(g, e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
-                consider(a_ite::<NA>(g, l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+                consider(a_ite::<NA>(g, e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit,
+                    &mut pb_sat, &mut pb_uns, &mut pb_und, &mut pb_none, &mut first_pb);
+                consider(a_ite::<NA>(g, l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit,
+                    &mut pb_sat, &mut pb_uns, &mut pb_und, &mut pb_none, &mut first_pb);
             }
         }
     }
     println!("  depth-4 candidates built            : {}", built);
     println!("  landing in a REFUTING language      : {}", hits);
     println!("  distinct refuting languages hit     : {} / {}", hit_langs.len(), refute.len());
+    println!("  --- the existential's other end: the FORCED PULLBACK (439) ---");
+    println!("    pullback SATISFIES LevelAgreementActive : {}", pb_sat);
+    println!("    pullback also refutes                   : {}", pb_uns);
+    println!("    undecided / no pullback                 : {} / {}", pb_und, pb_none);
+    if let Some(h) = first_pb { println!("    {}", h); }
     match first_hit {
         Some(h) => println!("  *** NON-DEGENERATE PAIR FOUND:\n    {}", h),
         None => println!("  no depth-4 expression realises any refuting language"),

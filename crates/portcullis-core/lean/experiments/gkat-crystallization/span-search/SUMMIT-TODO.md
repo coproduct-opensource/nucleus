@@ -20778,3 +20778,57 @@ The field's prior that this problem does not close still stands.
 **Next.** Enumerate the quotients BETWEEN the sum and the minimal automaton for
 one of the 326 pairs, and test each. That closes the existential in the only
 direction still open.
+
+## 439 — BOTH ends of the quotient lattice refute. The strongest result in this program.
+
+Web search: exhausted (200/200).
+
+438 left one way out: the hypothesis is `∃ quot`, and I had refuted only at the
+bisimulation-MINIMAL quotient. The lattice's structure settles what "other
+quotients" means — identifying the two starts and closing under transitions
+DETERMINES the merge, so the forced pullback is the **least**-merged valid
+quotient and the minimal automaton is the **most**-merged. Tested the other end,
+on all 326 non-degenerate pairs:
+
+| | count |
+|---|---|
+| pairs landing in a refuting language | 326 |
+| **forced pullback SATISFIES `LevelAgreementActive`** | **0** |
+| **forced pullback also refutes** | **326** |
+| undecided / no pullback | 0 / 0 |
+
+**Both extremes of the quotient lattice fail, for every one of the 326.** Taken
+with 438, that is: genuinely distinct expression pairs, verified same language,
+whose common minimal automaton AND forced pullback both refute the architecture's
+hypothesis, across all 6 refuting languages.
+
+**That this could have gone the other way is why it counts.** At 430, on the
+W1-degenerate population, the pullback failed and the minimal RESCUED all 400 —
+the two ends genuinely differ when the population is degenerate. Here they agree.
+
+**Lifting the cap, as promised.** At 434 I capped odds movement at ±5 unless a
+counterexample survived every quotient. This one survives both extremes of the
+lattice. The remaining gap is the intermediate quotients — untested, and they sit
+between two failures rather than beside a success, which is a much weaker refuge
+than the one 430 exposed.
+
+**Where the program actually stands.**
+* The state-preserving peel is refuted by theorems (417, 418).
+* The duplication replacement is proved and its cost is affordable (419-422).
+* `LevelAgreementActive` — the hypothesis both `finiteAxiomsComplete_of_agreement`
+  and `_of_maskAgreement` carry — is **false on non-degenerate pairs at both
+  extremal witnesses**.
+* Everything in the Lean corpus remains true and `sorry`-free; what is false is
+  that these hypotheses can be instantiated.
+
+**Odds: 50% → 40%.** The largest justified move since 417, and the first one
+resting on a counterexample that has survived every check I know how to run:
+non-degeneracy (438), witness choice (439), sample size (14M candidates), and
+vacuity (436). The field's prior that this problem does not close is now the
+better-supported position, and I have said so at 417 and been wrong; the
+difference is that this counterexample has survived what those did not.
+
+**Next.** Reduce one of the 326 to a minimal Lean statement: exhibit `e`, `f`,
+their common minimal automaton, and a proof that no rank satisfies
+`LevelAgreementActive` on it. That converts the census result into a theorem and
+retires the hypothesis for good.
