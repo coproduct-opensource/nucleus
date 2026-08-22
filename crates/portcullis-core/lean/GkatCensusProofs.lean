@@ -11606,6 +11606,62 @@ loops directly. -/
 
 #print axioms level_const_of_mutual
 
+/-! ### Replacing the pigeonhole
+
+356's argument iterates a chain through two blocks and appeals to a repeat in a
+finite set.  A pigeonhole is real work in a Mathlib-free file — but it is not
+what the argument needs.  Levels never rise along reachability, so the chain's
+levels form a non-increasing `Nat` sequence, and such a sequence STABILISES for
+a much simpler reason: there is no infinite strict descent in `Nat`.
+
+Stabilisation is then exactly the hypothesis of 339's `reachLevel_scc`, which
+turns "reaches, with equal level" into mutual reachability. -/
+
+/-- No infinite strict descent: a non-increasing `Nat` sequence stabilises
+somewhere.  The bound is explicit — it must stabilise by step `f 0`. -/
+theorem exists_stable (f : Nat → Nat) (hstep : ∀ n, f (n + 1) ≤ f n) :
+    ∃ n, f (n + 1) = f n := by
+  cases Classical.em (∃ n, f (n + 1) = f n) with
+  | inl h => exact h
+  | inr h =>
+      exfalso
+      have hne : ∀ n, f (n + 1) ≠ f n := fun n he => h ⟨n, he⟩
+      have key : ∀ n, f n + n ≤ f 0 := by
+        intro n
+        induction n with
+        | zero => exact Nat.le_refl _
+        | succ k ih =>
+            have hlt : f (k + 1) < f k := Nat.lt_of_le_of_ne (hstep k) (hne k)
+            have h1 : f (k + 1) + 1 ≤ f k := hlt
+            have h2 : f (k + 1) + (k + 1) ≤ f k + k := by
+              have e : f (k + 1) + (k + 1) = (f (k + 1) + 1) + k :=
+                (Nat.add_succ _ _).trans (Nat.succ_add _ _).symm
+              rw [e]
+              exact Nat.add_le_add_right h1 k
+            exact Nat.le_trans h2 ih
+      have hbad := key (f 0 + 1)
+      have : f 0 + 1 ≤ f 0 :=
+        Nat.le_trans (Nat.le_add_left _ _) hbad
+      exact absurd this (Nat.not_succ_le_self _)
+
+/-- **The chain argument, without a pigeonhole.**  If a chain of states never
+stops being reachable one from the next, its levels stabilise; at the point of
+stabilisation the two states reach each other, so they lie in one region.
+
+This is 356's iteration with the finite-set repeat replaced by well-foundedness
+of `<` on `Nat`. -/
+theorem exists_mutual_along_chain {S : Type} (sys : GkatThompson.GSystem S A T)
+    (g : Nat → S) (hmem : ∀ n, g n ∈ sys.states)
+    (hchain : ∀ n, SReaches sys (g n) (g (n + 1))) :
+    ∃ n, SReaches sys (g (n + 1)) (g n) := by
+  obtain ⟨n, hn⟩ := exists_stable (fun n => reachLevel sys (g n)) (fun n =>
+    countReach_mono sys (g n) (g (n + 1))
+      (fun w hw => (hchain n).trans hw) sys.states)
+  exact ⟨n, reachLevel_scc sys (hmem n) (hchain n) hn⟩
+
+#print axioms exists_stable
+#print axioms exists_mutual_along_chain
+
 end LevelExistence
 
 #print axioms reachLevel_mono

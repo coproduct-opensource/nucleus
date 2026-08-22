@@ -17558,3 +17558,49 @@ another circle:
 measurement, but it removes a route rather than opening one.
 
 **Next.** Option 1 — the pigeonhole, in Lean.
+
+## 377 — the pigeonhole, replaced rather than proved
+
+376 named the blocker on option 1: 356's chain argument appeals to a repeat in a
+finite set, and a pigeonhole is real work in a Mathlib-free file. It turns out
+the argument does not need one.
+
+Levels never rise along reachability, so a chain's levels form a non-increasing
+`Nat` sequence — and such a sequence stabilises for a much simpler reason than
+finiteness of the state set: **there is no infinite strict descent in `Nat`.**
+
+```lean
+theorem exists_stable (f : Nat → Nat) (hstep : ∀ n, f (n + 1) ≤ f n) :
+    ∃ n, f (n + 1) = f n
+```
+
+with an explicit bound — it must stabilise by step `f 0`, proved from
+`∀ n, f n + n ≤ f 0`. Stabilisation is then exactly the hypothesis of 339's
+`reachLevel_scc`, which converts *reaches, with equal level* into mutual
+reachability:
+
+```lean
+theorem exists_mutual_along_chain (sys) (g : Nat → S)
+    (hmem : ∀ n, g n ∈ sys.states) (hchain : ∀ n, SReaches sys (g n) (g (n + 1))) :
+    ∃ n, SReaches sys (g (n + 1)) (g n)
+```
+
+**That is 356's iteration, complete**, with the finite-set repeat traded for
+well-foundedness of `<`. Both `[propext, choice, Quot.sound]`.
+
+**A pattern worth naming.** This is the second time a hard-looking prerequisite
+dissolved once the right invariant was in hand — 355's "circular" lifting became
+two independent edges once SCC-level reachability replaced state-level, and here
+a pigeonhole became a descending-`Nat` argument once `reachLevel` was available.
+Both times the machinery already existed and the difficulty was in the framing.
+
+**What remains of option 1.** The chain `g` itself. Building it needs the
+bisimulation transport — *`v ~ v'` and `v' ⇝ u'` gives `v ⇝ u''` with `u''` in
+the same block* — which requires a bisimulation relation as a Lean object, and
+this file has none. That is a smaller and much more definite gap than "a
+pigeonhole", and it is the last piece of 356's argument.
+
+**Odds: 97%, unchanged.** A named blocker is gone, but it was the easier half of
+option 1.
+
+**Next.** The bisimulation transport as a Lean object, so the chain can be built.
