@@ -3241,6 +3241,50 @@ fn allrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     if let Some(b) = first_partial { println!("  first partial: {}", b); }
 }
 
+/// **`PAD_413QUOT`** (iteration 426).
+///
+/// 425 raised a caveat against 417/418: they refuted `LevelAgreementActive` by
+/// measuring `certifiedThompson` automata, but the top-level hypothesis
+/// quantifies over QUOTIENTS of `SUMof e f`, and 413's refuting configuration
+/// occurs in none of the 253 reducible pullbacks.  My argument that the shape is
+/// still reachable — take `e = f` and quotient `SUMof e e` — was a sketch.
+///
+/// Build it.  `e = wh g0 (seq (wh g1 act) act)` with g0 = 1, g1 = 3, the exact
+/// 413 expression; form the forced quotient of the pair `(a, a)`; and check
+/// whether a self-loop and a halt still share an SCC.
+fn q413<const NA: usize>() {
+    let act = a_act::<NA>();
+    let inner = a_wh::<NA>(3, &act);
+    let body = match a_seq::<NA>(&inner, &act) { Some(b) => b, None => { println!("seq failed"); return } };
+    let a = a_wh::<NA>(1, &body);
+    let a = match canon(&a) { Some(c) => c, None => { println!("canon failed"); return } };
+    println!("PAD_413QUOT  source  {}", show_aut("a", &a));
+    let bad = |x: &Aut<NA>| -> bool {
+        for comp in sccs_of(x) {
+            for at in 0..NA {
+                let mut hs = false; let mut hh = false;
+                for &u in &comp {
+                    if x.st[u][at] == (u + 1) as u8 { hs = true; }
+                    if (x.hl[u] >> at) & 1 == 1 && x.st[u][at] == 0 { hh = true; }
+                }
+                if hs && hh { return true; }
+            }
+        }
+        false
+    };
+    println!("  source has the 413 configuration : {}", bad(&a));
+    println!("  source reducible                 : {}", reducible(&a));
+    match pullback(&a, &a) {
+        None => println!("  pullback(a,a): NONE — the forced quotient does not exist at this size"),
+        Some(p) => {
+            let pc = canon(&p).unwrap_or(p);
+            println!("  pullback(a,a)  {}", show_aut("P", &pc));
+            println!("  quotient has the 413 configuration : {}", bad(&pc));
+            println!("  quotient reducible                 : {}", reducible(&pc));
+        }
+    }
+}
+
 fn srcagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut sccs, mut headed_ok, mut headless, mut headless_agree) =
@@ -10410,6 +10454,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         allrank::<3>(g, r, c);
         return;
     }
+    if std::env::var("PAD_413QUOT").is_ok() { q413::<3>(); return; }
     if std::env::var("PAD_SRCAGREE").is_ok() {
         let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);

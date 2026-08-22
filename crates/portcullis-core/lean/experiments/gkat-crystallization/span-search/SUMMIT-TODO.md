@@ -20122,3 +20122,49 @@ prior that this problem does not close still stands.
 **Next.** Settle the caveat: construct `SUMof e e` for 413's expression, quotient
 it, and check directly whether the refuting configuration survives — building the
 object rather than sampling for it.
+
+## 426 — the caveat is settled: 417's refutation was measured on the wrong objects and is RIGHT anyway.
+
+Web search: exhausted (200/200).
+
+425 raised a doubt against my own 417/418: they refuted `LevelAgreementActive`
+on `certifiedThompson` automata, but the top-level hypothesis quantifies over
+QUOTIENTS of `SUMof e f`, and 413's refuting configuration appeared in none of
+the 253 reducible pullbacks. My reply — take `e = f` and quotient `SUMof e e` —
+was a sketch. Built it instead:
+
+```
+source        a  k=2 ih=110 it=[1,0,0] | q0: hl=000 st=[1,1,2] | q1: hl=110 st=[1,0,0]
+  has 413 configuration : true      reducible : true
+pullback(a,a) P  k=2 ih=110 it=[1,0,0] | q0: hl=000 st=[1,1,2] | q1: hl=110 st=[1,0,0]
+  has 413 configuration : true      reducible : true
+```
+
+**The forced quotient IS the source automaton, and it keeps the configuration.**
+So 417/418's refutation holds on the objects the hypothesis actually ranges
+over, and the 27-point drop I took at 417 was justified. The sketch is now a
+measurement.
+
+**Two things worth separating.** 425's "the candidate scored zero" was a correct
+statement about the census sample and a wrong inference if read as absence: the
+configuration exists, the sample just does not contain it. 413's automaton comes
+from a depth-3 expression and the census pairs are drawn from k ≤ 3, so this is
+the same sampling limitation 413 itself exposed — the third time in this program
+that a census zero has meant "not in this pool" rather than "does not occur".
+
+**And the sharper point: this quotient is REDUCIBLE.** The configuration that
+breaks the architecture is not an irreducibility phenomenon. So the second
+obstruction of 424 — the 34 reducible-but-uncovered pullbacks — has at least one
+confirmed mechanism available to it, even though that mechanism is absent from
+the sample where those 34 live. Whether it is THEIR mechanism is still open, and
+I am not going to claim it is on the strength of one constructed example.
+
+**Odds: 50%, unchanged.** A doubt about earlier work was raised and resolved in
+favour of the earlier work; nothing new broke and nothing new was built. The
+field's prior that this problem does not close still stands.
+
+**Next.** The census's pullback population is too small to contain the shapes
+that matter — three iterations have now hit that. Generate pullbacks from
+TARGETED expression pairs at depth 3+, rather than from the k ≤ 3 closure, and
+re-run 424's cross-tabulation on a population that can actually contain the
+failures.
