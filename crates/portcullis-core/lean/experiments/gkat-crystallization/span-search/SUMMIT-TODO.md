@@ -17457,3 +17457,56 @@ labelled so that the next iteration cannot silently rest on a vacuity.
 
 **Next.** `HeadedRegion` for quotients — the one open item, with the residual
 1.9% as a separate obligation.
+
+## 375 — LEVEL AGREEMENT ⟹ COMPLETENESS
+
+The audit said everything but agreement is proved, so this iteration connects the
+chain to its actual target.
+
+```lean
+theorem finiteAxiomsComplete_of_agreement
+    (hquot : ∀ e f, UniformLanguageEquivalent e f →
+      ∃ Q quot π rank,
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        UniformWF quot ∧
+        LevelAgreementActive quot (reachLevel ⟨quot.states, quot.hlt, quot.trans⟩) rank) :
+    GkatKleene.FiniteAxiomsCompleteBA A T
+```
+
+`[propext, Classical.choice, Quot.sound]`. And
+`FiniteAxiomsCompleteBA A T` unfolds to
+`∀ e f, UniformLanguageEquivalent e f → EquivBA e f` — **the completeness
+statement itself**, over the finite axioms plus test BA.
+
+Built from `sumQuotientSolvable_of_agreement` (this iteration) composed with the
+corpus's `completeness_of_sumQuotientSolvable`, which I checked is itself
+`sorry`-free: `[propext, Classical.choice, Quot.sound]`.
+
+**So the whole program now rests on one hypothesis**, and everything else is
+discharged inside it: the level function (`reachLevel`, free for every system),
+its bound and monotonicity, halt determinism (from `UniformWF`), the peel with
+its layers and condensation, the shared lists, guard normalisation, the six
+region conditions, the gates, and the fact that minimality is required nowhere.
+
+**Is the hypothesis meaningful?** Applying my own rule rather than asserting it:
+
+* it is the *measured* predicate, not a neighbour — 362 checked that
+  `LevelAgreementActive`'s active set is exactly the set `PAD_BACKATOM` scores;
+* it is *non-generic* — 367 found 41% of arbitrary minimal guarded automata
+  violate it, so its holding on GKAT quotients is signal;
+* it is *measured to hold* — 136 295 of 136 295 regions, control passing.
+
+It is not proved. That is the whole of what is left.
+
+**`sumQuotientSolvable_of_headed` too**, taking the headed form — sufficient
+rather than necessary, covering the 98.1% of multi-state regions that have a
+per-atom head.
+
+**Odds: 97%, unchanged.** A reduction is not a proof, and this one has been
+implicit since 362; writing it down makes the remaining obligation exact but does
+not shrink it. What has changed is that the target is now a single named
+predicate with a measurement, a base rate, and a `sorry`-free path to
+completeness on either side of it.
+
+**Next.** `LevelAgreementActive` itself — the one open statement, by induction on
+GKAT syntax, with `wh` the only case that carries content.

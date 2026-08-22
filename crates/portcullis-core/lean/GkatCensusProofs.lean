@@ -13870,6 +13870,90 @@ theorem solvesBA_of_headed {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms levelAgreementActive_of_headed
 #print axioms solvesBA_of_headed
 
+/-- # THE ROUTE, CONNECTED TO COMPLETENESS
+
+`SumQuotientSolvable` follows from **level agreement alone**.
+
+Everything else the chain needed is discharged inside: the level function is
+`reachLevel`, free for every system (339); its bound and monotonicity are
+`reachLevel_bound` / `reachLevel_mono`; halt determinism comes from the corpus's
+`UniformWF` (357); and the whole peel — layers, condensation, shared lists, guard
+normalisation, region conditions, gates — is 338-362.  Minimality is not required
+anywhere (343).
+
+So the remaining mathematical content of the route is exactly one hypothesis per
+equivalent pair: **some quotient identifying the two starts satisfies
+`LevelAgreementActive`.** -/
+theorem sumQuotientSolvable_of_agreement
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        LevelAgreementActive quot
+          (reachLevel { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+          rank) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  refine sumQuotientSolvable_of_solver (fun e f hef => ?_)
+  obtain ⟨Q, quot, π, rank, hπ, hwf, hagree⟩ := hquot e f hef
+  refine ⟨Q, quot, π, ?_, hπ⟩
+  exact solvesBA_of_levelAgreementActive quot
+    (reachLevel { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+    rank (quot.states.length + 1)
+    (reachLevel_bound _)
+    (reachLevel_mono { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+    (haltDeterministic_of_uniformWF hwf)
+    hagree
+
+/-- The same, with the headed form of the hypothesis — sufficient rather than
+necessary, and measured to cover 98.1% of multi-state regions. -/
+theorem sumQuotientSolvable_of_headed
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        ∀ n : Nat, HeadedRegion quot
+          (reachLevel { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+          rank n) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  refine sumQuotientSolvable_of_agreement (fun e f hef => ?_)
+  obtain ⟨Q, quot, π, rank, hπ, hwf, hhead⟩ := hquot e f hef
+  exact ⟨Q, quot, π, rank, hπ, hwf,
+    levelAgreementActive_of_headed quot _ rank hhead⟩
+
+#print axioms sumQuotientSolvable_of_agreement
+#print axioms sumQuotientSolvable_of_headed
+
+/-- # LEVEL AGREEMENT ⟹ COMPLETENESS
+
+Composed with the corpus's `completeness_of_sumQuotientSolvable`, the route
+reaches its actual target: **the finite GKAT axioms are complete, given only
+that some quotient of each equivalent pair satisfies `LevelAgreementActive`.**
+
+Every other ingredient is discharged: the level function, its bound and
+monotonicity, halt determinism, the peel and all its layers, the shared lists,
+guard normalisation, the region conditions, the gates, and the fact that
+minimality is required nowhere. -/
+theorem finiteAxiomsComplete_of_agreement
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        LevelAgreementActive quot
+          (reachLevel { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+          rank) :
+    GkatKleene.FiniteAxiomsCompleteBA A T :=
+  GkatSumQuotient.completeness_of_sumQuotientSolvable
+    (sumQuotientSolvable_of_agreement hquot)
+
+#print axioms GkatSumQuotient.completeness_of_sumQuotientSolvable
+#print axioms finiteAxiomsComplete_of_agreement
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
