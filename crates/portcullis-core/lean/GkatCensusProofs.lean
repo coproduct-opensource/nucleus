@@ -12135,6 +12135,184 @@ theorem firstMatch_eq_of_exclusiveAt {S X : Type} (W : T → X → Bool) (x : X)
 #print axioms firstMatch_of_exclusiveAt
 #print axioms firstMatch_eq_of_exclusiveAt
 
+/-- **Any transition list is behaviourally its normalisation, split three ways.**
+The order is `(raw ++ loops) ++ exits` — exactly the shape `peeledSys.trans`
+has.  `p` picks the raw part, `q` the loop part among the rest, and what remains
+is the exit part; no side condition on `p` or `q` at all, because exclusivity
+does the work. -/
+theorem firstMatch_partition3 {S X : Type} (W : T → X → Bool) (x : X)
+    (D : List (BExp T × A × S)) (hex : ExclusiveAt W x D)
+    (p q : (BExp T × A × S) → Bool) :
+    GkatKleene.firstMatch W x D
+      = GkatKleene.firstMatch W x
+          ((D.filter p ++ D.filter (fun tr => !p tr && q tr))
+            ++ D.filter (fun tr => !p tr && !q tr)) := by
+  have hsub : ∀ tr, tr ∈ ((D.filter p ++ D.filter (fun tr => !p tr && q tr))
+      ++ D.filter (fun tr => !p tr && !q tr)) → tr ∈ D := by
+    intro tr h
+    cases List.mem_append.mp h with
+    | inr h3 => exact (List.mem_filter.mp h3).1
+    | inl h12 =>
+        cases List.mem_append.mp h12 with
+        | inl h1 => exact (List.mem_filter.mp h1).1
+        | inr h2 => exact (List.mem_filter.mp h2).1
+  refine firstMatch_eq_of_exclusiveAt W x D _ hex
+    (fun a ha b hb => hex a (hsub a ha) b (hsub b hb))
+    (fun tr _ => ⟨fun htr => ?_, fun htr => hsub tr htr⟩)
+  cases hp : p tr with
+  | true =>
+      exact List.mem_append.mpr (Or.inl
+        (List.mem_append.mpr (Or.inl (List.mem_filter.mpr ⟨htr, hp⟩))))
+  | false =>
+      cases hq : q tr with
+      | true =>
+          refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr
+            (List.mem_filter.mpr ⟨htr, ?_⟩))))
+          simp [hp, hq]
+      | false =>
+          refine List.mem_append.mpr (Or.inr (List.mem_filter.mpr ⟨htr, ?_⟩))
+          simp [hp, hq]
+
+/-- **The split, end to end.**  A state's transition list has the same behaviour
+as the three-way partition of its normalisation.  This is the shape obligation of
+`solvesBA_of_behaviour` discharged at the level of a single list: whatever `raw`,
+`loops` and `exits` are chosen, as long as they partition the normalised list in
+that order, `firstMatch` is unchanged. -/
+theorem firstMatch_split {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) (p q : (BExp T × A × S) → Bool) :
+    GkatKleene.firstMatch W x L
+      = GkatKleene.firstMatch W x
+          (((disjoin L).filter p ++ (disjoin L).filter (fun tr => !p tr && q tr))
+            ++ (disjoin L).filter (fun tr => !p tr && !q tr)) :=
+  (firstMatch_disjoin W x L).symm.trans
+    (firstMatch_partition3 W x (disjoin L) (disjoin_exclusive W x L) p q)
+
+#print axioms firstMatch_partition3
+#print axioms firstMatch_split
+
+/-- **Re-gating a guard is invisible where the gate covers it.**  The peel wraps
+each entry's guard `g` as `hlt ∧ b ∧ g`; that changes nothing at an atom where
+`g`'s truth already forces both `hlt` and `b`.  For the loop entries this is
+exactly what 343 measured: `raw.hlt s` is true on every non-raw non-dead atom,
+and `bs n` is true on every back-edge atom of the level. -/
+theorem bval_gate_eq {X : Type} (W : T → X → Bool) (x : X) (hlt b g : BExp T)
+    (h : GkatGS.bval W g x = true →
+      GkatGS.bval W hlt x = true ∧ GkatGS.bval W b x = true) :
+    GkatGS.bval W (BExp.and hlt (BExp.and b g)) x = GkatGS.bval W g x := by
+  cases hg : GkatGS.bval W g x with
+  | false => show (_ && (_ && GkatGS.bval W g x)) = _; rw [hg]; simp
+  | true =>
+      obtain ⟨h1, h2⟩ := h hg
+      show (GkatGS.bval W hlt x && (GkatGS.bval W b x && GkatGS.bval W g x)) = _
+      rw [h1, h2, hg]
+      rfl
+
+/-- A list whose guards are replaced by pointwise-equivalent ones fires the same
+way — so the shared, gated list of the peel may stand in for the state's own
+filtered part. -/
+theorem firstMatch_map_guard {S X : Type} (W : T → X → Bool) (x : X)
+    (f : BExp T → BExp T) :
+    ∀ (L : List (BExp T × A × S)),
+      (∀ tr ∈ L, GkatGS.bval W (f tr.1) x = GkatGS.bval W tr.1 x) →
+      GkatKleene.firstMatch W x (L.map (fun tr => (f tr.1, tr.2)))
+        = GkatKleene.firstMatch W x L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons e tl ih =>
+      intro h
+      obtain ⟨g, q, s'⟩ := e
+      have hg : GkatGS.bval W (f g) x = GkatGS.bval W g x :=
+        h _ (List.mem_cons_self ..)
+      show (if GkatGS.bval W (f g) x then _ else
+        GkatKleene.firstMatch W x (tl.map (fun tr => (f tr.1, tr.2))))
+        = (if GkatGS.bval W g x then _ else _)
+      rw [hg, ih (fun tr htr => h tr (List.mem_cons_of_mem _ htr))]
+
+/-- **The gated stand-in, at one state.**  If every entry's guard forces the
+state's halt test and the level's loop test, then the peel's gated copy of a list
+fires exactly as the list did. -/
+theorem firstMatch_gated {S X : Type} (W : T → X → Bool) (x : X)
+    (hlt b : BExp T) (L : List (BExp T × A × S))
+    (h : ∀ tr ∈ L, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W hlt x = true ∧ GkatGS.bval W b x = true) :
+    GkatKleene.firstMatch W x
+        (L.map (fun tr => (BExp.and hlt (BExp.and b tr.1), tr.2)))
+      = GkatKleene.firstMatch W x L :=
+  firstMatch_map_guard W x (fun g => BExp.and hlt (BExp.and b g)) L
+    (fun tr htr => bval_gate_eq W x hlt b tr.1 (h tr htr))
+
+#print axioms bval_gate_eq
+#print axioms firstMatch_gated
+
+/-- The exit gate has a different shape — `(hlt ∧ ¬b) ∧ g` — and needs `b` FALSE
+where the guard holds, which is the other half of 343's condition. -/
+theorem bval_exit_gate_eq {X : Type} (W : T → X → Bool) (x : X) (hlt b g : BExp T)
+    (h : GkatGS.bval W g x = true →
+      GkatGS.bval W hlt x = true ∧ GkatGS.bval W b x = false) :
+    GkatGS.bval W (BExp.and (BExp.and hlt (BExp.not b)) g) x = GkatGS.bval W g x := by
+  cases hg : GkatGS.bval W g x with
+  | false => show ((_ && _) && GkatGS.bval W g x) = _; rw [hg]; simp
+  | true =>
+      obtain ⟨h1, h2⟩ := h hg
+      show ((GkatGS.bval W hlt x && !GkatGS.bval W b x) && GkatGS.bval W g x) = _
+      rw [h1, h2, hg]
+      rfl
+
+theorem firstMatch_exit_gated {S X : Type} (W : T → X → Bool) (x : X)
+    (hlt b : BExp T) (L : List (BExp T × A × S))
+    (h : ∀ tr ∈ L, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W hlt x = true ∧ GkatGS.bval W b x = false) :
+    GkatKleene.firstMatch W x
+        (L.map (fun tr => (BExp.and (BExp.and hlt (BExp.not b)) tr.1, tr.2)))
+      = GkatKleene.firstMatch W x L :=
+  firstMatch_map_guard W x (fun g => BExp.and (BExp.and hlt (BExp.not b)) g) L
+    (fun tr htr => bval_exit_gate_eq W x hlt b tr.1 (h tr htr))
+
+theorem firstMatch_append_congr {S X : Type} (W : T → X → Bool) (x : X)
+    (A₁ A₂ B₁ B₂ : List (BExp T × A × S))
+    (hA : GkatKleene.firstMatch W x A₁ = GkatKleene.firstMatch W x A₂)
+    (hB : GkatKleene.firstMatch W x B₁ = GkatKleene.firstMatch W x B₂) :
+    GkatKleene.firstMatch W x (A₁ ++ B₁) = GkatKleene.firstMatch W x (A₂ ++ B₂) := by
+  cases hA₁ : GkatKleene.firstMatch W x A₁ with
+  | some r =>
+      rw [GkatKleene.firstMatch_append_some W x A₁ B₁ hA₁,
+        GkatKleene.firstMatch_append_some W x A₂ B₂ (hA ▸ hA₁)]
+  | none =>
+      rw [GkatKleene.firstMatch_append_none W x A₁ B₁ hA₁,
+        GkatKleene.firstMatch_append_none W x A₂ B₂ (hA ▸ hA₁), hB]
+
+/-- **THE STATE-LEVEL AGREEMENT.**  A state's transition list fires exactly as the
+peel's reassembly of it does — `raw` first, then the gated loop entries, then the
+gated exit entries.  The two hypotheses are precisely 343's measured condition,
+stated at one atom: where a loop entry fires, the state's halt test and the
+level's loop test both hold; where an exit entry fires, the halt test holds and
+the loop test does not. -/
+theorem firstMatch_peel_agrees {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) (hltE b : BExp T)
+    (p q : (BExp T × A × S) → Bool)
+    (hloop : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && q tr),
+      GkatGS.bval W tr.1 x = true →
+        GkatGS.bval W hltE x = true ∧ GkatGS.bval W b x = true)
+    (hexit : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && !q tr),
+      GkatGS.bval W tr.1 x = true →
+        GkatGS.bval W hltE x = true ∧ GkatGS.bval W b x = false) :
+    GkatKleene.firstMatch W x L
+      = GkatKleene.firstMatch W x
+          (((disjoin L).filter p
+             ++ ((disjoin L).filter (fun tr => !p tr && q tr)).map
+                  (fun tr => (BExp.and hltE (BExp.and b tr.1), tr.2)))
+            ++ ((disjoin L).filter (fun tr => !p tr && !q tr)).map
+                  (fun tr => (BExp.and (BExp.and hltE (BExp.not b)) tr.1, tr.2))) := by
+  refine (firstMatch_split W x L p q).trans ?_
+  refine (firstMatch_append_congr W x _ _ _ _
+    (firstMatch_append_congr W x _ _ _ _ rfl ?_) ?_).symm
+  · exact firstMatch_gated W x hltE b _ hloop
+  · exact firstMatch_exit_gated W x hltE b _ hexit
+
+#print axioms firstMatch_append_congr
+#print axioms firstMatch_peel_agrees
+
 end GuardNormalisation
 
 #print axioms firstMatch_disjoin

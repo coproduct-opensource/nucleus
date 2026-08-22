@@ -15898,3 +15898,58 @@ the `firstMatch`-agreement obligations of 340 without a translation step.
 
 **Next.** Use it: define `raw`/`loops`/`exits` as the three parts of the
 normalised list and discharge `solvesBA_of_behaviour`'s premise.
+
+## 345 — the state-level agreement, proved
+
+344 made partitioning legal. 345 uses it, and reaches the theorem the whole
+construction has been aimed at since 341.
+
+**The partition.** `firstMatch_partition3` / `firstMatch_split`: any transition
+list fires exactly as the three-way partition of its normalisation, in the order
+`(raw ++ loops) ++ exits` — which is `peeledSys.trans`'s shape on the nose. There
+is **no side condition on the two classifying predicates at all**; exclusivity
+does all the work, so `raw`, `loops` and `exits` may be carved out however the
+peel wants.
+
+**The gates.** The peel does not use the entries as they stand — it wraps them:
+
+| | gate | needs, where the guard holds |
+|---|---|---|
+| loop entry | `hlt ∧ (b ∧ g)` | `hlt` true and `b` **true** |
+| exit entry | `(hlt ∧ ¬b) ∧ g` | `hlt` true and `b` **false** |
+
+`bval_gate_eq` and `bval_exit_gate_eq` (both `[propext]`) say the wrapping is
+invisible under exactly those conditions, and `firstMatch_map_guard` lifts them
+from one guard to a whole list. The two conditions are **precisely 343's measured
+per-atom condition**, which is the first time the measurement and the proof have
+been the same statement rather than two statements about the same thing.
+
+**The theorem.**
+
+```lean
+theorem firstMatch_peel_agrees (W x) (L) (hltE b) (p q)
+    (hloop : ∀ tr ∈ (disjoin L).filter loopPart, bval W tr.1 x = true →
+       bval W hltE x = true ∧ bval W b x = true)
+    (hexit : ∀ tr ∈ (disjoin L).filter exitPart, bval W tr.1 x = true →
+       bval W hltE x = true ∧ bval W b x = false) :
+    firstMatch W x L = firstMatch W x (peel's reassembly of L)
+```
+
+That is `solvesBA_of_behaviour`'s transition obligation, discharged at one state
+from 343's condition. `firstMatch_append_congr` (`[propext]`) is the glue.
+
+**What is NOT yet done — two things, both real.**
+
+1. **The shared list.** `loops n` and `exits n` are ONE list per level; the
+   theorem above uses each state's own filtered part. For a singleton level those
+   coincide, which covers the 94.5% the census measures — but the multi-state
+   case needs 343's agreement to be turned into an actual shared list, not just
+   a per-atom consistency fact.
+2. **The halt agreement.** `solvesBA_of_behaviour` has a second premise, on
+   `bval` of the halt tests, and nothing above touches it.
+
+Neither is hand-waved by the theorem proved here; both are named because the
+theorem proved here makes it obvious what they are.
+
+**Next.** The halt agreement — the smaller of the two, and independent of the
+shared-list question.
