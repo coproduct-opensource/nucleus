@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "gkat-span"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rayon = "1"
+mimalloc = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

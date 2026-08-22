@@ -1,5 +1,6 @@
 import GkatInexpressibilityProofs
 import GkatBehaviorProofs
+import GkatFaithfulnessProofs
 
 /-!
 # The GKAT automaton carrier and the derivative automaton (Kleene synthesis, Phase 1)
@@ -54,6 +55,45 @@ def firstMatch (V : T → Atom → Bool) (a : Atom) :
     List (BExp T × A × S) → Option (A × S)
   | []                => none
   | (g, q, s') :: rest => if bval V g a then some (q, s') else firstMatch V a rest
+
+/-- The transition selected syntactically by a Boolean assignment aligned with a guarded
+    transition list.  Guard syntax is retained in `decisions` so alignment can be certified
+    by `IsGuardAssignment`; only the assigned bits drive this computation. -/
+def decidedFirst : List (BExp T × Bool) → List (BExp T × A × S) → Option (A × S)
+  | [], _ => none
+  | _, [] => none
+  | (_, bit) :: decisions, (_, q, s') :: transitions =>
+      if bit then some (q, s') else decidedFirst decisions transitions
+
+/-- On an atom satisfying an aligned Boolean cell, `firstMatch` is exactly the transition
+    computed from that cell's bits.  Thus automaton behavior is constant on every generated
+    finite cell, with no appeal to semantic choice or UA. -/
+theorem firstMatch_eq_decidedFirst (V : T → Atom → Bool) (a : Atom)
+    (transitions : List (BExp T × A × S)) (decisions : List (BExp T × Bool))
+    (hassignment : GkatFaithful.IsGuardAssignment
+      (transitions.map (fun transition => transition.1)) decisions)
+    (hcell : bval V (GkatFaithful.guardCell decisions) a = true) :
+    firstMatch V a transitions = decidedFirst decisions transitions := by
+  induction transitions generalizing decisions with
+  | nil =>
+      cases hassignment
+      rfl
+  | cons transition transitions ih =>
+      obtain ⟨guard, action, target⟩ := transition
+      cases hassignment with
+      | @cons _ tail _ bit htail =>
+          have htailCell := GkatFaithful.guardCell_tail_implies V a (guard, bit) tail hcell
+          cases bit with
+          | false =>
+              have hguard := GkatFaithful.guardCell_negative_implies V a guard tail hcell
+              unfold firstMatch decidedFirst
+              rw [hguard]
+              exact ih tail htail htailCell
+          | true =>
+              have hguard := GkatFaithful.guardCell_positive_implies V a guard tail hcell
+              unfold firstMatch decidedFirst
+              rw [hguard]
+              rfl
 
 /-- The automaton's one-step transition at state `s`, atom `a`. -/
 def autStep (V : T → Atom → Bool) (aut : GAut S A T) (s : S) (a : Atom) : Option (A × S) :=
@@ -126,6 +166,18 @@ theorem firstMatch_map_target (V : T → Atom → Bool) (a : Atom) (F : S → S)
       simp only [List.map_cons, firstMatch]
       by_cases hg : bval V g a <;> simp [hg, ih]
 
+/-- Target remapping into a different state carrier. -/
+theorem firstMatch_map_target_to {R : Type} (V : T → Atom → Bool) (a : Atom)
+    (F : S → R) (L : List (BExp T × A × S)) :
+    firstMatch V a (L.map (fun t => (t.1, t.2.1, F t.2.2))) =
+      (firstMatch V a L).map (fun output => (output.1, F output.2)) := by
+  induction L with
+  | nil => simp [firstMatch]
+  | cons hd tl ih =>
+      obtain ⟨g, q, s'⟩ := hd
+      simp only [List.map_cons, firstMatch]
+      by_cases hg : bval V g a <;> simp [hg, ih]
+
 /-- `firstMatch` over a list both guard-conjoined by `P` and target-remapped by `F`. -/
 theorem firstMatch_map_guard_target (V : T → Atom → Bool) (a : Atom) (P : BExp T)
     (F : S → S) (L : List (BExp T × A × S)) :
@@ -157,6 +209,25 @@ theorem noStepG_iff (V : T → Atom → Bool) (a : Atom) (L : List (BExp T × A 
       obtain ⟨g, q, s'⟩ := hd
       simp only [noStepG, firstMatch, bval]
       by_cases hg : bval V g a <;> simp [hg, ih]
+
+/-- A firing guard anywhere in a transition list guarantees that first-match selects
+    some transition (possibly an earlier firing transition). -/
+theorem firstMatch_isSome_of_mem_fires (V : T → Atom → Bool) (a : Atom)
+    (L : List (BExp T × A × S)) {transition : BExp T × A × S}
+    (hmem : transition ∈ L) (hguard : bval V transition.1 a = true) :
+    ∃ output, firstMatch V a L = some output := by
+  induction L with
+  | nil => exact nomatch hmem
+  | cons head tail ih =>
+      obtain ⟨guard, action, target⟩ := head
+      by_cases hhead : bval V guard a = true
+      · exact ⟨(action, target), by simp only [firstMatch, if_pos hhead]⟩
+      · have htail : transition ∈ tail := by
+          cases hmem with
+          | head => exact absurd hguard hhead
+          | tail _ h => exact h
+        obtain ⟨output, hout⟩ := ih htail
+        exact ⟨output, by simp only [firstMatch, if_neg hhead, hout]⟩
 
 /-- The **guarded-transition list of an expression**, read off the structure of `next`.
     Each constructor's transitions carry the syntactic `BExp` guard on which they fire:
@@ -250,6 +321,32 @@ theorem firstMatch_transG (V : T → Atom → Bool) (e : Exp A T) (a : Atom) :
         | some x => obtain ⟨p, e'⟩ := x; rfl
       · rw [if_neg hb]; simp only [next]; rw [if_neg hb]
 
+/-- If an expression can halt at an atom, its derivative transition list has no matching
+    step there. Hence the sequencing fall-through guard `noStepG(transG e) ∧ E(e)` is
+    Boolean-equivalent to `E(e)`. -/
+theorem noStepG_and_E_eq_E (e : Exp A T) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      bval W (.and (noStepG (transG e)) (E e)) x = bval W (E e) x := by
+  intro X W x
+  cases hE : bval W (E e) x with
+  | false =>
+      rw [bval, hE]
+      cases bval W (noStepG (transG e)) x <;> rfl
+  | true =>
+      have hnone : next W e x = none := by
+        cases hnext : next W e x with
+        | none => rfl
+        | some output =>
+            have hfalse := next_halt_exclusive W e x output hnext
+            rw [hE] at hfalse
+            contradiction
+      have hnoStep : bval W (noStepG (transG e)) x = true :=
+        (noStepG_iff W x (transG e)).mpr (by
+          rw [firstMatch_transG]
+          exact hnone)
+      rw [bval, hE, hnoStep]
+      rfl
+
 -- ── The derivative automaton and its language ─────────────────────────────────────
 
 /-- **The derivative automaton of `e`.** States are `e`'s finitely many derivatives; the
@@ -301,6 +398,10 @@ def WF (V : T → Atom → Bool) (aut : GAut S A T) : Prop :=
   (∀ s ∈ aut.states, ∀ a, bval V (aut.hlt s) a = true → autStep V aut s a = none) ∧
   (∀ s ∈ aut.states, ∀ a q s', autStep V aut s a = some (q, s') → s' ∈ aut.states)
 
+/-- Uniform well-formedness of a symbolic automaton under every Boolean interpretation. -/
+def UniformWF (aut : GAut S A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool), WF W aut
+
 /-- **The derivative automaton is well-formed.** Halt-excludes-step is
     `next_halt_exclusive`; closure is `derivs_closed`. -/
 theorem WF_derivAut (V : T → Atom → Bool) (e : Exp A T) : WF V (derivAut e) := by
@@ -315,6 +416,11 @@ theorem WF_derivAut (V : T → Atom → Bool) (e : Exp A T) : WF V (derivAut e) 
   · intro s hs a q s' hst
     rw [autStep_derivAut] at hst
     exact derivs_closed e hs hst
+
+/-- Derivative automata are well formed uniformly over the free Boolean interpretation. -/
+theorem UniformWF_derivAut (e : Exp A T) : UniformWF (derivAut e) := by
+  intro X W
+  exact WF_derivAut W e
 
 -- ── Automaton reachability and the nesting coequation `Nested` ─────────────────────
 
@@ -772,11 +878,1024 @@ def eqRHS (aut : GAut S A T) (sol : S → Exp A T) (s : S) : Exp A T :=
     (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (sol t.2.2)) acc)
     (Exp.test (aut.hlt s))
 
+/-- Expression-labelled version of a guarded transition list. -/
+def transitionBranches (transitions : List (BExp T × A × S))
+    (sol : S → Exp A T) : List (BExp T × Exp A T) :=
+  transitions.map (fun t =>
+    (t.1, Exp.seq (Exp.act t.2.1) (sol t.2.2)))
+
+/-- The Salomaa right-hand side is precisely a `guardedFold`. -/
+theorem eqRHS_eq_guardedFold (aut : GAut S A T) (sol : S → Exp A T) (s : S) :
+    eqRHS aut sol s = GkatFaithful.guardedFold
+      (transitionBranches (aut.trans s) sol) (Exp.test (aut.hlt s)) := by
+  unfold eqRHS transitionBranches GkatFaithful.guardedFold
+  induction aut.trans s with
+  | nil => rfl
+  | cons transition transitions ih =>
+      simp only [List.map_cons, List.foldr_cons]
+      rw [ih]
+
+/-- The expression leaf represented by a syntactically selected automaton transition. -/
+def selectedTransitionExp (sol : S → Exp A T) (fallback : Exp A T) :
+    Option (A × S) → Exp A T
+  | none => fallback
+  | some (action, target) => Exp.seq (Exp.act action) (sol target)
+
+/-- Cell evaluation commutes with relabelling automaton transitions by their action-prefixed
+    solution expressions.  This is the syntactic half of the common-cell bridge. -/
+theorem decidedGuardedFold_transitionBranches
+    (decisions : List (BExp T × Bool))
+    (transitions : List (BExp T × A × S)) (sol : S → Exp A T)
+    (fallback : Exp A T) :
+    GkatFaithful.decidedGuardedFold decisions
+      (transitionBranches transitions sol) fallback =
+    selectedTransitionExp sol fallback (decidedFirst decisions transitions) := by
+  induction decisions generalizing transitions with
+  | nil => rfl
+  | cons decision decisions ih =>
+      cases transitions with
+      | nil => rfl
+      | cons transition transitions =>
+          obtain ⟨guard, bit⟩ := decision
+          obtain ⟨transitionGuard, action, target⟩ := transition
+          cases bit
+          · exact ih transitions
+          · rfl
+
+/-- Relabelling transitions by expressions preserves their guard list. -/
+theorem transitionBranches_guards (transitions : List (BExp T × A × S))
+    (sol : S → Exp A T) :
+    (transitionBranches transitions sol).map (fun branch => branch.1) =
+      transitions.map (fun transition => transition.1) := by
+  induction transitions with
+  | nil => rfl
+  | cons transition transitions ih =>
+      change transition.1 ::
+          (transitionBranches transitions sol).map (fun branch => branch.1) =
+        transition.1 :: transitions.map (fun item => item.1)
+      rw [ih]
+
+/-- Guard-gating a transition list commutes with relabelling its targets by expressions. -/
+theorem transitionBranches_map_guard (region : BExp T)
+    (transitions : List (BExp T × A × S)) (sol : S → Exp A T) :
+    transitionBranches
+      (transitions.map (fun t => (BExp.and region t.1, t.2))) sol =
+      (transitionBranches transitions sol).map (fun branch =>
+        (BExp.and region branch.1, branch.2)) := by
+  induction transitions with
+  | nil => rfl
+  | cons transition transitions ih =>
+      obtain ⟨guard, action, target⟩ := transition
+      change (BExp.and region guard,
+          Exp.seq (Exp.act action) (sol target)) ::
+          transitionBranches
+            (transitions.map (fun t => (BExp.and region t.1, t.2))) sol =
+        (BExp.and region guard,
+          Exp.seq (Exp.act action) (sol target)) ::
+          (transitionBranches transitions sol).map (fun branch =>
+            (BExp.and region branch.1, branch.2))
+      rw [ih]
+
+/-- Relabelling transitions by expressions preserves list concatenation. -/
+theorem transitionBranches_append (first second : List (BExp T × A × S))
+    (sol : S → Exp A T) :
+    transitionBranches (first ++ second) sol =
+      transitionBranches first sol ++ transitionBranches second sol := by
+  induction first with
+  | nil => rfl
+  | cons transition first ih =>
+      obtain ⟨guard, action, target⟩ := transition
+      change (guard, Exp.seq (Exp.act action) (sol target)) ::
+          transitionBranches (first ++ second) sol =
+        (guard, Exp.seq (Exp.act action) (sol target)) ::
+          (transitionBranches first sol ++ transitionBranches second sol)
+      rw [ih]
+
+/-- Sequencing a suffix onto already-labelled transition branches agrees, up to S1,
+    with sequencing the suffix onto each transition target before relabelling. -/
+theorem transitionBranches_seq_target_fold
+    (transitions : List (BExp T × A × Exp A T))
+    (suffix fallback : Exp A T) :
+    GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        ((transitionBranches transitions (fun state => state)).map (fun branch =>
+          (branch.1, Exp.seq branch.2 suffix))) fallback)
+      (GkatFaithful.guardedFold
+        (transitionBranches
+          (transitions.map (fun t => (t.1, t.2.1, Exp.seq t.2.2 suffix)))
+          (fun state => state)) fallback) := by
+  induction transitions with
+  | nil => exact GkatFaithful.EquivBA.base (Equiv.refl _)
+  | cons transition transitions ih =>
+      obtain ⟨guard, action, target⟩ := transition
+      exact GkatFaithful.EquivBA.ite_c
+        (GkatFaithful.EquivBA.base (Equiv.s1 (Exp.act action) target suffix)) ih
+
+/-- Reassociate action-prefixed branches through a loop suffix, while allowing the
+    suffix itself to be replaced by an equivalent loop expression. -/
+theorem transitionBranches_seq_target_fold_congr
+    (transitions : List (BExp T × A × Exp A T))
+    (suffix suffix' fallback : Exp A T)
+    (hsuffix : GkatFaithful.EquivBA suffix suffix') :
+    GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        ((transitionBranches transitions (fun state => state)).map (fun branch =>
+          (branch.1, Exp.seq branch.2 suffix))) fallback)
+      (GkatFaithful.guardedFold
+        (transitionBranches
+          (transitions.map (fun t => (t.1, t.2.1, Exp.seq t.2.2 suffix')))
+          (fun state => state)) fallback) := by
+  induction transitions with
+  | nil => exact GkatFaithful.EquivBA.base (Equiv.refl _)
+  | cons transition transitions ih =>
+      obtain ⟨guard, action, target⟩ := transition
+      exact GkatFaithful.EquivBA.ite_c
+        (GkatFaithful.EquivBA.trans
+          (GkatFaithful.EquivBA.base (Equiv.s1 (Exp.act action) target suffix))
+          (GkatFaithful.EquivBA.seq_c
+            (GkatFaithful.EquivBA.base (Equiv.refl _))
+            (GkatFaithful.EquivBA.seq_c
+              (GkatFaithful.EquivBA.base (Equiv.refl _)) hsuffix))) ih
+
+/-- Every derivative action guard is disjoint from the expression's halting test.
+    This is the exact invariant needed to turn the derivative fold into `1 +_E D`. -/
+theorem transitionBranch_guard_E_disjoint (e : Exp A T)
+    (branch : BExp T × Exp A T)
+    (hmem : branch ∈ transitionBranches (transG e) (fun state => state)) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      bval W (.and branch.1 (E e)) x = false := by
+  intro X W x
+  have hguardMem : branch.1 ∈ (transG e).map (fun transition => transition.1) := by
+    rw [← transitionBranches_guards (transG e) (fun state => state)]
+    exact List.mem_map.mpr ⟨branch, hmem, rfl⟩
+  obtain ⟨transition, htransition, hguardEq⟩ := List.mem_map.mp hguardMem
+  by_cases hguard : bval W branch.1 x = true
+  · have htransitionGuard : bval W transition.1 x = true := by
+      rw [hguardEq]
+      exact hguard
+    obtain ⟨output, hfirst⟩ :=
+      firstMatch_isSome_of_mem_fires W x (transG e) htransition htransitionGuard
+    have hnext : next W e x = some output := by
+      rw [← firstMatch_transG]
+      exact hfirst
+    have hhalt := next_halt_exclusive W e x output hnext
+    change (bval W branch.1 x && bval W (E e) x) = false
+    rw [hguard, hhalt]
+    rfl
+  · have hfalse : bval W branch.1 x = false := by simpa using hguard
+    change (bval W branch.1 x && bval W (E e) x) = false
+    rw [hfalse]
+    rfl
+
+/-- Once an aligned decision prefix has consumed the entire transition list, trailing
+    decisions cannot change the selected transition. -/
+theorem decidedFirst_append_of_assignment
+    (transitions : List (BExp T × A × S))
+    (firstDecisions suffix : List (BExp T × Bool))
+    (haligned : GkatFaithful.IsGuardAssignment
+      (transitions.map (fun transition => transition.1)) firstDecisions) :
+    decidedFirst (firstDecisions ++ suffix) transitions =
+      decidedFirst firstDecisions transitions := by
+  induction transitions generalizing firstDecisions with
+  | nil =>
+      cases haligned
+      cases suffix <;> rfl
+  | cons transition transitions ih =>
+      cases haligned with
+      | @cons _ tail _ bit htail =>
+          obtain ⟨guard, action, target⟩ := transition
+          cases bit
+          · unfold decidedFirst
+            exact ih tail htail
+          · rfl
+
 /-- **`sol` solves the automaton's equation system**: at every state, its assigned
     expression is provably equivalent to that state's equation RHS. An expression solving
     the *start* state's equation is the synthesized program. -/
 def Solves (aut : GAut S A T) (sol : S → Exp A T) : Prop :=
   ∀ s ∈ aut.states, Equiv (sol s) (eqRHS aut sol s)
+
+/-- Solutions in the actual two-sorted GKAT theory: U/S/W together with Boolean-algebra
+    congruence and S6. `Solves` embeds into this relation, but the larger relation can also
+    normalize Boolean-equivalent guards such as the unconditional guard `1`. -/
+def SolvesBA (aut : GAut S A T) (sol : S → Exp A T) : Prop :=
+  ∀ s ∈ aut.states, GkatFaithful.EquivBA (sol s) (eqRHS aut sol s)
+
+/-- Boolean-aware simultaneous uniqueness, stated using only the original finite theory. -/
+def UABA (aut : GAut S A T) : Prop :=
+  ∀ sol1 sol2, SolvesBA aut sol1 → SolvesBA aut sol2 →
+    ∀ s ∈ aut.states, GkatFaithful.EquivBA (sol1 s) (sol2 s)
+
+/-- A structural homomorphism of finitely presented G-automata. Halting tests are preserved,
+    every source state is sent to a listed target state, and the target transition list is
+    exactly the source list with successor states mapped by `mapState`. This presentation is
+    strong enough for quotient projections and makes commutation with `eqRHS` syntactic. -/
+structure GAutHom {S₁ S₂ A T : Type} (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) where
+  mapState : S₁ → S₂
+  maps_states : ∀ s ∈ aut₁.states, mapState s ∈ aut₂.states
+  hlt_eq : ∀ s, aut₂.hlt (mapState s) = aut₁.hlt s
+  trans_eq : ∀ s, aut₂.trans (mapState s) =
+    (aut₁.trans s).map (fun t => (t.1, t.2.1, mapState t.2.2))
+
+/-- Identity automaton homomorphism. -/
+def GAutHom.id (aut : GAut S A T) : GAutHom aut aut where
+  mapState := fun s => s
+  maps_states := by intro s hs; exact hs
+  hlt_eq := by intro s; rfl
+  trans_eq := by
+    intro s
+    induction aut.trans s with
+    | nil => rfl
+    | cons t ts ih =>
+        obtain ⟨g, q, s'⟩ := t
+        change (g, q, s') :: ts = (g, q, s') ::
+          ts.map (fun t => (t.1, t.2.1, t.2.2))
+        exact congrArg (List.cons (g, q, s')) ih
+
+/-- Composition of structural automaton homomorphisms. -/
+def GAutHom.comp {S₁ S₂ S₃ A T : Type}
+    {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T} {aut₃ : GAut S₃ A T}
+    (h₂₃ : GAutHom aut₂ aut₃) (h₁₂ : GAutHom aut₁ aut₂) : GAutHom aut₁ aut₃ where
+  mapState := fun s => h₂₃.mapState (h₁₂.mapState s)
+  maps_states := by
+    intro s hs
+    exact h₂₃.maps_states _ (h₁₂.maps_states s hs)
+  hlt_eq := by
+    intro s
+    rw [h₂₃.hlt_eq, h₁₂.hlt_eq]
+  trans_eq := by
+    intro s
+    rw [h₂₃.trans_eq, h₁₂.trans_eq]
+    induction aut₁.trans s with
+    | nil => rfl
+    | cons t ts ih =>
+        simp only [List.map_cons]
+        rw [ih]
+
+/-- Disjoint union of two finite G-automata. The chosen start belongs to the left summand;
+    both summands still embed as uninitialized transition systems, which is what the shared
+    bisimulation quotient construction uses. -/
+def sumGAut {S₁ S₂ A T : Type} (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) :
+    GAut (Sum S₁ S₂) A T where
+  states := aut₁.states.map Sum.inl ++ aut₂.states.map Sum.inr
+  hlt
+    | .inl s => aut₁.hlt s
+    | .inr s => aut₂.hlt s
+  trans
+    | .inl s => (aut₁.trans s).map (fun t => (t.1, t.2.1, Sum.inl t.2.2))
+    | .inr s => (aut₂.trans s).map (fun t => (t.1, t.2.1, Sum.inr t.2.2))
+  start := .inl aut₁.start
+
+/-- One-step behavior of the left summand is inherited with targets injected by `Sum.inl`. -/
+theorem autStep_sumGAut_inl {S₁ S₂ A T X : Type} (W : T → X → Bool)
+    (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) (s : S₁) (x : X) :
+    autStep W (sumGAut aut₁ aut₂) (.inl s) x =
+      (autStep W aut₁ s x).map (fun output => (output.1, Sum.inl output.2)) := by
+  unfold autStep sumGAut
+  exact firstMatch_map_target_to W x Sum.inl (aut₁.trans s)
+
+/-- One-step behavior of the right summand is inherited with targets injected by `Sum.inr`. -/
+theorem autStep_sumGAut_inr {S₁ S₂ A T X : Type} (W : T → X → Bool)
+    (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) (s : S₂) (x : X) :
+    autStep W (sumGAut aut₁ aut₂) (.inr s) x =
+      (autStep W aut₂ s x).map (fun output => (output.1, Sum.inr output.2)) := by
+  unfold autStep sumGAut
+  exact firstMatch_map_target_to W x Sum.inr (aut₂.trans s)
+
+/-- Direct, computation-only membership transport through `List.map`.  Keeping this
+    elementary avoids importing propositional extensionality through generic membership
+    rewriting in the canonical sum inclusions below. -/
+private theorem mem_map_direct {X Y : Type} (f : X → Y) {x : X} {xs : List X}
+    (h : x ∈ xs) : f x ∈ xs.map f := by
+  induction xs with
+  | nil => exact nomatch h
+  | cons y ys ih =>
+      cases h with
+      | head => exact List.Mem.head _
+      | tail _ htail => exact List.Mem.tail _ (ih htail)
+
+/-- Direct membership transport into the left side of an append. -/
+private theorem mem_append_left_direct {X : Type} {x : X} {xs ys : List X}
+    (h : x ∈ xs) : x ∈ xs ++ ys := by
+  induction xs with
+  | nil => exact nomatch h
+  | cons y xs ih =>
+      cases h with
+      | head => exact List.Mem.head _
+      | tail _ htail => exact List.Mem.tail _ (ih htail)
+
+/-- Direct membership transport into the right side of an append. -/
+private theorem mem_append_right_direct {X : Type} (xs : List X) {x : X} {ys : List X}
+    (h : x ∈ ys) : x ∈ xs ++ ys := by
+  induction xs generalizing x with
+  | nil => exact h
+  | cons y xs ih => exact List.Mem.tail _ (ih h)
+
+/-- Left inclusion into the disjoint union. -/
+def GAutHom.inl {S₁ S₂ A T : Type} (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) :
+    GAutHom aut₁ (sumGAut aut₁ aut₂) where
+  mapState := Sum.inl
+  maps_states := by
+    intro s hs
+    exact mem_append_left_direct (mem_map_direct Sum.inl hs)
+  hlt_eq := by intro s; rfl
+  trans_eq := by intro s; rfl
+
+/-- Right inclusion into the disjoint union. -/
+def GAutHom.inr {S₁ S₂ A T : Type} (aut₁ : GAut S₁ A T) (aut₂ : GAut S₂ A T) :
+    GAutHom aut₂ (sumGAut aut₁ aut₂) where
+  mapState := Sum.inr
+  maps_states := by
+    intro s hs
+    exact mem_append_right_direct _ (mem_map_direct Sum.inr hs)
+  hlt_eq := by intro s; rfl
+  trans_eq := by intro s; rfl
+
+/-- Disjoint sums preserve uniform well-formedness. -/
+theorem UniformWF.sum {S₁ S₂ A T : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    (h₁ : UniformWF aut₁) (h₂ : UniformWF aut₂) : UniformWF (sumGAut aut₁ aut₂) := by
+  intro X W
+  constructor
+  · intro state hstate x hhalt
+    cases state with
+    | inl s =>
+        have hs : s ∈ aut₁.states := by
+          change Sum.inl s ∈ aut₁.states.map Sum.inl ++ aut₂.states.map Sum.inr at hstate
+          simpa using hstate
+        have hnone := (h₁ X W).1 s hs x hhalt
+        rw [autStep_sumGAut_inl, hnone]
+        rfl
+    | inr s =>
+        have hs : s ∈ aut₂.states := by
+          change Sum.inr s ∈ aut₁.states.map Sum.inl ++ aut₂.states.map Sum.inr at hstate
+          simpa using hstate
+        have hnone := (h₂ X W).1 s hs x hhalt
+        rw [autStep_sumGAut_inr, hnone]
+        rfl
+  · intro state hstate x action target hstep
+    cases state with
+    | inl s =>
+        have hs : s ∈ aut₁.states := by
+          change Sum.inl s ∈ aut₁.states.map Sum.inl ++ aut₂.states.map Sum.inr at hstate
+          simpa using hstate
+        rw [autStep_sumGAut_inl] at hstep
+        cases hsource : autStep W aut₁ s x with
+        | none => rw [hsource] at hstep; contradiction
+        | some output =>
+            obtain ⟨sourceAction, sourceTarget⟩ := output
+            rw [hsource] at hstep
+            have heq : (sourceAction, Sum.inl sourceTarget) = (action, target) :=
+              Option.some.inj hstep
+            have haction : sourceAction = action := congrArg Prod.fst heq
+            have htarget : Sum.inl sourceTarget = target := congrArg Prod.snd heq
+            subst action
+            subst target
+            have hmem := (h₁ X W).2 s hs x sourceAction sourceTarget hsource
+            exact mem_append_left_direct (mem_map_direct Sum.inl hmem)
+    | inr s =>
+        have hs : s ∈ aut₂.states := by
+          change Sum.inr s ∈ aut₁.states.map Sum.inl ++ aut₂.states.map Sum.inr at hstate
+          simpa using hstate
+        rw [autStep_sumGAut_inr] at hstep
+        cases hsource : autStep W aut₂ s x with
+        | none => rw [hsource] at hstep; contradiction
+        | some output =>
+            obtain ⟨sourceAction, sourceTarget⟩ := output
+            rw [hsource] at hstep
+            have heq : (sourceAction, Sum.inr sourceTarget) = (action, target) :=
+              Option.some.inj hstep
+            have haction : sourceAction = action := congrArg Prod.fst heq
+            have htarget : Sum.inr sourceTarget = target := congrArg Prod.snd heq
+            subst action
+            subst target
+            have hmem := (h₂ X W).2 s hs x sourceAction sourceTarget hsource
+            exact mem_append_right_direct _ (mem_map_direct Sum.inr hmem)
+
+/-- The comparison automaton for two expressions is uniformly well formed. -/
+theorem UniformWF_sum_derivAut (e f : Exp A T) :
+    UniformWF (sumGAut (derivAut e) (derivAut f)) :=
+  (UniformWF_derivAut e).sum (UniformWF_derivAut f)
+
+/-- A **strict** finite quotient presentation: a target automaton together with a structural
+    homomorphism that is surjective on its listed states.  This preserves the literal order
+    and syntax of guarded transition lists.  A genuine bisimulation quotient need only
+    preserve their atomwise behavior, so identifying the two notions requires a separate
+    Boolean guard-partition normalization theorem; we deliberately do not conceal that gap. -/
+structure StrictGAutQuotient {S Q A T : Type} (aut : GAut S A T) (quot : GAut Q A T)
+    extends GAutHom aut quot where
+  onto_states : ∀ q ∈ quot.states, ∃ s, s ∈ aut.states ∧ mapState s = q
+
+/-- The strict quotient-solvability property.  It is the algebraic core handled by the exact
+    `eqRHS` commutation theorem, but is weaker than the semantic property needed by Pham's
+    completeness reduction until guard-partition normalization has been proved. -/
+def StrictQuotientsSolvableBA (aut : GAut S A T) : Prop :=
+  ∀ {Q : Type} (quot : GAut Q A T), StrictGAutQuotient aut quot →
+    ∃ sol : Q → Exp A T, SolvesBA quot sol
+
+/-- A behaviorally presented finite quotient at a fixed atom interpretation.  The graph of
+    `mapState` is a bisimulation, but transition lists may use different, Boolean-equivalent
+    guard partitions.  This is the steelman notion the final completeness argument must
+    cover (uniformly over the free Boolean interpretation). -/
+structure BehavioralGAutQuotient {S Q A T Atom : Type} (V : T → Atom → Bool)
+    (aut : GAut S A T) (quot : GAut Q A T) where
+  mapState : S → Q
+  maps_states : ∀ s ∈ aut.states, mapState s ∈ quot.states
+  onto_states : ∀ q ∈ quot.states, ∃ s, s ∈ aut.states ∧ mapState s = q
+  bisim_graph : GAutBisim V aut quot (fun s q => mapState s = q)
+
+/-- The genuinely semantic quotient-solvability target.  Unlike the strict version, this
+    definition exposes the interpretation and therefore also exposes the remaining
+    uniformity/normalization obligation instead of assuming it away. -/
+def BehavioralQuotientsSolvableBA (V : T → Atom → Bool) (aut : GAut S A T) : Prop :=
+  ∀ {Q : Type} (quot : GAut Q A T), BehavioralGAutQuotient V aut quot →
+    ∃ sol : Q → Exp A T, SolvesBA quot sol
+
+/-- A quotient map that is behavioral under **every** interpretation of the primitive
+    tests.  This is the free-Boolean-algebra strength required to turn atomwise agreement
+    into applications of `EquivBA.ite_guard`/`baTest`; agreement for one `V` is too weak. -/
+structure UniformBehavioralGAutQuotient {S Q A T : Type}
+    (aut : GAut S A T) (quot : GAut Q A T) where
+  mapState : S → Q
+  maps_states : ∀ s ∈ aut.states, mapState s ∈ quot.states
+  onto_states : ∀ q ∈ quot.states, ∃ s, s ∈ aut.states ∧ mapState s = q
+  bisim_graph : ∀ (X : Type) (W : T → X → Bool),
+    GAutBisim W aut quot (fun s q => mapState s = q)
+
+/-- Uniform behavioral quotient-solvability is the honest premise needed by the
+    guarded-language completeness reduction.  The current strict lifting theorem will
+    apply once transition-list normalization converts this data into `eqRHS` equivalence. -/
+def UniformBehavioralQuotientsSolvableBA (aut : GAut S A T) : Prop :=
+  ∀ {Q : Type} (quot : GAut Q A T), UniformBehavioralGAutQuotient aut quot →
+    ∃ sol : Q → Exp A T, SolvesBA quot sol
+
+/-- Uniform quotient maps preserve halt guards as elements of the free Boolean algebra. -/
+theorem UniformBehavioralGAutQuotient.hlt_ba
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (s : S) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      bval W (aut.hlt s) x = bval W (quot.hlt (π.mapState s)) x := by
+  intro X W x
+  exact (π.bisim_graph X W s (π.mapState s) rfl).1 x
+
+/-- Uniform quotient maps commute with the atom-indexed transition function.  This is the
+    semantic replacement for `GAutHom.trans_eq`; the remaining normalization theorem must
+    lift this equality of `firstMatch` results to `EquivBA` equality of the two folds. -/
+theorem UniformBehavioralGAutQuotient.autStep_eq
+    {S Q A T X : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (W : T → X → Bool) (s : S) (x : X) :
+    (autStep W aut s x).map (fun y => (y.1, π.mapState y.2)) =
+      autStep W quot (π.mapState s) x := by
+  obtain ⟨_, hfwd, hbwd⟩ := π.bisim_graph X W s (π.mapState s) rfl
+  cases hs : autStep W aut s x with
+  | none =>
+      cases hq : autStep W quot (π.mapState s) x with
+      | none => rfl
+      | some y =>
+          obtain ⟨q, q'⟩ := y
+          obtain ⟨s', hsource, _⟩ := hbwd x q q' hq
+          rw [hs] at hsource
+          contradiction
+  | some y =>
+      obtain ⟨q, s'⟩ := y
+      obtain ⟨q', htarget, hmap⟩ := hfwd x q s' hs
+      subst q'
+      simp only [Option.map_some]
+      exact htarget.symm
+
+/-- Uniform behavioral quotients preserve symbolic well-formedness. Surjectivity supplies a
+    source representative for each listed quotient state; forward/backward bisimulation
+    transport halt exclusion and transition-target closure respectively. -/
+theorem UniformBehavioralGAutQuotient.uniformWF
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (hwf : UniformWF aut) :
+    UniformWF quot := by
+  intro X W
+  constructor
+  · intro q hq x hhalt
+    obtain ⟨s, hs, hmap⟩ := π.onto_states q hq
+    subst q
+    have hsourceHalt : bval W (aut.hlt s) x = true := by
+      rw [π.hlt_ba s]
+      exact hhalt
+    have hsourceNone : autStep W aut s x = none := (hwf X W).1 s hs x hsourceHalt
+    have hstep := π.autStep_eq W s x
+    rw [hsourceNone] at hstep
+    exact hstep.symm
+  · intro q hq x action q' htarget
+    obtain ⟨s, hs, hmap⟩ := π.onto_states q hq
+    subst q
+    obtain ⟨_, _, hback⟩ := π.bisim_graph X W s (π.mapState s) rfl
+    obtain ⟨s', hsource, hrel⟩ := hback x action q' htarget
+    have hs' : s' ∈ aut.states := (hwf X W).2 s hs x action s' hsource
+    have hmap' : π.mapState s' = q' := hrel
+    rw [← hmap']
+    exact π.maps_states s' hs'
+
+/-- In particular, every uniform behavioral quotient of a derivative automaton retains the
+    determinism and closure required by the semantic solution theorem. -/
+theorem UniformBehavioralGAutQuotient.uniformWF_of_derivAut
+    {Q A T : Type} {e : Exp A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient (derivAut e) quot) : UniformWF quot :=
+  π.uniformWF (UniformWF_derivAut e)
+
+/-- Every common behavioral quotient used to compare two derivative automata is uniformly
+    well formed. -/
+theorem UniformBehavioralGAutQuotient.uniformWF_of_sum_derivAut
+    {Q A T : Type} {e f : Exp A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient (sumGAut (derivAut e) (derivAut f)) quot) :
+    UniformWF quot :=
+  π.uniformWF (UniformWF_sum_derivAut e f)
+
+/-- On any pair of aligned cells that hold at the same atom, a uniform quotient's
+    syntactically decided source transition maps to the syntactically decided target
+    transition.  This is the leaf-equality fact used by common-partition normalization. -/
+theorem UniformBehavioralGAutQuotient.decidedFirst_eq
+    {S Q A T X : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (s : S)
+    (sourceDecisions targetDecisions : List (BExp T × Bool))
+    (hsource : GkatFaithful.IsGuardAssignment
+      ((aut.trans s).map (fun transition => transition.1)) sourceDecisions)
+    (htarget : GkatFaithful.IsGuardAssignment
+      ((quot.trans (π.mapState s)).map (fun transition => transition.1)) targetDecisions)
+    (W : T → X → Bool) (x : X)
+    (hsourceCell : bval W (GkatFaithful.guardCell sourceDecisions) x = true)
+    (htargetCell : bval W (GkatFaithful.guardCell targetDecisions) x = true) :
+    (decidedFirst sourceDecisions (aut.trans s)).map
+        (fun output => (output.1, π.mapState output.2)) =
+      decidedFirst targetDecisions (quot.trans (π.mapState s)) := by
+  have hs := firstMatch_eq_decidedFirst W x (aut.trans s) sourceDecisions hsource hsourceCell
+  have ht := firstMatch_eq_decidedFirst W x (quot.trans (π.mapState s))
+    targetDecisions htarget htargetCell
+  have hstep := π.autStep_eq W s x
+  unfold autStep at hstep
+  rw [hs, ht] at hstep
+  exact hstep
+
+/-- A single assignment over the concatenated source/target guard lists splits into cells
+    whose decided transitions agree through the quotient map whenever the combined cell is
+    satisfiable.  Unsatisfiable combined cells may subsequently be erased by `ite_of_unsat`. -/
+theorem UniformBehavioralGAutQuotient.combinedCell_decidedFirst_eq
+    {S Q A T X : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (s : S)
+    (decisions : List (BExp T × Bool))
+    (hassignment : GkatFaithful.IsGuardAssignment
+      ((aut.trans s).map (fun transition => transition.1) ++
+        (quot.trans (π.mapState s)).map (fun transition => transition.1)) decisions)
+    (W : T → X → Bool) (x : X)
+    (hcell : bval W (GkatFaithful.guardCell decisions) x = true) :
+    ∃ sourceDecisions targetDecisions,
+      decisions = sourceDecisions ++ targetDecisions ∧
+      GkatFaithful.IsGuardAssignment
+        ((aut.trans s).map (fun transition => transition.1)) sourceDecisions ∧
+      GkatFaithful.IsGuardAssignment
+        ((quot.trans (π.mapState s)).map (fun transition => transition.1)) targetDecisions ∧
+      (decidedFirst sourceDecisions (aut.trans s)).map
+          (fun output => (output.1, π.mapState output.2)) =
+        decidedFirst targetDecisions (quot.trans (π.mapState s)) := by
+  obtain ⟨sourceDecisions, targetDecisions, heq, hsource, htarget⟩ :=
+    hassignment.split_append
+  subst decisions
+  obtain ⟨hsourceCell, htargetCell⟩ :=
+    GkatFaithful.guardCell_append_implies W x sourceDecisions targetDecisions hcell
+  exact ⟨sourceDecisions, targetDecisions, rfl, hsource, htarget,
+    π.decidedFirst_eq s sourceDecisions targetDecisions hsource htarget W x
+      hsourceCell htargetCell⟩
+
+/-- The single finite guard list used to refine both sides of a behavioral quotient. -/
+def combinedTransitionGuards {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (s : S) : List (BExp T) :=
+  (aut.trans s).map (fun transition => transition.1) ++
+    (quot.trans (π.mapState s)).map (fun transition => transition.1)
+
+/-- Source leaf selected by an assignment to the combined source/target guard list. -/
+def sourceCombinedLabel {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S)
+    (decisions : List (BExp T × Bool)) : Exp A T :=
+  selectedTransitionExp (fun source => sol (π.mapState source))
+    (Exp.test (aut.hlt s)) (decidedFirst decisions (aut.trans s))
+
+/-- Target leaf selected by the suffix of a combined source/target assignment. -/
+def targetCombinedLabel {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S)
+    (decisions : List (BExp T × Bool)) : Exp A T :=
+  selectedTransitionExp sol (Exp.test (quot.hlt (π.mapState s)))
+    (decidedFirst
+      (GkatFaithful.dropGuardDecisions
+        ((aut.trans s).map (fun transition => transition.1)) decisions)
+      (quot.trans (π.mapState s)))
+
+/-- On a satisfiable combined cell, the source-selected transition (with its target mapped)
+    is exactly the target-selected transition expressed using the canonical dropped suffix. -/
+theorem UniformBehavioralGAutQuotient.combinedSelected_eq
+    {S Q A T X : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (s : S)
+    (decisions : List (BExp T × Bool))
+    (hassignment : GkatFaithful.IsGuardAssignment
+      (combinedTransitionGuards π s) decisions)
+    (W : T → X → Bool) (x : X)
+    (hcell : bval W (GkatFaithful.guardCell decisions) x = true) :
+    (decidedFirst decisions (aut.trans s)).map
+        (fun output => (output.1, π.mapState output.2)) =
+      decidedFirst
+        (GkatFaithful.dropGuardDecisions
+          ((aut.trans s).map (fun transition => transition.1)) decisions)
+        (quot.trans (π.mapState s)) := by
+  obtain ⟨sourceDecisions, targetDecisions, heq, hsource, htarget, hselected⟩ :=
+    π.combinedCell_decidedFirst_eq s decisions hassignment W x hcell
+  subst decisions
+  rw [decidedFirst_append_of_assignment (aut.trans s)
+    sourceDecisions targetDecisions hsource]
+  rw [GkatFaithful.dropGuardDecisions_append targetDecisions hsource]
+  exact hselected
+
+/-- The source Salomaa equation normalizes over the shared source/target cell partition.
+    This half is entirely constructive and uses only the finite axioms. -/
+theorem UniformBehavioralGAutQuotient.source_eqRHS_combined_normal_form
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S)
+    (newFallback : Exp A T) :
+    GkatFaithful.EquivBA
+      (eqRHS aut (fun source => sol (π.mapState source)) s)
+      (GkatFaithful.guardedFold
+        ((GkatFaithful.guardAssignments (combinedTransitionGuards π s)).map
+          (fun decisions =>
+            (GkatFaithful.guardCell decisions,
+              sourceCombinedLabel π sol s decisions))) newFallback) := by
+  let sourceSol : S → Exp A T := fun source => sol (π.mapState source)
+  let sourceBranches := transitionBranches (aut.trans s) sourceSol
+  let sourceFallback : Exp A T := Exp.test (aut.hlt s)
+  let guards := combinedTransitionGuards π s
+  have horiginal : eqRHS aut sourceSol s =
+      GkatFaithful.guardedFold sourceBranches sourceFallback :=
+    eqRHS_eq_guardedFold aut sourceSol s
+  rw [horiginal]
+  apply GkatFaithful.guardAssignments_label_normal_form guards
+  intro decisions hmem rest
+  have hassignment := GkatFaithful.guardAssignments_sound hmem
+  have hbranchGuards : sourceBranches.map (fun branch => branch.1) =
+      (aut.trans s).map (fun transition => transition.1) :=
+    transitionBranches_guards (aut.trans s) sourceSol
+  have haligned : GkatFaithful.IsGuardAssignment
+      (sourceBranches.map (fun branch => branch.1) ++
+        (quot.trans (π.mapState s)).map (fun transition => transition.1)) decisions := by
+    rw [hbranchGuards]
+    exact hassignment
+  have hregion : GkatFaithful.GuardImplies
+      (GkatFaithful.guardCell decisions) (GkatFaithful.guardCell decisions) := by
+    intro X W x h
+    exact h
+  have hleaf : GkatFaithful.decidedGuardedFold decisions sourceBranches sourceFallback =
+      sourceCombinedLabel π sol s decisions := by
+    exact decidedGuardedFold_transitionBranches decisions (aut.trans s)
+      sourceSol sourceFallback
+  have hleafBA : GkatFaithful.EquivBA
+      (GkatFaithful.decidedGuardedFold decisions sourceBranches sourceFallback)
+      (sourceCombinedLabel π sol s decisions) := by
+    rw [hleaf]
+    exact GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl _)
+  exact GkatFaithful.EquivBA.trans
+    (GkatFaithful.guardedFold_decide_under_prefix sourceBranches
+      ((quot.trans (π.mapState s)).map (fun transition => transition.1))
+      sourceFallback rest decisions haligned hregion)
+    (GkatFaithful.EquivBA.ite_c
+      hleafBA
+      (GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl rest)))
+
+/-- The target Salomaa equation normalizes over exactly the same combined-cell list as the
+    source.  Its selected decisions are the suffix remaining after the source guards. -/
+theorem UniformBehavioralGAutQuotient.target_eqRHS_combined_normal_form
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S)
+    (newFallback : Exp A T) :
+    GkatFaithful.EquivBA (eqRHS quot sol (π.mapState s))
+      (GkatFaithful.guardedFold
+        ((GkatFaithful.guardAssignments (combinedTransitionGuards π s)).map
+          (fun decisions =>
+            (GkatFaithful.guardCell decisions,
+              targetCombinedLabel π sol s decisions))) newFallback) := by
+  let targetTransitions := quot.trans (π.mapState s)
+  let targetBranches := transitionBranches targetTransitions sol
+  let targetFallback : Exp A T := Exp.test (quot.hlt (π.mapState s))
+  let sourceGuards := (aut.trans s).map (fun transition => transition.1)
+  let targetGuards := targetTransitions.map (fun transition => transition.1)
+  let guards := combinedTransitionGuards π s
+  have horiginal : eqRHS quot sol (π.mapState s) =
+      GkatFaithful.guardedFold targetBranches targetFallback :=
+    eqRHS_eq_guardedFold quot sol (π.mapState s)
+  rw [horiginal]
+  apply GkatFaithful.guardAssignments_label_normal_form guards
+  intro decisions hmem rest
+  have hassignment : GkatFaithful.IsGuardAssignment
+      (sourceGuards ++ targetGuards) decisions := by
+    exact GkatFaithful.guardAssignments_sound hmem
+  let targetDecisions := GkatFaithful.dropGuardDecisions sourceGuards decisions
+  have htarget : GkatFaithful.IsGuardAssignment targetGuards targetDecisions :=
+    hassignment.drop_append
+  have hbranchGuards : targetBranches.map (fun branch => branch.1) = targetGuards :=
+    transitionBranches_guards targetTransitions sol
+  have haligned : GkatFaithful.IsGuardAssignment
+      (targetBranches.map (fun branch => branch.1)) targetDecisions := by
+    rw [hbranchGuards]
+    exact htarget
+  have hregion : GkatFaithful.GuardImplies
+      (GkatFaithful.guardCell decisions) (GkatFaithful.guardCell targetDecisions) := by
+    intro X W x hcell
+    exact GkatFaithful.guardCell_drop_implies W x hassignment hcell
+  have hleaf : GkatFaithful.decidedGuardedFold targetDecisions
+      targetBranches targetFallback = targetCombinedLabel π sol s decisions := by
+    exact decidedGuardedFold_transitionBranches targetDecisions targetTransitions
+      sol targetFallback
+  have hleafBA : GkatFaithful.EquivBA
+      (GkatFaithful.decidedGuardedFold targetDecisions targetBranches targetFallback)
+      (targetCombinedLabel π sol s decisions) := by
+    rw [hleaf]
+    exact GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl _)
+  exact GkatFaithful.EquivBA.trans
+    (GkatFaithful.guardedFold_decide_under targetBranches targetFallback rest
+      targetDecisions haligned hregion)
+    (GkatFaithful.EquivBA.ite_c hleafBA
+      (GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl rest)))
+
+/-- Corresponding source and target labels are equivalent under their combined cell.
+    If their selected outputs differ, uniform bisimulation proves that cell unsatisfiable;
+    otherwise the action-prefixed leaves coincide (and the no-transition leaves use halt
+    guard equivalence).  The case distinction is metatheoretic classical logic, not UA. -/
+theorem UniformBehavioralGAutQuotient.combinedLabels_under
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S)
+    (decisions : List (BExp T × Bool))
+    (hassignment : GkatFaithful.IsGuardAssignment
+      (combinedTransitionGuards π s) decisions) (rest : Exp A T) :
+    GkatFaithful.EquivBA
+      (.ite (GkatFaithful.guardCell decisions) (sourceCombinedLabel π sol s decisions) rest)
+      (.ite (GkatFaithful.guardCell decisions) (targetCombinedLabel π sol s decisions) rest) := by
+  classical
+  let sourceChoice := decidedFirst decisions (aut.trans s)
+  let targetChoice := decidedFirst
+    (GkatFaithful.dropGuardDecisions
+      ((aut.trans s).map (fun transition => transition.1)) decisions)
+    (quot.trans (π.mapState s))
+  have hbehavior : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      bval W (GkatFaithful.guardCell decisions) x = true →
+      sourceChoice.map (fun output => (output.1, π.mapState output.2)) = targetChoice := by
+    intro X W x hcell
+    exact π.combinedSelected_eq s decisions hassignment W x hcell
+  have hfalse_of_ne
+      (hne : sourceChoice.map (fun output => (output.1, π.mapState output.2)) ≠
+        targetChoice) :
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+        bval W (GkatFaithful.guardCell decisions) x = false := by
+    intro X W x
+    cases hcell : bval W (GkatFaithful.guardCell decisions) x with
+    | false => rfl
+    | true => exact False.elim (hne (hbehavior X W x hcell))
+  cases hs : sourceChoice with
+  | none =>
+      cases ht : targetChoice with
+      | none =>
+          change GkatFaithful.EquivBA
+            (.ite (GkatFaithful.guardCell decisions)
+              (selectedTransitionExp (fun source => sol (π.mapState source))
+                (Exp.test (aut.hlt s)) sourceChoice) rest)
+            (.ite (GkatFaithful.guardCell decisions)
+              (selectedTransitionExp sol (Exp.test (quot.hlt (π.mapState s)))
+                targetChoice) rest)
+          rw [hs, ht]
+          exact GkatFaithful.EquivBA.ite_c
+            (GkatFaithful.EquivBA.baTest (π.hlt_ba s))
+            (GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl rest))
+      | some targetOutput =>
+          have hne : sourceChoice.map
+              (fun output => (output.1, π.mapState output.2)) ≠ targetChoice := by
+            rw [hs, ht]
+            intro h
+            contradiction
+          exact GkatFaithful.EquivBA.trans
+            (GkatFaithful.ite_of_unsat (sourceCombinedLabel π sol s decisions) rest
+              (hfalse_of_ne hne))
+            (GkatFaithful.EquivBA.symm
+              (GkatFaithful.ite_of_unsat (targetCombinedLabel π sol s decisions) rest
+                (hfalse_of_ne hne)))
+  | some sourceOutput =>
+      obtain ⟨sourceAction, sourceTarget⟩ := sourceOutput
+      cases ht : targetChoice with
+      | none =>
+          have hne : sourceChoice.map
+              (fun output => (output.1, π.mapState output.2)) ≠ targetChoice := by
+            rw [hs, ht]
+            intro h
+            contradiction
+          exact GkatFaithful.EquivBA.trans
+            (GkatFaithful.ite_of_unsat (sourceCombinedLabel π sol s decisions) rest
+              (hfalse_of_ne hne))
+            (GkatFaithful.EquivBA.symm
+              (GkatFaithful.ite_of_unsat (targetCombinedLabel π sol s decisions) rest
+                (hfalse_of_ne hne)))
+      | some targetOutput =>
+          obtain ⟨targetAction, targetTarget⟩ := targetOutput
+          by_cases hout : (sourceAction, π.mapState sourceTarget) =
+              (targetAction, targetTarget)
+          · have haction : sourceAction = targetAction := congrArg Prod.fst hout
+            have htarget : π.mapState sourceTarget = targetTarget := congrArg Prod.snd hout
+            subst targetAction
+            subst targetTarget
+            change GkatFaithful.EquivBA
+              (.ite (GkatFaithful.guardCell decisions)
+                (selectedTransitionExp (fun source => sol (π.mapState source))
+                  (Exp.test (aut.hlt s)) sourceChoice) rest)
+              (.ite (GkatFaithful.guardCell decisions)
+                (selectedTransitionExp sol (Exp.test (quot.hlt (π.mapState s)))
+                  targetChoice) rest)
+            rw [hs, ht]
+            exact GkatFaithful.EquivBA.base (GkatSyntax.Equiv.refl _)
+          · have hne : sourceChoice.map
+                (fun output => (output.1, π.mapState output.2)) ≠ targetChoice := by
+              rw [hs, ht]
+              intro h
+              exact hout (Option.some.inj h)
+            exact GkatFaithful.EquivBA.trans
+              (GkatFaithful.ite_of_unsat (sourceCombinedLabel π sol s decisions) rest
+                (hfalse_of_ne hne))
+              (GkatFaithful.EquivBA.symm
+                (GkatFaithful.ite_of_unsat (targetCombinedLabel π sol s decisions) rest
+                  (hfalse_of_ne hne)))
+
+/-- **Behavioral `eqRHS` commutation.** A uniform behavioral quotient need not preserve
+    transition-list syntax or order, yet after finite common-cell normalization its source
+    equation (with the target solution pulled back) is provably equivalent to the target
+    equation.  No general uniqueness axiom is used. -/
+theorem UniformBehavioralGAutQuotient.eqRHS_ba
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) (sol : Q → Exp A T) (s : S) :
+    GkatFaithful.EquivBA
+      (eqRHS aut (fun source => sol (π.mapState source)) s)
+      (eqRHS quot sol (π.mapState s)) := by
+  let guards := combinedTransitionGuards π s
+  let assignments := GkatFaithful.guardAssignments guards
+  let fallback : Exp A T := Exp.test .zero
+  have hsource := π.source_eqRHS_combined_normal_form sol s fallback
+  have htarget := π.target_eqRHS_combined_normal_form sol s fallback
+  have hlocal : ∀ decisions ∈ assignments, ∀ rest,
+      GkatFaithful.EquivBA
+        (.ite (GkatFaithful.guardCell decisions)
+          (sourceCombinedLabel π sol s decisions) rest)
+        (.ite (GkatFaithful.guardCell decisions)
+          (targetCombinedLabel π sol s decisions) rest) := by
+    intro decisions hmem rest
+    exact π.combinedLabels_under sol s decisions
+      (GkatFaithful.guardAssignments_sound hmem) rest
+  exact GkatFaithful.EquivBA.trans hsource
+    (GkatFaithful.EquivBA.trans
+      (GkatFaithful.guardedFold_labels_replace assignments
+        (sourceCombinedLabel π sol s) (targetCombinedLabel π sol s) fallback hlocal)
+      (GkatFaithful.EquivBA.symm htarget))
+
+/-- Provable quotient solutions pull back along a uniform behavioral quotient even when
+    its transition lists are not syntactically preserved. -/
+theorem UniformBehavioralGAutQuotient.lift_solvesBA
+    {S Q A T : Type} {aut : GAut S A T} {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient aut quot) {sol : Q → Exp A T}
+    (hsol : SolvesBA quot sol) : SolvesBA aut (fun s => sol (π.mapState s)) := by
+  intro s hs
+  exact GkatFaithful.EquivBA.trans
+    (hsol (π.mapState s) (π.maps_states s hs))
+    (GkatFaithful.EquivBA.symm (π.eqRHS_ba sol s))
+
+/-- The Salomaa right-hand side commutes definitionally with a structural automaton
+    homomorphism after pulling a target assignment back along its state map. -/
+theorem eqRHS_hom {S₁ S₂ A T : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    (h : GAutHom aut₁ aut₂) (sol : S₂ → Exp A T) (s : S₁) :
+    eqRHS aut₁ (fun x => sol (h.mapState x)) s = eqRHS aut₂ sol (h.mapState s) := by
+  unfold eqRHS
+  rw [h.hlt_eq, h.trans_eq]
+  induction aut₁.trans s with
+  | nil => rfl
+  | cons t ts ih =>
+      simp only [List.map_cons, List.foldr_cons]
+      rw [ih]
+
+/-- **Lifting solutions along a homomorphism** (Pham, Theorem 5.6). A provable solution
+    of the target—especially a bisimulation quotient—pulls back to a provable solution of
+    the source by composition with the quotient map. No uniqueness principle is used. -/
+theorem GAutHom.lift_solvesBA {S₁ S₂ A T : Type} {aut₁ : GAut S₁ A T}
+    {aut₂ : GAut S₂ A T} (h : GAutHom aut₁ aut₂) {sol : S₂ → Exp A T}
+    (hsol : SolvesBA aut₂ sol) : SolvesBA aut₁ (fun s => sol (h.mapState s)) := by
+  intro s hs
+  rw [eqRHS_hom h sol s]
+  exact hsol (h.mapState s) (h.maps_states s hs)
+
+/-- **The algebraic endgame of the quotient completeness reduction.** Suppose two source
+    automata map to one solved quotient, their initial states have the same quotient image,
+    and the source expressions are identified with the corresponding lifted standard
+    solutions. Then both lifted assignments solve their source systems and the expressions
+    are provably equal. Thus the only substantive missing premise in this route is existence
+    of `qsol` for every relevant bisimulation quotient. -/
+theorem shared_quotient_solution_reductionBA
+    {S₁ S₂ Q A T : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    {quot : GAut Q A T} (h₁ : GAutHom aut₁ quot) (h₂ : GAutHom aut₂ quot)
+    (qsol : Q → Exp A T) (hqsol : SolvesBA quot qsol)
+    (hstart : h₁.mapState aut₁.start = h₂.mapState aut₂.start)
+    {e f : Exp A T}
+    (he : GkatFaithful.EquivBA e (qsol (h₁.mapState aut₁.start)))
+    (hf : GkatFaithful.EquivBA f (qsol (h₂.mapState aut₂.start))) :
+    SolvesBA aut₁ (fun s => qsol (h₁.mapState s)) ∧
+      SolvesBA aut₂ (fun s => qsol (h₂.mapState s)) ∧
+      GkatFaithful.EquivBA e f := by
+  refine ⟨h₁.lift_solvesBA hqsol, h₂.lift_solvesBA hqsol, ?_⟩
+  rw [hstart] at he
+  exact GkatFaithful.EquivBA.trans he (GkatFaithful.EquivBA.symm hf)
+
+/-- The shared-quotient reduction in the literal disjoint-union form of Pham's Theorem 5.7.
+    The quotient projection is composed with the two canonical summand inclusions, and the
+    generic homomorphism theorem performs both lifts. -/
+theorem sum_quotient_solution_reductionBA
+    {S₁ S₂ Q A T : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    {quot : GAut Q A T} (π : StrictGAutQuotient (sumGAut aut₁ aut₂) quot)
+    (qsol : Q → Exp A T) (hqsol : SolvesBA quot qsol)
+    (hstart : π.mapState (.inl aut₁.start) = π.mapState (.inr aut₂.start))
+    {e f : Exp A T}
+    (he : GkatFaithful.EquivBA e (qsol (π.mapState (.inl aut₁.start))))
+    (hf : GkatFaithful.EquivBA f (qsol (π.mapState (.inr aut₂.start)))) :
+    SolvesBA aut₁ (fun s => qsol (π.mapState (.inl s))) ∧
+      SolvesBA aut₂ (fun s => qsol (π.mapState (.inr s))) ∧
+      GkatFaithful.EquivBA e f := by
+  exact shared_quotient_solution_reductionBA
+    (π.toGAutHom.comp (GAutHom.inl aut₁ aut₂))
+    (π.toGAutHom.comp (GAutHom.inr aut₁ aut₂))
+    qsol hqsol hstart he hf
+
+/-- **Honest behavioral shared-quotient endgame.** The same reduction works for a uniform
+    behavioral quotient, with arbitrary Boolean-equivalent guard partitions and orders.
+    The new common-cell theorem supplies the previously missing lift. -/
+theorem uniform_sum_quotient_solution_reductionBA
+    {S₁ S₂ Q A T : Type} {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T}
+    {quot : GAut Q A T}
+    (π : UniformBehavioralGAutQuotient (sumGAut aut₁ aut₂) quot)
+    (qsol : Q → Exp A T) (hqsol : SolvesBA quot qsol)
+    (hstart : π.mapState (.inl aut₁.start) = π.mapState (.inr aut₂.start))
+    {e f : Exp A T}
+    (he : GkatFaithful.EquivBA e (qsol (π.mapState (.inl aut₁.start))))
+    (hf : GkatFaithful.EquivBA f (qsol (π.mapState (.inr aut₂.start)))) :
+    SolvesBA aut₁ (fun s => qsol (π.mapState (.inl s))) ∧
+      SolvesBA aut₂ (fun s => qsol (π.mapState (.inr s))) ∧
+      GkatFaithful.EquivBA e f := by
+  let sumSol : Sum S₁ S₂ → Exp A T := fun state => qsol (π.mapState state)
+  have hsum : SolvesBA (sumGAut aut₁ aut₂) sumSol := π.lift_solvesBA hqsol
+  have hleft : SolvesBA aut₁ (fun s => qsol (π.mapState (.inl s))) :=
+    (GAutHom.inl aut₁ aut₂).lift_solvesBA hsum
+  have hright : SolvesBA aut₂ (fun s => qsol (π.mapState (.inr s))) :=
+    (GAutHom.inr aut₁ aut₂).lift_solvesBA hsum
+  refine ⟨hleft, hright, ?_⟩
+  rw [hstart] at he
+  exact GkatFaithful.EquivBA.trans he (GkatFaithful.EquivBA.symm hf)
+
+/-- The syntactic fundamental-theorem obligation for derivative automata. -/
+def DerivativeFundamentalBA (A T : Type) : Prop :=
+  ∀ e : Exp A T, SolvesBA (derivAut e) (fun state => state)
+
+/-- Simultaneous uniqueness for the Brzozowski-style derivative systems used in this file.
+    This is not definitionally Pham's occurrence-based Thompson construction; transporting
+    his uniqueness theorem requires a separate construction/bridge. -/
+def DerivativeUABA (A T : Type) : Prop :=
+  ∀ e : Exp A T, UABA (derivAut e)
+
+/-- **Exact common-quotient completeness reduction.** This removes the previously implicit
+    `he`/`hf` assumptions. A solved common behavioral quotient yields equality of its two
+    starts provided (i) expressions provably solve their derivative systems and (ii) those
+    particular Thompson systems have finite-axiom uniqueness. Thus quotient solvability is
+    necessary but not by itself sufficient; these are the three honest remaining premises. -/
+theorem commonQuotient_completeness_reductionBA
+    {Q A T : Type} {e f : Exp A T} {quot : GAut Q A T}
+    (hfund : DerivativeFundamentalBA A T) (hunique : DerivativeUABA A T)
+    (π : UniformBehavioralGAutQuotient (sumGAut (derivAut e) (derivAut f)) quot)
+    (qsol : Q → Exp A T) (hqsol : SolvesBA quot qsol)
+    (hstart : π.mapState (.inl e) = π.mapState (.inr f)) :
+    GkatFaithful.EquivBA e f := by
+  let sumSol : Sum (Exp A T) (Exp A T) → Exp A T :=
+    fun state => qsol (π.mapState state)
+  have hsum : SolvesBA (sumGAut (derivAut e) (derivAut f)) sumSol :=
+    π.lift_solvesBA hqsol
+  have hleft : SolvesBA (derivAut e) (fun state => qsol (π.mapState (.inl state))) :=
+    (GAutHom.inl (derivAut e) (derivAut f)).lift_solvesBA hsum
+  have hright : SolvesBA (derivAut f) (fun state => qsol (π.mapState (.inr state))) :=
+    (GAutHom.inr (derivAut e) (derivAut f)).lift_solvesBA hsum
+  have he : GkatFaithful.EquivBA e (qsol (π.mapState (.inl e))) :=
+    hunique e (fun state => state)
+      (fun state => qsol (π.mapState (.inl state))) (hfund e) hleft e (GkatDeriv.mem_self e)
+  have hf : GkatFaithful.EquivBA f (qsol (π.mapState (.inr f))) :=
+    hunique f (fun state => state)
+      (fun state => qsol (π.mapState (.inr state))) (hfund f) hright f (GkatDeriv.mem_self f)
+  exact (uniform_sum_quotient_solution_reductionBA π qsol hqsol hstart he hf).2.2
+
+/-- Once quotient solvability is established for the disjoint union, any particular quotient
+    presentation immediately comes equipped with a provable solution. This small eliminator
+    exposes the sole open construction required by `sum_quotient_solution_reductionBA`. -/
+theorem quotient_solution_of_solvableBA {S₁ S₂ Q A T : Type}
+    {aut₁ : GAut S₁ A T} {aut₂ : GAut S₂ A T} {quot : GAut Q A T}
+    (hall : StrictQuotientsSolvableBA (sumGAut aut₁ aut₂))
+    (π : StrictGAutQuotient (sumGAut aut₁ aut₂) quot) :
+    ∃ sol : Q → Exp A T, SolvesBA quot sol :=
+  hall quot π
 
 /-- **The Uniqueness Axiom (UA), `Equiv`-level.** Any two solutions of the automaton's
     system agree (provably) on every state. This is the hypothesis GKAT completeness is
@@ -786,6 +1905,15 @@ def Solves (aut : GAut S A T) (sol : S → Exp A T) : Prop :=
 def UA (aut : GAut S A T) : Prop :=
   ∀ sol1 sol2, Solves aut sol1 → Solves aut sol2 →
     ∀ s ∈ aut.states, Equiv (sol1 s) (sol2 s)
+
+/-- Guarded-language equivalence uniformly over all carriers and primitive-test
+    interpretations.  This is the semantic equality relevant to the free Boolean algebra. -/
+def UniformLanguageEquivalent (e f : Exp A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (gs : GS A X), den W e gs ↔ den W f gs
+
+/-- The completeness statement under investigation, isolated as a reusable proposition. -/
+def FiniteAxiomsCompleteBA (A T : Type) : Prop :=
+  ∀ e f : Exp A T, UniformLanguageEquivalent e f → GkatFaithful.EquivBA e f
 
 /-- The one-state self-loop automaton `x ─(b|q)→ x`, halting on `h`. The smallest genuine
     loop; its equation is the single-state Salomaa equation. -/
@@ -914,6 +2042,30 @@ theorem solves_semSolves {V : T → Atom → Bool} {aut : GAut S A T} {sol : S �
     (hsol : Solves aut sol) : SemSolves V aut sol := by
   intro s hs; funext gs; exact propext (GkatGS.sound V (hsol s hs) gs)
 
+/-- A solution provable in the full two-sorted GKAT theory is semantically a solution. -/
+theorem solvesBA_semSolves {V : T → Atom → Bool} {aut : GAut S A T}
+    {sol : S → Exp A T} (hsol : SolvesBA aut sol) : SemSolves V aut sol := by
+  intro s hs
+  funext gs
+  exact propext (GkatFaithful.sound_BA V (hsol s hs) gs)
+
+/-- **Completeness forces simultaneous uniqueness.** If the original finite axioms were
+    complete for guarded languages, then every uniformly well-formed finite Salomaa system
+    would satisfy the Boolean-aware general Uniqueness Axiom. Consequently, separating one
+    such `UABA` instance in a nonstandard model suffices to refute completeness; any positive
+    proof must cross this exact boundary. -/
+theorem finiteAxiomsCompleteBA_implies_UABA
+    (hcomplete : FiniteAxiomsCompleteBA A T) (aut : GAut S A T)
+    (hwf : UniformWF aut) : UABA aut := by
+  intro sol1 sol2 hsol1 hsol2 s hs
+  apply hcomplete (sol1 s) (sol2 s)
+  intro X W gs
+  have hlang1 := sem_solves_autLang (hwf X W)
+    (solvesBA_semSolves (V := W) hsol1) s hs
+  have hlang2 := sem_solves_autLang (hwf X W)
+    (solvesBA_semSolves (V := W) hsol2) s hs
+  rw [← hlang1, ← hlang2]
+
 /-- **Semantic soundness for a provable solution** — the `Solves` corollary of
     `sem_solves_autLang`, via `solves_semSolves`. -/
 theorem solves_autLang {V : T → Atom → Bool} {aut : GAut S A T} {sol : S → Exp A T}
@@ -962,6 +2114,374 @@ theorem semSolves_derivAut (V : T → Atom → Bool) (e : Exp A T) :
             obtain ⟨⟨hq, ha⟩, hw⟩ := heq
             exact ⟨s', by rw [hq], by rw [ha, hw]; exact hd'⟩
 
+/-- The syntactic derivative fundamental equation for an atomic action. -/
+theorem derivativeEquation_actBA (p : A) :
+    GkatFaithful.EquivBA (Exp.act p : Exp A T)
+      (eqRHS (derivAut (Exp.act p : Exp A T)) (fun state => state) (Exp.act p)) := by
+  simp only [eqRHS, derivAut, transG, E, List.foldr_cons, List.foldr_nil]
+  exact GkatFaithful.EquivBA.symm
+    (GkatFaithful.EquivBA.trans
+      (GkatFaithful.EquivBA.ite_c
+        (GkatFaithful.EquivBA.base (Equiv.s5 (Exp.act p)))
+        (GkatFaithful.EquivBA.base (Equiv.refl _)))
+      (GkatFaithful.ite_one (Exp.act p) (Exp.test .zero)))
+
+/-- The syntactic derivative fundamental equation for an embedded test. -/
+theorem derivativeEquation_testBA (b : BExp T) :
+    GkatFaithful.EquivBA (Exp.test b : Exp A T)
+      (eqRHS (derivAut (Exp.test b : Exp A T)) (fun state => state) (Exp.test b)) := by
+  exact GkatFaithful.EquivBA.base (Equiv.refl _)
+
+/-- Conditional derivative expansion reduces to the purely Boolean/test identity for its
+    terminal no-step branch. All transition-list restructuring is discharged by U2/U3 and
+    Boolean guard congruence. -/
+theorem derivativeEquation_iteBA_of_test_terminal
+    (b : BExp T) (e f : Exp A T)
+    (he : GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e))
+    (hf : GkatFaithful.EquivBA f
+      (eqRHS (derivAut f) (fun state => state) f))
+    (hterminal : GkatFaithful.EquivBA
+      (.ite b (.test (E e)) (.test (E f)) : Exp A T)
+      (.test (E (.ite b e f)))) :
+    GkatFaithful.EquivBA (.ite b e f)
+      (eqRHS (derivAut (.ite b e f)) (fun state => state) (.ite b e f)) := by
+  let left := transitionBranches (transG e) (fun state => state)
+  let right := transitionBranches (transG f) (fun state => state)
+  have hchoices : GkatFaithful.EquivBA (.ite b e f)
+      (.ite b (GkatFaithful.guardedFold left (.test (E e)))
+        (GkatFaithful.guardedFold right (.test (E f)))) := by
+    exact GkatFaithful.EquivBA.ite_c
+      (GkatFaithful.EquivBA.trans he
+        (eqRHS_eq_guardedFold (derivAut e) (fun state => state) e ▸
+          GkatFaithful.EquivBA.base (Equiv.refl _)))
+      (GkatFaithful.EquivBA.trans hf
+        (eqRHS_eq_guardedFold (derivAut f) (fun state => state) f ▸
+          GkatFaithful.EquivBA.base (Equiv.refl _)))
+  have hpartition := GkatFaithful.ite_guardedFold_partition b left right
+    (Exp.test (E e)) (Exp.test (E f))
+  have hfold : GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        (left.map (fun branch => (BExp.and b branch.1, branch.2)) ++
+          right.map (fun branch => (BExp.and (BExp.not b) branch.1, branch.2)))
+        (.ite b (.test (E e)) (.test (E f))))
+      (GkatFaithful.guardedFold
+        (left.map (fun branch => (BExp.and b branch.1, branch.2)) ++
+          right.map (fun branch => (BExp.and (BExp.not b) branch.1, branch.2)))
+        (.test (E (.ite b e f)))) :=
+    GkatFaithful.guardedFold_fallback_congr _ hterminal
+  have hrhs : GkatFaithful.guardedFold
+      (left.map (fun branch => (BExp.and b branch.1, branch.2)) ++
+        right.map (fun branch => (BExp.and (BExp.not b) branch.1, branch.2)))
+      (.test (E (.ite b e f))) =
+      eqRHS (derivAut (.ite b e f)) (fun state => state) (.ite b e f) := by
+    rw [eqRHS_eq_guardedFold]
+    unfold derivAut transG
+    dsimp only [left, right]
+    rw [transitionBranches_append, transitionBranches_map_guard,
+      transitionBranches_map_guard]
+  exact GkatFaithful.EquivBA.trans hchoices
+    (GkatFaithful.EquivBA.trans hpartition
+      (GkatFaithful.EquivBA.trans hfold
+        (hrhs ▸ GkatFaithful.EquivBA.base (Equiv.refl _))))
+
+/-- The derivative fundamental equation is closed under guarded conditionals. -/
+theorem derivativeEquation_iteBA
+    (b : BExp T) (e f : Exp A T)
+    (he : GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e))
+    (hf : GkatFaithful.EquivBA f
+      (eqRHS (derivAut f) (fun state => state) f)) :
+    GkatFaithful.EquivBA (.ite b e f)
+      (eqRHS (derivAut (.ite b e f)) (fun state => state) (.ite b e f)) := by
+  exact derivativeEquation_iteBA_of_test_terminal b e f he hf
+    (GkatFaithful.ite_tests_ba b (E e) (E f))
+
+/-- The derivative fundamental equation is closed under sequencing. -/
+theorem derivativeEquation_seqBA
+    (e f : Exp A T)
+    (he : GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e))
+    (hf : GkatFaithful.EquivBA f
+      (eqRHS (derivAut f) (fun state => state) f)) :
+    GkatFaithful.EquivBA (.seq e f)
+      (eqRHS (derivAut (.seq e f)) (fun state => state) (.seq e f)) := by
+  let left := transitionBranches (transG e) (fun state => state)
+  let right := transitionBranches (transG f) (fun state => state)
+  let region := BExp.and (noStepG (transG e)) (E e)
+  have hregion : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      bval W region x = bval W (E e) x := by
+    intro X W x
+    exact noStepG_and_E_eq_E e X W x
+  have hterminal : GkatFaithful.EquivBA
+      (.ite region (.test (E f)) (.test .zero) : Exp A T)
+      (.test (E (.seq e f))) := by
+    exact GkatFaithful.EquivBA.trans
+      (GkatFaithful.ite_tests_ba region (E f) .zero)
+      (GkatFaithful.EquivBA.baTest (by
+        intro X W x
+        have hr := hregion X W x
+        change ((bval W region x && bval W (E f) x) ||
+          ((!bval W region x) && false)) =
+          (bval W (E e) x && bval W (E f) x)
+        rw [hr]
+        cases bval W (E e) x <;> cases bval W (E f) x <;> rfl))
+  have hfall : GkatFaithful.EquivBA (.seq (.test (E e)) f : Exp A T)
+      (GkatFaithful.guardedFold
+        (right.map (fun branch => (BExp.and region branch.1, branch.2)))
+        (.test (E (.seq e f)))) := by
+    exact GkatFaithful.EquivBA.trans
+      (GkatFaithful.EquivBA.seq_c
+        (GkatFaithful.EquivBA.base (Equiv.refl _)) hf)
+      (GkatFaithful.EquivBA.trans
+        (eqRHS_eq_guardedFold (derivAut f) (fun state => state) f ▸
+          GkatFaithful.EquivBA.seq_c
+            (GkatFaithful.EquivBA.baTest (by
+              intro X W x
+              exact (hregion X W x).symm))
+            (GkatFaithful.EquivBA.base (Equiv.refl _)))
+        (GkatFaithful.EquivBA.trans
+          (GkatFaithful.test_seq_guardedFold_gate region right (.test (E f)))
+          (GkatFaithful.guardedFold_fallback_congr _ hterminal)))
+  have hstart : GkatFaithful.EquivBA (.seq e f)
+      (.seq (GkatFaithful.guardedFold left (.test (E e))) f) := by
+    exact GkatFaithful.EquivBA.seq_c
+      (GkatFaithful.EquivBA.trans he
+        (eqRHS_eq_guardedFold (derivAut e) (fun state => state) e ▸
+          GkatFaithful.EquivBA.base (Equiv.refl _)))
+      (GkatFaithful.EquivBA.base (Equiv.refl _))
+  have hdistributed := GkatFaithful.guardedFold_seq_right left (.test (E e)) f
+  have hleftFallback := GkatFaithful.guardedFold_fallback_congr
+    (left.map (fun branch => (branch.1, Exp.seq branch.2 f))) hfall
+  have htargets := transitionBranches_seq_target_fold (transG e) f
+    (GkatFaithful.guardedFold
+      (right.map (fun branch => (BExp.and region branch.1, branch.2)))
+      (.test (E (.seq e f))))
+  have happend := GkatFaithful.guardedFold_append
+    (transitionBranches
+      ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)))
+      (fun state => state))
+    (right.map (fun branch => (BExp.and region branch.1, branch.2)))
+    (.test (E (.seq e f)))
+  have hrhs : GkatFaithful.guardedFold
+      (transitionBranches
+          ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)))
+          (fun state => state) ++
+        right.map (fun branch => (BExp.and region branch.1, branch.2)))
+      (.test (E (.seq e f))) =
+      eqRHS (derivAut (.seq e f)) (fun state => state) (.seq e f) := by
+    rw [eqRHS_eq_guardedFold]
+    change _ = GkatFaithful.guardedFold
+      (transitionBranches (transG (.seq e f)) (fun state => state))
+      (.test (E (.seq e f)))
+    have htrans : transG (.seq e f) =
+        (transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)) ++
+        (transG f).map (fun t =>
+          (BExp.and (BExp.and (noStepG (transG e)) (E e)) t.1, t.2)) := rfl
+    rw [htrans]
+    dsimp only [right, region]
+    rw [transitionBranches_append, transitionBranches_map_guard]
+  have hflatten : GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        (transitionBranches
+          ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)))
+          (fun state => state))
+        (GkatFaithful.guardedFold
+          (right.map (fun branch => (BExp.and region branch.1, branch.2)))
+          (.test (E (.seq e f)))))
+      (GkatFaithful.guardedFold
+        (transitionBranches
+            ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)))
+            (fun state => state) ++
+          right.map (fun branch => (BExp.and region branch.1, branch.2)))
+        (.test (E (.seq e f)))) := by
+    rw [happend]
+    exact GkatFaithful.EquivBA.base (Equiv.refl _)
+  have htoRhs : GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        (transitionBranches
+            ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 f)))
+            (fun state => state) ++
+          right.map (fun branch => (BExp.and region branch.1, branch.2)))
+        (.test (E (.seq e f))))
+      (eqRHS (derivAut (.seq e f)) (fun state => state) (.seq e f)) := by
+    rw [← hrhs]
+    exact GkatFaithful.EquivBA.base (Equiv.refl _)
+  exact GkatFaithful.EquivBA.trans hstart
+    (GkatFaithful.EquivBA.trans hdistributed
+      (GkatFaithful.EquivBA.trans hleftFallback
+        (GkatFaithful.EquivBA.trans htargets
+          (GkatFaithful.EquivBA.trans hflatten htoRhs))))
+
+/-- Productive-loop normalization (Smolka et al., Lemma 3.9): a loop body may be
+    replaced by its action-only derivative fold using FT, U2, and W2. No uniqueness
+    or fixed-point induction is used. -/
+theorem productiveLoopBA (b : BExp T) (e : Exp A T)
+    (he : GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e)) :
+    GkatFaithful.EquivBA (.wh b e)
+      (.wh b (GkatFaithful.guardedFold
+        (transitionBranches (transG e) (fun state => state)) (.test .zero))) := by
+  let branches := transitionBranches (transG e) (fun state => state)
+  let d := GkatFaithful.guardedFold branches (.test .zero)
+  have hdis : ∀ branch ∈ branches,
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+        bval W (.and branch.1 (E e)) x = false := by
+    intro branch hmem
+    exact transitionBranch_guard_E_disjoint e branch hmem
+  have himp : ∀ branch ∈ branches,
+      GkatFaithful.GuardImplies branch.1 (.not (E e)) := by
+    intro branch hmem X W x hguard
+    have hd := hdis branch hmem X W x
+    change (bval W branch.1 x && bval W (E e) x) = false at hd
+    change (!bval W (E e) x) = true
+    rw [hguard] at hd
+    cases hE : bval W (E e) x
+    · rfl
+    · rw [hE] at hd
+      exact Bool.noConfusion hd
+  have hdecomp : GkatFaithful.EquivBA e
+      (.ite (E e) (.test .one) d) := by
+    exact GkatFaithful.EquivBA.trans he
+      (GkatFaithful.EquivBA.trans
+        (eqRHS_eq_guardedFold (derivAut e) (fun state => state) e ▸
+          GkatFaithful.EquivBA.base (Equiv.refl _))
+        (GkatFaithful.guardedFold_test_partition (E e) branches hdis))
+  have hprefix : GkatFaithful.EquivBA
+      (.seq (.test (.not (E e))) d : Exp A T) d :=
+    GkatFaithful.test_seq_guardedFold_of_implies (.not (E e)) branches himp
+  exact GkatFaithful.EquivBA.trans
+    (GkatFaithful.EquivBA.wh_c hdecomp)
+    (GkatFaithful.EquivBA.trans
+      (GkatFaithful.EquivBA.wh_c
+        (GkatFaithful.EquivBA.base
+          (Equiv.u2 (E e) (.test .one) d)))
+      (GkatFaithful.EquivBA.trans
+        (GkatFaithful.EquivBA.base (Equiv.w2 b (.not (E e)) d))
+        (GkatFaithful.EquivBA.wh_c hprefix)))
+
+/-- The derivative fundamental equation is closed under guarded iteration. Nullable
+    body stuttering is first removed by `productiveLoopBA`; the rest is finite U/W/S
+    algebra and transition-list bookkeeping. -/
+theorem derivativeEquation_whBA
+    (b : BExp T) (e : Exp A T)
+    (he : GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e)) :
+    GkatFaithful.EquivBA (.wh b e)
+      (eqRHS (derivAut (.wh b e)) (fun state => state) (.wh b e)) := by
+  let branches := transitionBranches (transG e) (fun state => state)
+  let d := GkatFaithful.guardedFold branches (.test .zero)
+  let loopD := Exp.wh b d
+  let loopE := Exp.wh b e
+  have hprod : GkatFaithful.EquivBA loopE loopD := productiveLoopBA b e he
+  have hunroll : GkatFaithful.EquivBA loopD
+      (.ite b (.seq d loopD) (.test .one)) :=
+    GkatFaithful.EquivBA.base (Equiv.w1 b d)
+  have hdistribute := GkatFaithful.guardedFold_seq_right
+    branches (.test .zero) loopD
+  have hzero : GkatFaithful.EquivBA
+      (.seq (.test .zero) loopD : Exp A T) (.test .zero) :=
+    GkatFaithful.EquivBA.base (Equiv.s2 loopD)
+  have hfoldZero := GkatFaithful.guardedFold_fallback_congr
+    (branches.map (fun branch => (branch.1, Exp.seq branch.2 loopD))) hzero
+  have htargets := transitionBranches_seq_target_fold_congr
+    (transG e) loopD loopE (.test .zero)
+    (GkatFaithful.EquivBA.symm hprod)
+  let targetBranches := transitionBranches
+    ((transG e).map (fun t => (t.1, t.2.1, Exp.seq t.2.2 loopE)))
+    (fun state => state)
+  have hbody : GkatFaithful.EquivBA (.seq d loopD)
+      (GkatFaithful.guardedFold targetBranches (.test .zero)) := by
+    exact GkatFaithful.EquivBA.trans hdistribute
+      (GkatFaithful.EquivBA.trans hfoldZero htargets)
+  have hpartition := GkatFaithful.ite_guardedFold_partition b targetBranches []
+    (.test .zero) (.test .one)
+  have hpartition' : GkatFaithful.EquivBA
+      (.ite b (GkatFaithful.guardedFold targetBranches (.test .zero))
+        (.test .one))
+      (GkatFaithful.guardedFold
+        (targetBranches.map (fun branch => (BExp.and b branch.1, branch.2)))
+        (.ite b (.test .zero) (.test .one))) := by
+    simpa only [List.map_nil, List.append_nil] using hpartition
+  have hterminal : GkatFaithful.EquivBA
+      (.ite b (.test .zero) (.test .one) : Exp A T)
+      (.test (.not b)) := by
+    exact GkatFaithful.EquivBA.trans
+      (GkatFaithful.EquivBA.base
+        (Equiv.u2 b (.test .zero) (.test .one)))
+      (GkatFaithful.test_eq_ite_one_zero (.not b) |>
+        GkatFaithful.EquivBA.symm)
+  have hterminalFold := GkatFaithful.guardedFold_fallback_congr
+    (targetBranches.map (fun branch => (BExp.and b branch.1, branch.2))) hterminal
+  have hrhs : GkatFaithful.guardedFold
+      (targetBranches.map (fun branch => (BExp.and b branch.1, branch.2)))
+      (.test (.not b)) =
+      eqRHS (derivAut (.wh b e)) (fun state => state) (.wh b e) := by
+    have hbranchList :
+        (targetBranches.map (fun branch => (BExp.and b branch.1, branch.2))) =
+        transitionBranches
+          ((transG e).map (fun t =>
+            (BExp.and b t.1, t.2.1, Exp.seq t.2.2 (.wh b e))))
+          (fun state => state) := by
+      dsimp only [targetBranches, loopE]
+      rw [← transitionBranches_map_guard]
+      simp only [List.map_map]
+      congr 1
+    rw [eqRHS_eq_guardedFold]
+    change _ = GkatFaithful.guardedFold
+      (transitionBranches (transG (.wh b e)) (fun state => state))
+      (.test (E (.wh b e)))
+    have htrans : transG (.wh b e) =
+        (transG e).map (fun t =>
+          (BExp.and b t.1, t.2.1, Exp.seq t.2.2 (.wh b e))) := rfl
+    rw [htrans, hbranchList]
+    simp only [E]
+  have htoRhs : GkatFaithful.EquivBA
+      (GkatFaithful.guardedFold
+        (targetBranches.map (fun branch => (BExp.and b branch.1, branch.2)))
+        (.test (.not b)))
+      (eqRHS (derivAut (.wh b e)) (fun state => state) (.wh b e)) := by
+    rw [← hrhs]
+    exact GkatFaithful.EquivBA.base (Equiv.refl _)
+  exact GkatFaithful.EquivBA.trans hprod
+    (GkatFaithful.EquivBA.trans hunroll
+      (GkatFaithful.EquivBA.trans
+        (GkatFaithful.EquivBA.ite_c hbody
+          (GkatFaithful.EquivBA.base (Equiv.refl _)))
+        (GkatFaithful.EquivBA.trans hpartition'
+          (GkatFaithful.EquivBA.trans hterminalFold htoRhs))))
+
+/-- Fundamental derivative equation for every GKAT expression, by structural induction. -/
+theorem derivativeEquationBA (e : Exp A T) :
+    GkatFaithful.EquivBA e
+      (eqRHS (derivAut e) (fun state => state) e) := by
+  induction e with
+  | act action => exact derivativeEquation_actBA action
+  | test test => exact derivativeEquation_testBA test
+  | seq e f ihe ihf => exact derivativeEquation_seqBA e f ihe ihf
+  | ite guard e f ihe ihf => exact derivativeEquation_iteBA guard e f ihe ihf
+  | wh guard e ihe => exact derivativeEquation_whBA guard e ihe
+
+/-- The identity labelling provably solves every finite derivative automaton using the
+    original finite GKAT axioms (with the ordinary Boolean algebra of tests). -/
+theorem derivativeFundamentalBA : DerivativeFundamentalBA A T := by
+  intro root state hstate
+  exact derivativeEquationBA state
+
+/-- Common-quotient reduction with the fundamental-theorem premise discharged. The
+    remaining algebraic premise is derivative-system uniqueness. It must not be conflated
+    with occurrence-based Thompson uniqueness without a proved bridge. -/
+theorem commonQuotient_completeness_reductionBA_closed
+    {Q A T : Type} {e f : Exp A T} {quot : GAut Q A T}
+    (hunique : DerivativeUABA A T)
+    (π : UniformBehavioralGAutQuotient
+      (sumGAut (derivAut e) (derivAut f)) quot)
+    (qsol : Q → Exp A T) (hqsol : SolvesBA quot qsol)
+    (hstart : π.mapState (.inl e) = π.mapState (.inr f)) :
+    GkatFaithful.EquivBA e f :=
+  commonQuotient_completeness_reductionBA
+    derivativeFundamentalBA hunique π qsol hqsol hstart
+
 -- ── Existence for acyclic automata: the guarded-choice solution ───────────────────
 
 /-- **The guarded-choice solution of an acyclic automaton.** `rank` witnesses acyclicity
@@ -986,7 +2506,18 @@ theorem buildSol_solves (aut : GAut S A T) (rank : S → Nat)
   intro s _
   have heq : buildSol aut rank hac s = eqRHS aut (buildSol aut rank hac) s := by
     rw [buildSol]; rfl
-  rw [heq]; exact Equiv.refl _
+  exact heq.symm ▸ Equiv.refl _
+
+/-- The same construction solves the equations in the full original two-sorted theory.
+    This is the first quotient-solvability fragment: every strict quotient whose transition
+    graph admits a decreasing rank is solved without UA (indeed, by reflexivity alone). -/
+theorem buildSol_solvesBA (aut : GAut S A T) (rank : S → Nat)
+    (hac : ∀ s : S, ∀ t ∈ aut.trans s, rank t.2.2 < rank s) :
+    SolvesBA aut (buildSol aut rank hac) := by
+  intro s _
+  have heq : buildSol aut rank hac s = eqRHS aut (buildSol aut rank hac) s := by
+    rw [buildSol]; rfl
+  exact heq.symm ▸ GkatFaithful.EquivBA.base (Equiv.refl _)
 
 /-- **Existence for acyclic automata (Kleene, the loop-free half).** Every well-formed
     automaton with a rank witnessing acyclicity is expressible: `autLang aut s = ⟦buildSol s⟧`
@@ -1354,6 +2885,24 @@ theorem loop2Aut_semsolves (V : T → Atom → Bool) (b : BExp T) (p q : A) :
       show den V (loop2Sol b p q Q2c.k) gs = den V (eqRHS (loop2Aut b p q) (loop2Sol b p q) Q2c.k) gs
       simp [loop2Sol, eqRHS, loop2Aut, den_ite, bval]
 
+/-- **The two-state Thompson loop has a provable solution in the original full theory.**
+    The former `ite 1` obstruction was an artifact of omitting Boolean congruence from the
+    Lean relation. At the head, the U/S/W derivation is unchanged; at the pure continuation
+    state, `GkatFaithful.ite_one` discharges the unconditional Salomaa branch. -/
+theorem loop2Aut_solvesBA (b : BExp T) (p q : A) :
+    SolvesBA (loop2Aut b p q) (loop2Sol b p q) := by
+  intro s _
+  cases s with
+  | h =>
+      apply GkatFaithful.EquivBA.base
+      simp only [eqRHS, loop2Aut, loop2Sol, loop2Sol0, List.foldr_cons, List.foldr_nil]
+      exact Equiv.trans
+        (salomaa_solution_exists b (Exp.seq (Exp.act p) (Exp.act q)) (Exp.test (BExp.not b)))
+        (Equiv.ite_c (Equiv.s1 (Exp.act p) (Exp.act q) _) (Equiv.refl _))
+  | k =>
+      simp only [eqRHS, loop2Aut, loop2Sol, List.foldr_cons, List.foldr_nil]
+      exact GkatFaithful.EquivBA.symm (GkatFaithful.ite_one _ _)
+
 /-- **First synthesis of a loop whose body spans multiple states.** `autLang (loop2Aut …) h =
     ⟦(p·q)^(b)·¬b⟧` — a `while b do (p; q)` cycle recovered as an expression, its two-action
     body composed by state elimination. The multi-state loop body is handled; the general
@@ -1390,8 +2939,13 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
     solves_autLang (WF_loopAut V b q) (loopAut_solves b q (BExp.not b)) () (by simp [loopAut])
 
 #print axioms firstMatch_transG
+#print axioms firstMatch_eq_decidedFirst
+#print axioms firstMatch_map_target_to
 #print axioms autLang_derivAut
 #print axioms WF_derivAut
+#print axioms UniformWF_derivAut
+#print axioms UniformWF.sum
+#print axioms UniformWF_sum_derivAut
 #print axioms Nested_derivAut
 #print axioms fig3_not_nested
 #print axioms autLang_eq_of_gbisim
@@ -1399,11 +2953,59 @@ theorem loopAut_expressible (V : T → Atom → Bool) (b : BExp T) (q : A) :
 #print axioms autLang_eq_of_gautBisim
 #print axioms den_seq_act
 #print axioms den_foldr_ite
+#print axioms eqRHS_eq_guardedFold
+#print axioms decidedGuardedFold_transitionBranches
+#print axioms transitionBranches_guards
+#print axioms transitionBranches_map_guard
+#print axioms transitionBranches_append
+#print axioms transitionBranches_seq_target_fold
+#print axioms transitionBranches_seq_target_fold_congr
+#print axioms transitionBranch_guard_E_disjoint
+#print axioms decidedFirst_append_of_assignment
 #print axioms loopAut_solves
 #print axioms sem_solves_autLang
 #print axioms solves_autLang
 #print axioms semSolves_derivAut
+#print axioms derivativeEquation_actBA
+#print axioms derivativeEquation_testBA
+#print axioms derivativeEquation_iteBA_of_test_terminal
+#print axioms derivativeEquation_iteBA
+#print axioms noStepG_and_E_eq_E
+#print axioms derivativeEquation_seqBA
+#print axioms productiveLoopBA
+#print axioms derivativeEquation_whBA
+#print axioms derivativeEquationBA
+#print axioms derivativeFundamentalBA
+#print axioms commonQuotient_completeness_reductionBA_closed
+#print axioms solvesBA_semSolves
+#print axioms finiteAxiomsCompleteBA_implies_UABA
+#print axioms GAutHom.id
+#print axioms GAutHom.comp
+#print axioms GAutHom.inl
+#print axioms GAutHom.inr
+#print axioms UniformBehavioralGAutQuotient.hlt_ba
+#print axioms UniformBehavioralGAutQuotient.autStep_eq
+#print axioms UniformBehavioralGAutQuotient.uniformWF
+#print axioms UniformBehavioralGAutQuotient.uniformWF_of_derivAut
+#print axioms UniformBehavioralGAutQuotient.uniformWF_of_sum_derivAut
+#print axioms UniformBehavioralGAutQuotient.decidedFirst_eq
+#print axioms UniformBehavioralGAutQuotient.combinedCell_decidedFirst_eq
+#print axioms UniformBehavioralGAutQuotient.combinedSelected_eq
+#print axioms UniformBehavioralGAutQuotient.source_eqRHS_combined_normal_form
+#print axioms UniformBehavioralGAutQuotient.target_eqRHS_combined_normal_form
+#print axioms UniformBehavioralGAutQuotient.combinedLabels_under
+#print axioms UniformBehavioralGAutQuotient.eqRHS_ba
+#print axioms UniformBehavioralGAutQuotient.lift_solvesBA
+#print axioms eqRHS_hom
+#print axioms GAutHom.lift_solvesBA
+#print axioms shared_quotient_solution_reductionBA
+#print axioms sum_quotient_solution_reductionBA
+#print axioms uniform_sum_quotient_solution_reductionBA
+#print axioms commonQuotient_completeness_reductionBA
+#print axioms quotient_solution_of_solvableBA
+#print axioms loop2Aut_solvesBA
 #print axioms buildSol_solves
+#print axioms buildSol_solvesBA
 #print axioms acyclic_expressible
 #print axioms acyclic_flat_expressible
 #print axioms selfLoop_solves

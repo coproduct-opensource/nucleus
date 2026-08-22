@@ -268,6 +268,15 @@ lean_lib «GkatDerivativeProofs» where
 lean_lib «GkatWellNestedProofs» where
   roots := #[`GkatWellNestedProofs]
 
+lean_lib «GkatHardFrontierProofs» where
+  roots := #[`GkatHardFrontierProofs]
+
+lean_lib «GkatOrderedBAProofs» where
+  roots := #[`GkatOrderedBAProofs]
+
+lean_lib «GkatCyclicOrderedBridgeProofs» where
+  roots := #[`GkatCyclicOrderedBridgeProofs]
+
 lean_lib «GkatBisimulationProofs» where
   roots := #[`GkatBisimulationProofs]
 
@@ -299,6 +308,78 @@ lean_lib «GkatFaithfulnessProofs» where
 -- the completeness half `W ⊆ {⟦e⟧}` (rel UA).
 lean_lib «GkatKleeneProofs» where
   roots := #[`GkatKleeneProofs]
+
+lean_lib «GkatThompsonUniquenessProofs» where
+  roots := #[`GkatThompsonUniquenessProofs]
+
+-- Derived guarded-algebra laws (U/S axioms only, no model, no uniqueness principle)
+-- used by the null-language elimination: assertion/guarded-choice interchange, the
+-- case-split insertion law, and the kill law that turns a right-hand Boolean fact into
+-- a rewrite of the preceding program.
+lean_lib «GkatGuardedAlgebraProofs» where
+  roots := #[`GkatGuardedAlgebraProofs]
+
+-- Atom transfer (`den` only reads the primitive tests of the expression) plus the
+-- finite dead-cell test `deadTestOver`: the device that turns "no guarded string starts
+-- here" into a Boolean guard the finite axioms can rewrite with.
+lean_lib «GkatAtomTransferProofs» where
+  roots := #[`GkatAtomTransferProofs]
+
+-- Semantic side conditions of the null-language induction: fresh sum carriers for the
+-- action case, the intermediate dead region for sequencing, and the loop invariant.
+lean_lib «GkatNullSemanticsProofs» where
+  roots := #[`GkatNullSemanticsProofs]
+
+-- NULL-LANGUAGE COMPLETENESS: a GKAT program with no guarded strings is provably 0,
+-- from the finite axioms alone (W3 only; no UA, no completeness hypothesis). Discharges
+-- the dead-branch obligation that previously assumed FiniteAxiomsCompleteBA.
+lean_lib «GkatNullLanguageProofs» where
+  roots := #[`GkatNullLanguageProofs]
+
+-- Where UA is actually still needed: the guard-pullback witness is DERIVABLE (as the
+-- constant 1 or 0) exactly on the decided regions, and the leftover residue provably
+-- branches both ways. Sharpens GkatUAIndependenceProofs / GkatPullbackWitnessProofs.
+lean_lib «GkatDecidedPullbackProofs» where
+  roots := #[`GkatDecidedPullbackProofs]
+
+-- Composition check: the dead-branch rewrite the completeness endgame needs, now with
+-- NO completeness hypothesis (it previously assumed FiniteAxiomsCompleteBA).
+lean_lib «GkatDeadBranchProofs» where
+  roots := #[`GkatDeadBranchProofs]
+
+-- UA ELIMINATED at every decided crossing: post_all PRODUCES the guard-pullback witness
+-- that GkatUAIndependenceProofs could only assume, so UA2 becomes a theorem of the
+-- finite axioms there (W3 = UA1 is the only fixpoint principle used).
+lean_lib «GkatDecidedUAProofs» where
+  roots := #[`GkatDecidedUAProofs]
+
+-- The sharp reduction: full finite-axiom completeness is EQUIVALENT to the statement
+-- that behaviourally identical positions inside ONE program's own Thompson automaton
+-- carry provably equal labels. Nothing about arbitrary equation systems survives.
+lean_lib «GkatCompletenessReductionProofs» where
+  roots := #[`GkatCompletenessReductionProofs]
+
+-- Completeness ENTAILS UA at every arity: "completeness with UA eliminated" is not a
+-- softer target than "UA is derivable", and the contrapositive gives the exact shape a
+-- negative resolution must take.
+lean_lib «GkatCompletenessImpliesUAProofs» where
+  roots := #[`GkatCompletenessImpliesUAProofs]
+
+-- The counter-model interface: one field per finite axiom, soundness of EquivBA, and the
+-- composed refutation lemma. Makes a negative resolution fill-in-the-blank.
+lean_lib «GkatModelProofs» where
+  roots := #[`GkatModelProofs]
+
+-- The positive route reduced to ONE statement, following Grabmayer-Fokkink
+-- crystallization: if any two language-equivalent programs are covered by the Thompson
+-- automaton of a third program, completeness follows with no uniqueness axiom.
+lean_lib «GkatCrystallizationProofs» where
+  roots := #[`GkatCrystallizationProofs]
+
+-- Brick 1 of the crystallization construction: the syntactic layering (loop-nesting rank)
+-- and the component-closure facts that make "loops are never mutually nested" formal.
+lean_lib «GkatLayeringProofs» where
+  roots := #[`GkatLayeringProofs]
 
 -- The n-ary decomposition of the Uniqueness Axiom: chain-elimination reduces an
 -- n-state guarded cycle to a single W3 loop given a pullback witness per crossing
@@ -553,3 +634,496 @@ lean_lib «RepairAlgebraProofs» where
 -- K4 SPIKE: governance-monotonicity completeness (mathlib-free model + crux proof)
 lean_lib «GovernanceCompletenessSpike» where
   roots := #[`GovernanceCompletenessSpike]
+
+-- The collapse target refuted: an explicit uniformly-equivalent pair whose forced
+-- quotient is not syntax-generated, so `CommonSyntacticCollapse` is false. Completeness
+-- is untouched (the pair is provably equal); the live target is the span,
+-- `CommonSyntacticRefinement`.
+lean_lib «GkatCollapseRefutationProofs» where
+  roots := #[`GkatCollapseRefutationProofs]
+
+-- The repair survives the counterexample: `h = if b then e else f` covers both sides of
+-- the pair that refutes `CommonSyntacticCollapse`, so `CommonSyntacticRefinement` holds
+-- there. Both cover legs are constructed and checked.
+lean_lib «GkatSpanWitnessProofs» where
+  roots := #[`GkatSpanWitnessProofs]
+
+-- Phase C engine: covers compose along the Thompson constructors, so synthesis is a
+-- structural recursion. `InitCover` is the pseudostate-preserving cover the induction needs.
+lean_lib «GkatSynthesisProofs» where
+  roots := #[`GkatSynthesisProofs]
+
+-- The positive fork discharged on the pair that refutes the cospan: `if b then e else f`
+-- is a common intermediate covering both sides and solvable by the syntax.
+lean_lib «GkatPositiveForkProofs» where
+  roots := #[`GkatPositiveForkProofs]
+
+lean_lib «GkatUnrollCoverProofs» where
+  roots := #[`GkatUnrollCoverProofs]
+
+-- The complementary refinement: repeating the loop body is a degree-2 cyclic cover of the
+-- loop. Unrolling lengthens the tail; this changes the cycle, which is the covering degree.
+lean_lib «GkatCyclicCoverProofs» where
+  roots := #[`GkatCyclicCoverProofs]
+
+-- Factors the single residual obligation into two independent halves: the span exists, and
+-- Thompson automata are cofinal below Thompson automata.
+lean_lib «GkatCofinalityProofs» where
+  roots := #[`GkatCofinalityProofs]
+
+-- Discharges the constructive half: the fibre product of two covers of a common system,
+-- with both projections proved to be covers.
+lean_lib «GkatPullbackProofs» where
+  roots := #[`GkatPullbackProofs]
+
+-- Refutes CommonTarget (a cover cannot turn a stepping pseudostate into a non-stepping one)
+-- and repairs it with the productivity precondition the search always applied.
+lean_lib «GkatCommonTargetProofs» where
+  roots := #[`GkatCommonTargetProofs]
+
+-- The behavioural target: lockstep matching of two normal automata with equal language.
+lean_lib «GkatQuotientProofs» where
+  roots := #[`GkatQuotientProofs]
+
+-- The period law: a covering map cannot shorten the cycle it sits over.
+lean_lib «GkatPeriodProofs» where
+  roots := #[`GkatPeriodProofs]
+
+-- The exit law: a GKAT while-loop has exactly one exit condition, tested at the entry.
+lean_lib «GkatLoopExitProofs» where
+  roots := #[`GkatLoopExitProofs]
+
+-- The degree-k cyclic cover: repeating the loop body k times.
+lean_lib «GkatCyclicKProofs» where
+  roots := #[`GkatCyclicKProofs]
+
+-- Guard-split duplication: the third refinement move, as a cover.
+lean_lib «GkatDupCoverProofs» where
+  roots := #[`GkatDupCoverProofs]
+
+-- The refinement closure the search explores, as one relation, with every member a cover.
+lean_lib «GkatRefinesProofs» where
+  roots := #[`GkatRefinesProofs]
+
+-- The residue, discharged: pair #3 of the eight open instances, proved without UA.
+lean_lib «GkatResidueProofs» where
+  roots := #[`GkatResidueProofs]
+
+-- The residue as a family: a general loop guard, and the core at the top of a loop body.
+lean_lib «GkatResidueFamilyProofs» where
+  roots := #[`GkatResidueFamilyProofs]
+
+-- Eliminating an unknown at an UNDECIDED crossing: the dead-exit kernel.
+lean_lib «GkatDeadExitElimProofs» where
+  roots := #[`GkatDeadExitElimProofs]
+
+-- The nesting coequation closed under quotients: the covariety's other half.
+lean_lib «GkatNestedClosureProofs» where
+  roots := #[`GkatNestedClosureProofs]
+
+-- Thompson automata satisfy the nesting coequation: the covariety chain's last leaf.
+lean_lib «GkatThompsonNestedProofs» where
+  roots := #[`GkatThompsonNestedProofs]
+
+-- Semantically solvable automata satisfy the nesting coequation.
+lean_lib «GkatSolvableNestedProofs» where
+  roots := #[`GkatSolvableNestedProofs]
+
+-- The certificate pipeline's first instance: CERT #3, kernel-checked end to end.
+lean_lib «GkatCertPilotProofs» where
+  roots := #[`GkatCertPilotProofs]
+
+-- Support lemmas for emitted certificates (constant-valuation evaluation).
+lean_lib «GkatCertSupportProofs» where
+  roots := #[`GkatCertSupportProofs]
+
+-- Emitted instance certificates (machine-generated by span-search/emit_cert.py).
+lean_lib «GkatCertGen1» where
+  roots := #[`GkatCertGen1]
+
+lean_lib «GkatCertGen2» where
+  roots := #[`GkatCertGen2]
+
+lean_lib «GkatCertGen3» where
+  roots := #[`GkatCertGen3]
+
+lean_lib «GkatCertGen4» where
+  roots := #[`GkatCertGen4]
+
+lean_lib «GkatCertGen5» where
+  roots := #[`GkatCertGen5]
+
+lean_lib «GkatCertGen6» where
+  roots := #[`GkatCertGen6]
+
+lean_lib «GkatCertK4n1» where
+  roots := #[`GkatCertK4n1]
+
+lean_lib «GkatCertK4n2» where
+  roots := #[`GkatCertK4n2]
+
+lean_lib «GkatCertK4n3» where
+  roots := #[`GkatCertK4n3]
+
+lean_lib «GkatCertT1» where
+  roots := #[`GkatCertT1]
+
+lean_lib «GkatCertT2» where
+  roots := #[`GkatCertT2]
+
+lean_lib «GkatCertR5» where
+  roots := #[`GkatCertR5]
+
+lean_lib «GkatRingSupportProofs» where
+  roots := #[`GkatRingSupportProofs]
+
+lean_lib «GkatCertSupportBoolProofs» where
+  roots := #[`GkatCertSupportBoolProofs]
+
+lean_lib «GkatMixPilotProofs» where
+  roots := #[`GkatMixPilotProofs]
+
+lean_lib «GkatRingPlanProofs» where
+  roots := #[`GkatRingPlanProofs]
+
+lean_lib «GkatRingPlan2Proofs» where
+  roots := #[`GkatRingPlan2Proofs]
+
+lean_lib «GkatRingDecompProofs» where
+  roots := #[`GkatRingDecompProofs]
+
+lean_lib «GkatDecompPilotProofs» where
+  roots := #[`GkatDecompPilotProofs]
+
+lean_lib «GkatDecompProofs» where
+  roots := #[`GkatDecompProofs]
+
+lean_lib «GkatPlanExistenceProofs» where
+  roots := #[`GkatPlanExistenceProofs]
+
+lean_lib «GkatNormalizationProofs» where
+  roots := #[`GkatNormalizationProofs]
+
+lean_lib «GkatTrimProofs» where
+  roots := #[`GkatTrimProofs]
+
+lean_lib «GkatCycleProofs» where
+  roots := #[`GkatCycleProofs]
+
+lean_lib «GkatLoopFreeProofs» where
+  roots := #[`GkatLoopFreeProofs]
+
+lean_lib «GkatAtomicLoopProofs» where
+  roots := #[`GkatAtomicLoopProofs]
+
+lean_lib «GkatChainLoopProofs» where
+  roots := #[`GkatChainLoopProofs]
+
+lean_lib «GkatOrbitProofs» where
+  roots := #[`GkatOrbitProofs]
+
+lean_lib «GkatChainFragmentProofs» where
+  roots := #[`GkatChainFragmentProofs]
+
+lean_lib «GkatListPigeonProofs» where
+  roots := #[`GkatListPigeonProofs]
+
+lean_lib «GkatGuardDecideProofs» where
+  roots := #[`GkatGuardDecideProofs]
+
+lean_lib «GkatDecideProofs» where
+  roots := #[`GkatDecideProofs]
+
+lean_lib «GkatWalkedOrbitProofs» where
+  roots := #[`GkatWalkedOrbitProofs]
+
+lean_lib «GkatTwoLoopProofs» where
+  roots := #[`GkatTwoLoopProofs]
+
+lean_lib «GkatThreeLoopProofs» where
+  roots := #[`GkatThreeLoopProofs]
+
+lean_lib «GkatCertR1» where
+  roots := #[`GkatCertR1]
+
+lean_lib «GkatCertR2» where
+  roots := #[`GkatCertR2]
+
+lean_lib «GkatCertR3» where
+  roots := #[`GkatCertR3]
+
+lean_lib «GkatCertR4» where
+  roots := #[`GkatCertR4]
+
+lean_lib «GkatCertR6» where
+  roots := #[`GkatCertR6]
+
+lean_lib «GkatK6R01» where
+  roots := #[`GkatK6R01]
+
+lean_lib «GkatK6R02» where
+  roots := #[`GkatK6R02]
+
+lean_lib «GkatK6R03» where
+  roots := #[`GkatK6R03]
+
+lean_lib «GkatK6R04» where
+  roots := #[`GkatK6R04]
+
+lean_lib «GkatK6R05» where
+  roots := #[`GkatK6R05]
+
+lean_lib «GkatK6R06» where
+  roots := #[`GkatK6R06]
+
+lean_lib «GkatK6R07» where
+  roots := #[`GkatK6R07]
+
+lean_lib «GkatK6R08» where
+  roots := #[`GkatK6R08]
+
+lean_lib «GkatK6R09» where
+  roots := #[`GkatK6R09]
+
+lean_lib «GkatK6R10» where
+  roots := #[`GkatK6R10]
+
+lean_lib «GkatK6R11» where
+  roots := #[`GkatK6R11]
+
+lean_lib «GkatK6R12» where
+  roots := #[`GkatK6R12]
+
+lean_lib «GkatK6R13» where
+  roots := #[`GkatK6R13]
+
+lean_lib «GkatK6R14» where
+  roots := #[`GkatK6R14]
+
+lean_lib «GkatK6R15» where
+  roots := #[`GkatK6R15]
+
+lean_lib «GkatK6R16» where
+  roots := #[`GkatK6R16]
+
+lean_lib «GkatK6R17» where
+  roots := #[`GkatK6R17]
+
+lean_lib «GkatK6R18» where
+  roots := #[`GkatK6R18]
+
+lean_lib «GkatK6R19» where
+  roots := #[`GkatK6R19]
+
+lean_lib «GkatK6R20» where
+  roots := #[`GkatK6R20]
+
+lean_lib «GkatK6R21» where
+  roots := #[`GkatK6R21]
+
+lean_lib «GkatK6R22» where
+  roots := #[`GkatK6R22]
+
+lean_lib «GkatK6R23» where
+  roots := #[`GkatK6R23]
+
+lean_lib «GkatK6R24» where
+  roots := #[`GkatK6R24]
+
+lean_lib «GkatK6R25» where
+  roots := #[`GkatK6R25]
+
+lean_lib «GkatK6R26» where
+  roots := #[`GkatK6R26]
+
+lean_lib «GkatK6R27» where
+  roots := #[`GkatK6R27]
+
+lean_lib «GkatK6R28» where
+  roots := #[`GkatK6R28]
+
+lean_lib «GkatK6R29» where
+  roots := #[`GkatK6R29]
+
+lean_lib «GkatK6R30» where
+  roots := #[`GkatK6R30]
+
+lean_lib «GkatK6R31» where
+  roots := #[`GkatK6R31]
+
+lean_lib «GkatK6R32» where
+  roots := #[`GkatK6R32]
+
+lean_lib «GkatK6R33» where
+  roots := #[`GkatK6R33]
+
+lean_lib «GkatK6R34» where
+  roots := #[`GkatK6R34]
+
+lean_lib «GkatK6R35» where
+  roots := #[`GkatK6R35]
+
+lean_lib «GkatK6R36» where
+  roots := #[`GkatK6R36]
+
+lean_lib «GkatK6R37» where
+  roots := #[`GkatK6R37]
+
+lean_lib «GkatK6R38» where
+  roots := #[`GkatK6R38]
+
+lean_lib «GkatK6R39» where
+  roots := #[`GkatK6R39]
+
+lean_lib «GkatK6R40» where
+  roots := #[`GkatK6R40]
+
+lean_lib «GkatK6R41» where
+  roots := #[`GkatK6R41]
+
+lean_lib «GkatK6R42» where
+  roots := #[`GkatK6R42]
+
+lean_lib «GkatK6R43» where
+  roots := #[`GkatK6R43]
+
+lean_lib «GkatK6R44» where
+  roots := #[`GkatK6R44]
+
+lean_lib «GkatK6R45» where
+  roots := #[`GkatK6R45]
+
+lean_lib «GkatK6R46» where
+  roots := #[`GkatK6R46]
+
+lean_lib «GkatK6R47» where
+  roots := #[`GkatK6R47]
+
+lean_lib «GkatK6R48» where
+  roots := #[`GkatK6R48]
+
+lean_lib «GkatK6R49» where
+  roots := #[`GkatK6R49]
+
+lean_lib «GkatK6R50» where
+  roots := #[`GkatK6R50]
+
+lean_lib «GkatK6R51» where
+  roots := #[`GkatK6R51]
+
+lean_lib «GkatK6R52» where
+  roots := #[`GkatK6R52]
+
+lean_lib «GkatK6R53» where
+  roots := #[`GkatK6R53]
+
+lean_lib «GkatK6R54» where
+  roots := #[`GkatK6R54]
+
+lean_lib «GkatK6R55» where
+  roots := #[`GkatK6R55]
+
+lean_lib «GkatK6R56» where
+  roots := #[`GkatK6R56]
+
+lean_lib «GkatK6R57» where
+  roots := #[`GkatK6R57]
+
+lean_lib «GkatK6R58» where
+  roots := #[`GkatK6R58]
+
+lean_lib «GkatK6R59» where
+  roots := #[`GkatK6R59]
+
+lean_lib «GkatK6R60» where
+  roots := #[`GkatK6R60]
+
+lean_lib «GkatK6R61» where
+  roots := #[`GkatK6R61]
+
+lean_lib «GkatK6R62» where
+  roots := #[`GkatK6R62]
+
+lean_lib «GkatK6R63» where
+  roots := #[`GkatK6R63]
+
+lean_lib «GkatK6R64» where
+  roots := #[`GkatK6R64]
+
+lean_lib «GkatK6R65» where
+  roots := #[`GkatK6R65]
+
+lean_lib «GkatK6R66» where
+  roots := #[`GkatK6R66]
+
+lean_lib «GkatK6R67» where
+  roots := #[`GkatK6R67]
+
+lean_lib «GkatK6R68» where
+  roots := #[`GkatK6R68]
+
+lean_lib «GkatK6R69» where
+  roots := #[`GkatK6R69]
+
+lean_lib «GkatK6R70» where
+  roots := #[`GkatK6R70]
+
+lean_lib «GkatK6R71» where
+  roots := #[`GkatK6R71]
+
+lean_lib «GkatK6R72» where
+  roots := #[`GkatK6R72]
+
+lean_lib «GkatK6R73» where
+  roots := #[`GkatK6R73]
+
+lean_lib «GkatK6R74» where
+  roots := #[`GkatK6R74]
+
+lean_lib «GkatK6R75» where
+  roots := #[`GkatK6R75]
+
+lean_lib «GkatK6R76» where
+  roots := #[`GkatK6R76]
+
+lean_lib «GkatK6R77» where
+  roots := #[`GkatK6R77]
+
+lean_lib «GkatK6R78» where
+  roots := #[`GkatK6R78]
+
+lean_lib «GkatK6R79» where
+  roots := #[`GkatK6R79]
+
+lean_lib «GkatK6R80» where
+  roots := #[`GkatK6R80]
+
+-- Normal form: non-vacuity, and which constructor destroys which half.
+lean_lib «GkatNormalProofs» where
+  roots := #[`GkatNormalProofs]
+
+lean_lib «GkatTotalizationProofs» where
+  roots := #[`GkatTotalizationProofs]
+
+-- Narrows the n=2 existence frontier: degenerate (tautologous / unsatisfiable) exit guards
+-- are not genuinely two-exit, so existence holds there without LeftDistrib.
+lean_lib «GkatExistenceNarrowProofs» where
+  roots := #[`GkatExistenceNarrowProofs]
+
+lean_lib «GkatW0Proofs» where
+  roots := #[`GkatW0Proofs]
+
+lean_lib «GkatSumQuotientProofs» where
+  roots := #[`GkatSumQuotientProofs]
+
+lean_lib «GkatGapWitnessProofs» where
+  roots := #[`GkatGapWitnessProofs]
+
+lean_lib «GkatElimProofs» where
+  roots := #[`GkatElimProofs]
+
+lean_lib «GkatCensusProofs» where
+  roots := #[`GkatCensusProofs]
+
+lean_lib «GkatGuardTransportProofs» where
+  roots := #[`GkatGuardTransportProofs]
