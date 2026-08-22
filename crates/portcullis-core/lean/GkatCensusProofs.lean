@@ -11259,6 +11259,111 @@ theorem demo_solves :
 
 end RegionDemo
 
+/-! ### Making the frame checkable
+
+Three of the chain's hypotheses quantify over EVERY atom type `X`, assignment `W`
+and atom `x` — `hmono`, the region's rank, and `LoopLayerOn.hlt_eq`.  A
+construction cannot discharge those by inspection.  Each has a syntactic form
+that implies it, so the whole frame reduces to finite checks on transition lists
+and one `BExp` equation. -/
+
+/-- A `firstMatch` step is always a member of the list it searched. -/
+theorem step_mem {S : Type} {sys : GkatThompson.GSystem S A T} {s : S}
+    {X : Type} {W : T → X → Bool} {x : X} {r : A × S}
+    (h : GkatKleene.firstMatch W x (sys.trans s) = some r) :
+    ∃ g, (g, r) ∈ sys.trans s :=
+  firstMatch_mem_of_some W x (sys.trans s) r.1 r.2 h
+
+/-- `hmono`, checkable: it suffices that no *syntactic* transition raises the level. -/
+theorem mono_of_syntactic {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (h : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s) :
+    ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s := by
+  intro s X W x r hfm
+  obtain ⟨g, hg⟩ := step_mem hfm
+  exact h s (g, r) hg
+
+/-- The region's rank condition, checkable. -/
+theorem rank_of_syntactic {S : Type} {base : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (n : Nat) (rank : S → Nat)
+    (h : ∀ s, lvl s = n → ∀ tr ∈ base.trans s,
+      lvl tr.2.2 ≠ n ∨ rank tr.2.2 < rank s) :
+    ∀ s, lvl s = n → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (base.trans s) = some r →
+        lvl r.2 ≠ n ∨ rank r.2 < rank s := by
+  intro s hs X W x r hfm
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (base.trans s) r.1 r.2 hfm
+  exact h s hs (g, r) hg
+
+/-- `LoopLayerOn.hlt_eq` is a `bval` equation; this syntactic halt shape implies
+it, and it is the shape the peel produces anyway. -/
+theorem LoopLayerOn.ofSyntactic {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {b : BExp T} {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (htrans : ∀ s, dom s → sys.trans s = base.trans s ++ entry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)))
+    (hhlt : ∀ s, dom s → sys.hlt s = BExp.and (base.hlt s) (BExp.not b))
+    (houtside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s)
+    (hstates : sys.states = base.states) :
+    LoopLayerOn sys base b entry dom where
+  trans_eq := htrans
+  hlt_eq := fun s hs _ _ _ => by rw [hhlt s hs]; rfl
+  outside := houtside
+  states_eq := hstates
+
+/-- **The fully checkable per-level obligation.**  Every conjunct is a finite
+statement about transition lists and `BExp`s; nothing quantifies over atoms. -/
+def RegionLevelSyn {S : Type} (sys : GkatThompson.GSystem S A T)
+    (lvl : S → Nat) (n : Nat) : Prop :=
+  ∃ (mid base : GkatThompson.GSystem S A T) (h₀ b : BExp T)
+    (entry loopEntry : List (BExp T × A × S)) (rank : S → Nat) (t : S),
+    lvl t = n ∧
+    SeqLayer sys mid h₀ entry (fun s => ¬ (lvl s ≠ n)) ∧
+    (∀ tr ∈ entry, lvl tr.2.2 ≠ n) ∧
+    LoopLayerOn mid base b loopEntry (fun s => ¬ (lvl s ≠ n)) ∧
+    (∀ s, lvl s = n → ∀ tr ∈ mid.trans s, lvl tr.2.2 = n) ∧
+    (∀ s, lvl s = n → ∀ tr ∈ base.trans s, lvl tr.2.2 ≠ n ∨ rank tr.2.2 < rank s)
+
+theorem regionLevel_of_syn {S : Type} {sys : GkatThompson.GSystem S A T}
+    {lvl : S → Nat} {n : Nat} (h : RegionLevelSyn sys lvl n) :
+    RegionLevel sys lvl n := by
+  obtain ⟨mid, base, h₀, b, entry, loopEntry, rank, t, hlt, hseq, hentry,
+    hloop, hin, hrank⟩ := h
+  exact ⟨mid, base, h₀, b, entry, loopEntry, rank, t, hlt, hseq, hentry, hloop,
+    hin, rank_of_syntactic lvl n rank hrank⟩
+
+/-- **END TO END, CHECKABLE.**  Same conclusion as `solves_of_region_levels`, but
+every hypothesis is a finite inspection of the automaton's own lists. -/
+theorem solves_of_syntactic_levels {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (B : Nat) (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s)
+    (hlevels : ∀ n, (∀ s, lvl s ≠ n) ∨ RegionLevelSyn sys lvl n)
+    (F : Exp A T) :
+    ∃ sol : S → Exp A T,
+      ∀ s, EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s) :=
+  solves_of_region_levels lvl B hbound (mono_of_syntactic lvl hmono)
+    (fun n => (hlevels n).elim Or.inl (fun h => Or.inr (regionLevel_of_syn h))) F
+
+/-- **THE REMAINING OBLIGATION, AS ONE PREDICATE.**  Everything the condensation
+route needs of an automaton, with no quantification over atoms anywhere: a
+bounded level function that no transition raises, each of whose levels is either
+unoccupied or peelable into a seq layer and a loop layer over a ranked base.
+
+This is the `Cert` the certificate architecture wants.  `hsolve` for it is the
+theorem below; what stays open is `hcollapse` — that a behavioural quotient of a
+`SyntacticallyLayered` automaton is again `SyntacticallyLayered`. -/
+def SyntacticallyLayered {S : Type} (sys : GkatThompson.GSystem S A T) : Prop :=
+  ∃ (lvl : S → Nat) (B : Nat), (∀ s, lvl s < B) ∧
+    (∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s) ∧
+    (∀ n, (∀ s, lvl s ≠ n) ∨ RegionLevelSyn sys lvl n)
+
+/-- `hsolve`, for the condensation certificate. -/
+theorem solves_of_syntacticallyLayered {S : Type} {sys : GkatThompson.GSystem S A T}
+    (h : SyntacticallyLayered sys) (F : Exp A T) :
+    ∃ sol : S → Exp A T,
+      ∀ s, EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s) := by
+  obtain ⟨lvl, B, hbound, hmono, hlevels⟩ := h
+  exact solves_of_syntactic_levels lvl B hbound hmono hlevels F
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
@@ -11472,6 +11577,9 @@ theorem d2_solves :
 end CycleDemo
 
 #print axioms d2_region_one
+#print axioms mono_of_syntactic
+#print axioms solves_of_syntactic_levels
+#print axioms solves_of_syntacticallyLayered
 #print axioms layeredOn_of_levels
 #print axioms layeredOn_empty_of_levels
 #print axioms solves_of_levels

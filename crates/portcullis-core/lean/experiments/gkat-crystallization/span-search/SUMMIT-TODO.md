@@ -15486,3 +15486,53 @@ peeled region, which for a simple cycle is the position along the path (here
 
 **Next.** Whether `hmono` and the per-level peel can be produced *uniformly* from
 a quotient, rather than instance by instance — the construction, not the frame.
+
+## 338 — the frame made checkable, and the remainder named
+
+**The problem with the chain as of 337.** Three of its hypotheses quantified over
+EVERY atom type `X`, assignment `W` and atom `x`: `hmono`, the region's rank, and
+`LoopLayerOn.hlt_eq`. A construction that has to produce them for an arbitrary
+quotient cannot discharge that by inspection — it would have to reason about all
+possible atom structures at every state. Each now has a syntactic form that
+implies it:
+
+- `step_mem` / `mono_of_syntactic` — a `firstMatch` step is a member of the list
+  it searched (`firstMatch_mem_of_some`, 264-era), so `hmono` reduces to *no
+  syntactic transition raises the level*. **Axiom-free.**
+- `rank_of_syntactic` — the same move for the region's rank.
+- `LoopLayerOn.ofSyntactic` — the `bval` field follows from the halt shape
+  `sys.hlt s = and (base.hlt s) (not b)`, which is what the peel produces anyway.
+
+`SeqLayer` was already syntactic in all four fields. So `RegionLevelSyn` and
+`solves_of_syntactic_levels` restate the whole chain as **finite inspection of
+transition lists plus `BExp` equations** — nothing about atoms.
+
+**The remainder, as one predicate.**
+
+```lean
+def SyntacticallyLayered (sys) : Prop :=
+  ∃ (lvl : S → Nat) (B : Nat), (∀ s, lvl s < B) ∧
+    (∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s) ∧
+    (∀ n, (∀ s, lvl s ≠ n) ∨ RegionLevelSyn sys lvl n)
+```
+
+`solves_of_syntacticallyLayered` is `hsolve` for it. Against the certificate
+architecture of 286 that leaves exactly one obligation:
+
+```
+every Thompson automaton is SyntacticallyLayered        (hsum — condensation of
+                                                          a Thompson automaton)
+every SyntacticallyLayered automaton has a solution     PROVED (338)
+------------------------------------------------------------------------
+the QUOTIENT is SyntacticallyLayered                    OPEN (hcollapse)
+```
+
+This is a **different** open statement from 286's. 286 needed the quotient to be
+`LayeredL`, whose `sum`/`seq` constructors a quotient does not respect — 287
+identified that as the hard part and 319–330 confirmed it. `SyntacticallyLayered`
+has no `sum` or `seq` constructor to respect: it asks only for a level function
+and a per-level peel, both of which are properties of the quotient's own graph.
+
+**Next.** The level function's existence for a finite system — the condensation
+itself. That is the one place the route still needs graph theory rather than
+list manipulation.
