@@ -20995,3 +20995,55 @@ better-supported position.
 **Next.** Attack the open case on its own terms rather than routing around it:
 read `GkatUniquenessFrontierProofs` for what the uniqueness side already gives at
 n=2, since existence is the blocked half and uniqueness may constrain it.
+
+## 443 — REFRAMING: the target is a known-open conjecture its originators suspect is FALSE.
+
+Web search: exhausted (200/200).
+
+442 sent me to the uniqueness side. `GkatUniquenessFrontierProofs`' header states
+the problem's actual status, and it is not what I have been assuming:
+
+> "GKAT completeness (Schmid–Kappé–Kozen–Silva, ICALP 2021) is proven only
+> **relative to the Uniqueness Axiom (UA)** … The open question is whether **UA
+> follows from the other GKAT axioms**; the authors write they **'think this
+> conjecture might be false.'** Pham (2026) proved UA for Thompson automata and
+> reduced completeness to **existence** of a provable solution."
+
+**Four things follow, and they change what this loop is doing.**
+
+1. **The goal is an open research conjecture, not a proof waiting to be
+   assembled** — and its originators lean toward it being false.
+2. **The n=2 UA instance is semantically TRUE.** The corpus machine-checked
+   `two_state_semantic_uniqueness`: two solutions of a guarded two-state system
+   denote the same languages, by well-founded induction on string length with
+   productivity forcing progress. So UA cannot be refuted by the standard model.
+   **The frontier is derivability, not truth.**
+3. **`productivity_is_necessary` closes off the standard model entirely.**
+   Non-uniqueness requires non-productivity; productive systems are forced unique
+   in the guarded-string model. So **any independence proof must use a
+   NON-STANDARD model, or be proof-theoretic** — and the corpus names constructing
+   one as "exactly the open route".
+4. Existence, not uniqueness, is the blocked half (Pham's reduction), which is
+   what 441/442 were circling without knowing the reduction existed.
+
+**On my own conduct of this loop.** I have spent iterations 404-442 building and
+demolishing routes to a statement whose status was documented inside the same
+repository, in files named `*Frontier*`. My memory note recorded the target as
+"holy grail TRUE" and I never checked what that meant. 441 was the first time I
+read a frontier header, and it immediately explained the peel; 443 is the second,
+and it explains the whole program. **Read the corpus's own statement of the
+problem before attacking it** — the cost of not doing so here was several dozen
+iterations aimed at the wrong obstruction.
+
+**Odds: 40% → 25%.** Not because new mathematics went against the target, but
+because I have been estimating the odds of proving something whose originators
+suspect is unprovable, and whose standard-model half is already settled. The
+honest number for "this loop closes the proof" has to absorb the real
+possibility that the statement is independent. The field's prior that this
+problem does not close is not merely a prior — it is the originators' own
+position, and I should have been quoting it rather than reconstructing it.
+
+**Next.** Switch target to the live route the corpus names: a **non-standard
+model** in which a productive guarded system has two distinct solutions. That
+would settle the conjecture negatively, is not blocked by anything found in
+404-442, and is where the remaining tractable work is.
