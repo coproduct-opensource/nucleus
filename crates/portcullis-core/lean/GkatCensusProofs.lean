@@ -9753,4 +9753,60 @@ theorem quotient_layered_seq_left {S₁ S₂ Q : Type}
 
 end QuotientLayeredSeq
 
+
+section QuotientLayeredWitness
+open Classical
+
+/-! ### 307 — 303's SHAPE CANNOT BE INSTANTIATED.  USE A WITNESS, NOT A FUNCTION.
+
+    **A defect found by trying to construct the representative.**  303 gave each
+    case a total `rep : Q → State`.  For `test` the state type is `Empty`, so
+    supplying such a function REQUIRES `Q` ITSELF TO BE EMPTY.
+    `quotient_layered_test`'s proof is correct and its statement is true, and it
+    can never be applied to anything.  The same defect blocks every recursive
+    call whose sub-expression has no states.
+
+    That is why the "leaf ordering" of 305 kept feeling heavier than it should:
+    it was trying to build a total function into a type that may be empty.
+
+    **The fix is to ask for a WITNESS PER CLASS instead of a function.**  The
+    hypothesis becomes "for every class outside the block there EXISTS a state
+    whose dynamics it carries" — which is what a quotient actually provides, and
+    which needs no inhabitant when there are no classes to witness.  `test` then
+    proves itself: a class outside the block would produce an element of
+    `Empty`.
+
+    **And the preference becomes a property of the witness rather than of a
+    global choice function**, which is what dissolves 305's obligation: each
+    node picks its own witness, and "prefer `inr`" is a condition on that pick,
+    not on one function serving every node at once. -/
+theorem quotient_layered_test' (t : BExp T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T (.test t)).State → Q)
+    (hwit : ∀ c, ¬ B c → ∃ s, Qsys.trans c
+      = ((GkatThompson.certifiedThompson A T (.test t)).aut.core.trans s).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    LayeredOn Qsys B :=
+  LayeredOn.acyclic ⟨fun _ => 0, fun c hc => (hwit c hc).elim (fun s _ => nomatch s)⟩
+
+theorem quotient_layered_act' (a : A) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T (.act a)).State → Q)
+    (hwit : ∀ c, ¬ B c → ∃ s, Qsys.trans c
+      = ((GkatThompson.certifiedThompson A T (.act a)).aut.core.trans s).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.acyclic ⟨fun _ => 0, ?_⟩
+  intro c hc X W x r hfm
+  obtain ⟨s, hs⟩ := hwit c hc
+  rw [hs] at hfm
+  have hnil : (GkatThompson.certifiedThompson A T (.act a)).aut.core.trans s = [] := rfl
+  rw [hnil] at hfm
+  exact absurd hfm (by simp [GkatKleene.firstMatch])
+
+#print axioms quotient_layered_test'
+#print axioms quotient_layered_act'
+
+end QuotientLayeredWitness
+
 end GkatCensus

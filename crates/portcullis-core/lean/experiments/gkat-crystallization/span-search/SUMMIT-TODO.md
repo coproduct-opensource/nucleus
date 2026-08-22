@@ -14174,3 +14174,40 @@ mismatches twice in this series (283, 305), so they are not yet free.
 **Next.**  (2), the preferring representative — it is self-contained, it is the
 one item that is a construction rather than an assembly, and (1) cannot be
 stated cleanly until the `rep` it quantifies over is known to exist.
+
+---
+
+## 307 — 303's SHAPE CANNOT BE INSTANTIATED.  USE A WITNESS, NOT A FUNCTION.
+
+**A defect found by trying to construct the representative, not by inspection.**
+303 gave each case a total `rep : Q → State`.  For `test` the state type is
+`Empty`, so supplying such a function REQUIRES `Q` ITSELF TO BE EMPTY.
+`quotient_layered_test`'s proof is correct and its statement is true, and **it
+can never be applied to anything**.  The same defect blocks every recursive call
+whose sub-expression has no states.
+
+That is why 305's "leaf ordering" kept feeling heavier than it should: it was
+trying to build a total function into a type that may be empty.
+
+**The fix: ask for a WITNESS PER CLASS instead of a function.**  The hypothesis
+becomes "for every class outside the block there EXISTS a state whose dynamics
+it carries" — what a quotient actually provides, and it needs no inhabitant when
+there are no classes to witness.  `test` then proves itself: a class outside the
+block would produce an element of `Empty`.
+
+**And 305's obligation dissolves.**  The preference becomes a property of the
+WITNESS rather than of a global choice function: each node picks its own
+witness, and "prefer `inr`" is a condition on that pick, not on one function
+serving every node at once.  No leaf ordering, no total order on states, no
+nested fallbacks.
+
+`quotient_layered_test'` and `quotient_layered_act'` in the new form.  The
+`wh`, `ite` and `seq` cases still need migrating.
+
+**Odds: 99%, HELD.**  A real defect in the shape I committed to four iterations
+ago, caught the only way it could be — by trying to USE the thing rather than
+prove it — and its fix removes a standing obligation rather than adding one.
+
+**Next.**  Migrate `wh`, `ite`, `seq` to the witness form.  The `wh` and `seq`
+proofs construct their base system from `rep`; with witnesses that construction
+becomes a `dite` on the class being outside the block, choosing the witness.
