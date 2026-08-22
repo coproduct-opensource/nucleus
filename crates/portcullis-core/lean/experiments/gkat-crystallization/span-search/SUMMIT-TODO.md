@@ -12252,3 +12252,58 @@ it.  Analysis is not progress, and the number should not move for it.
 **Next.**  Define connect-through-to — identify ONE bisimilar pair — and prove
 it preserves `Layered`, with the layer case repairing `base` rather than
 transporting it.
+
+---
+
+## 266 — CONNECT-THROUGH, READ FROM THE SOURCE.  `hcollapse` is much harder than 259 implied.
+
+Extracted the LICS'20 text directly (the PDF was fetchable but binary; `pypdf`
+got it) rather than reconstruct — 228-236's lesson.  The definition:
+
+> **Definition 6.1.** "The connect-w₁-through-to-w₂ chart `C(w₁)↠w₂` of `C` is
+> obtained by redirecting all incoming transitions at `w₁` over to `w₂`, and, if
+> `w₁` is the start vertex of `C`, making `w₂` the new start vertex; in this way
+> `w₁` gets unreachable, and it is removed with other unreachable vertices."
+>
+> **Lemma 6.2.** "If `w₁ ↔ w₂` in `C`, then `C(w₁)↠w₂ ↔ C`."
+
+**And then, immediately after:**
+
+> "While the connect-through operation of bisimilar vertices in a chart thus
+> results in a bisimilar chart, **its application to a LLEE-witness does not need
+> to yield a LLEE-witness again: the property LEE may be lost.**"
+
+Example 6.3 exhibits the failure.  So closure is NOT "identify a pair, repeat",
+which is how 259's one-line summary read.  It needs **Proposition 6.4**: a
+bisimilar pair can always be selected in one of THREE mutually exclusive
+categories (C1)/(C2)/(C3), each handled by a DIFFERENT transformation I/II/III,
+each with its own LOOP-LEVEL ADAPTATION (LI/LII/LIII) applied before or after
+the connect-through, plus a final clean-up turning loop-entry transitions back
+into body transitions when they no longer induce an infinite path.
+
+**And a problem with my formulation, not just its difficulty.**  Grabmayer's
+LLEE-witness is an ENTRY/BODY LABELLING carrying natural-number LOOP LEVELS, and
+LI/LII/LIII are operations ON THOSE LEVELS — "replace α by α+m", "turn the body
+transitions from ŵ₂ into loop-entry transitions with loop label γ".  **My
+`Layered` has no levels.**  It is an inductive elimination — acyclic, or a layer
+over something layered — which encodes the elimination ORDER implicitly and
+offers nothing to adapt.  Supporting the closure proof would need a seventh
+migration, to an explicit level labelling.
+
+**Odds: 84%, DOWN 2.**  Not because the theorem looks less true — 237 and 260
+measured the certificate surviving 41 716 quotients without a loss — but because
+`hcollapse` is now known to be several pages of case analysis over a
+representation I do not have, rather than the induction 259 suggested.  My
+estimate has been carrying an assumption that the remaining two obligations were
+of comparable size to `hsum`; that assumption is now falsified for one of them,
+and honesty requires the number to absorb it rather than the narrative.
+
+**What this does not change.**  `hsum` is proved.  `acyclic_quotient` is proved.
+The architecture is machine-checked.  The route is the same route; the distance
+along it is longer than stated.
+
+**Next.**  Decide whether to migrate `Layered` to an explicit level labelling —
+which is what the closure proof manipulates — or to look for a GKAT-specific
+argument that avoids Prop. 6.4's case analysis.  GKAT is proper-step, and 223's
+0-in-131 714 suggests its collapse may be better behaved than the general case;
+that is worth checking before importing three transformations.
