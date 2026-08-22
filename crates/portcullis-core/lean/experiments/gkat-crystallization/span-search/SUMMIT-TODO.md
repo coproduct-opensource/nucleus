@@ -18848,3 +18848,64 @@ problem does not close still stands.
 **Next.** The `inr` mirrors, then the recursion itself: `NoHaltBackClash` for
 `certifiedThompson` by structural induction, with the rank-transport hypotheses
 discharged from the level/rank construction rather than assumed.
+
+## 406 — the `wh` trichotomy collapses to ONE branch. And 405's threading was the wrong shape.
+
+Web search: exhausted (200/200).
+
+**First, a defect in 405.** `noHaltBackClash_seq_inl` takes `hsplit`: the two
+halves sit at different levels. That is 397 — but **397 is about `seqGSystem`
+in isolation.** Put the same `seq` inside a loop and it is false:
+`loopInitialized` appends `body.initTrans` to *every* halting state,
+`seqInitialized.initTrans` begins with `left.initTrans` tagged `inl`, so a
+halting `inr` state has an edge back to an `inl` one and the halves merge into
+one component. `hsplit` cannot be discharged in exactly the place the `wh` case
+needs it. 405's seq/ite lemmas are sound but apply at the **outermost** level
+only; both now carry that scope note in the file.
+
+**The resolution went the other way — the induction is shallower, not deeper.**
+Inside a loop the body's states collapse into the loop's single level, and
+`hbodyRaw` (the rank obligation `noHaltBackClash_loop` already takes) says every
+body step is raw. An automaton with no same-level non-raw steps has nothing to
+clash: `noHaltBackClash_of_allRaw`, **no axioms at all**. The `wh` case consumes
+no induction hypothesis about its body — it consumes a fact about the rank. So
+there is nothing to thread through `seq` and `ite` inside loops.
+
+**Then the middle branch fell too.** 401's trichotomy was: at one atom the
+active states of a loop component all take the **outer** back-edge, all step
+**inside the body**, or **mixed**. `SourceSccAgrees` only ever compares states
+whose `peelRawHlt` is true, and
+
+```lean
+peelRawHlt aut lvl rank s = bigOr (guards of nonRaw transitions) ∨ aut.hlt s
+```
+
+so such a state is halting or taking a **non-raw** step — never a raw one.
+`step_nonRaw_of_peelRawHlt` proves exactly that from `bigOr_nonRaw_iff` and
+`HaltDeterministic`, both already in the corpus. With `hbodyRaw`, a body step is
+raw, so `no_inner_active_of_hbodyRaw`: **no state under consideration is ever
+stepping inside the body.** The all-inner branch is vacuous.
+
+**Straight about what this costs 404/405.** The same argument kills the *mixed*
+branch too — mixed needs one state active inside the body, which cannot happen.
+So `loop_split_exclusive` and the `NoHaltBackClash` family are **no longer
+load-bearing**; they are an independent second derivation of the same exclusion,
+from the guard structure rather than from the peel. Two independent routes
+agreeing is a real cross-check and I am keeping them, but they are not what the
+proof now rests on, and saying otherwise would overstate 404 and 405.
+
+**Where the `wh` case stands: one branch, already proved.** All-outer, by 395's
+`loopInitialized_agree_of_body_silent`. Mixed and all-inner are both vacuous
+under `hbodyRaw`. The `wh` case of `SourceSccAgrees` reduces to the rank
+obligation and 395.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 97% → 98%.** The `wh` case was the last open case of the last open
+statement, and two of its three branches are now vacuous rather than merely
+argued. What remains is the rank construction discharging `hbodyRaw` and
+`RankTopEntry` — a construction problem, not a search problem. The field's prior
+that this problem does not close still stands.
+
+**Next.** Build the level/rank for `certifiedThompson` and discharge `hbodyRaw`
++ `RankTopEntry` from it.

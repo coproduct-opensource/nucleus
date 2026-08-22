@@ -15879,6 +15879,103 @@ theorem noHaltBackClash_seq_inl {S₁ S₂ : Type}
 
 #print axioms noHaltBackClash_seq_inl
 
+/-! ### The induction is shallower than it looks
+
+`noHaltBackClash_seq_inl` needs `hsplit`: the two halves sit at different
+levels.  That is 397 — but 397 is about `seqGSystem` **in isolation**.  Put the
+same `seq` inside a loop and it is false: `loopInitialized` appends
+`body.initTrans` to every halting state, `seqInitialized.initTrans` begins with
+`left.initTrans` tagged `inl`, so a halting `inr` state has an edge back to an
+`inl` one and the halves merge into a single component.
+
+So `noHaltBackClash_seq_inl` and `_sum_inl` apply at the **outermost** level
+only.  Inside a loop something better is true: the body's states all collapse
+into the loop's one level, and `hbodyRaw` — the rank obligation
+`noHaltBackClash_loop` already takes — says every body step is raw.  An
+automaton with no same-level non-raw steps has nothing to clash, so its
+`NoHaltBackClash` is **vacuous**.
+
+The `wh` case therefore consumes no induction hypothesis about its body at all;
+it consumes a fact about the rank.  The recursion does not have to thread the
+property through `seq` and `ite` inside loops, because there is nothing to
+thread. -/
+theorem noHaltBackClash_of_allRaw {S : Type} (aut : GkatKleene.GAut S A T)
+    (slvl : S → Nat) (srank : Nat → S → Nat)
+    (hallRaw : ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S) (r : A × S),
+      GkatKleene.autStep W aut s x = some r →
+      rawPred slvl srank s ((BExp.one : BExp T), r) = true) :
+    NoHaltBackClash aut slvl srank := by
+  intro X W x _ w r _ hstep _ hraw
+  rw [hallRaw X W x w r hstep] at hraw
+  exact Bool.noConfusion hraw
+
+/-- The same fact in the form the `wh` case supplies it: `hbodyRaw` is stated
+about the body's raw transition list, which is exactly the body automaton's
+`autStep`. -/
+theorem noHaltBackClash_body_of_hbodyRaw {S : Type}
+    (body : GkatThompson.InitializedGAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) (st : S)
+    (hbodyRaw : ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S) (r : A × S),
+      GkatKleene.firstMatch W x (body.core.trans s) = some r →
+      rawPred slvl srank s ((BExp.one : BExp T), r) = true) :
+    NoHaltBackClash
+      { states := body.core.states, hlt := body.core.hlt
+        trans := body.core.trans, start := st } slvl srank :=
+  noHaltBackClash_of_allRaw _ slvl srank hbodyRaw
+
+#print axioms noHaltBackClash_of_allRaw
+#print axioms noHaltBackClash_body_of_hbodyRaw
+
+/-! ### The all-inner branch of the `wh` trichotomy is vacuous
+
+401 split the `wh` case three ways: at one atom the active states of a loop
+component all take the outer back-edge, all step inside the body, or mixed.
+404/405 excluded mixed.  This kills the middle branch outright.
+
+`SourceSccAgrees` only ever compares states whose `peelRawHlt` is TRUE, and
+`peelRawHlt` is `bigOr (guards of the non-raw transitions) ∨ hlt`.  So a state
+under consideration is either halting or taking a **non-raw** step — never a raw
+one.  Inside a loop, `hbodyRaw` says every body step is raw.  The two cannot
+both hold, so no state under consideration is stepping inside the body.
+
+Only the all-outer branch survives, and 395 handles it. -/
+theorem step_nonRaw_of_peelRawHlt {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (hdet : HaltDeterministic aut) (s : S) (hs : s ∈ aut.states) (r : A × S)
+    (hact : GkatGS.bval W (peelRawHlt aut lvl rank s) x = true)
+    (hstep : GkatKleene.autStep W aut s x = some r) :
+    rawPred lvl rank s ((BExp.one : BExp T), r) = false := by
+  have hor : (GkatGS.bval W (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x
+      || GkatGS.bval W (aut.hlt s) x) = true := hact
+  cases hb : GkatGS.bval W (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x with
+  | true =>
+      obtain ⟨r', hr', hnr⟩ := (bigOr_nonRaw_iff W x aut lvl rank s).mp hb
+      have : r = r' := Option.some.inj (hstep.symm.trans hr')
+      rw [this]; exact hnr
+  | false =>
+      exfalso
+      rw [hb] at hor
+      simp only [Bool.false_or] at hor
+      have hnone : GkatKleene.firstMatch W x (aut.trans s) = none := hdet X W x s hs hor
+      have : GkatKleene.autStep W aut s x = none := hnone
+      rw [this] at hstep
+      exact (Option.some_ne_none r hstep.symm).elim
+
+/-- **The all-inner branch, gone.**  A state that `SourceSccAgrees` considers
+cannot be stepping inside the body, because every body step is raw. -/
+theorem no_inner_active_of_hbodyRaw {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (hdet : HaltDeterministic aut) (s : S) (hs : s ∈ aut.states) (r : A × S)
+    (hact : GkatGS.bval W (peelRawHlt aut lvl rank s) x = true)
+    (hstep : GkatKleene.autStep W aut s x = some r)
+    (hraw : rawPred lvl rank s ((BExp.one : BExp T), r) = true) :
+    False := by
+  rw [step_nonRaw_of_peelRawHlt W x aut lvl rank hdet s hs r hact hstep] at hraw
+  exact Bool.noConfusion hraw
+
+#print axioms step_nonRaw_of_peelRawHlt
+#print axioms no_inner_active_of_hbodyRaw
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
