@@ -7482,4 +7482,85 @@ theorem thompson_has_solution (e : Exp A T) (F : Exp A T) :
 
 #print axioms thompson_has_solution
 
+
+/-! ### 279 — LOOP LAYERS, AND WHY THE BASE IS DETERMINED ALONG A HOMOMORPHISM
+
+    278 pointed the remainder at ONE statement — produce a solution for the
+    minimal behavioural quotient — and the literature's technique for it:
+    prove preservation along an arbitrary FUNCTIONAL BISIMILARITY and take the
+    collapse as the special case.
+
+    Pushing a layer forward along `f : S → S'` means building `base'` from
+    `base`, and that needs `base` to be DETERMINED by its image: if `f s = f t`,
+    the two states' base data must agree, or `base'` is not well defined.  For
+    the general `IsLayer` this FAILS — the split is existential, so two states
+    with the same image may split their (equal) images differently, and nothing
+    forces the same cut.  **That is why 265 found the layer case blocked.**
+
+    For 277's `post = []` form it SUCCEEDS, and this is the payoff of that
+    restriction: the back-edge block has the SAME LENGTH at every state (it is
+    `entry` gated, and `entry` is shared), so the cut point is forced, and
+    `List.append_inj'` recovers the base transitions.  The base HALT comes back
+    too, from the head of the back-edge block — its guard is syntactically
+    `base.hlt s ∧ b ∧ g₀`, so `base.hlt s` is readable off it, provided the
+    layer has at least one entry.  A layer with no entries is not a loop.
+
+    So: the `post = []` restriction, forced on `hsolve` by 277, is exactly what
+    makes `hcollapse`'s pushforward well defined.  The two obligations 278
+    merged into one want the same hypothesis. -/
+structure LoopLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
+    (b : BExp T) (entry : List (BExp T × A × S)) : Prop where
+  trans_eq : ∀ s, sys.trans s = base.trans s ++ entry.map (fun tr =>
+    (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2))
+  hlt_eq : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X),
+    GkatGS.bval W (sys.hlt s) x
+      = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)
+  states_eq : sys.states = base.states
+
+/-- `wh b e`'s automaton is a LOOP LAYER over `e`'s, with `e`'s own initial
+    transitions as the shared entry list.  All three fields are `rfl` or 220. -/
+theorem wh_loopLayer (b : BExp T) (e : Exp A T) :
+    LoopLayer (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
+      (GkatThompson.certifiedThompson A T e).aut.core b
+      (GkatThompson.certifiedThompson A T e).aut.initTrans where
+  trans_eq s := loop_core_trans b e s
+  hlt_eq s := by
+    intro X W x
+    rw [loop_core_hlt b e s]
+    rfl
+  states_eq := rfl
+
+#print axioms wh_loopLayer
+
+/-- **THE BASE IS DETERMINED BY ITS IMAGE.**  If two states of a loop layer have
+    the same retargeted transition list, then so do their bases, and their base
+    halts are EQUAL — syntactically, not merely semantically.  This is the
+    well-definedness `hcollapse`'s pushforward needs, and it is false without
+    the `post = []` shape. -/
+theorem loopLayer_fiber_agree {S S' : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {tr₀ : BExp T × A × S} {rest : List (BExp T × A × S)}
+    (h : LoopLayer sys base b (tr₀ :: rest)) (f : S → S') (s t : S)
+    (hf : (sys.trans s).map (fun tr => (tr.1, tr.2.1, f tr.2.2))
+        = (sys.trans t).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+    (base.trans s).map (fun tr => (tr.1, tr.2.1, f tr.2.2))
+        = (base.trans t).map (fun tr => (tr.1, tr.2.1, f tr.2.2))
+      ∧ base.hlt s = base.hlt t := by
+  rw [h.trans_eq s, h.trans_eq t, List.map_append, List.map_append] at hf
+  have hlen : (((tr₀ :: rest).map (fun tr =>
+        (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2))).map
+        (fun tr => (tr.1, tr.2.1, f tr.2.2))).length
+      = (((tr₀ :: rest).map (fun tr =>
+        (BExp.and (base.hlt t) (BExp.and b tr.1), tr.2))).map
+        (fun tr => (tr.1, tr.2.1, f tr.2.2))).length := by
+    simp only [List.length_map]
+  obtain ⟨hpre, hsuf⟩ := List.append_inj' hf hlen
+  refine ⟨hpre, ?_⟩
+  simp only [List.map_cons] at hsuf
+  injection hsuf with hhd _
+  injection hhd with hg _
+  injection hg with h1 _
+
+#print axioms loopLayer_fiber_agree
+
 end GkatCensus

@@ -12921,3 +12921,64 @@ BISIMULATION (a surjective `GAutHom`), rather than along the minimal quotient.
 `acyclic` should push forward if the map is rank-compatible; the layer case is
 where 265 located the obstruction, and the forward direction is the one that
 avoids 277's `post` problem.
+
+---
+
+## 279 — THE BASE IS DETERMINED ALONG A HOMOMORPHISM (PROVED), AND A CORRECTION TO 278.
+
+**Two theorems.**
+
+`LoopLayer sys base b entry` — 277's `post = []` layer as a named structure:
+`sys.trans s = base.trans s ++ entry.map (base.hlt s ∧ b ∧ ·)`, halts
+`base.hlt ∧ ¬b`, same state list.  `wh_loopLayer`: `wh b e`'s automaton is one,
+over `e`'s, with `e`'s own initial transitions as the shared entry list — all
+three fields `rfl` or 220.
+
+`loopLayer_fiber_agree` — **the base is DETERMINED by its image.**  If two
+states have the same retargeted transition list, so do their bases, and their
+base halts are EQUAL SYNTACTICALLY.
+
+**Why this is the pushforward's missing piece.**  Pushing a layer forward along
+`f : S → S'` means building `base'` from `base`, which needs `base` determined
+by its image or `base'` is not well defined.  **For the general `IsLayer` this
+FAILS** — the split is existential, so two states with the same image may split
+their (equal) images differently and nothing forces the same cut.  **That is why
+265 found the layer case blocked.**  For `post = []` it SUCCEEDS: the back-edge
+block has the SAME LENGTH at every state (it is the shared `entry`, gated), so
+the cut point is forced and `List.append_inj'` recovers the base transitions;
+the base halt comes back from the head of the block, whose guard is
+syntactically `base.hlt s ∧ b ∧ g₀`.  A layer with no entries is not a loop.
+
+**So the `post = []` restriction, forced on `hsolve` by 277, is exactly what
+makes `hcollapse`'s pushforward well defined.**  The two obligations 278 merged
+into one want the same hypothesis.  Axioms: `propext` alone for both.
+
+**CORRECTION TO 278.**  278 quoted "LLEE is preserved along functional
+bisimilarity, and consequently by bisimulation collapse" as evidence the
+remaining obligation is true.  This iteration's search shows that is the
+**1-FREE** case.  Grabmayer–Fokkink explicitly record that **process graphs with
+EMPTY-STEP transitions satisfying LLEE are NOT closed under bisimulation
+collapse**, and circumnavigate it with a LLEE-preserving CRYSTALLIZATION
+procedure yielding "near-collapsed" graphs whose SCCs are collapsed or of
+"twin-crystal" shape.  GKAT's halting/tests are the analogue of empty steps, so
+278's evidence is weaker than I stated: the good case is 1-free, and mine is not.
+
+**What survives the correction, and is worth more than the quote was.**  The
+technique: their collapse result is proved **by a STEP-WISE construction of the
+bisimulation collapse** — one identification at a time, not the whole quotient
+at once.  That is directly actionable, and it is exactly the shape of 265's
+pairwise connect-through-to induction.  And the empirical position is unchanged
+and is about MY structure, not LLEE: the certificate survived arbitrary
+quotients 0/41 716, connect-through never lost it 0/47 584, collapse never broke
+solvability 0/131 714.
+
+**Odds: 91%, HELD.**  Two machine-checked lemmas resolving exactly why 265 was
+blocked, against a genuine weakening of 278's cited evidence.  The field's prior
+that the problem does not close still stands — and this iteration is a reminder
+of why it stands: the nearest published analogue of my obligation is FALSE in
+the setting nearest mine, and needed a new construction to repair.
+
+**Next.**  Build the pushforward on `LoopLayer` using `loopLayer_fiber_agree`:
+given a surjective structural hom `f : sys → sys'`, construct `base'` via a
+section and show `LoopLayer sys' base' b (entry.map f)`.  Then attempt it
+STEP-WISE — one merged pair at a time — rather than for an arbitrary quotient.
