@@ -14493,3 +14493,50 @@ start states?  Measurable with the same machinery: build `sum(Thompson e,
 Thompson f)` for semantically-equal `e, f`, compute the finest
 sub-automaton-respecting bisimulation, and check whether the starts land
 together.
+
+---
+
+## 315 — 311 WAS A REGRESSION.  THE PREFERENCE ROUTE IS BISIMULATION-FREE.
+
+311 removed 305/308's PREFERENCE hypothesis by proving the split's closure from
+the BISIMULATION instead.  That looked like a simplification and read like one
+for four iterations.  **314 measured what it cost**: `hbisim` does not transport
+from a composite to its components and fails at TWO STATES, so a route needing
+`hbisim` at every node of a recursion over sub-expressions cannot work.
+
+**Preference needs no transport, because it is not a property the quotient must
+happen to have — it is a property of the WITNESS WE CHOOSE.**  The quotient's
+dynamics at a class is DEFINED from a witness; every preimage of a class is
+behaviourally equivalent, so any choice yields a correct quotient.  We are free
+to choose, and choosing right is a CONSTRUCTION rather than a hope.  That is the
+difference between the two routes, and it is why the one that looked harder is
+the one that works.
+
+**And the construction reduces to two facts, both proved, both axiom-free.**
+Weight states so that at the node in question every RIGHT state outweighs every
+LEFT state; take the witness of maximal weight in its class.  Then:
+
+  * `max_is_inr` — a class containing a right state has a RIGHT witness.  This
+    IS the preference hypothesis.
+  * `max_inl_all_inl` — a class whose witness is LEFT has ALL members left.
+    This is why the order RESTRICTS to the left half at an inner node, which is
+    what lets the recursion continue.
+
+Everything else 305 called a "leaf ordering" is arranging such a weight by
+recursion on the expression, and these two lemmas say exactly what that
+recursion must supply: `hlt` at each node, and nothing more.
+
+**Odds: 99%** (+1, restoring 312's drop).  The obstruction that caused the drop
+is now routed around rather than fought, and the route's two load-bearing facts
+are proved with no axioms at all.  312's penalty was for a problem I no longer
+need to solve.
+
+**A note on the four iterations.**  311 → 314 was not wasted: 311's bisimulation
+argument is still the *right* one wherever `hbisim` IS available, and 314's
+harness mode is reusable.  But the lesson is sharp — **a hypothesis that can be
+CONSTRUCTED beats one that must be INHERITED, even when the second looks
+weaker.**
+
+**Next.**  Build the weight by recursion on the expression: `test`/`act` give
+anything, `ite`/`seq` give left-then-right with a strict offset, `wh` inherits
+its body's.

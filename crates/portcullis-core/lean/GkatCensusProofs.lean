@@ -10241,4 +10241,56 @@ theorem wh_step_eq_body_step (b : BExp T) (e : Exp A T)
 #print axioms firstMatch_append_left
 #print axioms wh_step_eq_body_step
 
+
+/-! ### 315 — 311 WAS A REGRESSION.  THE PREFERENCE ROUTE IS BISIMULATION-FREE.
+
+    311 removed 305/308's PREFERENCE hypothesis by proving the split's closure
+    from the BISIMULATION instead.  That looked like a simplification.  314
+    measured what it cost: `hbisim` does not transport from a composite to its
+    components, and fails at TWO STATES, so a route that needs `hbisim` at every
+    node of a recursion over sub-expressions cannot work.
+
+    **Preference needs no transport, because it is not a property the quotient
+    must happen to have — it is a property of the WITNESS WE CHOOSE.**  The
+    quotient's dynamics at a class is DEFINED from a witness, and every preimage
+    of a class is behaviourally equivalent, so any choice yields a correct
+    quotient.  We are free to choose the witness, and choosing it right is a
+    construction rather than a hope.
+
+    **And the whole construction reduces to this.**  Weight the states so that
+    at the node in question every RIGHT state outweighs every LEFT state; take
+    the witness of maximal weight in its class; then a class containing a right
+    state has a right witness.  That is the entire content of 305's "leaf
+    ordering" — the rest is arranging such a weight by recursion on the
+    expression, and the recursion is available because a class whose witness is
+    LEFT has ALL its members left (otherwise the maximum would be right), so
+    inside the left half the order restricts to the left half's own.
+
+    Stated with the weight abstract, since what the recursion must supply is
+    exactly `hlt` and nothing else. -/
+theorem max_is_inr {S₁ S₂ : Type} (w : Sum S₁ S₂ → Nat)
+    (hlt : ∀ (u : S₁) (t : S₂), w (Sum.inl u) < w (Sum.inr t))
+    (P : Sum S₁ S₂ → Prop) (s : Sum S₁ S₂) (hs : P s)
+    (hmax : ∀ y, P y → w y ≤ w s)
+    (t : S₂) (ht : P (Sum.inr t)) :
+    ∃ v : S₂, s = Sum.inr v := by
+  cases s with
+  | inl u => exact absurd (hmax (Sum.inr t) ht) (Nat.not_le.mpr (hlt u t))
+  | inr v => exact ⟨v, rfl⟩
+
+/-- The other half of the recursion: a class whose maximal member is LEFT has
+    ALL its members left.  This is why the order restricts to the left half at
+    an inner node, and it is the same fact read contrapositively. -/
+theorem max_inl_all_inl {S₁ S₂ : Type} (w : Sum S₁ S₂ → Nat)
+    (hlt : ∀ (u : S₁) (t : S₂), w (Sum.inl u) < w (Sum.inr t))
+    (P : Sum S₁ S₂ → Prop) (u : S₁) (hmax : ∀ y, P y → w y ≤ w (Sum.inl u)) :
+    ∀ y, P y → ∃ v : S₁, y = Sum.inl v := by
+  intro y hy
+  cases y with
+  | inl v => exact ⟨v, rfl⟩
+  | inr t => exact absurd (hmax (Sum.inr t) hy) (Nat.not_le.mpr (hlt u t))
+
+#print axioms max_is_inr
+#print axioms max_inl_all_inl
+
 end GkatCensus
