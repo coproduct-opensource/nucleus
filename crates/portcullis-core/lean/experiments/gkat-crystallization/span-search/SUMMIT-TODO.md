@@ -19556,3 +19556,79 @@ more weight after this iteration than before it.
 whether solvability of a region requires agreement at all, or whether a weaker
 per-atom condition suffices, since at a fixed atom the automaton is a function
 (408) and `q0` and `q2` are never simultaneously reachable on one run.
+
+## 417 — ARCHITECTURE REFUTED. Monotone levels cannot separate an SCC, and that is now a theorem.
+
+Web search: exhausted (200/200).
+
+416 ended with "stop refining the level; ask what the peel actually needs". So I
+read the consumers instead of guessing again — the move that worked at 414.
+
+**First, a correction to my own framing of 413-416.** Those iterations refuted
+SOURCE-side sufficient conditions (`SourceSccAgrees`, `SourceLevelAgrees`). The
+hypothesis the top-level theorem actually carries is `LevelAgreementActive` on a
+CHOSEN QUOTIENT with `reachMask` levels. I had been measuring a proxy. So I
+measured the real one, over the exhaustive depth-3 expression enumeration:
+
+| level = `reachMask` (the top-level hypothesis) | count |
+|---|---|
+| distinct (automaton, level), G=4, depth ≤ 3 | 552,969 |
+| satisfiable | 552,963 |
+| **NO rank satisfies it** | **6** |
+
+The first refuter is 413's automaton again, bit for bit.
+
+**Then the real question: is the level pinned?** No —
+`solvesBA_of_levelAgreementActive` takes ANY `lvl` with `hbound` and
+`hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s`. So I brute-forced EVERY
+monotone level assignment on each refuting automaton:
+
+| | count |
+|---|---|
+| refuting automata rescued by SOME monotone level | **0** |
+| refuting automata no monotone level can rescue | **6** |
+
+**And the reason is a theorem, not an accident.** `mono_forces_same_level`,
+proved this iteration with **no axioms at all**:
+
+```lean
+theorem mono_forces_same_level (sys) (lvl)
+    (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s)
+    (huv : SReaches sys u v) (hvu : SReaches sys v u) : lvl u = lvl v
+```
+
+Monotonicity makes the level non-increasing along every path, so mutual
+reachability forces equality. **Every admissible level is SCC-coarse.** And
+413's configuration — a self-loop (non-raw under every rank, hence always
+active) against a halt (always active) — lives inside one SCC. No level can
+separate them, so `LevelAgreementActive` is unsatisfiable for such automata.
+
+**What this refutes.** `finiteAxiomsComplete_of_maskAgreement` and
+`finiteAxiomsComplete_of_agreement` remain true, `sorry`-free theorems whose
+hypotheses are now known **unsatisfiable** for `certifiedThompson` automata of
+this shape. This is not one more sub-condition failing; it is the
+peel-via-agreement architecture, and 416's "coarse enough vs fine enough"
+tension is now the formal statement `mono_forces_same_level` rather than an
+observation about examples.
+
+**The room that remains, stated so it is not overclaimed.** `solvesBA_of_
+agreement` is more general than `solvesBA_of_levelAgreementActive` — it consumes
+`peelAut_trans_agrees_active` and `peelAut_hlt_agrees` directly, so a different
+peel could in principle avoid `LevelAgreementActive`. And the quotient is still
+existentially chosen, though a behavioural quotient can only MERGE states and
+the two states here are not bisimilar (one halts where the other does not), so
+that freedom looks empty.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 72% → 45%.** The largest single drop in this program. Four refuted
+agreement conditions was a bad sign; an axiom-free theorem showing no admissible
+level can do what the architecture needs is a different kind of result. The
+target — finite-axiom completeness for full GKAT — is untouched and may well be
+true; what is now known is that THIS route does not reach it without being
+rebuilt below the peel. The field's prior that this problem does not close was
+better calibrated than my last several estimates.
+
+**Next.** Go under the peel: does `solvesBA_of_agreement` admit a decomposition
+that is not level-based at all — and if the peel must be level-based, what
+replaces it?

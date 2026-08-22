@@ -2639,7 +2639,26 @@ fn lvlagree<const NA: usize>(nguards: u8, maxdepth: usize) {
         if !okmap { continue; }
         if let Some(c) = canon(a) {
             if c.k as usize == k {
-                if std::env::var("REFINE").is_ok() {
+                if std::env::var("MASK").is_ok() {
+                    // 417: the level the TOP-LEVEL hypothesis actually uses --
+                    // reachMask, i.e. group by the set of states reachable.
+                    let mut rm = vec![0usize; k];
+                    for u in 0..k {
+                        let mut seen = vec![false; k]; seen[u] = true;
+                        let mut st = vec![u];
+                        while let Some(v) = st.pop() {
+                            for x in 0..NA {
+                                if c.st[v][x] == 0 { continue; }
+                                let t = (c.st[v][x] - 1) as usize;
+                                if !seen[t] { seen[t] = true; st.push(t); }
+                            }
+                        }
+                        let mut m = 0usize;
+                        for w in 0..k { if seen[w] { m |= 1 << w; } }
+                        rm[u] = m;
+                    }
+                    cases.insert((c, rm));
+                } else if std::env::var("REFINE").is_ok() {
                     // REFINED level: nesting depth, then SCC of the subgraph
                     // restricted to states at that same depth.  Depth separates an
                     // inner loop from its enclosing one (413); the SCC separates
@@ -2685,6 +2704,7 @@ fn lvlagree<const NA: usize>(nguards: u8, maxdepth: usize) {
         }
     }
     let (mut tested, mut ok, mut bad) = (0usize, 0usize, 0usize);
+    let (mut rescued_cnt, mut doomed_cnt) = (0usize, 0usize);
     let mut first_bad: Option<String> = None;
     for (a, lvl) in &cases {
         let k = a.k as usize;
@@ -2729,8 +2749,69 @@ fn lvlagree<const NA: usize>(nguards: u8, maxdepth: usize) {
                 }
             }
         }
-        if all_ok { ok += 1; } else { bad += 1; }
+        if all_ok { ok += 1; } else {
+            bad += 1;
+            // 417: the level is NOT pinned to reachMask.  solvesBA_of_levelAgreementActive
+            // takes any lvl with hbound and hmono (lvl never increases along an edge).
+            // So for each refuting automaton, brute-force EVERY monotone level
+            // assignment and every rank.  If none works, the architecture itself is
+            // refuted for this automaton, not merely this choice of level.
+            if k <= 5 {
+                let mut rescued = false;
+                let total = (k as u32).pow(k as u32);
+                for code in 0..total {
+                    let mut lv = vec![0usize; k];
+                    let mut c2 = code;
+                    for u in 0..k { lv[u] = (c2 % (k as u32)) as usize; c2 /= k as u32; }
+                    // hmono: level never increases along a transition
+                    let mut mono = true;
+                    for u in 0..k {
+                        for x in 0..NA {
+                            if a.st[u][x] == 0 { continue; }
+                            let t = (a.st[u][x] - 1) as usize;
+                            if lv[t] > lv[u] { mono = false; }
+                        }
+                    }
+                    if !mono { continue; }
+                    let mut lvls = lv.clone(); lvls.sort_unstable(); lvls.dedup();
+                    let mut every_level_ok = true;
+                    for &n in &lvls {
+                        let comp: Vec<usize> = (0..k).filter(|&u| lv[u] == n).collect();
+                        let m = comp.len();
+                        if m < 2 { continue; }
+                        let mut perm: Vec<usize> = (0..m).collect();
+                        let mut lok = false;
+                        loop {
+                            let mut rank = [0usize; MAXK];
+                            for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                            let mut agree = true;
+                            for x in 0..NA {
+                                let mut outs: Vec<Option<usize>> = Vec::new();
+                                for &u in &comp {
+                                    let tv = a.st[u][x];
+                                    let halts = (a.hl[u] >> x) & 1 == 1;
+                                    let isact = if tv == 0 { halts } else {
+                                        let t = (tv - 1) as usize;
+                                        !(lv[t] == lv[u] && rank[t] < rank[u])
+                                    };
+                                    if !isact { continue; }
+                                    outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                                }
+                                if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                            }
+                            if agree { lok = true; break; }
+                            if !next_perm(&mut perm) { break; }
+                        }
+                        if !lok { every_level_ok = false; break; }
+                    }
+                    if every_level_ok { rescued = true; break; }
+                }
+                if rescued { rescued_cnt += 1; } else { doomed_cnt += 1; }
+            }
+        }
     }
+    println!("  refuting automata rescued by SOME monotone level : {}", rescued_cnt);
+    println!("  refuting automata NO monotone level can rescue   : {}", doomed_cnt);
     println!("PAD_LVLAGREE  expressions built (depth <= {}) : {}", maxdepth, exprs.len());
     println!("  distinct (automaton, syntactic level)      : {}", tested);
     println!("  SourceLevelAgrees satisfiable              : {}", ok);

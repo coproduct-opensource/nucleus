@@ -16253,6 +16253,45 @@ theorem levelAgreementActive_of_sourceLevelAgrees {S Q : Type}
 
 #print axioms levelAgreementActive_of_sourceLevelAgrees
 
+/-! ### 417: the architecture-level obstruction
+
+`solvesBA_of_levelAgreementActive` does not pin the level to `reachMask` — it
+takes any `lvl` with `hbound` and
+
+```lean
+hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s
+```
+
+so I searched, exhaustively, for ANY monotone level rescuing the automata that
+refute agreement. There is none, and the reason is a two-line theorem rather
+than an accident: **monotonicity forces mutually reachable states into the same
+level.** Every admissible level is therefore SCC-coarse, and 413's
+self-loop-against-halt lives inside one SCC. -/
+theorem lvl_le_of_sreaches {S : Type} (sys : GkatThompson.GSystem S A T)
+    (lvl : S → Nat)
+    (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s) :
+    ∀ {u v : S}, SReaches sys u v → lvl v ≤ lvl u := by
+  intro u v h
+  induction h with
+  | refl _ => exact Nat.le_refl _
+  | @step a b c hstep _ ih =>
+      obtain ⟨g, q, hmem⟩ := hstep
+      exact Nat.le_trans ih (hmono a (g, q, b) hmem)
+
+/-- **Monotone levels cannot separate an SCC.**  So no admissible level puts two
+mutually reachable states at different levels — which is exactly what the
+agreement condition needs it to do. -/
+theorem mono_forces_same_level {S : Type} (sys : GkatThompson.GSystem S A T)
+    (lvl : S → Nat)
+    (hmono : ∀ s, ∀ tr ∈ sys.trans s, lvl tr.2.2 ≤ lvl s)
+    {u v : S} (huv : SReaches sys u v) (hvu : SReaches sys v u) :
+    lvl u = lvl v :=
+  Nat.le_antisymm
+    (lvl_le_of_sreaches sys lvl hmono hvu)
+    (lvl_le_of_sreaches sys lvl hmono huv)
+
+#print axioms mono_forces_same_level
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
