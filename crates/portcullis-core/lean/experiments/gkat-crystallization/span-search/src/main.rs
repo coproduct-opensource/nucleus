@@ -2354,6 +2354,127 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_PUSHRANK`** (iteration 370).
+///
+/// 368 found the rank the induction forces on a SOURCE loop: distance to the
+/// head, with the head's entry into the body as the back-edge.  A transport
+/// proof needs the quotient's rank to be CANONICAL — derived from the source's —
+/// not merely to exist by search.  The natural candidate is the pushforward:
+///
+///     rank_q(block) = min over source states in that block of dist-to-head
+///
+/// This measures whether the pushforward works, which is a far stronger and more
+/// useful fact than "some rank works".
+fn pushrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut regions, mut push_agree, mut push_vac, mut any_agree) = (0usize, 0usize, 0usize, 0usize);
+    let mut per_ok = [0usize; 4];
+    for a in &pool {
+        let k = a.k as usize;
+        // source: per-SCC head (the unique exiting state, 358) and BFS distance
+        let mut dist = [usize::MAX; MAXK];
+        for comp in sccs_of(a) {
+            let head = comp.iter().copied().find(|&u| (0..NA).any(|x| {
+                let tv = a.st[u][x];
+                tv != 0 && !comp.contains(&((tv - 1) as usize))
+            })).unwrap_or(comp[0]);
+            let mut frontier = vec![head];
+            dist[head] = 0;
+            let mut d = 0usize;
+            while !frontier.is_empty() {
+                d += 1;
+                let mut next = Vec::new();
+                for &u in &frontier {
+                    for x in 0..NA {
+                        let tv = a.st[u][x];
+                        if tv == 0 { continue; }
+                        let t = (tv - 1) as usize;
+                        if !comp.contains(&t) || dist[t] != usize::MAX { continue; }
+                        dist[t] = d; next.push(t);
+                    }
+                }
+                frontier = next;
+            }
+        }
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        for comp in sccs_of(&q) {
+            if comp.len() < 2 { continue; }
+            regions += 1;
+            // pushforward rank, and note the head is at 0 so LOWER = closer to head
+            // four encodings, since one failing does not settle the question:
+            // min / max over the block, each in both orientations
+            let mut best_ok = false; let mut best_vac = false;
+            for variant in 0..4 {
+            let mut rank = [0usize; MAXK];
+            for &b in &comp {
+                let (mut lo, mut hi) = (usize::MAX, 0usize);
+                for u in 0..k {
+                    if blk[u] == b && dist[u] != usize::MAX {
+                        if dist[u] < lo { lo = dist[u]; }
+                        if dist[u] > hi { hi = dist[u]; }
+                    }
+                }
+                let v = if variant % 2 == 0 { if lo == usize::MAX { 0 } else { lo } } else { hi };
+                rank[b] = if variant < 2 { v } else { 64 - v.min(64) };
+            }
+            let mut ok = true; let mut vac = true;
+            for x in 0..NA {
+                let mut act = 0usize; let mut demand: i64 = -1;
+                for &u in &comp {
+                    let tv = q.st[u][x];
+                    let halts = (q.hl[u] >> x) & 1 == 1;
+                    let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                        else {
+                            let t = (tv - 1) as usize;
+                            if comp.contains(&t) && rank[t] < rank[u] { continue } else { t as i64 }
+                        };
+                    act += 1;
+                    if demand == -1 { demand = d; } else if demand != d { ok = false; }
+                }
+                if act > 1 { vac = false; }
+            }
+            if ok { best_ok = true; per_ok[variant] += 1; }
+            if vac { best_vac = true; }
+            }
+            if best_ok { push_agree += 1; }
+            if best_vac { push_vac += 1; }
+            // for comparison: does ANY rank agree?
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut oka = false;
+            loop {
+                let mut r2 = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { r2[comp[pi]] = i; }
+                let mut ag = true;
+                for x in 0..NA {
+                    let mut demand: i64 = -1;
+                    for &u in &comp {
+                        let tv = q.st[u][x];
+                        let halts = (q.hl[u] >> x) & 1 == 1;
+                        let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                            else { let t = (tv - 1) as usize;
+                                if comp.contains(&t) && r2[t] < r2[u] { continue } else { t as i64 } };
+                        if demand == -1 { demand = d; } else if demand != d { ag = false; }
+                    }
+                }
+                if ag { oka = true; break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if oka { any_agree += 1; }
+        }
+    }
+    println!("PUSHRANK: {regions} multi-state quotient regions");
+    println!("  PUSHFORWARD rank (best of 4 encodings) agrees in {push_agree} ({:.2}%), vacuous in {push_vac} ({:.2}%)",
+        100.0 * push_agree as f64 / regions.max(1) as f64,
+        100.0 * push_vac as f64 / regions.max(1) as f64);
+    println!("  per encoding (0=min fwd, 1=max fwd, 2=min REVERSED, 3=max REVERSED): \
+              {} {} {} {}", per_ok[0], per_ok[1], per_ok[2], per_ok[3]);
+    println!("  SOME rank agrees in {any_agree} ({:.2}%) — the gap is what a transport proof \
+              would still have to supply",
+        100.0 * any_agree as f64 / regions.max(1) as f64);
+}
+
 /// **`PAD_MINCONGVAC`** (iteration 369).
 ///
 /// The quotient transport has resisted since 354.  But 343 proved minimality is
@@ -8945,6 +9066,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_PUSHRANK").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        pushrank::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_MINCONGVAC").is_ok() {
