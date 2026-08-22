@@ -14291,3 +14291,36 @@ never `rw`, once dependent witnesses are in play.
 
 **Next.**  `quotient_layered_seq_left` in witness form — the same `dite`
 construction, over `sumGSystem L R.core` instead of `e`'s core.
+
+---
+
+## 310 — `seq` IN WITNESS FORM.  THE MIGRATION IS COMPLETE.
+
+The last case, and one thing gets SIMPLER in the migration.  The `rep` version
+needed a separate hypothesis `hinl` saying the representative of a non-block
+class is a left state.  **In witness form that hypothesis disappears into the
+witness's TYPE** — the witness is drawn from `S₁` directly.  It is justified for
+the same reason it was assumed: the block already contains every right class
+(305's split runs first), so a class outside it has no right preimage at all.
+
+**A hypothesis that becomes a type is a hypothesis that can no longer be
+forgotten at a call site**, which is the second thing 307's shape bought, after
+applicability.
+
+    test    quotient_layered_test'          (307)
+    act     quotient_layered_act'           (307)
+    ite/seq quotient_layered_split_right'   (308)
+    wh      quotient_layered_wh'            (309)
+    seq     quotient_layered_seq_left'      (310)
+
+**All five cases, in a form that can actually be instantiated.**  Compiled first
+try.  Whole file: zero errors, zero `sorryAx`.
+
+**Odds: 99%, HELD.**
+
+**Next.**  Tie the five into the induction on `Exp`.  The remaining work is
+CONSTRUCTING the sub-quotient data at each node: given the parent's `j` and its
+witness hypothesis, produce the child's.  For `wh` the state type is unchanged,
+so the child's data IS the parent's; for `ite` and `seq` it is the parent's
+composed with an injection, and the witness must be shown to land in the right
+half — which is what 308's `hwitR` and 310's `S₁`-valued witness are for.

@@ -9963,4 +9963,91 @@ theorem quotient_layered_wh' (b : BExp T) (e : Exp A T) {Q : Type}
 
 end QuotientLayeredWhWitness
 
+
+section QuotientLayeredSeqWitness
+open Classical
+
+/-! ### 310 — `seq` IN WITNESS FORM.  THE MIGRATION IS COMPLETE.
+
+    The last case.  One thing gets SIMPLER in the migration and is worth saying:
+    the `rep` version needed a separate hypothesis `hinl` saying the
+    representative of a non-block class is a left state.  In witness form that
+    hypothesis disappears into the witness's TYPE — the witness is drawn from
+    `S₁` directly.  It is justified for the same reason it was assumed: the
+    block already contains every right class (305's split ran first), so a class
+    outside it has no right preimage at all.
+
+    A hypothesis that becomes a type is a hypothesis that can no longer be
+    forgotten at a call site, which is the second thing 307's shape bought. -/
+theorem quotient_layered_seq_left' {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (Qsys : GkatThompson.GSystem Q A T) (P : Q → Prop)
+    (j : Sum S₁ S₂ → Q)
+    (hentryP : ∀ tr ∈ R.initTrans, P (j (Sum.inr tr.2.2)))
+    (hwit : ∀ c, ¬ P c → ∃ u : S₁, Qsys.trans c
+        = ((GkatThompson.seqGSystem L R).trans (Sum.inl u)).map
+            (fun tr => (tr.1, tr.2.1, j tr.2.2))
+      ∧ Qsys.hlt c = (GkatThompson.seqGSystem L R).hlt (Sum.inl u))
+    (ih : ∀ base : GkatThompson.GSystem Q A T,
+      (∀ c, ¬ P c → ∃ u : S₁, base.trans c
+          = ((GkatThompson.sumGSystem L R.core).trans (Sum.inl u)).map
+              (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        ∧ base.hlt c = (GkatThompson.sumGSystem L R.core).hlt (Sum.inl u)) →
+      LayeredOn base P) :
+    LayeredOn Qsys P := by
+  refine LayeredOn.seq
+    (base := ⟨Qsys.states,
+      fun c => if h : ¬ P c then
+          (GkatThompson.sumGSystem L R.core).hlt
+            (Sum.inl (Classical.choose (hwit c h)))
+        else Qsys.hlt c,
+      fun c => if h : ¬ P c then
+          ((GkatThompson.sumGSystem L R.core).trans
+            (Sum.inl (Classical.choose (hwit c h)))).map
+              (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        else Qsys.trans c⟩)
+    (h₀ := R.initHlt)
+    (entry := R.initTrans.map (fun tr => (tr.1, tr.2.1, j (Sum.inr tr.2.2))))
+    ⟨?_, ?_, ?_, rfl⟩ ?_ (ih _ ?_)
+  · -- trans_eq
+    intro c hc
+    show Qsys.trans c = (dite _ _ _) ++ _
+    simp only [dif_pos hc]
+    refine Eq.trans (Classical.choose_spec (hwit c hc)).1 ?_
+    show ((L.trans (Classical.choose (hwit c hc))).map
+          (fun tr : BExp T × A × S₁ => (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+        R.initTrans.map (fun tr : BExp T × A × S₂ =>
+          (BExp.and (L.hlt (Classical.choose (hwit c hc))) tr.1,
+            tr.2.1, Sum.inr tr.2.2))).map
+          (fun tr : BExp T × A × Sum S₁ S₂ => (tr.1, tr.2.1, j tr.2.2))
+      = ((L.trans (Classical.choose (hwit c hc))).map
+          (fun tr : BExp T × A × S₁ => (tr.1, tr.2.1, Sum.inl tr.2.2))).map
+          (fun tr : BExp T × A × Sum S₁ S₂ => (tr.1, tr.2.1, j tr.2.2)) ++ _
+    refine Eq.trans (map_append' _ _ _) ?_
+    congr 1
+    exact seq_gate_comm _ _ _
+  · -- hlt_eq
+    intro c hc
+    show Qsys.hlt c = BExp.and (dite _ _ _) _
+    simp only [dif_pos hc]
+    exact (Classical.choose_spec (hwit c hc)).2
+  · -- outside
+    intro c hc
+    exact ⟨by show Qsys.trans c = dite _ _ _; rw [dif_neg hc],
+      by show Qsys.hlt c = dite _ _ _; rw [dif_neg hc]⟩
+  · -- entry targets lie in the block
+    intro tr htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact hentryP t ht
+  · -- the recursive hypothesis' data
+    intro c hc
+    exact ⟨Classical.choose (hwit c hc),
+      by show dite _ _ _ = _; rw [dif_pos hc],
+      by show dite _ _ _ = _; rw [dif_pos hc]⟩
+
+#print axioms quotient_layered_seq_left'
+
+end QuotientLayeredSeqWitness
+
 end GkatCensus
