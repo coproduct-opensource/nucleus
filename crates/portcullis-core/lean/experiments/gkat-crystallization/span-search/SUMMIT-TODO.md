@@ -11785,3 +11785,52 @@ manipulated rather than merely carried.
 
 **Next.**  Define the pointwise guard-equivalence relation, migrate `IsLayer` to
 the hybrid shape in one pass, then `layered_seq`.
+
+---
+
+## 256 — THE HYBRID SHAPE LANDED.  Structure syntactic, guards semantic.
+
+255 specified it; this lands it in one pass, as 253's rule requires.
+
+**`RestrictedTo b post post'`** — a Mathlib-free inductive (this cluster has no
+`List.Forall₂`): same targets and actions in the same order, each guard of
+`post'` EQUIVALENT to `¬b ∧` the corresponding guard of `post`.  Plus
+`RestrictedTo.map`, which carries it through a retargeting injection — the
+lemma the `Sum` lifting needs.
+
+**`IsLayer`** now reads: `base.trans s = pre ++ post`, `sys.trans s = pre ++
+extra ++ post'`, every guard in `extra` implying `b`, and
+`RestrictedTo b post post'`.
+
+**Why this is the resolution rather than a third guess.**  252 said go semantic;
+253/254 kept it syntactic to protect the rank proofs.  Both were right about
+different halves: the LIST STRUCTURE must stay syntactic, because the rank
+proofs decompose membership through `pre`/`extra`/`post'`; only the GUARDS need
+to be semantic, because that is the only place 255's associativity mismatch
+lives.  Splitting the definition along that line makes both concerns disappear
+at once.
+
+**Zero errors, no `sorryAx`, all nine theorems still proved** — `wh_isLayer`
+(now `post = post' = []`, discharged by `RestrictedTo.nil`), `layered_wh`,
+`layered_test`, `layered_act`, `sum_isLayer_left/right` (the map-composition
+step 254 needed is gone; `RestrictedTo.map` replaces it), `layered_sum`,
+`layered_ite`, `layered_seq_acyclic`.
+
+This is the THIRD migration of `IsLayer` — 248 relativised it to a domain, 254
+generalised its shape, 256 split syntax from semantics — and each was forced by
+the next constructor rather than chosen.  All three landed whole, never
+half-migrated.
+
+    layered_test / act / wh / sum / ite   PROVED
+    layered_seq  acyclic case             PROVED
+    layered_seq  layer case               unblocked, open
+    hsum         assembly                 open
+
+**Odds: 81%, held.**  Plumbing again, and the number moves when `hsum` closes.
+But this is the first time the definition has no known obstruction ahead of it:
+255's mismatch was the last identified reason `layered_seq` could not close.
+
+**Next.**  `layered_seq`'s layer case, which should now go through:
+`post` = the right half's entry block at guards `L'.hlt s ∧ g`, `post'` = the
+same at `(L'.hlt s ∧ ¬b) ∧ g`, and `RestrictedTo` holds because both sides
+compute `hlt && !b && g`.

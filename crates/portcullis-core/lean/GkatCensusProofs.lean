@@ -6263,41 +6263,57 @@ theorem wh_layer_separates (b : BExp T) (e : Exp A T)
 
 #print axioms wh_layer_separates
 
-/-- **ONE LOOP LAYER, AS A RELATION BETWEEN AUTOMATA.**
+/-- **POINTWISE GUARD RESTRICTION**, Mathlib-free (this cluster has no
+    `List.Forall₂`).  `RestrictedTo b post post'` says the two lists have the
+    same targets and actions in the same order, with each guard of `post'`
+    EQUIVALENT to `¬b ∧` the corresponding guard of `post`.
 
-    `IsLayer sys base b` says `sys` is `base` with a single loop layer at guard
-    `b` added: every state's transitions are `base`'s followed by extra BACK
-    EDGES all lying inside `b`, and every state's halt is `base`'s restricted to
-    `¬b`.
+    255 established why equivalence rather than equality is required: in the
+    `seq` case `sys`'s trailing guards come out as `(hlt ∧ ¬b) ∧ g` while the
+    restriction produces `¬b ∧ (hlt ∧ g)` — the same Boolean function written
+    two ways.  Keeping the LIST STRUCTURE syntactic protects the rank proofs
+    (they decompose membership through `pre`/`extra`/`post'`); making only the
+    GUARDS semantic makes associativity and commutativity a non-issue. -/
+inductive RestrictedTo {S : Type} (b : BExp T) :
+    List (BExp T × A × S) → List (BExp T × A × S) → Prop where
+  | nil : RestrictedTo b [] []
+  | cons {g g' : BExp T} {a : A} {s : S} {l l' : List (BExp T × A × S)} :
+      (∀ (X : Type) (W : T → X → Bool) (x : X),
+        GkatGS.bval W g' x = (!GkatGS.bval W b x && GkatGS.bval W g x)) →
+      RestrictedTo b l l' →
+      RestrictedTo b ((g, a, s) :: l) ((g', a, s) :: l')
 
-    This packages what 244 and 245 established.  It is the guarded replacement
-    for Milner's "loop sub-chart with start vertex `vₛ`", which 242 showed has no
-    GKAT analogue — there is no vertex all the loop's cycles pass through,
-    because `loopInitialized` compiles it away.  A layer is not a sub-graph
-    picked out of the transition relation; it is a DIFFERENCE between two
-    automata, and that is why no amount of graph search recovered it. -/
+/-- `RestrictedTo` survives a retargeting injection — needed to lift a layer
+    into a `Sum`. -/
+theorem RestrictedTo.map {S S' : Type} {b : BExp T} {l l' : List (BExp T × A × S)}
+    (f : S → S') (h : RestrictedTo b l l') :
+    RestrictedTo (S := S') b (l.map (fun t => (t.1, t.2.1, f t.2.2)))
+      (l'.map (fun t => (t.1, t.2.1, f t.2.2))) := by
+  induction h with
+  | nil => exact RestrictedTo.nil
+  | cons hg _ ih => exact RestrictedTo.cons hg ih
+
 structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
     (b : BExp T) (dom : S → Prop) : Prop where
-  /-- **ON THE LAYER** (iteration 254's shape).  A layer splits a state's
+  /-- **ON THE LAYER** (iteration 256's shape).  A layer splits a state's
       transition list into a `pre` block it leaves alone, its own BACK EDGES
-      (guards implying `b`), and a `post` block whose guards are RESTRICTED to
-      `¬b`.
+      (guards implying `b`), and a `post'` block that RESTRICTS `base`'s
+      trailing block to `¬b`.
 
-      252 established why both parts are needed.  For `wh` the post block is
-      EMPTY — `CoreHaltDisjoint` keeps the back edges from colliding with
-      anything, so appending is faithful and 246's shape sufficed.  For `seq`
-      the post block is the right half's ENTRY transitions, guarded by `hlt`,
-      which is exactly where the back edges live; they must be separated by `b`
-      and `¬b`, which is a RESTRICTION rather than an insertion. -/
-  split : ∀ s, dom s → ∃ pre extra post,
+      252 established why both parts are needed, and 255 why the restriction is
+      up to guard EQUIVALENCE.  For `wh` the trailing block is EMPTY —
+      `CoreHaltDisjoint` keeps the back edges from colliding — so appending
+      sufficed and 246's shape worked.  For `seq` the trailing block is the
+      right half's ENTRY transitions, guarded by `hlt`, exactly where the back
+      edges live; they must be separated by `b` and `¬b`. -/
+  split : ∀ s, dom s → ∃ pre extra post post',
     base.trans s = pre ++ post ∧
-    sys.trans s = pre ++ extra ++
-      post.map (fun tr => (BExp.and (BExp.not b) tr.1, tr.2)) ∧
-    ∀ tr ∈ extra, GuardImplies tr.1 b
+    sys.trans s = pre ++ extra ++ post' ∧
+    (∀ tr ∈ extra, GuardImplies tr.1 b) ∧
+    RestrictedTo b post post'
   /-- ON THE LAYER: halts are `base`'s, restricted to outside the guard -/
   hlt_eq : ∀ s, dom s → sys.hlt s = .and (base.hlt s) (.not b)
-  /-- OFF THE LAYER: `sys` and `base` agree (248 — without this a layer in one
-      component of a `Sum` is not a layer of the whole automaton). -/
+  /-- OFF THE LAYER: `sys` and `base` agree (248). -/
   outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
 
 /-- **`wh b e`'s automaton is exactly ONE LAYER over `e`'s.**
@@ -6315,10 +6331,11 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
      (GkatThompson.certifiedThompson A T e).aut.initTrans.map
        (fun tr => (BExp.and ((GkatThompson.certifiedThompson A T e).aut.core.hlt s)
          (BExp.and b tr.1), tr.2)),
-     [],
+     [], [],
      by simp,
      by simpa using loop_core_trans b e s,
-     fun tr h => wh_backedge_guard_implies b e s tr h⟩
+     fun tr h => wh_backedge_guard_implies b e s tr h,
+     RestrictedTo.nil⟩
   hlt_eq s _ := loop_core_hlt b e s
   outside s h := absurd trivial h
 
@@ -6381,19 +6398,20 @@ theorem sum_isLayer_left {S₁ S₂ : Type}
       (fun x => match x with | .inl s => dom s | .inr _ => False) where
   split
     | .inl s, hs => by
-        obtain ⟨pre, extra, post, hbase, hsys, hg⟩ := h.split s hs
+        obtain ⟨pre, extra, post, post', hbase, hsys, hg, hr⟩ := h.split s hs
         refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
                 extra.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
-                post.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)), ?_, ?_, ?_⟩
+                post.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
+                post'.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)), ?_, ?_, ?_, ?_⟩
         · show (L'.trans s).map _ = _
           rw [hbase, List.map_append]
         · show (L.trans s).map _ = _
-          rw [hsys, List.map_append, List.map_append, List.map_map, List.map_map]
-          rfl
+          rw [hsys, List.map_append, List.map_append]
         · intro tr htr
           simp only [List.mem_map] at htr
           obtain ⟨t, ht, rfl⟩ := htr
           exact hg t ht
+        · exact hr.map _
     | .inr _, hs => absurd hs (by simp)
   hlt_eq
     | .inl s, hs => h.hlt_eq s hs
@@ -6414,19 +6432,20 @@ theorem sum_isLayer_right {S₁ S₂ : Type}
   split
     | .inl _, hs => absurd hs (by simp)
     | .inr s, hs => by
-        obtain ⟨pre, extra, post, hbase, hsys, hg⟩ := h.split s hs
+        obtain ⟨pre, extra, post, post', hbase, hsys, hg, hr⟩ := h.split s hs
         refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
                 extra.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
-                post.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_, ?_⟩
+                post.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                post'.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_, ?_, ?_⟩
         · show (R'.trans s).map _ = _
           rw [hbase, List.map_append]
         · show (R.trans s).map _ = _
-          rw [hsys, List.map_append, List.map_append, List.map_map, List.map_map]
-          rfl
+          rw [hsys, List.map_append, List.map_append]
         · intro tr htr
           simp only [List.mem_map] at htr
           obtain ⟨t, ht, rfl⟩ := htr
           exact hg t ht
+        · exact hr.map _
   hlt_eq
     | .inl _, hs => absurd hs (by simp)
     | .inr s, hs => h.hlt_eq s hs
