@@ -2459,6 +2459,138 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// rawness within a level.  So the levels are independent: search each level's
 /// permutations on its own and the whole rank space is covered without a
 /// product.
+/// **`PAD_DEEPNEST`** (iteration 416).
+///
+/// 415's refined level is (nesting depth, SCC of the subgraph at that depth),
+/// and it was swept clean over every expression of depth <= 3.  Depth 3 is a
+/// bound, not a proof, and there is a specific reason to doubt it generalises:
+/// 415's refuting shape was a SEQUENCE at top level, where the depth-0 subgraph
+/// is acyclic so every state is its own SCC.  Put the same sequence INSIDE a
+/// loop and the loop's back-edge makes the whole body one SCC at that depth —
+/// the refinement's second component collapses and the disagreement should come
+/// back.
+///
+/// That shape is `wh G (seq (seq X (wh g Y)) Z)`, which is depth 4.  Build it
+/// directly rather than widening the sweep: 413's lesson.
+fn deepnest<const NA: usize>(nguards: u8) {
+    let mut leaves: Vec<Aut<NA>> = vec![a_act::<NA>()];
+    for g in 0..nguards { leaves.push(a_test::<NA>(g)); }
+    let (mut built, mut ok, mut bad) = (0usize, 0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    for gg in 0..nguards {
+        for g in 0..nguards {
+            for xi in 0..leaves.len() {
+                for yi in 0..leaves.len() {
+                    for zi in 0..leaves.len() {
+                        let inner = a_wh::<NA>(g, &leaves[yi]);
+                        let d0 = vec![0usize; leaves[xi].k as usize];
+                        let di: Vec<usize> = (0..inner.k as usize).map(|_| 1usize).collect();
+                        let sq1 = match a_seq::<NA>(&leaves[xi], &inner) { Some(v) => v, None => continue };
+                        let mut dsq1 = d0.clone(); dsq1.extend(di.iter().cloned());
+                        let sq2 = match a_seq::<NA>(&sq1, &leaves[zi]) { Some(v) => v, None => continue };
+                        let mut dsq2 = dsq1.clone();
+                        dsq2.extend((0..leaves[zi].k as usize).map(|_| 0usize));
+                        let outer = a_wh::<NA>(gg, &sq2);
+                        let douter: Vec<usize> = dsq2.iter().map(|z| z + 1).collect();
+                        let k0 = outer.k as usize;
+                        if douter.len() < k0 { continue; }
+                        let ord = canon_order(&outer);
+                        let mut lvl = vec![0usize; k0];
+                        let mut okmap = true;
+                        for i in 0..k0 {
+                            if (ord[i] as usize) < k0 { lvl[ord[i] as usize] = douter[i]; }
+                            else { okmap = false; }
+                        }
+                        if !okmap { continue; }
+                        let c = match canon(&outer) { Some(c) => c, None => continue };
+                        let k = c.k as usize;
+                        if k != k0 { continue; }
+                        built += 1;
+                        // refined level: depth, then SCC of the same-depth subgraph
+                        let mut comp_id = vec![usize::MAX; k];
+                        let mut next_id = 0usize;
+                        for u in 0..k {
+                            if comp_id[u] != usize::MAX { continue; }
+                            let du = lvl[u];
+                            let mut fwd = vec![false; k]; fwd[u] = true;
+                            let mut st = vec![u];
+                            while let Some(v) = st.pop() {
+                                for x in 0..NA {
+                                    if c.st[v][x] == 0 { continue; }
+                                    let t = (c.st[v][x] - 1) as usize;
+                                    if lvl[t] != du || fwd[t] { continue; }
+                                    fwd[t] = true; st.push(t);
+                                }
+                            }
+                            let mut bwd = vec![false; k]; bwd[u] = true;
+                            let mut st2 = vec![u];
+                            while let Some(v) = st2.pop() {
+                                for w in 0..k {
+                                    if lvl[w] != du || bwd[w] { continue; }
+                                    if (0..NA).any(|x| c.st[w][x] != 0
+                                        && (c.st[w][x] - 1) as usize == v) {
+                                        bwd[w] = true; st2.push(w);
+                                    }
+                                }
+                            }
+                            for w in 0..k { if fwd[w] && bwd[w] { comp_id[w] = next_id; } }
+                            next_id += 1;
+                        }
+                        let rl: Vec<usize> = (0..k).map(|u| lvl[u] * 1000 + comp_id[u]).collect();
+                        let mut levels = rl.clone(); levels.sort_unstable(); levels.dedup();
+                        let mut all_ok = true;
+                        for &n in &levels {
+                            let comp: Vec<usize> = (0..k).filter(|&u| rl[u] == n).collect();
+                            let m = comp.len();
+                            if m < 2 || m > 7 { continue; }
+                            let mut perm: Vec<usize> = (0..m).collect();
+                            let mut level_ok = false;
+                            loop {
+                                let mut rank = [0usize; MAXK];
+                                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                                let mut agree = true;
+                                for x in 0..NA {
+                                    let mut outs: Vec<Option<usize>> = Vec::new();
+                                    for &u in &comp {
+                                        let tv = c.st[u][x];
+                                        let halts = (c.hl[u] >> x) & 1 == 1;
+                                        let isact = if tv == 0 { halts } else {
+                                            let t = (tv - 1) as usize;
+                                            !(rl[t] == rl[u] && rank[t] < rank[u])
+                                        };
+                                        if !isact { continue; }
+                                        outs.push(if tv == 0 { None } else { Some(t_of(tv)) });
+                                    }
+                                    if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                                }
+                                if agree { level_ok = true; break; }
+                                if !next_perm(&mut perm) { break; }
+                            }
+                            if !level_ok {
+                                all_ok = false;
+                                if first_bad.is_none() {
+                                    first_bad = Some(format!("G={} g={} X={} Y={} Z={} level={} states={:?} rl={:?} {}",
+                                        gg, g, xi, yi, zi, n, comp, rl, show_aut("a", &c)));
+                                }
+                            }
+                        }
+                        if all_ok { ok += 1; } else { bad += 1; }
+                    }
+                }
+            }
+        }
+    }
+    println!("PAD_DEEPNEST  built wh G (seq (seq X (wh g Y)) Z) : {}", built);
+    println!("  refined level SATISFIABLE : {}", ok);
+    println!("  NO rank satisfies it      : {}", bad);
+    match first_bad {
+        Some(b) => println!("  *** the refined level FAILS at depth 4:\n    {}", b),
+        None => println!("  the refined level survives this depth-4 family"),
+    }
+}
+
+fn t_of(tv: u8) -> usize { (tv - 1) as usize }
+
 fn lvlagree<const NA: usize>(nguards: u8, maxdepth: usize) {
     fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<(Aut<NA>, Vec<usize>)>) {
         if d == 0 {
@@ -10152,6 +10284,11 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_DEEPNEST").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        deepnest::<3>(g);
         return;
     }
     if std::env::var("PAD_LVLAGREE").is_ok() {

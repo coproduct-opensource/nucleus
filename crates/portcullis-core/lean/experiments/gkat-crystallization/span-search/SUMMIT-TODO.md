@@ -19485,3 +19485,74 @@ proof. The field's prior that this problem does not close still stands.
 **Next.** Define the refined level in Lean by recursion on the expression —
 depth from `wh`, components from the `seq`/`ite` structure — and prove it agrees
 with the graph computation.
+
+## 416 — the refined level FAILS at depth 4. Four refutations in one family, and the tension is now explicit.
+
+Web search: exhausted (200/200).
+
+415 swept the refined level clean over every expression of depth ≤ 3 and I
+flagged depth 3 as "a bound, not a proof". There was a specific reason to doubt
+it: 415's refuting shape was a SEQUENCE AT TOP LEVEL, where the depth-0
+subgraph is acyclic so every state is its own SCC. **Put the same sequence
+inside a loop and the loop's back-edge makes the whole body one SCC at that
+depth — the refinement's second component collapses.**
+
+That shape is `wh G (seq (seq X (wh g Y)) Z)`, depth 4. Built directly rather
+than widening the sweep:
+
+| | count |
+|---|---|
+| built | 1,444 |
+| refined level satisfiable | 1,435 |
+| **NO rank satisfies it** | **9** |
+
+**The counterexample, verified by hand.** `k=3`, refined levels
+`[1000, 2001, 1000]` — states 0 and 2 share a level, state 1 is deeper.
+
+```
+q0: hl=000 st=[2,3,3]    -- to q1 (deeper) at atom 0; to q2 at atoms 1,2
+q1: hl=000 st=[2,3,3]
+q2: hl=110 st=[1,0,0]    -- to q0 at atom 0; HALTS at atoms 1,2
+```
+
+Both ranks fail, for different reasons:
+- `rank[2] < rank[0]`: at atom 0, `q0` enters the deeper level (non-raw, active,
+  `some q1`) and `q2` back-edges to `q0` (non-raw, active, `some q0`) — disagree.
+- `rank[0] < rank[2]`: at atom 1, `q0` steps to `q2` without a rank decrease
+  (non-raw, active, `some q2`) while `q2` halts (active, `none`) — disagree.
+
+**The pattern, named.** This is the fourth refutation of an agreement condition
+in this program: `LevelAgreement` (359), `SourceSccAgrees` (413),
+`SourceLevelAgrees` at syntactic depth (415), and now at the refined level
+(416). Each repair was refuted by an example one construction deeper. That is
+the signature of an approach that does not work, not of one nearly finished, and
+I should say so rather than reach for a fifth refinement.
+
+**The tension, made explicit.** The level has two requirements pulling opposite
+ways:
+- **coarse enough**: a loop's body must lie in ONE level, or the peel cannot
+  capture the loop (`peelLoops` handles same-level cycles);
+- **fine enough**: all active states of a level must agree.
+
+416 exhibits a loop body containing a nested loop AND a tail. Coarseness forces
+`q0` and `q2` into one level; agreement forces them apart. **No level function
+satisfies both on this family** — and this is a structural obstruction to the
+peel-based route, not a missing lemma.
+
+**What is untouched.** The Lean corpus is unaffected:
+`levelAgreementActive_of_sourceLevelAgrees` takes an arbitrary level and remains
+a true, `sorry`-free theorem; what is refuted is that any level instantiates it
+for `certifiedThompson`. Completeness itself is independent of this route.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 88% → 72%.** Not a small correction. Four successive agreement
+conditions have now been refuted, the last two within three iterations of each
+other, and the obstruction is a tension between two requirements rather than a
+gap in an argument. The field's prior that this problem does not close deserves
+more weight after this iteration than before it.
+
+**Next.** Stop refining the level. Ask instead what the peel actually needs —
+whether solvability of a region requires agreement at all, or whether a weaker
+per-atom condition suffices, since at a fixed atom the automaton is a function
+(408) and `q0` and `q2` are never simultaneously reachable on one run.
