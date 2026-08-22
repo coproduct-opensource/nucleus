@@ -21631,3 +21631,57 @@ reverses whatever the last one showed.
 **Odds: 25%, unchanged.** A checkpoint, not a measurement.
 
 **Next.** Read the x4/x6 counts, which is still the live question.
+
+## 456 — why `LeftDistrib` fails, in structural terms, and where that leaves the pullback.
+
+Web search: exhausted (200/200).
+
+The rounds sweep is still running. Rather than start a competing census, an
+analysis of the obstruction 441 located, since I spent 404-442 attacking a
+statement I had not understood.
+
+**The n=2 open case, unfolded.**
+
+```
+g₀ ≡ e₀·g₁ +_{b₀} f₀        g₁ ≡ e₁·g₀ +_{b₁} f₁
+```
+
+Substituting g₁ gives `g₀ ≡ e₀·(e₁·g₀ +_{b₁} f₁) +_{b₀} f₀`, and pulling `g₀`
+out needs `LeftDistrib`. But the *reason* it is blocked is not algebraic
+bookkeeping — it is that **`b₁` is tested after `e₀` has run**, and `e₀` may
+change the state. There is no way to know at the top of the iteration which
+branch the body will take.
+
+**Restated as expressiveness:** `wh b e` tests `b` at the **top** of each
+iteration and has **one** exit. The system above is a loop with **two** exits —
+one before `e₀` (guarded by `b₀`, yielding `f₀`) and one mid-body after `e₀`
+(guarded by `b₁`, yielding `f₁`). A mid-body exit cannot be hoisted to the top
+without knowing a test before the action that determines it. That is exactly the
+"non-well-nested early return from a nested loop" the frontier names, and
+`LeftDistrib` is its algebraic shadow.
+
+**Where that leaves the completeness application, which is the part I had wrong.**
+For a **Thompson** automaton the system is solvable outright — each state carries
+its own sub-expression, which is Pham's result. The difficulty is that **the
+pullback is not Thompson**: its states are *pairs*, and a pair carries no natural
+expression. So the task is not "find a closed form for a two-state system in
+general" — it is "assign expressions to the states of a pullback".
+
+**And that is precisely why the span/witness search is the right instrument.** A
+witness *is* a Thompson automaton covering the pullback; covering it supplies the
+per-state expressions that the pullback lacks. So `SPAN FOUND: 219` and the 54,
+and 450's 929, are all measuring the same thing: how often the pairs of a
+pullback admit expressions.
+
+**Two source automata can be well-nested while their pullback is not.** The
+pairing can put a `b₀` decision and a `b₁` decision into one state, producing a
+two-exit loop where neither source had one. That is the mechanism by which a
+completeness question about well-behaved programs turns into the frontier's
+hardest case — and it is why 453's finding that resistance scales with `|P|`
+rather than with any named shape is unsurprising in hindsight: bigger pullbacks
+pair more decisions.
+
+**Odds: 25%, unchanged.** Analysis, not measurement, and none of it is new to the
+corpus — it is new to me, which is the honest description.
+
+**Next.** Still the x4/x6 counts.
