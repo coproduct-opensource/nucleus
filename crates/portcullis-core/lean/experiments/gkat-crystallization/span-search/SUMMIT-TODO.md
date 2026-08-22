@@ -14044,3 +14044,46 @@ split and the sequence layer have to meet the recursion.
 **Next.**  The `ite` case: `sum_quotient_layered_of_split` (301) supplies the
 split, `inl_partner_closed` (302) supplies its closure, and the two branches are
 recursive calls on `e` and `f`.
+
+---
+
+## 304 — THE `ite` CASE.  FOUR OF FIVE.
+
+With 303's shape fixed, the `ite` case reduces to `LayeredOn.split` at
+`C` = "the classes of the LEFT branch", plus two recursive calls.  The split
+constructor is immediate; what had to be PROVED is that `C` is CLOSED, and that
+is where the quotient's structure enters.
+
+**It needs exactly two facts and no more.**  The image misses the block
+(`hout`), and the representative PREFERS the left branch (`hpref`, 287).  A step
+out of a left class lands, upstairs, in the left half — sums have no cross
+edges — so its class HAS a left preimage; preference then makes that class's own
+representative left, which is the definition of `C`.
+
+`sum_left_block_closed`, stated for an ARBITRARY `sumGSystem` rather than for
+`ite`'s automaton so the `seq` case can reuse it, and `quotient_layered_ite`.
+Both compiled first try.
+
+**Worth noting which block each recursive call receives.**  The LEFT call gets
+"everything that is not a left class", so its own image is exactly `e`'s
+classes.  The RIGHT call gets `B` TOGETHER WITH the left classes, which is what
+makes it a call about `f` alone.  That asymmetry IS the split, and it is why the
+recursion descends rather than repeating itself.
+
+    test    quotient_layered_test    (303)
+    act     quotient_layered_act     (303)
+    wh      quotient_layered_wh      (303)
+    ite     quotient_layered_ite     (304)
+    seq     OPEN
+
+**The `seq` plan, from the shape.**  A sequence's entry block points at `f`'s
+classes, and `LayeredOn.seq` requires a layer's entry to point INTO the block.
+So the order is forced: **split off the right part FIRST**, making `f`'s classes
+part of the block, and only THEN peel the sequence layer whose entry now points
+there.  `seq_inr_closed` (247) gives the closure, 289 gives the layer.
+
+**Odds: 99%, HELD.**  Four of five cases, and the fifth has a forced plan rather
+than an open question.
+
+**Next.**  The `seq` case: split at the right classes, then `LayeredOn.seq` with
+289's layer, then recurse on `e`.

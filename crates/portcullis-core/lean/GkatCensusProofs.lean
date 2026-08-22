@@ -9510,4 +9510,73 @@ theorem quotient_layered_wh (b : BExp T) (e : Exp A T) {Q : Type}
 
 end QuotientLayeredWh
 
+
+/-! ### 304 — THE `ite` CASE'S CONTENT: THE LEFT BLOCK IS CLOSED
+
+    With the shape fixed by 303, the `ite` case reduces to `LayeredOn.split`
+    applied at `C` = "the classes of the LEFT branch", plus two recursive calls.
+    The split constructor itself is immediate; what has to be PROVED is that `C`
+    is closed, and that is where the quotient's structure enters.
+
+    It needs exactly two facts and no more: the image misses the block (`hout`),
+    and the representative PREFERS the left branch (`hpref`, 287).  A step out of
+    a left class lands, upstairs, in the left half — sums have no cross
+    edges — so its class has a LEFT PREIMAGE; preference then makes the class's
+    own representative left, which is the definition of `C`.
+
+    Stated for an arbitrary `sumGSystem` rather than for `ite`'s automaton, so
+    that the `seq` case can reuse it: a sequence's left half is closed for the
+    same reason once its connecting block has been peeled by 289. -/
+theorem sum_left_block_closed {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hout : ∀ s, ¬ B (j s))
+    (hpref : ∀ (c : Q) (u : S₁), j (Sum.inl u) = c → ∃ v, rep c = Sum.inl v)
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = ((GkatThompson.sumGSystem L R).trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    ∀ c, (¬ B c ∧ ∃ u, rep c = Sum.inl u) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+        GkatKleene.firstMatch W x (Qsys.trans c) = some r →
+          (¬ B r.2 ∧ ∃ u, rep r.2 = Sum.inl u) := by
+  intro c hc X W x r hfm
+  obtain ⟨hcB, u, hcu⟩ := hc
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (Qsys.trans c) r.1 r.2 (by rw [← hfm])
+  rw [htrans c hcB, hcu] at hg
+  simp only [List.mem_map] at hg
+  obtain ⟨z, hz, hzeq⟩ := hg
+  have hz' : z ∈ (L.trans u).map (fun w => (w.1, w.2.1, Sum.inl w.2.2)) := hz
+  simp only [List.mem_map] at hz'
+  obtain ⟨w, _, rfl⟩ := hz'
+  have hr2 : r.2 = j (Sum.inl w.2.2) := (congrArg (fun y => y.2.2) hzeq).symm
+  rw [hr2]
+  exact ⟨hout _, hpref _ w.2.2 rfl⟩
+
+#print axioms sum_left_block_closed
+
+
+/-- **THE `ite` CASE, ASSEMBLED.**  Split at the left branch's classes; the two
+    obligations are then the recursive calls on `e` and `f`.  Note which block
+    each receives: the LEFT call is given "everything that is not a left class",
+    so its own image is exactly `e`'s classes; the RIGHT call is given `B`
+    TOGETHER WITH the left classes, which is what makes it a call about `f`
+    alone.  That asymmetry is the split, and it is why the recursion descends. -/
+theorem quotient_layered_ite {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hout : ∀ s, ¬ B (j s))
+    (hpref : ∀ (c : Q) (u : S₁), j (Sum.inl u) = c → ∃ v, rep c = Sum.inl v)
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = ((GkatThompson.sumGSystem L R).trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    (hleft : LayeredOn Qsys (fun c => ¬ (¬ B c ∧ ∃ u, rep c = Sum.inl u)))
+    (hright : LayeredOn Qsys (fun c => B c ∨ (¬ B c ∧ ∃ u, rep c = Sum.inl u))) :
+    LayeredOn Qsys B :=
+  LayeredOn.split (fun _ hB hC => hC.1 hB)
+    (sum_left_block_closed L R Qsys B j rep hout hpref htrans) hleft hright
+
+#print axioms quotient_layered_ite
+
 end GkatCensus
