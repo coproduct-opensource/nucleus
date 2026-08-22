@@ -7211,4 +7211,55 @@ theorem layer_normal_form {S : Type} {sys : GkatThompson.GSystem S A T}
 
 #print axioms layer_normal_form
 
+
+/-- Gating every guard of a transition list commutes with labelling it. -/
+private theorem transitionBranches_gate {S : Type} (c : BExp T)
+    (sol : S → Exp A T) (l : List (BExp T × A × S)) :
+    transitionBranches (l.map (fun tr => (BExp.and c tr.1, tr.2))) sol
+      = (transitionBranches l sol).map (fun br => (BExp.and c br.1, br.2)) := by
+  simp only [transitionBranches, List.map_map, Function.comp_def]
+
+/-- **THE LAYER, IN LOOP FORM.**  275.  Folding 274's two gated blocks back
+    together under a single top-level conditional gives the shape `hsolve`
+    actually consumes:
+
+        pre , then  IF b THEN (back edges) ELSE (base's own tail)
+
+    — a state of the layer runs its `pre` block, and where `pre` does not fire
+    it takes the loop if the guard holds and behaves like `base` if it does not.
+    This is `loop_subsystem`'s content for an ABSTRACT layer, in the form 274
+    showed is forced: the conditional sits at the INSERTION POINT (after `pre`),
+    not at the end, which is exactly why the `seq` case broke 272's shape.
+
+    The proof is 274 plus `ite_guardedFold_partition` run BACKWARDS, with `u1`
+    (`ite b e e ≈ e`) collapsing the duplicated fallback the partition law
+    introduces.  Still no `IsLayer` field beyond `split`, and still no Thompson
+    constructor. -/
+theorem layer_ite_form {S : Type} {sys : GkatThompson.GSystem S A T}
+    {b : BExp T} (sol : S → Exp A T) (F : Exp A T) (s : S)
+    (pre extra post post' : List (BExp T × A × S))
+    (hsys : sys.trans s = pre ++ extra ++ post')
+    (hg : ∀ tr ∈ extra, GuardImplies tr.1 b)
+    (hr : RestrictedTo b post post') :
+    EquivBA (GkatThompson.eqRHSParam sys sol F s)
+      (guardedFold (transitionBranches pre sol)
+        (.ite b
+          (guardedFold (transitionBranches extra sol)
+            (GkatThompson.paramFallback (sys.hlt s) F))
+          (guardedFold (transitionBranches post sol)
+            (GkatThompson.paramFallback (sys.hlt s) F)))) := by
+  refine EquivBA.trans
+    (layer_normal_form sol F s pre extra post post' hsys hg hr) ?_
+  rw [transitionBranches_gate, transitionBranches_gate, List.append_assoc,
+    guardedFold_append]
+  refine guardedFold_fallback_congr ?_
+  refine EquivBA.symm (EquivBA.trans
+    (ite_guardedFold_partition b (transitionBranches extra sol)
+      (transitionBranches post sol)
+      (GkatThompson.paramFallback (sys.hlt s) F)
+      (GkatThompson.paramFallback (sys.hlt s) F)) ?_)
+  exact guardedFold_fallback_congr (EquivBA.base (Equiv.u1 b _))
+
+#print axioms layer_ite_form
+
 end GkatCensus

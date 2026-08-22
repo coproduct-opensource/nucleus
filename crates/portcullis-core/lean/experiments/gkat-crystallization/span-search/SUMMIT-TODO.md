@@ -12710,3 +12710,47 @@ problem does not close still stands.
 **Next.**  Fold the `b`-gated and `¬b`-gated blocks into `ite b (entry fold)
 (base's tail)` via `ite_guardedFold_partition`, which turns the normal form into
 the loop-shaped statement `hsolve` consumes.
+
+---
+
+## 275 — THE LAYER, IN LOOP FORM (PROVED).
+
+`layer_ite_form`: folding 274's two gated blocks back together under a single
+top-level conditional gives the shape `hsolve` actually consumes.
+
+```
+EquivBA (eqRHSParam sys sol F s)
+        (guardedFold (tb pre sol)
+          (ite b (guardedFold (tb extra sol) (paramFallback (sys.hlt s) F))
+                 (guardedFold (tb post  sol) (paramFallback (sys.hlt s) F))))
+```
+
+In words: **a state of the layer runs its `pre` block, and where `pre` does not
+fire it takes the LOOP if the guard holds and behaves like `base` if it does
+not.**  This is `loop_subsystem`'s content for an ABSTRACT layer, in the form
+274 showed is forced — **the conditional sits at the INSERTION POINT (after
+`pre`), not at the end**, which is exactly why the `seq` case broke 272's shape.
+
+**Proof**: 274 plus `ite_guardedFold_partition` run BACKWARDS, with `u1`
+(`ite b e e ≈ e`) collapsing the duplicated fallback the partition law
+introduces.  One new private bridge, `transitionBranches_gate` (gating guards
+commutes with labelling).  **Still no `IsLayer` field beyond `split`, still no
+Thompson constructor.**  Axioms `propext, Classical.choice, Quot.sound` — **no
+`sorryAx`**; whole file green.
+
+**Independent confirmation of the remainder (web search).**  Pham's thesis is
+now indexed with an abstract that states the position exactly: the three loop
+axioms of Smolka et al. are derivable from a single axiom, a uniqueness theorem
+holds for solutions of Thompson-generated equation systems, and the work
+"reduc[es] the remaining work to showing that A SOLUTION EXISTS for the relevant
+automaton."  That is `hsolve`, named from the outside.  The architecture 239
+built is not idiosyncratic — it is the field's own statement of what is left.
+
+**Odds: 88%** (+1).  Two machine-checked lemmas on the layer path in two
+iterations, the second delivering the exact shape the obligation consumes.  The
+field's prior that the problem does not close still stands.
+
+**Next.**  Sharpen the two branches: under `b` the fallback is `0` (the layer's
+halt is `base.hlt ∧ ¬b`), so the true branch is a pure entry fold; under `¬b`
+it is `base`'s own fallback.  Both are `guardedFold_congr_fallback_gated`.  Then
+the true branch is where 273's shared-entry list finally earns its keep.
