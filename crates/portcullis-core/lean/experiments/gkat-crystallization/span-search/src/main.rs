@@ -2354,6 +2354,86 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_RANDAGREE`** (iteration 367).
+///
+/// Every measurement of `LevelAgreementActive` so far has been on quotients of
+/// THOMPSON automata — automata that come from GKAT syntax.  That leaves the
+/// sharpest question unasked: is agreement a fact about GKAT, or a fact about
+/// minimal deterministic guarded automata in general?
+///
+/// The answer decides what kind of proof is needed.  If arbitrary minimal
+/// automata agree, there is a general argument to find.  If they do not,
+/// agreement is Thompson-specific and the proof must be an induction on
+/// expressions — a much bigger lift, but at least the right target.
+///
+/// At `k = 2` and `NA = 3` the whole space is 46 656 automata, so this is
+/// exhaustive, not sampled.
+fn randagree<const NA: usize>() {
+    let (mut total, mut multi, mut violate) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    let k = 2usize;
+    let cells = (k + 1) * (k + 1) * (k + 1);        // 3 atoms, k+1 targets each
+    let masks = 8usize;                              // halt mask over 3 atoms
+    for c0 in 0..cells { for h0 in 0..masks {
+    for c1 in 0..cells { for h1 in 0..masks {
+        let mut a = Aut::<NA> { k: k as u8, ih: 0, it: [0; NA], hl: [0; MAXK], st: [[0; NA]; MAXK] };
+        let dec = |mut c: usize| { let mut r = [0u8; 3];
+            for i in 0..3 { r[i] = (c % (k + 1)) as u8; c /= k + 1; } r };
+        let r0 = dec(c0); let r1 = dec(c1);
+        for x in 0..NA { a.st[0][x] = r0[x]; a.st[1][x] = r1[x]; }
+        a.hl[0] = h0 as u8; a.hl[1] = h1 as u8;
+        for x in 0..NA { a.it[x] = 1; }
+        total += 1;
+        let (blk, nb) = bisim_blocks(&a);
+        let Some(q) = quotient_by(&a, &blk, nb) else { continue };
+        for comp in sccs_of(&q) {
+            if comp.len() < 2 { continue; }
+            multi += 1;
+            // does SOME rank ordering make every atom's active states agree?
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut ok_any = false;
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let mut ok = true;
+                for x in 0..NA {
+                    let mut demand: i64 = -1;
+                    for &u in &comp {
+                        let tv = q.st[u][x];
+                        let halts = (q.hl[u] >> x) & 1 == 1;
+                        let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                            else {
+                                let t = (tv - 1) as usize;
+                                if comp.contains(&t) && rank[t] < rank[u] { continue }
+                                else { t as i64 }
+                            };
+                        if demand == -1 { demand = d; } else if demand != d { ok = false; }
+                    }
+                }
+                if ok { ok_any = true; break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if !ok_any {
+                violate += 1;
+                if first.is_none() {
+                    first = Some(format!("region {comp:?}\n    {}", show_aut("quot ", &q)));
+                }
+            }
+        }
+    }}}}
+    println!("RANDAGREE: {total} automata enumerated EXHAUSTIVELY at k=2, NA=3 \
+              (not sampled)");
+    println!("  {multi} multi-state regions in their minimal quotients");
+    println!("  {violate} where NO rank ordering makes the active states agree");
+    match first {
+        None => println!("  agreement holds for ARBITRARY minimal guarded automata at this size \
+                          — it is not a GKAT-specific fact, so a general argument should exist"),
+        Some(m) => println!("  VIOLATION — agreement is THOMPSON-SPECIFIC, and the proof must be \
+                             an induction on expressions\n    {m}"),
+    }
+}
+
 /// **`PAD_TWOEXIT`** (iteration 364).
 ///
 /// 363 found 23 quotient regions where two states are simultaneously active and
@@ -8721,6 +8801,7 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         strongagree::<3>(g, r, c);
         return;
     }
+    if std::env::var("PAD_RANDAGREE").is_ok() { randagree::<3>(); return; }
     if std::env::var("PAD_TWOEXIT").is_ok() {
         let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);

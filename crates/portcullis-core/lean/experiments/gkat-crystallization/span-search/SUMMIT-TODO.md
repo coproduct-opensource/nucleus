@@ -17075,3 +17075,54 @@ by measuring rather than by thinking harder.
 **Next.** The headerless case needs either a structural account or an argument
 that the peel does not need one — the second may be easier, since agreement is
 only ever used at active states.
+
+## 367 — agreement is GKAT-SPECIFIC: 41% of arbitrary automata violate it
+
+Every measurement of `LevelAgreementActive` so far has been on quotients of
+Thompson automata. That left the sharpest question unasked: **is agreement a fact
+about GKAT, or about minimal deterministic guarded automata in general?**
+
+At `k = 2`, `NA = 3` the whole space is 46 656 automata, so this is exhaustive,
+not sampled:
+
+```
+46 656 automata enumerated EXHAUSTIVELY
+22 472 multi-state regions in their minimal quotients
+ 9 216 where NO rank ordering makes the active states agree   (41.0%)
+```
+
+**Agreement fails for 41% of arbitrary minimal guarded automata.** The smallest
+witness:
+
+```
+quot k=2 | q0: hl=010 st=[q1,-,-] | q1: hl=001 st=[-,q0,-]
+```
+
+At atom 1, `q0` halts while `q1` steps to `q0`. Neither is raw under either
+ranking, so both are active with different kinds — a clash no choice of rank can
+remove.
+
+**Two consequences, and the second is the important one.**
+
+1. **The proof must use the Thompson provenance.** There is no general argument
+   about minimal guarded automata to find, because the statement is false of
+   them. `LevelAgreementActive` has to come from an induction on the expression —
+   a bigger lift than I had been hoping for, but now known to be the only route.
+
+2. **This is the base-rate control for the entire `LevelAgreement` measurement,
+   and it passes emphatically.** 136 295 of 136 295 Thompson quotient regions
+   agree; 41% of arbitrary automata do not. A property that holds universally on
+   the class of interest while failing four times in ten off it is signal, not an
+   artefact of how the census is built. Every prior run established that
+   agreement holds — none of them established that holding was *informative*.
+
+That is the control I should have run before building seven iterations on the
+predicate, and it is the reason I now believe the predicate rather than merely
+observing it.
+
+**Odds: 97%, unchanged.** The evidence for the conjecture is much stronger; the
+work remaining is confirmed to be a full induction on GKAT syntax rather than a
+slick lemma. Those move in opposite directions and roughly cancel.
+
+**Next.** The induction: what `LevelAgreementActive` says for `test`, `act`,
+`seq`, `ite` and `wh`, and which case carries the content.
