@@ -19888,3 +19888,66 @@ repair works". The field's prior that this problem does not close still stands.
 
 **Next.** Measure whether one-step unrolling structures the multi-entry loops
 408 found — build them and check, rather than sampling.
+
+## 422 — CORRECTION. W3 is a FINITE axiom. `hfib` was never the nemesis.
+
+Web search: exhausted (200/200).
+
+421 ended by asking whether unrolling-shaped duplication suffices for
+multi-entry loops. Chasing that led to loop rotation — and to a note in the
+corpus that corrects two iterations of my own framing.
+
+**What I got wrong.** 420 called `hfib` "uniqueness-flavoured, the program's
+nemesis". 421 treated W3-freedom as an achievement the route needed. Both are
+mistaken. From `GkatResidueFamilyProofs`, on rotation:
+
+> "loop rotation, `x(yx)* = (xy)*x` … is not among W1–W3 … It is not needed. **W3**
+> says a productive Salomaa equation has ONE solution … W3 then identifies them.
+> This is the uniqueness axiom's job being done by the single-unknown axiom
+> **that is already finite**. UA generalises W3 to systems of `n` unknowns."
+
+Checked rather than taken on the prose: `Equiv` has `w3` as a constructor
+(`GkatSyntaxProofs:98`), `EquivBA.base` lifts `Equiv`, and
+`FiniteAxiomsCompleteBA` is stated over `EquivBA`. **W3 is inside the finite
+theory.** What this program eliminates is the *n-ary* Uniqueness Axiom over
+SYSTEMS of equations — never the single-unknown fixpoint rule.
+
+**So the duplication route's price is affordable.** Fibre-mates are bisimilar,
+hence solve a common single-state equation; `salomaa_solutions_agree` (W3 plus a
+productivity side condition) makes their solutions provably equal. Packaged:
+
+```lean
+theorem hfib_of_salomaa (sol') (a b) (guard body fall)
+    (hg : Equiv (test (E body)) (test zero))
+    (ha : Equiv (sol' a) (ite guard (seq body (sol' a)) fall))
+    (hb : Equiv (sol' b) (ite guard (seq body (sol' b)) fall)) :
+  EquivBA (sol' a) (sol' b)
+```
+
+No axioms. **The residual obligation is PRODUCTIVITY (`E body ≡ 0`), not
+uniqueness** — a different and much more tractable condition, and one the corpus
+already has machinery for.
+
+**What still stands from 417/418.** The state-preserving peel is refuted, by
+theorems, and that is unaffected: `mono_forces_same_level` and
+`hh_fails_of_loop_and_halt` are unchanged. The route must still be rebuilt on
+`solvesBA_of_mapped`. What changed is only that its one hypothesis is cheap.
+
+**On my own calibration.** I spent 420 and 421 solving a problem that did not
+exist, and 421's W3-freedom result — while true and pleasant — was not needed.
+The error was reading `w3` as forbidden because the program's headline is
+"eliminate the uniqueness axiom", without checking which axiom that names. Two
+iterations ago I wrote the rule "check the transitive dependencies, not the
+prose"; the matching rule here is **check what the goal actually forbids, not
+what its slogan suggests.**
+
+File: 0 errors, no `sorry`.
+
+**Odds: 45% → 55%.** The perceived blocker on the replacement architecture
+dissolves, and the residual is productivity rather than uniqueness. Not higher:
+the peel refutation stands, the new route is a theorem plus a sketch rather than
+a construction, and this program has punished optimism at exactly this stage
+before. The field's prior that this problem does not close still stands.
+
+**Next.** Build the duplication construction itself: for a multi-entry loop,
+split by entry, and discharge productivity for the split copies.

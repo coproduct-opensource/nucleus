@@ -16436,6 +16436,39 @@ theorem hfib_at_unrolled_copy {S' : Type} (sol' : S' → Exp A T)
 #print axioms fibConstant_of_unroll
 #print axioms hfib_at_unrolled_copy
 
+/-! ### 422: CORRECTION — W3 is a FINITE axiom, so `hfib` was never the nemesis
+
+420 called `hfib` "uniqueness-flavoured, the program's nemesis" and 421 treated
+W3-freedom as something the route had to achieve.  Both readings were wrong, and
+the corpus says so plainly (`GkatResidueFamilyProofs`, on loop rotation):
+
+> "W3 says a productive Salomaa equation has ONE solution … W3 then identifies
+> them.  This is the uniqueness axiom's job being done by the single-unknown
+> axiom **that is already finite**.  UA generalises W3 to systems of `n`
+> unknowns."
+
+`Equiv` has `w3` as a constructor, `EquivBA.base` lifts it, and
+`FiniteAxiomsCompleteBA` is stated over `EquivBA`.  **W3 is in the finite theory.**
+What this program eliminates is the *n-ary* Uniqueness Axiom over systems of
+equations — not the single-unknown fixpoint rule.
+
+So the fibre-constancy obligation is discharged by W3 wherever the fibre-mates
+solve a common GUARDED single-state equation, which is exactly
+`salomaa_solutions_agree`.  The real residual obligation is **productivity**
+(`E body ≡ 0`), not uniqueness. -/
+theorem hfib_of_salomaa {S' : Type} (sol' : S' → Exp A T) (a b : S')
+    (guard : BExp T) (body fall : Exp A T)
+    (hg : GkatSyntax.Equiv (Exp.test (GkatSyntax.E body) : Exp A T)
+      (Exp.test (BExp.zero : BExp T)))
+    (ha : GkatSyntax.Equiv (sol' a)
+      (Exp.ite guard (Exp.seq body (sol' a)) fall))
+    (hb : GkatSyntax.Equiv (sol' b)
+      (Exp.ite guard (Exp.seq body (sol' b)) fall)) :
+    EquivBA (sol' a) (sol' b) :=
+  EquivBA.base (GkatSyntax.salomaa_solutions_agree hg ha hb)
+
+#print axioms hfib_of_salomaa
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
