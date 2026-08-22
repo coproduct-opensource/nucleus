@@ -10808,4 +10808,67 @@ theorem congr_with_zero_targets {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms seq_seq_zero
 
+
+/-! ### 329 — CORRECTING 328, AND WHAT IS ACTUALLY TRUE ABOUT CLOSED BLOCKS
+
+    **328's redesign does not work, and I should say so before building it.**
+    The claim was that carrying STANDARD solutions would let block values scale
+    with the continuation and so stop being special.  Working it through: at a
+    block target inside a loop's region, the base's equation at finish `W ; F`
+    supplies `std₀ t ; (W ; F)`, while the contract fixes the block's value at
+    the AMBIENT `F`.  The mismatch survives the reshaping.
+
+    **And it survives because it is structural, not notational.**  A state inside
+    a loop's body has a value that genuinely depends on the loop's continuation —
+    the run reaches it, the body finishes, the loop re-tests its guard.  Calling
+    such a state "already solved at the ambient finish" is simply false.  So the
+    fix cannot be to re-parametrise; it has to be to stop putting such states in
+    the block.
+
+    **Here is the fact that makes that tractable.**  A block closed under steps
+    is closed under REACHABILITY, so **any cycle through a block state lies
+    entirely in the block**.  A closed block therefore cannot cut a cycle in
+    half: every strongly connected region is wholly inside it or wholly outside.
+    That is exactly the property "the block does not cut through a loop" needs,
+    and it is free — no hypothesis beyond closure.
+
+    What is NOT free, and is what 328 measured, is that a NON-cyclic part of a
+    loop's body can still lie in the block: closure propagates forward, and a
+    body state that never returns has no forward path back into the loop to drag
+    the loop in with it. -/
+inductive Reaches {S : Type} (sys : GkatThompson.GSystem S A T) : S → S → Prop where
+  | refl (s : S) : Reaches sys s s
+  | step {s t u : S} :
+      (∃ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r ∧ r.2 = t) →
+      Reaches sys t u → Reaches sys s u
+
+/-- **A CLOSED BLOCK IS CLOSED UNDER REACHABILITY.** -/
+theorem closed_reaches {S : Type} (sys : GkatThompson.GSystem S A T) (C : S → Prop)
+    (hC : ∀ s, C s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2) :
+    ∀ s t, Reaches sys s t → C s → C t := by
+  intro s t h
+  induction h with
+  | refl _ => exact fun hs => hs
+  | step hstep _ ih =>
+      intro hs
+      obtain ⟨X, W, x, r, hfm, hr⟩ := hstep
+      exact ih (hr ▸ hC _ hs X W x r hfm)
+
+/-- **SO A CLOSED BLOCK CANNOT CUT A CYCLE IN HALF.**  If two states are
+    mutually reachable and either is in the block, both are.  Every strongly
+    connected region is wholly inside the block or wholly outside it — with no
+    hypothesis beyond closure. -/
+theorem closed_scc_saturated {S : Type} (sys : GkatThompson.GSystem S A T)
+    (C : S → Prop)
+    (hC : ∀ s, C s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2)
+    (s t : S) (hst : Reaches sys s t) (hts : Reaches sys t s) :
+    (C s → C t) ∧ (C t → C s) :=
+  ⟨closed_reaches sys C hC s t hst, closed_reaches sys C hC t s hts⟩
+
+#print axioms closed_reaches
+#print axioms closed_scc_saturated
+
 end GkatCensus

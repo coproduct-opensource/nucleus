@@ -15078,3 +15078,43 @@ that when the second patch was needed.
 
 **Next.**  Restate the contract in standard form — `∃ std, ∀ F, (std · F) solves`
 — and re-derive the four cases under it.
+
+---
+
+## 329 — RETRACTING 328's REDESIGN, AND WHAT IS ACTUALLY TRUE ABOUT CLOSED BLOCKS.
+
+**328's fix does not work, and saying so before building it is the point of
+working it through first.**  The claim was that carrying STANDARD solutions
+would let block values scale with the continuation and stop being special.
+Worked through: at a block target inside a loop's region, the base's equation at
+finish `W ; F` supplies `std₀ t ; (W ; F)`, while the contract fixes the block's
+value at the AMBIENT `F`.  **The mismatch survives the reshaping.**
+
+**It survives because it is structural, not notational.**  A state inside a
+loop's body has a value that genuinely depends on the loop's continuation — the
+run reaches it, the body finishes, the loop re-tests its guard.  Calling such a
+state "already solved at the ambient finish" is simply FALSE.  So the fix cannot
+be to re-parametrise; it has to be to stop putting such states in the block.
+
+### The fact that makes that tractable
+
+**A block closed under steps is closed under REACHABILITY** (`closed_reaches`),
+so **any cycle through a block state lies entirely in the block**
+(`closed_scc_saturated`).  A closed block cannot cut a cycle in half: every
+strongly connected region is wholly inside it or wholly outside.  **No hypothesis
+beyond closure** — both lemmas are axiom-free.
+
+That is exactly the property "the block does not cut through a loop" wants, for
+the CYCLIC part.  What it does not give — and what 328 measured — is the
+non-cyclic part: a body state that never returns has no forward path back into
+the loop, so closure cannot drag the loop in with it, and such a state can sit
+in the block while the loop around it does not.
+
+**Odds: 97%, HELD.**  A proposed fix retracted before it was built, against a
+free structural fact that constrains where the real fix can live.  The retraction
+costs nothing that 328 had not already priced; the SCC fact is new.
+
+**Next.**  The remaining gap is exactly the NON-CYCLIC body states in the block.
+Measure how often a loop's body has a block state that is not on any cycle —
+that is the residue after `closed_scc_saturated` does its work, and it is a
+strictly smaller target than 328's 15%.
