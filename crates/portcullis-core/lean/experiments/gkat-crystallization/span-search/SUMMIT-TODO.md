@@ -20014,3 +20014,60 @@ hard. The field's prior that this problem does not close still stands.
 **Next.** Attack the irreducible case on its own terms: can a multi-entry GKAT
 loop be made single-entry by a DAG-shaped duplication — unrolling plus guard
 refinement — rather than by entry-splitting?
+
+## 424 — the census already knew: irreducibility is a PERFECT obstruction. And it explains only 37% of the failures.
+
+Web search: exhausted (200/200).
+
+419 diagnosed the peel as forbidding node duplication; 423 showed cyclic
+duplication — what irreducible multi-entry loops need — costs the n-ary axiom.
+That theory predicts **irreducible pullbacks are exactly the hard ones.** The
+census has printed the relevant table since long before this analysis existed,
+so it is a genuine out-of-sample test.
+
+```
+is-Thompson x reducible:
+  Thompson     & reducible  219    Thompson     & irreducible    0
+  NOT Thompson & reducible   34    NOT Thompson & irreducible   20
+
+pullback reducible x covered:
+  reducible   & covered  219   reducible   & NOT   34
+  irreducible & covered    0   irreducible & NOT   20
+```
+
+**Two perfect one-way implications.** Of 273 forced quotients: no Thompson
+pullback is irreducible (0/213), and **no irreducible pullback is covered
+(0/20)**. Irreducibility is a SUFFICIENT condition for failure with no exceptions
+in the sample — exactly what 423 predicts, since an irreducible loop needs
+entry-splitting, entry-splitting is cyclic over fibres, and cyclic duplication
+needs simultaneous uniqueness.
+
+**But the base rate kills the converse, and that is the real news.** Of the 54
+uncovered pullbacks, 20 are irreducible and **34 are REDUCIBLE**. Irreducibility
+explains **20/54 = 37%** of the failures. **There is a second obstruction, and it
+is the larger one.**
+
+I nearly wrote this up as "irreducibility is the obstruction". It is not — it is
+*an* obstruction, perfect in one direction and covering barely a third of the
+cases. 367's control taught exactly this: run the base rate before crediting a
+mechanism with a phenomenon.
+
+**Consistency check against 408.** 408 found 11,139 irreducible automata among
+156,601 Thompson closure members, while this table shows 0 irreducible among 213
+Thompson pullbacks. Both are right: the pullback sample is 273 items built from
+pairs with k ≤ 3, far too small to reach the irreducible Thompson population.
+The table's "Thompson ⟹ reducible" is a fact about this sample, not a theorem,
+and I will not quote it as one.
+
+**Where the program stands.** Duplication is sound when DAG-shaped (421, 423);
+the peel is refuted (417, 418); irreducibility is a confirmed hard class; and **a
+second, unidentified obstruction accounts for most observed failures.** Finding
+it is now the highest-value target — 34 reducible-but-uncovered pullbacks are
+sitting in the census waiting to be characterised.
+
+**Odds: 50%, unchanged.** The theory earned a clean out-of-sample confirmation
+and simultaneously lost its claim to be the whole story. Those cancel. The
+field's prior that this problem does not close still stands.
+
+**Next.** Characterise the 34 reducible-but-uncovered pullbacks — what do they
+share that the 219 covered reducible ones do not?
