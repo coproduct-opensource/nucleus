@@ -11982,13 +11982,24 @@ pullback: {ok} / {}", res.len());
          // signature of a DEPTH limit rather than an obstruction.
          (true, true, 2, 4, "W1+dup+cyc2 x4"),
          (true, true, 2, 6, "W1+dup+cyc2 x6")].iter() {
+        // 459: MECH_ONLY=rounds runs just the x2/x4/x6 comparison, so the
+        // depth question can be answered without re-paying for the other ten.
+        if std::env::var("MECH_ONLY").map(|v| v == "rounds").unwrap_or(false)
+            && !(mode_unr && mode_dup && mode_cyc == 2 && (rounds == 2 || rounds == 4 || rounds == 6)) {
+            continue;
+        }
         let mut rescued = 0usize;
         let mut biggest = 0usize;
         let mut feat = [[[0usize; 2]; 2]; 4];
         let mut ksize = [[0usize; 12]; 2];
         let mut ncand = [0usize; 2];
         let mut nseen = [0usize; 2];
-        for &(i, j) in unsolved.iter() {
+        // 459: the full 3347 x 6 rounds does not finish in a usable time.  The
+        // question -- does adding rounds keep rescuing? -- is answerable on a
+        // sample, so cap it and report the denominator honestly.
+        let cap: usize = std::env::var("MECH_SAMPLE").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+        for &(i, j) in unsolved.iter().take(cap) {
             let p = match pullback(&list[i], &list[j]).and_then(|p| canon(&p)) {
                 Some(p) => p, None => continue,
             };
@@ -12055,7 +12066,7 @@ pullback: {ok} / {}", res.len());
             if found { rescued += 1; }
         }
         println!("  {label:<14}: rescued {rescued} / {}  (largest variant {biggest} states)",
-            unsolved.len());
+            unsolved.len().min(cap));
         if rounds == 2 && mode_dup && mode_cyc >= 2 {
             let names = ["max SCC >= 3", "reducible", "two-HALT cycle", "selfloop+halt (413)"];
             println!("    --- 452: what distinguishes the survivors? (resistant | rescued) ---");

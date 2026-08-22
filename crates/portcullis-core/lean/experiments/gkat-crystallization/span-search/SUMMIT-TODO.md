@@ -21785,3 +21785,74 @@ open case is untouched.
 **Next.** The x4/x6 counts are still pending after ~11 minutes on x4. If they do
 not land next iteration I will cut the experiment down — the same question is
 answerable on a sample rather than all 3,347.
+
+## 459 — WEB SEARCH RESTORED. 443 verified verbatim, one citation unverifiable, and the literature names a route.
+
+WebSearch is still budget-exhausted, but **WebFetch works**, which is enough.
+
+**1. 443's central claim is verified, verbatim.** From the Discussion (§9) of
+Schmid–Kappé–Kozen–Silva, *Guarded Kleene Algebra with Tests: Coequations,
+Coinduction, and Completeness* (arXiv:2102.08286):
+
+> "First, it was conjectured in [33] that the uniqueness axiom follows from the
+> other axioms of GKAT. This remains open, but at the time of writing **we think
+> this conjecture might be false**."
+
+UA is their Definition 15 — *"every Salomaa system of equations has at most one
+solution in Exp/≡"* — and **Theorem 17 and Corollary 22 both explicitly assume
+it**. So the target of this program is exactly what 443 said: an open conjecture
+whose originators lean toward false. That was taken on the corpus's prose at 443;
+it is now checked at the source.
+
+**2. The other load-bearing citation is NOT verifiable.** The corpus attributes to
+**"Pham (2026)"** a proof of UA for Thompson automata and a reduction of
+completeness to *existence*. Querying arXiv for all 40 papers matching "Guarded
+Kleene Algebra" (through June 2026) returns **no author named Pham**, and no
+paper mentioning Thompson automata or UA-free completeness. It may be a thesis or
+a non-arXiv venue — I cannot say it does not exist — but **I can no longer treat
+it as established**, and 443's conclusion that "existence, not uniqueness, is the
+blocked half" rests on it.
+
+**3. The literature names a route, and it explains every failure in 417-458.**
+Rooduijn, Kozen and Silva, *A cyclic proof system for Guarded Kleene Algebra with
+Tests* (arXiv:2405.07505), give a **non-well-founded sequent system `SGKAT∞`
+that is complete for FULL GKAT** under guarded language semantics, with the
+**regular (cyclic) proofs also complete** and decidable in NLOGSPACE. On the
+fixed-point rule this program has been circling:
+
+> "the axiomatisation of KAT contains a least fixed point rule that relies on the
+> equational definability of inclusion, which does not seem to be available in
+> GKAT" … prior work "circumvent[s] this by introducing a custom equational
+> axiomatisation for GKAT that uses a *unique* fixed point rule," which carries
+> "a **non-algebraic side-condition, analogous to the empty word property**."
+
+That side-condition is exactly the productivity obligation (`E e ≡ 0`) that 422
+identified as the residual cost. And their stated future work is **this
+program's target**:
+
+> "The most natural question for future work is whether our system could be used
+> to prove the completeness of some (ordered)-algebraic axiomatisation of GKAT"
+
+— by translating cyclic proofs into well-founded proofs in an inequational
+system. **They flag it as open and have not done it.**
+
+**Why this retro-explains 417-458.** The complete system is **non-well-founded**;
+the peel is a **well-founded** decomposition, and so is every replacement I built
+(levels, ranks, `fibConstant_by_measure`'s descending measure, the DAG-shaped
+duplication of 423). `mono_forces_same_level` (417) and
+`hh_fails_of_loop_and_halt` (418) are what well-foundedness costs when the object
+genuinely needs a cycle. **The peel kept failing because it was the wrong shape
+of proof, not because its lemmas were wrong.**
+
+**Odds: 25%, unchanged.** One pillar of 443 is confirmed and one is withdrawn;
+the new route is real but unattempted by its own authors. What has changed is
+that the program now has a *published* direction — cyclic-to-well-founded
+translation — rather than a home-grown one.
+
+**Next.** Read `SGKAT∞`'s rules and ask what a regular proof of a two-exit mutual
+recursion looks like — that is the case 441 isolated, and the cyclic system
+proves it, so the translation obstruction is visible in one concrete derivation.
+
+Sources:
+- [Schmid, Kappé, Kozen, Silva — GKAT: Coequations, Coinduction, and Completeness](https://arxiv.org/abs/2102.08286)
+- [Rooduijn, Kozen, Silva — A cyclic proof system for GKAT](https://arxiv.org/abs/2405.07505)
