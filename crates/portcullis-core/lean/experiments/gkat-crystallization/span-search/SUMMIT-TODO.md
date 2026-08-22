@@ -12064,3 +12064,49 @@ known, bounded obstacle; that is progress in understanding, not in proof.
 
 **Next.**  The membership-extraction lemmas, then the listed-states migration in
 one pass, then `hcollapse`'s acyclic case.
+
+---
+
+## 262 — THE FIFTH MIGRATION LANDED.  And a sixth mismatch, named.
+
+**Landed:** `Layered.acyclic` now quantifies over LISTED states, with four
+membership-extraction lemmas (`sum_states_inl/inr`, `seq_states_inl/inr`) and
+all four dependent proofs updated in one pass.  Zero errors, no `sorryAx`,
+`thompson_layered` still proved.  That is the fifth migration in the series and
+the first one that did not need a revert.
+
+**And attempting `hcollapse`'s acyclic case immediately finds the sixth
+mismatch.**  `GAutBisim` — the repo's bisimulation, and what
+`UniformBehavioralGAutQuotient.bisim_graph` provides — is stated via `autStep`,
+the FIRST-MATCHING transition at an atom.  `Layered.acyclic` quantifies over
+EVERY ENTRY of the transition list.  A list entry whose guard is shadowed by an
+earlier entry never fires, so it cannot be lifted through the bisimulation — yet
+the rank condition still demands it decrease.  The two notions of "edge" do not
+line up.
+
+**Two ways out, and the choice matters.**
+
+  * **(a) Make `acyclic` a condition on `autStep` edges**, which is the
+    semantically right notion — a shadowed transition cannot contribute to a
+    cycle because it never fires.  This is a sixth migration and a heavier one:
+    `layered_sum` and `layered_seq_acyclic` currently reason by list membership
+    and would have to reason about `firstMatch` instead.
+  * **(b) Prove the two coincide for these automata**, via an invariant that a
+    Thompson state's transition guards are MUTUALLY DISJOINT — plausible, since
+    the construction is deterministic — but `CoreStructural` records only
+    `CoreTargetsListed` and `CoreHaltDisjoint`, not mutual disjointness of the
+    transition guards themselves.  So it would need proving through all five
+    constructors.
+
+**(a) is more honest and (b) is less work, which is exactly the trade that
+produced 253's rule.**  Not choosing under time pressure; the choice wants the
+same treatment 252-256 got — work one case of each far enough to see which
+breaks.
+
+**Odds: 84%, held.**  A migration landed and an obstacle named.  Six mismatches
+now, every one found by attempting the next case rather than by inspection, which
+is the process working — but `hcollapse` is not closer to proved than it was two
+iterations ago, only better understood.
+
+**Next.**  Decide (a) vs (b) by attempting `layered_sum`'s acyclic case under (a)
+and the disjointness invariant under (b) for one constructor each.

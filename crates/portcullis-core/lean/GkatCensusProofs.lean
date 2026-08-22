@@ -6394,6 +6394,40 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
 
 #print axioms wh_isLayer
 
+/-- Membership extraction for a sum's state list, needed once
+    `Layered.acyclic` is restricted to LISTED states (261). -/
+theorem sum_states_inl {S₁ S₂ : Type}
+    {L : GkatThompson.GSystem S₁ A T} {R : GkatThompson.GSystem S₂ A T} {x : S₁}
+    (h : Sum.inl x ∈ (GkatThompson.sumGSystem L R).states) : x ∈ L.states := by
+  simp only [GkatThompson.sumGSystem, List.mem_append, List.mem_map] at h
+  rcases h with ⟨y, hy, hxy⟩ | ⟨y, _, hxy⟩
+  · cases hxy; exact hy
+  · cases hxy
+
+theorem sum_states_inr {S₁ S₂ : Type}
+    {L : GkatThompson.GSystem S₁ A T} {R : GkatThompson.GSystem S₂ A T} {y : S₂}
+    (h : Sum.inr y ∈ (GkatThompson.sumGSystem L R).states) : y ∈ R.states := by
+  simp only [GkatThompson.sumGSystem, List.mem_append, List.mem_map] at h
+  rcases h with ⟨z, _, hzy⟩ | ⟨z, hz, hzy⟩
+  · cases hzy
+  · cases hzy; exact hz
+
+theorem seq_states_inl {S₁ S₂ : Type}
+    {L : GkatThompson.GSystem S₁ A T} {R : GkatThompson.InitializedGAut S₂ A T} {x : S₁}
+    (h : Sum.inl x ∈ (GkatThompson.seqGSystem L R).states) : x ∈ L.states := by
+  simp only [GkatThompson.seqGSystem, List.mem_append, List.mem_map] at h
+  rcases h with ⟨y, hy, hxy⟩ | ⟨y, _, hxy⟩
+  · cases hxy; exact hy
+  · cases hxy
+
+theorem seq_states_inr {S₁ S₂ : Type}
+    {L : GkatThompson.GSystem S₁ A T} {R : GkatThompson.InitializedGAut S₂ A T} {y : S₂}
+    (h : Sum.inr y ∈ (GkatThompson.seqGSystem L R).states) : y ∈ R.core.states := by
+  simp only [GkatThompson.seqGSystem, List.mem_append, List.mem_map] at h
+  rcases h with ⟨z, _, hzy⟩ | ⟨z, hz, hzy⟩
+  · cases hzy
+  · cases hzy; exact hz
+
 /-- **THE CERTIFICATE, AS AN INDUCTIVE PREDICATE ON AUTOMATA.**
 
     An automaton is layered when it is acyclic, or is one loop layer over
@@ -6406,7 +6440,8 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
     without infinite paths", and it avoids needing a path predicate. -/
 inductive Layered {S : Type} : GkatThompson.GSystem S A T → Prop where
   | acyclic {sys : GkatThompson.GSystem S A T} :
-      (∃ rank : S → Nat, ∀ s tr, tr ∈ sys.trans s → rank tr.2.2 < rank s) →
+      (∃ rank : S → Nat, ∀ s ∈ sys.states, ∀ tr ∈ sys.trans s,
+        rank tr.2.2 < rank s) →
       Layered sys
   | layer {sys base : GkatThompson.GSystem S A T} {b : BExp T} {dom : S → Prop} :
       IsLayer sys base b dom → Layered base → Layered sys
@@ -6435,7 +6470,7 @@ theorem layered_test (t : BExp T) :
 
 theorem layered_act (a : A) :
     Layered (GkatThompson.certifiedThompson A T (.act a)).aut.core :=
-  Layered.acyclic ⟨fun _ => 0, by intro s tr h; cases h⟩
+  Layered.acyclic ⟨fun _ => 0, by intro s _ tr h; cases h⟩
 
 #print axioms layered_test
 #print axioms layered_act
@@ -6536,13 +6571,13 @@ theorem layered_sum {S₁ S₂ : Type}
           obtain ⟨r1, hr1⟩ := h1
           obtain ⟨r2, hr2⟩ := h2
           refine Layered.acyclic ⟨Sum.elim r1 r2, ?_⟩
-          rintro (x | y) tr htr
+          rintro (x | y) hmem tr htr
           · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
             obtain ⟨t, ht, rfl⟩ := htr
-            exact hr1 x t ht
+            exact hr1 x (sum_states_inl hmem) t ht
           · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
             obtain ⟨t, ht, rfl⟩ := htr
-            exact hr2 y t ht
+            exact hr2 y (sum_states_inr hmem) t ht
       | layer hlay _ ih =>
           exact Layered.layer (sum_isLayer_right _ _ _ hlay) ih
   | layer hlay _ ih =>
@@ -6588,18 +6623,20 @@ private theorem le_maxOf {l : List Nat} {x : Nat} (h : x ∈ l) : x ≤ maxOf l 
 theorem layered_seq_acyclic {S₁ S₂ : Type}
     (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
     (hR : GkatThompson.InitTargetsListed R)
-    (r₁ : S₁ → Nat) (h₁ : ∀ s tr, tr ∈ L.trans s → r₁ tr.2.2 < r₁ s)
-    (r₂ : S₂ → Nat) (h₂ : ∀ s tr, tr ∈ R.core.trans s → r₂ tr.2.2 < r₂ s) :
+    (r₁ : S₁ → Nat) (h₁ : ∀ s ∈ L.states, ∀ tr ∈ L.trans s, r₁ tr.2.2 < r₁ s)
+    (r₂ : S₂ → Nat) (h₂ : ∀ s ∈ R.core.states, ∀ tr ∈ R.core.trans s,
+      r₂ tr.2.2 < r₂ s) :
     Layered (GkatThompson.seqGSystem L R) := by
   refine Layered.acyclic ⟨Sum.elim
     (fun x => r₁ x + maxOf (R.core.states.map r₂) + 1) r₂, ?_⟩
-  rintro (x | y) tr htr
+  rintro (x | y) hmem tr htr
   · show Sum.elim _ _ tr.2.2 < r₁ x + _ + 1
     simp only [GkatThompson.seqGSystem, List.mem_append, List.mem_map] at htr
     cases htr with
     | inl h =>
         obtain ⟨t, ht, rfl⟩ := h
-        exact Nat.add_lt_add_right (Nat.add_lt_add_right (h₁ x t ht) _) 1
+        exact Nat.add_lt_add_right
+          (Nat.add_lt_add_right (h₁ x (seq_states_inl hmem) t ht) _) 1
     | inr h =>
         obtain ⟨t, ht, rfl⟩ := h
         have : r₂ t.2.2 ≤ maxOf (R.core.states.map r₂) :=
@@ -6608,7 +6645,7 @@ theorem layered_seq_acyclic {S₁ S₂ : Type}
   · show Sum.elim _ _ tr.2.2 < r₂ y
     simp only [GkatThompson.seqGSystem, List.mem_map] at htr
     obtain ⟨t, ht, rfl⟩ := htr
-    exact h₂ y t ht
+    exact h₂ y (seq_states_inr hmem) t ht
 
 #print axioms layered_seq_acyclic
 
