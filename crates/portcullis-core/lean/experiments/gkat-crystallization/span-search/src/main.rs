@@ -3497,6 +3497,8 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     let (mut pairs, mut pb_ok, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize);
     let mut skipped_big = 0usize;
     let mut maxcomp = 0usize;
+    let (mut big_pairs, mut big_sat, mut big_uns) = (0usize, 0usize, 0usize);
+    let mut first_big: Option<String> = None;
     let (mut red_sat, mut red_uns, mut irr_sat, mut irr_uns) = (0usize, 0usize, 0usize, 0usize);
     let mut first_bad: Option<String> = None;
     'outer: for (_k, idxs) in byb.iter() {
@@ -3535,6 +3537,11 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                     let c = (0..k).filter(|&u| lvl[u] == n).count();
                     if c > maxcomp { maxcomp = c; }
                 }
+                let mut mx_here = 0usize;
+                for &n in &levels {
+                    let c = (0..k).filter(|&u| lvl[u] == n).count();
+                    if c > mx_here { mx_here = c; }
+                }
                 let mut all_ok = true;
                 let mut too_big = false;
                 for &n in &levels {
@@ -3567,6 +3574,17 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                     if !lok { all_ok = false; break; }
                 }
                 if too_big { skipped_big += 1; continue; }
+                // 432: the untested regime is components of size >= 3.  Count and
+                // test those separately from the size-<=2 bulk.
+                if mx_here >= 3 {
+                    big_pairs += 1;
+                    if all_ok { big_sat += 1 } else {
+                        big_uns += 1;
+                        if first_big.is_none() {
+                            first_big = Some(format!("maxcomp={} {}", mx_here, show_aut("P", &p)));
+                        }
+                    }
+                }
                 let red = reducible(&p);
                 if all_ok { sat += 1; if red { red_sat += 1 } else { irr_sat += 1 } }
                 else {
@@ -3586,6 +3604,11 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     println!("  UNSATISFIABLE (no rank)             : {}", unsat);
     println!("  skipped, a component > 8 states     : {}   (largest component seen: {})",
         skipped_big, maxcomp);
+    println!("  --- the untested regime (component >= 3) ---");
+    println!("  pullbacks with a component >= 3     : {}", big_pairs);
+    println!("    satisfiable                       : {}", big_sat);
+    println!("    UNSATISFIABLE                     : {}", big_uns);
+    if let Some(b) = first_big { println!("    first big-component case: {}", b); }
     println!("    reducible   : {:5} sat / {:5} unsat", red_sat, red_uns);
     println!("    irreducible : {:5} sat / {:5} unsat", irr_sat, irr_uns);
     if let Some(b) = first_bad { println!("  first refuter: {}", b); }

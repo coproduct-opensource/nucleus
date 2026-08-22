@@ -20429,3 +20429,55 @@ still stands.
 components of size ≥ 3 that are NOT instances of a single axiom — e.g. pairs
 related by two or more rewrites, found by searching the behaviour classes of
 expressions containing multi-state loops.
+
+## 432 — the untested regime, reached at last: 200,000 non-degenerate pullbacks, ZERO failures.
+
+Web search: exhausted (200/200).
+
+431 concluded the interesting regime — distinct equivalent pairs, not settled by
+one axiom, components of size ≥ 3 — was untested in both directions. Reached it
+by raising the pair cap from 50,000 to 200,000:
+
+| | G=3, D=3 | G=4, D=3 |
+|---|---|---|
+| pullbacks tested | 200,000 | 200,000 |
+| `LevelAgreementActive` **unsatisfiable** | **0** | **0** |
+| largest component seen | **5** | **5** |
+| **pullbacks with a component ≥ 3** | **18** | **19** |
+| of those, satisfiable | **18** | **19** |
+| **irreducible pullbacks** | 0 | **4,097** |
+| of those, satisfiable | — | **4,097** |
+
+**428's "largest component seen: 2" was a cap artefact.** At 200,000 pairs the
+population reaches component size 5. That is the fourth time in this program a
+number I reported turned out to be a property of the sample size rather than of
+the mathematics — and this one was mine, from four iterations ago.
+
+**Two substantive results.**
+
+1. **The regime is reachable and clean.** 19 pullbacks have a component of size
+   ≥ 3 — exactly where 425's predictor says failures live — and all 19 satisfy
+   `LevelAgreementActive`. Small, but it is the first evidence of any kind in the
+   regime 431 called untested.
+2. **Irreducibility does NOT obstruct the architecture.** 4,097 irreducible
+   pullbacks, **all satisfiable**. This does not contradict 424 — that table was
+   about *coverage* (the span notion), a different property — but it undercuts
+   the story built at 423/424, in which irreducibility was the mechanism by which
+   the architecture fails. Here it fails to fail.
+
+**So across 200,000 pullbacks of genuinely distinct equivalent pairs, none of
+them axiom-degenerate, `LevelAgreementActive` has never once been unsatisfiable**
+— including on big components and on irreducible automata.
+
+**What keeps this from being decisive.** 19 is a small sample in the ≥ 3 regime,
+every pair is depth ≤ 3, and the whole population is a single construction. Given
+how often a clean sweep here has meant "not in this pool", this is a first
+positive signal, not a result.
+
+**Odds: 50% → 55%.** The first genuine evidence in the regime that matters, and
+it favours the architecture. Five points and no more, because the decisive cell
+of the table has nineteen entries in it.
+
+**Next.** Grow the ≥ 3 cell: bias pair selection toward expressions with
+multi-state loops instead of taking behaviour classes in hash order, so the
+deciding regime gets thousands of samples rather than nineteen.
