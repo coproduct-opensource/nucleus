@@ -16292,6 +16292,48 @@ theorem mono_forces_same_level {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms mono_forces_same_level
 
+/-! ### 418: the obstruction reaches the MORE GENERAL consumer too
+
+417 left one escape open: `solvesBA_of_agreement` takes `htr` and `hh` directly
+rather than going through `LevelAgreementActive`, so a different peel might have
+avoided the level. It does not, and the reason is visible in `peeledSys`:
+
+```lean
+hlt := fun s => (raw.hlt s ∧ ¬ bs (lvl s)) ∧ h₀s (lvl s)
+```
+
+`bs` is `peelBs`, the disjunction of the loop guards of EVERY state of the
+level — the peel POOLS a level's transitions because a level has to become one
+`wh`. So one state's loop firing at an atom suppresses a different state's halt
+at that atom, and `hh` fails outright. -/
+theorem hh_fails_of_loop_and_halt {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : S → (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (n : Nat) (a c : S)
+    (ha : a ∈ levelStates aut lvl n) (hc : c ∈ levelStates aut lvl n)
+    (tr : BExp T × A × S)
+    (htr : tr ∈ (disjoin (aut.trans c)).filter (fun t => !p c t && q c t))
+    (hfire : GkatGS.bval W tr.1 x = true)
+    (hhalt : GkatGS.bval W (aut.hlt a) x = true) :
+    GkatGS.bval W (aut.hlt a) x
+      ≠ GkatGS.bval W ((peelAut aut lvl p q rawHlt).hlt a) x := by
+  have hlvl : lvl a = n := levelStates_lvl ha
+  -- the pooled loop test is true, because `c`'s loop transition fires
+  have hbs : GkatGS.bval W (peelBs aut lvl p q n) x = true := by
+    refine (bval_bigOr_true W x _).mpr ⟨tr.1, ?_, hfire⟩
+    exact List.mem_map.mpr ⟨tr, List.mem_flatMap.mpr ⟨c, hc, htr⟩, rfl⟩
+  -- so the peeled halt at `a` is false, whatever `a` itself does
+  have hfalse : GkatGS.bval W ((peelAut aut lvl p q rawHlt).hlt a) x = false := by
+    show ((GkatGS.bval W (rawHlt a) x
+      && !(GkatGS.bval W (peelBs aut lvl p q (lvl a)) x))
+      && GkatGS.bval W (peelH0 aut lvl (lvl a)) x) = false
+    rw [hlvl, hbs]
+    simp only [Bool.not_true, Bool.and_false, Bool.false_and]
+  rw [hhalt, hfalse]
+  exact Bool.noConfusion
+
+#print axioms hh_fails_of_loop_and_halt
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

@@ -19632,3 +19632,73 @@ better calibrated than my last several estimates.
 **Next.** Go under the peel: does `solvesBA_of_agreement` admit a decomposition
 that is not level-based at all — and if the peel must be level-based, what
 replaces it?
+
+## 418 — the escape hatch closes. The peel POOLS, and that is the whole problem.
+
+Web search: exhausted (200/200).
+
+417 refuted the architecture but left one hatch: `solvesBA_of_agreement` takes
+`htr` and `hh` DIRECTLY rather than through `LevelAgreementActive`, so a
+different peel might have avoided the level. It does not.
+
+**The root cause, found by reading `peeledSys` rather than reasoning about it.**
+
+```lean
+hlt := fun s => (raw.hlt s ∧ ¬ bs (lvl s)) ∧ h₀s (lvl s)
+```
+
+`bs` is `peelBs`, and `peelLoops`/`peelExits`/`peelH0` all `flatMap` over EVERY
+state of the level. **The peel pools a level's transitions and halts**, because
+a level has to become a single `wh` — one guard, one body. So one state's loop
+firing at an atom suppresses a DIFFERENT state's halt at that atom.
+
+`hh_fails_of_loop_and_halt` (axioms: `propext, Quot.sound`) makes it a theorem:
+if `a` and `c` share a level, `c`'s loop transition fires at `x`, and `a` halts
+at `x`, then `hh` is false at `a` — the peeled halt is `false` while
+`aut.hlt a` is `true`. No agreement condition, no rank, no choice of level
+enters the argument.
+
+**The complete diagnosis, all four parts established.**
+
+1. **Nested loops share an SCC** — the outer back-edge makes the inner loop's
+   states mutually reachable with the rest of the body (405, 407).
+2. **Monotone levels cannot separate an SCC** — `mono_forces_same_level`, 417,
+   **no axioms**.
+3. **The peel pools each level** — `peeledSys`, because one level is one `wh`.
+4. **Pooling breaks `hh`** — `hh_fails_of_loop_and_halt`, 418.
+
+And 413's automaton, `certifiedThompson (wh g₀ (seq (wh g₁ act) act))`,
+realises the configuration exactly: a self-looping state (the inner loop, non-raw
+under every rank) beside a halting state (the outer loop's exit), forced into one
+level by 1 and 2.
+
+**So the peel cannot handle nested loops at all** — not "with this level", not
+"with this agreement condition". Every consumer in the chain is now closed:
+`finiteAxiomsComplete_of_maskAgreement`, `finiteAxiomsComplete_of_agreement`,
+`solvesBA_of_levelAgreementActive`, and `solvesBA_of_agreement`. They remain
+true, `sorry`-free theorems; their hypotheses are unsatisfiable for nested loops,
+which is every interesting GKAT program.
+
+**What the replacement would have to be.** The peel is FLAT: one stratification,
+each stratum collapsed to one `wh`. Nested loops need a RECURSIVE decomposition
+— which is just recursion on the expression, and that works for Thompson
+automata but not for the arbitrary quotients the sum-quotient route requires.
+The census has long said so: of 273 forced quotients, 213 are Thompson and 60
+are not, and 54 admit no span at k ≤ 4. **That gap is the actual mathematical
+content, and the peel was an attempt to route around it that has now failed on
+its own terms.**
+
+File: 0 errors, no `sorry`.
+
+**Odds: 45% → 35%.** Two iterations ago this looked like a gap in an argument;
+it is a refuted architecture with four established parts and no identified
+replacement. I am not going lower because the TARGET is untouched — finite-axiom
+completeness for full GKAT may well be true, the corpus below the peel is intact,
+and the obstruction is now understood precisely enough to aim at. But the honest
+reading is that this loop is further from closing the proof than at any point
+since the rewired summit, and the field's prior looks better calibrated than my
+estimates did through 404-412.
+
+**Next.** Confront the real gap directly: the 60 non-Thompson forced quotients.
+Either find a solving construction for them, or determine what the sum-quotient
+route needs that bisimulation collapse destroys.
