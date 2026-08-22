@@ -12754,3 +12754,51 @@ field's prior that the problem does not close still stands.
 halt is `base.hlt ∧ ¬b`), so the true branch is a pure entry fold; under `¬b`
 it is `base`'s own fallback.  Both are `guardedFold_congr_fallback_gated`.  Then
 the true branch is where 273's shared-entry list finally earns its keep.
+
+---
+
+## 276 — THE LOOP IS GLOBAL TO THE LAYER (PROVED), AND THE FORM `hsolve` CONSUMES.
+
+Two theorems, both zero-`sorry`.
+
+**`layer_entry_shared`** — what 273's shared-entry condition BUYS, and the whole
+reason to want it.  Under `b`, EVERY state of the layer does
+
+    test (base.hlt s) ; E
+
+with **ONE `E` shared by the entire layer**.  The only per-state part is the
+halt test; the loop body does not depend on which state fell into it.  That is
+the algebraic content of "the back edge returns to the layer's ENTRY rather
+than to `s`", and it is what will let a single `wh b E` serve every state.
+
+Proved by `guardedFold_guard_factor` (parametric guard factoring, 1341): the
+per-state halt conjoined onto every back edge factors out as a test prefix,
+leaving a fold that mentions `s` NOWHERE.  The layer's halt semantics
+(`base.hlt ∧ ¬b`) is exactly what makes the fallback factor along with it.
+Compiled first try.  **Axioms: `propext` ALONE.**
+
+**`layer_loop_form`** — 275 and the above, composed:
+
+    pre , then  IF b THEN (test (base.hlt s) ; E) ELSE (base's own tail)
+
+Every trace of the layer's identity is now confined to two places: the halt
+test `base.hlt s`, and `base`'s tail.  `E` is the same expression at every
+state.  `GuardImplies` for the back edges is now DERIVED from the entry shape
+rather than assumed.  Axioms `propext, Classical.choice, Quot.sound`.
+
+**This is the statement 272 was reaching for and mis-stated, 273 identified the
+missing hypothesis for, 274 and 275 proved the split of, and that the shared
+entry list finally pays for.**  Four iterations, one theorem, no retraction
+outstanding.
+
+**Odds: 89%** (+1).  The layer path now has four machine-checked lemmas and the
+target shape in hand; what remains on `hsolve` is the FIXPOINT step — turning
+`sol s ≈ pre-fold(ite b (halt ; E) tail)` into an actual `sol` via `wh`.  The
+field's prior that the problem does not close still stands.
+
+**Next.**  The fixpoint.  With the layer's equation in loop form, `sol_sys` is
+built from `sol_base` at the finish `wh b E`-and-continue, which is what
+`ParametricCanonicalBA` is stated to consume — and `W3` restricted to one
+unknown is exactly the axiom that closes it.  Check whether the eighth
+migration (folding `entry` into `IsLayer`) is still needed, or whether taking
+the entry list as a hypothesis at the point of use suffices.

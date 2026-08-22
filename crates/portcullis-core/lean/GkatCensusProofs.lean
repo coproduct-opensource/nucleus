@@ -7262,4 +7262,110 @@ theorem layer_ite_form {S : Type} {sys : GkatThompson.GSystem S A T}
 
 #print axioms layer_ite_form
 
+
+/-! ### 276 — THE LOOP IS GLOBAL TO THE LAYER
+
+    273 derived — and Grabmayer's own loop-chart definition confirmed — that a
+    layer's back edges must be ONE shared entry list gated by each state's own
+    halt.  This is what that condition BUYS, and it is the whole reason to want
+    it: under `b`, every state of the layer does
+
+        test (base.hlt s) ; E
+
+    with ONE `E` shared by the entire layer.  The only per-state part is the
+    halt test; the loop body itself does not depend on which state fell into it.
+    That is the algebraic content of "the back edge returns to the layer's ENTRY
+    rather than to `s`", and it is what will let a single `wh b E` serve every
+    state of the layer.
+
+    Proved by `guardedFold_guard_factor` (parametric guard factoring): the
+    per-state halt conjoined onto every back edge factors out as a test prefix,
+    leaving a fold that mentions `s` nowhere.  The layer's halt semantics
+    (`base.hlt ∧ ¬b`) is exactly what makes the fallback factor with it. -/
+theorem layer_entry_shared {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {b : BExp T} (sol : S → Exp A T) (F : Exp A T) (s : S)
+    (entry extra : List (BExp T × A × S))
+    (hextra : extra = entry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)))
+    (hhlt : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (sys.hlt s) x
+        = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)) :
+    EquivBA
+      (guardedFold (transitionBranches extra sol)
+        (GkatThompson.paramFallback (sys.hlt s) F))
+      (.seq (.test (base.hlt s))
+        (guardedFold
+          (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2))) sol)
+          (GkatThompson.paramFallback (BExp.not b) F))) := by
+  have hmap : extra
+      = (entry.map (fun tr => (BExp.and b tr.1, tr.2))).map
+          (fun tr => (BExp.and (base.hlt s) tr.1, tr.2)) := by
+    rw [hextra]
+    simp only [List.map_map, Function.comp_def]
+  have hfb : EquivBA (GkatThompson.paramFallback (sys.hlt s) F)
+      (GkatThompson.paramFallback
+        (BExp.and (base.hlt s) (BExp.not b)) F) :=
+    EquivBA.seq_c (EquivBA.baTest (fun X W x => hhlt X W x))
+      (EquivBA.base (Equiv.refl F))
+  rw [hmap, transitionBranches_gate]
+  exact EquivBA.trans (guardedFold_fallback_congr hfb)
+    (guardedFold_guard_factor (base.hlt s) (BExp.not b) F _)
+
+#print axioms layer_entry_shared
+
+
+/-- **THE LAYER'S EQUATION, IN THE FORM `hsolve` CONSUMES.**  276.  275 and the
+    lemma above, composed.  A state of the layer runs its `pre` block; where
+    `pre` does not fire it takes the loop — `test (base.hlt s) ; E` for the
+    ONE `E` the whole layer shares — if the guard holds, and behaves like
+    `base` if it does not:
+
+        pre , then  IF b THEN (test (base.hlt s) ; E) ELSE (base's own tail)
+
+    Every trace of the layer's identity is now confined to two places: the halt
+    test `base.hlt s`, and `base`'s tail.  `E` is the same expression at every
+    state.  This is the statement 272 was reaching for and mis-stated, 273
+    identified the missing hypothesis for, 274 and 275 proved the split of, and
+    that the shared entry list finally pays for. -/
+theorem layer_loop_form {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {b : BExp T} (sol : S → Exp A T) (F : Exp A T) (s : S)
+    (pre entry extra post post' : List (BExp T × A × S))
+    (hsys : sys.trans s = pre ++ extra ++ post')
+    (hextra : extra = entry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)))
+    (hhlt : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (sys.hlt s) x
+        = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x))
+    (hr : RestrictedTo b post post') :
+    EquivBA (GkatThompson.eqRHSParam sys sol F s)
+      (guardedFold (transitionBranches pre sol)
+        (.ite b
+          (.seq (.test (base.hlt s))
+            (guardedFold
+              (transitionBranches
+                (entry.map (fun tr => (BExp.and b tr.1, tr.2))) sol)
+              (GkatThompson.paramFallback (BExp.not b) F)))
+          (guardedFold (transitionBranches post sol)
+            (GkatThompson.paramFallback (sys.hlt s) F)))) := by
+  have hg : ∀ tr ∈ extra, GuardImplies tr.1 b := by
+    intro tr htr X W x hx
+    rw [hextra] at htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    have hval : (GkatGS.bval W (base.hlt s) x
+        && (GkatGS.bval W b x && GkatGS.bval W t.1 x)) = true := hx
+    cases hb : GkatGS.bval W b x
+    · rw [hb] at hval
+      cases GkatGS.bval W (base.hlt s) x <;>
+        cases GkatGS.bval W t.1 x <;> simp at hval
+    · rfl
+  refine EquivBA.trans
+    (layer_ite_form sol F s pre extra post post' hsys hg hr) ?_
+  exact guardedFold_fallback_congr
+    (EquivBA.ite_c
+      (layer_entry_shared sol F s entry extra hextra hhlt)
+      (EquivBA.base (Equiv.refl _)))
+
+#print axioms layer_loop_form
+
 end GkatCensus
