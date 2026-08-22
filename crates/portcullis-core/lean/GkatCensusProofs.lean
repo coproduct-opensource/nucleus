@@ -16469,6 +16469,62 @@ theorem hfib_of_salomaa {S' : Type} (sol' : S' → Exp A T) (a b : S')
 
 #print axioms hfib_of_salomaa
 
+/-! ### 423: which duplications are safe — the fibre order must be WELL-FOUNDED
+
+`hfib_of_salomaa` (422) needs two fibre-mates to solve a COMMON single-state
+equation.  But a state's equation mentions its TARGETS' solutions, so
+fibre-constancy at `s` presupposes fibre-constancy at everything `s` steps to.
+That makes `hfib` a propagation problem, and whether it can be discharged
+depends entirely on the SHAPE of the duplication.
+
+* **Unrolling** (W1) duplicates a loop body so that the new copy points at the
+  OLD one and never back.  The copies form a DAG over the fibres, so
+  fibre-constancy is establishable bottom-up, one equation at a time — which is
+  exactly why `fibConstant_of_unroll` needed no system.
+* **Entry-splitting** — the standard fix for an irreducible, multi-entry loop —
+  gives each entry its own copy of the whole loop.  Copy `A`'s states point
+  inside `A`, copy `B`'s inside `B`.  The fibres are related ACROSS two disjoint
+  cycles, so no bottom-up order exists and the constancy of all fibres has to be
+  established SIMULTANEOUSLY.  **A simultaneous uniqueness statement over a
+  system of equations is precisely the n-ary Uniqueness Axiom.**
+
+So the safety condition is a well-founded order on the duplicated states along
+which fibre-constancy descends. -/
+def FibreWellFounded {S S' : Type} (sys : GkatKleene.GAut S' A T)
+    (f : S' → S) (m : S' → Nat) : Prop :=
+  ∀ (s' : S') (tr : BExp T × A × S'), tr ∈ sys.trans s' →
+    f tr.2.2 ≠ f s' ∨ m tr.2.2 < m s'
+
+/-- **Fibre-constancy descends along a well-founded measure.**  Given the local
+step — mates whose targets already agree, agree — the measure lets it be
+discharged one state at a time, with no simultaneous system.  This is the formal
+content of "unrolling is safe, entry-splitting is not". -/
+theorem fibConstant_by_measure {S S' : Type} (f : S' → S) (m : S' → Nat)
+    (sol' : S' → Exp A T)
+    (hstep : ∀ a b : S', f a = f b →
+      (∀ a' b' : S', m a' < m a → m b' < m b → f a' = f b' →
+        EquivBA (sol' a') (sol' b')) →
+      EquivBA (sol' a) (sol' b)) :
+    ∀ a b : S', f a = f b → EquivBA (sol' a) (sol' b) := by
+  have key : ∀ N : Nat, ∀ a b : S', m a ≤ N → m b ≤ N → f a = f b →
+      EquivBA (sol' a) (sol' b) := by
+    intro N
+    induction N with
+    | zero =>
+        intro a b ha _ hf
+        refine hstep a b hf (fun a' b' ha' _ _ => ?_)
+        exact absurd (Nat.lt_of_lt_of_le ha' ha) (Nat.not_lt_zero _)
+    | succ N ih =>
+        intro a b ha hb hf
+        refine hstep a b hf (fun a' b' ha' hb' hf' => ?_)
+        exact ih a' b'
+          (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le ha' ha))
+          (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hb' hb)) hf'
+  intro a b hf
+  exact key (m a + m b) a b (Nat.le_add_right _ _) (Nat.le_add_left _ _) hf
+
+#print axioms fibConstant_by_measure
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

@@ -19951,3 +19951,66 @@ before. The field's prior that this problem does not close still stands.
 
 **Next.** Build the duplication construction itself: for a multi-entry loop,
 split by entry, and discharge productivity for the split copies.
+
+## 423 — which duplications are safe: the fibre order must be WELL-FOUNDED.
+
+Web search: exhausted (200/200).
+
+422 made `hfib` cheap: fibre-mates are bisimilar, so W3 (finite) identifies their
+solutions. Before building the split-by-entry construction I checked what that
+discharge actually requires, and it splits the duplication route cleanly in two.
+
+**The propagation problem.** `hfib_of_salomaa` needs two mates to solve a COMMON
+single-state equation. But a state's equation mentions its TARGETS' solutions —
+so fibre-constancy at `s` presupposes fibre-constancy at everything `s` steps to.
+Whether that can be discharged depends on the SHAPE of the duplication.
+
+* **Unrolling (W1)** duplicates a loop body so the new copy points at the OLD one
+  and never back. The fibres form a DAG, so constancy is establishable
+  bottom-up, ONE equation at a time. That is exactly why `fibConstant_of_unroll`
+  needed no system.
+* **Entry-splitting** — the standard fix for an irreducible multi-entry loop —
+  gives each entry its own copy of the whole loop. Copy `A`'s states point inside
+  `A`, copy `B`'s inside `B`. The fibres relate two DISJOINT CYCLES, so no
+  bottom-up order exists and every fibre must be settled SIMULTANEOUSLY.
+  **Simultaneous uniqueness over a system of equations IS the n-ary Uniqueness
+  Axiom** — the one thing this program may not use.
+
+**Formalised.** `FibreWellFounded` names the condition, and
+
+```lean
+theorem fibConstant_by_measure (f : S' → S) (m : S' → Nat) (sol')
+    (hstep : ∀ a b, f a = f b →
+      (∀ a' b', m a' < m a → m b' < m b → f a' = f b' → EquivBA (sol' a') (sol' b')) →
+      EquivBA (sol' a) (sol' b)) :
+  ∀ a b, f a = f b → EquivBA (sol' a) (sol' b)
+```
+
+**depends on no axioms.** A measure descending along fibres converts the
+simultaneous obligation into one-at-a-time W3 applications. No measure, no
+conversion.
+
+**Where this leaves the program.** The duplication route is **sound on the
+reducible fragment** — unrolling is DAG-shaped, W1 discharges it, W3 closes each
+equation, and the n-ary axiom never appears. It is **blocked exactly on the
+irreducible automata**, and 408 established those exist in GKAT: `initTrans` is
+a list, different atoms may enter a loop body at different states, and 235 of
+pool 200k were irreducible with 117 multi-entry.
+
+That is not a new difficulty smuggled in; it is the same hard core the census
+has been pointing at since the 60 non-Thompson forced quotients. The value of
+this iteration is that the boundary is now exact and formal rather than a
+suspicion: **DAG-shaped duplication is free, cyclic duplication costs the axiom
+being eliminated.**
+
+File: 0 errors, no `sorry`.
+
+**Odds: 55% → 50%.** A genuine narrowing and a genuine obstruction in the same
+iteration, and I am weighting the obstruction slightly higher because it lands
+on the case that has resisted every previous approach. The reducible fragment
+now looks tractable end to end; the irreducible one has a named reason to be
+hard. The field's prior that this problem does not close still stands.
+
+**Next.** Attack the irreducible case on its own terms: can a multi-entry GKAT
+loop be made single-entry by a DAG-shaped duplication — unrolling plus guard
+refinement — rather than by entry-splitting?
