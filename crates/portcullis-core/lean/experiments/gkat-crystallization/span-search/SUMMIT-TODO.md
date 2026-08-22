@@ -21856,3 +21856,72 @@ proves it, so the translation obstruction is visible in one concrete derivation.
 Sources:
 - [Schmid, Kappé, Kozen, Silva — GKAT: Coequations, Coinduction, and Completeness](https://arxiv.org/abs/2102.08286)
 - [Rooduijn, Kozen, Silva — A cyclic proof system for GKAT](https://arxiv.org/abs/2405.07505)
+
+## 460 — `SGKAT∞`'s rules, and the deepest statement yet of why `LeftDistrib` fails.
+
+WebFetch (WebSearch still budget-exhausted).
+
+Read the cyclic system's actual rules. A sequent is `Γ ⇒_A Δ` where **`A` is a
+set of ATOMS** — "tracks which Boolean states are active" — and validity is
+`A ⋄ ⟦Γ⟧ ⊆ ⟦Δ⟧`. The loop rule:
+
+```
+e, e^(b), Γ ⇒_{A↾b} Δ      Γ ⇒_{A↾b̄} Δ
+────────────────────────────────────────  while-ll
+            e^(b), Γ ⇒_A Δ
+```
+
+Soundness comes from **fairness**: *"every infinite branch is fair for
+`while-ll`, i.e. contains infinitely many applications of the rule `while-ll`"*.
+Cyclic proofs are regular derivations — *"finite trees with back edges"* — with
+distinct sequents bounded quadratically in syntax size.
+
+**Every device in that system has a counterpart this program built
+independently, which is worth recording as a check on both.**
+
+| `SGKAT∞` | this program |
+|---|---|
+| atom-set annotation `A`, split `A↾b` / `A↾b̄` | 408: *at a fixed atom the automaton is a partial function*, and 409's guard-cell expressibility |
+| `while-ll` unrolling | W1 unrolling — `fibConstant_of_unroll` (421) |
+| fairness (a Büchi condition) on infinite branches | a well-founded measure — `fibConstant_by_measure` (423) |
+| regular proof = finite tree with back edges | the cyclic structure the peel cannot express (417, 418) |
+
+**And it gives the cleanest statement of the obstruction I have reached.** The
+sequent system can carry `A` *through the proof*: after testing `b` it knows the
+live atoms are `A↾b`. The algebra cannot. Written out, `LeftDistrib` asks
+
+> `p·(a +_c b) ≡ p·a +_c p·b`
+
+and it fails because the left side tests `c` **on the atoms `p` produces**, while
+the right side tests `c` **on the atoms entering `p`**. The sequent system has a
+name for the first set — the annotation — and GKAT's syntax has none. **That is
+the whole difficulty, in one sentence: GKAT expressions cannot name the atom set
+reached after an action, and the cyclic system's completeness comes precisely
+from being able to.**
+
+**What this says about the translation route.** RKS's future-work question is to
+turn cyclic proofs into well-founded algebraic ones. Steps 1-2 look tractable —
+a regular proof is finite-state, and extracting a ranking from a Büchi condition
+on a finite-state structure is standard (progress measures). The break is at the
+last step: a rank-`n` measure would be discharged by `n` nested single-unknown
+eliminations, i.e. **Gaussian elimination in the order the measure gives** — and
+that is exactly what `LeftDistrib` blocks. So the obstruction survives the
+translation and reappears at its final step.
+
+**This also explains why 423 felt like the right shape and did not help.**
+`fibConstant_by_measure` is the well-founded shadow of the fairness condition; I
+built the measure without the thing it must discharge.
+
+**Odds: 25%, unchanged.** Understanding, not progress. But the obstruction is now
+stated in one line about atom sets rather than as a failed axiom schema, and it
+is the same line at the automaton level (408), the algebraic level
+(`LeftDistrib`), and the proof-theoretic level (the `A` annotation).
+
+**Next.** The one asymmetry worth probing: the sequent system's `A` is a *finite*
+set of atoms, and GKAT tests denote atom sets. So `A` is *expressible as a test*
+— the obstacle is not expressibility but that the algebra cannot **apply** a test
+to the post-state of an action. `test_seq_ite` (the frontier's third escape) is
+exactly the case where it can. That is where to push.
+
+Sources:
+- [Rooduijn, Kozen, Silva — A cyclic proof system for GKAT](https://arxiv.org/abs/2405.07505)
