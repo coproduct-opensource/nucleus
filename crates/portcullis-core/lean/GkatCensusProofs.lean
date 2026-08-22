@@ -15162,6 +15162,72 @@ theorem headedRegion_of_sourceHeadedIntrinsic {S Q : Type}
 
 #print axioms headedRegion_of_sourceHeadedIntrinsic
 
+/-- **What `nonRaw` firing MEANS.**  Sharper than 386's `bigOr` version: the
+non-raw part fires to `r` exactly when the state's whole step goes to `r` and `r`
+is not a raw target.  `disjoin` makes the guards exclusive, so the entry
+`firstMatch` selects in the filtered list is the entry it selects in the whole
+one. -/
+theorem firstMatch_nonRaw_iff {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (s : S) (r : A × S) :
+    GkatKleene.firstMatch W x (nonRaw aut lvl rank s) = some r ↔
+      (GkatKleene.autStep W aut s x = some r ∧
+        rawPred lvl rank s ((BExp.one : BExp T), r) = false) := by
+  constructor
+  · intro h
+    obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank s) r h
+    have hfm : GkatKleene.firstMatch W x (disjoin (aut.trans s)) = some r :=
+      firstMatch_of_exclusiveAt W x (disjoin (aut.trans s))
+        (disjoin_exclusive W x (aut.trans s)) (g, r) (List.mem_filter.mp hgm).1 hgb
+    refine ⟨?_, (Bool.not_eq_true' _).mp (List.mem_filter.mp hgm).2⟩
+    show GkatKleene.firstMatch W x (aut.trans s) = some r
+    rw [← firstMatch_disjoin W x (aut.trans s)]; exact hfm
+  · rintro ⟨hstep, hraw⟩
+    have hfm : GkatKleene.firstMatch W x (disjoin (aut.trans s)) = some r := by
+      rw [firstMatch_disjoin W x (aut.trans s)]; exact hstep
+    obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (disjoin (aut.trans s)) r hfm
+    exact firstMatch_filter_of_mem W x (disjoin (aut.trans s))
+      (disjoin_exclusive W x (aut.trans s)) _ (g, r) hgm
+      ((Bool.not_eq_true' _).mpr hraw) hgb
+
+/-- **The bridge to `LevelAgreementActive`.**  Agreement is really a statement
+about `autStep`: two states that take the same step at an atom, and classify its
+target the same way, have the same non-raw behaviour.
+
+This is what lets the `wh` facts — which are all about `firstMatch` on a loop's
+transition list — reach a predicate stated in terms of `nonRaw`. -/
+theorem agree_of_autStep_eq {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (a c : S) (r : A × S)
+    (hstep : GkatKleene.autStep W aut a x = GkatKleene.autStep W aut c x)
+    (hc : GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some r)
+    (hraw : rawPred lvl rank a ((BExp.one : BExp T), r) = false) :
+    GkatKleene.firstMatch W x (nonRaw aut lvl rank a) = some r := by
+  obtain ⟨hcstep, _⟩ := (firstMatch_nonRaw_iff W x aut lvl rank c r).mp hc
+  exact (firstMatch_nonRaw_iff W x aut lvl rank a r).mpr ⟨hstep.trans hcstep, hraw⟩
+
+#print axioms firstMatch_nonRaw_iff
+#print axioms agree_of_autStep_eq
+
+/-- **`hraw`, and the rank it prescribes.**  `agree_of_autStep_eq` needs each
+state to classify the shared target as NON-raw.  `rawPred` is a conjunction whose
+second half is `rank … target < rank … source`, so it suffices that the target
+does not rank below the source.
+
+For a `wh`, the shared target is the loop's entry, and the prescription is
+therefore concrete: **give the entry's target the top rank in its component**, and
+every back-edge is non-raw from every body state at once.  That is 368's
+"distance to the head" with the orientation fixed by what the proof needs rather
+than by which encoding scored better in a census (370/371). -/
+theorem rawPred_false_of_not_lt {S : Type} (lvl : S → Nat) (rank : Nat → S → Nat)
+    (a : S) (r : A × S)
+    (hmax : ¬ (rank (lvl a) r.2 < rank (lvl a) a)) :
+    rawPred lvl rank a ((BExp.one : BExp T), r) = false := by
+  show (decide (lvl r.2 = lvl a) && decide (rank (lvl a) r.2 < rank (lvl a) a)) = false
+  rw [decide_eq_false hmax, Bool.and_false]
+
+#print axioms rawPred_false_of_not_lt
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

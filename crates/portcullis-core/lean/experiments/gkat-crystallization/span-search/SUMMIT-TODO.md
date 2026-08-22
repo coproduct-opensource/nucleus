@@ -18404,3 +18404,40 @@ is tying these to `LevelAgreementActive`'s statement — which speaks of levels,
 
 **Next.** Connect the case analysis to `nonRaw`/`peelRawHlt`, which is where the
 statement actually lives.
+
+## 396 — the bridge to the predicate, and the rank the proof prescribes
+
+395's `wh` facts are all about `firstMatch` on a loop's transition list;
+`LevelAgreementActive` is about `nonRaw` and `peelRawHlt`. This iteration
+connects them.
+
+**`firstMatch_nonRaw_iff`** — sharper than 386's `bigOr` version: the non-raw part
+fires to `r` exactly when the state's whole step goes to `r` **and** `r` is not a
+raw target. `disjoin`'s exclusivity means the entry selected in the filtered list
+is the entry selected in the whole one.
+
+**`agree_of_autStep_eq`** — agreement is really a statement about `autStep`: two
+states taking the same step at an atom, classifying its target the same way, have
+the same non-raw behaviour. That is what lets the loop facts reach the predicate.
+
+**And the remaining input pins down the rank.** `agree_of_autStep_eq` needs each
+state to classify the shared target as non-raw. `rawPred` is a conjunction whose
+second half is `rank … target < rank … source`, so it is enough that the target
+does not rank below the source (`rawPred_false_of_not_lt`, axiom-free).
+
+For a `wh` the shared target is the loop's **entry**, so the prescription is
+concrete: **give the entry's target the top rank in its component**, and every
+back-edge is non-raw from every body state at once.
+
+That settles an orientation question I got wrong twice. 368 derived
+"distance to the head" by hand; 370 measured a pushforward and withdrew it; 371
+measured again with a better head definition and re-instated it. **The proof
+picks the orientation on its own** — it is whichever one makes every back-edge
+non-raw simultaneously — and it needed no census at all. Two iterations of
+measurement were spent on a question the obligation answers directly.
+
+**Odds: 96%, unchanged.** The `wh` case now has its facts, its bridge to the
+predicate, and its rank. What remains is `seq`/`ite` (no new cycles) and writing
+the induction itself.
+
+**Next.** `seq`/`ite`, then the induction.
