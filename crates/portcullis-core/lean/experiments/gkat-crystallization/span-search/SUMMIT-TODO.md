@@ -20481,3 +20481,55 @@ of the table has nineteen entries in it.
 **Next.** Grow the ≥ 3 cell: bias pair selection toward expressions with
 multi-state loops instead of taking behaviour classes in hash order, so the
 deciding regime gets thousands of samples rather than nineteen.
+
+## 433 — bias the sampling and the regime FAILS: 400 non-degenerate refuters, both predictors confirmed.
+
+Web search: exhausted (200/200).
+
+432 reported 19/19 clean in the component-≥3 regime and took five points. The
+deciding cell had nineteen entries because classes were taken in hash order. So
+bias the selection — keep only behaviour classes with a member whose own
+automaton has a component of size ≥ 3 — and the cell grows by three orders of
+magnitude.
+
+| | G=4 | **G=6** |
+|---|---|---|
+| pullbacks with a component ≥ 3 | 178 | **1,306** |
+| of those, satisfiable | 178 | **1,054** |
+| of those, **UNSATISFIABLE** | **0** | **252 (19%)** |
+| reducible | 106 sat / 0 unsat | **17,267 sat / 12 unsat** |
+| irreducible | 95 sat / 0 unsat | **6,352 sat / 388 unsat** |
+| largest component | 6 | **8** |
+
+**432's clean sweep was a sample-size artefact — the fifth in this program**, and
+the second in a row that was mine. At G=4 the biased population still had only
+178 cases in the deciding cell and every one passed; at G=6 there are 1,306 and
+nearly a fifth fail.
+
+**Both predictors are confirmed, and 432's undercut of them is withdrawn.**
+
+* **Component size**: 19% failure at ≥ 3 against 1.7% overall — an 11x
+  enrichment. 425's cross-tab was right.
+* **Irreducibility**: 388/6,740 = 5.8% failure against 12/17,279 = 0.07% for
+  reducible — an **85x** enrichment. 423/424's mechanism is real; 432's "it fails
+  to fail there" was reading a sample that contained no failures at all.
+
+**These pairs are NOT axiom-degenerate.** They come from behaviour classes of the
+expression enumeration — distinct expressions that happen to be language-
+equivalent — not from a construction built on an axiom identity as 429's were. So
+431's "non-degenerate failures: none confirmed" is now false: **there are 400.**
+
+**The one caveat that survives.** Every failure here is on the FORCED pullback,
+and 430 showed the bisimulation collapse rescues about a third of such failures.
+So the true non-degenerate failure rate is perhaps ~1%, not 1.7% — but it is not
+zero, which is what matters.
+
+**Odds: 55% → 45%.** The architecture demonstrably fails on genuinely distinct,
+non-degenerate equivalent pairs, concentrated exactly where 423-425 predicted.
+That is the first confirmed non-degenerate refutation in this program, and it
+costs back the ten points that 431 and 432 added on the strength of samples too
+small to contain a failure.
+
+**Next.** Take one of the 12 REDUCIBLE failures — the rarest and therefore
+sharpest class, since irreducibility is not available as an excuse — and
+determine whether any quotient of that pair satisfies the hypothesis.

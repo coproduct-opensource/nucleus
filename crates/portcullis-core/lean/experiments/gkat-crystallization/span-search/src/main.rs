@@ -3493,6 +3493,19 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     // group by behaviour
     let mut byb: std::collections::HashMap<Vec<u8>, Vec<usize>> = std::collections::HashMap::new();
     for (i, a) in exprs.iter().enumerate() { byb.entry(behaviour(a)).or_default().push(i); }
+    // 433: taking classes in hash order gives only ~19 pullbacks with a
+    // component >= 3 out of 200k.  Bias selection: keep only classes with a
+    // member whose own automaton has a component of size >= 3, so the deciding
+    // regime gets sampled instead of being reached by accident.
+    let bigbias = std::env::var("BIGBIAS").is_ok();
+    let own_max_comp = |a: &Aut<NA>| -> usize {
+        sccs_of(a).iter().map(|c| {
+            if c.len() == 1 {
+                let u = c[0];
+                if (0..NA).any(|x| a.st[u][x] == (u + 1) as u8) { 1 } else { 0 }
+            } else { c.len() }
+        }).max().unwrap_or(0)
+    };
     let mut classes = 0usize;
     let (mut pairs, mut pb_ok, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize);
     let mut skipped_big = 0usize;
@@ -3503,6 +3516,7 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     let mut first_bad: Option<String> = None;
     'outer: for (_k, idxs) in byb.iter() {
         if idxs.len() < 2 { continue; }
+        if bigbias && !idxs.iter().any(|&i| own_max_comp(&exprs[i]) >= 3) { continue; }
         classes += 1;
         for ii in 0..idxs.len() {
             for jj in (ii + 1)..idxs.len() {
