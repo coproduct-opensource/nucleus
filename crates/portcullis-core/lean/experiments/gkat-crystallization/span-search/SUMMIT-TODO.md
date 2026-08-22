@@ -15655,3 +15655,64 @@ build a quotient in peeled form, then transport the solution back with
 **Next.** The peel construction, exploiting the freedom: given a level's states
 and their behaviour, emit `base`, `mid` and `sys` directly — the generic version
 of `d2Base`/`d2Mid`/`d2Sys`.
+
+## 341 — the peel constructed, every level at once
+
+340 showed the quotient's transition lists are ours to choose. 341 spends that
+freedom: the layers are no longer *exhibited* for a given system, they are
+*emitted*.
+
+**One level.** `loopPeel` and `seqPeel` build the intermediate and outer systems
+from the trimmed one; `loopPeel_layer` and `seqPeel_layer` are the layer
+structures, **axiom-free**. Level equality is decidable, so the `if`s cost no
+`Classical`. `regionLevelSyn_of_peel` turns four finite list checks into
+`RegionLevelSyn`.
+
+**Every level at once — and this is where the shape had to change.**
+`SyntacticallyLayered` needs every level regional *for the same system*, and both
+layer structures carry an `outside` field insisting `mid` and `base` agree off
+the region. So level `n`'s intermediates cannot be "raw plus level `n`'s layers":
+they must be **the fully peeled system with level `n`'s two layers removed**.
+Peeling level by level and composing does not typecheck, and that is not a
+technicality — it is the statement that each level is peeled *in situ*.
+
+```lean
+def peeledSys raw bs h₀s loops exits lvl   -- every level's layers, simultaneously
+def midSys  … n   -- peeledSys with level n's EXIT layer stripped back to raw
+def baseSys … n   -- peeledSys with BOTH of level n's layers stripped
+```
+
+`midSys_loopLayer` and `peeledSys_seqLayer` — **both axiom-free**. Then
+`regionLevelSyn_peeled`, `peeled_mono`, and the capstone:
+
+```lean
+theorem syntacticallyLayered_peeled (raw bs h₀s loops exits lvl rank B)
+    (hbound) (hraw) (hloopIn) (hexitLe) (hexit) (hrawIn) (hrawRank) :
+    SyntacticallyLayered (peeledSys raw bs h₀s loops exits lvl)
+```
+
+and `solvesBA_peeled`, which delivers `∃ sol, SolvesBA aut sol` for the
+corresponding G-automaton — the exact form `hsolve` consumes.
+
+**What the hypotheses actually say.** Read plainly: the raw system's transitions
+never raise the level, its intra-level edges are **ranked** (so raw is the
+automaton with its back-edges removed), the per-level `loops` are the back-edges
+(targets in their own level), and the per-level `exits` leave the level
+downward. That is a complete recipe, and every conjunct is a finite check.
+
+**What is left, stated honestly.** `solvesBA_peeled` solves the system it
+*builds*. `hcollapse` needs it to solve the quotient it is *handed*. The bridge
+is 340's `solvesBA_of_behaviour`, and its premise is the remaining obligation:
+
+> given a quotient, split each state's transition list into `raw`, `loops` and
+> `exits` such that the gated reassembly selects the same transition at every
+> atom.
+
+The gating is `and (raw.hlt s) (and b tr.1)` for loops and
+`and (and (raw.hlt s) (not b)) tr.1` for exits, so the split is not free — it is
+a guard-algebra obligation, and it is the one thing between here and the
+certificate. 337 already showed the per-state selector that makes shared entries
+harmless; this is the same question asked of the whole level at once.
+
+**Next.** That split: from a quotient's lists, produce `raw`/`loops`/`exits` and
+prove `firstMatch` agreement.

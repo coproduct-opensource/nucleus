@@ -11584,6 +11584,332 @@ end ShapeFreedom
 #print axioms eqRHS_equiv_of_behaviour
 #print axioms solvesBA_of_behaviour
 
+
+section GenericPeel
+
+/-! ### The peel, constructed rather than exhibited
+
+340 established that a quotient's transition lists are ours to choose.  So the
+layers need not be found in a system handed over — they can be *built*.  These
+two constructors are the generic form of `d2Base`/`d2Mid`/`d2Sys`: given the
+trimmed system and the loop and exit data, they emit the intermediate and outer
+systems, and the layer structures hold by construction.
+
+Level equality is decidable, so the `if`s cost nothing — no `Classical` here. -/
+
+/-- Add one loop layer over `base` at the states of level `n`. -/
+def loopPeel {S : Type} (base : GkatThompson.GSystem S A T) (b : BExp T)
+    (loopEntry : List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    GkatThompson.GSystem S A T where
+  states := base.states
+  hlt := fun s => if lvl s = n then BExp.and (base.hlt s) (BExp.not b) else base.hlt s
+  trans := fun s => if lvl s = n then base.trans s ++ loopEntry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)) else base.trans s
+
+/-- Add the exit layer over `mid` at the states of level `n`. -/
+def seqPeel {S : Type} (mid : GkatThompson.GSystem S A T) (h₀ : BExp T)
+    (entry : List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    GkatThompson.GSystem S A T where
+  states := mid.states
+  hlt := fun s => if lvl s = n then BExp.and (mid.hlt s) h₀ else mid.hlt s
+  trans := fun s => if lvl s = n then mid.trans s ++ entry.map (fun tr =>
+      (BExp.and (mid.hlt s) tr.1, tr.2)) else mid.trans s
+
+theorem loopPeel_layer {S : Type} (base : GkatThompson.GSystem S A T) (b : BExp T)
+    (loopEntry : List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    LoopLayerOn (loopPeel base b loopEntry lvl n) base b loopEntry
+      (fun s => ¬ (lvl s ≠ n)) := by
+  refine LoopLayerOn.ofSyntactic (fun s hs => ?_) (fun s hs => ?_) (fun s hs => ?_) rfl
+  · show (if lvl s = n then _ else _) = _
+    rw [if_pos (level_dom lvl n s hs)]
+  · show (if lvl s = n then _ else _) = _
+    rw [if_pos (level_dom lvl n s hs)]
+  · have hne : lvl s ≠ n := Decidable.not_not.mp hs
+    exact ⟨by show (if lvl s = n then _ else _) = _; rw [if_neg hne],
+           by show (if lvl s = n then _ else _) = _; rw [if_neg hne]⟩
+
+theorem seqPeel_layer {S : Type} (mid : GkatThompson.GSystem S A T) (h₀ : BExp T)
+    (entry : List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    SeqLayer (seqPeel mid h₀ entry lvl n) mid h₀ entry (fun s => ¬ (lvl s ≠ n)) where
+  trans_eq := fun s hs => by
+    show (if lvl s = n then _ else _) = _
+    rw [if_pos (level_dom lvl n s hs)]
+  hlt_eq := fun s hs => by
+    show (if lvl s = n then _ else _) = _
+    rw [if_pos (level_dom lvl n s hs)]
+  outside := fun s hs => by
+    have hne : lvl s ≠ n := Decidable.not_not.mp hs
+    exact ⟨by show (if lvl s = n then _ else _) = _; rw [if_neg hne],
+           by show (if lvl s = n then _ else _) = _; rw [if_neg hne]⟩
+  states_eq := rfl
+
+/-- **THE GENERIC PEEL.**  From the trimmed system and the loop/exit data, plus
+four finite checks on the lists, the constructed system's level `n` is regional.
+Nothing is exhibited by hand — `d2_region_one` is this theorem's instance. -/
+theorem regionLevelSyn_of_peel {S : Type} (base : GkatThompson.GSystem S A T)
+    (lvl : S → Nat) (n : Nat) (b h₀ : BExp T)
+    (entry loopEntry : List (BExp T × A × S)) (rank : S → Nat) (t : S)
+    (hlt : lvl t = n)
+    (hentry : ∀ tr ∈ entry, lvl tr.2.2 ≠ n)
+    (hloopIn : ∀ tr ∈ loopEntry, lvl tr.2.2 = n)
+    (hbaseIn : ∀ s, lvl s = n → ∀ tr ∈ base.trans s, lvl tr.2.2 = n)
+    (hrank : ∀ s, lvl s = n → ∀ tr ∈ base.trans s,
+      lvl tr.2.2 ≠ n ∨ rank tr.2.2 < rank s) :
+    RegionLevelSyn (seqPeel (loopPeel base b loopEntry lvl n) h₀ entry lvl n) lvl n := by
+  refine ⟨loopPeel base b loopEntry lvl n, base, h₀, b, entry, loopEntry, rank, t,
+    hlt, seqPeel_layer _ _ _ _ _, hentry, loopPeel_layer _ _ _ _ _,
+    fun s hs tr htr => ?_, hrank⟩
+  have htr' : tr ∈ base.trans s ++ loopEntry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)) := by
+    have : (loopPeel base b loopEntry lvl n).trans s
+        = base.trans s ++ loopEntry.map (fun tr =>
+            (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)) := by
+      show (if lvl s = n then _ else _) = _
+      rw [if_pos hs]
+    rw [← this]; exact htr
+  cases List.mem_append.mp htr' with
+  | inl hl => exact hbaseIn s hs tr hl
+  | inr hr =>
+      obtain ⟨tr', htr', heq⟩ := List.mem_map.mp hr
+      rw [← heq]
+      exact hloopIn tr' htr'
+
+end GenericPeel
+
+#print axioms loopPeel_layer
+#print axioms seqPeel_layer
+#print axioms regionLevelSyn_of_peel
+
+
+section SimultaneousPeel
+
+/-! ### Every level peeled at once
+
+`regionLevelSyn_of_peel` peels ONE level, but `SyntacticallyLayered` needs every
+level regional **for the same system**, and the layer structures' `outside`
+fields insist that `mid` and `base` agree off the region.  So the intermediate
+systems for level `n` cannot be "the raw system plus level `n`'s layers" — they
+must be the fully peeled system with level `n`'s two layers *removed*.
+
+That is what these three definitions do: `peeledSys` carries every level's layers
+simultaneously, and `midSys n` / `baseSys n` strip level `n`'s back to the raw
+lists while leaving all other levels alone. -/
+
+variable {S : Type}
+
+/-- Every level's exit layer over every level's loop layer, at once. -/
+def peeledSys (raw : GkatThompson.GSystem S A T) (bs h₀s : Nat → BExp T)
+    (loops exits : Nat → List (BExp T × A × S)) (lvl : S → Nat) :
+    GkatThompson.GSystem S A T where
+  states := raw.states
+  hlt := fun s => BExp.and (BExp.and (raw.hlt s) (BExp.not (bs (lvl s)))) (h₀s (lvl s))
+  trans := fun s =>
+    (raw.trans s ++ (loops (lvl s)).map (fun tr =>
+      (BExp.and (raw.hlt s) (BExp.and (bs (lvl s)) tr.1), tr.2)))
+    ++ (exits (lvl s)).map (fun tr =>
+      (BExp.and (BExp.and (raw.hlt s) (BExp.not (bs (lvl s)))) tr.1, tr.2))
+
+/-- The peeled system with level `n`'s EXIT layer removed. -/
+def midSys (raw : GkatThompson.GSystem S A T) (bs h₀s : Nat → BExp T)
+    (loops exits : Nat → List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    GkatThompson.GSystem S A T where
+  states := raw.states
+  hlt := fun s => if lvl s = n then BExp.and (raw.hlt s) (BExp.not (bs n))
+    else (peeledSys raw bs h₀s loops exits lvl).hlt s
+  trans := fun s => if lvl s = n then
+      raw.trans s ++ (loops n).map (fun tr =>
+        (BExp.and (raw.hlt s) (BExp.and (bs n) tr.1), tr.2))
+    else (peeledSys raw bs h₀s loops exits lvl).trans s
+
+/-- The peeled system with BOTH of level `n`'s layers removed. -/
+def baseSys (raw : GkatThompson.GSystem S A T) (bs h₀s : Nat → BExp T)
+    (loops exits : Nat → List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    GkatThompson.GSystem S A T where
+  states := raw.states
+  hlt := fun s => if lvl s = n then raw.hlt s
+    else (peeledSys raw bs h₀s loops exits lvl).hlt s
+  trans := fun s => if lvl s = n then raw.trans s
+    else (peeledSys raw bs h₀s loops exits lvl).trans s
+
+theorem midSys_loopLayer (raw : GkatThompson.GSystem S A T) (bs h₀s : Nat → BExp T)
+    (loops exits : Nat → List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    LoopLayerOn (midSys raw bs h₀s loops exits lvl n)
+      (baseSys raw bs h₀s loops exits lvl n) (bs n) (loops n)
+      (fun s => ¬ (lvl s ≠ n)) := by
+  refine LoopLayerOn.ofSyntactic (fun s hs => ?_) (fun s hs => ?_) (fun s hs => ?_) rfl
+  · have h : lvl s = n := level_dom lvl n s hs
+    show (if lvl s = n then _ else _) = _
+    rw [if_pos h]
+    show _ = (if lvl s = n then _ else _) ++ _
+    rw [if_pos h]
+    show _ = _ ++ (loops n).map (fun tr =>
+      (BExp.and ((baseSys raw bs h₀s loops exits lvl n).hlt s) (BExp.and (bs n) tr.1), tr.2))
+    have hb : (baseSys raw bs h₀s loops exits lvl n).hlt s = raw.hlt s := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos h]
+    rw [hb]
+  · have h : lvl s = n := level_dom lvl n s hs
+    show (if lvl s = n then _ else _) = _
+    rw [if_pos h]
+    have hb : (baseSys raw bs h₀s loops exits lvl n).hlt s = raw.hlt s := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos h]
+    rw [hb]
+  · have hne : lvl s ≠ n := Decidable.not_not.mp hs
+    refine ⟨?_, ?_⟩
+    · show (if lvl s = n then _ else _) = _
+      rw [if_neg hne]
+      show _ = (if lvl s = n then _ else _)
+      rw [if_neg hne]
+    · show (if lvl s = n then _ else _) = _
+      rw [if_neg hne]
+      show _ = (if lvl s = n then _ else _)
+      rw [if_neg hne]
+
+theorem peeledSys_seqLayer (raw : GkatThompson.GSystem S A T) (bs h₀s : Nat → BExp T)
+    (loops exits : Nat → List (BExp T × A × S)) (lvl : S → Nat) (n : Nat) :
+    SeqLayer (peeledSys raw bs h₀s loops exits lvl)
+      (midSys raw bs h₀s loops exits lvl n) (h₀s n) (exits n)
+      (fun s => ¬ (lvl s ≠ n)) where
+  trans_eq := fun s hs => by
+    have h : lvl s = n := level_dom lvl n s hs
+    show (raw.trans s ++ _) ++ _ = _
+    have hm : (midSys raw bs h₀s loops exits lvl n).trans s
+        = raw.trans s ++ (loops n).map (fun tr =>
+          (BExp.and (raw.hlt s) (BExp.and (bs n) tr.1), tr.2)) := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos h]
+    have hmh : (midSys raw bs h₀s loops exits lvl n).hlt s
+        = BExp.and (raw.hlt s) (BExp.not (bs n)) := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos h]
+    rw [hm, hmh, h]
+  hlt_eq := fun s hs => by
+    have h : lvl s = n := level_dom lvl n s hs
+    have hmh : (midSys raw bs h₀s loops exits lvl n).hlt s
+        = BExp.and (raw.hlt s) (BExp.not (bs n)) := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos h]
+    show BExp.and (BExp.and (raw.hlt s) (BExp.not (bs (lvl s)))) (h₀s (lvl s)) = _
+    rw [hmh, h]
+  outside := fun s hs => by
+    have hne : lvl s ≠ n := Decidable.not_not.mp hs
+    refine ⟨?_, ?_⟩
+    · show _ = (if lvl s = n then _ else _); rw [if_neg hne]
+    · show _ = (if lvl s = n then _ else _); rw [if_neg hne]
+  states_eq := rfl
+
+/-- Level `n` of the simultaneously peeled system is regional, from four finite
+checks on the raw lists and the two entry lists. -/
+theorem regionLevelSyn_peeled {S : Type} (raw : GkatThompson.GSystem S A T)
+    (bs h₀s : Nat → BExp T) (loops exits : Nat → List (BExp T × A × S))
+    (lvl : S → Nat) (rank : Nat → S → Nat) (n : Nat) (t : S) (hlt : lvl t = n)
+    (hexit : ∀ tr ∈ exits n, lvl tr.2.2 ≠ n)
+    (hloopIn : ∀ tr ∈ loops n, lvl tr.2.2 = n)
+    (hrawIn : ∀ s, lvl s = n → ∀ tr ∈ raw.trans s, lvl tr.2.2 = n)
+    (hrawRank : ∀ s, lvl s = n → ∀ tr ∈ raw.trans s, rank n tr.2.2 < rank n s) :
+    RegionLevelSyn (peeledSys raw bs h₀s loops exits lvl) lvl n := by
+  refine ⟨midSys raw bs h₀s loops exits lvl n, baseSys raw bs h₀s loops exits lvl n,
+    h₀s n, bs n, exits n, loops n, rank n, t, hlt,
+    peeledSys_seqLayer raw bs h₀s loops exits lvl n, hexit,
+    midSys_loopLayer raw bs h₀s loops exits lvl n, fun s hs tr htr => ?_,
+    fun s hs tr htr => ?_⟩
+  · have hm : (midSys raw bs h₀s loops exits lvl n).trans s
+        = raw.trans s ++ (loops n).map (fun tr =>
+          (BExp.and (raw.hlt s) (BExp.and (bs n) tr.1), tr.2)) := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos hs]
+    rw [hm] at htr
+    cases List.mem_append.mp htr with
+    | inl hl => exact hrawIn s hs tr hl
+    | inr hr =>
+        obtain ⟨tr', htr', heq⟩ := List.mem_map.mp hr
+        rw [← heq]; exact hloopIn tr' htr'
+  · have hb : (baseSys raw bs h₀s loops exits lvl n).trans s = raw.trans s := by
+      show (if lvl s = n then _ else _) = _; rw [if_pos hs]
+    rw [hb] at htr
+    exact Or.inr (hrawRank s hs tr htr)
+
+/-- `hmono` for the peeled system, from the same finite checks.  The peel adds
+only loop entries (which stay in the level) and exit entries (which leave it
+downward), so no transition raises the level. -/
+theorem peeled_mono {S : Type} (raw : GkatThompson.GSystem S A T)
+    (bs h₀s : Nat → BExp T) (loops exits : Nat → List (BExp T × A × S))
+    (lvl : S → Nat)
+    (hraw : ∀ s, ∀ tr ∈ raw.trans s, lvl tr.2.2 ≤ lvl s)
+    (hloop : ∀ n, ∀ tr ∈ loops n, lvl tr.2.2 ≤ n)
+    (hexit : ∀ n, ∀ tr ∈ exits n, lvl tr.2.2 ≤ n) :
+    ∀ s, ∀ tr ∈ (peeledSys raw bs h₀s loops exits lvl).trans s,
+      lvl tr.2.2 ≤ lvl s := by
+  intro s tr htr
+  have hs : (peeledSys raw bs h₀s loops exits lvl).trans s
+      = (raw.trans s ++ (loops (lvl s)).map (fun tr =>
+          (BExp.and (raw.hlt s) (BExp.and (bs (lvl s)) tr.1), tr.2)))
+        ++ (exits (lvl s)).map (fun tr =>
+          (BExp.and (BExp.and (raw.hlt s) (BExp.not (bs (lvl s)))) tr.1, tr.2)) := rfl
+  rw [hs] at htr
+  cases List.mem_append.mp htr with
+  | inr hr =>
+      obtain ⟨tr', htr', heq⟩ := List.mem_map.mp hr
+      rw [← heq]; exact hexit (lvl s) tr' htr'
+  | inl hl =>
+      cases List.mem_append.mp hl with
+      | inl h => exact hraw s tr h
+      | inr hr =>
+          obtain ⟨tr', htr', heq⟩ := List.mem_map.mp hr
+          rw [← heq]; exact hloop (lvl s) tr' htr'
+
+#print axioms regionLevelSyn_peeled
+#print axioms peeled_mono
+
+/-- **THE CONSTRUCTION, ASSEMBLED.**  A raw system whose transitions never raise
+the level and whose intra-level edges are ranked, plus per-level loop and exit
+lists that respect the level, yields a peeled system that is
+`SyntacticallyLayered` — hence solvable. Nothing is exhibited by hand. -/
+theorem syntacticallyLayered_peeled {S : Type} (raw : GkatThompson.GSystem S A T)
+    (bs h₀s : Nat → BExp T) (loops exits : Nat → List (BExp T × A × S))
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat)
+    (hbound : ∀ s, lvl s < B)
+    (hraw : ∀ s, ∀ tr ∈ raw.trans s, lvl tr.2.2 ≤ lvl s)
+    (hloopIn : ∀ n, ∀ tr ∈ loops n, lvl tr.2.2 = n)
+    (hexitLe : ∀ n, ∀ tr ∈ exits n, lvl tr.2.2 ≤ n)
+    (hexit : ∀ n, ∀ tr ∈ exits n, lvl tr.2.2 ≠ n)
+    (hrawIn : ∀ n s, lvl s = n → ∀ tr ∈ raw.trans s, lvl tr.2.2 = n)
+    (hrawRank : ∀ n s, lvl s = n → ∀ tr ∈ raw.trans s, rank n tr.2.2 < rank n s) :
+    SyntacticallyLayered (peeledSys raw bs h₀s loops exits lvl) := by
+  refine ⟨lvl, B, hbound,
+    peeled_mono raw bs h₀s loops exits lvl hraw
+      (fun n tr htr => Nat.le_of_eq (hloopIn n tr htr)) hexitLe, fun n => ?_⟩
+  cases Classical.em (∃ t, lvl t = n) with
+  | inr hno => exact Or.inl (fun s hsn => hno ⟨s, hsn⟩)
+  | inl hyes =>
+      exact Or.inr (regionLevelSyn_peeled raw bs h₀s loops exits lvl rank n
+        (Classical.choose hyes) (Classical.choose_spec hyes) (hexit n) (hloopIn n)
+        (hrawIn n) (hrawRank n))
+
+/-- The same, delivered as a `SolvesBA` solution of the corresponding
+G-automaton — the form `sumQuotientSolvable_of_certificate`'s `hsolve` consumes. -/
+theorem solvesBA_peeled {S : Type} (raw : GkatThompson.GSystem S A T)
+    (bs h₀s : Nat → BExp T) (loops exits : Nat → List (BExp T × A × S))
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat) (start : S)
+    (hbound : ∀ s, lvl s < B)
+    (hraw : ∀ s, ∀ tr ∈ raw.trans s, lvl tr.2.2 ≤ lvl s)
+    (hloopIn : ∀ n, ∀ tr ∈ loops n, lvl tr.2.2 = n)
+    (hexitLe : ∀ n, ∀ tr ∈ exits n, lvl tr.2.2 ≤ n)
+    (hexit : ∀ n, ∀ tr ∈ exits n, lvl tr.2.2 ≠ n)
+    (hrawIn : ∀ n s, lvl s = n → ∀ tr ∈ raw.trans s, lvl tr.2.2 = n)
+    (hrawRank : ∀ n s, lvl s = n → ∀ tr ∈ raw.trans s, rank n tr.2.2 < rank n s) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA
+      { states := (peeledSys raw bs h₀s loops exits lvl).states
+        hlt := (peeledSys raw bs h₀s loops exits lvl).hlt
+        trans := (peeledSys raw bs h₀s loops exits lvl).trans
+        start := start } sol :=
+  solvesBA_of_syntacticallyLayered _
+    (syntacticallyLayered_peeled raw bs h₀s loops exits lvl rank B hbound hraw
+      hloopIn hexitLe hexit hrawIn hrawRank)
+
+#print axioms syntacticallyLayered_peeled
+#print axioms solvesBA_peeled
+
+end SimultaneousPeel
+
+#print axioms midSys_loopLayer
+#print axioms peeledSys_seqLayer
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
