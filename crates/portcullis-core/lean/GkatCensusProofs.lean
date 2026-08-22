@@ -8811,7 +8811,8 @@ inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop)
       something a sequence layer may point at. -/
   | split {S : Type} {sys : GkatThompson.GSystem S A T} {P C : S → Prop} :
       (∀ s, P s → ¬ C s) →
-      (∀ s, C s → ∀ tr ∈ sys.trans s, C tr.2.2) →
+      (∀ s, C s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2) →
       LayeredOn sys (fun s => ¬ C s) →
       LayeredOn sys (fun s => P s ∨ C s) →
       LayeredOn sys P
@@ -8897,13 +8898,14 @@ theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A 
         rw [hin2 s (Or.inl hs), hin1 s (hdisj s hs)]
       · intro s hs
         by_cases hC : C s
-        · have hagree : ∀ tr ∈ sys.trans s, sol2 tr.2.2 = sol1 tr.2.2 :=
-            fun tr htr => hin2 tr.2.2 (Or.inr (hCclosed s hC tr htr))
-          have hcongr : GkatThompson.eqRHSParam sys sol2 F s
-              = GkatThompson.eqRHSParam sys sol1 F s :=
-            guardedFold_trans_congr _ sol2 sol1 (sys.trans s) hagree
-          rw [hcongr, hin2 s (Or.inr hC)]
-          exact hout1 s (fun h => h hC)
+        · have hcongr : EquivBA (GkatThompson.eqRHSParam sys sol2 F s)
+              (GkatThompson.eqRHSParam sys sol1 F s) := by
+            refine fold_congr_step sys s _ sol2 sol1 ?_
+            intro X W x r hfm
+            rw [hin2 r.2 (Or.inr (hCclosed s hC X W x r hfm))]
+            exact EquivBA.base (Equiv.refl _)
+          rw [hin2 s (Or.inr hC)]
+          exact EquivBA.trans (hout1 s (fun h => h hC)) (EquivBA.symm hcongr)
         · exact hout2 s (fun h => h.elim hs hC)
 
 #print axioms layeredOn_has_solution
@@ -9132,5 +9134,69 @@ theorem acyclic_bisim_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A 
 #print axioms acyclic_bisim_pushforward
 
 end AcyclicBisimPush
+
+
+/-! ### 299 — BLOCKS CAN BE SATURATED
+
+    298 showed the pushforward induction closes exactly when every block in the
+    derivation is a UNION OF CLASSES, and left that as a condition the collapse
+    might not grant.  But the blocks come from `split`, and `split`'s blocks are
+    OURS to choose.  So the question is whether a block can always be REPLACED
+    by its class-saturation while staying admissible, and the answer is yes for
+    the property `split` actually needs:
+
+        the saturation of a CLOSED set is CLOSED.
+
+    If `s ~ t` with `t` in the block and `s` steps to `s'`, the bisimulation
+    gives `t` a matching step to some `t'` with `s' ~ t'`, and closure puts `t'`
+    in the block — so `s'` is in the saturation.
+
+    **Why this required weakening `split` first.**  The argument produces a
+    matching step, and steps are SELECTIONS, not list members: a dead branch of
+    `s` has no counterpart at `t` at all.  So the saturation is closed under
+    `firstMatch` steps and NOT under list membership.  `split` asked for the
+    latter.  It has been weakened to the former, and its case in
+    `layeredOn_has_solution` now goes through `fold_congr_step` (292) instead of
+    `guardedFold_trans_congr` — the same list-versus-selection trade 283 made,
+    paying syntactic equality for `EquivBA` and getting the weaker hypothesis in
+    return.
+
+    **What is still open.**  Saturating a block enlarges it, so the two
+    subderivations `split` demands must survive the enlargement: the block must
+    still be solvable, and it must still be disjoint from `P`.  Neither is
+    automatic. -/
+theorem saturation_closed {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (f : S → S') (C : S → Prop)
+    (hC : ∀ s, C s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2)
+    (hbisim : ∀ s t : S, f s = f t → ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x (sys.trans s)).map (fun q => (q.1, f q.2))
+        = (GkatKleene.firstMatch W x (sys.trans t)).map (fun q => (q.1, f q.2))) :
+    ∀ s, (∃ t, f t = f s ∧ C t) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r →
+          ∃ u, f u = f r.2 ∧ C u := by
+  intro s hs X W x r hfm
+  obtain ⟨t, hft, hCt⟩ := hs
+  have hb := hbisim t s hft X W x
+  rw [hfm] at hb
+  cases hfm0 : GkatKleene.firstMatch W x (sys.trans t) with
+  | none => rw [hfm0] at hb; exact absurd hb (by simp)
+  | some qt =>
+      rw [hfm0] at hb
+      have hq : f qt.2 = f r.2 := by
+        simp only [Option.map_some] at hb
+        exact congrArg Prod.snd (Option.some.inj hb)
+      exact ⟨qt.2, hq, hC t hCt X W x qt hfm0⟩
+
+/-- And a saturated block is a UNION OF CLASSES by construction — the property
+    298 showed the induction needs. -/
+theorem saturation_is_union {S S' : Type} (f : S → S') (C : S → Prop)
+    (s t : S) (hf : f s = f t) :
+    (∃ u, f u = f s ∧ C u) → (∃ u, f u = f t ∧ C u) :=
+  fun ⟨u, hu, hCu⟩ => ⟨u, by rw [hu, hf], hCu⟩
+
+#print axioms saturation_closed
+#print axioms saturation_is_union
 
 end GkatCensus

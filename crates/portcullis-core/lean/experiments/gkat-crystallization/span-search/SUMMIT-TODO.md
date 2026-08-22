@@ -13819,3 +13819,49 @@ clearest reason yet why.
 blocks are unions of classes — the splits are ours to choose, even if the
 collapse is not; or (b) drop the derivation-pushforward strategy and build the
 downstairs derivation directly by induction on the EXPRESSION.
+
+---
+
+## 299 — BLOCKS CAN BE SATURATED.
+
+298 showed the pushforward induction closes exactly when every block is a UNION
+OF CLASSES, and left that as a condition the collapse might not grant.  But
+**the blocks come from `split`, and `split`'s blocks are OURS to choose.**  So
+the question is whether a block can always be REPLACED by its class-saturation,
+and for the property `split` actually needs the answer is yes:
+
+    THE SATURATION OF A CLOSED SET IS CLOSED.
+
+If `s ~ t` with `t` in the block and `s` steps to `s'`, the bisimulation gives
+`t` a matching step to some `t'` with `s' ~ t'`, and closure puts `t'` in the
+block — so `s'` is in the saturation.  `saturation_closed` (`propext` alone);
+`saturation_is_union` (NO axioms).
+
+**Why this required weakening `split` first, and what it cost.**  The argument
+produces a MATCHING STEP, and steps are SELECTIONS, not list members — a dead
+branch of `s` has no counterpart at `t` at all.  So the saturation is closed
+under `firstMatch` steps and NOT under list membership, which is what `split`
+asked for.  `split` has been weakened to the selection form, and its case in
+`layeredOn_has_solution` now goes through `fold_congr_step` (292) instead of
+`guardedFold_trans_congr` — **the same list-versus-selection trade 283 made**,
+paying syntactic equality for `EquivBA` and getting the weaker hypothesis in
+return.  That this trade keeps coming up, always in the same direction, is now
+a pattern worth naming: **whenever a hypothesis is too strong, check whether it
+is asking about the LIST when the proof only observes the SELECTION.**
+
+**What is still open, and it is the substantive part.**  Saturating a block
+ENLARGES it, so `split`'s two subderivations must survive the enlargement: the
+enlarged block must still be SOLVABLE, and still DISJOINT from `P`.  Neither is
+automatic, and the first is the real question — in the completeness application
+the saturation of `f`'s states includes every `e`-state bisimilar to one, so the
+enlarged block mixes the two halves.
+
+**Odds: 98%, HELD.**  298's condition is now shown ARRANGEABLE in principle,
+which recovers part of what 298 cost — but "the enlarged block is still
+solvable" is untouched, and it is where the difficulty moved rather than
+vanished.
+
+**Next.**  Whether a saturated block is still solvable: it is closed and a union
+of classes, and it is the image of a solvable region under the collapse — which
+is the same question one level down, so the honest move is to check whether the
+recursion on saturated blocks is WELL-FOUNDED before assuming it terminates.
