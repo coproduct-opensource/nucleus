@@ -7690,6 +7690,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         llee_test::<NA>(nguards as u8);
         return;
     }
+    if std::env::var("PAD_BODY_COND").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(2);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(120);
+        body_cond::<NA>(nguards as u8, rounds, cap);
+        return;
+    }
     if std::env::var("PAD_MIXED_ENTRY").is_ok() {
         let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(2);
@@ -11584,6 +11592,136 @@ fn productive_states<const NA: usize>(a: &Aut<NA>) -> [bool; MAXK] {
         if !changed { break; }
     }
     p
+}
+
+/// **`PAD_BODY_COND`** (iteration 328).
+///
+/// 327 replaced the blanket `hout` by exactly two conditions: `hentry` at a
+/// loop's entry targets — 322 measured that one favourably — and `hbody` at the
+/// BODY's transition targets, which nothing has measured.
+///
+/// `hbody` says: for a class OUTSIDE the block, every transition target's class
+/// is also outside the block, OR is stuck.  In the `ite` setting with the block
+/// taken as "classes with a right-half preimage", that reads: **a purely-left
+/// class never steps to a LIVE mixed class.**  320 measured cross-class
+/// identification at 16%, so this is the condition most likely to fail, and it
+/// is the one the `ite` assembly needs.
+fn body_cond<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    {
+        let a = a_act::<NA>();
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    for _ in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    if pool.len() < cap {
+                        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                    }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        if pool.len() < cap {
+                            if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                        }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap {
+                    if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                }
+            }
+        }
+        if pool.len() >= cap { break; }
+    }
+    let (mut steps, mut bad, mut bad_live) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for l in &pool {
+        for r in &pool {
+            for g in 0..nguards {
+                if let Some(a) = a_ite::<NA>(g, l, r) {
+                    let (blk, _) = bisim_blocks(&a);
+                    let prod = productive_states(&a);
+                    let mut in_c = [false; MAXK];
+                    for t in l.k as usize..a.k as usize { in_c[blk[t]] = true; }
+                    for u in 0..l.k as usize {
+                        if in_c[blk[u]] { continue; }   // u's class is already in the block
+                        for i in 0..NA {
+                            let tv = a.st[u][i];
+                            if tv == 0 { continue; }
+                            let t = (tv - 1) as usize;
+                            steps += 1;
+                            if in_c[blk[t]] {
+                                bad += 1;
+                                if prod[t] {
+                                    bad_live += 1;
+                                    if first.is_none() {
+                                        first = Some(format!(
+                                            "q{u} -atom{i}-> q{t}: source class outside the \
+                                             block, target class inside it and LIVE\n    {}\n    {}\n    {}",
+                                            show_aut("whole", &a), show_aut("left ", l),
+                                            show_aut("right", r)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Does the non-block region even CONTAIN a cycle?  If not, the acyclic-relative
+    // constructor (288's solExt) applies — and it ALLOWS steps into the block, so
+    // hbody's failure would be irrelevant.
+    let (mut regions, mut cyclic) = (0usize, 0usize);
+    for l in &pool {
+        for r in &pool {
+            for g in 0..nguards {
+                if let Some(a) = a_ite::<NA>(g, l, r) {
+                    let (blk, _) = bisim_blocks(&a);
+                    let mut in_c = [false; MAXK];
+                    for t in l.k as usize..a.k as usize { in_c[blk[t]] = true; }
+                    // reachability within the non-block region, by closure
+                    let k = a.k as usize;
+                    let mut reach = [[false; MAXK]; MAXK];
+                    for u in 0..k {
+                        if in_c[blk[u]] { continue; }
+                        for i in 0..NA {
+                            let tv = a.st[u][i];
+                            if tv == 0 { continue; }
+                            let t = (tv - 1) as usize;
+                            if !in_c[blk[t]] { reach[u][t] = true; }
+                        }
+                    }
+                    for m in 0..k { for u in 0..k { if reach[u][m] {
+                        for v in 0..k { if reach[m][v] { reach[u][v] = true; } }
+                    } } }
+                    regions += 1;
+                    if (0..k).any(|u| !in_c[blk[u]] && reach[u][u]) { cyclic += 1; }
+                }
+            }
+        }
+    }
+    println!("NON-BLOCK REGION: {regions} regions, {cyclic} contain a cycle ({:.2}%)",
+        100.0 * cyclic as f64 / regions.max(1) as f64);
+    println!("BODY COND: {steps} steps from a class outside the block; {bad} land inside it \
+              ({:.2}%), of which {bad_live} have a LIVE target ({:.2}%)",
+        100.0 * bad as f64 / steps.max(1) as f64,
+        100.0 * bad_live as f64 / steps.max(1) as f64);
+    match first {
+        None => println!("  hbody HOLDS on this closure: every step out of a non-block class \
+                          lands outside the block or on a dead state"),
+        Some(msg) => println!("  FIRST VIOLATION\n    {msg}"),
+    }
 }
 
 /// **`PAD_MIXED_ENTRY`** (iteration 321).

@@ -15031,3 +15031,50 @@ favourably and said nothing about the body half.
 **Next.**  The same weakening for the `seq` case, then the `ite` assembly with
 the two precise conditions — where `hentry` is 322's measured-favourable half
 and `hbody` is unmeasured.
+
+---
+
+## 328 — MEASURED: `hbody` FAILS, AND SO DOES THE ACYCLIC ESCAPE.  THE ROOT CAUSE IS THE FIXED BLOCK SOLUTION.
+
+New mode `PAD_BODY_COND`, two numbers:
+
+    BODY COND        70 632 steps from a class outside the block;
+                     11 264 land inside it (15.95%), 10 704 of those LIVE (15.15%)
+    NON-BLOCK REGION 57 600 regions, 13 304 contain a cycle (23.10%)
+
+**`hbody` fails comprehensively**, and trivially: the first violation is the left
+half's halting state being bisimilar to the right half's.  322's stuck-target
+escape hatch covers ENTRY lists and does nothing for BODY transitions.
+
+**And the acyclic escape is not available either.**  288's `solExt` tolerates
+steps INTO the block — so if the non-block region were acyclic, `hbody`'s failure
+would not matter.  It is cyclic 23% of the time, so the loop constructor is
+genuinely needed, and it is the loop constructor that cannot take those steps.
+
+### The root cause, and it is not the constructors
+
+`wh b D`'s solution requires the body to be solved PARAMETRICALLY in the loop's
+continuation — that is what `withContinuation` does, multiplying the whole
+solution by `W`.  A block whose solution is a FIXED function cannot be
+multiplied: its values do not scale with the continuation.  But **they should**
+— a run that enters the block and later halts must continue with the ambient
+finish, exactly like everything else.
+
+**So the fix is to carry STANDARD solutions rather than fixed ones**: the
+contract should produce a `std` with "`std · F` solves at finish `F`", and
+should RECEIVE the block's solution in the same form.  Then the loop case
+multiplies uniformly and block targets stop being special.  284 considered this
+shape and set it aside because of blocks; 328 says blocks are precisely why it
+is needed.
+
+`split` composes under it — the first call produces a standard `std_C`, the
+second receives it — and the acyclic case should too, since `solExt`'s fold
+carries `· F` through every branch by `guardedFold_seq_right`.
+
+**Odds: 97%** (−1).  Two measured failures against one redesign that addresses
+the cause rather than the symptom.  The current shape is wrong in a way three
+iterations of patching (322, 326, 327) could not fix, and I should have suspected
+that when the second patch was needed.
+
+**Next.**  Restate the contract in standard form — `∃ std, ∀ F, (std · F) solves`
+— and re-derive the four cases under it.
