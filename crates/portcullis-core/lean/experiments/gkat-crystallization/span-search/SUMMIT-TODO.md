@@ -15392,3 +15392,50 @@ appear, syntactically, in the other's transition list.
 
 **Next.** The multi-state cycle: instantiate `layeredOn_region_closed` with the
 rank that a peeled simple cycle admits.
+
+## 336 — the chain instantiated on `while p do a`
+
+**`RegionLevel sys lvl n`** packages one level's peel data as a single Prop —
+`mid`, `base`, the two layers, closure in `mid`, a rank for `base`. Nothing in it
+mentions the expression that built the automaton, which is the whole point of the
+condensation frame. With it:
+
+- `layeredOn_of_regionLevel : RegionLevel sys lvl n → LayeredOn sys (lvl · ≠ n)`
+- `regionLevel_of_singleton` — the self-loop singleton is regional; `base.trans t = []`
+  supplies closure (mid's only edges at `t` are the gated self-loops, targets `t`)
+  and the rank (nothing left to rank)
+- **`solves_of_region_levels`** — bounded, step-non-increasing `lvl`, every level
+  unoccupied or regional ⟹ a full parametric solution. End to end.
+
+**The live risk was satisfiability, and it is now discharged.** `SeqLayer.trans_eq`,
+`SeqLayer.hlt_eq` and `LoopLayerOn.trans_eq` are **syntactic** equations on `BExp`s
+and lists — not `bval` equations. A frame whose layer equations no real automaton
+satisfies would be worth nothing, and nothing proved so far ruled that out. So:
+
+```lean
+def demoBase : GSystem Unit Unit Unit := { hlt := fun _ => .one, trans := fun _ => [] , … }
+def demoMid  := …  -- one loop layer, gated exactly as LoopLayerOn demands
+def demoSys  := …  -- seq layer with an EMPTY exit list
+
+theorem demo_solves : ∃ sol : Unit → Exp Unit Unit,
+    ∀ s, EquivBA (sol s) (eqRHSParam demoSys sol (.test .one) s)
+```
+
+One state, halting except on `p`, looping to itself on `p` — **`while p do a`**,
+the canonical automaton for which the Uniqueness Axiom is invoked. Every layer
+equation closes by `rfl` except `sys.trans = mid.trans ++ []`, which is
+`(List.append_nil _).symm`. `[propext, Classical.choice, Quot.sound]`, no `sorry`.
+
+**Why the syntactic equations are affordable.** 330 established the target needs
+only SOME quotient identifying the two starts — no minimality. A quotient's `hlt`
+expressions are therefore ours to choose, so the `and`-shapes the seq and loop
+layers demand can be arranged when the quotient is built, rather than discovered
+in an automaton handed to us.
+
+**Base-rate control.** `RegionLevel` is not trivially satisfiable. The degenerate
+route — peel every transition as an exit, leaving `mid` and `base` empty — dies on
+`hentry : ∀ tr ∈ entry, lvl tr.2.2 ≠ n`: a self-loop's target is IN the level, so
+self-loops cannot be peeled as exits. The loop layer is forced to do the work.
+
+**Next.** The multi-state cycle instance — the same demo one size up, which is
+where `LoopLayerOn`'s shared `entry` first has to carry more than one state.

@@ -11131,6 +11131,134 @@ theorem layeredOn_level_empty {S : Type} {sys : GkatThompson.GSystem S A T}
     LayeredOn sys (fun s => lvl s ≠ n) :=
   LayeredOn.acyclic ⟨fun _ => 0, fun s hs => absurd (hno s) hs⟩
 
+/-- **One level's peel data**, packaged.  A level of the condensation is
+*regional* when it can be peeled into exits (`mid`) and one loop layer (`base`)
+leaving a region that is closed in `mid` and acyclic in `base`.  Everything is
+stated on the peeled systems; the expression that built the automaton does not
+appear, which is the point of the whole condensation frame. -/
+def RegionLevel {S : Type} (sys : GkatThompson.GSystem S A T)
+    (lvl : S → Nat) (n : Nat) : Prop :=
+  ∃ (mid base : GkatThompson.GSystem S A T) (h₀ b : BExp T)
+    (entry loopEntry : List (BExp T × A × S)) (rank : S → Nat) (t : S),
+    lvl t = n ∧
+    SeqLayer sys mid h₀ entry (fun s => ¬ (lvl s ≠ n)) ∧
+    (∀ tr ∈ entry, lvl tr.2.2 ≠ n) ∧
+    LoopLayerOn mid base b loopEntry (fun s => ¬ (lvl s ≠ n)) ∧
+    (∀ s, lvl s = n → ∀ tr ∈ mid.trans s, lvl tr.2.2 = n) ∧
+    (∀ s, lvl s = n → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (base.trans s) = some r →
+        lvl r.2 ≠ n ∨ rank r.2 < rank s)
+
+theorem layeredOn_of_regionLevel {S : Type} {sys : GkatThompson.GSystem S A T}
+    {lvl : S → Nat} {n : Nat} (h : RegionLevel sys lvl n) :
+    LayeredOn sys (fun s => lvl s ≠ n) := by
+  obtain ⟨mid, base, h₀, b, entry, loopEntry, rank, t, hlt, hseq, hentry,
+    hloop, hin, hacyc⟩ := h
+  exact layeredOn_region_closed hseq hentry hloop
+    (fun s hs tr htr hne => hne (hin s (level_dom lvl n s hs) tr htr))
+    ⟨t, fun hne => hne hlt⟩
+    ⟨rank, fun s hs => hacyc s (level_dom lvl n s hs)⟩
+
+/-- A singleton self-looping level is regional: `base.trans t = []` supplies both
+side conditions.  `mid`'s only transitions at `t` are the gated self-loops, so
+closure holds; and there is nothing left to rank. -/
+theorem regionLevel_of_singleton {S : Type} {sys mid base : GkatThompson.GSystem S A T}
+    {lvl : S → Nat} {n : Nat} {t : S} {h₀ b : BExp T}
+    {entry loopEntry : List (BExp T × A × S)}
+    (hlt : lvl t = n) (huniq : ∀ s, lvl s = n → s = t)
+    (hseq : SeqLayer sys mid h₀ entry (fun s => ¬ (lvl s ≠ n)))
+    (hentry : ∀ tr ∈ entry, lvl tr.2.2 ≠ n)
+    (hloop : LoopLayerOn mid base b loopEntry (fun s => ¬ (lvl s ≠ n)))
+    (hself : ∀ tr ∈ loopEntry, tr.2.2 = t)
+    (htrim : base.trans t = []) :
+    RegionLevel sys lvl n := by
+  refine ⟨mid, base, h₀, b, entry, loopEntry, fun _ => 0, t, hlt, hseq, hentry,
+    hloop, fun s hs tr htr => ?_, fun s hs X W x r hfm => ?_⟩
+  · rw [huniq s hs, hloop.trans_eq t (fun hne => hne hlt), htrim] at htr
+    have hmem := (List.mem_append.mp htr).resolve_left (fun h => by cases h)
+    obtain ⟨tr', htr', heq⟩ := List.mem_map.mp hmem
+    rw [← heq, hself tr' htr']
+    exact hlt
+  · rw [huniq s hs, htrim] at hfm
+    have hnone : GkatKleene.firstMatch W x ([] : List (BExp T × A × S)) = none := rfl
+    rw [hnone] at hfm
+    exact (Option.some_ne_none r hfm.symm).elim
+
+/-- **END TO END.**  A bounded, step-non-increasing level function whose every
+level is either unoccupied or regional gives the automaton a full parametric
+solution — the shape `hcollapse` demands, with no residual hypothesis about the
+expression that built it. -/
+theorem solves_of_region_levels {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (B : Nat) (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s)
+    (hlevels : ∀ n, (∀ s, lvl s ≠ n) ∨ RegionLevel sys lvl n)
+    (F : Exp A T) :
+    ∃ sol : S → Exp A T,
+      ∀ s, EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s) :=
+  solves_of_levels lvl B hbound hmono
+    (fun n => (hlevels n).elim (layeredOn_level_empty lvl n) layeredOn_of_regionLevel) F
+
+section RegionDemo
+
+/-! **A concrete instance.**  The chain above is only worth anything if the layer
+equations — several of which are SYNTACTIC, not semantic — can actually be
+satisfied.  So here is a real automaton satisfying them: one state, halting
+except on `p`, looping back to itself on `p`.  That is `while p do a`, the very
+shape for which the Uniqueness Axiom is classically invoked. -/
+
+/-- Fully trimmed: no transitions, halts everywhere. -/
+def demoBase : GkatThompson.GSystem Unit Unit Unit :=
+  { states := [()], hlt := fun _ => BExp.one, trans := fun _ => [] }
+
+def demoLoopEntry : List (BExp Unit × Unit × Unit) := [(BExp.one, (), ())]
+
+/-- One loop layer on top of `demoBase`, with the gating `LoopLayerOn` demands. -/
+def demoMid : GkatThompson.GSystem Unit Unit Unit :=
+  { states := [()]
+    hlt := fun _ => BExp.and BExp.one (BExp.not (BExp.prim ()))
+    trans := fun s => demoBase.trans s ++ demoLoopEntry.map (fun tr =>
+      (BExp.and (demoBase.hlt s) (BExp.and (BExp.prim ()) tr.1), tr.2)) }
+
+/-- No exits to peel, so the seq layer only reshapes the halt test. -/
+def demoSys : GkatThompson.GSystem Unit Unit Unit :=
+  { states := [()]
+    hlt := fun s => BExp.and (demoMid.hlt s) BExp.one
+    trans := demoMid.trans }
+
+theorem demo_regionLevel : RegionLevel demoSys (fun _ => 0) 0 := by
+  refine regionLevel_of_singleton (mid := demoMid) (base := demoBase)
+    (t := ()) (h₀ := BExp.one) (b := BExp.prim ())
+    (entry := []) (loopEntry := demoLoopEntry) rfl (fun _ _ => rfl) ?_ ?_ ?_ ?_ rfl
+  · exact { trans_eq := fun _ _ => (List.append_nil _).symm
+            hlt_eq := fun _ _ => rfl
+            outside := fun _ hs => absurd (fun h => h rfl) hs
+            states_eq := rfl }
+  · intro tr htr; cases htr
+  · exact { trans_eq := fun _ _ => rfl
+            hlt_eq := fun _ _ _ _ _ => rfl
+            outside := fun _ hs => absurd (fun h => h rfl) hs
+            states_eq := rfl }
+  · intro tr htr
+    cases htr with
+    | head => rfl
+    | tail _ h => cases h
+
+/-- **The chain, instantiated.**  `while p do a` gets a parametric solution out of
+`solves_of_region_levels` with nothing assumed about the expression that built
+it.  This is the non-vacuity check for the whole condensation frame. -/
+theorem demo_solves :
+    ∃ sol : Unit → Exp Unit Unit,
+      ∀ s, EquivBA (sol s)
+        (GkatThompson.eqRHSParam demoSys sol (Exp.test BExp.one) s) := by
+  refine solves_of_region_levels (fun _ => 0) 1 (fun _ => Nat.zero_lt_one)
+    (fun _ _ _ _ _ _ => Nat.le_refl 0) (fun n => ?_) (Exp.test BExp.one)
+  cases n with
+  | zero => exact Or.inr demo_regionLevel
+  | succ k => exact Or.inl (fun _ h => Nat.noConfusion h)
+
+end RegionDemo
+
 #print axioms layeredOn_of_levels
 #print axioms layeredOn_empty_of_levels
 #print axioms solves_of_levels
@@ -11138,6 +11266,11 @@ theorem layeredOn_level_empty {S : Type} {sys : GkatThompson.GSystem S A T}
 #print axioms layeredOn_singleton_region
 #print axioms layeredOn_level_singleton
 #print axioms layeredOn_level_empty
+#print axioms layeredOn_of_regionLevel
+#print axioms regionLevel_of_singleton
+#print axioms solves_of_region_levels
+#print axioms demo_regionLevel
+#print axioms demo_solves
 
 
 end GkatCensus
