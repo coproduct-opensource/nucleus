@@ -12201,3 +12201,54 @@ theorem in this chain to do so.
 quotient of `sys`, produce a layer over something layered downstairs.  259
 established the method is pairwise identification rather than wholesale
 transport, and recorded why the wholesale version fails.
+
+---
+
+## 265 — `hcollapse`'s LAYER CASE: the obstruction, located exactly.
+
+**First finding: `UniformBehavioralGAutQuotient` is the wrong notion for a
+STRUCTURAL certificate.**  It relates `aut` and `quot` only through
+`bisim_graph`; `quot.trans` is otherwise unconstrained.  So there is no way to
+say which of `quot`'s transitions are BACK EDGES — and `IsLayer` is a statement
+about exactly that.  The repo already has the right notion: **`GAutHom`**, whose
+
+    trans_eq : aut₂.trans (mapState s) = (aut₁.trans s).map (retarget mapState)
+
+makes the image's transition list literally the source's with targets mapped.
+Back edges map to back edges, positionally.  And `gAutHom_bisim` derives the
+bisimulation from a hom, so nothing in 239's architecture breaks — `hstart` just
+has to supply a hom-based quotient, which the canonical collapse is.
+
+**Second finding: `IsLayer` DOES transport, and by an argument that works.**
+Given `φ : GAutHom aut₁ aut₂` and `IsLayer sys base b dom`, define `base'` by
+CHOOSING a preimage `s` for each image state `q` and setting
+
+    base'.hlt q   := base.hlt s          base'.trans q := (base.trans s).map φ
+
+Then `IsLayer (image) base' b dom'` holds: `sys.trans q = aut₂.trans (φ s) =
+(pre ++ extra ++ post').map φ`, which splits as `pre.map φ ++ extra.map φ ++
+post'.map φ`; guards are untouched by `φ` (only targets move), so the back-edge
+condition survives and `RestrictedTo.map` carries the restriction.  The halt
+equation holds for the chosen preimage, which is all `IsLayer` asks.
+
+**Third finding, and it is the obstruction: `Layered base'` does NOT follow from
+`Layered base`.**  `base'` is built from CHOSEN preimages, so for a
+non-chosen `s'` with `φ s' = q` we have `base'.trans q = (base.trans s).map φ`,
+not `(base.trans s').map φ` — the two need not agree, because `s` and `s'` are
+bisimilar in `sys` but need not be in `base`.  **So `base'` is not a homomorphic
+image of `base`, and the induction hypothesis does not apply to it.**  This is
+259's observation, now pinned to the exact place it bites: not in transporting
+the layer, which works, but in re-establishing the certificate BELOW the layer.
+
+**That is precisely what connect-through-to is for.**  Identifying one pair at a
+time lets the base's structure be repaired at each step, instead of demanding
+that `base` accept a partition derived from `sys` wholesale.
+
+**Odds: 86%, held.**  No proof this iteration — but the layer case now has its
+obstruction isolated to a single sentence, and two of its three parts are
+settled: the right quotient notion is `GAutHom`, and `IsLayer` transports along
+it.  Analysis is not progress, and the number should not move for it.
+
+**Next.**  Define connect-through-to — identify ONE bisimilar pair — and prove
+it preserves `Layered`, with the layer case repairing `base` rather than
+transporting it.
