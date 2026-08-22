@@ -10118,4 +10118,72 @@ theorem right_block_closed_bisim {S₁ S₂ Q : Type}
 
 #print axioms right_block_closed_bisim
 
+
+/-! ### 312 — `hbisim` TRANSPORTS THROUGH `ite`, AND NOT THROUGH `wh` OR `seq`
+
+    Assembling the induction, `hbisim` is needed at each `ite`/`seq` node by
+    311, and the recursive calls need it for the SUB-automata.  So the question
+    is whether it transports, and the answer splits.
+
+    **Through `ite` it does, and the reason is that a SUM CHANGES NOTHING.**  A
+    left state's transitions in `sumGSystem L R` are exactly `L`'s, retargeted;
+    so agreeing in the sum is agreeing in `L`.  That is this theorem.
+
+    **Through `wh` and `seq` it does NOT**, for the same reason in both: those
+    constructors ADD transitions to the sub-automaton — back edges for `wh`, the
+    entry block for `seq` — and behaviour in the WHOLE can agree where behaviour
+    in the PART does not.  Concretely for `seq`: let `s, t` be left states with
+    `j (inl s) = j (inl t)`.  Suppose `L` fires at `s` and not at `t`, and `t`
+    instead takes an `R`-entry step whose target lands in the same class as
+    `s`'s target.  Then the two agree in `seqGSystem` and differ in `L` — `s`
+    steps, `t` does not.  This needs an `L`-state and an `R`-state to be
+    bisimilar, which nothing forbids.  `wh` is the same with back edges in place
+    of the entry block.
+
+    **So the induction cannot carry `hbisim` for `g` alone.**  The candidate fix
+    is to carry it for EVERY SUB-AUTOMATON — a predicate `BisimAll g j` defined
+    by recursion on `g`, conjoining each node's own `hbisim` with those of its
+    children.  That is definable and each case can destruct it; the cost moves
+    to the FINAL application, which must then supply a quotient respecting every
+    sub-automaton's bisimilarity while still identifying the two start states.
+    Whether such a quotient exists is the next real question, and it is a
+    genuine one — this is 298's second obstruction, which the move downstairs
+    did not remove but did localise. -/
+theorem sum_bisim_restrict {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.GSystem S₂ A T)
+    (j : Sum S₁ S₂ → Q)
+    (hbisim : ∀ s t : Sum S₁ S₂, j s = j t →
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x ((GkatThompson.sumGSystem L R).trans s)).map
+          (fun z => (z.1, j z.2))
+        = (GkatKleene.firstMatch W x ((GkatThompson.sumGSystem L R).trans t)).map
+          (fun z => (z.1, j z.2))) :
+    ∀ s t : S₁, j (Sum.inl s) = j (Sum.inl t) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x (L.trans s)).map
+          (fun z => (z.1, j (Sum.inl z.2)))
+        = (GkatKleene.firstMatch W x (L.trans t)).map
+          (fun z => (z.1, j (Sum.inl z.2))) := by
+  intro s t hst X W x
+  have h := hbisim (Sum.inl s) (Sum.inl t) hst X W x
+  have hs' : (GkatThompson.sumGSystem L R).trans (Sum.inl s)
+      = (L.trans s).map (fun w => (w.1, w.2.1, Sum.inl w.2.2)) := rfl
+  have ht' : (GkatThompson.sumGSystem L R).trans (Sum.inl t)
+      = (L.trans t).map (fun w => (w.1, w.2.1, Sum.inl w.2.2)) := rfl
+  rw [hs', ht', firstMatch_map, firstMatch_map] at h
+  cases hs : GkatKleene.firstMatch W x (L.trans s) with
+  | none =>
+      cases ht : GkatKleene.firstMatch W x (L.trans t) with
+      | none => rfl
+      | some q => rw [hs, ht] at h; exact absurd h (by simp)
+  | some p =>
+      cases ht : GkatKleene.firstMatch W x (L.trans t) with
+      | none => rw [hs, ht] at h; exact absurd h (by simp)
+      | some q =>
+          rw [hs, ht] at h
+          simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at h ⊢
+          exact h
+
+#print axioms sum_bisim_restrict
+
 end GkatCensus

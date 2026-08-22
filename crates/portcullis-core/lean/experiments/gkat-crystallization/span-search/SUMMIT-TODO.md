@@ -14362,3 +14362,51 @@ which is better, but no new ground taken.
 each node: `hout`, the witness, and the bisimulation — all three of which the
 parent supplies to the child directly, since `wh` keeps the state type and
 `ite`/`seq` compose `j` with an injection.
+
+---
+
+## 312 — `hbisim` TRANSPORTS THROUGH `ite`, AND NOT THROUGH `wh` OR `seq`.
+
+Assembling the induction, `hbisim` is needed at each `ite`/`seq` node by 311,
+and the recursive calls need it for the SUB-automata.  Whether it transports
+splits:
+
+**Through `ite` it does, because A SUM CHANGES NOTHING.**  A left state's
+transitions in `sumGSystem L R` are exactly `L`'s, retargeted; agreeing in the
+sum is agreeing in `L`.  `sum_bisim_restrict`, `propext` alone.
+
+**Through `wh` and `seq` it does NOT**, for the same reason in both: those
+constructors ADD transitions to the sub-automaton — back edges for `wh`, the
+entry block for `seq` — and **behaviour in the WHOLE can agree where behaviour
+in the PART does not.**  Concretely for `seq`: let `s, t` be left states with
+`j (inl s) = j (inl t)`; suppose `L` fires at `s` and not at `t`, and `t`
+instead takes an `R`-entry step whose target lands in the same class as `s`'s
+target.  They agree in `seqGSystem` and differ in `L` — `s` steps, `t` does not.
+This needs an `L`-state and an `R`-state to be bisimilar, which nothing forbids.
+`wh` is the same with back edges in place of the entry block.
+
+### This is 298's second obstruction, not gone
+
+302 established the recursion is well-founded downstairs.  **It did not remove
+the bisimulation-transport problem, and I did not check that it had.**  Moving
+downstairs LOCALISED the obstruction — it is now exactly "`hbisim` for `g` does
+not give `hbisim` for `g`'s sub-automata under `wh` and `seq`" — but it is the
+same obstruction 298 named.
+
+**Candidate fix**: carry `hbisim` for EVERY sub-automaton, as a predicate
+`BisimAll g j` defined by recursion on `g` conjoining each node's own `hbisim`
+with its children's.  Definable, and each case can destruct it.  The cost moves
+to the FINAL application: it must supply a quotient respecting every
+sub-automaton's bisimilarity **while still identifying the two start states**.
+Whether such a quotient exists is a genuine open question and is the same
+tension as the "destructive merge" of 290 — a quotient coarse enough to do its
+job and fine enough to preserve structure.
+
+**Odds: 98%** (−1).  An obstruction I had treated as resolved is not, and the
+correction is mine to make: 302 answered the well-foundedness fork and I let
+that stand in for the transport question, which it never addressed.  One
+compiled lemma (the `ite` half) against one re-opened problem.
+
+**Next.**  Define `BisimAll` and carry it through the induction — that at least
+makes the five cases compose — and then attack the existence question it
+creates, which is the real remainder.
