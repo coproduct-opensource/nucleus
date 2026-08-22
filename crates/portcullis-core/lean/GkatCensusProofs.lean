@@ -6440,9 +6440,8 @@ theorem seq_states_inr {S₁ S₂ : Type}
     without infinite paths", and it avoids needing a path predicate. -/
 inductive Layered {S : Type} : GkatThompson.GSystem S A T → Prop where
   | acyclic {sys : GkatThompson.GSystem S A T} :
-      (∃ rank : S → Nat, ∀ s ∈ sys.states,
-        ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
-          GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s) →
+      (∃ rank : S → Nat, ∀ s ∈ sys.states, ∀ tr ∈ sys.trans s,
+        rank tr.2.2 < rank s) →
       Layered sys
   | layer {sys base : GkatThompson.GSystem S A T} {b : BExp T} {dom : S → Prop} :
       IsLayer sys base b dom → Layered base → Layered sys
@@ -6471,11 +6470,7 @@ theorem layered_test (t : BExp T) :
 
 theorem layered_act (a : A) :
     Layered (GkatThompson.certifiedThompson A T (.act a)).aut.core :=
-  Layered.acyclic ⟨fun _ => 0, by
-    intro s _ X W x r h
-    rw [show (GkatThompson.certifiedThompson A T (.act a)).aut.core.trans s
-        = [] from rfl] at h
-    simp [GkatKleene.firstMatch] at h⟩
+  Layered.acyclic ⟨fun _ => 0, by intro s _ tr h; cases h⟩
 
 #print axioms layered_test
 #print axioms layered_act
@@ -6576,24 +6571,13 @@ theorem layered_sum {S₁ S₂ : Type}
           obtain ⟨r1, hr1⟩ := h1
           obtain ⟨r2, hr2⟩ := h2
           refine Layered.acyclic ⟨Sum.elim r1 r2, ?_⟩
-          rintro (x | y) hmem X W z r h
-          · -- a step from a left state is a step of the left system, retargeted
-            simp only [GkatThompson.sumGSystem,
-              GkatKleene.firstMatch_map_target_to] at h
-            cases hm : GkatKleene.firstMatch W z (_ : List (BExp T × A × S₁)) with
-            | none => rw [hm] at h; simp at h
-            | some r' =>
-                rw [hm] at h
-                cases h
-                exact hr1 x (sum_states_inl hmem) X W z r' hm
-          · simp only [GkatThompson.sumGSystem,
-              GkatKleene.firstMatch_map_target_to] at h
-            cases hm : GkatKleene.firstMatch W z (_ : List (BExp T × A × S₂)) with
-            | none => rw [hm] at h; simp at h
-            | some r' =>
-                rw [hm] at h
-                cases h
-                exact hr2 y (sum_states_inr hmem) X W z r' hm
+          rintro (x | y) hmem tr htr
+          · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
+            obtain ⟨t, ht, rfl⟩ := htr
+            exact hr1 x (sum_states_inl hmem) t ht
+          · simp only [GkatThompson.sumGSystem, List.mem_map] at htr
+            obtain ⟨t, ht, rfl⟩ := htr
+            exact hr2 y (sum_states_inr hmem) t ht
       | layer hlay _ ih =>
           exact Layered.layer (sum_isLayer_right _ _ _ hlay) ih
   | layer hlay _ ih =>
@@ -6639,52 +6623,29 @@ private theorem le_maxOf {l : List Nat} {x : Nat} (h : x ∈ l) : x ≤ maxOf l 
 theorem layered_seq_acyclic {S₁ S₂ : Type}
     (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
     (hR : GkatThompson.InitTargetsListed R)
-    (r₁ : S₁ → Nat) (h₁ : ∀ s ∈ L.states, ∀ (X : Type) (W : T → X → Bool) (x : X)
-      (r : A × S₁), GkatKleene.firstMatch W x (L.trans s) = some r → r₁ r.2 < r₁ s)
-    (r₂ : S₂ → Nat) (h₂ : ∀ s ∈ R.core.states, ∀ (X : Type) (W : T → X → Bool)
-      (x : X) (r : A × S₂),
-      GkatKleene.firstMatch W x (R.core.trans s) = some r → r₂ r.2 < r₂ s) :
+    (r₁ : S₁ → Nat) (h₁ : ∀ s ∈ L.states, ∀ tr ∈ L.trans s, r₁ tr.2.2 < r₁ s)
+    (r₂ : S₂ → Nat) (h₂ : ∀ s ∈ R.core.states, ∀ tr ∈ R.core.trans s,
+      r₂ tr.2.2 < r₂ s) :
     Layered (GkatThompson.seqGSystem L R) := by
   refine Layered.acyclic ⟨Sum.elim
     (fun x => r₁ x + maxOf (R.core.states.map r₂) + 1) r₂, ?_⟩
-  rintro (x | y) hmem X W z r h
-  · -- Either the step is the left half's own, or it CROSSES into the right half.
-    show Sum.elim _ _ r.2 < r₁ x + _ + 1
-    simp only [GkatThompson.seqGSystem] at h
-    cases hL : GkatKleene.firstMatch W z
-        ((L.trans x).map (fun t => (t.1, t.2.1, Sum.inl t.2.2))) with
-    | some r' =>
-        rw [GkatKleene.firstMatch_append_some _ _ _ _ hL] at h
-        cases h
-        rw [GkatKleene.firstMatch_map_target_to] at hL
-        cases hm : GkatKleene.firstMatch W z (L.trans x) with
-        | none => rw [hm] at hL; simp at hL
-        | some r'' =>
-            rw [hm] at hL
-            cases hL
-            exact Nat.add_lt_add_right (Nat.add_lt_add_right
-              (h₁ x (seq_states_inl hmem) X W z r'' hm) _) 1
-    | none =>
-        rw [GkatKleene.firstMatch_append_none _ _ _ _ hL] at h
-        -- the crossing lands on an entry target, which `InitTargetsListed`
-        -- places in the right half's state list, so its rank is bounded by `M`
-        obtain ⟨a, t⟩ := r
-        obtain ⟨g, hin⟩ := firstMatch_mem_of_some W z _ a t h
-        simp only [List.mem_map] at hin
-        obtain ⟨e, he, heq⟩ := hin
-        cases heq
-        have : r₂ e.2.2 ≤ maxOf (R.core.states.map r₂) :=
-          le_maxOf (List.mem_map_of_mem (hR e he))
+  rintro (x | y) hmem tr htr
+  · show Sum.elim _ _ tr.2.2 < r₁ x + _ + 1
+    simp only [GkatThompson.seqGSystem, List.mem_append, List.mem_map] at htr
+    cases htr with
+    | inl h =>
+        obtain ⟨t, ht, rfl⟩ := h
+        exact Nat.add_lt_add_right
+          (Nat.add_lt_add_right (h₁ x (seq_states_inl hmem) t ht) _) 1
+    | inr h =>
+        obtain ⟨t, ht, rfl⟩ := h
+        have : r₂ t.2.2 ≤ maxOf (R.core.states.map r₂) :=
+          le_maxOf (List.mem_map_of_mem (hR t ht))
         exact Nat.lt_succ_of_le (Nat.le_add_left_of_le this)
-  · show Sum.elim _ _ r.2 < r₂ y
-    simp only [GkatThompson.seqGSystem,
-      GkatKleene.firstMatch_map_target_to] at h
-    cases hm : GkatKleene.firstMatch W z (R.core.trans y) with
-    | none => rw [hm] at h; simp at h
-    | some r' =>
-        rw [hm] at h
-        cases h
-        exact h₂ y (seq_states_inr hmem) X W z r' hm
+  · show Sum.elim _ _ tr.2.2 < r₂ y
+    simp only [GkatThompson.seqGSystem, List.mem_map] at htr
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact h₂ y (seq_states_inr hmem) t ht
 
 #print axioms layered_seq_acyclic
 
@@ -6997,5 +6958,91 @@ theorem acyclic_quotient {S Q : Type}
   exact Nat.lt_of_le_of_lt (minOfList_le _ _ hmemlist) hlt
 
 #print axioms acyclic_quotient
+
+
+/-! ### `hsolve`, acyclic case: the solution is built, not imported
+
+269 established that Grabmayer's `hsolve` cannot be imported — his existence
+proof uses layeredness, which 268/269 showed GKAT's Thompson automata do not
+have under this translation.  But a constructive replacement has been in the
+development since iteration 206: the calculus takes a decomposition to a
+solution, and `decomp_solves` turns "every state's label IS its equation's
+right-hand side" into `SolvesBA`.
+
+For an ACYCLIC system that is a direct recursion: a state's label is the guarded
+fold of its transitions over its successors' labels, which terminates because
+every transition strictly decreases the rank.  Lean wants that recursion
+fuelled, so it is written with an explicit budget and a stability lemma. -/
+
+/-- The solution of an acyclic system, computed with a fuel budget: at fuel
+    `n+1` a state's label is the guarded fold of its transitions over the labels
+    computed at fuel `n`. -/
+def solFuel {S : Type} (sys : GkatThompson.GSystem S A T) : Nat → S → Exp A T
+  | 0, s => .test (sys.hlt s)
+  | n + 1, s => GkatFaithful.guardedFold
+      (GkatKleene.transitionBranches (sys.trans s) (solFuel sys n))
+      (.test (sys.hlt s))
+
+/-- Folding two labellings that agree on the targets gives the same result. -/
+theorem guardedFold_trans_congr {S : Type} (fb : Exp A T) (f g : S → Exp A T) :
+    ∀ l : List (BExp T × A × S), (∀ tr ∈ l, f tr.2.2 = g tr.2.2) →
+      GkatFaithful.guardedFold (GkatKleene.transitionBranches l f) fb
+        = GkatFaithful.guardedFold (GkatKleene.transitionBranches l g) fb := by
+  intro l
+  induction l with
+  | nil => intro _; rfl
+  | cons tr rest ih =>
+      intro h
+      show Exp.ite tr.1 (.seq (.act tr.2.1) (f tr.2.2)) _
+        = Exp.ite tr.1 (.seq (.act tr.2.1) (g tr.2.2)) _
+      rw [h tr (List.Mem.head _)]
+      exact congrArg _ (ih (fun t ht => h t (List.Mem.tail _ ht)))
+
+/-- **STABILITY.**  Once the fuel exceeds a state's rank the computed label no
+    longer changes — every transition drops the rank, so the recursion has
+    already bottomed out.  This is what lets a single `sol` be read off the
+    fuelled family. -/
+theorem solFuel_stable {S : Type} (sys : GkatThompson.GSystem S A T)
+    (rank : S → Nat)
+    (hmem : ∀ s, ∀ tr ∈ sys.trans s, rank tr.2.2 < rank s) :
+    ∀ n m s, rank s ≤ n → rank s ≤ m → solFuel sys n s = solFuel sys m s := by
+  have hnil : ∀ s, rank s = 0 → sys.trans s = [] := by
+    intro s h0
+    cases hl : sys.trans s with
+    | nil => rfl
+    | cons tr rest =>
+        have := hmem s tr (by rw [hl]; exact List.Mem.head _)
+        rw [h0] at this
+        exact absurd this (Nat.not_lt_zero _)
+  have base : ∀ m s, rank s = 0 → solFuel sys m s = .test (sys.hlt s) := by
+    intro m s h0
+    cases m with
+    | zero => rfl
+    | succ m' =>
+        show GkatFaithful.guardedFold
+          (GkatKleene.transitionBranches (sys.trans s) _) _ = _
+        rw [hnil s h0]
+        rfl
+  intro n
+  induction n with
+  | zero =>
+      intro m s hn hm
+      have h0 : rank s = 0 := Nat.le_zero.mp hn
+      rw [base 0 s h0, base m s h0]
+  | succ n' ih =>
+      intro m s hn hm
+      cases m with
+      | zero =>
+          have h0 : rank s = 0 := Nat.le_zero.mp hm
+          rw [base (n' + 1) s h0, base 0 s h0]
+      | succ m' =>
+          show GkatFaithful.guardedFold _ _ = GkatFaithful.guardedFold _ _
+          refine guardedFold_trans_congr _ _ _ _ (fun tr htr => ?_)
+          have hlt : rank tr.2.2 < rank s := hmem s tr htr
+          exact ih m' tr.2.2
+            (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hlt hn))
+            (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hlt hm))
+
+#print axioms solFuel
 
 end GkatCensus

@@ -12459,3 +12459,47 @@ the number would be pretending to more precision than I have.
 **Next.**  `hsolve` via the calculus: `Layered sys → ∃ sol, SolvesBA sys sol`, by
 induction on the `Layered` derivation — acyclic gives a fold, a layer gives a
 `wh`, which is what rules 1-6 do case by case.
+
+---
+
+## 270 — `hsolve`'s MACHINERY, AND 263's MIGRATION WENT THE WRONG WAY.
+
+269 said `hsolve` must be built here rather than imported.  Started building it,
+and the construction immediately corrected an earlier decision.
+
+**Built:** `solFuel` — the solution of an acyclic system computed with a fuel
+budget, a state's label being the guarded fold of its transitions over the
+labels computed at lower fuel — plus `solFuel_stable`, that once the fuel
+exceeds a state's rank the label stops changing, and `guardedFold_trans_congr`,
+that two labellings agreeing on targets fold alike.  `solFuel` needs NO axioms.
+
+**And the correction.**  Building a solution folds over EVERY entry of a state's
+transition list, including entries whose guard is shadowed — so termination
+needs the LIST form of the rank condition.  263 had weakened `acyclic` to the
+`firstMatch` form, because 262 found the bisimulation speaks in `autStep`.
+
+**The list form is STRONGER and implies the `firstMatch` form** — every
+first-matching transition is a list entry, which is exactly what
+`firstMatch_mem_of_some` says, and `acyclic_quotient` already calls that lemma
+for its `targets` hypothesis.  So the list form serves BOTH obligations and the
+`firstMatch` form serves only one.  **263 chose the weaker of two options
+because it was the "semantically right" notion; the right criterion was which
+one both consumers can use.**
+
+Reverted `acyclic` to the list form and restored the four proofs.  Green, zero
+`sorryAx`, `thompson_layered` and `acyclic_quotient` both still proved —
+`acyclic_quotient` needs no change at all, since it takes its rank hypothesis as
+its own parameter rather than from `Layered`.
+
+**Seven migrations now** (248, 254, 256, 258, 261/262, 263, 270), and this is
+the first that UNDID a previous one rather than extending it.  Worth noting
+plainly: 263's write-up called the choice "decided by evidence rather than
+taste", and the evidence considered was which route had lemmas available — not
+which form the eventual consumers needed.
+
+**Odds: 85%, held.**  Real machinery built for `hsolve`, and a wrong turn
+corrected before it cost anything.  Neither moves the estimate.
+
+**Next.**  The acyclic case of `hsolve`: `sol s := solFuel sys (rank s) s`
+satisfies `sol s = eqRHS sys sol s`, by `solFuel_stable` at the targets — then
+`decomp_solves` gives `SolvesBA`.
