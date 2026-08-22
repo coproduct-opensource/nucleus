@@ -8186,4 +8186,138 @@ theorem preferringRep_section {S Q : Type} (P : S → Prop)
 
 end PreferringRep
 
+
+/-! ### 288 — SOLVING OUTSIDE A CLOSED BLOCK
+
+    287's `split` needs to solve a block that is NOT an automaton on its own:
+    its transitions leave into the closed block, so the single trailing `finish`
+    that `eqRHSParam` carries cannot express what happens at the boundary.  Each
+    outgoing transition needs its OWN continuation — the closed block's already
+    known solution at that target.
+
+    The generalisation turns out not to need new algebra, only a new SEED.
+    `solFuel` (271) starts from the halt test; `solExt` starts from a supplied
+    `sol₀` on the block and the halt test off it, and never touches the block
+    again.  A boundary transition is then handled by the recursion itself: its
+    target is in the block, so every fuel level returns the SAME expression
+    there, and stability sees no difference at all.
+
+    The rank condition weakens accordingly: a step out of the block-complement
+    must either LAND IN THE BLOCK — in which case nothing more is asked of it —
+    or decrease.  That is the honest content of "the complement is acyclic
+    RELATIVE to the block".
+
+    One subtlety, and it is what forces `rank s < n` rather than `rank s ≤ n`
+    in the stability statement: a state of rank `0` may still step INTO the
+    block, so fuel `0` is not enough to unfold it.  Every state needs one level
+    of fuel more than its rank, and the base case then becomes vacuous. -/
+open Classical in
+noncomputable def solExt {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) : Nat → S → Exp A T
+  | 0, s => if P s then sol₀ s else .test (sys.hlt s)
+  | n + 1, s => if P s then sol₀ s else
+      guardedFold (transitionBranches (sys.trans s) (solExt sys P sol₀ n))
+        (.test (sys.hlt s))
+
+open Classical in
+theorem solExt_block {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (n : Nat) (s : S) (hs : P s) :
+    solExt sys P sol₀ n s = sol₀ s := by
+  cases n with
+  | zero => show (if P s then sol₀ s else _) = _; rw [if_pos hs]
+  | succ n => show (if P s then sol₀ s else _) = _; rw [if_pos hs]
+
+open Classical in
+theorem solExt_out {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (n : Nat) (s : S) (hs : ¬ P s) :
+    solExt sys P sol₀ (n + 1) s
+      = guardedFold (transitionBranches (sys.trans s) (solExt sys P sol₀ n))
+          (.test (sys.hlt s)) := by
+  show (if P s then sol₀ s else _) = _
+  rw [if_neg hs]
+
+/-- **STABILITY, RELATIVE TO A BLOCK.** -/
+theorem solExt_stable {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s) :
+    ∀ (n m : Nat) (s : S), rank s < n → rank s < m →
+      EquivBA (solExt sys P sol₀ n s) (solExt sys P sol₀ m s) := by
+  intro n
+  induction n with
+  | zero => intro m s hn _; exact absurd hn (Nat.not_lt_zero _)
+  | succ k ih =>
+      intro m s hn hm
+      cases m with
+      | zero => exact absurd hm (Nat.not_lt_zero _)
+      | succ j =>
+          by_cases hP : P s
+          · rw [solExt_block sys P sol₀ _ s hP, solExt_block sys P sol₀ _ s hP]
+            exact EquivBA.base (Equiv.refl _)
+          · rw [solExt_out sys P sol₀ k s hP, solExt_out sys P sol₀ j s hP]
+            refine solFuel_congr_step sys s _ _ ?_
+            intro X W x r hfm
+            rcases hstep s hP X W x r hfm with hPr | hlt
+            · rw [solExt_block sys P sol₀ _ r.2 hPr,
+                solExt_block sys P sol₀ _ r.2 hPr]
+              exact EquivBA.base (Equiv.refl _)
+            · exact ih j r.2 (Nat.lt_of_lt_of_le hlt (Nat.le_of_lt_succ hn))
+                (Nat.lt_of_lt_of_le hlt (Nat.le_of_lt_succ hm))
+
+/-- **THE EXTENSION.**  A solution on a closed block extends to one on the whole
+    system, as soon as the complement is acyclic RELATIVE to the block. -/
+theorem solExt_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (sol₀ : S → Exp A T) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s) :
+    ∃ sol : S → Exp A T,
+      (∀ s, P s → sol s = sol₀ s) ∧
+      (∀ s, ¬ P s → EquivBA (sol s)
+        (guardedFold (transitionBranches (sys.trans s) sol) (.test (sys.hlt s)))) := by
+  refine ⟨fun s => solExt sys P sol₀ (rank s + 1) s, ?_, ?_⟩
+  · intro s hs
+    exact solExt_block sys P sol₀ _ s hs
+  · intro s hs
+    show EquivBA (solExt sys P sol₀ (rank s + 1) s) _
+    rw [solExt_out sys P sol₀ (rank s) s hs]
+    refine solFuel_congr_step sys s _ _ ?_
+    intro X W x r hfm
+    rcases hstep s hs X W x r hfm with hPr | hlt
+    · rw [solExt_block sys P sol₀ _ r.2 hPr, solExt_block sys P sol₀ _ r.2 hPr]
+      exact EquivBA.base (Equiv.refl _)
+    · exact solExt_stable sys P sol₀ rank hstep (rank s) (rank r.2 + 1) r.2
+        hlt (Nat.lt_succ_self _)
+
+/-- **A CLOSED BLOCK SOLVED, PLUS A RELATIVELY ACYCLIC COMPLEMENT, SOLVES THE
+    WHOLE SYSTEM.**  The block's own equations survive because the block is
+    CLOSED: they mention no state outside it, and the extension changes nothing
+    inside. -/
+theorem split_acyclic_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop)
+    (hclosed : ∀ s, P s → ∀ tr ∈ sys.trans s, P tr.2.2)
+    (sol₀ : S → Exp A T)
+    (h₀ : ∀ s ∈ sys.states, P s → EquivBA (sol₀ s)
+      (GkatThompson.eqRHSParam sys sol₀ (.test .one) s))
+    (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s ∈ sys.states,
+      EquivBA (sol s) (GkatThompson.eqRHSParam sys sol (.test .one) s) := by
+  obtain ⟨sol, hin, hout⟩ := solExt_has_solution sys P sol₀ rank hstep
+  refine ⟨sol, fun s hsmem => ?_⟩
+  by_cases hP : P s
+  · rw [hin s hP]
+    refine EquivBA.trans (h₀ s hsmem hP) ?_
+    show EquivBA (guardedFold (transitionBranches (sys.trans s) sol₀) _)
+      (guardedFold (transitionBranches (sys.trans s) sol) _)
+    rw [guardedFold_trans_congr _ sol₀ sol (sys.trans s)
+      (fun tr htr => (hin tr.2.2 (hclosed s hP tr htr)).symm)]
+    exact EquivBA.base (Equiv.refl _)
+  · refine EquivBA.trans (hout s hP) ?_
+    exact guardedFold_fallback_congr
+      (EquivBA.symm (GkatGuardedAlgebra.seq_one (.test (sys.hlt s))))
+
+#print axioms solExt_has_solution
+#print axioms split_acyclic_has_solution
+
 end GkatCensus

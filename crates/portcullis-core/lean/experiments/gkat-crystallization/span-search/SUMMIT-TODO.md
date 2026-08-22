@@ -13317,3 +13317,52 @@ The field's prior that the problem does not close still stands.
 per-target external continuations, which is what a `split` constructor needs;
 then `split` replaces `sum`/`seq` and `quotient_closed_block` carries it through
 the collapse.
+
+---
+
+## 288 — SOLVING OUTSIDE A CLOSED BLOCK.  THE "UNESTIMATED" MACHINERY WAS A SEED CHANGE.
+
+287 stopped at a generalisation it called unbuilt and unestimated: the block
+outside a closed set is NOT an automaton on its own, its transitions leave into
+the closed block, and the single trailing `finish` `eqRHSParam` carries cannot
+express what happens at the boundary — each outgoing transition needs its OWN
+continuation, the closed block's already-known solution at that target.
+
+**It needs no new algebra, only a new SEED.**  `solFuel` (271) starts from the
+halt test; `solExt` starts from a supplied `sol₀` ON the block and the halt test
+off it, and never touches the block again.  A boundary transition is then
+handled by the recursion itself: its target is in the block, so EVERY fuel level
+returns the SAME expression there, and stability sees no difference at all.  The
+per-target continuation problem disappears because the per-target values are
+constants of the recursion.
+
+The rank condition weakens accordingly: a step out of the block-complement must
+either LAND IN THE BLOCK — nothing more asked of it — or decrease.  That is the
+honest content of "the complement is acyclic RELATIVE to the block".
+
+**One subtlety worth recording**, because it is what forces `rank s < n` rather
+than `rank s ≤ n`: a state of rank `0` may still step INTO the block, so fuel
+`0` does not suffice to unfold it.  Every state needs one level of fuel more
+than its rank — and the base case then becomes vacuous, which is why the proof
+is shorter than 283's rather than longer.
+
+**Proved**: `solExt`, `solExt_block`, `solExt_out`, `solExt_stable`,
+`solExt_has_solution`, and the combination
+`split_acyclic_has_solution` — *a closed block solved, plus a relatively acyclic
+complement, solves the whole system*.  The block's own equations survive because
+the block is CLOSED: they mention no state outside it, so
+`guardedFold_trans_congr` transports them verbatim.  All zero-`sorry`.
+
+**What remains for a full `split`.**  The complement must be allowed to be
+LAYERED, not merely acyclic — loops outside the block.  That is the same
+`LayeredL` recursion relativised to a complement, and 288's seed handles the
+boundary in every case, so the remaining work is structural rather than
+algebraic.
+
+**Odds: 97%** (+1).  The generalisation 287 declined to price turned out to cost
+one definition and no new algebra, which removes the largest unknown in the
+remaining path.  The field's prior that the problem does not close still stands.
+
+**Next.**  Relativise the `LayeredL` recursion to a complement — `LoopLayer`
+outside a closed block — so `split` accepts a layered complement, not only an
+acyclic one.
