@@ -17781,3 +17781,56 @@ proved, which is real; the open statement is still open, and I have moved odds o
 sub-lemmas before and regretted it.
 
 **Next.** Source structure to quotient agreement — the last link.
+
+## 382 — RETRACTION: `reachLevel` is too coarse, and 375 is vacuous as instantiated
+
+Working out the last link, I noticed that every agreement measurement has grouped
+states by **SCC**, while `LevelAgreementActive` quantifies over a **LEVEL** — and
+339 itself established that a level is a disjoint union of *mutually-unreachable*
+SCCs. Two unrelated SCCs sharing a level could be active at one atom with
+different targets, and the predicate demands they agree. Checked before building
+on it:
+
+```
+219 419 multi-state LEVELS in quotients
+217 454 (99.10%) span MORE THAN ONE SCC
+ 74 510 admit NO rank under which the whole LEVEL agrees
+```
+
+**So `LevelAgreementActive` with `lvl = reachLevel` is false for roughly a third
+of multi-state levels.** The smallest witness is as simple as it gets:
+
+```
+quot k=2 | q0: hl=110 st=[q0,-,-] | q1: hl=111 st=[-,-,-]
+```
+
+`q0` self-loops, `q1` halts everywhere. Neither reaches the other, so they are
+different SCCs — but each reaches exactly one state, so `reachLevel` gives them
+the **same level**, and at the atom where `q0` loops and `q1` halts they cannot
+agree under any rank.
+
+**What this retracts.** `finiteAxiomsComplete_of_agreement` (375) instantiates
+`lvl := reachLevel`, so its hypothesis is false for a third of levels: the
+statement "the whole program rests on one hypothesis" rests on a hypothesis that
+cannot be met. 375 is **vacuous as instantiated**. The general theorems
+(`solvesBA_of_levelAgreementActive`, `solvesBA_of_headed`) keep `lvl` as a
+parameter and are unaffected — the fault is entirely in the instantiation.
+
+**And it retracts part of 339.** `reachLevel` was celebrated as giving the level
+function "free, for every system, with no graph theory". It is free, and it is
+**too coarse**: it counts the *size* of the reachable set, so two unrelated SCCs
+with equal counts collide. 376 proved a level can never be finer than an SCC;
+what it does not give is a level that is exactly as fine as one.
+
+**The fix, and its cost.** Levels must be a **topological index of the
+condensation**, not a reach-count — an index that separates unrelated SCCs while
+staying monotone. That exists, but computing it is the graph theory 339
+deliberately avoided, which is why `reachLevel` was attractive in the first place.
+
+**Odds: 96% (−1).** Not for the mathematics — the route's shape is intact and the
+fix is a better level function, not a new idea — but because the top-level
+statement I wrote seven iterations ago has turned out unusable, for the second
+time (352, 375), by the same mechanism: quantifying over more than what was
+measured.
+
+**Next.** A level function that separates SCCs, and re-instantiating 375.

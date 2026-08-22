@@ -2354,6 +2354,105 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_LEVELVSCC`** (iteration 382).
+///
+/// Every agreement measurement so far grouped states by SCC.  But
+/// `LevelAgreementActive` quantifies over a LEVEL — states with equal
+/// `reachLevel` — and 339 established that a level is a disjoint union of
+/// mutually-UNREACHABLE SCCs, not a single one.  Two unrelated SCCs sharing a
+/// level could be active at the same atom with different targets, and the
+/// predicate would demand they agree.
+///
+/// So: how often does a level contain more than one SCC, and does agreement
+/// survive when it does?  This is the 359 mismatch checked BEFORE building on it.
+fn levelvsscc<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut levels, mut multi_scc, mut lvl_agree_fail) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        let k = q.k as usize;
+        // reachLevel: how many states each state can reach
+        let mut reach = vec![0usize; k];
+        let mut rset = vec![0u32; k];
+        for s in 0..k {
+            let mut seen = 0u32; let mut stack = vec![s];
+            seen |= 1 << s;
+            while let Some(u) = stack.pop() {
+                for x in 0..NA {
+                    let tv = q.st[u][x];
+                    if tv == 0 { continue; }
+                    let t = (tv - 1) as usize;
+                    if seen & (1 << t) == 0 { seen |= 1 << t; stack.push(t); }
+                }
+            }
+            rset[s] = seen; reach[s] = seen.count_ones() as usize;
+        }
+        // group by level
+        let mut done = vec![false; k];
+        for s in 0..k {
+            if done[s] { continue; }
+            let grp: Vec<usize> = (0..k).filter(|&t| reach[t] == reach[s]).collect();
+            for &t in &grp { done[t] = true; }
+            if grp.len() < 2 { continue; }
+            levels += 1;
+            // how many distinct SCCs does this level span?
+            let mut ncomp = 0usize;
+            for comp in sccs_of(&q) {
+                if comp.iter().any(|u| grp.contains(u)) { ncomp += 1; }
+            }
+            if ncomp > 1 {
+                multi_scc += 1;
+                // does agreement hold across the WHOLE level, best over ranks?
+                let m = grp.len();
+                if m <= 6 {
+                    let mut perm: Vec<usize> = (0..m).collect();
+                    let mut ok_any = false;
+                    loop {
+                        let mut rank = [0usize; MAXK];
+                        for (i, &pi) in perm.iter().enumerate() { rank[grp[pi]] = i; }
+                        let mut ok = true;
+                        for x in 0..NA {
+                            let mut demand: i64 = -1;
+                            for &u in &grp {
+                                let tv = q.st[u][x];
+                                let halts = (q.hl[u] >> x) & 1 == 1;
+                                let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                                    else { let t = (tv - 1) as usize;
+                                        if grp.contains(&t) && rank[t] < rank[u] { continue }
+                                        else { t as i64 } };
+                                if demand == -1 { demand = d; } else if demand != d { ok = false; }
+                            }
+                        }
+                        if ok { ok_any = true; break; }
+                        if !next_perm(&mut perm) { break; }
+                    }
+                    if !ok_any {
+                        lvl_agree_fail += 1;
+                        if first.is_none() {
+                            first = Some(format!("level {grp:?} spans {ncomp} SCCs\n    {}",
+                                show_aut("quot ", &q)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("LEVELVSCC: {levels} multi-state LEVELS in quotients");
+    println!("  {multi_scc} span MORE THAN ONE SCC ({:.2}%) — a level is a disjoint union of \
+              mutually-unreachable SCCs, not one SCC",
+        100.0 * multi_scc as f64 / levels.max(1) as f64);
+    println!("  {lvl_agree_fail} of those admit NO rank under which the whole LEVEL agrees \
+              — any hit means LevelAgreementActive is stronger than what was measured",
+        );
+    match first {
+        None => println!("  agreement survives level-grouping: every multi-SCC level still \
+                          agrees under some rank"),
+        Some(m) => println!("  FIRST LEVEL-AGREEMENT FAILURE\n    {m}"),
+    }
+}
+
 /// **`PAD_ENTRY`** (iteration 373).
 ///
 /// 372 made the head DATA rather than something inferred.  Looking at where the
@@ -9127,6 +9226,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_LEVELVSCC").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        levelvsscc::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_ENTRY").is_ok() {
