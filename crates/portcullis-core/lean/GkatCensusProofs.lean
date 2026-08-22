@@ -9809,4 +9809,68 @@ theorem quotient_layered_act' (a : A) {Q : Type}
 
 end QuotientLayeredWitness
 
+
+/-! ### 308 — THE SPLIT IN WITNESS FORM, AND A BETTER BLOCK
+
+    Migrating 305's split to 307's witness form does more than remove the
+    unusable `rep`.  With a representative, the block had to be stated as "the
+    representative is `inr`" — a fact about a CHOICE.  With witnesses it becomes
+
+        the class HAS an `inr` preimage
+
+    which is a fact about the QUOTIENT, needs no choice function, and is
+    manifestly a union of classes.  The preference likewise stops being a
+    property of a global function and becomes a hypothesis about what witnesses
+    the dynamics: **if a class has an `inr` preimage, then its dynamics is
+    witnessed by an `inr` state.**  That is a condition one can actually verify
+    of a quotient one is building, which the `rep`-based version never was. -/
+theorem right_block_closed' {S₁ S₂ Q : Type}
+    (sys : GkatThompson.GSystem (Sum S₁ S₂) A T)
+    (Rt : S₂ → List (BExp T × A × S₂))
+    (hinr : ∀ t, sys.trans (Sum.inr t)
+      = (Rt t).map (fun w => (w.1, w.2.1, Sum.inr w.2.2)))
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q)
+    (hout : ∀ s, ¬ B (j s))
+    (hwitR : ∀ c, ¬ B c → (∃ u : S₂, j (Sum.inr u) = c) →
+      ∃ t : S₂, Qsys.trans c
+        = (sys.trans (Sum.inr t)).map (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    ∀ c, (¬ B c ∧ ∃ u : S₂, j (Sum.inr u) = c) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+        GkatKleene.firstMatch W x (Qsys.trans c) = some r →
+          (¬ B r.2 ∧ ∃ u : S₂, j (Sum.inr u) = r.2) := by
+  intro c hc X W x r hfm
+  obtain ⟨hcB, hpre⟩ := hc
+  obtain ⟨t, ht⟩ := hwitR c hcB hpre
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (Qsys.trans c) r.1 r.2 (by rw [← hfm])
+  rw [ht, hinr t] at hg
+  simp only [List.mem_map] at hg
+  obtain ⟨z, hz, hzeq⟩ := hg
+  obtain ⟨w, _, rfl⟩ := hz
+  have hr2 : r.2 = j (Sum.inr w.2.2) := (congrArg (fun y => y.2.2) hzeq).symm
+  exact ⟨by rw [hr2]; exact hout _, ⟨w.2.2, hr2.symm⟩⟩
+
+/-- **THE SPLIT, IN WITNESS FORM.**  Serves `ite` and `seq` alike, and is now
+    applicable: nothing in it demands a function into a possibly-empty type. -/
+theorem quotient_layered_split_right' {S₁ S₂ Q : Type}
+    (sys : GkatThompson.GSystem (Sum S₁ S₂) A T)
+    (Rt : S₂ → List (BExp T × A × S₂))
+    (hinr : ∀ t, sys.trans (Sum.inr t)
+      = (Rt t).map (fun w => (w.1, w.2.1, Sum.inr w.2.2)))
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : Sum S₁ S₂ → Q)
+    (hout : ∀ s, ¬ B (j s))
+    (hwitR : ∀ c, ¬ B c → (∃ u : S₂, j (Sum.inr u) = c) →
+      ∃ t : S₂, Qsys.trans c
+        = (sys.trans (Sum.inr t)).map (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    (hright : LayeredOn Qsys (fun c => ¬ (¬ B c ∧ ∃ u : S₂, j (Sum.inr u) = c)))
+    (hleft : LayeredOn Qsys
+      (fun c => B c ∨ (¬ B c ∧ ∃ u : S₂, j (Sum.inr u) = c))) :
+    LayeredOn Qsys B :=
+  LayeredOn.split (fun _ hB hC => hC.1 hB)
+    (right_block_closed' sys Rt hinr Qsys B j hout hwitR) hright hleft
+
+#print axioms right_block_closed'
+#print axioms quotient_layered_split_right'
+
 end GkatCensus

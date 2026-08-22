@@ -14211,3 +14211,47 @@ prove it — and its fix removes a standing obligation rather than adding one.
 **Next.**  Migrate `wh`, `ite`, `seq` to the witness form.  The `wh` and `seq`
 proofs construct their base system from `rep`; with witnesses that construction
 becomes a `dite` on the class being outside the block, choosing the witness.
+
+---
+
+## 308 — THE SPLIT IN WITNESS FORM, AND A BETTER BLOCK.
+
+Migrating 305's split to 307's witness form does more than remove the unusable
+`rep`.  With a representative the block had to be "the representative is `inr`"
+— a fact about a CHOICE.  With witnesses it becomes
+
+    the class HAS an `inr` preimage
+
+which is a fact about the QUOTIENT, needs no choice function, and is manifestly
+a union of classes.  The preference likewise stops being a property of a global
+function and becomes a hypothesis about what witnesses the dynamics: **if a
+class has an `inr` preimage, its dynamics is witnessed by an `inr` state.**
+That is a condition one can verify of a quotient one is BUILDING, which the
+`rep`-based version never was.
+
+`right_block_closed'` and `quotient_layered_split_right'`, both compiled first
+try.  `wh` and `seq_left` still to migrate — they construct their base system,
+which becomes a `dite` on the class being outside the block, choosing the
+witness.
+
+**Odds: 99%, HELD.**  A migration, and one that improved the statement it
+migrated rather than merely relocating it.
+
+### STANDING INSTRUCTION FOR AFTER THE PROOF CLOSES
+
+Recorded to memory (`gkat-post-proof-agenda`).  When the full proof closes, the
+loop does NOT stop and does NOT drift — it switches to, in order:
+
+  1. **STEELMAN OBJECTIONS.**  Attack the finished proof as a hostile referee
+     would.  Priorities from this proof's own shape: is `LayeredOn` VACUOUS
+     where it matters (the base-rate control that caught 205); does
+     `sumQuotientSolvable_of_certificate` really deliver completeness or has the
+     hard part moved into its hypotheses; is W3 truly unused — check transitive
+     AXIOM DEPENDENCIES, not the prose; are the `Classical.choice` uses
+     eliminable or load-bearing; does any theorem quantify so as to be
+     unusable — **the defect 307 found: true, proved, and impossible to
+     instantiate.**
+  2. **Obvious connections**, then **3. distant ones**, from the candidate list
+     in that memory.
+
+**Next.**  Migrate `wh` and `seq_left` to the witness form.
