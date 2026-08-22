@@ -18150,3 +18150,42 @@ between them and the intrinsic form.
 
 **Next.** Impose the level-independent rank and finish the reduction to an
 intrinsic `SourceSccHeaded`.
+
+## 390 — the LEVEL becomes intrinsic; the rank does not
+
+389 analysed the reduction and flagged a wrinkle: `rawPred` indexes the rank by
+the level value, so the implication needs a level-independent rank. Imposing that
+and finishing:
+
+- **`active_intrinsic_of_pullback`** — with a level-independent rank, an edge raw
+  under the source's OWN level is raw under the pullback too (389's component
+  fact), so contrapositively a state active under the pullback is active
+  intrinsically.
+- **`SourceSccHeadedIntrinsic`** — the source condition stated with the source
+  automaton's own `reachMask`.
+- **`headedRegion_of_sourceHeadedIntrinsic`** — it suffices.
+
+`exists_mutual_over_pair` also had to start exposing membership (`u, w ∈
+aut.states`), which its proof already established internally and its statement
+threw away.
+
+**What did NOT become intrinsic, stated plainly.** I set out to remove the
+quotient from the source condition and got half of it. The **level** is now the
+source's own — that is the structural half, and it is what 389's component fact
+buys. The **rank** is not: `active_transport` compares a state with its image, so
+the rank it uses is the quotient's pulled back, and a free source rank cannot be
+reconciled with it because `mapState` is many-to-one. `rank0` must factor through
+the quotient.
+
+That is a much milder dependence than 388's — there the level itself was
+borrowed — but it is a dependence, and my first attempt at this iteration wrote
+`SourceSccHeadedIntrinsic` taking a free source rank, which did not typecheck
+against `active_transport`. The name would have promised more than the definition
+delivered, so the docstring now says which half is intrinsic and why the other
+cannot be.
+
+**Odds: 96%, unchanged.** Half a reduction, honestly labelled.
+
+**Next.** Whether the rank can be made intrinsic too — it only has to order
+states within one component, and components are preserved, so a source-side rank
+may be reconcilable after all with a different formulation of `active_transport`.

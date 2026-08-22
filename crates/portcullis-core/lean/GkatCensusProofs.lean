@@ -11942,21 +11942,23 @@ theorem exists_mutual_over_pair {S Q : Type} {aut : GkatKleene.GAut S A T}
     (h1 : SemReaches quot p m) (h2 : SemReaches quot m p)
     (u0 : S) (h0 : π.mapState u0 = p) (hu0 : u0 ∈ aut.states) :
     ∃ u w : S, π.mapState u = p ∧ π.mapState w = m ∧
+      u ∈ aut.states ∧ w ∈ aut.states ∧
       SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } u w ∧
       SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } w u := by
   have hstep : ∀ n, SemReaches aut (legChain π h1 h2 u0 h0 n).1
       (legChain π h1 h2 u0 h0 (n + 1)).1 := fun n =>
     (legChain_to_mid π h1 h2 u0 h0 n).trans (legMid_to_next π h1 h2 u0 h0 n)
+  have hmem : ∀ n, (legChain π h1 h2 u0 h0 n).1 ∈ aut.states := fun n => by
+    induction n with
+    | zero => exact hu0
+    | succ k ih => exact semReaches_mem hwf ih (hstep k)
   obtain ⟨n, hn⟩ := exists_mutual_along_chain
     { states := aut.states, hlt := aut.hlt, trans := aut.trans }
-    (fun n => (legChain π h1 h2 u0 h0 n).1)
-    (fun n => by
-      induction n with
-      | zero => exact hu0
-      | succ k ih => exact semReaches_mem hwf ih (hstep k))
+    (fun n => (legChain π h1 h2 u0 h0 n).1) hmem
     (fun n => sreaches_of_semReaches aut (hstep n))
   refine ⟨(legChain π h1 h2 u0 h0 n).1, legMid π h1 h2 u0 h0 n,
     (legChain π h1 h2 u0 h0 n).2, legMid_map π h1 h2 u0 h0 n,
+    hmem n, semReaches_mem hwf (hmem n) (legChain_to_mid π h1 h2 u0 h0 n),
     sreaches_of_semReaches aut (legChain_to_mid π h1 h2 u0 h0 n), ?_⟩
   exact (sreaches_of_semReaches aut (legMid_to_next π h1 h2 u0 h0 n)).trans hn
 
@@ -14810,7 +14812,7 @@ theorem headedRegion_of_sourceHeaded {S Q : Type} {aut : GkatKleene.GAut S A T}
   have hs12 : SemReaches quot b1 b2 := semReaches_of_sreaches quot hniQ hr12
   have hs21 : SemReaches quot b2 b1 := semReaches_of_sreaches quot hniQ hr21
   obtain ⟨s0, hs0mem, hs0map⟩ := π.onto_states b1 hm1
-  obtain ⟨u, w, hu, hw, huw, hwu⟩ :=
+  obtain ⟨u, w, hu, hw, humem, hwmem, huw, hwu⟩ :=
     exists_mutual_over_pair π hwf hs12 hs21 s0 hs0map hs0mem
   have hactu : GkatGS.bval W (peelRawHlt aut
       (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState s))
@@ -14866,6 +14868,111 @@ theorem finiteAxiomsComplete_of_sourceHeaded
       (headedRegion_of_sourceHeaded π hwfS hniS hniQ rank hsrc)⟩
 
 #print axioms finiteAxiomsComplete_of_sourceHeaded
+
+/-- **Pullback activity implies intrinsic activity.**  With a rank that ignores
+its level index, an edge raw under the SOURCE's own level is raw under the
+pullback too — because a source component maps into one quotient level (389).
+Contrapositively, a state active under the pullback is active intrinsically. -/
+theorem active_intrinsic_of_pullback {S Q X : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut) (hniS : NoInert aut)
+    (rank0 : S → Nat) (u : S) (hu : u ∈ aut.states)
+    (W : T → X → Bool) (x : X)
+    (h : GkatGS.bval W (peelRawHlt aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)
+        (π.mapState s)) (fun _ v => rank0 v) u) x = true) :
+    GkatGS.bval W (peelRawHlt aut
+      (reachMask (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans))
+      (fun _ v => rank0 v) u) x = true := by
+  have hor : (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt u) x) = true := h
+  show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt u) x) = true
+  cases (Bool.or_eq_true _ _).mp hor with
+  | inr hh => exact (Bool.or_eq_true _ _).mpr (Or.inr hh)
+  | inl hb =>
+      obtain ⟨r, hstep, hraw⟩ := (bigOr_nonRaw_iff W x aut _ _ u).mp hb
+      refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+      refine (bigOr_nonRaw_iff W x aut _ _ u).mpr ⟨r, hstep, ?_⟩
+      cases hint : rawPred
+        (reachMask (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans))
+        (fun _ v => rank0 v) u ((BExp.one : BExp T), r) with
+      | false => rfl
+      | true =>
+          exfalso
+          obtain ⟨hlvl, hrk⟩ := (Bool.and_eq_true _ _).mp hint
+          have hmemr : r.2 ∈ aut.states := (hwf X W).2 u hu x r.1 r.2 hstep
+          have hmask := of_decide_eq_true hlvl
+          obtain ⟨h1, h2⟩ := mutual_of_reachMask_eq
+            (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans) hmemr hu hmask
+          have hq := quotMask_eq_of_source_mutual π
+            (semReaches_of_sreaches aut hniS h1) (semReaches_of_sreaches aut hniS h2)
+          have : rawPred (fun s => reachMask
+              (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState s))
+              (fun _ v => rank0 v) u ((BExp.one : BExp T), r) = true :=
+            (Bool.and_eq_true _ _).mpr ⟨decide_eq_true hq, hrk⟩
+          rw [this] at hraw
+          exact Bool.noConfusion hraw
+
+#print axioms active_intrinsic_of_pullback
+
+/-- **The source condition, with an INTRINSIC LEVEL.**  Stated with the source
+automaton's OWN `reachMask` — that is the half that becomes intrinsic, and it is
+the structural half.
+
+The rank does not: `active_transport` compares a state with its image, so the
+rank it uses is the quotient's pulled back, and a free source rank cannot be
+reconciled with it (`mapState` is many-to-one).  So `rank0` here must factor
+through the quotient.  That is a much milder dependence than 388's, where the
+LEVEL itself was borrowed, but it is a dependence and the name should not hide
+it. -/
+def SourceSccHeadedIntrinsic {S : Type} (aut : GkatKleene.GAut S A T)
+    (rank0 : S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
+    u ∈ aut.states → w ∈ aut.states →
+    SemReaches aut u w → SemReaches aut w u →
+    GkatGS.bval W (peelRawHlt aut
+      (reachMask (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans))
+      (fun _ v => rank0 v) u) x = true →
+    GkatGS.bval W (peelRawHlt aut
+      (reachMask (GkatThompson.GSystem.mk aut.states aut.hlt aut.trans))
+      (fun _ v => rank0 v) w) x = true → u = w
+
+/-- **The intrinsic condition suffices.**  389's wrinkle is discharged by fixing
+the rank level-independent; then `active_intrinsic_of_pullback` converts the
+activity the transport produces into the activity the intrinsic condition
+consumes. -/
+theorem headedRegion_of_sourceHeadedIntrinsic {S Q : Type}
+    {aut : GkatKleene.GAut S A T} {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut)
+    (hniS : NoInert aut) (hniQ : NoInert quot) (rank0Q : Q → Nat)
+    (hsrc : SourceSccHeadedIntrinsic aut (fun v => rank0Q (π.mapState v))) :
+    ∀ n : Nat, HeadedRegion quot
+      (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans))
+      (fun _ b => rank0Q b) n := by
+  intro n X W x b1 hb1 b2 hb2 hact1 hact2
+  have hm1 : b1 ∈ quot.states := (List.mem_filter.mp hb1).1
+  have hm2 : b2 ∈ quot.states := (List.mem_filter.mp hb2).1
+  have heq : reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) b1
+      = reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) b2 := by
+    rw [levelStates_lvl hb1, levelStates_lvl hb2]
+  obtain ⟨hr12, hr21⟩ := mutual_of_reachMask_eq
+    (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) hm1 hm2 heq
+  obtain ⟨s0, hs0mem, hs0map⟩ := π.onto_states b1 hm1
+  obtain ⟨u, w, hu, hw, humem, hwmem, huw, hwu⟩ :=
+    exists_mutual_over_pair π hwf (semReaches_of_sreaches quot hniQ hr12)
+      (semReaches_of_sreaches quot hniQ hr21) s0 hs0map hs0mem
+  have hpu := (active_transport π _ (fun _ b => rank0Q b) u W x).mpr (by rw [hu]; exact hact1)
+  have hpw := (active_transport π _ (fun _ b => rank0Q b) w W x).mpr (by rw [hw]; exact hact2)
+  have hiu := active_intrinsic_of_pullback π hwf hniS (fun v => rank0Q (π.mapState v))
+    u humem W x hpu
+  have hiw := active_intrinsic_of_pullback π hwf hniS (fun v => rank0Q (π.mapState v))
+    w hwmem W x hpw
+  have := hsrc X W x u w humem hwmem (semReaches_of_sreaches aut hniS huw)
+    (semReaches_of_sreaches aut hniS hwu) hiu hiw
+  rw [← hu, ← hw, this]
+
+#print axioms headedRegion_of_sourceHeadedIntrinsic
 
 end Instantiation
 
