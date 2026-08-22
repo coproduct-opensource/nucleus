@@ -13031,3 +13031,67 @@ does not close still stands.
 components, so the pushforward applies where the loop is; and check whether a
 behavioural quotient of a GKAT automaton is a structural hom in the list
 representation, or only up to guard equivalence.
+
+---
+
+## 281–282 — BOTH OF 280'S SCOPE GAPS, CLOSED.
+
+280 proved `hcollapse`'s layer case and named two gaps that limited it.  Both
+are now closed, machine-checked.
+
+### 281 — the STRUCTURAL-HOM assumption dissolves.
+
+280 assumed the quotient map is a structural homomorphism — lists map exactly,
+same order, same guards.  A BEHAVIOURAL quotient need not be: two bisimilar
+states can carry syntactically different guarded decision lists inducing the
+same first-match behaviour.  This was the gap most likely to sink the route.
+
+It dissolves on re-reading 280's proof: **the proof only ever touches
+REPRESENTATIVES.**  Every use of the hypotheses is at
+`Classical.choose (hsurj s')`, never at an arbitrary fibre member.  So the
+hypothesis weakens to
+
+    sys'.trans s' = (sys.trans (rep s')).map (retarget f)
+    sys'.hlt   s' =  sys.hlt   (rep s')
+
+— "the quotient's dynamics at each class is a REPRESENTATIVE's, retargeted" —
+which a behavioural quotient satisfies BY CONSTRUCTION, since that is how one
+builds it.  `loopLayer_pushforward_rep`, `propext + Classical.choice`.  `entry`
+need not even be nonempty any more: 279's fibre lemma was what wanted a head to
+read the base halt off, and this route does not use it.
+
+### 282 — a loop NESTED in a sequence, peeled.
+
+280's other gap: `LoopLayer` is total with `post = []`, so only a TOP-LEVEL `wh`
+satisfies it.  277 named the fix — peel the sequence first, apply the layer
+lemma to the left component where `post` is empty again — and here it is
+carried out.  `seq_subsystem` reduces a left state's equation in `seq L R` to
+`L`'s own equation at the finish "R's initial dispatch"; `layer_subsystem` (277)
+then strips the loop off `L`.  **The two compose by transitivity and nothing
+else** — the ambient continuation `seq_subsystem` hands down is exactly the
+parameter `layer_subsystem` accepts, which is why both were kept parametric from
+the start.  `seq_layer_subsystem` and `sum_layer_subsystem`, `propext` alone.
+
+Worth noting what this shows about 277's constraint.  "The recursion must follow
+the construction" sounded like a restriction; it is a two-line proof.  The layer
+lemmas are not weaker for being applied at the right place — they are applied
+there by COMPOSITION, and the composition is the identity on the difficulty.
+
+### What is left, stated plainly.
+
+That the `sys'` of 281 is behaviourally equivalent to `sys` — that `f` is a
+bisimulation — is a separate obligation, about the QUOTIENT's correctness rather
+than the layer.  This iteration's search says it is the standard coalgebraic
+fact: **"a relation is a bisimulation if and only if there exists a G-coalgebra
+structure map making canonical projection maps into homomorphisms"**, and
+"every coalgebra has a simple quotient given by the cointersection of all
+quotient coalgebras."  So the representative construction IS a homomorphism at
+the behavioural level — which is the direction 281 needs.
+
+**Odds: 93%** (+1).  Both named scope gaps closed in one turn, machine-checked,
+and the residue is a standard coalgebraic fact rather than a new obstruction.
+The field's prior that the problem does not close still stands.
+
+**Next.**  Assemble: a `Layered` built on `LoopLayer` (acyclic | loop), its
+pushforward by induction combining 264's `acyclic_quotient` with 281, and the
+bisimulation obligation for the representative quotient.

@@ -7624,4 +7624,125 @@ theorem loopLayer_pushforward {S S' : Type}
 
 #print axioms loopLayer_pushforward
 
+
+/-! ### 281 — THE PUSHFORWARD WITHOUT THE STRUCTURAL-HOM ASSUMPTION
+
+    280 closed `hcollapse`'s layer case but left a gap it named: the theorem
+    assumed the quotient map is a STRUCTURAL homomorphism — transition lists
+    map exactly, same order, same guards — and a BEHAVIOURAL quotient need not
+    be one.  Two bisimilar states can carry syntactically different guarded
+    decision lists that induce the same first-match behaviour, so the
+    assumption is genuinely strong, and it was the gap most likely to sink the
+    route.
+
+    It dissolves on re-reading 280's proof: **the proof only ever touches
+    REPRESENTATIVES.**  Every use of `htrans` and `hhlt` is at
+    `Classical.choose (hsurj s')`, never at an arbitrary fibre member.  So the
+    hypothesis can be weakened to
+
+        sys'.trans s' = (sys.trans (rep s')).map (retarget f)
+        sys'.hlt   s' =  sys.hlt   (rep s')
+
+    — "the quotient's dynamics at each class is a REPRESENTATIVE's, retargeted"
+    — which a behavioural quotient satisfies BY CONSTRUCTION, since that is how
+    one builds it.  The structural-hom assumption is gone, and with it 280's
+    second scope gap.
+
+    `entry` no longer needs to be nonempty either: 279's fibre lemma was what
+    required a head to read the base halt off, and this route does not use it.
+    (`loopLayer_fiber_agree` remains the well-definedness fact for the
+    structural version, and remains proved.)
+
+    **What is NOT proved here, stated plainly.**  That the `sys'` so described
+    is behaviourally equivalent to `sys` — i.e. that `f` is a bisimulation — is
+    a separate obligation.  It is a statement about the QUOTIENT's correctness,
+    not about the layer, and it is where the remaining work on `hcollapse`
+    lives. -/
+theorem loopLayer_pushforward_rep {S S' : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {entry : List (BExp T × A × S)}
+    (h : LoopLayer sys base b entry)
+    (f : S → S') (hsurj : ∀ s' : S', ∃ s, f s = s')
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ s' : S', sys'.trans s'
+      = (sys.trans (Classical.choose (hsurj s'))).map
+          (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (hhlt : ∀ s' : S', sys'.hlt s' = sys.hlt (Classical.choose (hsurj s'))) :
+    LoopLayer sys' (pushBase f hsurj base sys') b
+      (entry.map (fun tr => (tr.1, tr.2.1, f tr.2.2))) := by
+  refine ⟨?_, ?_, rfl⟩
+  · intro s'
+    simp only [pushBase]
+    rw [htrans s', h.trans_eq (Classical.choose (hsurj s')), List.map_append]
+    congr 1
+    simp only [List.map_map, Function.comp_def]
+  · intro s' X W x
+    simp only [pushBase]
+    rw [hhlt s']
+    exact h.hlt_eq (Classical.choose (hsurj s')) X W x
+
+#print axioms loopLayer_pushforward_rep
+
+
+/-! ### 282 — A LOOP NESTED IN A SEQUENCE, PEELED
+
+    280's FIRST scope gap: `LoopLayer` is total and has `post = []`, so only a
+    TOP-LEVEL `wh` satisfies it — `seq (wh b e) f` is not a `LoopLayer` over
+    anything.  277 explained why and named the fix: the recursion follows the
+    construction, so PEEL THE SEQUENCE FIRST and apply the layer lemma to the
+    left component, where `post` is empty again.
+
+    Here that fix is carried out.  `seq_subsystem` (already proved) reduces a
+    left state's equation in `seq L R` to `L`'s own equation at the finish "R's
+    initial dispatch"; `layer_subsystem` (277) then strips the loop off `L`.
+    The two compose by transitivity and nothing else — the ambient continuation
+    `F` that `seq_subsystem` hands down is exactly the parameter
+    `layer_subsystem` is stated to accept, which is why both were kept
+    parametric from the start.
+
+    Worth noting what this shows about 277's constraint.  "The recursion must
+    follow the construction" sounded like a restriction; here it is a two-line
+    proof.  The layer lemmas are not weaker for being applied at the right
+    place — they are applied there by COMPOSITION, and the composition is the
+    identity on the difficulty. -/
+theorem seq_layer_subsystem {S₁ S₂ : Type}
+    {sysL baseL : GkatThompson.GSystem S₁ A T} {b : BExp T}
+    {entry : List (BExp T × A × S₁)}
+    (h : LoopLayer sysL baseL b entry)
+    (R : GkatThompson.InitializedGAut S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₁) :
+    EquivBA
+      (GkatThompson.eqRHSParam (GkatThompson.seqGSystem sysL R) sol F (.inl s))
+      (GkatThompson.eqRHSParam baseL (fun t => sol (.inl t))
+        (guardedFold
+          (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2)))
+            (fun t => sol (.inl t)))
+          (GkatThompson.paramFallback (BExp.not b)
+            (GkatThompson.initRHSParam R (fun t => sol (.inr t)) F))) s) :=
+  EquivBA.trans (seq_subsystem sysL R sol F s)
+    (layer_subsystem (fun t => sol (.inl t)) _ s entry (h.trans_eq s) (h.hlt_eq s))
+
+#print axioms seq_layer_subsystem
+
+/-- The same for a loop in the LEFT half of a SUM (hence of an `ite`). -/
+theorem sum_layer_subsystem {S₁ S₂ : Type}
+    {sysL baseL : GkatThompson.GSystem S₁ A T} {b : BExp T}
+    {entry : List (BExp T × A × S₁)}
+    (h : LoopLayer sysL baseL b entry)
+    (Rc : GkatThompson.GSystem S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₁) :
+    EquivBA
+      (GkatThompson.eqRHSParam (GkatThompson.sumGSystem sysL Rc) sol F (.inl s))
+      (GkatThompson.eqRHSParam baseL (fun t => sol (.inl t))
+        (guardedFold
+          (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2)))
+            (fun t => sol (.inl t)))
+          (GkatThompson.paramFallback (BExp.not b) F)) s) :=
+  by
+    rw [sum_subsystem_inl sysL Rc sol F s]
+    exact layer_subsystem (fun t => sol (.inl t)) F s entry
+      (h.trans_eq s) (h.hlt_eq s)
+
+#print axioms sum_layer_subsystem
+
 end GkatCensus
