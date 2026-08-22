@@ -7368,4 +7368,73 @@ theorem layer_loop_form {S : Type} {sys base : GkatThompson.GSystem S A T}
 
 #print axioms layer_loop_form
 
+
+/-! ### 277 — `loop_subsystem` FOR AN ABSTRACT LAYER
+
+    273 wanted `loop_subsystem` generalised from `loopInitialized` to an
+    abstract layer.  274 showed the generalisation is FALSE in general, because
+    the layer's conditional sits at the INSERTION POINT and `post` sits between
+    it and the end.  What 274 did not say, and what is true, is that the
+    obstruction is EXACTLY `post ≠ []`:
+
+    with `post = []` the insertion point IS the end, and 276's shared-`E` lemma
+    turns the whole back-edge block into `test (base.hlt s) ; E` — which is
+    literally `paramFallback (base.hlt s) E`.  So the layer's parametric
+    equation is `base`'s parametric equation at the finish `E`, with no algebra
+    left to do.
+
+    **Why this is not a weakening.**  `wh_isLayer` ALREADY has `post = []` —
+    `CoreHaltDisjoint` keeps the back edges from colliding, which is what 246
+    observed and what made 246's original shape work.  `post` becomes nonempty
+    only when a layer is LIFTED through a `seq`, and there the right move is to
+    peel the `seq` first (`seq_subsystem`, already proved) and apply this lemma
+    to the left component, where `post` is empty again.  The recursion follows
+    the construction; it does not strip an abstract layer off an arbitrary
+    automaton.  That is a real constraint on `Layered`, recorded in the ledger. -/
+theorem layer_subsystem {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {b : BExp T} (sol : S → Exp A T) (F : Exp A T) (s : S)
+    (entry : List (BExp T × A × S))
+    (hsys : sys.trans s = base.trans s ++ entry.map (fun tr =>
+      (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2)))
+    (hhlt : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (sys.hlt s) x
+        = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)) :
+    EquivBA (GkatThompson.eqRHSParam sys sol F s)
+      (GkatThompson.eqRHSParam base sol
+        (guardedFold
+          (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2))) sol)
+          (GkatThompson.paramFallback (BExp.not b) F)) s) := by
+  have hsplit : transitionBranches (sys.trans s) sol
+      = transitionBranches (base.trans s) sol
+        ++ transitionBranches (entry.map (fun tr =>
+            (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2))) sol := by
+    rw [hsys]
+    simp only [transitionBranches, List.map_append]
+  show EquivBA (guardedFold (transitionBranches (sys.trans s) sol) _) _
+  rw [hsplit, guardedFold_append]
+  exact guardedFold_fallback_congr
+    (layer_entry_shared sol F s entry _ rfl hhlt)
+
+#print axioms layer_subsystem
+
+/-- **AND IT SPECIALISES BACK TO `loop_subsystem`.**  A sanity check that the
+    abstract lemma really covers the concrete one it generalises: a `wh`'s core
+    is a layer over its body's core with `post = []`, entry list the body's own
+    initial transitions, and the halt semantics `body.hlt ∧ ¬guard` — all three
+    hypotheses hold by `rfl` or by 220's `loop_core_hlt`. -/
+theorem loop_subsystem_of_layer {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T)
+    (sol : S → Exp A T) (F : Exp A T) (s : S) :
+    EquivBA
+      (GkatThompson.eqRHSParam
+        (GkatThompson.loopInitialized guard body).core sol F s)
+      (GkatThompson.eqRHSParam body.core sol
+        (guardedFold
+          (transitionBranches
+            (body.initTrans.map (fun tr => (BExp.and guard tr.1, tr.2))) sol)
+          (GkatThompson.paramFallback (BExp.not guard) F)) s) :=
+  layer_subsystem sol F s body.initTrans rfl (fun _ _ _ => rfl)
+
+#print axioms loop_subsystem_of_layer
+
 end GkatCensus

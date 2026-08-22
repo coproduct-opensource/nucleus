@@ -12802,3 +12802,64 @@ built from `sol_base` at the finish `wh b E`-and-continue, which is what
 unknown is exactly the axiom that closes it.  Check whether the eighth
 migration (folding `entry` into `IsLayer`) is still needed, or whether taking
 the entry list as a hypothesis at the point of use suffices.
+
+---
+
+## 277 — `loop_subsystem` FOR AN ABSTRACT LAYER (PROVED).  AND THE CONSTRAINT IT COMES WITH.
+
+**The theorem.**  273 wanted `loop_subsystem` generalised from `loopInitialized`
+to an abstract layer.  274 showed the generalisation is FALSE in general.  What
+274 did not say, and what is true, is that **the obstruction is EXACTLY
+`post ≠ []`**:
+
+```
+layer_subsystem :
+  sys.trans s = base.trans s ++ entry.map (fun tr => (base.hlt s ∧ b ∧ tr.1, tr.2))
+  →  sys.hlt s ≈ base.hlt s ∧ ¬b
+  →  EquivBA (eqRHSParam sys sol F s) (eqRHSParam base sol E s)
+```
+
+with `E` the shared entry fold.  **No algebra left to do**: with `post = []` the
+insertion point IS the end, and 276's shared-`E` lemma turns the whole back-edge
+block into `test (base.hlt s) ; E`, which is LITERALLY `paramFallback
+(base.hlt s) E`.  The proof is `guardedFold_append` then 276.  Compiled first
+try; **axioms `propext` ALONE**.
+
+**Sanity check that it really generalises.**  `loop_subsystem_of_layer` derives
+the `loopInitialized` case from it — and **both hypotheses discharge by `rfl`**.
+The abstract statement covers the concrete one definitionally.  `propext` alone.
+
+**The constraint, stated honestly.**  `wh_isLayer` already has `post = []`
+(`CoreHaltDisjoint` keeps the back edges from colliding — 246's observation).
+`post` becomes nonempty only when a layer is LIFTED THROUGH A `seq`.  Proof that
+no `G` rescues that case: base's `post` guards are not disjoint from `b` (in
+`seq (wh b e) f` at `inl s`, `post` is `f`'s entry block gated by `e`'s halt,
+which fires under `b`), so on `b` the base equation runs `post` while the layer
+skips it — no choice of finish can repair a difference that is not at the end.
+
+⇒ **`hsolve` cannot strip an abstract layer off an arbitrary automaton.**  The
+recursion must follow the CONSTRUCTION: peel the `seq` first (`seq_subsystem`,
+already proved, 1370) and apply `layer_subsystem` to the left component, where
+`post` is empty again.  **This is a real constraint on `Layered`** — a NINTH
+migration, splitting `Layered.layer` into a `post = []` loop constructor plus
+explicit `sum`/`seq` LIFTING constructors.  Note this makes `layered_sum` and
+`layered_seq` (250, 258) SIMPLER, not harder: they become the constructors
+themselves rather than theorems pushing a layer through.
+
+**Confirmation from LLEE (web search).**  Grabmayer's loop-subchart elimination
+"involves removing all loop-entry transitions of that subchart AND THEN REMOVING
+ALL VERTICES AND TRANSITIONS THAT BECOME UNREACHABLE" — the unreachability sweep
+is the analogue of the `post = []` requirement, and "LLEE is satisfied when
+loop-entry transitions are never removed from the body of a previously
+eliminated loop sub-chart" is the ordering my nested `Layered` already encodes.
+
+**Odds: 90%** (+1).  `loop_subsystem` generalised and machine-checked with the
+concrete case falling out by `rfl`, against a genuine constraint on the
+induction — but one that comes with its fix already proved.  The field's prior
+that the problem does not close still stands.
+
+**Next.**  The ninth migration: restructure `Layered` as acyclic / `post = []`
+loop / `sum`-lift / `seq`-lift, re-prove `thompson_layered` (all four cases are
+now constructors or existing lemmas), and then `hsolve` by recursion on it with
+`layer_subsystem` at the loop constructor and `seq_subsystem`/`sum_subsystem` at
+the lifts.
