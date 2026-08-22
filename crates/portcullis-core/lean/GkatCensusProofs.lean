@@ -8001,32 +8001,109 @@ theorem loopLayer_has_solution {S : Type}
     consumes a solution of `base` at finish `1` and produces a solution of `sys`
     at finish `1`.  Input and output are the same predicate, which is what makes
     the recursion go through without a separate parametric invariant. -/
-inductive LayeredL {S : Type} : GkatThompson.GSystem S A T → Prop where
-  | acyclic {sys} :
+inductive LayeredL : {S : Type} → GkatThompson.GSystem S A T → Prop where
+  | acyclic {S : Type} {sys : GkatThompson.GSystem S A T} :
       (∃ rank : S → Nat, ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
         GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s) →
       LayeredL sys
-  | loop {sys base} {b : BExp T} {entry : List (BExp T × A × S)} :
+  | loop {S : Type} {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+      {entry : List (BExp T × A × S)} :
       LoopLayer sys base b entry → LayeredL base → LayeredL sys
+  | sum {S₁ S₂ : Type} {L : GkatThompson.GSystem S₁ A T}
+      {R : GkatThompson.GSystem S₂ A T} :
+      LayeredL L → LayeredL R → LayeredL (GkatThompson.sumGSystem L R)
+  | seq {S₁ S₂ : Type} {L : GkatThompson.GSystem S₁ A T}
+      {R : GkatThompson.InitializedGAut S₂ A T} :
+      LayeredL L → LayeredL R.core → LayeredL (GkatThompson.seqGSystem L R)
+
+/-- The right half of a sequence is untouched by the construction, so its
+    equations are its own — the same fact `sum_subsystem_inr` states, and
+    definitionally the same proof. -/
+theorem seq_subsystem_inr {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T)
+    (R : GkatThompson.InitializedGAut S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₂) :
+    GkatThompson.eqRHSParam (GkatThompson.seqGSystem L R) sol F (.inr s)
+      = GkatThompson.eqRHSParam R.core (fun t => sol (.inr t)) F s :=
+  sum_subsystem_inr L R.core sol F s
 
 /-- **EVERY LAYERED AUTOMATON HAS A SOLUTION.**  `hsolve`, for the predicate
-    283 and 284 were built to consume. -/
-theorem layeredL_has_solution {S : Type} {sys : GkatThompson.GSystem S A T}
-    (h : LayeredL sys) :
-    ∃ std : S → Exp A T, ∀ s ∈ sys.states,
+    283, 284 and 282 were built to consume.  The four cases use, in order:
+    283 (acyclic, in the firstMatch form a bisimulation can supply), 284 (the
+    loop, needing only W1), and 282's composition for the two lifts — where the
+    ambient continuation is exactly `withContinuation`'s parameter. -/
+theorem layeredL_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A T},
+    LayeredL sys → ∃ std : S → Exp A T, ∀ s ∈ sys.states,
       EquivBA (std s) (GkatThompson.eqRHSParam sys std (.test .one) s) := by
+  intro S sys h
   induction h with
-  | @acyclic sys hr =>
+  | @acyclic S sys hr =>
       obtain ⟨rank, hrank⟩ := hr
       obtain ⟨sol, hsol⟩ := acyclic_has_solution_sem sys rank hrank
       refine ⟨sol, fun s _ => EquivBA.trans (hsol s) ?_⟩
       exact guardedFold_fallback_congr
         (EquivBA.symm (GkatGuardedAlgebra.seq_one (.test (sys.hlt s))))
-  | @loop sys base b entry hlay _ ih =>
+  | @loop S sys base b entry hlay _ ih =>
       obtain ⟨std, hstd⟩ := ih
       exact ⟨fun t => .seq (std t)
           (.wh b (guardedFold (transitionBranches entry std) (.test .zero))),
         loopLayer_has_solution hlay std hstd _ _ rfl rfl⟩
+  | @sum S₁ S₂ L R _ _ ihL ihR =>
+      obtain ⟨stdL, hL⟩ := ihL
+      obtain ⟨stdR, hR⟩ := ihR
+      refine ⟨fun x => match x with | .inl t => stdL t | .inr t => stdR t, ?_⟩
+      intro x hs
+      cases x with
+      | inl s =>
+          rw [sum_subsystem_inl]
+          exact hL s (sum_states_inl hs)
+      | inr s =>
+          rw [sum_subsystem_inr]
+          exact hR s (sum_states_inr hs)
+  | @seq S₁ S₂ L R _ _ ihL ihR =>
+      obtain ⟨stdL, hL⟩ := ihL
+      obtain ⟨stdR, hR⟩ := ihR
+      refine ⟨fun x => match x with
+        | .inl t => .seq (stdL t) (GkatThompson.initRHSParam R stdR (.test .one))
+        | .inr t => stdR t, ?_⟩
+      intro x hs
+      cases x with
+      | inl s =>
+          refine EquivBA.trans ?_
+            (EquivBA.symm (seq_subsystem L R _ (.test .one) s))
+          exact GkatThompson.StandardSolvesBA.withContinuation ⟨L, .one, []⟩ stdL hL
+            _ s (seq_states_inl hs)
+      | inr s =>
+          rw [seq_subsystem_inr]
+          exact hR s (seq_states_inr hs)
+
+/-- **`hsum` FOR `LayeredL`: every Thompson automaton is layered.**  One
+    constructor per syntactic form, and every case is definitional or 279. -/
+theorem thompson_layeredL : ∀ e : Exp A T,
+    LayeredL (GkatThompson.certifiedThompson A T e).aut.core
+  | .test _ => LayeredL.acyclic ⟨fun s => (nomatch s : Nat), fun s => nomatch s⟩
+  | .act _ => LayeredL.acyclic ⟨fun _ => 0, by
+      intro s X W x r hfm
+      cases hfm⟩
+  | .ite _ e f => LayeredL.sum (thompson_layeredL e) (thompson_layeredL f)
+  | .seq e f => LayeredL.seq (thompson_layeredL e) (thompson_layeredL f)
+  | .wh b e => LayeredL.loop (wh_loopLayer b e) (thompson_layeredL e)
+
+#print axioms thompson_layeredL
+
+/-- **THE REMAINDER, IN ONE STATEMENT.**  `hsum` and `hsolve` now meet: every
+    Thompson automaton is `LayeredL` (285), and every `LayeredL` automaton has a
+    solution (285).  So the ONLY thing still wanted is that the QUOTIENT is
+    `LayeredL` — and `loopLayer_pushforward_rep` (281) and `acyclic_quotient`
+    (264) are its two cases. -/
+theorem thompson_has_solution_via_layers (e : Exp A T) :
+    ∃ std : (GkatThompson.certifiedThompson A T e).State → Exp A T,
+      ∀ s ∈ (GkatThompson.certifiedThompson A T e).aut.core.states,
+        EquivBA (std s) (GkatThompson.eqRHSParam
+          (GkatThompson.certifiedThompson A T e).aut.core std (.test .one) s) :=
+  layeredL_has_solution (thompson_layeredL e)
+
+#print axioms thompson_has_solution_via_layers
 
 #print axioms layeredL_has_solution
 

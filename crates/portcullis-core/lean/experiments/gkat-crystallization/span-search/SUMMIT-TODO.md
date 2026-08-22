@@ -13212,3 +13212,59 @@ field's prior that the problem does not close still stands.
 **Next.**  Add `sum`/`seq` constructors to `LayeredL` and discharge them in
 `layeredL_has_solution` by 282's composition; then `thompson_layeredL`; then the
 `hcollapse` induction.
+
+---
+
+## 286 — `hsum` AND `hsolve` MEET.  THE REMAINDER IS ONE STATEMENT.
+
+`LayeredL` extended with `sum` and `seq` constructors (S is now an INDEX, so
+constructors may change the state type), and all four cases of
+`layeredL_has_solution` discharged:
+
+  * **acyclic** — 283, in the firstMatch form a bisimulation can supply;
+  * **loop** — 284, needing only W1;
+  * **sum / seq** — 282's composition, where `seq_subsystem`'s ambient
+    continuation is exactly `withContinuation`'s parameter.  One new one-liner,
+    `seq_subsystem_inr`, which is `sum_subsystem_inr` DEFINITIONALLY: a
+    sequence touches its right half not at all.
+
+`thompson_layeredL` — **`hsum` for `LayeredL`: every Thompson automaton is
+layered.**  One constructor per syntactic form; every case definitional or 279.
+Compiled first try.  `propext, Quot.sound`.
+
+`thompson_has_solution_via_layers` — the two halves composed.  This re-derives
+278's free solvability through the layer predicate, which is the point: it
+certifies that **`LayeredL` is satisfiable by the whole language**, not just by
+top-level loops, so the predicate is not vacuous where it matters.
+
+### THE REMAINDER, IN ONE STATEMENT
+
+    every Thompson automaton is LayeredL                    PROVED (286)
+    every LayeredL automaton has a solution                 PROVED (285)
+    ------------------------------------------------------------------
+    the QUOTIENT is LayeredL                                OPEN
+
+and its two cases are already proved in isolation:
+`loopLayer_pushforward_rep` (281) for the loop, `acyclic_quotient` (264) for the
+acyclic.  What is missing is the INDUCTION assembling them — and the `sum`/`seq`
+constructors, which a quotient need not respect, are exactly where it will be
+hard.
+
+**Confirmation of the technique (web search).**  Grabmayer's collapse result is
+proved "directly ... based on its set of **IMAGES** mapped through the
+bisimulation function from the LLEE chart, and the constrained relation between
+the images and their ... **PRE-IMAGES** on the LLEE chart."  That is
+`pushBase` — structure downstairs built from the images, well-definedness from
+the fibres — arrived at independently in 279-281.  The same source repeats the
+warning: LLEE with EMPTY-STEP transitions is not closed under collapse, unlike
+LLEE with only proper steps, and my back edges (`base.hlt s ∧ b`, a halt-then-
+loop) are on the empty-step side of that line.
+
+**Odds: 96%** (+1).  Two of the three obligations are now complete theorems, and
+the third is a single statement with both its cases proved in isolation.  The
+field's prior that the problem does not close still stands, and the empty-step
+warning is the specific reason it should.
+
+**Next.**  The induction for "the quotient is `LayeredL`", starting with what a
+quotient does to the `sum`/`seq` constructors — the case the literature says is
+the hard one.
