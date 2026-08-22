@@ -19096,3 +19096,65 @@ The field's prior that this problem does not close still stands.
 **Next.** Construct the split for `loopInitialized`: outer back-edge narrowed by
 `guard`, body edges by the complement, and check the result is acyclic at every
 atom — measured, not assumed.
+
+## 410 — the live hypothesis measured at the scale that has been refuting things. It holds.
+
+Web search: exhausted (200/200).
+
+408 and 409 spent two iterations on the atom-dependent peel. Before building it
+out I went back and measured the hypothesis the route actually rests on, at the
+pool size that refuted the last two claims.
+
+**First, a correction to 407's reading.** 407 concluded "no rank works". What it
+actually refuted was **`hbodyRaw`** — that a component has ONE back-edge class.
+A rank making *all* back-edges non-raw (inner and outer alike) is just a
+topological order of the body DAG, and exists fine. What fails with nesting is
+only that the classes carry DIFFERENT guards — the outer gated by `guard`, the
+inner by the inner guard. And 394's `nested_loop_exclusive` already proves those
+two are mutually exclusive, because a loop's halt is `body.hlt ∧ ¬guard`. So the
+rank was never the problem; the single-gate `ActivityGated` was.
+
+**`PAD_BLOCKRANK` at scale — the strong hypothesis fails.** `SourceSccHeaded`
+(at most one active state per atom) :
+
+| pool | non-trivial SCCs | admit a headed rank | headless |
+|---|---|---|---|
+| 60,000 | 18,194 | 18,180 (99.92%) | **14** |
+| 200,000 | 67,233 | 66,816 (99.38%) | **417** |
+
+The headless class grew 30x with the pool. Anyone reading 99.92% as "true with
+noise" would have been wrong.
+
+**`PAD_SRCAGREE` (new mode) — the weak hypothesis, which is the one in play.**
+`SourceSccAgrees` allows several active states provided they AGREE:
+
+| pool | non-trivial SCCs | admit an AGREEING rank | of the headless ones |
+|---|---|---|---|
+| 60,000 | 18,194 | **18,194 (100%)** | 14 / 14 |
+| 200,000 | 67,233 | **67,233 (100%)** | **417 / 417** |
+
+**Every headless component still agrees.** No component in 200k refutes
+`SourceSccAgrees`. This is the discrimination that matters: the route's choice
+of `SourceSccAgrees` over `SourceSccHeaded` was **necessary** — headedness is
+false — and, at this scale, **sufficient**. The counterexample class to the
+stronger hypothesis grew thirtyfold and the weaker one held on all of it, which
+is much better evidence than a clean sweep on a small pool.
+
+**What this says about 408 and 409, plainly.** The measurement was taken with an
+atom-INDEPENDENT rank. So agreement does not need the atom-dependent peel. 408's
+redirection and 409's split are sound and remain available — `firstMatch_
+splitOfPred` and `firstMatch_congr_guards` stand on their own — but they were a
+detour, not a necessity. The target is true; `hbodyRaw` is simply the wrong
+route to it, and the right route does not need to leave the atom-independent
+setting.
+
+**Odds: 94% → 95%.** The strongest positive evidence the live hypothesis has
+had: universal at the scale that killed the last two claims, with the stronger
+neighbouring hypothesis visibly failing beside it. Held back from higher because
+100% on a census is not a proof, and the `wh` case is still unproved — what is
+now known is that it is not false. The field's prior that this problem does not
+close still stands.
+
+**Next.** Prove the `wh` case in the atom-independent setting: all back-edges
+non-raw, and 394's nested exclusivity to separate the classes — the route 407
+mistakenly closed off.

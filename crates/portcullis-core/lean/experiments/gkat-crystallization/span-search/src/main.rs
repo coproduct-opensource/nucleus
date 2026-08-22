@@ -2370,6 +2370,81 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// `u`, and whether deleting the back-edges leaves a DAG.  If Thompson automata
 /// are always reducible, the depth stratification exists and `hbodyRaw` becomes
 /// satisfiable per level.
+/// **`PAD_SRCAGREE`** (iteration 410).  The LIVE hypothesis.
+///
+/// `SourceSccHeaded` demands at most one active state per atom in a component;
+/// `PAD_BLOCKRANK` shows that fails for 417 of 67,233 SCCs at pool 200k (and
+/// only 14 of 18,194 at 60k — 408's lesson again).  But the route in play does
+/// not use headedness.  It uses `SourceSccAgrees`, strictly weaker: several
+/// states may be active provided they AGREE.
+///
+/// So what decides the route is whether the headless components nonetheless
+/// agree.  Measured: is there a rank under which, at every atom, all ACTIVE
+/// states of the component have the same outcome (same successor, or all
+/// halting)?  Split by headedness so the headless ones — the only ones that can
+/// refute anything — are visible on their own.
+fn srcagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut headed_ok, mut headless, mut headless_agree) =
+        (0usize, 0usize, 0usize, 0usize);
+    let mut agree_any = 0usize;
+    let mut first_bad: Option<String> = None;
+    for a in &pool {
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let m = comp.len();
+            if m > 7 { continue; }
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut ok_headed, mut ok_agree) = (false, false);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let (mut headed, mut agree) = (true, true);
+                for x in 0..NA {
+                    let mut outs: Vec<Option<usize>> = Vec::new();
+                    for &u in &comp {
+                        let tv = a.st[u][x];
+                        let halts = (a.hl[u] >> x) & 1 == 1;
+                        let isact = if tv == 0 { halts } else {
+                            let t = (tv - 1) as usize;
+                            !(comp.contains(&t) && rank[t] < rank[u])
+                        };
+                        if !isact { continue; }
+                        outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                    }
+                    if outs.len() > 1 { headed = false; }
+                    if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; }
+                }
+                if headed { ok_headed = true; }
+                if agree { ok_agree = true; }
+                if ok_headed && ok_agree { break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if ok_agree { agree_any += 1; }
+            if ok_headed { headed_ok += 1; } else {
+                headless += 1;
+                if ok_agree { headless_agree += 1; }
+                else if first_bad.is_none() {
+                    first_bad = Some(format!("k={} comp={:?} hl={:?} st={:?}",
+                        a.k, comp, &a.hl[..a.k as usize], &a.st[..a.k as usize]));
+                }
+            }
+        }
+    }
+    println!("PAD_SRCAGREE  pool={}  non-trivial SCCs={}", pool.len(), sccs);
+    println!("  admit a HEADED rank                : {}", headed_ok);
+    println!("  HEADLESS (no headed rank)          : {}", headless);
+    println!("    of those, admit an AGREEING rank : {}", headless_agree);
+    println!("  admit an AGREEING rank (total)     : {}", agree_any);
+    match first_bad {
+        Some(b) => println!("  *** REFUTES SourceSccAgrees: {}", b),
+        None => println!("  no component refutes SourceSccAgrees"),
+    }
+}
+
 fn atomcycles<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut irred, mut multi_entry) = (0usize, 0usize);
@@ -9432,6 +9507,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_SRCAGREE").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        srcagree::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_ATOMCYCLES").is_ok() {
