@@ -2287,6 +2287,113 @@ fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Au
     pool
 }
 
+/// **`PAD_LOOPMERGE`** (iteration 354).
+///
+/// 353 found the mechanism behind `LevelAgreement`: an SCC in GKAT comes from a
+/// while-loop, and a while-loop has exactly ONE exit continuation, so a region's
+/// exits agree structurally rather than accidentally.  That argument has one
+/// weak joint — the collapse.  If a bisimulation quotient ever merged states
+/// from TWO different loops into a single SCC, that SCC would inherit two exit
+/// continuations and the structural argument would break.
+///
+/// This measures the joint directly: for each non-trivial SCC of a quotient,
+/// how many distinct non-trivial SCCs of the SOURCE automaton its preimage
+/// spans.  Two or more is a merge.
+fn loopmerge<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut qsccs, mut merged, mut merged_conflict) = (0usize, 0usize, 0usize);
+    let mut cross_loop = 0usize;
+    let mut spanmax = 0usize;
+    let mut first_merge: Option<String> = None;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        let k = a.k as usize;
+        // source SCC index per state, and which source SCCs are non-trivial
+        let src = sccs_of(a);
+        let mut scomp = [usize::MAX; MAXK];
+        let mut snontriv = vec![false; src.len()];
+        for (ci, mem) in src.iter().enumerate() {
+            for &m in mem { scomp[m] = ci; }
+            let selfloop = mem.len() == 1
+                && (0..NA).any(|x| a.st[mem[0]][x] == (mem[0] + 1) as u8);
+            snontriv[ci] = mem.len() > 1 || selfloop;
+        }
+        for comp in sccs_of(&q) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| q.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            qsccs += 1;
+            let mut spans: Vec<usize> = Vec::new();
+            for u in 0..k {
+                if !comp.contains(&blk[u]) { continue; }
+                let ci = scomp[u];
+                if ci == usize::MAX || !snontriv[ci] { continue; }
+                if !spans.contains(&ci) { spans.push(ci); }
+            }
+            if spans.len() > spanmax { spanmax = spans.len(); }
+            // Sharper: is the span WITHIN one quotient state (bisimilar sources,
+            // which agree on everything trivially), or ACROSS two distinct
+            // quotient states drawn from different source loops?  Only the second
+            // could put two exit continuations in one region.
+            {
+                let mut cross = false;
+                for &b1 in &comp {
+                    for &b2 in &comp {
+                        if b1 >= b2 { continue; }
+                        let mut c1: Vec<usize> = Vec::new();
+                        let mut c2: Vec<usize> = Vec::new();
+                        for u in 0..k {
+                            let ci = scomp[u];
+                            if ci == usize::MAX || !snontriv[ci] { continue; }
+                            if blk[u] == b1 && !c1.contains(&ci) { c1.push(ci); }
+                            if blk[u] == b2 && !c2.contains(&ci) { c2.push(ci); }
+                        }
+                        if !c1.is_empty() && !c2.is_empty()
+                            && c1.iter().all(|x| !c2.contains(x)) { cross = true; }
+                    }
+                }
+                if cross { cross_loop += 1; }
+            }
+            if spans.len() >= 2 {
+                merged += 1;
+                // does the merged SCC have two different exit targets at one atom?
+                let mut exit_tgt = [usize::MAX; 16];
+                let mut clash = false;
+                for &u in &comp {
+                    for x in 0..NA {
+                        let tv = q.st[u][x];
+                        if tv == 0 { continue; }
+                        let t = (tv - 1) as usize;
+                        if comp.contains(&t) { continue; }
+                        if exit_tgt[x] == usize::MAX { exit_tgt[x] = t; }
+                        else if exit_tgt[x] != t { clash = true; }
+                    }
+                }
+                if clash { merged_conflict += 1; }
+                if first_merge.is_none() {
+                    first_merge = Some(format!(
+                        "quotient SCC {comp:?} spans {} source loops, exit clash {clash}\n    {}",
+                        spans.len(), show_aut("src  ", a)));
+                }
+            }
+        }
+    }
+    println!("LOOPMERGE: {qsccs} non-trivial SCCs in quotients");
+    println!("  {merged} whose preimage spans TWO OR MORE non-trivial source loops \
+              ({:.3}%); max span {spanmax}",
+        100.0 * merged as f64 / qsccs.max(1) as f64);
+    println!("  {cross_loop} quotient SCCs contain TWO DISTINCT states drawn from DISJOINT \
+              source loops (the only shape that could bring two exit continuations together)");
+    println!("  of those merged SCCs, {merged_conflict} have two different exit targets \
+              at one atom (this is the number that would break the structural argument)");
+    match first_merge {
+        None => println!("  no merge anywhere: the collapse never fuses two loops into one SCC, \
+                          so a region keeps its single exit continuation"),
+        Some(m) => println!("  FIRST MERGE\n    {m}"),
+    }
+}
+
 /// **`PAD_BACKATOM`** (iteration 342).
 ///
 /// 341 left exactly one obligation: from a quotient's transition lists, produce
@@ -8169,6 +8276,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_LOOPMERGE").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        loopmerge::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_BACKATOM").is_ok() {
