@@ -9082,13 +9082,17 @@ private theorem fibreOut_achieved {S S' : Type} (sys : GkatThompson.GSystem S A 
   have hcond' : f s₀ = c ∧ ¬ P s₀ := by simpa using hcond
   exact ⟨s₀, hmem₀, hcond'.1, hcond'.2, hrk⟩
 
-/-- **THE ACYCLIC CASE OF THE PUSHFORWARD, VIA THE BISIMULATION.** -/
+/-- **THE ACYCLIC CASE OF THE PUSHFORWARD, VIA THE BISIMULATION.**  Stated with
+    the block downstairs as `P ∘ rep`, which is the form the induction consumes
+    and is also the shorter proof: `¬ P (rep c)` is then immediate rather than
+    derived, and the in-block branch is exactly `hpref`. -/
 theorem acyclic_bisim_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A T)
     (P : S → Prop) (rank : S → Nat)
     (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
       GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s)
     (f : S → S') (rep : S' → S)
     (hrep : ∀ c, f (rep c) = c) (hrepmem : ∀ c, rep c ∈ sys.states)
+    (hpref : ∀ (c : S') (t : S), f t = c → P t → P (rep c))
     (htargets : ∀ s ∈ sys.states, ∀ tr ∈ sys.trans s, tr.2.2 ∈ sys.states)
     (hbisim : ∀ s t : S, f s = f t → ∀ (X : Type) (W : T → X → Bool) (x : X),
       (GkatKleene.firstMatch W x (sys.trans s)).map (fun q => (q.1, f q.2))
@@ -9096,14 +9100,11 @@ theorem acyclic_bisim_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A 
     (sys' : GkatThompson.GSystem S' A T)
     (htrans : ∀ c, sys'.trans c
       = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
-    LayeredOn sys' (fun c => ∃ s, s ∈ sys.states ∧ f s = c ∧ P s) := by
+    LayeredOn sys' (fun c => P (rep c)) := by
   refine LayeredOn.acyclic ⟨fun c => minOfList (fibreOut sys P rank f c), ?_⟩
   intro c hc X W x r hfm
-  -- `rep c` is a listed preimage outside the block, so the minimising set is nonempty
-  have hrepP : ¬ P (rep c) := fun hP => hc ⟨rep c, hrepmem c, hrep c, hP⟩
   obtain ⟨s₀, hs₀mem, hs₀f, hs₀P, hs₀rk⟩ :=
-    fibreOut_achieved sys P rank f c (rep c) (hrepmem c) (hrep c) hrepP
-  -- transport the step from `rep c` to the minimiser `s₀`
+    fibreOut_achieved sys P rank f c (rep c) (hrepmem c) (hrep c) hc
   rw [htrans, firstMatch_map] at hfm
   have hb := hbisim (rep c) s₀ (by rw [hrep c, hs₀f]) X W x
   rw [hfm] at hb
@@ -9116,9 +9117,7 @@ theorem acyclic_bisim_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A 
         exact Option.some.inj hb
       subst hrq
       by_cases hPq : P qt.2
-      · refine Or.inl ⟨qt.2, ?_, rfl, hPq⟩
-        obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (sys.trans s₀) qt.1 qt.2 hfm0
-        exact htargets s₀ hs₀mem (g, qt.1, qt.2) hg
+      · exact Or.inl (hpref (f qt.2) qt.2 rfl hPq)
       · rcases hstep s₀ hs₀P X W x qt hfm0 with hP | hlt
         · exact absurd hP hPq
         · refine Or.inr ?_

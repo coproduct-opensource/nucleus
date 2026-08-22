@@ -13763,3 +13763,59 @@ the next step.
 **Next.**  `layeredOn_pushforward` by induction: acyclic by 297, sequence by 289,
 loop by 296 — with the block downstairs stated uniformly as "some listed
 preimage lies in the block".
+
+---
+
+## 298 — THE INDUCTION NEEDS ONE CONDITION, AND IT IS THE ONE 290 NAMED.
+
+297 restated with the block downstairs as `P ∘ rep`, which is both the form the
+induction consumes and the shorter proof: `¬ P (rep c)` becomes immediate rather
+than derived, and the in-block branch is exactly `hpref`.  Recompiled clean.
+
+Then attempted `layeredOn_pushforward` by induction.  **It does not close, and
+working out why gives a single sharp condition rather than a list.**
+
+**First obstruction — the loop's entry condition.**  The `loop` constructor
+carries `∀ tr ∈ entry, ¬ P tr.2.2`.  Downstairs that becomes
+`¬ P (rep (f t))` for each entry target `t` with `¬ P t`.  `hpref` gives the
+WRONG direction — it gives `P t → P (rep (f t))`.  The converse fails exactly
+when a loop-entry target MERGES with a block state.
+
+**Second obstruction — the bisimulation does not transport.**  The acyclic case
+(297) needs `hbisim` for the system AT THAT NODE, which is the fully-peeled
+base, not the original `sys`.  And it does not transport: in a `SeqLayer`,
+`firstMatch` in `sys` agrees with `firstMatch` in `base` only on worlds where
+`base` FIRES; where `base` falls through, `sys` takes an entry transition
+instead, so two `sys`-bisimilar states can differ in `base`.
+
+**Both reduce to the same condition.**  295's alternative to `hbisim` was a
+RANK-MINIMAL representative, rejected because the rank is existential per
+acyclic node while the representative is global.  But the acyclic nodes of a
+derivation sit on DISJOINT regions — `split`'s two subderivations concern `C`
+and its complement — so one representative CAN be rank-minimal on each region
+separately, **provided no class crosses a region boundary.**  That is the same
+condition the first obstruction wants.  So:
+
+    THE INDUCTION CLOSES IFF EVERY BLOCK APPEARING IN THE DERIVATION
+    IS A UNION OF CLASSES
+
+— i.e. the collapse never merges a block state with a non-block state.  **This
+is exactly 290's "destructive merge", now derived from the proof rather than
+guessed at**, and it is a condition on the SPLITS, which are the closed regions
+the derivation chooses: a `seq`'s right half, a `sum`'s halves.
+
+**And it is not free.**  Whether the collapse respects those regions is not up
+to us — in the completeness application the whole point is that the two halves'
+start states merge.
+
+**Odds: 98%** (−1).  The plan of the last ten iterations — prove the three
+pushforward cases, then assemble — does not work as stated, and the reason is
+structural rather than bookkeeping.  What survives is better than what it
+replaces: a single named condition, derived, instead of a diffuse worry.  The
+field's prior that the problem does not close still stands, and this is the
+clearest reason yet why.
+
+**Next.**  Either (a) show the derivation can always be REORGANISED so its
+blocks are unions of classes — the splits are ours to choose, even if the
+collapse is not; or (b) drop the derivation-pushforward strategy and build the
+downstairs derivation directly by induction on the EXPRESSION.
