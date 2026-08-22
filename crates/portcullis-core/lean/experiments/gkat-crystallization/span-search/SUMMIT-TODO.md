@@ -11931,3 +11931,53 @@ behavioural quotient.  237 measured it at 100% and 223 measured the underlying
 property at 131 714/131 714, and 243 established GKAT sits on the favourable
 side of the proper-step/empty-step divide — so the target is right; the proof is
 open.
+
+---
+
+## 259 — THE METHOD FOR `hcollapse`, NAMED FROM THE SOURCE.
+
+258 closed `hsum`.  The next obligation is `hcollapse`: the certificate survives
+passage to a minimal behavioural quotient.  Before attempting it, the literature
+says how it is done — and it is not what I would have tried.
+
+> "The class of finite LLEE-precharts is closed under arbitrary homomorphic
+> images, with the main tool being the **connect-through-to** operation, which
+> preserves bisimilarity while identifying bisimilar states."
+
+**So `hcollapse` is proved ONE BISIMILAR PAIR AT A TIME**, each identification
+preserving the certificate, then iterated — not by transporting a `Layered`
+derivation across the whole quotient at once.
+
+**That matters because the wholesale transport does not obviously work**, and it
+is worth writing down why before it is attempted a third time.  Given
+`IsLayer sys base b dom` and a quotient map `π` for `sys`, the natural move is to
+quotient `base` by the SAME partition.  But `π` identifies states bisimilar in
+`sys`, and `base` is `sys` MINUS its back edges — those states need not be
+bisimilar in `base`, so the induced map need not be well defined on `base` at
+all.  A single-pair operation sidesteps this: it never asks `base` to accept
+`sys`'s partition wholesale.
+
+**Also confirmed, and it is the stronger statement:** closure holds under
+ARBITRARY homomorphic images, not merely the minimal collapse.  That is more
+than `hcollapse` needs — 227 had to restrict `QuotientClosure` to minimal
+quotients after measuring 4 failures at NA=4, and those were failures of MY
+CALCULUS on non-minimal quotients, not of the certificate.  The certificate
+formulation should not need the minimality hypothesis at all.
+
+**Where this leaves the three obligations:**
+
+    hsum        PROVED                                              258
+    hcollapse   method identified (connect-through-to, pairwise);
+                measured 100% at 237; unproved
+    hsolve      unproved; Grabmayer's "every prechart with LLEE
+                admits a solution"
+
+**Odds: 84%, held.**  A method identified is not a proof, and the literature
+precedent was already priced in at 224.  What is new is narrower: the SHAPE of
+the induction, which is pairwise rather than global, and the observation that
+the certificate version of closure should not need 227's minimality restriction.
+
+**Next.**  Define the single-pair identification and prove it preserves
+`Layered` — the acyclic case first, where the proper-step argument does the work
+(a cycle in the image lifts to an infinite path upstairs, contradicting the
+rank).
