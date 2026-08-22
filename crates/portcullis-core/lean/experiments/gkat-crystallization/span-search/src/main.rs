@@ -2393,7 +2393,13 @@ fn levelvsscc<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
         let mut done = vec![false; k];
         for s in 0..k {
             if done[s] { continue; }
-            let grp: Vec<usize> = (0..k).filter(|&t| reach[t] == reach[s]).collect();
+            // 383's fix: group by the reachable SET (rset), not its SIZE (reach).
+            // The set is a perfect invariant, so a group should be exactly one SCC.
+            let grp: Vec<usize> = if std::env::var("BYMASK").is_ok() {
+                (0..k).filter(|&t| rset[t] == rset[s]).collect()
+            } else {
+                (0..k).filter(|&t| reach[t] == reach[s]).collect()
+            };
             for &t in &grp { done[t] = true; }
             if grp.len() < 2 { continue; }
             levels += 1;
@@ -2439,7 +2445,9 @@ fn levelvsscc<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
             }
         }
     }
-    println!("LEVELVSCC: {levels} multi-state LEVELS in quotients");
+    println!("LEVELVSCC ({}): {levels} multi-state LEVELS in quotients",
+        if std::env::var("BYMASK").is_ok() { "grouped by reachable SET — 383's reachMask" }
+        else { "grouped by reachable-set SIZE — 339's reachLevel" });
     println!("  {multi_scc} span MORE THAN ONE SCC ({:.2}%) — a level is a disjoint union of \
               mutually-unreachable SCCs, not one SCC",
         100.0 * multi_scc as f64 / levels.max(1) as f64);

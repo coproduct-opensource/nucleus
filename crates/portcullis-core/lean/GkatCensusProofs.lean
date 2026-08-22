@@ -14399,7 +14399,12 @@ theorem solvesBA_of_headed {S : Type} (aut : GkatKleene.GAut S A T)
 #print axioms levelAgreementActive_of_headed
 #print axioms solvesBA_of_headed
 
-/-- # THE ROUTE, CONNECTED TO COMPLETENESS
+/-- ⚠️ **SUPERSEDED — DO NOT USE.**  Instantiates `lvl := reachLevel`, whose
+levels are unions of mutually-unreachable SCCs; 382 measured the resulting
+hypothesis false for a third of multi-state levels.  Use the `reachMask` form
+below.
+
+# (former) THE ROUTE, CONNECTED TO COMPLETENESS
 
 `SumQuotientSolvable` follows from **level agreement alone**.
 
@@ -14456,7 +14461,10 @@ theorem sumQuotientSolvable_of_headed
 #print axioms sumQuotientSolvable_of_agreement
 #print axioms sumQuotientSolvable_of_headed
 
-/-- # LEVEL AGREEMENT ⟹ COMPLETENESS
+/-- ⚠️ **SUPERSEDED — DO NOT USE.**  Same defect: `lvl := reachLevel`.  Use
+`finiteAxiomsComplete_of_maskAgreement`.
+
+# (former) LEVEL AGREEMENT ⟹ COMPLETENESS
 
 Composed with the corpus's `completeness_of_sumQuotientSolvable`, the route
 reaches its actual target: **the finite GKAT axioms are complete, given only
@@ -14482,6 +14490,52 @@ theorem finiteAxiomsComplete_of_agreement
 
 #print axioms GkatSumQuotient.completeness_of_sumQuotientSolvable
 #print axioms finiteAxiomsComplete_of_agreement
+
+/-- # LEVEL AGREEMENT ⟹ COMPLETENESS, on the exact level function
+
+382 showed `reachLevel`'s levels are unions of mutually-unreachable SCCs, so the
+agreement hypothesis stated over them is false for a third of levels.  383's
+`reachMask` fixes that: `mutual_of_reachMask_eq` makes a level exactly one SCC.
+
+This is 375 re-instantiated on the level function that works. -/
+theorem sumQuotientSolvable_of_maskAgreement
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        LevelAgreementActive quot
+          (reachMask { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+          rank) :
+    GkatSumQuotient.SumQuotientSolvable A T := by
+  refine sumQuotientSolvable_of_solver (fun e f hef => ?_)
+  obtain ⟨Q, quot, π, rank, hπ, hwf, hagree⟩ := hquot e f hef
+  refine ⟨Q, quot, π, ?_, hπ⟩
+  exact solvesBA_of_levelAgreementActive quot
+    (reachMask { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+    rank (2 ^ quot.states.length)
+    (reachMask_bound _)
+    (reachMask_mono { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+    (haltDeterministic_of_uniformWF hwf)
+    hagree
+
+/-- The completeness statement, on the exact level function. -/
+theorem finiteAxiomsComplete_of_maskAgreement
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        LevelAgreementActive quot
+          (reachMask { states := quot.states, hlt := quot.hlt, trans := quot.trans })
+          rank) :
+    GkatKleene.FiniteAxiomsCompleteBA A T :=
+  GkatSumQuotient.completeness_of_sumQuotientSolvable
+    (sumQuotientSolvable_of_maskAgreement hquot)
+
+#print axioms finiteAxiomsComplete_of_maskAgreement
 
 end Instantiation
 

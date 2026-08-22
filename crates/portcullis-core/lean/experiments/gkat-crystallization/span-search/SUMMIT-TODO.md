@@ -17880,3 +17880,52 @@ anything is built on it — which is the discipline 382 was a lesson in.
 
 **Next.** Re-run 382's measurement with the mask grouping, then re-instantiate
 375.
+
+## 384 — the fix confirmed, and 375 re-instantiated
+
+383's `reachMask` was proved to make a level exactly one SCC. Measured, on the
+same pool, grouping the two ways:
+
+| grouping | multi-state levels | span > 1 SCC | admit no agreeing rank |
+|---|---|---|---|
+| `reachLevel` — reachable-set **size** | 219 419 | **217 454 (99.10%)** | **74 510** |
+| `reachMask` — reachable **set** | **2 193** | **0** | **0** |
+
+And 2 193 is exactly the multi-state SCC count 363/364 reported for this pool —
+so mask-groups *are* the SCCs, empirically as well as by
+`mutual_of_reachMask_eq`. The measurement and the theorem agree, which is the
+check 382 was a lesson in and which I ran before rebuilding rather than after.
+
+**375, re-instantiated:**
+
+```lean
+theorem finiteAxiomsComplete_of_maskAgreement
+    (hquot : ∀ e f, UniformLanguageEquivalent e f →
+      ∃ Q quot π rank,
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        UniformWF quot ∧
+        LevelAgreementActive quot (reachMask ⟨quot.states, quot.hlt, quot.trans⟩) rank) :
+    GkatKleene.FiniteAxiomsCompleteBA A T
+```
+
+with `reachMask_bound` supplying `B := 2 ^ states.length` and `reachMask_mono`
+the monotonicity. The two `reachLevel` forms are marked **⚠️ SUPERSEDED** rather
+than deleted, per 374 — a true-but-vacuous theorem left unmarked is exactly the
+trap that cost iterations 352–362.
+
+**Where the hypothesis stands now.** Same three checks as 375, re-run against the
+grouping that is actually quantified over:
+
+* it is the measured predicate — mask-groups coincide with the SCCs every
+  agreement run used;
+* it is non-generic — 367's 41% failure rate for arbitrary minimal automata was
+  measured at SCC grouping, which now *is* the level grouping, so it transfers;
+* it is measured to hold — 0 failures over 2 193 multi-state levels.
+
+**Odds: 96%, unchanged.** The retraction is fully repaired and the top-level
+statement is back, on a level function that provably does what the predicate
+needs. That restores what 382 cost; it does not add to it, and the open statement
+is still `LevelAgreementActive` itself.
+
+**Next.** Back to the last link — source structure to quotient agreement, now
+that a level is known to be a single SCC.
