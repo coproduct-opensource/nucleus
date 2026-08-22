@@ -15854,3 +15854,47 @@ the split as a THEOREM, not a measurement    THE REMAINDER
 **Next.** Turn the measured condition into the Lean construction: define
 `raw`/`loops`/`exits` from a level's agreement data and prove `firstMatch`
 agreement.
+
+## 344 — guard normalisation: making the split legal
+
+343 measured the per-atom condition and it held. Turning it into Lean runs
+straight into a mismatch that no amount of measuring would have surfaced:
+
+> the split of a state's list into `raw` / `loops` / `exits` is a **partition**,
+> but `firstMatch` is **order-sensitive** — an entry fires only if no earlier
+> guard holds. Partitioning a list can therefore change its behaviour.
+
+Both facts are reconciled at once by normalising the guards: fold the negations
+of all preceding guards into each guard.
+
+```lean
+def disjoinAux (acc : BExp T) : List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, r) :: tl => (BExp.and acc g, r) :: disjoinAux (BExp.and acc (BExp.not g)) tl
+```
+
+- **`firstMatch_disjoin`** — normalising changes no behaviour. `[propext]`.
+  Proved through `firstMatch_disjoinAux`, whose statement carries the accumulator
+  as `if bval acc x then firstMatch L else none`; the `acc = false` case is what
+  makes the induction go through, and it is invisible if you only state the
+  `acc = one` corollary.
+- **`disjoin_exclusive`** — normalised guards are pairwise exclusive at every
+  atom. `[propext]`. The invariant needed is stronger than exclusivity alone:
+  every entry's guard must also *imply* the accumulator, which is what lets a
+  tail entry's truth force the head guard false.
+- **`firstMatch_of_exclusiveAt`** — in an exclusive list, "the first entry that
+  fires" and "the entry that fires" are the same thing. **Axiom-free.**
+- **`firstMatch_eq_of_exclusiveAt`** — two exclusive lists with the same firing
+  entries have the same `firstMatch`.
+
+That last one is the tool the whole construction was waiting for: **a normalised
+transition list may be split into `raw`, `loops` and `exits` and reassembled in
+any order.** 340 established that reshaping preserves solutions; 344 establishes
+that the particular reshaping the peel needs is behaviour-preserving.
+
+Worth noting what this cost: nothing about atoms. Exclusivity is stated at a
+single `(W, x)` and every lemma is quantified over it, so the tool composes with
+the `firstMatch`-agreement obligations of 340 without a translation step.
+
+**Next.** Use it: define `raw`/`loops`/`exits` as the three parts of the
+normalised list and discharge `solvesBA_of_behaviour`'s premise.

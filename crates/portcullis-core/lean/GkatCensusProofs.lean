@@ -11954,6 +11954,192 @@ end SimultaneousPeel
 #print axioms midSys_loopLayer
 #print axioms peeledSys_seqLayer
 
+
+section GuardNormalisation
+
+/-! ### Making `firstMatch` order-independent
+
+The split of a quotient's list into `raw`/`loops`/`exits` is a PARTITION, but
+`firstMatch` is order-sensitive: an entry fires only if no earlier guard holds.
+Both facts can be reconciled at once by normalising the guards — fold the
+negations of all preceding guards into each guard.  That changes no behaviour and
+makes the guards pairwise exclusive, after which "the first entry that fires" and
+"the entry that fires" are the same thing, and a partition is safe. -/
+
+/-- Fold `acc` (the negations of the guards seen so far) into each guard. -/
+def disjoinAux {S : Type} (acc : BExp T) :
+    List (BExp T × A × S) → List (BExp T × A × S)
+  | [] => []
+  | (g, r) :: tl => (BExp.and acc g, r) :: disjoinAux (BExp.and acc (BExp.not g)) tl
+
+def disjoin {S : Type} (L : List (BExp T × A × S)) : List (BExp T × A × S) :=
+  disjoinAux BExp.one L
+
+theorem firstMatch_disjoinAux {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)) (acc : BExp T),
+      GkatKleene.firstMatch W x (disjoinAux acc L)
+        = if GkatGS.bval W acc x then GkatKleene.firstMatch W x L else none := by
+  intro L
+  induction L with
+  | nil => intro acc; cases GkatGS.bval W acc x <;> rfl
+  | cons e tl ih =>
+      intro acc
+      obtain ⟨g, q, s'⟩ := e
+      cases hacc : GkatGS.bval W acc x with
+      | false => simp [disjoinAux, GkatKleene.firstMatch, GkatGS.bval, hacc, ih]
+      | true =>
+          cases hg : GkatGS.bval W g x with
+          | false => simp [disjoinAux, GkatKleene.firstMatch, GkatGS.bval, hacc, hg, ih]
+          | true => simp [disjoinAux, GkatKleene.firstMatch, GkatGS.bval, hacc, hg]
+
+/-- **Normalising the guards changes no behaviour.** -/
+theorem firstMatch_disjoin {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) :
+    GkatKleene.firstMatch W x (disjoin L) = GkatKleene.firstMatch W x L := by
+  rw [disjoin, firstMatch_disjoinAux]
+  rfl
+
+/-- **And it makes the guards pairwise exclusive.**  At any atom at most one entry
+of a normalised list has a true guard — so its `firstMatch` no longer depends on
+the order, and the list may be partitioned freely. -/
+theorem disjoinAux_exclusive {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)) (acc : BExp T),
+      (∀ tr ∈ disjoinAux acc L, GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W acc x = true) ∧
+      (∀ tr ∈ disjoinAux acc L, ∀ tr' ∈ disjoinAux acc L,
+          GkatGS.bval W tr.1 x = true → GkatGS.bval W tr'.1 x = true → tr = tr') := by
+  intro L
+  induction L with
+  | nil =>
+      intro acc
+      constructor
+      · intro tr htr; cases htr
+      · intro tr htr; cases htr
+  | cons e tl ih =>
+      intro acc
+      obtain ⟨g, q, s'⟩ := e
+      have hhead : ∀ tr ∈ disjoinAux (BExp.and acc (BExp.not g)) tl,
+          GkatGS.bval W tr.1 x = true →
+            GkatGS.bval W acc x = true ∧ GkatGS.bval W g x = false := by
+        intro tr htr hb
+        have h1 := (ih (BExp.and acc (BExp.not g))).1 tr htr hb
+        simpa only [GkatGS.bval, Bool.and_eq_true, Bool.not_eq_true'] using h1
+      have hsplit : ∀ (p q' : BExp T), GkatGS.bval W (BExp.and p q') x = true →
+          GkatGS.bval W p x = true ∧ GkatGS.bval W q' x = true := by
+        intro p q' hpq
+        simpa only [GkatGS.bval, Bool.and_eq_true] using hpq
+      refine ⟨fun tr htr hb => ?_, fun tr htr tr' htr' hb hb' => ?_⟩
+      · cases htr with
+        | head => exact (hsplit _ _ hb).1
+        | tail _ h => exact (hhead tr h hb).1
+      · cases htr with
+        | head =>
+            cases htr' with
+            | head => rfl
+            | tail _ h' =>
+                have hgf := (hhead tr' h' hb').2
+                have hgt := (hsplit _ _ hb).2
+                rw [hgf] at hgt
+                exact absurd hgt Bool.false_ne_true
+        | tail _ h =>
+            cases htr' with
+            | head =>
+                have hgf := (hhead tr h hb).2
+                have hgt := (hsplit _ _ hb').2
+                rw [hgf] at hgt
+                exact absurd hgt Bool.false_ne_true
+            | tail _ h' => exact (ih (BExp.and acc (BExp.not g))).2 tr h tr' h' hb hb'
+
+theorem disjoin_exclusive {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) :
+    ∀ tr ∈ disjoin L, ∀ tr' ∈ disjoin L,
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W tr'.1 x = true → tr = tr' :=
+  (disjoinAux_exclusive W x L BExp.one).2
+
+/-- Exclusivity at one atom: at most one entry's guard holds. -/
+def ExclusiveAt {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) : Prop :=
+  ∀ tr ∈ L, ∀ tr' ∈ L,
+    GkatGS.bval W tr.1 x = true → GkatGS.bval W tr'.1 x = true → tr = tr'
+
+theorem firstMatch_none_of_all_false {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)), (∀ tr ∈ L, GkatGS.bval W tr.1 x = false) →
+      GkatKleene.firstMatch W x L = none := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons e rest ih =>
+      intro h
+      obtain ⟨g, q, s'⟩ := e
+      have hg : GkatGS.bval W g x = false := h _ (List.mem_cons_self ..)
+      show (if GkatGS.bval W g x then _ else _) = _
+      rw [if_neg (by rw [hg]; exact Bool.false_ne_true)]
+      exact ih (fun tr htr => h tr (List.mem_cons_of_mem _ htr))
+
+/-- In an exclusive list, "the first entry that fires" is "the entry that fires":
+`firstMatch` no longer depends on the order. -/
+theorem firstMatch_of_exclusiveAt {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)), ExclusiveAt W x L →
+      ∀ tr ∈ L, GkatGS.bval W tr.1 x = true →
+        GkatKleene.firstMatch W x L = some tr.2 := by
+  intro L
+  induction L with
+  | nil => intro _ tr htr; cases htr
+  | cons e rest ih =>
+      intro hex tr htr hb
+      obtain ⟨g, q, s'⟩ := e
+      cases hg : GkatGS.bval W g x with
+      | true =>
+          have : tr = (g, q, s') :=
+            hex tr htr _ (List.mem_cons_self ..) hb hg
+          show (if GkatGS.bval W g x then _ else _) = _
+          rw [if_pos (by rw [hg]), this]
+      | false =>
+          have hne : tr ≠ (g, q, s') := by
+            intro heq; rw [heq] at hb; rw [hg] at hb; exact Bool.noConfusion hb
+          have htr' : tr ∈ rest := by
+            cases htr with
+            | head => exact absurd rfl hne
+            | tail _ h => exact h
+          show (if GkatGS.bval W g x then _ else _) = _
+          rw [if_neg (by rw [hg]; exact Bool.false_ne_true)]
+          exact ih (fun a ha b hb' => hex a (List.mem_cons_of_mem _ ha) b
+            (List.mem_cons_of_mem _ hb')) tr htr' hb
+
+/-- **The reassembly tool.**  Two exclusive lists with the same firing entries
+have the same `firstMatch` — so a normalised transition list may be split into
+`raw`, `loops` and `exits` and put back in any order. -/
+theorem firstMatch_eq_of_exclusiveAt {S X : Type} (W : T → X → Bool) (x : X)
+    (L L' : List (BExp T × A × S)) (hex : ExclusiveAt W x L) (hex' : ExclusiveAt W x L')
+    (hmem : ∀ tr, GkatGS.bval W tr.1 x = true → (tr ∈ L ↔ tr ∈ L')) :
+    GkatKleene.firstMatch W x L = GkatKleene.firstMatch W x L' := by
+  cases Classical.em (∃ tr ∈ L, GkatGS.bval W tr.1 x = true) with
+  | inl hyes =>
+      obtain ⟨tr, htr, hb⟩ := hyes
+      rw [firstMatch_of_exclusiveAt W x L hex tr htr hb,
+        firstMatch_of_exclusiveAt W x L' hex' tr ((hmem tr hb).mp htr) hb]
+  | inr hno =>
+      have hL : ∀ tr ∈ L, GkatGS.bval W tr.1 x = false := by
+        intro tr htr
+        cases hb : GkatGS.bval W tr.1 x with
+        | false => rfl
+        | true => exact absurd ⟨tr, htr, hb⟩ hno
+      have hL' : ∀ tr ∈ L', GkatGS.bval W tr.1 x = false := by
+        intro tr htr
+        cases hb : GkatGS.bval W tr.1 x with
+        | false => rfl
+        | true => exact absurd ⟨tr, (hmem tr hb).mpr htr, hb⟩ hno
+      rw [firstMatch_none_of_all_false W x L hL,
+        firstMatch_none_of_all_false W x L' hL']
+
+#print axioms firstMatch_of_exclusiveAt
+#print axioms firstMatch_eq_of_exclusiveAt
+
+end GuardNormalisation
+
+#print axioms firstMatch_disjoin
+#print axioms disjoin_exclusive
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
