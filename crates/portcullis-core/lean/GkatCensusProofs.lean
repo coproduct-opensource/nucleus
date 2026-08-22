@@ -8761,6 +8761,55 @@ theorem loopLayerOn_has_solution {S : Type}
 #print axioms loopLayerOn_has_solution
 
 
+/-- A state that can neither move nor halt.  Its solution is `0` (323), which is
+    why 322's split entry lists are harmless. -/
+def StuckAt {S : Type} (sys : GkatThompson.GSystem S A T) (t : S) : Prop :=
+  sys.trans t = [] ∧ ∀ (X : Type) (W : T → X → Bool) (x : X),
+    GkatGS.bval W (sys.hlt t) x = false
+
+theorem fold_congr_list {S : Type} (l : List (BExp T × A × S)) (fb : Exp A T)
+    (solA solB : S → Exp A T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x l = some r → EquivBA (solA r.2) (solB r.2)) :
+    EquivBA (guardedFold (transitionBranches l solA) fb)
+      (guardedFold (transitionBranches l solB) fb) := by
+  refine guardedFold_select_congr _ _ _ _ ?_
+  intro X W x
+  rw [selectFull_tb_gen W x solA fb, selectFull_tb_gen W x solB fb]
+  cases hfm : GkatKleene.firstMatch W x l with
+  | none => exact EquivBA.base (Equiv.refl _)
+  | some r => exact EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (h X W x r hfm)
+
+theorem stuck_solution_zero {S : Type} (sys : GkatThompson.GSystem S A T)
+    (sol : S → Exp A T) (F : Exp A T) (t : S)
+    (htr : sys.trans t = [])
+    (hhl : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (sys.hlt t) x = false)
+    (heq : EquivBA (sol t) (GkatThompson.eqRHSParam sys sol F t)) :
+    EquivBA (sol t) (.test .zero) := by
+  refine EquivBA.trans heq ?_
+  show EquivBA (guardedFold (transitionBranches (sys.trans t) sol)
+    (GkatThompson.paramFallback (sys.hlt t) F)) _
+  rw [htr]
+  show EquivBA (Exp.seq (Exp.test (sys.hlt t)) F) _
+  refine EquivBA.trans (EquivBA.seq_c
+    (EquivBA.baTest (c := BExp.zero) (fun X W x => hhl X W x))
+    (EquivBA.base (Equiv.refl F))) ?_
+  exact EquivBA.base (Equiv.s2 F)
+
+theorem zero_targets_agree {S : Type} (sol sol' : S → Exp A T) (t : S)
+    (h : EquivBA (sol t) (.test .zero)) (h' : EquivBA (sol' t) (.test .zero)) :
+    EquivBA (sol t) (sol' t) :=
+  EquivBA.trans h (EquivBA.symm h')
+
+theorem seq_seq_zero (x w F : Exp A T) (h : EquivBA x (.test .zero)) :
+    EquivBA (Exp.seq (Exp.seq x w) F) (.test .zero) := by
+  refine EquivBA.trans (EquivBA.seq_c
+    (EquivBA.trans (EquivBA.seq_c h (EquivBA.base (Equiv.refl w)))
+      (EquivBA.base (Equiv.s2 w)))
+    (EquivBA.base (Equiv.refl F))) ?_
+  exact EquivBA.base (Equiv.s2 F)
+
 section LayeredRelative
 open Classical
 
@@ -8799,8 +8848,8 @@ inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop)
   | loop {S : Type} {sys base : GkatThompson.GSystem S A T} {P : S → Prop}
       {b : BExp T} {entry : List (BExp T × A × S)} :
       LoopLayerOn sys base b entry (fun s => ¬ P s) →
-      (∀ tr ∈ entry, ¬ P tr.2.2) →
-      (∀ s, ¬ P s → ∀ tr ∈ base.trans s, ¬ P tr.2.2) →
+      (∀ tr ∈ entry, ¬ P tr.2.2 ∨ StuckAt sys tr.2.2) →
+      (∀ s, ¬ P s → ∀ tr ∈ base.trans s, ¬ P tr.2.2 ∨ StuckAt sys tr.2.2) →
       LayeredOn base P → LayeredOn sys P
   /-- **GROW THE BLOCK.**  The `seq` constructor demands that a layer's entry
       point INTO the block, so a recursion that starts from an empty block must
@@ -8817,48 +8866,69 @@ inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop)
       LayeredOn sys (fun s => P s ∨ C s) →
       LayeredOn sys P
 
-/-- **`hsolve`, RELATIVISED: a layered complement is solvable at any finish,
-    given any solution on the block.** -/
+/-- **`hsolve`, RELATIVISED.**  325's final shape.  Two changes from 294:
+
+    * the input carries `hz` — **`sol₀` is ZERO at STUCK block states** — which is
+      what 322-324 showed the loop case needs once its entry list may touch the
+      block;
+    * the conclusion agrees with `sol₀` on the block only up to `EquivBA`, which
+      is what lets `split` NORMALISE its first call's input to zero at stuck
+      states.  325 found that normalisation unavoidable: `hz` is known on `P`
+      and `split`'s first call needs it on `¬C ⊇ P`, with nothing supplying the
+      difference.
+
+    The weakening is affordable because a block's values are only ever CONSUMED
+    through a guarded fold, and folds are compared by `fold_congr_step`. -/
 theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A T}
     {P : S → Prop}, LayeredOn sys P → ∀ (sol₀ : S → Exp A T) (F : Exp A T),
-      ∃ sol : S → Exp A T, (∀ s, P s → sol s = sol₀ s) ∧
+      (∀ t, P t → StuckAt sys t → EquivBA (sol₀ t) (.test .zero)) →
+      ∃ sol : S → Exp A T, (∀ s, P s → EquivBA (sol s) (sol₀ s)) ∧
         (∀ s, ¬ P s → EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s)) := by
   intro S sys P h
   induction h with
   | @acyclic sys P hr =>
-      intro sol₀ F
+      intro sol₀ F _
       obtain ⟨rank, hrank⟩ := hr
-      exact solExtF_has_solution sys P sol₀ F rank hrank
+      obtain ⟨sol, hin, hout⟩ := solExtF_has_solution sys P sol₀ F rank hrank
+      exact ⟨sol, fun s hs => by rw [hin s hs]; exact EquivBA.base (Equiv.refl _), hout⟩
   | @seq sys base P h₀ entry hlay hentry _ ih =>
-      intro sol₀ F
+      intro sol₀ F hz
       obtain ⟨solB, hin, hout⟩ := ih sol₀
         (guardedFold (transitionBranches entry sol₀)
           (GkatThompson.paramFallback h₀ F))
+        (fun t hp hst => hz t hp ⟨(hlay.outside t (fun h => h hp)).1.trans hst.1,
+          fun X W x => by rw [(hlay.outside t (fun h => h hp)).2]; exact hst.2 X W x⟩)
       refine ⟨solB, hin, ?_⟩
-      have hG : guardedFold (transitionBranches entry sol₀)
-            (GkatThompson.paramFallback h₀ F)
-          = guardedFold (transitionBranches entry solB)
-            (GkatThompson.paramFallback h₀ F) :=
-        guardedFold_trans_congr _ sol₀ solB entry
-          (fun tr htr => (hin tr.2.2 (hentry tr htr)).symm)
-      rw [hG] at hout
-      exact seqLayer_extends hlay solB F hout
+      have hGeq : EquivBA (guardedFold (transitionBranches entry sol₀)
+            (GkatThompson.paramFallback h₀ F))
+          (guardedFold (transitionBranches entry solB)
+            (GkatThompson.paramFallback h₀ F)) := by
+        refine fold_congr_list entry _ sol₀ solB ?_
+        intro X W x r hfm
+        obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x entry r.1 r.2 (by rw [← hfm])
+        exact EquivBA.symm (hin r.2 (hentry (g, r.1, r.2) hg))
+      refine seqLayer_extends hlay solB F (fun s hs => EquivBA.trans (hout s hs) ?_)
+      exact guardedFold_fallback_congr
+        (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hGeq)
   | @loop sys base P b entry hlay hentry hclosed _ ih =>
-      intro sol₀ F
+      intro sol₀ F hz
       obtain ⟨solB, hin, hout⟩ := ih sol₀ (.test .one)
+        (fun t hp hst => hz t hp ⟨(hlay.outside t (fun h => h hp)).1.trans hst.1,
+          fun X W x => by rw [(hlay.outside t (fun h => h hp)).2]; exact hst.2 X W x⟩)
       have hloop := loopLayerOn_has_solution hlay solB hout
         (guardedFold (transitionBranches entry solB) (.test .zero))
         (.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))
         rfl rfl
       refine ⟨fun t => if P t then sol₀ t else
         Exp.seq (Exp.seq (solB t)
-          (Exp.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))) F,
+          (.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))) F,
         ?_, ?_⟩
       · intro s hs
-        show (if P s then sol₀ s else _) = _
+        show EquivBA (if P s then sol₀ s else _) _
         rw [if_pos hs]
+        exact EquivBA.base (Equiv.refl _)
       · intro s hs
-        have htargets : ∀ tr ∈ sys.trans s, ¬ P tr.2.2 := by
+        have htargets : ∀ tr ∈ sys.trans s, ¬ P tr.2.2 ∨ StuckAt sys tr.2.2 := by
           intro tr htr
           rw [hlay.trans_eq s hs, List.mem_append] at htr
           rcases htr with htr | htr
@@ -8866,21 +8936,33 @@ theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A 
           · simp only [List.mem_map] at htr
             obtain ⟨t, ht, rfl⟩ := htr
             exact hentry t ht
-        have hcongr : GkatThompson.eqRHSParam sys
+        have hcongr : EquivBA (GkatThompson.eqRHSParam sys
               (fun t => Exp.seq (Exp.seq (solB t)
                 (.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))) F)
-              F s
-            = GkatThompson.eqRHSParam sys
+              F s)
+            (GkatThompson.eqRHSParam sys
               (fun t => if P t then sol₀ t else
                 Exp.seq (Exp.seq (solB t)
                   (.wh b (guardedFold (transitionBranches entry solB)
-                    (.test .zero)))) F) F s :=
-          guardedFold_trans_congr _ _ _ (sys.trans s)
-            (fun tr htr => by
-              show _ = (if P tr.2.2 then _ else _)
-              rw [if_neg (htargets tr htr)])
+                    (.test .zero)))) F) F s) := by
+          refine fold_congr_list (sys.trans s) _ _ _ ?_
+          intro X W x r hfm
+          obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (sys.trans s) r.1 r.2 (by rw [← hfm])
+          by_cases hPr : P r.2
+          · have hst : StuckAt sys r.2 :=
+              (htargets (g, r.1, r.2) hg).resolve_left (fun hnp => hnp hPr)
+            have hz0 : EquivBA (sol₀ r.2) (.test .zero) := hz r.2 hPr hst
+            refine EquivBA.trans (seq_seq_zero _ _ _ ?_) (EquivBA.symm ?_)
+            · exact EquivBA.trans (hin r.2 hPr) hz0
+            · show EquivBA (if P r.2 then sol₀ r.2 else _) _
+              rw [if_pos hPr]
+              exact hz0
+          · show EquivBA _ (if P r.2 then _ else _)
+            rw [if_neg hPr]
+            exact EquivBA.base (Equiv.refl _)
         show EquivBA (if P s then sol₀ s else _) _
-        rw [if_neg hs, ← hcongr]
+        rw [if_neg hs]
+        refine EquivBA.trans ?_ hcongr
         exact GkatThompson.StandardSolvesBA.withContinuation
           ⟨⟨[s], sys.hlt, sys.trans⟩, .one, []⟩
           (fun t => Exp.seq (solB t)
@@ -8890,22 +8972,39 @@ theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A 
             subst hts
             exact hloop t hs) F s (by simp)
   | @split sys P C hdisj hCclosed _ _ ih1 ih2 =>
-      intro sol₀ F
-      obtain ⟨sol1, hin1, hout1⟩ := ih1 sol₀ F
-      obtain ⟨sol2, hin2, hout2⟩ := ih2 sol1 F
+      intro sol₀ F hz
+      obtain ⟨sol1, hin1, hout1⟩ := ih1
+        (fun t => if StuckAt sys t then Exp.test BExp.zero else sol₀ t) F
+        (fun t _ hst => by
+          show EquivBA (if StuckAt sys t then _ else _) _
+          rw [if_pos hst]
+          exact EquivBA.base (Equiv.refl _))
+      obtain ⟨sol2, hin2, hout2⟩ := ih2 sol1 F (fun t ht hst => by
+        rcases ht with hP | hC
+        · refine EquivBA.trans (hin1 t (hdisj t hP)) ?_
+          show EquivBA (if StuckAt sys t then _ else _) _
+          rw [if_pos hst]
+          exact EquivBA.base (Equiv.refl _)
+        · exact stuck_solution_zero sys sol1 F t hst.1 hst.2 (hout1 t (fun h => h hC)))
       refine ⟨sol2, ?_, ?_⟩
       · intro s hs
-        rw [hin2 s (Or.inl hs), hin1 s (hdisj s hs)]
+        refine EquivBA.trans (hin2 s (Or.inl hs))
+          (EquivBA.trans (hin1 s (hdisj s hs)) ?_)
+        show EquivBA (if StuckAt sys s then _ else _) (sol₀ s)
+        by_cases hst : StuckAt sys s
+        · rw [if_pos hst]
+          exact EquivBA.symm (hz s hs hst)
+        · rw [if_neg hst]
+          exact EquivBA.base (Equiv.refl _)
       · intro s hs
         by_cases hC : C s
         · have hcongr : EquivBA (GkatThompson.eqRHSParam sys sol2 F s)
               (GkatThompson.eqRHSParam sys sol1 F s) := by
-            refine fold_congr_step sys s _ sol2 sol1 ?_
+            refine fold_congr_list (sys.trans s) _ sol2 sol1 ?_
             intro X W x r hfm
-            rw [hin2 r.2 (Or.inr (hCclosed s hC X W x r hfm))]
-            exact EquivBA.base (Equiv.refl _)
-          rw [hin2 s (Or.inr hC)]
-          exact EquivBA.trans (hout1 s (fun h => h hC)) (EquivBA.symm hcongr)
+            exact hin2 r.2 (Or.inr (hCclosed s hC X W x r hfm))
+          exact EquivBA.trans (EquivBA.trans (hin2 s (Or.inr hC))
+            (hout1 s (fun h => h hC))) (EquivBA.symm hcongr)
         · exact hout2 s (fun h => h.elim hs hC)
 
 #print axioms layeredOn_has_solution
@@ -9497,12 +9596,12 @@ theorem quotient_layered_wh (b : BExp T) (e : Exp A T) {Q : Type}
     intro tr htr
     simp only [List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · -- the base's targets are outside the block
     intro c hc tr htr
     simp only [if_neg hc, List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · intro c hc; show (if B c then _ else _) = _; rw [if_neg hc]
   · intro c hc; show (if B c then _ else _) = _; rw [if_neg hc]
 
@@ -9947,12 +10046,12 @@ theorem quotient_layered_wh' (b : BExp T) (e : Exp A T) {Q : Type}
     intro tr htr
     simp only [List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · -- base targets outside the block
     intro c hc tr htr
     simp only [dif_pos hc, List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · -- the recursive hypothesis' data
     intro c hc
     exact ⟨Classical.choose (hwit c hc),
@@ -10565,11 +10664,11 @@ theorem quotient_layered_wh'' (b : BExp T) (e : Exp A T) {Q : Type}
   · intro tr htr
     simp only [List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · intro c hc tr htr
     simp only [dif_pos hc, List.mem_map] at htr
     obtain ⟨t, _, rfl⟩ := htr
-    exact hout t.2.2
+    exact Or.inl (hout t.2.2)
   · intro c hc
     exact ⟨Classical.choose (hw c hc),
       (Classical.choose_spec (hw c hc)).1,
@@ -10611,30 +10710,10 @@ end QuotWitCases
     Stated for a state that is IMMEDIATELY stuck.  322's non-productive states
     are more general — one may reach a stuck state after several steps — and
     that generalisation is a separate induction along the productivity ordering,
-    not needed until the plumbing demands it. -/
-theorem stuck_solution_zero {S : Type} (sys : GkatThompson.GSystem S A T)
-    (sol : S → Exp A T) (F : Exp A T) (t : S)
-    (htr : sys.trans t = [])
-    (hhl : ∀ (X : Type) (W : T → X → Bool) (x : X),
-      GkatGS.bval W (sys.hlt t) x = false)
-    (heq : EquivBA (sol t) (GkatThompson.eqRHSParam sys sol F t)) :
-    EquivBA (sol t) (.test .zero) := by
-  refine EquivBA.trans heq ?_
-  show EquivBA (guardedFold (transitionBranches (sys.trans t) sol)
-    (GkatThompson.paramFallback (sys.hlt t) F)) _
-  rw [htr]
-  show EquivBA (Exp.seq (Exp.test (sys.hlt t)) F) _
-  refine EquivBA.trans (EquivBA.seq_c
-    (EquivBA.baTest (c := BExp.zero) (fun X W x => hhl X W x))
-    (EquivBA.base (Equiv.refl F))) ?_
-  exact EquivBA.base (Equiv.s2 F)
+    not needed until the plumbing demands it.
 
-/-- Two solutions that are both zero at a target agree there — which is all the
-    congruence needs, and needs no hypothesis about the block at all. -/
-theorem zero_targets_agree {S : Type} (sol sol' : S → Exp A T) (t : S)
-    (h : EquivBA (sol t) (.test .zero)) (h' : EquivBA (sol' t) (.test .zero)) :
-    EquivBA (sol t) (sol' t) :=
-  EquivBA.trans h (EquivBA.symm h')
+    (Both lemmas, and `seq_seq_zero`, now live earlier in the file — the
+    relativised solution theorem consumes them.) -/
 
 #print axioms stuck_solution_zero
 #print axioms zero_targets_agree
@@ -10714,13 +10793,6 @@ theorem congr_with_zero_targets {S : Type} (sys : GkatThompson.GSystem S A T)
     **Fifth instance of the same trade.**  What it costs is re-proving the
     `split` case's gluing step, which currently uses `rw` on a syntactic
     equality. -/
-theorem seq_seq_zero (x w F : Exp A T) (h : EquivBA x (.test .zero)) :
-    EquivBA (Exp.seq (Exp.seq x w) F) (.test .zero) := by
-  refine EquivBA.trans (EquivBA.seq_c
-    (EquivBA.trans (EquivBA.seq_c h (EquivBA.base (Equiv.refl w)))
-      (EquivBA.base (Equiv.s2 w)))
-    (EquivBA.base (Equiv.refl F))) ?_
-  exact EquivBA.base (Equiv.s2 F)
 
 #print axioms seq_seq_zero
 

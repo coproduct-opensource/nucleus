@@ -14964,3 +14964,38 @@ round, but 324 should have checked all four before claiming it composed.
 
 **Next.**  Weaken the conclusion to `EquivBA` on the block, normalise at
 `split`'s first call, and re-prove the gluing step with `fold_congr_step`.
+
+---
+
+## 326 — THE REDESIGN LANDS.  319's GAP IS CLOSED AT THE SOLUTION LEVEL.
+
+All four pieces 322–325 identified, in one compiling change:
+
+  * **`StuckAt`** — a state that can neither move nor halt — and
+    `fold_congr_list`, the list-form congruence the new proofs need;
+  * **`LayeredOn.loop` weakened**: its entry and base targets may now lie in the
+    block PROVIDED they are stuck.  That is 322's escape hatch, made a
+    constructor field;
+  * **`hz` added to `layeredOn_has_solution`**: `sol₀` is ZERO at stuck block
+    states, which 323 shows is forced of any real solution;
+  * **the conclusion weakened to `EquivBA` on the block**, which is what lets
+    `split` NORMALISE its first call's input to zero at stuck states — 325's
+    unavoidable step.
+
+All four cases re-proved under the new contract.  The `split` case now
+establishes `hz` for BOTH its calls: for `P` states from the outer hypothesis
+through the normalisation, and for `C` states from `stuck_solution_zero` applied
+to its first subderivation's own solution — the block's values being read for
+the first time, exactly as 324 predicted.
+
+**Zero errors, zero `sorryAx`, 10 799 lines.**
+
+**Odds: 98%** (+1).  319's gap — a hypothesis carried since 303 and false in the
+target case — is closed where it was diagnosed.  The remaining trace of it is in
+the CASE LEMMAS (`quotient_layered_wh''` and friends still carry `hout` and
+supply `Or.inl`), where the same weakening now applies because the constructor
+accepts it.
+
+**Next.**  Weaken `hout` in the case lemmas from "the block misses the image" to
+"misses it, or the offending target is stuck", and re-attempt the `ite` case
+that 319 blocked.
