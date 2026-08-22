@@ -11698,6 +11698,105 @@ theorem step_transport {S Q : Type} {aut : GkatKleene.GAut S A T}
 
 #print axioms step_transport
 
+/-- Reachability at a FIXED atom.  At one atom the automaton is deterministic, so
+this is iteration of a single function — much simpler than general reachability,
+and it is all the chain argument needs. -/
+inductive AReaches {S : Type} (aut : GkatKleene.GAut S A T) {X : Type}
+    (W : T → X → Bool) (x : X) : S → S → Prop where
+  | refl (s : S) : AReaches aut W x s s
+  | step {s t u : S} : (∃ q : A, GkatKleene.autStep W aut s x = some (q, t)) →
+      AReaches aut W x t u → AReaches aut W x s u
+
+/-- **A quotient path lifts, from any preimage of its start.**  This is the piece
+378 named.  It needs only `autStep_eq`: at each step the quotient's move is the
+image of the source's, so a source state over the path's current point has a move
+over the path's next point. -/
+theorem path_lifts {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    {X : Type} (W : T → X → Bool) (x : X) :
+    ∀ {p r : Q}, AReaches quot W x p r → ∀ u : S, π.mapState u = p →
+      ∃ u' : S, AReaches aut W x u u' ∧ π.mapState u' = r := by
+  intro p r h
+  induction h with
+  | refl s => intro u hu; exact ⟨u, AReaches.refl u, hu⟩
+  | step hstep _ ih =>
+      intro u hu
+      obtain ⟨q, hq⟩ := hstep
+      have h2 := π.autStep_eq W u x
+      rw [hu, hq] at h2
+      cases hau : GkatKleene.autStep W aut u x with
+      | none =>
+          rw [hau] at h2
+          exact (Option.some_ne_none _ h2.symm).elim
+      | some y =>
+          rw [hau] at h2
+          have h3 := Option.some.inj h2
+          have hm := congrArg Prod.snd h3
+          obtain ⟨u', hreach, hmap⟩ := ih y.2 hm
+          exact ⟨u', AReaches.step ⟨y.1, by rw [hau]⟩ hreach, hmap⟩
+
+#print axioms path_lifts
+
+/-! A cycle in a quotient SCC need not use one atom throughout — each step may
+fire at a different atom.  So the lift has to bind the atom PER STEP, not once
+for the whole path.  `AReaches` fixes the atom and is too weak for the chain
+argument; `SemReaches` is the right relation. -/
+
+/-- Semantic reachability with the atom chosen per step. -/
+inductive SemReaches {S : Type} (aut : GkatKleene.GAut S A T) : S → S → Prop where
+  | refl (s : S) : SemReaches aut s s
+  | step {s t u : S} :
+      (∃ (X : Type) (W : T → X → Bool) (x : X) (q : A),
+        GkatKleene.autStep W aut s x = some (q, t)) →
+      SemReaches aut t u → SemReaches aut s u
+
+/-- **A quotient path lifts, atoms chosen per step.**  Same argument as
+`path_lifts`, with the atom bound inside each step rather than outside the whole
+path — which is what a quotient SCC actually supplies. -/
+theorem sem_path_lifts {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) :
+    ∀ {p r : Q}, SemReaches quot p r → ∀ u : S, π.mapState u = p →
+      ∃ u' : S, SemReaches aut u u' ∧ π.mapState u' = r := by
+  intro p r h
+  induction h with
+  | refl s => intro u hu; exact ⟨u, SemReaches.refl u, hu⟩
+  | step hstep _ ih =>
+      intro u hu
+      obtain ⟨X, W, x, q, hq⟩ := hstep
+      have h2 := π.autStep_eq W u x
+      rw [hu, hq] at h2
+      cases hau : GkatKleene.autStep W aut u x with
+      | none =>
+          rw [hau] at h2
+          exact (Option.some_ne_none _ h2.symm).elim
+      | some y =>
+          rw [hau] at h2
+          have h3 := Option.some.inj h2
+          have hm := congrArg Prod.snd h3
+          obtain ⟨u', hreach, hmap⟩ := ih y.2 hm
+          exact ⟨u', SemReaches.step ⟨X, W, x, y.1, by rw [hau]⟩ hreach, hmap⟩
+
+#print axioms sem_path_lifts
+
+/-- **Semantic steps are syntactic steps.**  `autStep` is `firstMatch` on the
+transition list, and a `firstMatch` result is always a member of that list — so
+`SemReaches` (which the lift produces) implies `SReaches` (which `reachLevel` and
+`exists_mutual_along_chain` consume).  This is the bridge between the two halves
+of the chain argument. -/
+theorem sreaches_of_semReaches {S : Type} (aut : GkatKleene.GAut S A T) {u v : S}
+    (h : SemReaches aut u v) :
+    SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } u v := by
+  induction h with
+  | refl s => exact SReaches.refl s
+  | step hstep _ ih =>
+      obtain ⟨X, W, x, q, hq⟩ := hstep
+      obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x (aut.trans _) q _ hq
+      exact SReaches.step ⟨g, q, hg⟩ ih
+
+#print axioms sreaches_of_semReaches
+
 end LevelExistence
 
 #print axioms reachLevel_mono

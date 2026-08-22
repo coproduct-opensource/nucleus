@@ -17644,3 +17644,57 @@ are assembly rather than discovery. That is a better position than a week ago,
 but the open statement is still open.
 
 **Next.** `path_lifts` by induction, then the chain.
+
+## 379 — the lifting toolchain, complete and axiom-free
+
+378 named the missing lemma: *a quotient path lifts to a source path from any
+preimage of its start*. Three theorems this iteration, **all axiom-free**.
+
+**`path_lifts`** — the lift at a fixed atom, by induction on the path, needing
+only `autStep_eq`.
+
+**And then a mismatch, caught before it cost anything.** `path_lifts` fixes one
+atom for the whole path, but a cycle in a quotient SCC need not use one atom
+throughout — each step may fire at a different one. So the lift has to bind the
+atom **per step**:
+
+```lean
+inductive SemReaches (aut) : S → S → Prop
+  | refl (s) : SemReaches aut s s
+  | step {s t u} : (∃ X W x q, autStep W aut s x = some (q, t)) →
+      SemReaches aut t u → SemReaches aut s u
+
+theorem sem_path_lifts (π) : ∀ {p r}, SemReaches quot p r →
+    ∀ u, π.mapState u = p → ∃ u', SemReaches aut u u' ∧ π.mapState u' = r
+```
+
+Same proof, atom bound inside each step. `AReaches` is too weak for the chain
+argument and `SemReaches` is the right relation — worth stating, because writing
+the fixed-atom version first and only then noticing is how the last several
+mismatches happened, and this time the noticing came before anything was built on
+it.
+
+**`sreaches_of_semReaches`** — the second half of the chain argument consumes
+`SReaches` (that is what `reachLevel` and `exists_mutual_along_chain` are stated
+over), while the lift produces `SemReaches`. The bridge is one induction:
+`autStep` is `firstMatch` on the transition list, and a `firstMatch` result is
+always a member of that list (`firstMatch_mem_of_some`).
+
+**The toolchain for 356's argument is now complete:**
+
+| piece | status |
+|---|---|
+| `step_transport` — same image, same step | axiom-free (378) |
+| `sem_path_lifts` — quotient paths lift, atoms per step | axiom-free (379) |
+| `sreaches_of_semReaches` — semantic ⟹ syntactic | axiom-free (379) |
+| `exists_stable` — no infinite descent in `Nat` | 377 |
+| `exists_mutual_along_chain` — chains contain a mutual pair | 377 |
+| `reachLevel_scc` — reaches + equal level ⟹ mutual | 339 |
+
+What is left is assembling them into the chain, which needs dependent choice to
+turn each lift's existential into a function `g : Nat → S`.
+
+**Odds: 97%, unchanged.** Every piece is in place and none of them is the
+statement itself; assembly can still fail.
+
+**Next.** The assembly, with dependent choice.
