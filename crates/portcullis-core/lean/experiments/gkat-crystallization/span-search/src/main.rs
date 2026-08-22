@@ -7690,6 +7690,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         llee_test::<NA>(nguards as u8);
         return;
     }
+    if std::env::var("PAD_BISIM_TRANSPORT").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(3);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(400);
+        bisim_transport::<NA>(nguards as u8, rounds, cap);
+        return;
+    }
     if std::env::var("PAD_CLOSURE").is_ok() {
         closure_test::<NA>(nguards as u8);
         return;
@@ -11477,6 +11485,125 @@ covered {done}/{}", open.len());
     };
     for (i, j, _) in misses.iter() {
         println!("NOSPAN\t{}\t{}", fmt(&list[*i]), fmt(&list[*j]));
+    }
+}
+
+/// **`PAD_BISIM_TRANSPORT`** (iteration 314).
+///
+/// 312 found that `hbisim` need not transport from a composite to its
+/// components: two states of a component can be bisimilar in the WHOLE and not
+/// in the PART, because `wh` and `seq` ADD transitions.  313 narrowed the corner
+/// — the added transitions come LAST, so a divergence needs one component to
+/// fire where the other does not, AND the second's entry step to match the
+/// first's component step in both action and target class.
+///
+/// This decides whether that corner is inhabited.  Build the Thompson closure by
+/// depth; at every composite, compare the coarsest bisimulation of the WHOLE
+/// against each component's own.  A violation is the counterexample that settles
+/// 312 and dictates the fix; no violation over a large closure is evidence the
+/// corner is empty for Thompson automata, which is the only case the proof needs.
+///
+/// The composite is checked BEFORE canonicalisation — `canon` renumbers states,
+/// which would destroy the alignment between a component's indices and its
+/// offset in the composite.  Only the pooled copy is canonical.
+fn transport_violation<const NA: usize>(
+    a: &Aut<NA>, off: usize, p: &Aut<NA>,
+) -> Option<(usize, usize)> {
+    let (ba, _) = bisim_blocks(a);
+    let (bp, _) = bisim_blocks(p);
+    for s in 0..p.k as usize {
+        for t in (s + 1)..p.k as usize {
+            if ba[off + s] == ba[off + t] && bp[s] != bp[t] {
+                return Some((s, t));
+            }
+        }
+    }
+    None
+}
+
+fn show_aut<const NA: usize>(tag: &str, a: &Aut<NA>) -> String {
+    let mut out = format!("{tag} k={} ih={:0w$b} it=[", a.k, a.ih, w = NA);
+    for i in 0..NA {
+        out.push_str(&format!("{}{}", if i > 0 { "," } else { "" }, a.it[i]));
+    }
+    out.push(']');
+    for s in 0..a.k as usize {
+        out.push_str(&format!(" | q{s}: hl={:0w$b} st=[", a.hl[s], w = NA));
+        for i in 0..NA {
+            out.push_str(&format!("{}{}", if i > 0 { "," } else { "" }, a.st[s][i]));
+        }
+        out.push(']');
+    }
+    out
+}
+
+fn bisim_transport<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    {
+        let a = a_act::<NA>();
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    let (mut checked, mut bad) = (0usize, 0usize);
+    let mut first: Option<String> = None;
+    let mut note = |a: &Aut<NA>, parts: &[(usize, &Aut<NA>)], what: &str,
+                    checked: &mut usize, bad: &mut usize, first: &mut Option<String>| {
+        for &(off, p) in parts {
+            *checked += 1;
+            if let Some((s, t)) = transport_violation(a, off, p) {
+                *bad += 1;
+                if first.is_none() {
+                    *first = Some(format!(
+                        "{what}: component states q{s},q{t} (offset {off}) are bisimilar in the \
+                         WHOLE but not in the PART\n    {}\n    {}",
+                        show_aut("whole ", a), show_aut("part  ", p)));
+                }
+            }
+        }
+    };
+    for round in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                note(&a, &[(0, l)], "wh", &mut checked, &mut bad, &mut first);
+                if pool.len() < cap {
+                    if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                }
+            }
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    note(&a, &[(0, l), (l.k as usize, r)], "seq",
+                        &mut checked, &mut bad, &mut first);
+                    if pool.len() < cap {
+                        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                    }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        note(&a, &[(0, l), (l.k as usize, r)], "ite",
+                            &mut checked, &mut bad, &mut first);
+                        if pool.len() < cap {
+                            if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                        }
+                    }
+                }
+            }
+        }
+        println!("  round {round}: pool = {}, component-checks = {checked}, violations = {bad}",
+            pool.len());
+        if pool.len() >= cap { break; }
+    }
+    println!("BISIM TRANSPORT: {checked} component-checks, {bad} violations");
+    match first {
+        None => println!("  no counterexample: the coarsest bisimulation of a Thompson \
+                          composite never identifies two component states that the \
+                          component's own bisimulation separates"),
+        Some(msg) => println!("  FIRST VIOLATION\n    {msg}"),
     }
 }
 

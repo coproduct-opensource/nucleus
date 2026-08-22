@@ -14448,3 +14448,48 @@ sub-automaton.  If it never does, `hbisim` transports in practice and 312's
 worry is theoretical; if it does, the witness is the counterexample that decides
 the shape of the fix.  **Rust, per the standing mandate — a new mode in the
 existing harness, not a script.**
+
+---
+
+## 314 — MEASURED: 312's CORNER IS INHABITED, AND MINIMALLY.
+
+New Rust mode `PAD_BISIM_TRANSPORT` (per the standing mandate — a mode in the
+existing harness, not a script).  Build the Thompson closure by depth; at every
+composite, compare the coarsest bisimulation of the WHOLE against each
+component's own.  The composite is checked BEFORE canonicalisation, since
+`canon` renumbers states and would destroy the alignment between a component's
+indices and its offset.
+
+    BISIM TRANSPORT: 436 700 component-checks, 1392 violations  (~0.3%)
+    FIRST VIOLATION — wh, at k = 2:
+      part  = seq (act a) (act a):  q0 --a--> q1 --halt-->,   q0 ≁ q1
+      whole = wh 1 (seq (act a) (act a)):  back edge q1 --a--> q0,
+              so both states do `a` forever and q0 ~ q1
+
+**312's obstruction is real, it is not a corner, and it appears at TWO STATES.**
+It also survives the harness's action-blindness: both transitions carry the same
+`a`, so distinguishing actions does not remove it.  313's narrowing was correct
+about the mechanism and wrong to imply rarity mattered — one example is enough.
+
+**What this kills.**  The `BisimAll` plan as framed in 312: carrying `hbisim`
+for every sub-automaton is not something the COARSEST bisimulation provides, and
+the coarsest is what "the quotient" has meant throughout.
+
+**What it opens, and it is not nothing.**  *We never needed the minimal
+quotient.*  Completeness needs SOME quotient that identifies the two start
+states and is solvable.  In this very example, refusing to merge `q0` and `q1`
+leaves the Thompson automaton itself — solvable by construction.  So the object
+to look for is the coarsest relation that is a bisimulation, RESPECTS EVERY
+SUB-AUTOMATON, and still identifies the starts.  Whether the third survives the
+second is the question 312 should have asked and this iteration makes concrete.
+
+**Odds: 98%, HELD.**  A suspected obstruction confirmed inhabited — which 312
+already priced — against a genuine out that the confirmation itself exposed.
+The measurement cost one iteration and settled what reasoning had been circling
+for three.
+
+**Next.**  Does the sub-automaton-respecting bisimulation still identify the two
+start states?  Measurable with the same machinery: build `sum(Thompson e,
+Thompson f)` for semantically-equal `e, f`, compute the finest
+sub-automaton-respecting bisimulation, and check whether the starts land
+together.
