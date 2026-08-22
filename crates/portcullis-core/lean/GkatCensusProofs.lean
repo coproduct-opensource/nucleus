@@ -13151,20 +13151,28 @@ theorem rawHlt_of_halt {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat
 Every guarded automaton has this; nothing in the development had been made to say
 it, and the last two halt hypotheses cannot be proved without it. -/
 def HaltDeterministic {S : Type} (aut : GkatKleene.GAut S A T) : Prop :=
-  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S),
+  ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
     GkatGS.bval W (aut.hlt s) x = true → GkatKleene.firstMatch W x (aut.trans s) = none
+
+/-- **It is already in the corpus.**  `WF`'s first conjunct is exactly halt
+determinism, `UniformWF` is it under every interpretation, and
+`UniformBehavioralGAutQuotient.uniformWF` already transports it to a quotient.
+So `hdet` needs no new mathematics — it needs to be recognised. -/
+theorem haltDeterministic_of_uniformWF {S : Type} {aut : GkatKleene.GAut S A T}
+    (h : GkatKleene.UniformWF aut) : HaltDeterministic aut :=
+  fun X W x s hs hb => (h X W).1 s hs x hb
 
 /-- A halting state fires nothing, in particular nothing non-raw. -/
 theorem nonRaw_none_of_halt {S X : Type} (W : T → X → Bool) (x : X)
     (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
-    (hdet : HaltDeterministic aut) (s : S)
+    (hdet : HaltDeterministic aut) (s : S) (hs : s ∈ aut.states)
     (h : GkatGS.bval W (aut.hlt s) x = true) :
     GkatKleene.firstMatch W x (nonRaw aut lvl rank s) = none := by
   refine firstMatch_none_of_all_false W x _ (fun tr htr => ?_)
   refine firstMatch_none_all_false W x (disjoin (aut.trans s)) ?_ tr
     (List.mem_filter.mp htr).1
   rw [firstMatch_disjoin]
-  exact hdet X W x s h
+  exact hdet X W x s hs h
 
 /-- **`hloopoff`, derived.**  If the level's loop test fired where `s` halts,
 agreement would make `s` fire there too — and a halting state fires nothing. -/
@@ -13188,7 +13196,7 @@ theorem loopoff_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S �
       have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hb
       have := hagree X W x (lvl s) s (mem_levelStates (lvl := lvl) hs) c hc e.2
         (nonRaw_fire W x aut lvl rank c e hnr heb)
-      rw [nonRaw_none_of_halt W x aut lvl rank hdet s hhalt] at this
+      rw [nonRaw_none_of_halt W x aut lvl rank hdet s hs hhalt] at this
       exact Option.some_ne_none e.2 this.symm
 
 /-- **`hnot`, derived.**  Where `s` does not halt but is still non-raw, it fires
@@ -13233,7 +13241,8 @@ theorem hnot_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → 
           exfalso
           have hch : GkatGS.bval W (aut.hlt c) x = true := by rw [hcg]; exact hb
           have := hagree X W x (lvl s) c hc s (mem_levelStates (lvl := lvl) hs) e.2 hsfire
-          rw [nonRaw_none_of_halt W x aut lvl rank hdet c hch] at this
+          rw [nonRaw_none_of_halt W x aut lvl rank hdet c
+            (List.mem_filter.mp hc).1 hch] at this
           exact Option.some_ne_none e.2 this.symm
 
 #print axioms loopoff_of_agreement
@@ -13273,6 +13282,7 @@ theorem solvesBA_of_levelAgreement {S : Type} (aut : GkatKleene.GAut S A T)
       (loopoff_of_agreement aut lvl rank hdet hagree)
       (hnot_of_agreement aut lvl rank hdet hagree))
 
+#print axioms haltDeterministic_of_uniformWF
 #print axioms solvesBA_of_levelAgreement
 
 end Instantiation

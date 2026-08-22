@@ -16556,3 +16556,62 @@ them now stated sharply enough to be attacked one at a time.
 
 **Next.** `HaltDeterministic` for the quotient — the smallest of the four, and
 the only one that needs no new mathematics.
+
+## 357 — `HaltDeterministic` discharged: it was already in the corpus
+
+352 introduced `HaltDeterministic` as a hypothesis on the grounds that "every
+guarded automaton has it". That is an assertion about the representation, not a
+theorem, and the peel genuinely needs it — `eqRHS_equiv_of_behaviour` demands the
+two halt tests agree at EVERY atom, including atoms where a transition fires and
+the halt test is otherwise irrelevant. So it was worth checking.
+
+**Measured first.** `PAD_HALTDET`, over the largest pool:
+
+| | source | quotient |
+|---|---|---|
+| (state, atom) pairs | 1 455 834 | 1 240 380 |
+| **both halts and steps** | **0** | **0** |
+| neither — DEAD | 296 921 (20.40%) | 273 064 (22.01%) |
+
+Zero violations, and the dead column is the striking one: **a fifth of all
+(state, atom) pairs are dead** — neither halting nor stepping. 342 treated dead
+as halting and manufactured a counterexample out of it; at 20% of the data that
+was never going to be a corner case.
+
+**Then found it was already proved.** `GkatKleene.WF`'s first conjunct is
+
+```lean
+∀ s ∈ aut.states, ∀ a, bval V (aut.hlt s) a = true → autStep V aut s a = none
+```
+
+which is `HaltDeterministic` verbatim (`autStep = firstMatch ∘ trans`).
+`UniformWF` is it under every interpretation, and
+`UniformBehavioralGAutQuotient.uniformWF` **already transports it to quotients**.
+So:
+
+```lean
+theorem haltDeterministic_of_uniformWF (h : UniformWF aut) : HaltDeterministic aut
+```
+
+**Axiom-free.** One correction was needed: my predicate quantified over ALL
+states where the corpus quantifies over LISTED ones. The corpus is right — a peel
+says nothing about unlisted states — and every use site already had membership in
+hand.
+
+**The remaining chain, updated.**
+
+| item | status |
+|---|---|
+| bounded non-raising level function | **free** (339) |
+| `HaltDeterministic` | **PROVED** (357, via `UniformWF`) |
+| structural single-exit continuation | open |
+| its transport through the quotient | argued (356) + measured, not formalised |
+| `LevelAgreement` | follows from the two above |
+
+**Odds: 98%, unchanged.** One of four items closed, and it closed by recognising
+existing work rather than by proving anything new — which is worth noting as a
+process point: the corpus is large enough that "assume it, it's obviously true"
+is a worse move than grepping for it.
+
+**Next.** The structural single-exit continuation — the last item needing new
+mathematics.

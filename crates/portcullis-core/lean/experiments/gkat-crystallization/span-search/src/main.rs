@@ -2287,6 +2287,65 @@ fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Au
     pool
 }
 
+/// **`PAD_HALTDET`** (iteration 357).
+///
+/// 352 introduced `HaltDeterministic` — no state both halts and transitions at
+/// the same atom — as a hypothesis, on the grounds that "every guarded automaton
+/// has it".  That is an assertion about the corpus's representation, not a
+/// theorem, and the peel genuinely needs it: `eqRHS_equiv_of_behaviour` demands
+/// the two halt tests agree at EVERY atom, including atoms where a transition
+/// fires and the halt test is otherwise irrelevant.  So it is worth checking
+/// rather than asserting.
+fn haltdet<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut states, mut both, mut qstates, mut qboth) = (0usize, 0usize, 0usize, 0usize);
+    let (mut dead, mut qdead) = (0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        for u in 0..a.k as usize {
+            for x in 0..NA {
+                states += 1;
+                let halts = (a.hl[u] >> x) & 1 == 1;
+                let steps = a.st[u][x] != 0;
+                if halts && steps {
+                    both += 1;
+                    if first.is_none() {
+                        first = Some(format!("state q{u} atom {x}\n    {}",
+                            show_aut("src  ", a)));
+                    }
+                }
+                if !halts && !steps { dead += 1; }
+            }
+        }
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        for u in 0..q.k as usize {
+            for x in 0..NA {
+                qstates += 1;
+                let halts = (q.hl[u] >> x) & 1 == 1;
+                let steps = q.st[u][x] != 0;
+                if halts && steps { qboth += 1; }
+                if !halts && !steps { qdead += 1; }
+            }
+        }
+    }
+    println!("HALTDET: {states} (state, atom) pairs in Thompson automata, \
+              {qstates} in their quotients");
+    println!("  BOTH halts and steps: {both} source ({:.4}%), {qboth} quotient ({:.4}%) \
+              — must be 0 for HaltDeterministic",
+        100.0 * both as f64 / states.max(1) as f64,
+        100.0 * qboth as f64 / qstates.max(1) as f64);
+    println!("  neither (DEAD): {dead} source ({:.2}%), {qdead} quotient ({:.2}%) \
+              — dead atoms are legal and 343 relies on them",
+        100.0 * dead as f64 / states.max(1) as f64,
+        100.0 * qdead as f64 / qstates.max(1) as f64);
+    match first {
+        None => println!("  HaltDeterministic holds throughout: halting and stepping are \
+                          exclusive at every atom, source and quotient alike"),
+        Some(m) => println!("  FIRST VIOLATION\n    {m}"),
+    }
+}
+
 /// **`PAD_LOOPMERGE`** (iteration 354).
 ///
 /// 353 found the mechanism behind `LevelAgreement`: an SCC in GKAT comes from a
@@ -8305,6 +8364,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_HALTDET").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        haltdet::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_LOOPMERGE").is_ok() {
