@@ -19035,3 +19035,64 @@ problem does not close still stands.
 **Next.** A per-atom rank: at atom `x`, rank = distance to the unique cycle of
 the component. Check first whether `rawPred` can be made atom-dependent without
 breaking `peelRaw`, which builds one syntactic automaton for all atoms.
+
+## 409 — the atom-dependent peel is implementable. Split the GUARD, do not filter the transition.
+
+Web search: exhausted (200/200).
+
+408 ended with the redirection — the peel should be per-atom, because at a fixed
+atom the automaton is a partial *function* and every component has exactly one
+cycle — and one objection: `peelRaw` must emit ONE syntactic automaton serving
+all atoms, and its filter `S → transition → Bool` cannot see the atom. This
+iteration removes the objection.
+
+**The move.** Transitions carry GUARDS. Instead of keeping or dropping a
+transition, keep it with a **narrowed guard** — the sub-guard on which it counts
+as raw:
+
+```lean
+def RawSplit (S : Type) : Type := S → (BExp T × A × S) → BExp T
+
+def peelRawOf (aut) (sp : RawSplit S) (rawHlt) : GSystem S A T where
+  trans := fun s => (disjoin (aut.trans s)).map (fun tr => (sp s tr, tr.2))
+```
+
+Narrowing to `zero` *is* dropping, so this is strictly more general.
+
+**Compatibility — nothing already proved is lost.** `splitOfPred p` narrows to
+`tr.1` where `p` holds and to `zero` where it does not, and
+`firstMatch_splitOfPred` proves the narrowed list and the filtered list select
+the same transition at every atom. `peelRawOf_eq_peelRaw` lifts that to the
+peeled automata. Axioms: **`propext`** alone. So the atom-dependent design is a
+conservative extension of the atom-independent one, not a replacement that
+restarts the corpus.
+
+**Expressibility — the part that could have sunk it.** A split is data of type
+`BExp T`, so it can only distinguish atoms that some guard distinguishes. Is
+that enough? Yes, and `firstMatch_congr_guards` is the proof: two atoms agreeing
+on every guard of a transition list select the same transition. So the step
+function — and hence the whole cycle structure the split must respond to — is
+constant on **guard-cells**, and a guard-cell is a conjunction of guards and
+their negations, which is a `BExp` by construction. **Does not depend on any
+axioms.**
+
+That closes the feasibility question. The per-atom choice the split must make is
+never finer than what a `BExp` can express.
+
+**Why this defeats 407's obstruction.** 407 killed `hbodyRaw` because nested
+loops share an SCC and one atom-independent rank cannot break two cycle classes.
+With a split, the outer back-edge is narrowed to the atoms where the inner
+guard is false and the inner back-edge to where it is true — two classes, two
+guards, no single order required.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 93% → 94%.** A live obstruction removed with two axiom-light theorems,
+and the design shown conservative over everything already proved. Not more,
+because the split's *existence* for `certifiedThompson` is still un-built — the
+mechanism is now known to be expressible, which is not the same as constructed.
+The field's prior that this problem does not close still stands.
+
+**Next.** Construct the split for `loopInitialized`: outer back-edge narrowed by
+`guard`, body edges by the complement, and check the result is acyclic at every
+atom — measured, not assumed.

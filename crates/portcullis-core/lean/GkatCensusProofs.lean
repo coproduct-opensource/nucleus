@@ -15989,6 +15989,102 @@ theorem no_inner_active_of_hbodyRaw {S X : Type} (W : T → X → Bool) (x : X)
 #print axioms step_nonRaw_of_peelRawHlt
 #print axioms no_inner_active_of_hbodyRaw
 
+/-! ### The atom-dependent peel (408): split the GUARD, do not filter the transition
+
+408 established that `rawPred`, `lvl` and `rank` are atom-INDEPENDENT while the
+structure they order is not: at a fixed atom a GKAT automaton is a partial
+*function*, so every component has exactly one cycle and one back-edge class,
+but no single atom-independent rank can break several nested classes at once
+(407).
+
+The objection to going atom-dependent is that `peelRaw` must produce ONE
+syntactic automaton serving all atoms, and a filter `S → transition → Bool`
+cannot see the atom.  But transitions carry GUARDS.  Rather than keep or drop a
+transition, keep it with a **narrowed guard** — the sub-guard on which it counts
+as raw.  Narrowing to `zero` is dropping, so this is strictly more general. -/
+def RawSplit (S : Type) : Type := S → (BExp T × A × S) → BExp T
+
+/-- The peel driven by a split instead of a predicate. -/
+def peelRawOf {S : Type} (aut : GkatKleene.GAut S A T)
+    (sp : RawSplit (A := A) (T := T) S) (rawHlt : S → BExp T) :
+    GkatThompson.GSystem S A T where
+  states := aut.states
+  hlt := rawHlt
+  trans := fun s => (disjoin (aut.trans s)).map (fun tr => (sp s tr, tr.2))
+
+/-- The split induced by an atom-independent predicate: keep the guard where the
+predicate holds, narrow it to `zero` where it does not. -/
+def splitOfPred {S : Type} (p : S → (BExp T × A × S) → Bool) :
+    RawSplit (A := A) (T := T) S :=
+  fun s tr => if p s tr then tr.1 else (BExp.zero : BExp T)
+
+/-- **Compatibility.**  Narrowing to `zero` behaves exactly like filtering, so
+everything already proved about `peelRaw` transfers to `peelRawOf` with
+`splitOfPred`.  Nothing established under the atom-independent design is lost by
+moving to the atom-dependent one. -/
+theorem firstMatch_splitOfPred {S X : Type} (W : T → X → Bool) (x : X)
+    (p : S → (BExp T × A × S) → Bool) (s : S) :
+    ∀ L : List (BExp T × A × S),
+      GkatKleene.firstMatch W x (L.map (fun tr => (splitOfPred p s tr, tr.2)))
+        = GkatKleene.firstMatch W x (L.filter (p s)) := by
+  intro L
+  induction L with
+  | nil => rfl
+  | cons hd tl ihSplit =>
+      cases hp : p s hd with
+      | true =>
+          simp only [List.map, List.filter, hp, splitOfPred, if_true,
+            GkatKleene.firstMatch]
+          cases hb : GkatGS.bval W hd.1 x with
+          | true => rfl
+          | false => exact ihSplit
+      | false =>
+          have h1 : splitOfPred p s hd = (BExp.zero : BExp T) := by
+            simp [splitOfPred, hp]
+          have hz : GkatGS.bval W (BExp.zero : BExp T) x = false := rfl
+          simp only [List.map, List.filter, hp, GkatKleene.firstMatch, h1, hz]
+          exact ihSplit
+
+/-- The peeled automata agree step for step. -/
+theorem peelRawOf_eq_peelRaw {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (p : S → (BExp T × A × S) → Bool)
+    (rawHlt : S → BExp T) (s : S) :
+    GkatKleene.firstMatch W x ((peelRawOf aut (splitOfPred p) rawHlt).trans s)
+      = GkatKleene.firstMatch W x ((peelRaw aut p rawHlt).trans s) :=
+  firstMatch_splitOfPred W x p s (disjoin (aut.trans s))
+
+#print axioms firstMatch_splitOfPred
+#print axioms peelRawOf_eq_peelRaw
+
+/-- **Expressibility.**  A split is data of type `BExp T`, so it can only
+distinguish atoms that some guard distinguishes.  That is enough: the guards
+already determine the whole step function.  Two atoms agreeing on every guard of
+a transition list select the same transition — so the per-atom choice the split
+has to make is constant on guard-cells, and guard-cells are `BExp`-definable by
+construction (a conjunction of guards and their negations).
+
+This is what makes the atom-dependent peel implementable rather than merely
+desirable. -/
+theorem firstMatch_congr_guards {S X Y : Type} (W : T → X → Bool)
+    (W' : T → Y → Bool) (x : X) (y : Y) :
+    ∀ L : List (BExp T × A × S),
+      (∀ tr ∈ L, GkatGS.bval W tr.1 x = GkatGS.bval W' tr.1 y) →
+      GkatKleene.firstMatch W x L = GkatKleene.firstMatch W' y L := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons hd tl ihG =>
+      intro hall
+      have hhd : GkatGS.bval W hd.1 x = GkatGS.bval W' hd.1 y :=
+        hall hd (List.mem_cons_self)
+      simp only [GkatKleene.firstMatch, hhd]
+      cases hb : GkatGS.bval W' hd.1 y with
+      | true => rfl
+      | false =>
+          exact ihG (fun tr htr => hall tr (List.mem_cons_of_mem hd htr))
+
+#print axioms firstMatch_congr_guards
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
