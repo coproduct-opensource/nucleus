@@ -2123,6 +2123,120 @@ fn flag_product<const NA: usize>(a: &Aut<NA>, choice: u64) -> Option<Aut<NA>> {
 /// So this computes the SMALLEST congruence identifying them — merge the two initial targets
 /// at each atom, then close under "if x ~ y then succ(x,·) ~ succ(y,·)" — which is the
 /// intermediate quotient nearest the bottom of the lattice, adjoining only what is required.
+/// The block map of the MINIMAL congruence identifying the two initial dispatches —
+/// `min_congruence`'s computation, stopping before it builds the quotient automaton.
+/// 330 needs the blocks themselves, to ask which halves each class draws from.
+fn min_congruence_blocks<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>)
+    -> Option<([usize; MAXK], usize, usize)> {
+    let su = sum_core(a, b)?;
+    let ka = a.k as usize;
+    let n = su.k as usize;
+    let mut par: Vec<usize> = (0..n).collect();
+    fn find(par: &mut Vec<usize>, x: usize) -> usize {
+        let mut r = x;
+        while par[r] != r { r = par[r]; }
+        let mut c = x;
+        while par[c] != c { let nx = par[c]; par[c] = r; c = nx; }
+        r
+    }
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    for y in 0..NA {
+        if a.it[y] != 0 && b.it[y] != 0 {
+            work.push(((a.it[y] - 1) as usize, (b.it[y] - 1) as usize + ka));
+        }
+    }
+    while let Some((x, y)) = work.pop() {
+        let (rx, ry) = (find(&mut par, x), find(&mut par, y));
+        if rx == ry { continue; }
+        if su.hl[x] != su.hl[y] { return None; }
+        par[rx] = ry;
+        for t in 0..NA {
+            let (sx, sy) = (su.st[x][t], su.st[y][t]);
+            if sx == 0 && sy == 0 { continue; }
+            if sx == 0 || sy == 0 { return None; }
+            work.push(((sx - 1) as usize, (sy - 1) as usize));
+        }
+    }
+    let mut blk = [0usize; MAXK];
+    let mut seen: Vec<usize> = Vec::new();
+    for x in 0..n {
+        let r = find(&mut par, x);
+        blk[x] = match seen.iter().position(|&t| t == r) {
+            Some(i) => i,
+            None => { seen.push(r); seen.len() - 1 }
+        };
+    }
+    Some((blk, seen.len(), ka))
+}
+
+/// **`PAD_MINCONG`** (iteration 330).
+///
+/// Grounding the target showed `SumQuotientSolvable` accepts ANY behavioural
+/// quotient identifying the two start pseudostates — NOT the minimal one.  The
+/// finest such quotient is `min_congruence`.  Under it, how much of the
+/// difficulty 319-329 fought even exists?  The question is the class
+/// composition: a class drawing from BOTH halves cannot make a split
+/// problematic, because there is nothing outside the block for it to be outside
+/// of.  Only classes drawing from ONE half create a non-trivial complement.
+fn mincong<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    { let a = a_act::<NA>(); if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+    for _ in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+            }
+        }
+        if pool.len() >= cap { break; }
+    }
+    let (mut pairs, mut ok, mut mixedonly) = (0usize, 0usize, 0usize);
+    let mut classes_tot = 0usize;
+    let mut classes_one = 0usize;
+    for i in 0..pool.len() {
+        for j in 0..pool.len() {
+            if i == j { continue; }
+            if behaviour(&pool[i]) != behaviour(&pool[j]) { continue; }
+            pairs += 1;
+            let Some((blk, nb, ka)) = min_congruence_blocks(&pool[i], &pool[j]) else { continue };
+            ok += 1;
+            let n = pool[i].k as usize + pool[j].k as usize;
+            let mut from_a = vec![false; nb];
+            let mut from_b = vec![false; nb];
+            for x in 0..n {
+                if x < ka { from_a[blk[x]] = true; } else { from_b[blk[x]] = true; }
+            }
+            let one = (0..nb).filter(|&c| !(from_a[c] && from_b[c])).count();
+            classes_tot += nb;
+            classes_one += one;
+            if one == 0 { mixedonly += 1; }
+        }
+    }
+    println!("MIN CONGRUENCE: {pairs} language-equivalent ordered pairs, {ok} with a \
+              consistent congruence");
+    println!("  classes: {classes_tot} total, {classes_one} drawing from ONE half only \
+              ({:.1}%)", 100.0 * classes_one as f64 / classes_tot.max(1) as f64);
+    println!("  {mixedonly} of {ok} quotients have EVERY class drawing from BOTH halves \
+              ({:.1}%) — for those the split is trivial and 319-329's difficulty is empty",
+        100.0 * mixedonly as f64 / ok.max(1) as f64);
+}
+
 fn min_congruence<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>) -> Option<Aut<NA>> {
     let su = sum_core(a, b)?;
     let ka = a.k as usize;
@@ -7688,6 +7802,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_MINCONG").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+        mincong::<NA>(nguards as u8, rounds, cap);
         return;
     }
     if std::env::var("PAD_BODY_COND").is_ok() {

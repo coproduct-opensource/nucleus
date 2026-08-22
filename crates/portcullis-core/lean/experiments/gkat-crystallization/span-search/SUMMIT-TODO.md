@@ -15118,3 +15118,52 @@ costs nothing that 328 had not already priced; the SCC fact is new.
 Measure how often a loop's body has a block state that is not on any cycle —
 that is the residue after `closed_scc_saturated` does its work, and it is a
 strictly smaller target than 328's 15%.
+
+---
+
+## 330 — GROUNDING THE TARGET: THE QUOTIENT IS OURS TO CHOOSE.
+
+Went and read `SumQuotientSolvable` rather than reasoning from memory about it,
+which I had been doing for twenty-odd iterations.  It asks, for
+language-equivalent `e, f`, for
+
+    SOME quotient `Q` of the sum, SOME solution of it, and the two start
+    pseudostates identified
+
+— and **nothing about minimality**.  `sumQuotientSolvable_of_certificate` adds
+minimality in its `hstart`, but that is a choice made to suit 264's acyclic
+pushforward, not a demand of the target.
+
+**So the quotient is OURS TO CHOOSE**, and I have been treating it as given
+since 287.  That is the reframing: not "does the collapse decompose?" but
+**"can I construct a quotient that decomposes?"**
+
+### First measurement under the finest choice
+
+`min_congruence` is the finest quotient identifying the two starts.
+`PAD_MINCONG`:
+
+    50 language-equivalent ordered pairs, 16 with a CONSISTENT congruence
+    41 classes total, 25 drawing from ONE half only (61.0%)
+    6 of 16 quotients have EVERY class drawing from both halves (37.5%)
+
+**Mixed, and honestly so.**  For 37.5% of the quotients the split is trivial and
+319–329's difficulty is empty.  For the rest, 61% of classes still draw from one
+half, so the difficulty persists — the finest quotient is not automatically the
+convenient one.
+
+**And a caveat worth recording**: 34 of 50 pairs have NO consistent minimal
+congruence at all — merging the starts forces merging states whose halts differ
+syntactically.  So "finest" is not always available either; the useful quotient
+lies somewhere between identity and the full collapse, and finding it is the
+new question.
+
+**Odds: 98%** (+1).  A freedom the target grants that I had not been using, found
+by reading the definition instead of remembering it — against a measurement
+saying the obvious way to use it is not enough.  **The lesson is the cheap one:
+re-read the goal periodically; twenty iterations of reasoning from memory cost
+more than the two minutes this took.**
+
+**Next.**  What property must a quotient have for the decomposition to work, and
+can one with that property always be constructed?  That is a better-posed
+question than any asked since 319.
