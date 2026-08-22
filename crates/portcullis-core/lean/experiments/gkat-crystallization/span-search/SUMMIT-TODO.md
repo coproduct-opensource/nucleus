@@ -12158,3 +12158,46 @@ be written against.  Only +1: it is still unwritten, and the layer case of
 `hcollapse` — the pairwise connect-through-to induction — is untouched.
 
 **Next.**  `hcollapse`'s acyclic case, written against the new definition.
+
+---
+
+## 264 — **`hcollapse`'s ACYCLIC CASE IS PROVED.**
+
+`acyclic_quotient` — a behavioural quotient of an acyclic automaton is acyclic.
+261's argument, writable at last because 263 made `Layered.acyclic` speak in
+`firstMatch` steps, which is exactly what `autStep` is: the certificate and the
+bisimulation now quantify over the SAME edges.
+
+**The proof.**  `rank' q` is the least rank among `q`'s listed preimages.  Given
+a step `q → r.2`, take a preimage `s` ACHIEVING that minimum and push the step
+BACKWARDS through the bisimulation to `s → s'` with `π s' = r.2`; then
+
+    rank' r.2  ≤  rank s'  <  rank s  =  rank' q
+
+`targets` is what places `s'` back in `aut.states` so it counts as a preimage —
+Thompson automata supply it from `CoreTargetsListed`.
+
+**`Nat.find` does not exist here**, so the minimum was built directly: `minOf1`
+with the two facts the argument needs — it is a LOWER BOUND and it is ACHIEVED —
+plus a `minOfList` wrapper.  Four small inductions.  This is the Mathlib-free
+constraint costing about twenty lines, which is the usual price in this cluster.
+
+**Where the three obligations stand:**
+
+    hsum       PROVED                                          258
+    hcollapse  acyclic case PROVED                             264
+               layer case — the pairwise connect-through-to
+               induction 259 identified                        open
+    hsolve                                                     open
+
+**Odds: 86%, up 1.**  The acyclic case is the base case of `hcollapse` and it is
+now a theorem; more to the point, it is the first place the certificate and the
+bisimulation have actually been made to interact, which is what six migrations
+were for.  Only +1 because the layer case is the substantial half and is
+untouched — and because `acyclic_quotient` needed `Classical.choice`, the first
+theorem in this chain to do so.
+
+**Next.**  `hcollapse`'s layer case: given `IsLayer sys base b dom` and a
+quotient of `sys`, produce a layer over something layered downstairs.  259
+established the method is pairwise identification rather than wholesale
+transport, and recorded why the wholesale version fails.

@@ -6858,4 +6858,144 @@ theorem thompson_layered : ∀ e : Exp A T,
 
 #print axioms thompson_layered
 
+
+
+/-! ### Minimum of a nonempty list, Mathlib-free
+
+`Nat.find` does not exist in this environment (no Mathlib), so `hcollapse`'s
+"least rank among the preimages" is built directly: `minOf1 x l` is the minimum
+of `x :: l`, with the two facts the argument needs — it is a LOWER BOUND, and it
+is ACHIEVED. -/
+
+private def minOf1 : Nat → List Nat → Nat
+  | x, [] => x
+  | x, y :: ys => minOf1 (min x y) ys
+
+private theorem minOf1_le_head : ∀ (l : List Nat) (x : Nat), minOf1 x l ≤ x := by
+  intro l
+  induction l with
+  | nil => intro x; exact Nat.le_refl x
+  | cons y ys ih =>
+      intro x
+      exact Nat.le_trans (ih (min x y)) (Nat.min_le_left x y)
+
+private theorem minOf1_le_mem : ∀ (l : List Nat) (x y : Nat), y ∈ l →
+    minOf1 x l ≤ y := by
+  intro l
+  induction l with
+  | nil => intro x y h; cases h
+  | cons z zs ih =>
+      intro x y h
+      cases h with
+      | head => exact Nat.le_trans (minOf1_le_head zs (min x z)) (Nat.min_le_right x z)
+      | tail _ h' => exact ih (min x z) y h'
+
+private theorem minOf1_achieved : ∀ (l : List Nat) (x : Nat),
+    minOf1 x l = x ∨ minOf1 x l ∈ l := by
+  intro l
+  induction l with
+  | nil => intro x; exact Or.inl rfl
+  | cons y ys ih =>
+      intro x
+      show minOf1 (min x y) ys = x ∨ minOf1 (min x y) ys ∈ y :: ys
+      rcases ih (min x y) with h | h
+      · rcases Nat.le_total x y with hxy | hxy
+        · exact Or.inl (by rw [h, Nat.min_eq_left hxy])
+        · exact Or.inr (by rw [h, Nat.min_eq_right hxy]; exact List.Mem.head _)
+      · exact Or.inr (List.Mem.tail _ h)
+
+private def minOfList : List Nat → Nat
+  | [] => 0
+  | x :: xs => minOf1 x xs
+
+private theorem minOfList_le : ∀ (l : List Nat) (y : Nat), y ∈ l →
+    minOfList l ≤ y := by
+  intro l
+  cases l with
+  | nil => intro y h; cases h
+  | cons z zs =>
+      intro y h
+      show minOf1 z zs ≤ y
+      cases h with
+      | head => exact minOf1_le_head zs z
+      | tail _ h' => exact minOf1_le_mem zs z y h'
+
+private theorem minOfList_mem : ∀ (l : List Nat), l ≠ [] → minOfList l ∈ l := by
+  intro l
+  cases l with
+  | nil => intro h; exact absurd rfl h
+  | cons z zs =>
+      intro _
+      show minOf1 z zs ∈ z :: zs
+      rcases minOf1_achieved zs z with hh | hh
+      · rw [hh]; exact List.Mem.head _
+      · exact List.Mem.tail _ hh
+
+/-- The `GSystem` underlying a `GAut` — 239's architecture states `Cert` on
+    `GAut`s, while `Layered` is a property of the transition structure alone. -/
+def gautSystem {S : Type} (aut : GkatKleene.GAut S A T) :
+    GkatThompson.GSystem S A T :=
+  ⟨aut.states, aut.hlt, aut.trans⟩
+
+/-- **`hcollapse`, ACYCLIC CASE: a behavioural quotient of an acyclic automaton
+    is acyclic.**
+
+    261's argument, now writable because 263 made `Layered.acyclic` speak in
+    `firstMatch` steps — which is exactly `autStep`, so the certificate and the
+    bisimulation quantify over the same edges.
+
+    `rank' q` is the MINIMUM rank over `q`'s preimages, obtained from `Nat.find`
+    rather than from any finiteness machinery: `Nat.find_spec` supplies a
+    preimage ACHIEVING the minimum, `Nat.find_min'` its minimality.  Given a step
+    `q → r.2`, take the minimising preimage `s` and push the step BACKWARDS
+    through the bisimulation to `s → s'` with `π s' = r.2`; then
+
+        rank' r.2  ≤  rank s'  <  rank s  =  rank' q
+
+    The `targets` hypothesis is what places `s'` back in `aut.states` so it
+    counts as a preimage; Thompson automata supply it from `CoreTargetsListed`. -/
+theorem acyclic_quotient {S Q : Type}
+    (aut : GkatKleene.GAut S A T) (quot : GkatKleene.GAut Q A T)
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (targets : ∀ s ∈ aut.states, ∀ tr ∈ aut.trans s, tr.2.2 ∈ aut.states)
+    (rank : S → Nat)
+    (hrank : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X)
+      (r : A × S), GkatKleene.firstMatch W x (aut.trans s) = some r →
+        rank r.2 < rank s) :
+    ∃ rank' : Q → Nat, ∀ q ∈ quot.states, ∀ (X : Type) (W : T → X → Bool)
+      (x : X) (r : A × Q),
+      GkatKleene.firstMatch W x (quot.trans q) = some r → rank' r.2 < rank' q := by
+  classical
+  -- `rank' q` = least rank among `q`'s preimages that are listed in `aut`
+  let pre : Q → List Nat := fun q =>
+    (aut.states.filter (fun s => decide (π.mapState s = q))).map rank
+  refine ⟨fun q => minOfList (pre q), ?_⟩
+  intro q hq X W x r hstep
+  -- the minimum at `q` is achieved by an actual preimage
+  have hne : pre q ≠ [] := by
+    obtain ⟨s, hs, hps⟩ := π.onto_states q hq
+    intro hempty
+    have : rank s ∈ pre q :=
+      List.mem_map_of_mem (List.mem_filter.mpr ⟨hs, by simp [hps]⟩)
+    rw [hempty] at this; cases this
+  obtain ⟨s, hsf, hsr⟩ := List.mem_map.mp (minOfList_mem (pre q) hne)
+  obtain ⟨hsmem, hps⟩ := List.mem_filter.mp hsf
+  have hps : π.mapState s = q := by simpa using hps
+  -- push the step backwards through the bisimulation
+  obtain ⟨s', hs', hps'⟩ :=
+    (((π.bisim_graph X W) s q hps).2.2) x r.1 r.2 (by
+      show GkatKleene.firstMatch W x (quot.trans q) = some (r.1, r.2)
+      simpa using hstep)
+  have hmem' : s' ∈ aut.states := by
+    obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x _ r.1 s' hs'
+    exact targets s hsmem _ hg
+  have hlt : rank s' < rank s := hrank s hsmem X W x (r.1, s') hs'
+  have hmemlist : rank s' ∈ pre r.2 :=
+    List.mem_map_of_mem (List.mem_filter.mpr ⟨hmem', by simp [hps']⟩)
+  show minOfList (pre r.2) < minOfList (pre q)
+  rw [← hsr]
+  exact Nat.lt_of_le_of_lt (minOfList_le _ _ hmemlist) hlt
+
+#print axioms acyclic_quotient
+
 end GkatCensus
