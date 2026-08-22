@@ -2417,6 +2417,119 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// ENTRY, descending — the entry at the top, each step into the body one lower.
 /// This is a single named rank, not a search, so if it always agrees it is
 /// directly implementable in Lean.
+/// **`PAD_CROSSHALF`** (iteration 413).
+///
+/// 411 named the one configuration its propagation lemmas cannot exclude: `u`
+/// halting in one half of a `seq` while `w` is active in the other, with an
+/// ENCLOSING LOOP merging the halves into a single component.  `seqGSystem`'s
+/// halt at `inr s` is `right.core.hlt s`, which kills the right half's guards
+/// but says nothing about the left half's.
+///
+/// 412's distance rank makes inner back-edges NON-raw (they climb back toward
+/// an inner entry, not the outer one), so this shape should show two active
+/// states with different targets — unless the guards block it.
+///
+/// Rather than argue, build the shape: `wh G (seq (wh g' X) Y)` over every
+/// choice of guards and of `X`, `Y` in {act, test}, and check the distance rank
+/// on it directly.
+fn crosshalf<const NA: usize>(nguards: u8) {
+    let mut built = 0usize;
+    let (mut ok, mut bad) = (0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    let mut bad_aut: Option<Aut<NA>> = None;
+    let mut leaves: Vec<Aut<NA>> = vec![a_act::<NA>()];
+    for g in 0..nguards { leaves.push(a_test::<NA>(g)); }
+    for g0 in 0..nguards {
+        for g1 in 0..nguards {
+            for xi in 0..leaves.len() {
+                for yi in 0..leaves.len() {
+                    let inner = a_wh::<NA>(g1, &leaves[xi]);
+                    let body = match a_seq::<NA>(&inner, &leaves[yi]) { Some(b) => b, None => continue };
+                    let outer = a_wh::<NA>(g0, &body);
+                    let outer = match canon(&outer) { Some(c) => c, None => continue };
+                    built += 1;
+                    let k = outer.k as usize;
+                    for comp in sccs_of(&outer) {
+                        let selfloop = comp.len() == 1
+                            && (0..NA).any(|x| outer.st[comp[0]][x] == (comp[0] + 1) as u8);
+                        if comp.len() == 1 && !selfloop { continue; }
+                        let mut ents: Vec<usize> = Vec::new();
+                        for x in 0..NA {
+                            if outer.it[x] != 0 {
+                                let t = (outer.it[x] - 1) as usize;
+                                if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                            }
+                        }
+                        for u in 0..k {
+                            if comp.contains(&u) { continue; }
+                            for x in 0..NA {
+                                if outer.st[u][x] != 0 {
+                                    let t = (outer.st[u][x] - 1) as usize;
+                                    if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                                }
+                            }
+                        }
+                        if ents.len() != 1 { continue; }
+                        let e = ents[0];
+                        let mut dist = [usize::MAX; MAXK];
+                        dist[e] = 0;
+                        let mut q = vec![e]; let mut qi = 0;
+                        while qi < q.len() {
+                            let u = q[qi]; qi += 1;
+                            for x in 0..NA {
+                                if outer.st[u][x] == 0 { continue; }
+                                let t = (outer.st[u][x] - 1) as usize;
+                                if !comp.contains(&t) || dist[t] != usize::MAX { continue; }
+                                dist[t] = dist[u] + 1; q.push(t);
+                            }
+                        }
+                        let maxd = comp.iter().map(|&u| dist[u]).filter(|&d| d != usize::MAX).max().unwrap_or(0);
+                        let mut rank = [0usize; MAXK];
+                        for &u in &comp { rank[u] = if dist[u] == usize::MAX { 0 } else { maxd - dist[u] }; }
+                        let mut agree = true;
+                        for x in 0..NA {
+                            let mut outs: Vec<Option<usize>> = Vec::new();
+                            for &u in &comp {
+                                let tv = outer.st[u][x];
+                                let halts = (outer.hl[u] >> x) & 1 == 1;
+                                let isact = if tv == 0 { halts } else {
+                                    let t = (tv - 1) as usize;
+                                    !(comp.contains(&t) && rank[t] < rank[u])
+                                };
+                                if !isact { continue; }
+                                outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                            }
+                            if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                        }
+                        if agree { ok += 1; } else {
+                            bad += 1;
+                            if first_bad.is_none() {
+                                first_bad = Some(format!("g0={} g1={} X={} Y={} comp={:?} entry={} {}",
+                                    g0, g1, xi, yi, comp, e, show_aut("outer", &outer)));
+                                bad_aut = Some(outer.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("PAD_CROSSHALF  built wh G (seq (wh g' X) Y) : {} automata", built);
+    println!("  components where the distance rank AGREES    : {}", ok);
+    println!("  components where it DISAGREES               : {}", bad);
+    match first_bad {
+        Some(b) => println!("  *** the 411 cross-half gap is REAL:\n    {}", b),
+        None => println!("  the 411 cross-half shape never disagrees here"),
+    }
+    if let Some(b) = bad_aut {
+        let pool = build_pool::<NA>(nguards, 6, 200000);
+        let found = pool.iter().any(|a| *a == b);
+        println!("  is the counterexample IN build_pool(nguards,6,200000)? {}  (pool={})",
+            if found { "YES — so PAD_DISTRANK has a bug" }
+            else { "NO — build_pool's enumeration misses it" }, pool.len());
+    }
+}
+
 fn distrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut sccs, mut tested, mut ok, mut bad) = (0usize, 0usize, 0usize, 0usize);
@@ -9769,6 +9882,11 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_CROSSHALF").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        crosshalf::<3>(g);
         return;
     }
     if std::env::var("PAD_DISTRANK").is_ok() {

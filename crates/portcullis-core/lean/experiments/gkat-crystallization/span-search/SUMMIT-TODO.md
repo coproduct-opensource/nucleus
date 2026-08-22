@@ -19278,3 +19278,81 @@ a proof. The field's prior that this problem does not close still stands.
 
 **Next.** Define the distance rank in Lean and prove `SourceSccAgrees` for
 single-entry components from it; then the multi-entry case separately.
+
+## 413 — REFUTATION. `SourceSccAgrees` is FALSE, and 412's clean sweep was no evidence at all.
+
+Web search: exhausted (200/200).
+
+411 named a configuration its lemmas could not exclude. 412 answered it with a
+census and moved on. This iteration built the named shape directly instead of
+sampling for it, and the shape refutes the live hypothesis.
+
+**The construction.** `wh g₀ (seq (wh g₁ act) act)`, with `g₀` true only at atom
+0 and `g₁` true at atoms 0 and 1. Built through the harness's own `a_wh`/`a_seq`
+— which I checked line by line against `loopInitialized`/`seqGSystem` first
+(`hl[s] = b.hl[s] && !g`; cross edges gated by `l.hl[s]`) — and re-derived by
+hand; it reproduces bit for bit:
+
+```
+k=2  ih=110  it=[1,0,0]
+q0: hl=000  st=[1,1,2]     -- self-loops at atoms 0,1; goes to q1 at atom 2
+q1: hl=110  st=[1,0,0]     -- goes to q0 at atom 0; HALTS at atoms 1,2
+```
+
+`0 → 1` at atom 2 and `1 → 0` at atom 0, so the two are mutually reachable:
+`SemReaches` holds both ways, which is all `SourceSccAgrees` requires.
+
+**At atom 1, state 0 self-loops and state 1 halts.** A self-loop is non-raw
+under EVERY level and rank, because
+
+```
+rawPred slvl srank s (one, (q, s))
+  = decide (slvl s = slvl s) && decide (srank (slvl s) s < srank (slvl s) s)
+  = true && false = false
+```
+
+So `peelRawHlt 0` is true at atom 1 (its non-raw guard holds), `peelRawHlt 1` is
+true (it halts), and the conclusion demands
+`autStep 0 x = autStep 1 x` — that is `some (act, 0) = none`. **False, and no
+choice of `slvl` or `srank` can repair it.** The Lean statement carries no level
+or rank side-condition, so this is a refutation of the definition as written.
+
+**Why 410 and 412 missed it, which is the methodological point.** Both used
+`build_pool`. I checked directly: the counterexample is **NOT in
+`build_pool(4, 6, 200000)`** — and `PAD_DISTRANK` at pools of 200k and 400k
+returns 0 disagreements. The enumeration never produces this family at any cap.
+So 412's 66,998/66,998 was not weak evidence for the distance rank; **it was no
+evidence at all** for the case that matters. A bigger pool is not a
+representative pool, and after 407 and 408 I had been treating pool size as the
+thing to fix. The fix is targeted construction of the named shape — 319
+automata found it immediately where 400,000 did not.
+
+**What falls.** `finiteAxiomsComplete_of_sourceAgrees` and
+`levelAgreementActive_of_sourceAgrees` are still true theorems and still
+`sorry`-free, but their hypothesis is unsatisfiable for these automata, so they
+are **vacuous exactly where completeness is hard** — the 307 defect again: true,
+proved, and impossible to instantiate. 412's distance rank falls with it, along
+with the `wh`-case work of 404-406 and 411 that fed the same hypothesis. The
+Lean file now carries the counterexample at the definition.
+
+**What survives, and the diagnosis.** The mechanism is sharp: state 0 is the
+INNER loop still running while the OUTER loop's exit condition holds at that
+atom. They are at different NESTING DEPTHS and the SCC merges them. So this is
+not really about ranks at all — **it refutes SCC-based levels**, which is what
+407 and 408 kept circling. Nesting depth is the right stratification; 408 ruled
+it out via irreducibility, but this automaton is single-entry and reducible, so
+the nesting forest exists here and would separate the two states.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 96% → 82%.** The central hypothesis of the live route is false, for a
+reason that is structural rather than incidental, and this is the second time
+the central hypothesis has been refuted (`LevelAgreement` at 359, now
+`SourceSccAgrees`). Not lower, because the refutation comes with a specific
+diagnosis and a named repair, and the corpus below the hypothesis is untouched.
+The field's prior that this problem does not close still stands, and iterations
+like this one are why.
+
+**Next.** Levels by loop-nesting depth on the reducible fragment: define it,
+check it separates the 413 counterexample, and re-measure agreement against
+targeted families rather than the pool.

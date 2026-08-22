@@ -15318,7 +15318,26 @@ theorem rawPred_false_of_not_lt {S : Type} (lvl : S → Nat) (rank : Nat → S �
 /-- **The source condition, as AGREEMENT rather than headedness.**  392 showed
 headedness is false for `wh` — several body states can back-edge at one atom — so
 the condition that survives is that active states of a component AGREE, which is
-what 393-395 actually prove. -/
+what 393-395 actually prove.
+
+⚠️ **REFUTED (413) — FALSE for `certifiedThompson`.**  Counterexample:
+`wh g₀ (seq (wh g₁ act) act)` with `g₀` true only at atom 0 and `g₁` true at
+atoms 0 and 1.  The resulting automaton has two states, mutually reachable
+(`0 → 1` at atom 2, `1 → 0` at atom 0).  At atom 1, state 0 **self-loops** and
+state 1 **halts**.
+
+A self-loop is non-raw under EVERY level and rank, because
+`rawPred slvl srank s (one, (q, s)) = decide (slvl s = slvl s) && decide
+(srank (slvl s) s < srank (slvl s) s) = true && false = false`.  So state 0's
+`peelRawHlt` is true at atom 1; state 1's is true because it halts; and
+`autStep 0 = some (act, 0)` while `autStep 1 = none`.  The conclusion fails, and
+no choice of `slvl`/`srank` can repair it.
+
+Anything below taking this as a hypothesis is therefore VACUOUS on such
+automata — the 307 defect again: true, proved, and impossible to instantiate.
+The diagnosis is that the SCC is the wrong grouping: state 0 is the INNER loop
+still running while the OUTER loop's exit holds, so the two belong at different
+NESTING DEPTHS, which the SCC merges. -/
 def SourceSccAgrees {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
     (srank : Nat → S → Nat) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
