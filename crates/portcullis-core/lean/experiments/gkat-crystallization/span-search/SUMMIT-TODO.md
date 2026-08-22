@@ -13467,3 +13467,55 @@ still stands, and this iteration is the sharpest statement yet of why.
 determinism rules out the destructive merge (the automata here are deterministic
 per atom, unlike the process graphs the counterexamples live in), or by porting
 the crystallization repair.
+
+---
+
+## 291 — 290's PESSIMISM WAS WRONG.  A LOOP IN THE COMPLEMENT EXITS AS A `SeqLayer`.
+
+**Correcting myself.**  290 restricted the complement to being relatively
+ACYCLIC and read that restriction as "the case where no destructive merge has
+happened".  That reading was too gloomy.  **A loop in the complement is
+ORDINARY, not pathological**: in `ite c e f` with `f` containing a loop and
+`f`'s states unmerged, the complement simply contains `f`'s loop.  290's
+restriction therefore excludes a routine case, not only a pathological one — and
+the pathology I attributed to it was mostly my own overstatement.
+
+**What actually matters is how such a loop EXITS into the block**, and it exits
+the way every loop in a Thompson automaton exits: through the HALT-GATE, into a
+SHARED entry block.  In `seq (wh d g) h` the body's states carry `g.hlt ∧ ¬d`
+gated transitions into `h`'s entry; after a collapse that puts `h` in the block,
+those are halt-gated shared entry transitions whose TARGETS LIE IN THE BLOCK.
+**That is exactly `SeqLayer`** — whose `entry` list 289 left unconstrained as to
+where it points.  So the complement is a `SeqLayer` over something, and removing
+it leaves the loop total again, which is precisely 282's peel-the-seq-first move
+one level down.
+
+**Proved**: `seqLayer_subsystem` — 277's `layer_subsystem`, for sequences rather
+than loops.  Same proof, same tool: parametric guard factoring turns the
+per-state halt conjoined onto every entry transition into a test prefix, so the
+whole entry block becomes a FINISH.  `propext` ALONE.
+
+**And it specialises back**, the same check 277 ran for the loop:
+`seq_subsystem_of_layer` reproduces the concrete `seq_subsystem` by reducing
+through the abstract layer and then through the sum.  `propext` alone.  The
+abstraction is faithful.
+
+**On the determinism hope, negatively.**  290 suggested GKAT's per-atom
+determinism might rule out the destructive merge outright.  This iteration's
+search does not support that: deterministic systems have "computational
+advantages but NOT uniformly better structure preservation across all process
+classes", and the taxonomy result is stated for transition graphs generally.
+Determinism is not a free pass; the structure has to be carried, and carrying it
+is what 279-291 have been doing.
+
+**Odds: 98%, HELD — and held deliberately.**  Two theorems on `propext` alone
+plus a faithful-abstraction check is real progress, but it partly cancels my own
+overstatement in 290, and the assembly it enables is not done.  Assembly has
+surfaced a genuine mismatch before (283, where the two halves did not compose
+until the hypothesis forms were reconciled), and I will not price this one until
+it compiles.  The field's prior that the problem does not close still stands.
+
+**Next.**  The relativised `LayeredL` on a domain — acyclic-relative (288) /
+loop total on the domain (284) / `SeqLayer` on the domain (291) — with the
+solution theorem by induction, and the pushforward by induction from 264, 281
+and 289.

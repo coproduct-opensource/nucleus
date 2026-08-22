@@ -8470,4 +8470,70 @@ theorem sum_quotient_has_solution {S₁ S₂ Q : Type}
 
 #print axioms sum_quotient_has_solution
 
+
+/-! ### 291 — `seq_subsystem` FOR AN ABSTRACT SEQUENCE LAYER
+
+    290 restricted the complement to being relatively ACYCLIC and read that as
+    the case "no destructive merge has happened".  That reading was too gloomy.
+    A loop in the complement is ORDINARY, not pathological: in
+    `ite c e f` with `f` containing a loop and `f`'s states unmerged, the
+    complement simply contains `f`'s loop.
+
+    What matters is how such a loop EXITS into the block.  It exits the way
+    every loop in a Thompson automaton exits — through the halt-gate, into a
+    SHARED entry block.  In `seq (wh d g) h` the body's states carry
+    `g.hlt ∧ ¬d`-gated transitions into `h`'s entry; after a collapse that puts
+    `h` in the block, those are halt-gated shared entry transitions whose
+    TARGETS LIE IN THE BLOCK.  That is exactly `SeqLayer`, whose `entry` list is
+    unconstrained as to where it points (289).
+
+    So the complement is a `SeqLayer` over something, and removing it leaves the
+    loop total again.  What was missing to say so is the equation-level lemma —
+    277's `layer_subsystem` for sequences rather than loops.  It is the same
+    proof, and it uses the same tool `seq_subsystem` itself uses: parametric
+    guard factoring.  The per-state halt conjoined onto every entry transition
+    factors out as a test prefix, turning the whole entry block into a FINISH. -/
+theorem seqLayer_subsystem {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {h₀ : BExp T} {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (h : SeqLayer sys base h₀ entry dom)
+    (sol : S → Exp A T) (F : Exp A T) (s : S) (hs : dom s) :
+    EquivBA (GkatThompson.eqRHSParam sys sol F s)
+      (GkatThompson.eqRHSParam base sol
+        (guardedFold (transitionBranches entry sol)
+          (GkatThompson.paramFallback h₀ F)) s) := by
+  have hsplit : transitionBranches (sys.trans s) sol
+      = transitionBranches (base.trans s) sol
+        ++ (transitionBranches entry sol).map
+            (fun br => (BExp.and (base.hlt s) br.1, br.2)) := by
+    rw [h.trans_eq s hs]
+    simp only [transitionBranches, List.map_append, List.map_map, Function.comp_def]
+  show EquivBA (guardedFold (transitionBranches (sys.trans s) sol) _) _
+  rw [hsplit, guardedFold_append, h.hlt_eq s hs]
+  exact guardedFold_fallback_congr
+    (guardedFold_guard_factor (base.hlt s) h₀ F (transitionBranches entry sol))
+
+#print axioms seqLayer_subsystem
+
+/-- **AND IT SPECIALISES BACK TO `seq_subsystem`**, the same check 277 ran for
+    the loop: a concrete sequence is an abstract sequence layer over the
+    disjoint union of its halves, and reducing through the layer and then
+    through the sum reproduces the concrete lemma. -/
+theorem seq_subsystem_of_layer {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (sol : Sum S₁ S₂ → Exp A T) (F : Exp A T) (s : S₁) :
+    EquivBA
+      (GkatThompson.eqRHSParam (GkatThompson.seqGSystem L R) sol F (.inl s))
+      (GkatThompson.eqRHSParam L (fun t => sol (.inl t))
+        (GkatThompson.initRHSParam R (fun t => sol (.inr t)) F) s) := by
+  refine EquivBA.trans (seqLayer_subsystem (seq_seqLayer L R) sol F (.inl s) trivial) ?_
+  rw [sum_subsystem_inl]
+  have : transitionBranches
+      (R.initTrans.map (fun tr => (tr.1, tr.2.1, Sum.inr tr.2.2))) sol
+      = transitionBranches R.initTrans (fun t => sol (.inr t)) := by
+    simp only [transitionBranches, List.map_map, Function.comp_def]
+  rw [this]
+  exact EquivBA.base (Equiv.refl _)
+
+#print axioms seq_subsystem_of_layer
+
 end GkatCensus
