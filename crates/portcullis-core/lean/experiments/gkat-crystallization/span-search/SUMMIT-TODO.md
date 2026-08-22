@@ -20270,3 +20270,60 @@ is genuine and independent.
 **Next.** Get large components deliberately: construct equivalent pairs whose
 loop bodies have three or more states — pair a loop against its unrolling, which
 W1 makes equivalent by construction — and test those directly.
+
+## 429 — 427's "degenerate" reading is REFUTED: 168 non-degenerate refuters.
+
+Web search: exhausted (200/200).
+
+428 showed the deeppull population had max component 2 and could not exhibit the
+failure mode. So construct pairs that can: **a loop against its own W1
+unrolling**,
+
+```
+A = wh g e          B = ite g (e ; wh g e) 1
+```
+
+equivalent by axiom rather than by search, with `B` carrying a copy of `e`
+outside the loop so the pullback's components track `e`'s size. Equivalence is
+**checked**, not assumed — `behaviour(A) == behaviour(B)` gates every pair.
+
+| | G=8, D=2 |
+|---|---|
+| (loop, unrolling) pairs built | 16,000 |
+| **verified language-equivalent** (non-vacuity gate) | **5,190** |
+| pullbacks tested | 5,126 |
+| `LevelAgreementActive` satisfiable | 4,958 |
+| **UNSATISFIABLE** | **168** |
+| max-component histogram (index = size) | `[0, 790, 3241, 1019, 76, …]` |
+
+**427 was wrong.** I read 33,073 clean pullbacks as evidence that 413's
+refutation only reaches the hypothesis through `e = f` and is therefore
+degenerate, and took five points for it. Here are **168 refuters from genuinely
+distinct, verified-equivalent pairs**. The refutation is not degenerate, and
+417/418 keep their force.
+
+**Two things I did differently, and both mattered.** The pairs are equivalent *by
+construction* (W1) rather than found by grouping, which is why large components
+appear at all — the histogram reaches size 4 where deeppull never passed 2. And
+the equivalence is verified rather than assumed, so the 168 are not an artefact
+of pairing non-equivalent expressions. 428's lesson was to check the population's
+distribution on the predictor; the fix was to build a population with the right
+distribution.
+
+**The limitation that keeps this from being decisive.** The hypothesis is
+`∃ quot …` — SOME behavioural quotient of `SUMof e f`. I tested only the FORCED
+pullback, one quotient among possibly several. So 168 forced pullbacks fail;
+whether some other quotient of those same pairs succeeds is untested, and every
+measurement in this program since 417 shares that gap. I am not going to call
+the hypothesis refuted on evidence about one witness when the statement is
+existential.
+
+**Odds: 52% → 45%.** 427's optimism was unearned and is withdrawn; the
+refutation reaches non-degenerate pairs. Not lower, because the existential
+freedom in the hypothesis is real, untested, and exactly the kind of thing that
+has reversed a reading twice in the last five iterations. The field's prior that
+this problem does not close still stands.
+
+**Next.** Test the existential directly: for the 168 failing pairs, enumerate
+OTHER behavioural quotients of the sum and check whether any satisfies
+`LevelAgreementActive`.

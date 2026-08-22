@@ -3263,6 +3263,134 @@ fn allrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// Then test the TOP-LEVEL hypothesis on them directly — `LevelAgreementActive`
 /// with `reachMask` levels, searched over all ranks — rather than a source-side
 /// proxy.  Cross-tabulated against reducibility so the base rates stay visible.
+/// **`PAD_UNROLLPAIR`** (iteration 429).
+///
+/// 428 found the buildable pullback population has max component 2, so it
+/// cannot exhibit the failure mode 425's cross-tab points at (SCC size >= 3).
+/// Construct pairs that DO have large components, and that are equivalent by
+/// construction rather than by search: a loop against its W1 unrolling,
+///
+///     A = wh g e        B = ite g (e ; wh g e) 1
+///
+/// W1 makes these equivalent, and `B` carries a copy of `e` outside the loop, so
+/// the pullback's components track `e`'s size.  Equivalence is CHECKED
+/// (`behaviour(A) == behaviour(B)`) rather than assumed — a non-vacuity gate.
+fn unrollpair<const NA: usize>(nguards: u8, maxdepth: usize) {
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
+        if d == 0 {
+            out.push(a_act::<NA>());
+            for g in 0..nguards { out.push(a_test::<NA>(g)); }
+            return;
+        }
+        let mut sm: Vec<Aut<NA>> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut sm);
+        let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+        sm.retain(|e| seen.insert(e.clone()));
+        out.extend(sm.iter().cloned());
+        for l in &sm {
+            for g in 0..nguards { out.push(a_wh::<NA>(g, l)); }
+            for r in &sm {
+                if let Some(q) = a_seq::<NA>(l, r) { out.push(q); }
+                for g in 0..nguards {
+                    if let Some(q) = a_ite::<NA>(g, l, r) { out.push(q); }
+                }
+            }
+        }
+    }
+    let mut base: Vec<Aut<NA>> = Vec::new();
+    build::<NA>(nguards, maxdepth, &mut base);
+    let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+    let base: Vec<Aut<NA>> = base.into_iter().filter_map(|a| canon(&a))
+        .filter(|a| seen.insert(a.clone())).collect();
+    let one = a_test::<NA>((1u8 << NA) - 1);          // the guard true at every atom
+    let (mut tried, mut equiv, mut tested, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut comp_hist = [0usize; 10];
+    let mut first_bad: Option<String> = None;
+    for e in &base {
+        for g in 0..nguards {
+            tried += 1;
+            let a = a_wh::<NA>(g, e);
+            let inner = match a_seq::<NA>(e, &a) { Some(v) => v, None => continue };
+            let b = match a_ite::<NA>(g, &inner, &one) { Some(v) => v, None => continue };
+            let (a, b) = match (canon(&a), canon(&b)) { (Some(x), Some(y)) => (x, y), _ => continue };
+            if behaviour(&a) != behaviour(&b) { continue; }   // non-vacuity gate
+            equiv += 1;
+            let p = match pullback(&a, &b).and_then(|p| canon(&p)) { Some(v) => v, None => continue };
+            let k = p.k as usize;
+            if k == 0 || k > MAXK { continue; }
+            let mut lvl = vec![0usize; k];
+            for u in 0..k {
+                let mut sr = vec![false; k]; sr[u] = true;
+                let mut st = vec![u];
+                while let Some(v) = st.pop() {
+                    for x in 0..NA {
+                        if p.st[v][x] == 0 { continue; }
+                        let t = (p.st[v][x] - 1) as usize;
+                        if !sr[t] { sr[t] = true; st.push(t); }
+                    }
+                }
+                let mut m = 0usize;
+                for w in 0..k { if sr[w] { m |= 1 << w; } }
+                lvl[u] = m;
+            }
+            let mut levels = lvl.clone(); levels.sort_unstable(); levels.dedup();
+            let mut mx = 0usize;
+            for &n in &levels {
+                let c = (0..k).filter(|&u| lvl[u] == n).count();
+                if c > mx { mx = c; }
+            }
+            if mx < 10 { comp_hist[mx] += 1; }
+            let mut all_ok = true;
+            let mut big = false;
+            for &n in &levels {
+                let comp: Vec<usize> = (0..k).filter(|&u| lvl[u] == n).collect();
+                if comp.len() < 2 { continue; }
+                if comp.len() > 8 { big = true; break; }
+                let mut perm: Vec<usize> = (0..comp.len()).collect();
+                let mut lok = false;
+                loop {
+                    let mut rank = [0usize; MAXK];
+                    for (i2, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i2; }
+                    let mut agree = true;
+                    for x in 0..NA {
+                        let mut outs: Vec<Option<usize>> = Vec::new();
+                        for &u in &comp {
+                            let tv = p.st[u][x];
+                            let halts = (p.hl[u] >> x) & 1 == 1;
+                            let isact = if tv == 0 { halts } else {
+                                let t = (tv - 1) as usize;
+                                !(lvl[t] == lvl[u] && rank[t] < rank[u])
+                            };
+                            if !isact { continue; }
+                            outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                        }
+                        if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                    }
+                    if agree { lok = true; break; }
+                    if !next_perm(&mut perm) { break; }
+                }
+                if !lok { all_ok = false; break; }
+            }
+            if big { continue; }
+            tested += 1;
+            if all_ok { sat += 1 } else {
+                unsat += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("g={} maxcomp={} {}", g, mx, show_aut("P", &p)));
+                }
+            }
+        }
+    }
+    println!("PAD_UNROLLPAIR  base expressions (depth <= {}): {}", maxdepth, base.len());
+    println!("  (loop, unrolling) pairs built        : {}", tried);
+    println!("  VERIFIED language-equivalent         : {}   <- non-vacuity gate", equiv);
+    println!("  pullbacks tested                     : {}", tested);
+    println!("  LevelAgreementActive satisfiable     : {}", sat);
+    println!("  UNSATISFIABLE                        : {}", unsat);
+    println!("  max-component histogram (index=size) : {:?}", comp_hist);
+    if let Some(b) = first_bad { println!("  first refuter: {}", b); }
+}
+
 fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
         if d == 0 {
@@ -10593,6 +10721,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         allrank::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_UNROLLPAIR").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        unrollpair::<3>(g, d);
         return;
     }
     if std::env::var("PAD_DEEPPULL").is_ok() {
