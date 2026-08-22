@@ -17741,3 +17741,43 @@ expose something the construction already produces — but I have been wrong abo
 "just plumbing" before, so it stays at 97 until it compiles.
 
 **Next.** The midpoint form of the lift, and then 356's claim proper.
+
+## 381 — 356's claim is a theorem
+
+```lean
+theorem exists_mutual_over_pair (π) (hwf : UniformWF aut) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p)
+    (u0) (h0 : π.mapState u0 = p) (hu0 : u0 ∈ aut.states) :
+    ∃ u w, π.mapState u = p ∧ π.mapState w = m ∧
+      SReaches ⟨aut.states, aut.hlt, aut.trans⟩ u w ∧
+      SReaches ⟨aut.states, aut.hlt, aut.trans⟩ w u
+```
+
+*Two mutually reachable quotient states have mutually reachable preimages* —
+so the preimages of two blocks in one quotient SCC meet a **common source SCC**.
+
+That is the statement 354 refuted the naive form of, 355 called circular, and 356
+argued for informally with 0 measured counterexamples over 41 885 regions. It is
+now a theorem. `[propext, choice, Quot.sound]`, the `choice` being the dependent
+choice that builds the chain.
+
+**How the midpoint got exposed.** 380's chain lifted the whole round trip in one
+step, which hid the intermediate state over `m`. `legChain` steps through the two
+**legs separately** — lift `p ⇝ m`, then lift `m ⇝ p` — so `legMid` is available
+at every step, with `legChain_to_mid` and `legMid_to_next` (both `[choice]` only)
+recording the two halves. The mutual pair is then the chain point `g n` and its
+own midpoint: `g n ⇝ mid` by the first leg, and `mid ⇝ g (n+1) ⇝ g n` by the
+second leg composed with the descent lemma's conclusion.
+
+**What it settles and what it does not.** It settles the lifting question that
+has blocked the transport since 354 — and settles it by construction, not by
+appeal. What remains for `LevelAgreementActive` is the step *from* "the two
+blocks' preimages share a source SCC" *to* "the two blocks agree at each atom",
+which needs 358's source facts (only one state of a loop body exits) carried
+across. That is a different obligation, and the one this iteration does not touch.
+
+**Odds: 97%, unchanged.** A sub-lemma that resisted for twenty-odd iterations is
+proved, which is real; the open statement is still open, and I have moved odds on
+sub-lemmas before and regretted it.
+
+**Next.** Source structure to quotient agreement — the last link.

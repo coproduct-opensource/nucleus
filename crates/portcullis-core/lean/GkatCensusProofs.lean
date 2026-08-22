@@ -11870,6 +11870,100 @@ theorem exists_source_cycle_over {S Q : Type} {aut : GkatKleene.GAut S A T}
 #print axioms semReaches_mem
 #print axioms exists_source_cycle_over
 
+section Midpoint
+
+/-- The chain again, stepping through the round trip's two LEGS separately so the
+midpoint over `m` is available at each step. -/
+noncomputable def legChain {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p) (u0 : S)
+    (h0 : π.mapState u0 = p) : Nat → { u : S // π.mapState u = p }
+  | 0 => ⟨u0, h0⟩
+  | n + 1 =>
+      let prev := legChain π h1 h2 u0 h0 n
+      ⟨Classical.choose (sem_path_lifts π h2
+          (Classical.choose (sem_path_lifts π h1 prev.1 prev.2))
+          (Classical.choose_spec (sem_path_lifts π h1 prev.1 prev.2)).2),
+        (Classical.choose_spec (sem_path_lifts π h2
+          (Classical.choose (sem_path_lifts π h1 prev.1 prev.2))
+          (Classical.choose_spec (sem_path_lifts π h1 prev.1 prev.2)).2)).2⟩
+
+/-- The midpoint of step `n`, over `m`. -/
+noncomputable def legMid {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p) (u0 : S)
+    (h0 : π.mapState u0 = p) (n : Nat) : S :=
+  Classical.choose (sem_path_lifts π h1 (legChain π h1 h2 u0 h0 n).1
+    (legChain π h1 h2 u0 h0 n).2)
+
+theorem legMid_map {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p) (u0 : S)
+    (h0 : π.mapState u0 = p) (n : Nat) :
+    π.mapState (legMid π h1 h2 u0 h0 n) = m :=
+  (Classical.choose_spec (sem_path_lifts π h1 (legChain π h1 h2 u0 h0 n).1
+    (legChain π h1 h2 u0 h0 n).2)).2
+
+theorem legChain_to_mid {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p) (u0 : S)
+    (h0 : π.mapState u0 = p) (n : Nat) :
+    SemReaches aut (legChain π h1 h2 u0 h0 n).1 (legMid π h1 h2 u0 h0 n) :=
+  (Classical.choose_spec (sem_path_lifts π h1 (legChain π h1 h2 u0 h0 n).1
+    (legChain π h1 h2 u0 h0 n).2)).1
+
+theorem legMid_to_next {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p) (u0 : S)
+    (h0 : π.mapState u0 = p) (n : Nat) :
+    SemReaches aut (legMid π h1 h2 u0 h0 n) (legChain π h1 h2 u0 h0 (n + 1)).1 :=
+  (Classical.choose_spec (sem_path_lifts π h2 (legMid π h1 h2 u0 h0 n)
+    (legMid_map π h1 h2 u0 h0 n))).1
+
+#print axioms legChain_to_mid
+#print axioms legMid_to_next
+
+/-- **356's CLAIM, PROVED.**  If two quotient states are mutually reachable, then
+some source state over the first and some source state over the second are
+mutually reachable — so their preimages meet a common source SCC.
+
+This is the statement 354 refuted the naive version of, 355 called circular, 356
+argued for informally and measured at 0 counterexamples, and 377-380 built the
+machinery for.  It is now a theorem. -/
+theorem exists_mutual_over_pair {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut) {p m : Q}
+    (h1 : SemReaches quot p m) (h2 : SemReaches quot m p)
+    (u0 : S) (h0 : π.mapState u0 = p) (hu0 : u0 ∈ aut.states) :
+    ∃ u w : S, π.mapState u = p ∧ π.mapState w = m ∧
+      SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } u w ∧
+      SReaches { states := aut.states, hlt := aut.hlt, trans := aut.trans } w u := by
+  have hstep : ∀ n, SemReaches aut (legChain π h1 h2 u0 h0 n).1
+      (legChain π h1 h2 u0 h0 (n + 1)).1 := fun n =>
+    (legChain_to_mid π h1 h2 u0 h0 n).trans (legMid_to_next π h1 h2 u0 h0 n)
+  obtain ⟨n, hn⟩ := exists_mutual_along_chain
+    { states := aut.states, hlt := aut.hlt, trans := aut.trans }
+    (fun n => (legChain π h1 h2 u0 h0 n).1)
+    (fun n => by
+      induction n with
+      | zero => exact hu0
+      | succ k ih => exact semReaches_mem hwf ih (hstep k))
+    (fun n => sreaches_of_semReaches aut (hstep n))
+  refine ⟨(legChain π h1 h2 u0 h0 n).1, legMid π h1 h2 u0 h0 n,
+    (legChain π h1 h2 u0 h0 n).2, legMid_map π h1 h2 u0 h0 n,
+    sreaches_of_semReaches aut (legChain_to_mid π h1 h2 u0 h0 n), ?_⟩
+  exact (sreaches_of_semReaches aut (legMid_to_next π h1 h2 u0 h0 n)).trans hn
+
+#print axioms exists_mutual_over_pair
+
+end Midpoint
+
 end LevelExistence
 
 #print axioms reachLevel_mono
