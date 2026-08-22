@@ -18228,3 +18228,58 @@ to redesign, not a reason to think the open statement is closer.
 
 **Next.** `SourceSccHeadedIntrinsic` for Thompson automata — the induction on
 GKAT syntax, which every route since 367 has pointed at and none has started.
+
+## 392 — reading `loopInitialized`: why headedness is NOT universal
+
+Starting the induction meant reading the construction it inducts over.
+`certifiedThompson` recurses on the expression, with `.test` giving `State :=
+Empty`, `.act` giving `Unit`, and `.wh guard body` giving
+`CertifiedThompson.loop guard (certifiedThompson body)`. And `loopInitialized` is:
+
+```lean
+core.hlt   s := body.hlt s ∧ ¬guard
+core.trans s := body.trans s ++ body.initTrans.map (fun tr =>
+                  (body.hlt s ∧ guard ∧ tr.1, tr.2))
+```
+
+That is the peel's `LoopLayerOn` shape, in the construction itself: **a loop
+appends the body's INIT transitions at EVERY body state, gated by that state's
+own halt test.** 337 found this shape by measurement and 373 confirmed the
+per-atom head; here it is in the definition.
+
+**And it says headedness cannot be universal.** At an atom where two different
+body states both halt, both take the back-edge — so **two states of the component
+are active at once**. They go to the *same* target, since the entry that fires is
+determined by the atom and not by the state, so **agreement holds**. But
+*at most one active* does not.
+
+That is the structural explanation of a residue I had only measured:
+
+| | |
+|---|---|
+| source components admitting a headed rank | 99.39% (368) |
+| multi-state quotient regions admitting one | 98.1% (363) |
+| all regions/levels agreeing | 100% (343, 384) |
+
+The 0.61% and 1.9% are not noise and not duplicates — they are loops whose bodies
+halt at a shared atom in more than one state, which `loopInitialized` produces
+directly.
+
+**What this costs.** `finiteAxiomsComplete_of_sourceHeaded` and
+`solvesBA_of_headed` are **sufficient conditions that are not universally
+instantiable**. They cover the large majority and they are correct theorems, but
+the induction I was about to start would have failed in the `wh` case — and it
+would have failed for a reason visible in five lines of the definition, which I
+should have read before three iterations of building toward it.
+
+The route that survives is the one that was always general: **agreement**, not
+headedness. `solvesBA_of_levelAgreementActive` and
+`finiteAxiomsComplete_of_maskAgreement` take agreement directly and are unaffected.
+
+**Odds: 96%, unchanged.** A blind alley identified before it was walked, and the
+general route untouched. The open statement reverts to `LevelAgreementActive`
+itself, which is where 384 left it.
+
+**Next.** The `wh` case for AGREEMENT — all back-edging body states share the
+entry that fires at that atom, which `loopInitialized` makes syntactically
+evident.
