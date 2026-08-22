@@ -20630,3 +20630,52 @@ vacuously, which is the failure mode my own checklist warns about first.
 construct a minimal automaton with a 3-cycle of distinguishable states, check it
 is realisable as a quotient of a `SUMof`, and test `LevelAgreementActive` on it.
 That is the case the whole architecture stands or falls on.
+
+## 436 — minimal GKAT automata DO have multi-state SCCs, and 22 of them REFUTE the hypothesis.
+
+Web search: exhausted (200/200).
+
+435 found the minimal quotient rescues by vacuity — every failing component
+collapsing to a singleton — and flagged that "minimal ⟹ singleton SCCs" is false
+in general. Tested whether it is false HERE. It is.
+
+| | G=4, D=3 | G=6, D=3 |
+|---|---|---|
+| expressions | 552,977 | 1,438,989 |
+| largest-SCC histogram of the MINIMAL automata | `[8, 548034, 4849, 83, 3]` | `[8, 1425115, 13681, 180, 5]` |
+| **minimal automata with a multi-state SCC** | **4,935** | **13,866** |
+| of those, `LevelAgreementActive` satisfiable | 4,929 | 13,844 |
+| **UNSATISFIABLE** | **6** | **22** |
+| undecided | 0 | 0 |
+
+**So 435's vacuity is a population artefact, exactly as suspected.** About 1% of
+minimal automata have a multi-state SCC, and 22 of them refute
+`LevelAgreementActive` — **at the canonical witness**, not at the forced
+pullback. The first refuter at G=4 is 413's automaton again, which is therefore
+bisimulation-minimal.
+
+**Why this reaches the hypothesis, and why 434 does not contradict it.** For
+equivalent `e` and `f`, the bisimulation-minimal quotient of `SUMof e f` is the
+minimal automaton of their COMMON LANGUAGE — canonical, independent of which
+expressions were used. So if that automaton refutes, every pair with that
+language refutes, and the choice of witness cannot help: the minimal quotient is
+the smallest valid one, and 430/434 already showed larger quotients fail more
+often, not less. 434's 400/400 rescue was on pairs whose languages have
+singleton-SCC minimal automata; these 22 languages simply were not among them —
+the sixth time two populations in this program have failed to overlap.
+
+**The one gap before this is a clean refutation.** It needs a language with a
+refuting minimal automaton AND at least two syntactically distinct expressions,
+so the pair is not the degenerate `e = f`. That is near-certain — every GKAT
+language has many expressions — but it is unchecked, and 431 is exactly the
+iteration where I assumed a population was non-degenerate and was wrong.
+
+**Odds: 55% → 50%.** At the ±5 cap. The architecture's hypothesis fails at its
+canonical witness for 22 languages, which is the strongest negative since 417 and
+is not obviously an artefact of witness choice or sample size. Held to five
+points only because the non-degeneracy of those 22 is unverified. The field's
+prior that this problem does not close still stands.
+
+**Next.** Check the behaviour class of each of the 22 refuting languages for a
+second, distinct member. One hit turns this into a clean non-degenerate
+refutation of the architecture at its own best witness.

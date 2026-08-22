@@ -3695,6 +3695,76 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     if let Some(b) = first_bad { println!("  first refuter: {}", b); }
 }
 
+/// **`PAD_MINSCC`** (iteration 436).
+///
+/// 435 found the minimal quotient rescues by VACUITY — every failing component
+/// collapses to a singleton, so `LevelAgreementActive` has nothing to quantify
+/// over.  That would be a clean proof route, but only if minimal GKAT automata
+/// really do have singleton SCCs.  In general that is false (a 3-cycle of
+/// distinguishable states is minimal), so: does it happen HERE?
+///
+/// Minimise every expression automaton and histogram the largest SCC.  For any
+/// with a multi-state SCC, test `LevelAgreementActive` — those are the cases the
+/// architecture stands or falls on.
+fn minscc<const NA: usize>(nguards: u8, maxdepth: usize) {
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
+        if d == 0 {
+            out.push(a_act::<NA>());
+            for g in 0..nguards { out.push(a_test::<NA>(g)); }
+            return;
+        }
+        let mut sm: Vec<Aut<NA>> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut sm);
+        let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+        sm.retain(|e| seen.insert(e.clone()));
+        out.extend(sm.iter().cloned());
+        for l in &sm {
+            for g in 0..nguards { out.push(a_wh::<NA>(g, l)); }
+            for r in &sm {
+                if let Some(q) = a_seq::<NA>(l, r) { out.push(q); }
+                for g in 0..nguards {
+                    if let Some(q) = a_ite::<NA>(g, l, r) { out.push(q); }
+                }
+            }
+        }
+    }
+    let mut raw: Vec<Aut<NA>> = Vec::new();
+    build::<NA>(nguards, maxdepth, &mut raw);
+    let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+    let exprs: Vec<Aut<NA>> = raw.into_iter().filter_map(|a| canon(&a))
+        .filter(|a| seen.insert(a.clone())).collect();
+    let mut hist = [0usize; 12];
+    let (mut big, mut big_sat, mut big_uns, mut big_undec) = (0usize, 0usize, 0usize, 0usize);
+    let mut first_big: Option<String> = None;
+    let mut first_uns: Option<String> = None;
+    for a in &exprs {
+        let (blk, nb) = bisim_blocks(a);
+        let m = match quotient_by(a, &blk, nb).and_then(|q| canon(&q)) { Some(q) => q, None => continue };
+        let mx = sccs_of(&m).iter().map(|c| c.len()).max().unwrap_or(0);
+        if mx < 12 { hist[mx] += 1; }
+        if mx >= 2 {
+            big += 1;
+            if first_big.is_none() { first_big = Some(show_aut("M", &m)); }
+            match laa_satisfiable(&m) {
+                Some(true) => big_sat += 1,
+                Some(false) => {
+                    big_uns += 1;
+                    if first_uns.is_none() { first_uns = Some(show_aut("M", &m)); }
+                }
+                None => big_undec += 1,
+            }
+        }
+    }
+    println!("PAD_MINSCC  expressions (depth <= {}): {}", maxdepth, exprs.len());
+    println!("  largest-SCC histogram of the MINIMAL automata: {:?}", hist);
+    println!("  minimal automata with a MULTI-STATE SCC : {}", big);
+    println!("    LevelAgreementActive satisfiable      : {}", big_sat);
+    println!("    UNSATISFIABLE                         : {}", big_uns);
+    println!("    undecided (component too big)         : {}", big_undec);
+    if let Some(b) = first_big { println!("  first multi-state minimal: {}", b); }
+    if let Some(b) = first_uns { println!("  *** first REFUTER: {}", b); }
+}
+
 fn q413<const NA: usize>() {
     let act = a_act::<NA>();
     let inner = a_wh::<NA>(3, &act);
@@ -10908,6 +10978,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(20000);
         deeppull::<3>(g, d, c);
+        return;
+    }
+    if std::env::var("PAD_MINSCC").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        minscc::<3>(g, d);
         return;
     }
     if std::env::var("PAD_413QUOT").is_ok() { q413::<3>(); return; }
