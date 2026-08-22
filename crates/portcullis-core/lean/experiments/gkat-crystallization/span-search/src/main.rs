@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_LEVELS").is_ok() {
+        levels_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_CONNECT").is_ok() {
         connect_test::<NA>(nguards as u8);
         return;
@@ -12622,4 +12626,81 @@ fn connect_test<const NA: usize>(nguards: u8) {
     }
     println!("  connect_test NA={NA}: {pairs} connect-through steps on bisimilar pairs \
         of certified automata; certificate LOST on {lost}");
+}
+
+/// **DOES MY `Layered` YIELD GRABMAYER'S LEVEL LABELLING?** (iteration 268.)
+///
+/// 266 raised a representation gap: Grabmayer's LLEE-witness is an entry/body
+/// labelling carrying natural-number LOOP LEVELS, and the closure proof's
+/// transformations LI/LII/LIII operate on those levels — while my `Layered` is
+/// an inductive elimination with no levels at all.
+///
+/// But the elimination ORDER induces levels: a loop eliminated at step `n` is
+/// nested inside one eliminated later, so `n` IS its loop level.  If every
+/// successful elimination yields a labelling satisfying the descent condition —
+/// "an edge descending into a loop accompanies a descent in the labelling" —
+/// then the two representations carry the same information and 266's gap is
+/// cosmetic.
+///
+/// Records, for each certified automaton, the elimination depth reached and
+/// whether the induced levels are STRICTLY NESTED: every loop eliminated at a
+/// later step must contain, as a subset of its body, every earlier-eliminated
+/// loop it overlaps.  That containment is what "layered" means.
+fn levels_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x3C6EF372FE94F82B;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut layered_ok, mut nested_ok, mut maxdepth) =
+        (0usize, 0usize, 0usize, 0usize);
+    for _ in 0..20_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        // replay the elimination greedily, recording each layer's body
+        let mut g = a;
+        let mut layers: Vec<Vec<usize>> = Vec::new();
+        loop {
+            let cyclic = sccs_of(&g).iter().any(|c| c.len() >= 2
+                || (0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8));
+            if !cyclic { break; }
+            let mut progressed = false;
+            for (h, body, gd) in llee_subcharts_L123(&g) {
+                if body.iter().any(|&s| g.hl[s] & gd != 0) { continue; }
+                let mut g2 = g;
+                for &s in body.iter() {
+                    for y in 0..NA {
+                        if gd >> y & 1 == 1 && g2.st[s][y] == (h + 1) as u8 {
+                            g2.st[s][y] = 0;
+                        }
+                    }
+                }
+                if g2.st == g.st { continue; }
+                layers.push(body.clone());
+                g = g2;
+                progressed = true;
+                break;
+            }
+            if !progressed { break; }
+        }
+        let done = !sccs_of(&g).iter().any(|c| c.len() >= 2
+            || (0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8));
+        n += 1;
+        if !done { continue; }
+        layered_ok += 1;
+        if layers.len() > maxdepth { maxdepth = layers.len(); }
+        // LAYEREDNESS: an earlier-eliminated (inner) layer that overlaps a later
+        // one must be CONTAINED in it — loops are nested, never interleaved.
+        let mut nested = true;
+        for i in 0..layers.len() {
+            for j in (i + 1)..layers.len() {
+                let overlap = layers[i].iter().any(|s| layers[j].contains(s));
+                if overlap && !layers[i].iter().all(|s| layers[j].contains(s)) {
+                    nested = false;
+                }
+            }
+        }
+        if nested { nested_ok += 1; }
+    }
+    println!("  levels_test NA={NA}: {n} automata; greedy elimination succeeded on \
+        {layered_ok}; of those, induced levels STRICTLY NESTED on {nested_ok}; \
+        max nesting depth {maxdepth}");
 }

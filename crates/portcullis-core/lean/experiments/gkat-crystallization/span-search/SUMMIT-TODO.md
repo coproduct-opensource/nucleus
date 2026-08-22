@@ -12357,3 +12357,56 @@ NONDETERMINISTIC chart in Milner's style where connect-through loses the
 certificate (Example 6.3's shape), and confirm the GKAT analogue cannot be
 built.  If determinism is the mechanism, `hcollapse` should be provable by a
 direct argument, and that argument is the next target.
+
+---
+
+## 268 — THE "L" IN LLEE IS MISSING FROM MY CERTIFICATE.
+
+266 raised a representation gap: Grabmayer's LLEE-witness carries natural-number
+LOOP LEVELS and the closure transformations operate on them, while my `Layered`
+is an inductive elimination with no levels.  I argued the elimination ORDER
+induces levels, and tested whether those levels are LAYERED — whether an
+earlier-eliminated loop that overlaps a later one is CONTAINED in it.
+
+    NA=2   6570/6570 greedy elimination succeeded   nested 6525  (99.3%)  depth ≤5
+    NA=3   6570/6570                                nested 6446  (98.1%)  depth ≤7
+    NA=4   6570/6570                                nested 6369  (96.9%)  depth ≤8
+
+**Two findings, and the second is a gap in my own formulation.**
+
+**(1) Greedy elimination succeeds 100%** — first-found loop at each step, no
+backtracking.  That is stronger than `llee_L123`, which searches over orders,
+and it suggests the search 233/234 built was never needed.
+
+**(2) The induced levels are NOT always nested — and layeredness is a condition
+I never encoded.**  "Loops are never mutually nested" is the L in LLEE.  My
+`Layered` requires L1/L2/L3 of each layer and permits ANY elimination order,
+with no constraint relating the layers to each other.  So **my certificate is
+potentially strictly weaker than Grabmayer's**, and the 1-3% of automata whose
+greedy decomposition interleaves are where the difference shows.
+
+**Which reading is right is not yet known, and the two differ a lot:**
+
+  * **(a)** A nested order always EXISTS and greedy merely missed it.  Then
+    layeredness is free, adding it to `Layered` is safe, and `thompson_layered`
+    needs re-proving with nested orders — annoying but bounded.
+  * **(b)** Some Thompson automata genuinely admit no nested decomposition.
+    Then my `Layered` is weaker than LLEE, and `hsolve` — "the certificate
+    implies a solution exists" — may be FALSE for it, since Grabmayer's
+    existence proof uses layeredness.
+
+**This also re-reads 267 with more caution.**  That measured connect-through
+preserving MY certificate, not LLEE.  If mine is weaker, preservation is a
+weaker statement than it appeared, and the determinism hypothesis is less
+supported than 267 claimed.
+
+**Odds: 85%, DOWN 1.**  A condition of the source definition turns out to be
+absent from my formalisation, discovered only by computing the object it
+constrains.  That is the same failure mode as 228-236 — approximating a
+definition rather than implementing it — recurring after I thought it was
+behind me.
+
+**Next.**  Decide (a) vs (b): for each automaton whose greedy decomposition
+interleaves, search all elimination orders for a nested one.  If one always
+exists, add layeredness and re-prove; if not, the certificate needs rebuilding
+before `hsolve` can be attempted.
