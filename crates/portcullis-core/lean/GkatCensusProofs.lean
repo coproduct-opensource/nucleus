@@ -13117,6 +13117,134 @@ theorem rawHlt_of_halt {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat
 
 #print axioms rawHlt_of_halt
 
+/-- **Determinism.**  A state does not both halt and transition at the same atom.
+Every guarded automaton has this; nothing in the development had been made to say
+it, and the last two halt hypotheses cannot be proved without it. -/
+def HaltDeterministic {S : Type} (aut : GkatKleene.GAut S A T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S),
+    GkatGS.bval W (aut.hlt s) x = true → GkatKleene.firstMatch W x (aut.trans s) = none
+
+/-- A halting state fires nothing, in particular nothing non-raw. -/
+theorem nonRaw_none_of_halt {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (hdet : HaltDeterministic aut) (s : S)
+    (h : GkatGS.bval W (aut.hlt s) x = true) :
+    GkatKleene.firstMatch W x (nonRaw aut lvl rank s) = none := by
+  refine firstMatch_none_of_all_false W x _ (fun tr htr => ?_)
+  refine firstMatch_none_all_false W x (disjoin (aut.trans s)) ?_ tr
+    (List.mem_filter.mp htr).1
+  rw [firstMatch_disjoin]
+  exact hdet X W x s h
+
+/-- **`hloopoff`, derived.**  If the level's loop test fired where `s` halts,
+agreement would make `s` fire there too — and a halting state fires nothing. -/
+theorem loopoff_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = true →
+        ∀ g ∈ (peelLoops aut lvl (rawPred lvl rank) (loopPred lvl) (lvl s)).map
+          (fun tr => tr.1), GkatGS.bval W g x = false := by
+  intro X W x s hs hhalt g hg
+  cases hb : GkatGS.bval W g x with
+  | false => rfl
+  | true =>
+      exfalso
+      obtain ⟨e, hem, heg⟩ := List.mem_map.mp hg
+      obtain ⟨c, hc, hem'⟩ := List.mem_flatMap.mp hem
+      have hnr : e ∈ nonRaw aut lvl rank c :=
+        List.mem_filter.mpr ⟨(List.mem_filter.mp hem').1,
+          ((Bool.and_eq_true _ _).mp (List.mem_filter.mp hem').2).1⟩
+      have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hb
+      have := hagree X W x (lvl s) s (mem_levelStates (lvl := lvl) hs) c hc e.2
+        (nonRaw_fire W x aut lvl rank c e hnr heb)
+      rw [nonRaw_none_of_halt W x aut lvl rank hdet s hhalt] at this
+      exact Option.some_ne_none e.2 this.symm
+
+/-- **`hnot`, derived.**  Where `s` does not halt but is still non-raw, it fires
+something: if that something stays in the level it is a loop entry, and if it
+leaves the level then nothing in the level can halt there — because agreement
+would make a halting state fire too. -/
+theorem hnot_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreement aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = false →
+      GkatGS.bval W (peelRawHlt aut lvl rank s) x = true →
+        (∃ g ∈ (peelLoops aut lvl (rawPred lvl rank) (loopPred lvl) (lvl s)).map
+            (fun tr => tr.1), GkatGS.bval W g x = true) ∨
+        (∀ h ∈ (levelStates aut lvl (lvl s)).map aut.hlt,
+            GkatGS.bval W h x = false) := by
+  intro X W x s hs hnh hrh
+  have hor : (GkatGS.bval W (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x
+      || GkatGS.bval W (aut.hlt s) x) = true := hrh
+  have hbig : GkatGS.bval W
+      (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x = true := by
+    cases (Bool.or_eq_true _ _).mp hor with
+    | inl h => exact h
+    | inr h => rw [hnh] at h; exact absurd h Bool.false_ne_true
+  obtain ⟨g, hgm, hgb⟩ := (bval_bigOr_true W x _).mp hbig
+  obtain ⟨e, hem, heg⟩ := List.mem_map.mp hgm
+  have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hgb
+  have hsfire := nonRaw_fire W x aut lvl rank s e hem heb
+  cases hlp : loopPred lvl s e with
+  | true =>
+      refine Or.inl ⟨e.1, ?_, heb⟩
+      refine List.mem_map.mpr ⟨e, ?_, rfl⟩
+      refine List.mem_flatMap.mpr ⟨s, mem_levelStates (lvl := lvl) hs, ?_⟩
+      exact List.mem_filter.mpr ⟨(List.mem_filter.mp hem).1,
+        (Bool.and_eq_true _ _).mpr ⟨(List.mem_filter.mp hem).2, hlp⟩⟩
+  | false =>
+      refine Or.inr (fun h hh => ?_)
+      obtain ⟨c, hc, hcg⟩ := List.mem_map.mp hh
+      cases hb : GkatGS.bval W h x with
+      | false => rfl
+      | true =>
+          exfalso
+          have hch : GkatGS.bval W (aut.hlt c) x = true := by rw [hcg]; exact hb
+          have := hagree X W x (lvl s) c hc s (mem_levelStates (lvl := lvl) hs) e.2 hsfire
+          rw [nonRaw_none_of_halt W x aut lvl rank hdet c hch] at this
+          exact Option.some_ne_none e.2 this.symm
+
+#print axioms loopoff_of_agreement
+#print axioms hnot_of_agreement
+
+/-- # THE THEOREM OF THE ARC
+
+A quotient automaton is **solvable** as soon as three things hold of it:
+
+* a **bounded level function that no transition raises** — 339 constructs one for
+  every system, free (`reachLevel`);
+* **determinism** — no state both halts and transitions at the same atom;
+* **level agreement** — at any atom, if one state of a level fires a non-raw
+  transition to `r`, every state of that level fires to `r`; this is the
+  condition 343 measured, at 100% with the base-rate control passing.
+
+Everything else — the layers, the condensation, the peel, the shared lists, the
+guard normalisation, the region conditions, the gates — is discharged inside.
+The `rank` is a parameter: any per-level ranking whose raw edges decrease it. -/
+theorem solvesBA_of_levelAgreement {S : Type} (aut : GkatKleene.GAut S A T)
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat)
+    (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s)
+    (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreement aut lvl rank) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
+  solvesBA_of_agreement aut lvl rank B (peelRawHlt aut lvl rank) hbound hmono
+    (peelAut_trans_agrees aut lvl (rawPred lvl rank) (loopPred lvl)
+      (peelRawHlt aut lvl rank)
+      (gateL_of_agreement aut lvl rank hagree)
+      (gateE_of_agreement aut lvl rank hagree)
+      (agreeL_of_agreement aut lvl rank hagree)
+      (agreeE_of_agreement aut lvl rank hagree))
+    (peelAut_hlt_agrees aut lvl (rawPred lvl rank) (loopPred lvl)
+      (peelRawHlt aut lvl rank)
+      (fun X W x s _ => rawHlt_of_halt aut lvl rank X W x s)
+      (loopoff_of_agreement aut lvl rank hdet hagree)
+      (hnot_of_agreement aut lvl rank hdet hagree))
+
+#print axioms solvesBA_of_levelAgreement
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

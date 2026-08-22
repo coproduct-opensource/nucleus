@@ -16283,3 +16283,59 @@ here" into "s's non-raw part fires nothing here"; `hnot` needs it plus agreement
 for the "exits shadow halting" clause.
 
 **Next.** That determinism property, and the two remaining halt hypotheses.
+
+## 352 — THE THEOREM OF THE ARC
+
+```lean
+theorem solvesBA_of_levelAgreement (aut) (lvl) (rank) (B)
+    (hbound : ∀ s, lvl s < B)
+    (hmono  : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s)
+    (hdet   : HaltDeterministic aut)
+    (hagree : LevelAgreement aut lvl rank) :
+    ∃ sol, GkatKleene.SolvesBA aut sol
+```
+
+`[propext, Classical.choice, Quot.sound]`. No `sorry`.
+
+A quotient automaton is solvable as soon as three things hold of it: a bounded
+level function no transition raises, determinism, and level agreement.
+**Everything else is discharged inside** — the layers (294-326), the condensation
+(331-339), the peel (341-349), guard normalisation (344), the shared lists
+(347-348), the region conditions (350), the gates (351).
+
+`HaltDeterministic` had to be introduced this iteration: *no state both halts and
+transitions at the same atom*. Every guarded automaton has it and nothing in the
+development had been made to say it. `nonRaw_none_of_halt` turns it into "a
+halting state fires nothing non-raw", which is what both remaining halt
+hypotheses needed — `loopoff_of_agreement` (if the level's loop test fired where
+`s` halts, agreement would make `s` fire, and a halting state fires nothing) and
+`hnot_of_agreement` (the exits-shadow-halting clause, same argument run at
+another state of the level).
+
+### What this does NOT prove
+
+Three hypotheses stand between this and `hcollapse`, and it is worth being exact
+about their status, because two of them are *measured*, not proved:
+
+| hypothesis | status |
+|---|---|
+| `hbound`, `hmono` | **free** — 339's `reachLevel` supplies both for every system |
+| `hdet` | true of every guarded automaton; not yet proved for the quotients in question |
+| `rank` + `hagree` | **measured only** — 343: 100% of 5722 regions, control passing |
+
+So the single open mathematical statement is now:
+
+> **for every quotient there EXISTS a rank making `LevelAgreement` hold.**
+
+343 measured exactly that (and the control matters: 126/126 multi-state regions
+have some rank ordering that FAILS, so the existential is doing work and is not
+vacuous). But measured is not proved, and 342 is the standing reminder — a
+measurement artifact there manufactured a counterexample and an architectural
+fork out of nothing.
+
+**Odds: 98%, unchanged.** The architecture is complete and the remainder is one
+sharply-stated existential with a passing control behind it. That is not the same
+as a proof, and the field's prior that this problem does not close still stands.
+
+**Next.** Prove `HaltDeterministic` for the quotient construction, then attack the
+rank existential.
