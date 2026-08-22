@@ -14999,3 +14999,35 @@ accepts it.
 **Next.**  Weaken `hout` in the case lemmas from "the block misses the image" to
 "misses it, or the offending target is stuck", and re-attempt the `ite` case
 that 319 blocked.
+
+---
+
+## 327 — THE BLANKET `hout` IS GONE FROM THE `wh` CASE.
+
+319 found "the block misses the image" false in the target case; 326 made the
+constructor accept STUCK targets in the block.  So the case lemma can now ask
+for **exactly what the constructor needs and no more**:
+
+    hentry : the disjunction at the ENTRY targets
+    hbody  : the disjunction at the BODY's transition targets
+
+instead of `hout : ∀ s, ¬ B (j s)` at every state of the image.
+
+**Why the blanket form was wrong in the same way 307's was.**  A hypothesis that
+quantifies over more than the proof CONSUMES can be true of the proof and false
+at the call site — 307's version was unusable because its type could not be
+inhabited, this one because its statement is false where it is needed.  Both are
+the same failure to state the hypothesis in the form the caller can supply.
+
+`quotient_layered_wh''` recompiled on the new signature; the two uses of `hout`
+become direct applications of the precise hypotheses, with the body one applied
+at the class's own witness.
+
+**Odds: 98%, HELD.**  A clean weakening that removes a false hypothesis, but
+whether the precise conditions are SUPPLYABLE at the `ite` call site is now the
+question — and it is a sharper one than 319's, since 322 measured the entry half
+favourably and said nothing about the body half.
+
+**Next.**  The same weakening for the `seq` case, then the `ite` assembly with
+the two precise conditions — where `hentry` is 322's measured-favourable half
+and `hbody` is unmeasured.

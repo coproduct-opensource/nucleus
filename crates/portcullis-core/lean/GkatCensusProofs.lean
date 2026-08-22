@@ -10614,14 +10614,26 @@ theorem quotient_layered_act'' (a : A) {Q : Type}
   exact absurd hfm (by simp [GkatKleene.firstMatch])
 
 /-- **THE `wh` CASE ON THE BUNDLE.**  The base system downstairs is built as in
-    309; what is new is that its bundle inherits BOTH extra conjuncts from the
-    parent's — the preimage fact verbatim, and maximality because
+    309; its bundle inherits BOTH extra conjuncts from the parent's — the
+    preimage fact verbatim, and maximality because
     `stateWeight (.wh b e) = stateWeight e` by definition.  **A loop adds
-    transitions, never states, so it cannot change the weights.** -/
+    transitions, never states, so it cannot change the weights.**
+
+    **327: the blanket `hout` is gone.**  319 found "the block misses the image"
+    false in the target case; 326 made the constructor accept STUCK targets in
+    the block.  So this asks for exactly what the constructor needs and no more
+    — the disjunction at the ENTRY targets and at the BODY's targets — rather
+    than at every state of the image.  A hypothesis that quantifies over more
+    than the proof consumes is the same defect 307 found in a different guise:
+    it can be true of the proof and false at the call site. -/
 theorem quotient_layered_wh'' (b : BExp T) (e : Exp A T) {Q : Type}
     (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
     (j : (GkatThompson.certifiedThompson A T e).State → Q)
-    (hout : ∀ s, ¬ B (j s))
+    (hentry : ∀ tr ∈ (GkatThompson.certifiedThompson A T e).aut.initTrans,
+      ¬ B (j tr.2.2) ∨ StuckAt Qsys (j tr.2.2))
+    (hbody : ∀ (s : (GkatThompson.certifiedThompson A T e).State) (tr),
+      tr ∈ (GkatThompson.certifiedThompson A T e).aut.core.trans s →
+        ¬ B (j tr.2.2) ∨ StuckAt Qsys (j tr.2.2))
     (hw : QuotWit (GkatThompson.certifiedThompson A T (.wh b e)).aut.core
       (stateWeight (.wh b e)).1 Qsys B j)
     (ih : ∀ base : GkatThompson.GSystem Q A T,
@@ -10663,12 +10675,12 @@ theorem quotient_layered_wh'' (b : BExp T) (e : Exp A T) {Q : Type}
       by show Qsys.hlt c = dite _ _ _; rw [dif_neg hc]⟩
   · intro tr htr
     simp only [List.mem_map] at htr
-    obtain ⟨t, _, rfl⟩ := htr
-    exact Or.inl (hout t.2.2)
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact hentry t ht
   · intro c hc tr htr
     simp only [dif_pos hc, List.mem_map] at htr
-    obtain ⟨t, _, rfl⟩ := htr
-    exact Or.inl (hout t.2.2)
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact hbody (Classical.choose (hw c hc)) t ht
   · intro c hc
     exact ⟨Classical.choose (hw c hc),
       (Classical.choose_spec (hw c hc)).1,
