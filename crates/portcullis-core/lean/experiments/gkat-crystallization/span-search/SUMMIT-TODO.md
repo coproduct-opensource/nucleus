@@ -19702,3 +19702,66 @@ estimates did through 404-412.
 **Next.** Confront the real gap directly: the 60 non-Thompson forced quotients.
 Either find a solving construction for them, or determine what the sum-quotient
 route needs that bisimulation collapse destroys.
+
+## 419 — WHY the peel fails, in one sentence: it forbids node duplication, and structuring requires it.
+
+Web search: exhausted (200/200).
+
+418 proved the peel cannot handle nested loops. This iteration asks what the
+solver at the bottom actually needs, and the answer both explains the failure and
+names the fix.
+
+**`LayeredOn` is RECURSIVE, so the flatness was never forced.**
+
+```lean
+| loop : LoopLayerOn sys base b entry (fun s => ¬ P s) → … → LayeredOn base P → LayeredOn sys P
+```
+
+`loop`, `seq` and `split` all recurse into a `base` system. Nested loops are
+expressible: peel the outer loop, recurse on what is left. So the obstruction is
+not in `LayeredOn`; it is in `peelAut`/`syntacticallyLayered_peelAut`, which
+build the whole layering from ONE level function in ONE shot.
+
+**And here is the real constraint, which I had not noticed.** `peelRaw` sets
+`states := aut.states`, and `peeledSys` sets `states := raw.states`. **The peel
+is STATE-PRESERVING.** The intermediate layered system must have exactly the
+states of the automaton it decomposes.
+
+**That is precisely the hypothesis the structured-programming theorems say you
+cannot have.** Turning an unstructured flow graph into structured control flow
+requires either auxiliary variables or **node duplication** (Ashcroft–Manna,
+Kosaraju). GKAT has no auxiliary variables — a `BExp` is a test on the state,
+not a fresh flag. So duplication is the only route, and a state-preserving peel
+forbids it by construction.
+
+**This ties 408 to 418.** 408 found that GKAT automata **can be irreducible** —
+`initTrans` is a list, so different atoms may enter a loop body at different
+states, giving a loop several headers (235 irreducible at pool 200k, 117 of them
+multi-entry). Irreducible flow graph + no auxiliary variables ⟹ duplication
+required ⟹ **no state-preserving decomposition exists.** 417's
+`mono_forces_same_level` and 418's `hh_fails_of_loop_and_halt` are two symptoms
+of that one cause, and 413's counterexample is an instance of it.
+
+**The fix this names.** The layered system must be allowed MORE states than the
+automaton, with a map back. Nothing in `SolvesBA aut sol` objects — a solution is
+one expression per state of `aut`, and the intermediate system is scaffolding.
+The restriction lives only in `peelAut`'s construction and in `solvesBA_of_peel`'s
+signature, both of which are ours to change.
+
+**What is NOT thereby fixed.** Duplication makes the decomposition possible in
+principle; it does not supply one, and the count is the question — structuring an
+irreducible graph can need exponentially many duplicated nodes, and a GKAT
+solution must stay finite. The 60 non-Thompson forced quotients and the 54 pairs
+with no span at k ≤ 4 are where that bites.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 35% → 40%.** The obstruction now has a named cause and a standard fix
+rather than being a wall, and the fix is in code we control. Only five points,
+because the fix is identified and not built, the duplication count is unbounded
+so far, and this is the same class of "the repair is clear" optimism that 404-412
+punished. The field's prior that this problem does not close still stands.
+
+**Next.** A duplication-permitting layered system: restate `solvesBA_of_peel`
+over a system with a state map `f : S' → S` instead of `S' = S`, and check the
+existing peel lemmas survive the generalisation.
