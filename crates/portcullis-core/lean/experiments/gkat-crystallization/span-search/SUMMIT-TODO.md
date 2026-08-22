@@ -15204,3 +15204,39 @@ iterations, and I will not price it before measuring.
 
 **Next.**  Do the SCC exits of a quotient have the `SeqLayer` shape — one shared
 halt-gated entry list?
+
+---
+
+## 332 — MEASURED: SCC EXITS ARE PER-ATOM SINGLE-VALUED.  331's OBSTACLE DOES NOT BITE.
+
+331 named the obstacle to the condensation frame: `SeqLayer` demands an SCC's
+exits form ONE SHARED entry list.  The sharpest necessary condition of that, in
+the per-atom representation, is that **all states of an SCC exiting on the SAME
+ATOM exit to the SAME TARGET**.  `PAD_SCC_EXIT`, measured on the QUOTIENT since
+that is what the proof must decompose:
+
+    NA = 2, K = 6:  672 SCCs, 120 with an exit, 0 conflicts
+    NA = 3, K = 6:  302 SCCs, 0 with an exit   — UNINFORMATIVE
+
+**Zero conflicts in 120 exiting SCCs.**  Every one has per-atom single-valued
+exits, which is exactly what a shared entry list needs.
+
+**And the NA = 3 run tells us nothing** — the closure never reached an automaton
+whose quotient has an exiting SCC at that cap.  Reporting it as confirmation
+would be reporting the absence of the test as the passing of it.
+
+**Odds: 98%, HELD** — deliberately.  120 samples at ONE atom count is thin
+support for a UNIVERSAL claim, and universals are exactly what sampling
+confirms worst.  313 called a corner narrow on similar reasoning and 314 found
+it inhabited at two states; the difference there was that the claim under test
+was existential.  This one moves the number when it is proved or when the sample
+is much larger and spans atom counts.
+
+**What the measurement does buy**: the condensation frame's one named obstacle
+has no counterexample in the range where the question is even askable, so it is
+worth BUILDING rather than worth more measuring.
+
+**Next.**  State the condensation decomposition in Lean: an SCC, the down-set
+below it as a block, its exits as a `SeqLayer` into that block, and the
+remaining closed region as a `LoopLayerOn`.  331's `reachClosure_closed` gives
+the block; 329 gives that it does not cut the cycle.

@@ -2169,6 +2169,91 @@ fn min_congruence_blocks<const NA: usize>(a: &Aut<NA>, b: &Aut<NA>)
     Some((blk, seen.len(), ka))
 }
 
+/// **`PAD_SCC_EXIT`** (iteration 332).
+///
+/// 331 proposed decomposing a quotient along its own SCC condensation and named
+/// the obstacle: `SeqLayer`'s shape demands the exits from a strongly connected
+/// region be ONE SHARED entry list, gated by each state's own halt.  The
+/// sharpest necessary condition of that shape, in the per-atom representation,
+/// is simple: **all states of an SCC that exit on the SAME ATOM must exit to the
+/// SAME TARGET.**  If two do not, no shared entry list exists and the shape
+/// fails outright.
+///
+/// Measured on the QUOTIENT — build the automaton, collapse it, and ask the
+/// question of the collapsed object, since that is what the proof must
+/// decompose.
+fn scc_exit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    { let a = a_act::<NA>(); if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+    for _ in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+            }
+        }
+        if pool.len() >= cap { break; }
+    }
+    let (mut sccs, mut with_exit, mut conflict) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        for o in orbits(&q) {
+            sccs += 1;
+            let mut exits = false;
+            let mut bad = false;
+            for i in 0..NA {
+                let mut tgt: Option<usize> = None;
+                for u in 0..q.k as usize {
+                    if o & (1u16 << u) == 0 { continue; }
+                    let tv = q.st[u][i];
+                    if tv == 0 { continue; }
+                    let t = (tv - 1) as usize;
+                    if o & (1u16 << t) != 0 { continue; }   // stays inside the SCC
+                    exits = true;
+                    match tgt {
+                        None => tgt = Some(t),
+                        Some(t0) => if t0 != t { bad = true; },
+                    }
+                }
+            }
+            if exits { with_exit += 1; }
+            if bad {
+                conflict += 1;
+                if first.is_none() {
+                    first = Some(format!("SCC mask {o:b}\n    {}", show_aut("quot ", &q)));
+                }
+            }
+        }
+    }
+    println!("SCC EXIT: {sccs} SCCs in quotients, {with_exit} with an exit, \
+              {conflict} where two states exit on the SAME ATOM to DIFFERENT TARGETS \
+              ({:.2}% of those with an exit)",
+        100.0 * conflict as f64 / with_exit.max(1) as f64);
+    match first {
+        None => println!("  no conflict: every SCC's exits are per-atom single-valued, which \
+                          is what a SHARED entry list needs"),
+        Some(msg) => println!("  FIRST CONFLICT\n    {msg}"),
+    }
+}
+
 /// **`PAD_MINCONG`** (iteration 330).
 ///
 /// Grounding the target showed `SumQuotientSolvable` accepts ANY behavioural
@@ -7802,6 +7887,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_SCC_EXIT").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+        scc_exit::<NA>(nguards as u8, rounds, cap);
         return;
     }
     if std::env::var("PAD_MINCONG").is_ok() {
