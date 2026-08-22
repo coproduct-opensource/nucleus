@@ -21110,3 +21110,46 @@ frontier. The field's prior that this problem does not close still stands.
 witness is missing because no guard is definable, or because the search space
 (MAXK=16, k ≤ 4 sources) is still too small. That distinction decides whether the
 conjecture is false or the search is.
+
+## 445 — CORRECTION to 444, and the right tool was already in the harness.
+
+Web search: exhausted (200/200).
+
+**444 misread the census output.** I wrote that the "refinement test on 54
+uncoverable pullbacks (MAXK=16)" left the count unchanged at 54. Reading the
+print sites: `NO span (k <= {maxk})` uses **`maxk`, the CLOSURE bound (4)**, not
+`MAXK = 16`. The refinement header and the SPAN FOUND/NO span lines are two
+separate reports that happen to print adjacently, and I read them as one. So the
+correct statement is:
+
+> **54 of 273 crux pairs admit no guard-pullback witness within the k ≤ 4
+> closure.** Whether a witness exists at larger k is **not** settled by that
+> output, and 444's claim that a 16-state refinement leaves it unchanged is
+> withdrawn.
+
+That matters because it is exactly this iteration's question — is the witness
+absent, or is the search too small? — and I had answered it wrongly one
+iteration earlier by conflating two adjacent lines.
+
+**The harness already has the right tool.** `EXPAND_K` builds the closure to a
+larger state bound and re-runs coverage against the pullbacks of the crux pairs,
+with a comment that states the point precisely:
+
+> "Which automata does the programme actually need covered? Only the pullbacks of
+> equivalent pairs — `CommonCoveredIntermediate` asks for *some* common covered
+> intermediate, and the pullback is the canonical one. An uncovered automaton
+> that is not a pullback refutes the general statement without touching the
+> programme."
+
+So the distinction 444 needed was anticipated in the harness: an uncovered
+NON-pullback is not a counterexample to the programme; only an uncovered
+pullback is. `EXPAND_K=5` is running now; it did not finish inside this
+iteration's budget and is in the background.
+
+**Odds: 25%, unchanged.** A correction to my own reading plus a launched
+measurement, with no result yet. The field's prior that this problem does not
+close still stands.
+
+**Next.** Read the `EXPAND_K=5` result. If the 54 shrink, the witness search was
+merely too small and the programme survives at larger k; if they persist, that is
+the sharpest evidence yet that the conjecture is false.
