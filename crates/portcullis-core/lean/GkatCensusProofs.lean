@@ -16525,6 +16525,43 @@ theorem fibConstant_by_measure {S S' : Type} (f : S' → S) (m : S' → Nat)
 
 #print axioms fibConstant_by_measure
 
+/-! ### 440: the census refutation, as a theorem
+
+439 established that `LevelAgreementActive` fails on genuinely distinct
+equivalent pairs at BOTH extremal quotients, for all 6 refuting languages found.
+Every refuter has the same shape, going back to 413: at one atom, one state of a
+level takes a **self-loop** while another **halts**.
+
+That shape refutes the hypothesis outright, and the reason needs no rank search:
+a self-loop can never decrease rank, so it is non-raw under EVERY level and rank,
+while a halting state with no firing transition has an empty non-raw part.  The
+hypothesis then demands `none = some r`. -/
+theorem levelAgreementActive_fails {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat)
+    (n : Nat) (a c : S) (r : A × S)
+    (ha : a ∈ levelStates aut lvl n) (hc : c ∈ levelStates aut lvl n)
+    (hfire : GkatKleene.firstMatch W x (nonRaw aut lvl rank c) = some r)
+    (hact : GkatGS.bval W (peelRawHlt aut lvl rank a) x = true)
+    (hdead : GkatKleene.firstMatch W x (nonRaw aut lvl rank a) = none) :
+    ¬ LevelAgreementActive aut lvl rank := by
+  intro hagree
+  have := hagree X W x n a ha c hc r hfire hact
+  rw [hdead] at this
+  exact (Option.some_ne_none r this.symm).elim
+
+/-- **A self-loop is non-raw under every level and rank.**  `rawPred` needs the
+rank to strictly decrease, and no value is less than itself — so the state that
+carries the loop is always among the `nonRaw` candidates.  This is why the
+refuting shape needs no rank search to defeat. -/
+theorem selfLoop_nonRaw {S : Type} (lvl : S → Nat) (rank : Nat → S → Nat)
+    (s : S) (q : A) :
+    rawPred lvl rank s ((BExp.one : BExp T), (q, s)) = false := by
+  show (decide (lvl s = lvl s) && decide (rank (lvl s) s < rank (lvl s) s)) = false
+  rw [decide_eq_false (Nat.lt_irrefl (rank (lvl s) s)), Bool.and_false]
+
+#print axioms levelAgreementActive_fails
+#print axioms selfLoop_nonRaw
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

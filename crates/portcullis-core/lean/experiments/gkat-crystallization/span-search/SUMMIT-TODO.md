@@ -20832,3 +20832,56 @@ difference is that this counterexample has survived what those did not.
 their common minimal automaton, and a proof that no rank satisfies
 `LevelAgreementActive` on it. That converts the census result into a theorem and
 retires the hypothesis for good.
+
+## 440 — the census refutation becomes a THEOREM. Two axiom-free lemmas retire the hypothesis.
+
+Web search: exhausted (200/200).
+
+439 established the refutation empirically. This converts it, because a census
+result is not a proof and the whole point of this program is Lean.
+
+**Every refuter since 413 has the same shape**: at one atom, one state of a level
+takes a **self-loop** while another **halts**. Decoding 439's refuting minimal
+automaton confirms it — `q0` self-loops at atoms 0 and 1 and steps to `q1` at
+atom 2; `q1` halts at atoms 0 and 2 and steps back at atom 1; at atom 0, `q0`
+loops while `q1` halts.
+
+```lean
+theorem selfLoop_nonRaw (lvl) (rank) (s) (q) :
+    rawPred lvl rank s (one, (q, s)) = false
+```
+
+**A self-loop is non-raw under EVERY level and rank** — `rawPred` requires the
+rank to strictly decrease and no value is less than itself. That is why the shape
+needs no rank search to defeat, and why 407's exhaustive permutation sweeps were
+never necessary for this class.
+
+```lean
+theorem levelAgreementActive_fails (W) (x) (aut) (lvl) (rank) (n) (a c) (r)
+    (ha : a ∈ levelStates aut lvl n) (hc : c ∈ levelStates aut lvl n)
+    (hfire : firstMatch W x (nonRaw aut lvl rank c) = some r)
+    (hact  : bval W (peelRawHlt aut lvl rank a) x = true)
+    (hdead : firstMatch W x (nonRaw aut lvl rank a) = none) :
+  ¬ LevelAgreementActive aut lvl rank
+```
+
+**Both depend on no axioms at all.** The hypothesis demands `none = some r`, and
+that is the end of it — no rank, no level, no quotient enters the argument.
+
+**What is now settled, and what is not.** Settled: `LevelAgreementActive` is
+refutable by an explicit, axiom-free criterion, and 439 showed the criterion is
+met by non-degenerate pairs at both extremal quotients. Not settled: whether GKAT
+finite-axiom completeness is true — it very likely is, and every theorem in the
+corpus remains true and `sorry`-free. What has been retired is the claim that
+this particular hypothesis can be instantiated.
+
+**Odds: 40%, unchanged.** Formalising a result already priced at 439 adds
+confidence in the refutation without changing what is known about the target. The
+field's prior that this problem does not close remains the better-supported
+position.
+
+File: 0 errors, no `sorry`.
+
+**Next.** The route needs rebuilding on `solvesBA_of_mapped` (420) with the
+duplication whose cost 421-423 established: unrolling is DAG-shaped and free,
+W3 is finite, and the peel is not required. That is a construction, not a search.
