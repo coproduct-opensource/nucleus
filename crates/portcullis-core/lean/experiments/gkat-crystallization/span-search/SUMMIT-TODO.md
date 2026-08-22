@@ -18725,3 +18725,65 @@ theorem.
 
 **Next.** The `wh` case with the corrected claim: entry targets maximal within
 the component, back-edges non-raw, the two guard classes exclusive.
+
+## 404 — THE GUARD SPLIT FALLS. The `wh` case's blocking obstruction is proved.
+
+Web search: exhausted (200/200).
+
+**What was blocking.** 401 reduced the `wh` case to a trichotomy at each atom:
+the active states of a loop component are all taking the **outer** back-edge
+(agree by 395), or all active **inside the body** (agree by the IH), or —
+**mixed**, one of each. The mixed case was the hole. Nothing in the corpus
+excluded it, and agreement is false without excluding it: an outer back-edge and
+an inner body step are different transitions, so if both can fire at one atom the
+two states demonstrably disagree.
+
+**Why agreement alone could not close it.** The mixed case is about the BODY —
+whether the body can step where it also halts. `SourceSccAgrees` says nothing
+about that. So the induction hypothesis has to be **strengthened**. Named:
+
+```lean
+def ActivityGated (aut) (slvl) (srank) (gate : BExp T) : Prop :=
+  ∀ X W x s r, autStep W aut s x = some r →
+    rawPred slvl srank s (one, r) = false → bval W gate x = true
+```
+
+*every non-raw step happens only where `gate` is true* — the automaton's activity
+is confined to its gate. Plus its dual, `GateExcludesHalt`: wherever the
+automaton may halt, its gate is false.
+
+**Three theorems, all clean.**
+
+- `activityGated_loop` — a loop's non-raw steps are exactly its back-edges, and
+  those are gated by `guard`. Proof: split on whether `firstMatch` finds a body
+  transition; if it does the step is raw by hypothesis, contradiction; if it does
+  not, the step came from the appended `initTrans` and 401's
+  `guard_true_of_backedge` reads `guard` out of `body.hlt ∧ guard ∧ tr.1`.
+  Axioms: `propext, Quot.sound`.
+- `gateExcludesHalt_loop` — `loopInitialized`'s halt condition is
+  `body.hlt ∧ ¬guard`, so it excludes `guard` at every state. Axioms: same.
+- `loop_split_exclusive` — the mixed case is impossible. u active by the outer
+  back-edge forces `body.hlt u` true; w active by a non-raw body step forces the
+  body's gate true via `ActivityGated`; `GateExcludesHalt` says the body's gate
+  is false wherever the body halts. **Does not depend on any axioms.**
+
+**The non-loop bodies come free.** A body that is not a loop has no back-edges,
+hence no non-raw steps, hence satisfies `ActivityGated ... zero` vacuously — and
+`bval zero x = true` is already false, so the mixed case dies immediately. The
+strengthened hypothesis costs nothing on `seq`, `ite`, `test`, `act`.
+
+**Where this leaves the `wh` case.** All three branches now have a proof:
+all-outer (395), all-inner (IH), mixed (404, excluded). What remains is the
+assembly — carrying `ActivityGated` and `GateExcludesHalt` alongside
+`SourceSccAgrees` through `certifiedThompson`'s recursion, with the `wh` case
+discharging them by the two theorems above.
+
+File: 0 errors, no `sorry` (the two textual hits are doc comments).
+
+**Odds: 96% → 97%.** The mixed case was the one branch of the `wh` trichotomy
+with no argument at all behind it, and it is now a theorem with an empty axiom
+list. The field's prior that this problem does not close still stands.
+
+**Next.** Thread `ActivityGated` + `GateExcludesHalt` through the induction —
+the `seq`/`ite` inheritance (they add no non-raw intra-component edges, by 397)
+and the `wh` discharge.

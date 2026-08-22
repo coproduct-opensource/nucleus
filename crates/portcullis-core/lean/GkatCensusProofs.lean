@@ -15573,6 +15573,136 @@ theorem loop_autStep_agree_of_body_silent {S X : Type} (W : T → X → Bool) (x
 #print axioms backedge_nonRaw_of_topEntry
 #print axioms loop_autStep_agree_of_body_silent
 
+/-! ### The induction hypothesis has to be strengthened
+
+The `wh` case's guard split needs to know, of the BODY, that its non-raw steps
+happen only where the body's own guard holds — otherwise "u back-edges the outer
+loop while w steps non-rawly inside the body" is not excluded.  Agreement alone
+does not say that, so the induction has to carry it. -/
+
+/-- Every non-raw step of `aut` happens only where `gate` is true: the
+automaton's *activity is confined* to its gate. -/
+def ActivityGated {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) (gate : BExp T) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S) (r : A × S),
+    GkatKleene.autStep W aut s x = some r →
+    rawPred slvl srank s ((BExp.one : BExp T), r) = false →
+    GkatGS.bval W gate x = true
+
+/-- **A loop's own contribution to the strengthened hypothesis.**  If the body's
+steps are all raw — which the rank makes true of everything but the body's own
+back-edges — then the loop's non-raw steps are exactly its back-edges, and those
+are gated by `guard`. -/
+theorem activityGated_loop {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat)
+    (st : S)
+    (hbodyRaw : ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S) (r : A × S),
+      GkatKleene.firstMatch W x (body.core.trans s) = some r →
+      rawPred slvl srank s ((BExp.one : BExp T), r) = true) :
+    ActivityGated
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := st } slvl srank guard := by
+  intro X W x s r hstep hraw
+  -- the step is either the body's (raw, contradiction) or an appended entry
+  cases hb : GkatKleene.firstMatch W x (body.core.trans s) with
+  | some r' =>
+      exfalso
+      have : GkatKleene.firstMatch W x
+          (body.core.trans s ++ body.initTrans.map (fun tr =>
+            (BExp.and (body.core.hlt s) (BExp.and guard tr.1), tr.2))) = some r' :=
+        GkatKleene.firstMatch_append_some W x _ _ hb
+      have hrr : r = r' := Option.some.inj (hstep.symm.trans this)
+      rw [hrr, hbodyRaw X W x s r' hb] at hraw
+      exact Bool.noConfusion hraw
+  | none =>
+      have hap : GkatKleene.firstMatch W x
+          (body.initTrans.map (fun tr =>
+            (BExp.and (body.core.hlt s) (BExp.and guard tr.1), tr.2))) = some r := by
+        rw [← GkatKleene.firstMatch_append_none W x _ _ hb]; exact hstep
+      obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x _ r hap
+      obtain ⟨e, _, heq⟩ := List.mem_map.mp hgm
+      have : GkatGS.bval W (BExp.and (body.core.hlt s)
+          (BExp.and guard e.1)) x = true := by
+        rw [show BExp.and (body.core.hlt s) (BExp.and guard e.1) = g from
+          congrArg (fun p => p.1) heq]
+        exact hgb
+      exact guard_true_of_backedge (S := S) W x guard (body.core.hlt s) e.1 this
+
+#print axioms activityGated_loop
+
+/-- The gate excludes halting: wherever the automaton may halt, its gate is
+false.  For a loop body this is immediate — `loopInitialized`'s halt condition
+is `body.hlt ∧ ¬guard`, and the gate is `guard`. -/
+def GateExcludesHalt {S : Type} (aut : GkatKleene.GAut S A T) (gate : BExp T) :
+    Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S),
+    GkatGS.bval W (aut.hlt s) x = true → GkatGS.bval W gate x = false
+
+/-- A loop's halt condition excludes its own guard, for every state. -/
+theorem gateExcludesHalt_loop {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (st : S) :
+    GateExcludesHalt
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := st } guard := by
+  intro X W x s hh
+  have h2 : (GkatGS.bval W (body.core.hlt s) x
+      && !(GkatGS.bval W guard x)) = true := hh
+  cases hgv : GkatGS.bval W guard x with
+  | false => rfl
+  | true =>
+      exfalso; rw [hgv] at h2
+      simp only [Bool.not_true, Bool.and_false] at h2
+      exact Bool.noConfusion h2
+
+/-! ### The guard split
+
+This is the case the `wh` induction was blocked on.  At one atom, take two
+states of a loop component that are both active.  Suppose one is active by the
+outer back-edge and the other by a step inside the body.  The back-edge needs
+`guard` true *and* the body halting; the body's non-raw step needs the body's
+own gate true; and the body's gate is false wherever the body halts.  So the
+two cannot both happen — the active states of a loop component are, at each
+atom, *all outer* or *all inner*. -/
+theorem loop_split_exclusive {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (body : GkatThompson.InitializedGAut S A T)
+    (slvl : S → Nat) (srank : Nat → S → Nat) (bgate : BExp T)
+    (st u w : S)
+    (hgated : ActivityGated
+      { states := body.core.states, hlt := body.core.hlt
+        trans := body.core.trans, start := st } slvl srank bgate)
+    (hexcl : GateExcludesHalt
+      { states := body.core.states, hlt := body.core.hlt
+        trans := body.core.trans, start := st } bgate)
+    -- u is active by the outer back-edge: its guard is `body.hlt u ∧ guard ∧ g`
+    (g : BExp T)
+    (hout : GkatGS.bval W (BExp.and (body.core.hlt u) (BExp.and guard g)) x = true)
+    -- w is active by a non-raw step inside the body
+    (r : A × S)
+    (hin : GkatKleene.firstMatch W x (body.core.trans w) = some r)
+    (hnr : rawPred slvl srank w ((BExp.one : BExp T), r) = false) :
+    False := by
+  -- the body's gate is true, because w's body step is non-raw
+  have hg : GkatGS.bval W bgate x = true := hgated X W x w r hin hnr
+  -- but the body halts at u, so the body's gate is false
+  have hhu : GkatGS.bval W (body.core.hlt u) x = true := by
+    have h2 : (GkatGS.bval W (body.core.hlt u) x
+      && (GkatGS.bval W guard x && GkatGS.bval W g x)) = true := hout
+    cases hv : GkatGS.bval W (body.core.hlt u) x with
+    | true => rfl
+    | false =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.false_and] at h2
+        exact Bool.noConfusion h2
+  rw [hexcl X W x u hhu] at hg
+  exact Bool.noConfusion hg
+
+#print axioms loop_split_exclusive
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
