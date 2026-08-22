@@ -15435,6 +15435,74 @@ theorem finiteAxiomsComplete_of_sourceAgrees
 
 #print axioms finiteAxiomsComplete_of_sourceAgrees
 
+/-- **Agreement is automatic without non-trivial components.**  If no two DISTINCT
+states are mutually reachable, the hypothesis of `SourceSccAgrees` forces `u = w`
+and the conclusion is `rfl`.
+
+That is the induction's whole base: `test` has `State := Empty`, `act` has
+`Unit`, and `seq`/`ite` over acyclic parts stay acyclic (397). Only `wh` creates
+a component, which is why 367 found it carries all the content. -/
+theorem sourceSccAgrees_of_acyclic {S : Type} (aut : GkatKleene.GAut S A T)
+    (slvl : S → Nat) (srank : Nat → S → Nat)
+    (hacyc : ∀ u w : S, SemReaches aut u w → SemReaches aut w u → u = w) :
+    SourceSccAgrees aut slvl srank := by
+  intro X W x u w _ _ h1 h2 _ _
+  rw [hacyc u w h1 h2]
+
+/-- `Empty`-stated automata — the `test` case — satisfy it outright. -/
+theorem sourceSccAgrees_empty (aut : GkatKleene.GAut Empty A T)
+    (slvl : Empty → Nat) (srank : Nat → Empty → Nat) :
+    SourceSccAgrees aut slvl srank :=
+  sourceSccAgrees_of_acyclic aut slvl srank (fun u => nomatch u)
+
+/-- One-state automata — the `act` case — satisfy it outright. -/
+theorem sourceSccAgrees_unit (aut : GkatKleene.GAut Unit A T)
+    (slvl : Unit → Nat) (srank : Nat → Unit → Nat) :
+    SourceSccAgrees aut slvl srank :=
+  sourceSccAgrees_of_acyclic aut slvl srank (fun u w _ _ => by
+    cases u; cases w; rfl)
+
+#print axioms sourceSccAgrees_of_acyclic
+#print axioms sourceSccAgrees_empty
+#print axioms sourceSccAgrees_unit
+
+/-- `RankUniform` is automatic when every level is a singleton. -/
+theorem rankUniform_of_singleton_levels {Q : Type} (quot : GkatKleene.GAut Q A T)
+    (lvl : Q → Nat) (rank : Nat → Q → Nat)
+    (h : ∀ (n : Nat) (a c : Q), a ∈ levelStates quot lvl n →
+      c ∈ levelStates quot lvl n → a = c) :
+    RankUniform quot lvl rank := by
+  intro n a c ha hc r hcraw
+  rw [h n a c ha hc]
+  exact hcraw
+
+/-- **An acyclic source forces an acyclic quotient.**  Two mutually reachable
+quotient states have mutually reachable preimages (381); if the source has no
+non-trivial component those preimages are equal, so the two states are equal.
+
+With `reachMask` as the level, that makes every quotient level a singleton — so
+`RankUniform` is free, and by `sourceSccAgrees_of_acyclic` so is the source
+condition.  **Both obligations of 399 are discharged for loop-free expressions.** -/
+theorem quot_acyclic_of_source_acyclic {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut) (hniS : NoInert aut) (hniQ : NoInert quot)
+    (hacyc : ∀ u w : S, SemReaches aut u w → SemReaches aut w u → u = w)
+    {a c : Q} (ha : a ∈ quot.states) (hc : c ∈ quot.states)
+    (h1 : SReaches (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) a c)
+    (h2 : SReaches (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) c a) :
+    a = c := by
+  obtain ⟨s0, hs0mem, hs0map⟩ := π.onto_states a ha
+  obtain ⟨u, w, hu, hw, humem, hwmem, huw, hwu⟩ :=
+    exists_mutual_over_pair π hwf (semReaches_of_sreaches quot hniQ h1)
+      (semReaches_of_sreaches quot hniQ h2) s0 hs0map hs0mem
+  have := hacyc u w (semReaches_of_sreaches aut hniS huw)
+    (semReaches_of_sreaches aut hniS hwu)
+  rw [← hu, ← hw, this]
+
+#print axioms rankUniform_of_singleton_levels
+#print axioms quot_acyclic_of_source_acyclic
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

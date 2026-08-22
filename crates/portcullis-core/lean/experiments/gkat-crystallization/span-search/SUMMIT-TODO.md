@@ -18566,3 +18566,39 @@ discharges `SourceSccAgrees` and `RankUniform` for Thompson automata — which n
 has all its cases' content proved and needs writing.
 
 **Next.** That induction.
+
+## 400 — the induction's base, and the loop-free fragment closed
+
+- **`sourceSccAgrees_of_acyclic`** (axiom-free) — agreement is **automatic**
+  without non-trivial components: the hypothesis forces `u = w` and the
+  conclusion is `rfl`. That is the induction's whole base — `test` has
+  `State := Empty`, `act` has `Unit`, and `seq`/`ite` over acyclic parts stay
+  acyclic (397). Only `wh` creates a component, which is why 367 found it carries
+  all the content.
+- **`sourceSccAgrees_empty`, `sourceSccAgrees_unit`** — the `test` and `act`
+  cases outright, both axiom-free.
+- **`rankUniform_of_singleton_levels`** (axiom-free) — `RankUniform` is automatic
+  when every level is a singleton.
+- **`quot_acyclic_of_source_acyclic`** — an acyclic source forces an acyclic
+  quotient: two mutually reachable quotient states have mutually reachable
+  preimages (381), which acyclicity makes equal, so the states are equal.
+
+**Together those close the loop-free fragment.** For an expression without `wh`,
+the source has no non-trivial component, so `SourceSccAgrees` is free; the
+quotient is then acyclic too, so every level is a singleton and `RankUniform` is
+free. Both obligations of 399 are discharged — completeness for loop-free GKAT
+follows from the route, given the standing side conditions (the quotient exists,
+`UniformWF`, `NoInert`).
+
+**A shortcut I caught myself taking.** My first draft of
+`quot_acyclic_of_source_acyclic` supplied the needed `NoInert aut` with
+`fun _ _ _ _ => trivial` — that is not a proof of anything, it was me papering
+over a missing hypothesis to make the term elaborate. It did not typecheck, which
+is the only reason I noticed. Added as a real hypothesis instead.
+
+**Odds: 96%, unchanged.** A fragment closed is not the theorem, and the fragment
+closed is the one without loops — precisely the part that was never hard. What
+remains is the `wh` case of the induction, where 393-396's facts have to be
+assembled into `SourceSccAgrees` for `loopInitialized`.
+
+**Next.** The `wh` case of the induction.
