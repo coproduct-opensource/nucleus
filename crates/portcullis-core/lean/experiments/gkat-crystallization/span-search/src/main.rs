@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_NESTED").is_ok() {
+        nested_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_LEVELS").is_ok() {
         levels_test::<NA>(nguards as u8);
         return;
@@ -12703,4 +12707,109 @@ fn levels_test<const NA: usize>(nguards: u8) {
     println!("  levels_test NA={NA}: {n} automata; greedy elimination succeeded on \
         {layered_ok}; of those, induced levels STRICTLY NESTED on {nested_ok}; \
         max nesting depth {maxdepth}");
+}
+
+/// **(a) OR (b)? DOES A NESTED ELIMINATION ORDER ALWAYS EXIST?** (iteration 269.)
+///
+/// 268 found greedy elimination always succeeds but its induced levels are
+/// nested only ~97-99% of the time, and that LAYEREDNESS — the "L" in LLEE — is
+/// absent from my `Layered`.  Two readings: (a) a nested order always exists and
+/// greedy missed it, so layeredness is free; (b) some Thompson automata admit no
+/// nested decomposition, in which case my certificate is weaker than LLEE and
+/// `hsolve` may fail for it.
+///
+/// Search all elimination orders, requiring nesting INCREMENTALLY: each new
+/// layer must, for every earlier layer it overlaps, CONTAIN that layer.
+fn nested_search<const NA: usize>(g: &Aut<NA>, layers: &mut Vec<Vec<usize>>,
+    budget: &mut usize) -> bool
+{
+    if *budget == 0 { return false; }
+    *budget -= 1;
+    let cyclic = sccs_of(g).iter().any(|c| c.len() >= 2
+        || (0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8));
+    if !cyclic { return true; }
+    for (h, body, gd) in llee_subcharts_L123(g) {
+        if body.iter().any(|&s| g.hl[s] & gd != 0) { continue; }
+        // layeredness: every earlier layer this one overlaps must be inside it
+        let ok = layers.iter().all(|prev| {
+            let overlap = prev.iter().any(|s| body.contains(s));
+            !overlap || prev.iter().all(|s| body.contains(s))
+        });
+        if !ok { continue; }
+        let mut g2 = *g;
+        for &s in body.iter() {
+            for y in 0..NA {
+                if gd >> y & 1 == 1 && g2.st[s][y] == (h + 1) as u8 { g2.st[s][y] = 0; }
+            }
+        }
+        if g2.st == g.st { continue; }
+        layers.push(body.clone());
+        if nested_search(&g2, layers, budget) { return true; }
+        layers.pop();
+    }
+    false
+}
+
+fn nested_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0x3C6EF372FE94F82B;   // same seed as 268
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut n, mut greedy_nested, mut search_nested, mut no_nested) =
+        (0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..20_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        n += 1;
+        // greedy, as at 268
+        let mut g = a; let mut layers: Vec<Vec<usize>> = Vec::new();
+        loop {
+            let cyclic = sccs_of(&g).iter().any(|c| c.len() >= 2
+                || (0..NA).any(|y| g.st[c[0]][y] == (c[0] + 1) as u8));
+            if !cyclic { break; }
+            let mut prog = false;
+            for (h, body, gd) in llee_subcharts_L123(&g) {
+                if body.iter().any(|&s| g.hl[s] & gd != 0) { continue; }
+                let mut g2 = g;
+                for &s in body.iter() {
+                    for y in 0..NA {
+                        if gd >> y & 1 == 1 && g2.st[s][y] == (h + 1) as u8 {
+                            g2.st[s][y] = 0;
+                        }
+                    }
+                }
+                if g2.st == g.st { continue; }
+                layers.push(body.clone()); g = g2; prog = true; break;
+            }
+            if !prog { break; }
+        }
+        let mut nested = true;
+        for i in 0..layers.len() {
+            for j in (i + 1)..layers.len() {
+                if layers[i].iter().any(|s| layers[j].contains(s))
+                    && !layers[i].iter().all(|s| layers[j].contains(s)) { nested = false; }
+            }
+        }
+        if nested { greedy_nested += 1; continue; }
+        // greedy interleaved — is there a nested order at all?
+        let mut ls: Vec<Vec<usize>> = Vec::new();
+        let mut bud = 500_000usize;
+        if nested_search(&a, &mut ls, &mut bud) { search_nested += 1; }
+        else {
+            no_nested += 1;
+            if shown < 3 {
+                shown += 1;
+                println!("    NO NESTED ORDER, k={}:", a.k);
+                for s in 0..(a.k as usize) {
+                    let row: Vec<String> = (0..NA).map(|i| {
+                        let t = a.st[s][i];
+                        if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                    }).collect();
+                    println!("      q{s}: hl={:03b} st=[{}]", a.hl[s], row.join(","));
+                }
+            }
+        }
+    }
+    println!("  nested_test NA={NA}: {n} automata; greedy already nested {greedy_nested}; \
+        nested order FOUND BY SEARCH {search_nested}; NO nested order {no_nested}");
 }

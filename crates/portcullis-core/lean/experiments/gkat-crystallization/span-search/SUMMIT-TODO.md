@@ -12410,3 +12410,52 @@ behind me.
 interleaves, search all elimination orders for a nested one.  If one always
 exists, add layeredness and re-prove; if not, the certificate needs rebuilding
 before `hsolve` can be attempted.
+
+---
+
+## 269 — READING (b): LAYEREDNESS IS UNSATISFIABLE HERE.  My certificate is not LLEE.
+
+268 left two readings.  Searched all elimination orders for a nested one:
+
+    NA=2   greedy nested 6525   found by search 45    NO nested order  0
+    NA=3   greedy nested 6446   found by search 119   NO nested order  5
+    NA=4   greedy nested 6369   found by search 188   NO nested order 13
+
+Search recovers most interleaving cases — but **18 Thompson automata admit NO
+nested decomposition at all** under my loop-sub-chart definition.  So reading (b)
+holds: **adding layeredness to `Layered` would make `hsum` FALSE**, and `hsum`
+is already PROVED for the certificate as it stands.
+
+**What that means, stated carefully.**  Grabmayer's theorem — every chart
+interpretation of a star expression has LLEE — is about MILNER charts:
+nondeterministic, action-labelled, with a termination sink.  My guarded
+translation is not that, and 268/269 now show the difference is REAL rather than
+cosmetic: **my layer notion and LLEE's do not coincide, and layeredness is not a
+property GKAT's Thompson automata have under my definitions.**
+
+**Two consequences, one bad and one not.**
+
+  * **Bad: Grabmayer's `hsolve` cannot be imported.**  His proof that a
+    certificate yields a solution USES layeredness.  Mine has no layeredness to
+    use, so that half of the literature route is unavailable — which is the
+    piece 224 was most confident about.
+  * **Not bad: `hsum` and the collapse measurements stand.**  They were always
+    about MY certificate.  `thompson_layered` is proved, `acyclic_quotient` is
+    proved, and 223/260/267 measured MY certificate surviving collapse across
+    220 000 cases.  None of that depended on the certificate being LLEE.
+
+**And there is a constructive `hsolve` already in hand, unnoticed.**  The
+six-rule calculus IS a procedure taking a decomposition to a solution — that is
+what `decomp_solves` and the census have been doing all along.  Its cases are the
+elimination rules, and it has never once produced a wrong solution.  So `hsolve`
+may be provable HERE by the calculus rather than imported from a setting whose
+hypotheses GKAT does not satisfy.
+
+**Odds: 85%, held.**  Losing the ability to import `hsolve` is a real cost.
+Discovering that a constructive replacement has been sitting in the development
+since iteration 206 is a real gain.  They are close enough in size that moving
+the number would be pretending to more precision than I have.
+
+**Next.**  `hsolve` via the calculus: `Layered sys → ∃ sol, SolvesBA sys sol`, by
+induction on the `Layered` derivation — acyclic gives a fold, a layer gives a
+`wh`, which is what rules 1-6 do case by case.
