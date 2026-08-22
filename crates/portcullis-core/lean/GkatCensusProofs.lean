@@ -12098,6 +12098,42 @@ theorem mutual_of_reachMask_eq {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms reachMask_mono
 #print axioms mutual_of_reachMask_eq
 
+/-! ### Pull the level back, do not push it forward
+
+371 spent an iteration on pushing a source rank FORWARD through the collapse and
+found the answer depended on the encoding — `mapState` is many-to-one, so a
+pushforward needs a choice (min? max?) and the choice changed the result.
+
+Pulling BACK is canonical: `lvl ∘ π.mapState` needs no choice at all, and it
+transports exactly the properties the peel wants —
+
+* **monotonicity**, below;
+* **raw-ness**: with the source rank defined as `rank ∘ mapState`, an edge
+  `u → w` decreases the source rank exactly when `mapState u → mapState w`
+  decreases the quotient rank, so "raw" means the same thing upstairs and down.
+
+That second point is what the last link needs, and it is why 371's direction was
+wrong rather than its arithmetic. -/
+
+/-- A quotient level function pulls back to a source level function, and
+monotonicity comes with it. -/
+theorem pullback_mono {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot) (lvl : Q → Nat)
+    (hmono : ∀ (b : Q) (X : Type) (W : T → X → Bool) (x : X) (r : A × Q),
+      GkatKleene.autStep W quot b x = some r → lvl r.2 ≤ lvl b) :
+    ∀ (u : S) (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.autStep W aut u x = some r →
+        lvl (π.mapState r.2) ≤ lvl (π.mapState u) := by
+  intro u X W x r hr
+  have h := π.autStep_eq W u x
+  rw [hr] at h
+  exact hmono (π.mapState u) X W x (r.1, π.mapState r.2) h.symm
+
+#print axioms pullback_mono
+
+
+
 end LevelExistence
 
 #print axioms reachLevel_mono
@@ -14536,6 +14572,35 @@ theorem finiteAxiomsComplete_of_maskAgreement
     (sumQuotientSolvable_of_maskAgreement hquot)
 
 #print axioms finiteAxiomsComplete_of_maskAgreement
+
+/-- **Raw-ness is preserved by the pullback, definitionally.**  With the source
+level and rank defined as `lvl ∘ mapState` and `rank · ∘ mapState`, an edge is
+raw upstairs exactly when its image is raw downstairs — the two `rawPred`
+computations are literally the same expression.
+
+This is the bridge the last link needs, and it is `rfl`.  Pushing the rank
+forward (371) could never have given it, because a pushforward has to pick one
+of several preimages and the picked value is not the one the edge's own endpoints
+determine. -/
+theorem rawPred_pullback {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (lvl : Q → Nat) (rank : Nat → Q → Nat) (u : S) (tr : BExp T × A × S) :
+    rawPred (fun s => lvl (π.mapState s)) (fun n s => rank n (π.mapState s)) u tr
+      = rawPred lvl rank (π.mapState u) (tr.1, tr.2.1, π.mapState tr.2.2) :=
+  rfl
+
+/-- Likewise for the loop classifier. -/
+theorem loopPred_pullback {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (lvl : Q → Nat) (u : S) (tr : BExp T × A × S) :
+    loopPred (fun s => lvl (π.mapState s)) u tr
+      = loopPred lvl (π.mapState u) (tr.1, tr.2.1, π.mapState tr.2.2) :=
+  rfl
+
+#print axioms rawPred_pullback
+#print axioms loopPred_pullback
 
 end Instantiation
 

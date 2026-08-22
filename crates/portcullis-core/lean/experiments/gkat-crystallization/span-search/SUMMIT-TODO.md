@@ -17929,3 +17929,45 @@ is still `LevelAgreementActive` itself.
 
 **Next.** Back to the last link — source structure to quotient agreement, now
 that a level is known to be a single SCC.
+
+## 385 — pull the level back, do not push it forward
+
+371 spent an iteration pushing a source rank **forward** through the collapse and
+found the answer depended on the encoding — `mapState` is many-to-one, so a
+pushforward must pick one of several preimages (min? max?), and the pick changed
+the winning orientation. I recorded that as a measurement defect. It is better
+described as a **directional** mistake.
+
+**Pulling back is canonical.** `lvl ∘ π.mapState` needs no choice at all:
+
+- **`pullback_mono`** (axiom-free) — a quotient level function pulls back to a
+  source one, monotonicity included, straight from `autStep_eq`.
+- **`rawPred_pullback`, `loopPred_pullback`** (axiom-free, both **`rfl`**) — with
+  the source level and rank taken as `lvl ∘ mapState` and `rank · ∘ mapState`, an
+  edge is raw upstairs exactly when its image is raw downstairs. The two
+  `rawPred` computations are *literally the same expression*.
+
+That last is the bridge the final link needs — "raw means the same thing
+upstairs and down" — and it is `rfl`. A pushforward could never have supplied it:
+it has to choose among preimages, and the chosen value is not the one the edge's
+own endpoints determine. 371's arithmetic was fine; its direction was wrong.
+
+**What is now lined up for the last link.** A level is one SCC (383/384); two
+states of a level are mutually reachable; their preimages meet a common source
+SCC (381); and raw-ness, level and rank all transport definitionally by pullback
+(385). So the argument *at most one active state per level* reduces to the same
+statement about a source SCC.
+
+**What is still missing.** `peelRawHlt` is built from a state's own `nonRaw`
+**list**, and the source and quotient lists are different objects even when their
+classifiers agree. So "quotient-active ⟺ some preimage is source-active" is not
+yet a theorem; the rank obstruction is gone but the list correspondence is not.
+That is a smaller and more concrete gap than it was two iterations ago, and it is
+about `firstMatch` agreement between a state and its image — which
+`step_transport` and `autStep_eq` already speak to.
+
+**Odds: 96%, unchanged.** A wrong direction identified and reversed is worth
+recording, but it converts a confusion into a to-do rather than closing anything.
+
+**Next.** The list correspondence: quotient-active iff a preimage is
+source-active.
