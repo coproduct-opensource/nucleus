@@ -2354,6 +2354,51 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_ENTRY`** (iteration 373).
+///
+/// 372 made the head DATA rather than something inferred.  Looking at where the
+/// data would come from, `a_wh` turns out to add no state at all: the loop's
+/// entry is the body's initial transition `b.it[·]`, and `it` is indexed BY
+/// ATOM.  So the construction does not hand over "the head" — it hands over an
+/// entry map that may send different atoms to different states.
+///
+/// If `it` is single-valued the head is well-defined construction data and 372's
+/// `HeadedRegion` can be supplied by the induction.  If it is not, the whole
+/// single-head picture is wrong at the root, and 364's 693/695 was measuring an
+/// accident of small automata.
+fn entrycheck<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut total, mut single, mut multi) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        total += 1;
+        let mut tgt: Option<u8> = None;
+        let mut ok = true;
+        for i in 0..NA {
+            if a.it[i] == 0 { continue; }
+            match tgt { None => tgt = Some(a.it[i]),
+                        Some(t) => if t != a.it[i] { ok = false; } }
+        }
+        if ok { single += 1; } else {
+            multi += 1;
+            if first.is_none() {
+                first = Some(format!("{}", show_aut("aut  ", a)));
+            }
+        }
+    }
+    println!("ENTRY: {total} automata in the census pool");
+    println!("  {single} ({:.2}%) have a SINGLE entry state — `it` sends every atom to the \
+              same place, so the loop head is well-defined construction data",
+        100.0 * single as f64 / total.max(1) as f64);
+    println!("  {multi} ({:.2}%) send different atoms to DIFFERENT entry states",
+        100.0 * multi as f64 / total.max(1) as f64);
+    match first {
+        None => println!("  the head is always a single state: 372's HeadedRegion can be \
+                          supplied by the construction"),
+        Some(m) => println!("  FIRST MULTI-ENTRY AUTOMATON\n    {m}"),
+    }
+}
+
 /// **`PAD_PUSHRANK`** (iteration 370).
 ///
 /// 368 found the rank the induction forces on a SOURCE loop: distance to the
@@ -9082,6 +9127,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_ENTRY").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        entrycheck::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_PUSHRANK").is_ok() {

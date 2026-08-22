@@ -17356,3 +17356,52 @@ guess at. That is a better target, not a closed one.
 **Next.** Whether `HeadedRegion` survives the collapse — the same transport
 question, but now about a predicate with a supplied witness rather than a
 searched rank.
+
+## 373 — the head is PER-ATOM, and `a_wh` says so
+
+372 made the head data. Asking where that data would come from sends you to
+`a_wh`, and it says something I had not looked at: **`a_wh` adds no state.** The
+loop's re-entry is the body's initial transition `b.it[·]`, and `it` is indexed
+**by atom** — the body's halting states are redirected to `b.it[i]`, a different
+target for each `i`.
+
+Measured on the pool:
+
+```
+400 000 automata
+137 607 (34.40%) have a SINGLE entry state
+262 393 (65.60%) send different atoms to DIFFERENT entry states
+```
+
+**So there is no single head, for two thirds of automata.** But agreement is a
+*per-atom* statement, and at a fixed atom `x` every back-edge of the loop points
+at `b.it[x]` — one state. The head is per-atom construction data, and that is
+exactly enough.
+
+**Which means 372's `HeadedRegion` was too strong.** It fixed one `h` for the
+whole level and demanded every other state be inactive *at every atom*. The
+condition that actually holds — and the one 363 measured at 98.1% — is that *at
+each atom* at most one state is active, with the head free to vary between atoms.
+Restated:
+
+```lean
+def HeadedRegion aut lvl rank n : Prop :=
+  ∀ X W x, ∃ h, ∀ s ∈ levelStates aut lvl n, s ≠ h →
+    bval W (peelRawHlt aut lvl rank s) x = false
+```
+
+`levelAgreementActive_of_headed` and `solvesBA_of_headed` both go through
+unchanged — the proof already worked at a fixed `(X, W, x)`, so the quantifier
+moved inward for free.
+
+**This is the same mismatch as 359**, one iteration old instead of seven: I wrote
+a hypothesis stronger than the property I had measured. What caught it this time
+was reading the *constructor*, not another census — the harness had been reporting
+98.1% for the weaker condition all along while the Lean demanded the stronger one.
+
+**Odds: 97%, unchanged.** The hypothesis now matches both the measurement and the
+construction. The residual is still the 1.9% of multi-state regions with two
+simultaneously-active states, which headedness does not cover in any form.
+
+**Next.** Those 1.9% — they agree because both back-edge to `b.it[x]`, so the
+per-atom head may cover them after all under a slightly different reading.

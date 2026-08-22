@@ -13785,9 +13785,9 @@ the right Lean shape takes the head as DATA and proves what follows from it.
 That is 358's structural picture, stated without reference to how the head was
 found. -/
 def HeadedRegion {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
-    (rank : Nat → S → Nat) (n : Nat) (h : S) : Prop :=
-  ∀ s ∈ levelStates aut lvl n, s ≠ h →
-    ∀ (X : Type) (W : T → X → Bool) (x : X),
+    (rank : Nat → S → Nat) (n : Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X), ∃ h : S,
+    ∀ s ∈ levelStates aut lvl n, s ≠ h →
       GkatGS.bval W (peelRawHlt aut lvl rank s) x = false
 
 /-- A firing non-raw part makes its state active. -/
@@ -13806,21 +13806,20 @@ This is the 96.7-98% route of 363, formalised, and it needs nothing about how th
 head is chosen. -/
 theorem levelAgreementActive_of_headed {S : Type} (aut : GkatKleene.GAut S A T)
     (lvl : S → Nat) (rank : Nat → S → Nat)
-    (hhead : ∀ n : Nat, ∀ a ∈ levelStates aut lvl n,
-      ∃ h : S, HeadedRegion aut lvl rank n h) :
+    (hhead : ∀ n : Nat, HeadedRegion aut lvl rank n) :
     LevelAgreementActive aut lvl rank := by
   intro X W x n a ha c hc r hcfire hact
-  obtain ⟨h, hh⟩ := hhead n a ha
+  obtain ⟨h, hh⟩ := hhead n X W x
   have hca : GkatGS.bval W (peelRawHlt aut lvl rank c) x = true :=
     active_of_fires W x aut lvl rank c hcfire
   have hce : c = h := by
     cases Classical.em (c = h) with
     | inl heq => exact heq
-    | inr hne => rw [hh c hc hne X W x] at hca; exact Bool.noConfusion hca
+    | inr hne => rw [hh c hc hne] at hca; exact Bool.noConfusion hca
   have hae : a = h := by
     cases Classical.em (a = h) with
     | inl heq => exact heq
-    | inr hne => rw [hh a ha hne X W x] at hact; exact Bool.noConfusion hact
+    | inr hne => rw [hh a ha hne] at hact; exact Bool.noConfusion hact
   rw [hae, ← hce]
   exact hcfire
 
@@ -13830,8 +13829,7 @@ theorem solvesBA_of_headed {S : Type} (aut : GkatKleene.GAut S A T)
     (hbound : ∀ s, lvl s < B)
     (hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s)
     (hdet : HaltDeterministic aut)
-    (hhead : ∀ n : Nat, ∀ a ∈ levelStates aut lvl n,
-      ∃ h : S, HeadedRegion aut lvl rank n h) :
+    (hhead : ∀ n : Nat, HeadedRegion aut lvl rank n) :
     ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
   solvesBA_of_levelAgreementActive aut lvl rank B hbound hmono hdet
     (levelAgreementActive_of_headed aut lvl rank hhead)
