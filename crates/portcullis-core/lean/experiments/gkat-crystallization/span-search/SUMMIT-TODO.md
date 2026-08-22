@@ -18189,3 +18189,42 @@ cannot be.
 **Next.** Whether the rank can be made intrinsic too — it only has to order
 states within one component, and components are preserved, so a source-side rank
 may be reconcilable after all with a different formulation of `active_transport`.
+
+## 391 — the forced constraint is nearly free
+
+390 found the source rank **must** factor through bisimilarity: `active_transport`
+compares a state with its image, so a rank separating bisimilar states cannot be
+reconciled with the quotient's. That is forced by the argument rather than chosen,
+which makes the right question not *can I avoid it* but *is it satisfiable*.
+
+```
+139 245 non-trivial SCCs in source Thompson automata
+138 400 (99.39%) admit SOME rank making the component headed
+138 395 (99.39%) admit one that is ALSO constant on bisimilarity blocks
+```
+
+**The constraint costs five components out of 139 245** — 0.004% of them, and
+0.004% of the ones that were headed at all.
+
+**And the five are duplicates again.** The first is
+
+```
+src k=2 | q0: st=[q1,-,-] | q1: st=[q0,-,-]
+```
+
+— a two-cycle whose states step to each other and halt nowhere, so they are
+bisimilar. They collapse to a single block in the quotient, where the component
+is one state and headedness is trivial. Same shape as 368's exceptions: the
+un-minimised source carries duplicate states, and every constraint that mentions
+bisimilarity trips on exactly those.
+
+**So 390's half-reduction is in better shape than it looked.** The rank's
+dependence on the quotient is real, but the property it has to satisfy —
+constancy on bisimilarity blocks — is one that a headed rank almost always
+already has, and fails only where the source has not been minimised.
+
+**Odds: 96%, unchanged.** A forced constraint measured harmless is a reason not
+to redesign, not a reason to think the open statement is closer.
+
+**Next.** `SourceSccHeadedIntrinsic` for Thompson automata — the induction on
+GKAT syntax, which every route since 367 has pointed at and none has started.

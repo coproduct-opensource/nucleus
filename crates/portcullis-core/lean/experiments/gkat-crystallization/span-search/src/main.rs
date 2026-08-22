@@ -2354,6 +2354,79 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_BLOCKRANK`** (iteration 391).
+///
+/// 390 found the source rank must factor through bisimilarity — `active_transport`
+/// compares a state with its image, so a rank that separates bisimilar states
+/// cannot be reconciled with the quotient's.  That is forced by the argument, not
+/// chosen, so the question is whether it is SATISFIABLE: is there a rank that is
+/// constant on bisimilarity blocks and still makes every source component headed
+/// (at most one active state per atom)?
+///
+/// If not, the whole `SourceSccHeaded` route needs restating.  Measured against
+/// the unconstrained search, so the cost of the constraint is visible.
+fn blockrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut free_ok, mut block_ok) = (0usize, 0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    for a in &pool {
+        let (blk, _nb) = bisim_blocks(a);
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut okfree, mut okblock) = (false, false);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                // headed?  at most one active state per atom
+                let mut headed = true;
+                for x in 0..NA {
+                    let mut act = 0usize;
+                    for &u in &comp {
+                        let tv = a.st[u][x];
+                        let halts = (a.hl[u] >> x) & 1 == 1;
+                        let isact = if tv == 0 { halts } else {
+                            let t = (tv - 1) as usize;
+                            !(comp.contains(&t) && rank[t] < rank[u])
+                        };
+                        if isact { act += 1; }
+                    }
+                    if act > 1 { headed = false; }
+                }
+                // constant on bisimilarity blocks?
+                let mut blockconst = true;
+                for &u in &comp {
+                    for &v in &comp {
+                        if blk[u] == blk[v] && rank[u] != rank[v] { blockconst = false; }
+                    }
+                }
+                if headed { okfree = true; if blockconst { okblock = true; } }
+                if !next_perm(&mut perm) { break; }
+            }
+            if okfree { free_ok += 1; }
+            if okblock { block_ok += 1; }
+            if okfree && !okblock && first_bad.is_none() {
+                first_bad = Some(format!("SCC {comp:?}\n    {}", show_aut("src  ", a)));
+            }
+        }
+    }
+    println!("BLOCKRANK: {sccs} non-trivial SCCs in source Thompson automata");
+    println!("  {free_ok} ({:.2}%) admit SOME rank making the component headed",
+        100.0 * free_ok as f64 / sccs.max(1) as f64);
+    println!("  {block_ok} ({:.2}%) admit one that is ALSO constant on bisimilarity blocks \
+              — the constraint 390 forced",
+        100.0 * block_ok as f64 / sccs.max(1) as f64);
+    match first_bad {
+        None => println!("  the constraint costs nothing: whenever a headed rank exists, a \
+                          block-constant one does"),
+        Some(m) => println!("  FIRST SCC HEADED ONLY BY A BLOCK-SEPARATING RANK\n    {m}"),
+    }
+}
+
 /// **`PAD_LEVELVSCC`** (iteration 382).
 ///
 /// Every agreement measurement so far grouped states by SCC.  But
@@ -9234,6 +9307,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_BLOCKRANK").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        blockrank::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_LEVELVSCC").is_ok() {
