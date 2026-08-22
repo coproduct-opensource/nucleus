@@ -9653,4 +9653,104 @@ theorem quotient_layered_split_right {S₁ S₂ Q : Type}
 #print axioms right_block_closed
 #print axioms quotient_layered_split_right
 
+
+section QuotientLayeredSeq
+open Classical
+
+private theorem seq_gate_comm {S₁ S₂ S' : Type} (H : BExp T) (j : Sum S₁ S₂ → S') :
+    ∀ l : List (BExp T × A × S₂),
+      (l.map (fun tr => (BExp.and H tr.1, tr.2.1, Sum.inr tr.2.2))).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        = (l.map (fun tr => (tr.1, tr.2.1, j (Sum.inr tr.2.2)))).map
+            (fun tr => (BExp.and H tr.1, tr.2))
+  | [] => rfl
+  | a :: t => by
+      show (BExp.and H a.1, a.2.1, j (Sum.inr a.2.2)) :: _
+        = (BExp.and H a.1, a.2.1, j (Sum.inr a.2.2)) :: _
+      rw [seq_gate_comm H j t]
+
+/-! ### 306 — THE `seq` LAYER STEP.  THE FIFTH CASE.
+
+    After 305's split has put the right classes into the block, what is left is
+    to peel the connecting block.  The construction mirrors 303's `wh` exactly:
+    **the base system downstairs is BUILT, not assumed** — off the block it is
+    the DISJOINT UNION `sumGSystem L R.core` read through the representative, on
+    the block it is whatever `Qsys` already had — so `SeqLayer`'s `outside`
+    clause holds by construction and the layer is confined to the image.
+
+    That the base is the disjoint union is 289's observation doing its work:
+    **a sequence is a layer over the sum of its halves**, so removing the layer
+    leaves an `ite`-shaped node, and the recursion continues on `e` with the
+    right classes already in the block.
+
+    The entry targets land in the block for the reason 305 arranged: they are
+    `R`'s initial targets, so their classes have `inr` preimages, and the
+    preferring representative puts them in the right-class block. -/
+theorem quotient_layered_seq_left {S₁ S₂ Q : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (Qsys : GkatThompson.GSystem Q A T) (P : Q → Prop)
+    (j : Sum S₁ S₂ → Q) (rep : Q → Sum S₁ S₂)
+    (hinl : ∀ c, ¬ P c → ∃ u, rep c = Sum.inl u)
+    (hentryP : ∀ tr ∈ R.initTrans, P (j (Sum.inr tr.2.2)))
+    (htrans : ∀ c, ¬ P c → Qsys.trans c
+      = ((GkatThompson.seqGSystem L R).trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    (hhlt : ∀ c, ¬ P c → Qsys.hlt c
+      = (GkatThompson.seqGSystem L R).hlt (rep c))
+    (ih : ∀ base : GkatThompson.GSystem Q A T,
+      (∀ c, ¬ P c → base.trans c
+        = ((GkatThompson.sumGSystem L R.core).trans (rep c)).map
+            (fun tr => (tr.1, tr.2.1, j tr.2.2))) →
+      (∀ c, ¬ P c → base.hlt c
+        = (GkatThompson.sumGSystem L R.core).hlt (rep c)) →
+      LayeredOn base P) :
+    LayeredOn Qsys P := by
+  refine LayeredOn.seq
+    (base := ⟨Qsys.states,
+      fun c => if P c then Qsys.hlt c
+        else (GkatThompson.sumGSystem L R.core).hlt (rep c),
+      fun c => if P c then Qsys.trans c
+        else ((GkatThompson.sumGSystem L R.core).trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))⟩)
+    (h₀ := R.initHlt)
+    (entry := R.initTrans.map (fun tr => (tr.1, tr.2.1, j (Sum.inr tr.2.2))))
+    ⟨?_, ?_, ?_, rfl⟩ ?_ (ih _ ?_ ?_)
+  · -- trans_eq
+    intro c hc
+    obtain ⟨u, hu⟩ := hinl c hc
+    show Qsys.trans c = (if P c then _ else _) ++ _
+    simp only [if_neg hc]
+    rw [htrans c hc, hu]
+    show ((L.trans u).map (fun tr : BExp T × A × S₁ => (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+        R.initTrans.map (fun tr : BExp T × A × S₂ =>
+          (BExp.and (L.hlt u) tr.1, tr.2.1, Sum.inr tr.2.2))).map
+          (fun tr : BExp T × A × Sum S₁ S₂ => (tr.1, tr.2.1, j tr.2.2))
+      = ((L.trans u).map (fun tr : BExp T × A × S₁ => (tr.1, tr.2.1, Sum.inl tr.2.2))).map
+          (fun tr : BExp T × A × Sum S₁ S₂ => (tr.1, tr.2.1, j tr.2.2)) ++ _
+    refine Eq.trans (map_append' _ _ _) ?_
+    congr 1
+    exact seq_gate_comm _ _ _
+  · -- hlt_eq
+    intro c hc
+    obtain ⟨u, hu⟩ := hinl c hc
+    show Qsys.hlt c = BExp.and (if P c then _ else _) _
+    simp only [if_neg hc]
+    rw [hhlt c hc, hu]
+    rfl
+  · -- outside
+    intro c hc
+    exact ⟨by show Qsys.trans c = (if P c then _ else _); rw [if_pos (Classical.not_not.mp hc)],
+      by show Qsys.hlt c = (if P c then _ else _); rw [if_pos (Classical.not_not.mp hc)]⟩
+  · -- entry targets lie in the block
+    intro tr htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, ht, rfl⟩ := htr
+    exact hentryP t ht
+  · intro c hc; show (if P c then _ else _) = _; rw [if_neg hc]
+  · intro c hc; show (if P c then _ else _) = _; rw [if_neg hc]
+
+#print axioms quotient_layered_seq_left
+
+end QuotientLayeredSeq
+
 end GkatCensus

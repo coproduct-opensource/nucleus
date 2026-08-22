@@ -14124,3 +14124,53 @@ to come first.
 next case rather than by inspection, plus the lemma that now serves both.
 
 **Next.**  The `seq` layer step, and with it the fifth case.
+
+---
+
+## 306 — THE `seq` LAYER STEP.  ALL FIVE CASES OF THE EXPRESSION INDUCTION.
+
+After 305's split has put the right classes into the block, what remains is to
+peel the connecting block.  The construction mirrors 303's `wh` exactly: **the
+base system downstairs is BUILT, not assumed** — off the block it is the
+DISJOINT UNION `sumGSystem L R.core` read through the representative, on the
+block it is whatever `Qsys` already had — so `SeqLayer`'s `outside` clause holds
+by construction and the layer is confined to the image.
+
+**That the base is the disjoint union is 289's observation doing its work.**  A
+sequence is a layer over the SUM of its halves, so removing the layer leaves an
+`ite`-shaped node, and the recursion continues on `e` with the right classes
+already in the block.  The entry targets land in the block for the reason 305
+arranged: they are `R`'s initial targets, so their classes have `inr` preimages,
+and the preferring representative puts them in the right-class block.
+
+`seq_gate_comm` (a fourth term-level map helper) and
+`quotient_layered_seq_left`.
+
+    test    quotient_layered_test          (303)
+    act     quotient_layered_act           (303)
+    wh      quotient_layered_wh            (303)
+    ite     quotient_layered_ite           (304), or split_right (305)
+    seq     quotient_layered_split_right   (305)
+          + quotient_layered_seq_left      (306)
+
+**All five cases proved**, each taking its recursive hypotheses as arguments.
+
+### What remains, precisely
+
+  1. **Tie the five into an induction on `Exp`** — the case lemmas each take the
+     sub-quotient data (`j`, `rep`, `htrans`, `hhlt`) as hypotheses, and the
+     induction must CONSTRUCT that data at each node from the parent's.
+  2. **Construct the global preferring representative** — 305's obligation: one
+     `rep` ranking the expression tree's leaves right-before-left, satisfying
+     every node's `hpref` at once.
+  3. **Connect to `sumQuotientSolvable_of_certificate`** — the architecture's
+     entry point, which is what turns "the quotient is `LayeredOn`" into
+     completeness.
+
+**Odds: 99%, HELD.**  The five cases are the mathematical content and they are
+done; (1)–(3) are construction and plumbing, but plumbing has produced genuine
+mismatches twice in this series (283, 305), so they are not yet free.
+
+**Next.**  (2), the preferring representative — it is self-contained, it is the
+one item that is a construction rather than an assembly, and (1) cannot be
+stated cleanly until the `rep` it quantifies over is known to exist.
