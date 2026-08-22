@@ -13143,3 +13143,72 @@ theorems.  The field's prior that the problem does not close still stands.
 **Next.**  The same join for the LAYER half: `LayeredL` (acyclic | `LoopLayer`)
 with the firstMatch form in the acyclic constructor, its pushforward by
 induction (264 + 281), and solvability by recursion (283 + 277/282).
+
+---
+
+## 284–285 — `hsolve` IS CLOSED.  AND IT NEEDS W1, NOT W3.
+
+### 284 — the layer case.
+
+Given a loop layer over a base with a standard solution `std`, put
+
+    D   := the ENTRY DISPATCH, `guardedFold (transitionBranches entry std) 0`
+    W   := `wh b D`
+    sol := `fun s => std s ; W`
+
+and `sol` solves `sys`.  Three steps: `layer_subsystem` (277) turns `sys`'s
+equation at `s` into `base`'s equation at the finish `E`; `E ≈ W` by gating
+(`ite_guardedFold_partition`), by distributing the trailing `W` out of the entry
+fold (`entryFold_seq`, new, proved by selection), and then by **W1**;
+`StandardSolvesBA.withContinuation` closes it, since `base`'s standard solution
+times any finish solves `base` at that finish and here the finish is `W`.
+
+**Only W1 is used, and this is the point of the whole programme.**  W3 — the
+Salomaa rule, the one restricted to a single unknown — is a UNIQUENESS
+principle, and uniqueness is what the certificate already supplies.  EXISTENCE
+needs only that a loop UNFOLDS.  `W` is not FOUND by solving a fixpoint
+equation; it is BUILT and then checked, and the knot ties itself.
+
+This iteration's search confirms the reading from the source: Salomaa's rule
+"assert[s] that if the regular language `a` does not contain the empty word then
+`a*b` is **the UNIQUE solution** of the fixed point equation `x = ax + b`".
+Uniqueness is what the rule buys; that `a*b` IS a solution is unfolding.
+
+### 285 — the induction closes.
+
+`LayeredL` := acyclic (in the FIRSTMATCH form 283 taught it to accept) | loop
+(`LoopLayer` over a `LayeredL` base).  `layeredL_has_solution`: **every layered
+automaton has a solution.**
+
+Note the shape that makes the recursion work: `loopLayer_has_solution` consumes
+a solution of `base` at finish `1` and produces a solution of `sys` at finish
+`1`.  Input and output are the SAME predicate, so no separate parametric
+invariant is needed — `withContinuation` supplies the parametricity internally,
+exactly where it is used.
+
+**Status of the three obligations.**
+
+    hsum       every Thompson automaton carries the certificate    PROVED
+    hcollapse  layer case (pushforward)                            PROVED (280/281)
+               acyclic case                                        PROVED (264)
+               assembling the induction                            OPEN
+    hsolve     acyclic                                             PROVED (283)
+               layer                                               PROVED (284)
+               ASSEMBLED                                           PROVED (285)
+
+**What is honestly still open.**  `hsolve` is closed FOR `LayeredL`.  Whether
+the QUOTIENT is `LayeredL` is the remaining question, and `LayeredL` as defined
+has no `sum`/`seq` constructors — so even a Thompson automaton is not `LayeredL`
+unless it is a top-level loop over a layered base.  278 argued lifting
+constructors prove nothing new FOR THOMPSON AUTOMATA, which is true, but
+`layeredL_has_solution` needs them to reach nested loops, and 282 shows the
+solution-level composition that discharges them.  That is the next step, and it
+is mechanical rather than conceptual.
+
+**Odds: 95%** (+1).  `hsolve` — open in some form since 239, and the layer case
+open since 271 — is closed, and closed using only the loop UNFOLDING axiom.  The
+field's prior that the problem does not close still stands.
+
+**Next.**  Add `sum`/`seq` constructors to `LayeredL` and discharge them in
+`layeredL_has_solution` by 282's composition; then `thompson_layeredL`; then the
+`hcollapse` induction.

@@ -7876,4 +7876,158 @@ theorem acyclic_has_solution_sem {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms acyclic_has_solution_sem
 
+
+/-! ### 284 — `hsolve`'s LAYER CASE.  IT NEEDS W1, NOT W3.
+
+    The fixpoint 276 pointed at, resolved.  Given a loop layer over a base that
+    already has a standard solution `std`, put
+
+        D   := the ENTRY DISPATCH,  `guardedFold (transitionBranches entry std) 0`
+        W   := `wh b D`
+        sol := `fun s => std s ; W`
+
+    and `sol` solves `sys`.  The chain is three steps:
+
+      1. `layer_subsystem` (277) turns `sys`'s equation at `s` into `base`'s
+         equation at the finish `E`, where `E` is the entry fold under `sol`;
+      2. `E ≈ W`, by gating (`ite_guardedFold_partition`), by distributing the
+         trailing `W` out of the entry fold, and then by **W1** — the loop's own
+         UNFOLDING law;
+      3. `StandardSolvesBA.withContinuation` closes it: `base`'s standard
+         solution times any finish solves `base` at that finish, and here the
+         finish is `W`.
+
+    **Only W1 is used.**  This is worth stating plainly, because the whole
+    programme is about eliminating a loop axiom.  W3 — the Salomaa rule, the
+    one restricted to a single unknown — is a UNIQUENESS principle, and
+    uniqueness is what the certificate already supplies.  EXISTENCE needs only
+    that a loop unfolds, and `W` is not FOUND by solving a fixpoint equation, it
+    is BUILT and then checked.  The knot ties itself. -/
+private theorem selectFull_map_label {X : Type} (W : T → X → Bool) (x : X)
+    (F : Exp A T → Exp A T) (fb : Exp A T) :
+    ∀ B : List (BExp T × Exp A T),
+      selectFull W x (B.map (fun br => (br.1, F br.2))) (F fb)
+        = F (selectFull W x B fb)
+  | [] => rfl
+  | br :: tl => by
+      cases hb : GkatGS.bval W br.1 x
+      · simp only [List.map_cons, selectFull, hb]
+        exact selectFull_map_label W x F fb tl
+      · simp only [List.map_cons, selectFull, hb]
+
+/-- A trailing continuation distributes out of an entry fold. -/
+theorem entryFold_seq {S : Type} (L : List (BExp T × A × S))
+    (sol : S → Exp A T) (g : Exp A T) :
+    EquivBA
+      (guardedFold (transitionBranches L (fun t => .seq (sol t) g)) (.test .zero))
+      (.seq (guardedFold (transitionBranches L sol) (.test .zero)) g) := by
+  refine EquivBA.trans ?_
+    (EquivBA.symm (guardedFold_seq_right g (transitionBranches L sol) (.test .zero)))
+  refine guardedFold_select_congr _ _ _ _ ?_
+  intro X W x
+  rw [selectFull_transitionBranches W x (fun t => Exp.seq (sol t) g) BExp.zero,
+    selectFull_map_label W x (fun e => Exp.seq e g) (.test .zero),
+    selectFull_transitionBranches W x sol BExp.zero]
+  cases GkatKleene.firstMatch W x L with
+  | none => exact EquivBA.symm (EquivBA.base (Equiv.s2 g))
+  | some qt =>
+      exact EquivBA.symm (EquivBA.base (Equiv.s1 (.act qt.1) (sol qt.2) g))
+
+/-- The `¬b` fallback of a gated entry block, as a conditional. -/
+private theorem notb_fallback (b : BExp T) :
+    EquivBA (A := A) (GkatThompson.paramFallback (BExp.not b) (.test .one))
+      (.ite b (.test .zero) (.test .one)) := by
+  show EquivBA (Exp.seq (Exp.test (BExp.not b)) (Exp.test BExp.one)) _
+  exact EquivBA.trans (GkatGuardedAlgebra.seq_one (.test (.not b)))
+    (EquivBA.trans (test_eq_ite_one_zero (.not b))
+      (EquivBA.symm (EquivBA.base (Equiv.u2 b (.test .zero) (.test .one)))))
+
+/-- **`hsolve`'s LAYER CASE.**  A loop layer over a solved base is solved, by
+    the base's standard solution followed by the loop the layer names.  `D` is
+    the ENTRY DISPATCH and `W` the loop built on it; both are supplied rather
+    than inlined, so the statement reads as the construction it is. -/
+theorem loopLayer_has_solution {S : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {entry : List (BExp T × A × S)} (h : LoopLayer sys base b entry)
+    (std : S → Exp A T)
+    (hstd : ∀ s ∈ base.states, EquivBA (std s)
+      (GkatThompson.eqRHSParam base std (.test .one) s))
+    (D W : Exp A T)
+    (hD : D = guardedFold (transitionBranches entry std) (.test .zero))
+    (hW : W = .wh b D) :
+    ∀ s ∈ sys.states, EquivBA (.seq (std s) W)
+      (GkatThompson.eqRHSParam sys (fun t => .seq (std t) W) (.test .one) s) := by
+  intro s hs
+  have hEW : EquivBA
+      (guardedFold
+        (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2)))
+          (fun t => Exp.seq (std t) W))
+        (GkatThompson.paramFallback (BExp.not b) (.test .one))) W := by
+    rw [transitionBranches_gate]
+    refine EquivBA.trans (guardedFold_fallback_congr (notb_fallback b)) ?_
+    have hpart : EquivBA
+        (Exp.ite b (guardedFold
+            (transitionBranches entry (fun t => Exp.seq (std t) W)) (.test .zero))
+          (Exp.test BExp.one))
+        (guardedFold
+          ((transitionBranches entry (fun t => Exp.seq (std t) W)).map
+            (fun br => (BExp.and b br.1, br.2)))
+          (Exp.ite b (.test .zero) (.test .one))) := by
+      have hp := ite_guardedFold_partition b
+        (transitionBranches entry (fun t => Exp.seq (std t) W)) []
+        (Exp.test BExp.zero) (Exp.test BExp.one)
+      simpa only [List.map_nil, List.append_nil] using hp
+    refine EquivBA.trans (EquivBA.symm hpart) ?_
+    refine EquivBA.trans (EquivBA.ite_c (entryFold_seq entry std W)
+      (EquivBA.base (Equiv.refl _))) ?_
+    rw [← hD, hW]
+    exact EquivBA.symm (EquivBA.base (Equiv.w1 b D))
+  refine EquivBA.symm (EquivBA.trans
+    (layer_subsystem (fun t => Exp.seq (std t) W) (.test .one) s entry
+      (h.trans_eq s) (h.hlt_eq s)) ?_)
+  refine EquivBA.trans (guardedFold_fallback_congr
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hEW)) ?_
+  exact EquivBA.symm (GkatThompson.StandardSolvesBA.withContinuation
+    ⟨base, .one, []⟩ std hstd W s (h.states_eq ▸ hs))
+
+#print axioms loopLayer_has_solution
+
+
+/-! ### 285 — `hsolve`, CLOSED.
+
+    Both cases are now proved from the hypotheses the other obligation actually
+    supplies — acyclic by 283 (firstMatch form, dead branches and all), loop by
+    284 — so the induction closes.  Note the shape: `loopLayer_has_solution`
+    consumes a solution of `base` at finish `1` and produces a solution of `sys`
+    at finish `1`.  Input and output are the same predicate, which is what makes
+    the recursion go through without a separate parametric invariant. -/
+inductive LayeredL {S : Type} : GkatThompson.GSystem S A T → Prop where
+  | acyclic {sys} :
+      (∃ rank : S → Nat, ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s) →
+      LayeredL sys
+  | loop {sys base} {b : BExp T} {entry : List (BExp T × A × S)} :
+      LoopLayer sys base b entry → LayeredL base → LayeredL sys
+
+/-- **EVERY LAYERED AUTOMATON HAS A SOLUTION.**  `hsolve`, for the predicate
+    283 and 284 were built to consume. -/
+theorem layeredL_has_solution {S : Type} {sys : GkatThompson.GSystem S A T}
+    (h : LayeredL sys) :
+    ∃ std : S → Exp A T, ∀ s ∈ sys.states,
+      EquivBA (std s) (GkatThompson.eqRHSParam sys std (.test .one) s) := by
+  induction h with
+  | @acyclic sys hr =>
+      obtain ⟨rank, hrank⟩ := hr
+      obtain ⟨sol, hsol⟩ := acyclic_has_solution_sem sys rank hrank
+      refine ⟨sol, fun s _ => EquivBA.trans (hsol s) ?_⟩
+      exact guardedFold_fallback_congr
+        (EquivBA.symm (GkatGuardedAlgebra.seq_one (.test (sys.hlt s))))
+  | @loop sys base b entry hlay _ ih =>
+      obtain ⟨std, hstd⟩ := ih
+      exact ⟨fun t => .seq (std t)
+          (.wh b (guardedFold (transitionBranches entry std) (.test .zero))),
+        loopLayer_has_solution hlay std hstd _ _ rfl rfl⟩
+
+#print axioms layeredL_has_solution
+
 end GkatCensus
