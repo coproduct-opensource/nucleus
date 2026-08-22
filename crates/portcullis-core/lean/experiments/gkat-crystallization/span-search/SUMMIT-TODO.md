@@ -15271,3 +15271,73 @@ the file rather than letting two short theorems read as progress.
 **Next.**  The induction over the condensation, and the construction of the two
 layers at each region — neither needs a new constructor, which is what 333
 establishes.
+
+## 334 — `split` was too strong, and weakening it closed the condensation induction
+
+**The obstruction, found by building the thing.** 333 said the condensation frame
+needed no new constructor. Building the induction refuted that in one step:
+`LayeredOn.split` required its peeled set `C` to be closed **absolutely**, and
+under that hypothesis the condensation recursion is impossible. Peel the bottom
+level, and the block is non-empty; every subsequent peel must be a non-empty
+closed set **disjoint from the block** — but a closed set contains everything it
+reaches, and every region reaches the bottom. So absolute closure admits exactly
+one peel and then jams.
+
+**The fix is one hypothesis.** `C` closed *relative to the block*:
+
+```lean
+(∀ s, C s → ∀ … , firstMatch W x (sys.trans s) = some r → C r.2 ∨ P r.2)
+```
+
+The solution proof survives untouched — the congruence step needed `sol₂ = sol₁`
+at every target of a `C`-state, and that holds on `P` for the same reason it held
+on `C` (`hin2` already covers `P ∨ C`; the disjunct just arrives swapped). One
+`.symm`. All five existing call sites still go through by `Or.inl`.
+
+**What it unlocks.** With relative closure the peel `C := {lvl = n}` against the
+block `P := {lvl < n}` is legal, and the induction closes:
+
+```lean
+theorem layeredOn_of_levels (lvl : S → Nat)
+    (hmono  : ∀ s …, firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s)
+    (hregion : ∀ n, LayeredOn sys (fun s => ¬ (lvl s = n))) :
+    ∀ k n, (∀ s, lvl s < n + k) → LayeredOn sys (fun s => lvl s < n)
+```
+
+and its discharge `layeredOn_empty_of_levels`, which gives `LayeredOn sys ∅` —
+the **empty** block. Both `[propext, Quot.sound]`, no `choice`, no `sorry`.
+
+**Non-vacuity, checked at the consumer.** `solves_of_levels` feeds the empty
+block to `layeredOn_has_solution`, whose conclusion is conditional on `¬ P`;
+with `P = False` that condition evaporates and what comes out is an
+unconditional full parametric solution — the exact shape `hcollapse` asks for.
+An empty block is what makes the theorem say anything.
+
+**`PAD_CONDENSATION` — how much work is left, and it is bounded.**
+4000 quotients, 14922 regions:
+
+| measurement | value |
+|---|---|
+| quotients where the component ordering is not step-monotone | **0** — `hmono` is real |
+| max condensation depth (peels the induction makes) | **7** |
+| max region size | **3** |
+| non-trivial regions | 968 — sizes `1:915  2:52  3:1` |
+| single-cycle regions | **967 (99.9%)** |
+| richer regions | **1** |
+
+The `hmono` line is the control: region sizes read off a wrong ordering would
+measure nothing, so the ordering is checked before anything is reported from it.
+
+The one richer region is `q0: st=[q0,q1,q1] | q1: st=[q0,…]` — a self-loop nested
+inside a 2-cycle. `LayeredOn.loop` recurses on `LayeredOn base P`, so loop-over-
+loop is already expressible; that case needs nesting, not a new constructor.
+
+**The finding.** Every remaining obligation is now per-region, and a region is at
+most three states, 94.5% of them one state with a self-loop. Twelve iterations
+(319–330) tried to decompose along the expression's shape; the decomposition the
+constructors actually wanted was along the *quotient's own* condensation, and the
+only thing standing in its way was a hypothesis strictly stronger than the proof
+of `split` ever used.
+
+**Next.** Discharge `hregion` for the single-cycle region — 99.9% of the mass and
+the shape `layeredOn_region` was built for.

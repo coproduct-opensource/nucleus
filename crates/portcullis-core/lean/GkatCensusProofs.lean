@@ -8861,7 +8861,7 @@ inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop)
   | split {S : Type} {sys : GkatThompson.GSystem S A T} {P C : S → Prop} :
       (∀ s, P s → ¬ C s) →
       (∀ s, C s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
-        GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2) →
+        GkatKleene.firstMatch W x (sys.trans s) = some r → C r.2 ∨ P r.2) →
       LayeredOn sys (fun s => ¬ C s) →
       LayeredOn sys (fun s => P s ∨ C s) →
       LayeredOn sys P
@@ -9002,7 +9002,7 @@ theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A 
               (GkatThompson.eqRHSParam sys sol1 F s) := by
             refine fold_congr_list (sys.trans s) _ sol2 sol1 ?_
             intro X W x r hfm
-            exact hin2 r.2 (Or.inr (hCclosed s hC X W x r hfm))
+            exact hin2 r.2 (hCclosed s hC X W x r hfm).symm
           exact EquivBA.trans (EquivBA.trans (hin2 s (Or.inr hC))
             (hout1 s (fun h => h hC))) (EquivBA.symm hcongr)
         · exact hout2 s (fun h => h.elim hs hC)
@@ -9399,7 +9399,8 @@ theorem sum_quotient_layered_of_split {S₁ S₂ Q : Type}
       = (fun s : Q => False ∨ ∃ u, rep s = Sum.inl u) := by
     funext s
     exact propext ⟨Or.inr, fun h => h.elim (fun x => x.elim) id⟩
-  exact LayeredOn.split (fun _ h => h.elim) hclosed' hleft (heq ▸ hrest)
+  exact LayeredOn.split (fun _ h => h.elim)
+    (fun c hc X W x r hfm => Or.inl (hclosed' c hc X W x r hfm)) hleft (heq ▸ hrest)
 
 #print axioms sum_quotient_layered_of_split
 
@@ -9674,7 +9675,9 @@ theorem quotient_layered_ite {S₁ S₂ Q : Type}
     (hright : LayeredOn Qsys (fun c => B c ∨ (¬ B c ∧ ∃ u, rep c = Sum.inl u))) :
     LayeredOn Qsys B :=
   LayeredOn.split (fun _ hB hC => hC.1 hB)
-    (sum_left_block_closed L R Qsys B j rep hout hpref htrans) hleft hright
+    (fun c hc X W x r hfm =>
+      Or.inl (sum_left_block_closed L R Qsys B j rep hout hpref htrans c hc X W x r hfm))
+    hleft hright
 
 #print axioms quotient_layered_ite
 
@@ -9747,7 +9750,10 @@ theorem quotient_layered_split_right {S₁ S₂ Q : Type}
     (hleft : LayeredOn Qsys (fun c => B c ∨ (¬ B c ∧ ∃ u, rep c = Sum.inr u))) :
     LayeredOn Qsys B :=
   LayeredOn.split (fun _ hB hC => hC.1 hB)
-    (right_block_closed sys Rt hinr Qsys B j rep hout hpref htrans) hright hleft
+    (fun c hc X W x r hfm =>
+      Or.inl (right_block_closed sys Rt hinr Qsys B j rep hout hpref htrans
+        c hc X W x r hfm))
+    hright hleft
 
 #print axioms right_block_closed
 #print axioms quotient_layered_split_right
@@ -9967,7 +9973,9 @@ theorem quotient_layered_split_right' {S₁ S₂ Q : Type}
       (fun c => B c ∨ (¬ B c ∧ ∃ u : S₂, j (Sum.inr u) = c))) :
     LayeredOn Qsys B :=
   LayeredOn.split (fun _ hB hC => hC.1 hB)
-    (right_block_closed' sys Rt hinr Qsys B j hout hwitR) hright hleft
+    (fun c hc X W x r hfm =>
+      Or.inl (right_block_closed' sys Rt hinr Qsys B j hout hwitR c hc X W x r hfm))
+    hright hleft
 
 #print axioms right_block_closed'
 #print axioms quotient_layered_split_right'
@@ -10949,7 +10957,8 @@ theorem layeredOn_split_reach {S : Type} (sys : GkatThompson.GSystem S A T)
     (h1 : LayeredOn sys (fun s => ¬ ∃ u, X u ∧ Reaches sys u s))
     (h2 : LayeredOn sys (fun s => P s ∨ ∃ u, X u ∧ Reaches sys u s)) :
     LayeredOn sys P :=
-  LayeredOn.split hdisj (reachClosure_closed sys X) h1 h2
+  LayeredOn.split hdisj
+    (fun s hs Y W x r hfm => Or.inl (reachClosure_closed sys X s hs Y W x r hfm)) h1 h2
 
 /-- **THE SINGLE-REGION MOVE.**  Exits first, then the loop — and the order is
     forced, exactly as 305 found for `seq`: the loop constructor needs its region
@@ -10969,5 +10978,83 @@ theorem layeredOn_region {S : Type} {sys mid base : GkatThompson.GSystem S A T}
 
 #print axioms layeredOn_split_reach
 #print axioms layeredOn_region
+
+
+/-- **The condensation induction.**  Let `lvl` be a level function on states that
+never increases along a step — a topological numbering of the SCC condensation.
+If each single level can be solved in isolation (with every *other* level as its
+block), then the whole system is solvable with an EMPTY block.
+
+The peel is `C := {lvl = n}` against the block `P := {lvl < n}`.  That block is
+non-empty from `n = 1` on, and `{lvl = n}` is NOT closed — its steps drop into
+the block.  It is exactly the relative closure of `LayeredOn.split` that makes
+this legal; with the absolute closure the peel is impossible after the first
+level, since every non-empty closed set reaches the bottom. -/
+theorem layeredOn_of_levels {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat)
+    (hmono : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s)
+    (hregion : ∀ n : Nat, LayeredOn sys (fun s => ¬ (lvl s = n))) :
+    ∀ (k n : Nat), (∀ s, lvl s < n + k) → LayeredOn sys (fun s => lvl s < n)
+  | 0, n, hb =>
+      LayeredOn.acyclic ⟨fun _ => 0, fun s hs => absurd (hb s) hs⟩
+  | k + 1, n, hb => by
+      have hcast : (fun s => lvl s < n ∨ lvl s = n) = (fun s => lvl s < n + 1) := by
+        refine funext (fun s => propext ⟨?_, ?_⟩)
+        · intro h
+          cases h with
+          | inl hlt => exact Nat.lt_succ_of_lt hlt
+          | inr he => exact he ▸ Nat.lt_succ_self _
+        · intro h
+          cases Nat.lt_or_ge (lvl s) n with
+          | inl hlt => exact Or.inl hlt
+          | inr hge => exact Or.inr (Nat.le_antisymm (Nat.le_of_lt_succ h) hge)
+      have hIH : LayeredOn sys (fun s => lvl s < n + 1) := by
+        refine layeredOn_of_levels lvl hmono hregion k (n + 1) (fun s => ?_)
+        have hEq : n + (k + 1) = n + 1 + k := by
+          rw [Nat.add_succ, Nat.succ_add]
+        exact hEq ▸ hb s
+      refine LayeredOn.split (C := fun s => lvl s = n)
+        (fun s hs he => absurd he (Nat.ne_of_lt hs)) (fun s hs X W x r hfm => ?_)
+        (hregion n) (hcast ▸ hIH)
+      cases Nat.lt_or_ge (lvl r.2) n with
+      | inl hlt => exact Or.inr hlt
+      | inr hge => exact Or.inl (Nat.le_antisymm (hs ▸ hmono s X W x r hfm) hge)
+
+/-- The condensation induction, discharged: a bounded level function whose levels
+are each individually solvable gives a solution over the whole system. -/
+theorem layeredOn_empty_of_levels {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (B : Nat) (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s)
+    (hregion : ∀ n : Nat, LayeredOn sys (fun s => ¬ (lvl s = n))) :
+    LayeredOn sys (fun _ => False) := by
+  have h := layeredOn_of_levels lvl hmono hregion B 0 (fun s => by
+    rw [Nat.zero_add]; exact hbound s)
+  have hcast : (fun s : S => lvl s < 0) = (fun _ : S => False) :=
+    funext (fun s => propext ⟨fun h => absurd h (Nat.not_lt_zero _), fun h => h.elim⟩)
+  exact hcast ▸ h
+
+/-- **The level theorem lands on the obligation.**  A bounded, step-non-increasing
+level function with each level individually solvable yields a FULL parametric
+solution — the shape `hcollapse` asks for.  This is the non-vacuity check: an
+empty block turns `layeredOn_has_solution`'s conditional conclusion into an
+unconditional one. -/
+theorem solves_of_levels {S : Type} {sys : GkatThompson.GSystem S A T}
+    (lvl : S → Nat) (B : Nat) (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → lvl r.2 ≤ lvl s)
+    (hregion : ∀ n : Nat, LayeredOn sys (fun s => ¬ (lvl s = n)))
+    (F : Exp A T) :
+    ∃ sol : S → Exp A T,
+      ∀ s, EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s) :=
+  match layeredOn_has_solution (layeredOn_empty_of_levels lvl B hbound hmono hregion)
+      (fun _ => Exp.test BExp.zero) F (fun _ ht _ => ht.elim) with
+  | ⟨sol, _, hout⟩ => ⟨sol, fun s => hout s (fun h => h)⟩
+
+#print axioms layeredOn_of_levels
+#print axioms layeredOn_empty_of_levels
+#print axioms solves_of_levels
+
 
 end GkatCensus

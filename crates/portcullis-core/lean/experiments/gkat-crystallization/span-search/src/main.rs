@@ -2254,6 +2254,130 @@ fn scc_exit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// The standard census pool: every automaton reachable from tests and the single
+/// action by `seq`/`ite`/`wh`, up to `cap`, deduplicated by canonical form.
+fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Aut<NA>> {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    { let a = a_act::<NA>(); if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+    for _ in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap { if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } } }
+            }
+        }
+        if pool.len() >= cap { break; }
+    }
+    pool
+}
+
+/// **`PAD_CONDENSATION`** (iteration 334).
+///
+/// 334 proved `layeredOn_empty_of_levels`: a level function that never increases
+/// along a step, plus a solution for each SINGLE level in isolation, gives a
+/// solution for the whole system with an EMPTY block.  Everything that remains
+/// is therefore per-region, so the decision-relevant number is **how big a
+/// region gets** and **how many levels the induction climbs**.
+///
+/// Three things measured on quotients (the objects the proof decomposes):
+///   1. the level function itself — that `sccs_of`'s ordering really is
+///      non-increasing along every edge, which is `hmono`.  A harness that
+///      reported region sizes from a WRONG ordering would be measuring nothing.
+///   2. condensation depth: how many distinct levels, i.e. how many times the
+///      induction peels.
+///   3. region size and shape: is a non-trivial region a single cycle (one
+///      `LoopLayerOn` suffices) or something that needs nesting?
+fn condensation<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut quots, mut nsccs, mut nontrivial, mut mono_bad) = (0usize, 0usize, 0usize, 0usize);
+    let mut maxregion = 0usize;
+    let mut maxdepth = 0usize;
+    let mut hist: Vec<usize> = vec![0; MAXK + 1];
+    let (mut single_cycle, mut multi) = (0usize, 0usize);
+    let mut first_multi: Option<String> = None;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        quots += 1;
+        let comps = sccs_of(&q);
+        let k = q.k as usize;
+        // level = index of the state's component, with components numbered so
+        // that a later component never precedes an earlier one along an edge.
+        let mut lvl = [0usize; MAXK];
+        for (ci, mem) in comps.iter().enumerate() { for &m in mem { lvl[m] = ci; } }
+        // hmono check, and orient: if edges INCREASE the index, flip.
+        let (mut up, mut down) = (0usize, 0usize);
+        for s in 0..k { for x in 0..NA { if q.st[s][x] != 0 {
+            let t = (q.st[s][x] - 1) as usize;
+            if lvl[t] > lvl[s] { up += 1; } else if lvl[t] < lvl[s] { down += 1; }
+        }}}
+        if up > 0 && down > 0 { mono_bad += 1; }
+        if up > 0 && down == 0 {
+            let top = comps.len() - 1;
+            for s in 0..k { lvl[s] = top - lvl[s]; }
+        }
+        let mut depth = 0usize;
+        for s in 0..k { if lvl[s] + 1 > depth { depth = lvl[s] + 1; } }
+        if depth > maxdepth { maxdepth = depth; }
+        for mem in comps.iter() {
+            nsccs += 1;
+            let selfloop = mem.len() == 1 && (0..NA).any(|x| q.st[mem[0]][x] == (mem[0] + 1) as u8);
+            if mem.len() == 1 && !selfloop { continue; }
+            nontrivial += 1;
+            hist[mem.len().min(MAXK)] += 1;
+            if mem.len() > maxregion { maxregion = mem.len(); }
+            // single cycle? every member has exactly ONE distinct intra-region successor
+            let mut cyc = true;
+            for &u in mem {
+                let mut tg: Option<usize> = None;
+                for x in 0..NA { if q.st[u][x] != 0 {
+                    let t = (q.st[u][x] - 1) as usize;
+                    if !mem.contains(&t) { continue; }
+                    match tg { None => tg = Some(t), Some(t0) => if t0 != t { cyc = false; } }
+                }}
+                if tg.is_none() { cyc = false; }
+            }
+            if cyc { single_cycle += 1; } else {
+                multi += 1;
+                if first_multi.is_none() && mem.len() > 1 {
+                    first_multi = Some(format!("region {mem:?}\n    {}", show_aut("quot ", &q)));
+                }
+            }
+        }
+    }
+    println!("CONDENSATION: {quots} quotients, {nsccs} regions, {nontrivial} non-trivial");
+    println!("  hmono: {mono_bad} quotients where the component ordering is NOT monotone \
+              along edges (must be 0 for the level function to exist)");
+    println!("  max condensation depth {maxdepth} (= peels the induction makes), \
+              max region size {maxregion}");
+    println!("  non-trivial region shape: {single_cycle} single-cycle ({:.1}%), {multi} richer",
+        100.0 * single_cycle as f64 / nontrivial.max(1) as f64);
+    let sizes: Vec<String> = (1..=MAXK).filter(|&i| hist[i] > 0)
+        .map(|i| format!("{i}:{}", hist[i])).collect();
+    println!("  region sizes {}", sizes.join(" "));
+    match first_multi {
+        None => println!("  every non-trivial region is a single cycle: ONE LoopLayerOn per \
+                          region suffices, no nesting"),
+        Some(m) => println!("  FIRST RICHER REGION\n    {m}"),
+    }
+}
+
 /// **`PAD_MINCONG`** (iteration 330).
 ///
 /// Grounding the target showed `SumQuotientSolvable` accepts ANY behavioural
@@ -7887,6 +8011,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     if std::env::var("PAD_LLEE").is_ok() {
         llee_test::<NA>(nguards as u8);
+        return;
+    }
+    if std::env::var("PAD_CONDENSATION").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        condensation::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_SCC_EXIT").is_ok() {
