@@ -17126,3 +17126,49 @@ slick lemma. Those move in opposite directions and roughly cancel.
 
 **Next.** The induction: what `LevelAgreementActive` says for `test`, `act`,
 `seq`, `ite` and `wh`, and which case carries the content.
+
+## 368 — the `wh` case, and the rank it forces
+
+367 established the proof must be an induction on GKAT syntax. Working the cases
+out: `test` and `act` have no cycles; `seq` and `ite` create none, so their
+regions are inherited and the IH covers them. **All the content is in `wh`.**
+
+Working `wh` out by hand gives something I had backwards. The natural guess is to
+rank the body forward from the head and call the body's RETURN edge the
+back-edge. That fails: at an atom where `b` is false the head exits, while a body
+state may return at the same atom — two active states, different targets, clash.
+
+The rank that works is **distance to the head**, with the head at 0 and the
+head's **ENTRY** into the body as the back-edge. Then every body edge decreases
+the rank (raw), and the only ever-active state is the head — which either enters
+(back-edge) or exits. Agreement is vacuous.
+
+That also explains 363's finding that the choice of ordering is not incidental:
+one of the two natural ranks makes agreement vacuous and the other breaks it.
+
+**Checked where the induction lives — on SOURCE automata, before any quotient:**
+
+```
+139 245 non-trivial SCCs in source Thompson automata
+138 400 (99.39%) admit a rank with AT MOST ONE active state per atom
+139 245 (100.00%) admit a rank under which the active states AGREE
+```
+
+**The prediction holds for 99.39%, and the exceptions are duplicates.** The first
+failure is `q0: st=[q0,q1,-] | q1: st=[q0,q1,-]` — two states with identical rows
+and identical halting, i.e. bisimilar states that the source has not minimised
+away. They are active together and agree trivially. So the `wh` account is sound
+modulo duplicate states, which the quotient removes.
+
+**A reading gotcha, nearly acted on.** `show_aut` prints the halt mask
+**MSB-first**. Read LSB-first, the example above appears to halt AND step at atom
+0, which would contradict `HaltDeterministic` — a measured 0-violation fact. The
+analysis code uses the mask directly and is unaffected; only the printed form
+misleads.
+
+**Odds: 97%, unchanged.** The `wh` case now has a concrete account with a
+predicted rank, checked at 139 245 source loops. The quotient transport — the
+step that has resisted since 354 — is untouched by this.
+
+**Next.** Whether the head-distance rank survives the quotient, or whether the
+merged regions need their own.

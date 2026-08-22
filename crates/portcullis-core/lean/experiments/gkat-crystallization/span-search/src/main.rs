@@ -2354,6 +2354,72 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_SRCVAC`** (iteration 368).
+///
+/// Working the induction's `wh` case out by hand says the rank must be
+/// **distance to the loop head**, with the head's ENTRY into the body as the
+/// back-edge — the reverse of the obvious choice.  Under that rank the body's
+/// states all step forward (raw) and only the HEAD is ever active, so agreement
+/// is vacuous.  This checks the prediction where the induction lives: on SOURCE
+/// Thompson automata, before any quotient.
+fn srcvac<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut vac, mut agree) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for a in &pool {
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut ok_vac, mut ok_agree) = (false, false);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let (mut vacuous, mut agrees) = (true, true);
+                for x in 0..NA {
+                    let mut act = 0usize;
+                    let mut demand: i64 = -1;
+                    for &u in &comp {
+                        let tv = a.st[u][x];
+                        let halts = (a.hl[u] >> x) & 1 == 1;
+                        let d: i64 = if tv == 0 { if halts { -2 } else { continue } }
+                            else {
+                                let t = (tv - 1) as usize;
+                                if comp.contains(&t) && rank[t] < rank[u] { continue }
+                                else { t as i64 }
+                            };
+                        act += 1;
+                        if demand == -1 { demand = d; } else if demand != d { agrees = false; }
+                    }
+                    if act > 1 { vacuous = false; }
+                }
+                if vacuous { ok_vac = true; }
+                if agrees { ok_agree = true; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if ok_vac { vac += 1; }
+            if ok_agree { agree += 1; }
+            if !ok_vac && first.is_none() {
+                first = Some(format!("SCC {comp:?}\n    {}", show_aut("src  ", a)));
+            }
+        }
+    }
+    println!("SRCVAC: {sccs} non-trivial SCCs in SOURCE Thompson automata");
+    println!("  {vac} ({:.2}%) admit a rank under which AT MOST ONE state is active per atom \
+              — the `wh` case's prediction",
+        100.0 * vac as f64 / sccs.max(1) as f64);
+    println!("  {agree} ({:.2}%) admit a rank under which the active states AGREE",
+        100.0 * agree as f64 / sccs.max(1) as f64);
+    match first {
+        None => println!("  the prediction holds on every source loop: with the right rank, \
+                          only the head is ever active"),
+        Some(m) => println!("  FIRST SOURCE LOOP WITH NO VACUOUS RANK\n    {m}"),
+    }
+}
+
 /// **`PAD_RANDAGREE`** (iteration 367).
 ///
 /// Every measurement of `LevelAgreementActive` so far has been on quotients of
@@ -8799,6 +8865,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_SRCVAC").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        srcvac::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_RANDAGREE").is_ok() { randagree::<3>(); return; }
