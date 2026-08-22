@@ -2354,6 +2354,66 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_REDUCIBLE`** (iteration 408).
+///
+/// 407 killed `hbodyRaw` for nested loops: nested loops share an SCC, so one
+/// component holds two cycle classes and no rank breaks both.  A lexicographic
+/// rank cannot rescue it — lex order on bounded pairs embeds into `Nat`, so it
+/// induces a total order, and 407 already searched every total order.
+///
+/// The fix has to be the LEVEL, not the rank: stratify by loop-nesting DEPTH
+/// rather than by SCC, so each stratum holds exactly one cycle class.  That
+/// stratification exists exactly when the flow graph is REDUCIBLE — every cycle
+/// entered only through a single header that dominates it.
+///
+/// Measured: dominators from a virtual start, back-edges `u -> t` with `t` dom
+/// `u`, and whether deleting the back-edges leaves a DAG.  If Thompson automata
+/// are always reducible, the depth stratification exists and `hbodyRaw` becomes
+/// satisfiable per level.
+fn atomcycles<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut irred, mut multi_entry) = (0usize, 0usize);
+    let mut cyc_hist = [0usize; 8];
+    let mut worst = 0usize;
+    for a in &pool {
+        let k = a.k as usize;
+        if !reducible(a) {
+            irred += 1;
+            // does it have more than one INITIAL target?  that is a multi-header loop
+            let mut ents: Vec<u8> = Vec::new();
+            for x in 0..NA { if a.it[x] != 0 && !ents.contains(&a.it[x]) { ents.push(a.it[x]); } }
+            if ents.len() > 1 { multi_entry += 1; }
+        }
+        // per ATOM the automaton is a partial FUNCTION on states, so each weakly
+        // connected piece holds at most one cycle.  Count the cycles at each atom.
+        for x in 0..NA {
+            let mut colour = [0u8; MAXK];      // 0 = unvisited, 1 = on stack, 2 = done
+            let mut cycles = 0usize;
+            for s0 in 0..k {
+                if colour[s0] != 0 { continue; }
+                let mut path: Vec<usize> = Vec::new();
+                let mut u = s0;
+                loop {
+                    if colour[u] == 1 { cycles += 1; break; }
+                    if colour[u] == 2 { break; }
+                    colour[u] = 1; path.push(u);
+                    let tv = a.st[u][x];
+                    if tv == 0 { break; }
+                    u = (tv - 1) as usize;
+                }
+                for &v in &path { colour[v] = 2; }
+            }
+            if cycles < 8 { cyc_hist[cycles] += 1; }
+            if cycles > worst { worst = cycles; }
+        }
+    }
+    println!("PAD_ATOMCYCLES  pool={}", pool.len());
+    println!("  irreducible (whole-graph)        : {}", irred);
+    println!("    of those, >1 initial target    : {}", multi_entry);
+    println!("  cycles per (automaton, ATOM)     : {:?}  worst={}", cyc_hist, worst);
+    println!("  -- index i = number of disjoint cycles at that atom");
+}
+
 /// **`PAD_NESTRANK`** (iteration 407).
 ///
 /// 404-406 all lean on `hbodyRaw`: inside a loop, EVERY body step is raw, so the
@@ -9374,6 +9434,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         strongagree::<3>(g, r, c);
         return;
     }
+    if std::env::var("PAD_ATOMCYCLES").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        atomcycles::<3>(g, r, c);
+        return;
+    }
     if std::env::var("PAD_NESTRANK").is_ok() {
         let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -9687,10 +9754,18 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
     }
     phase("closure", &mut mark);
     {
-        // Sanity for the predicate: a structured program's flow graph must be reducible.
-        // If any syntax-generated automaton is irreducible, the test is wrong, not the theory.
+        // 408: the "must be 0" label here was WRONG, and had been printing a nonzero
+        // count unchallenged.  It imported the structured-programming theorem — a
+        // structured program's flow graph is reducible — into a setting where it does
+        // not hold.  Classical reducibility assumes each loop has ONE entry; GKAT is
+        // GUARDED, `initTrans` is a list, and different atoms may enter a loop body at
+        // different states.  A loop with two headers is irreducible by definition.
+        // Measured (PAD_ATOMCYCLES): 235 irreducible at pool 200k, of which 117 have
+        // more than one initial target — the multi-header mechanism, directly.
+        // This is a MEASUREMENT, not a gate.
         let bad = list.par_iter().filter(|a| !reducible(a)).count();
-        println!("  irreducible Thompson automata (must be 0): {bad}");
+        println!("  irreducible Thompson automata: {bad} \
+                  (a measurement, not a gate — GKAT loops may have several headers, see 408)");
         let bh = list.par_iter().filter(|a| !backedge_halt_disjoint(a)).count();
         // NOT an assertion: 342 derived the real disjointness condition and found it
         // genuinely fails for some automata, so a "must be 0" label here was wrong.

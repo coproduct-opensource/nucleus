@@ -18966,3 +18966,72 @@ this is the kind of iteration that is evidence for it.
 LEXICOGRAPHIC rank, one component per nesting depth, so each cycle class is
 broken at its own level. Measure whether `PAD_NESTRANK`'s counterexamples admit
 a 2-level lexicographic rank before assuming they do.
+
+## 408 — GKAT automata are NOT all reducible. A wrong gate found, and the peel should be per-ATOM.
+
+Web search: exhausted (200/200).
+
+**The lexicographic idea died without a measurement.** 407 proposed a
+lexicographic rank for nested loops. It cannot work: lex order on bounded pairs
+embeds into `Nat` (`d·BIG + r`), so a lex rank induces a **total order** on the
+component — and `PAD_NESTRANK` already searched every total order by
+permutation. Ruled out by argument, no census needed.
+
+**So the fix had to be the LEVEL, not the rank:** stratify by loop-nesting
+DEPTH instead of by SCC, giving one cycle class per stratum. That
+stratification exists exactly when the flow graph is **reducible**.
+
+**And that is where a live defect surfaced.** The harness has carried this for
+some time:
+
+```rust
+// Sanity for the predicate: a structured program's flow graph must be reducible.
+// If any syntax-generated automaton is irreducible, the test is wrong, not the theory.
+println!("  irreducible Thompson automata (must be 0): {bad}");
+```
+
+It prints **11139** of 156601. A "must be 0" gate has been printing 7.1%
+unchallenged. The label is wrong, not the test.
+
+**Why it is wrong — and it is GKAT-specific.** The structured-programming
+theorem says a structured program's flow graph is reducible, and classical
+reducibility assumes each loop has **one** entry. GKAT is *guarded*:
+`initTrans` is a LIST, and different atoms may enter a loop body at different
+states. A loop with two headers is irreducible by definition. Nothing is broken;
+the classical theorem simply does not transfer to the guarded setting.
+
+**Measured (`PAD_ATOMCYCLES`, new mode).**
+
+| pool | irreducible | of those, >1 initial target |
+|---|---|---|
+| 60,000 | **0** | — |
+| 200,000 | **235** | **117** |
+
+117/235 exhibit the multi-header mechanism directly. And **the 60k pool showed a
+clean sweep that the 200k pool refutes** — 407's lesson, one iteration later,
+in a new place. `build_pool` uses the same `a_seq`/`a_ite`/`a_wh`/`canon` as the
+census closure, so the 60k run was a subset that had not yet reached them.
+The harness's label is now corrected to a measurement with the reason attached.
+
+**Consequence: the depth-stratification plan is dead.** No reducibility, no loop
+nesting forest, no unique headers.
+
+**What survives, and it is the better idea: fix the atom first.** At a FIXED
+atom a GKAT automaton is a partial *function* on states — out-degree at most
+one. A functional graph's every component holds exactly **one** cycle. So per
+atom there is exactly one back-edge class, and the nested-loop obstruction of
+407 disappears. Measured cycles per (automaton, atom): `[512307, 83276, 4393,
+24]` — counts of 2 and 3 are *disjoint* components, one cycle each, exactly as
+determinism forces.
+
+The mismatch all along is that `rawPred`, `lvl` and `rank` are **atom-
+independent** while the thing they are trying to order is not. `AReaches`
+(fixed-atom reachability) is already in the corpus.
+
+**Odds: 93%, unchanged.** A dead branch replaced by a live one, plus a wrong
+gate corrected. No net movement on the theorem. The field's prior that this
+problem does not close still stands.
+
+**Next.** A per-atom rank: at atom `x`, rank = distance to the unique cycle of
+the component. Check first whether `rawPred` can be made atom-dependent without
+breaking `peelRaw`, which builds one syntactic automaton for all atoms.
