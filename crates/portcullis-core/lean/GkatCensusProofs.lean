@@ -11964,6 +11964,140 @@ theorem exists_mutual_over_pair {S Q : Type} {aut : GkatKleene.GAut S A T}
 
 end Midpoint
 
+/-! ### 382's fix: weight the count, and the level becomes exact
+
+`reachLevel` counts how many states `s` can reach, and 382 showed the count
+collides: two unrelated SCCs of the same size share a level.  Weighting the count
+by powers of two fixes it, because the reachable SET is a perfect invariant —
+
+* `reach u = reach v` gives `v ∈ reach u` and `u ∈ reach v`, so `u` and `v` are
+  mutually reachable;
+* conversely mutually reachable states reach the same things.
+
+So a level built from the reachable set, rather than its size, is exactly the
+condensation index — and it needs no graph algorithm, only the same induction
+`countReach` already used. -/
+section MaskLevel
+open Classical
+
+/-- The reachable set of `s`, as a binary mask over `l`. -/
+noncomputable def maskReach {S : Type} (sys : GkatThompson.GSystem S A T)
+    (s : S) : List S → Nat
+  | [] => 0
+  | u :: rest => (if SReaches sys s u then 1 else 0) + 2 * maskReach sys s rest
+
+theorem maskReach_mono {S : Type} (sys : GkatThompson.GSystem S A T) (s t : S)
+    (h : ∀ u, SReaches sys t u → SReaches sys s u) :
+    ∀ l : List S, maskReach sys t l ≤ maskReach sys s l
+  | [] => Nat.le_refl 0
+  | u :: rest => by
+      show (if SReaches sys t u then 1 else 0) + 2 * maskReach sys t rest
+        ≤ (if SReaches sys s u then 1 else 0) + 2 * maskReach sys s rest
+      refine Nat.add_le_add ?_ (Nat.mul_le_mul_left 2 (maskReach_mono sys s t h rest))
+      by_cases hu : SReaches sys t u
+      · rw [if_pos hu, if_pos (h u hu)]; exact Nat.le_refl 1
+      · rw [if_neg hu]; exact Nat.zero_le _
+
+/-- Equal masks force the indicators equal, term by term — the parity of the sum
+pins the head bit, and the rest follows by induction. -/
+theorem maskReach_pointwise {S : Type} (sys : GkatThompson.GSystem S A T) (s t : S) :
+    ∀ (l : List S), maskReach sys s l = maskReach sys t l →
+      ∀ u ∈ l, (SReaches sys s u ↔ SReaches sys t u) := by
+  intro l
+  induction l with
+  | nil => intro _ u hu; cases hu
+  | cons v rest ih =>
+      intro heq u hu
+      have heq' : (if SReaches sys s v then 1 else 0) + 2 * maskReach sys s rest
+          = (if SReaches sys t v then 1 else 0) + 2 * maskReach sys t rest := heq
+      have hhead : (if SReaches sys s v then (1:Nat) else 0)
+          = (if SReaches sys t v then 1 else 0) := by
+        by_cases h1 : SReaches sys s v <;> by_cases h2 : SReaches sys t v
+        · rw [if_pos h1, if_pos h2]
+        · exfalso
+          rw [if_pos h1, if_neg h2, Nat.zero_add] at heq'
+          have := congrArg (fun n => n % 2) heq'
+          simp [Nat.add_mul_mod_self_left, Nat.mul_mod_right] at this
+        · exfalso
+          rw [if_neg h1, if_pos h2, Nat.zero_add] at heq'
+          have := congrArg (fun n => n % 2) heq'
+          simp [Nat.add_mul_mod_self_left, Nat.mul_mod_right] at this
+        · rw [if_neg h1, if_neg h2]
+      have htail : maskReach sys s rest = maskReach sys t rest := by
+        rw [hhead] at heq'
+        have := Nat.add_left_cancel heq'
+        exact Nat.eq_of_mul_eq_mul_left (by decide) this
+      cases hu with
+      | head =>
+          constructor
+          · intro h1
+            by_cases h2 : SReaches sys t v
+            · exact h2
+            · exfalso; rw [if_pos h1, if_neg h2] at hhead; exact absurd hhead (by decide)
+          · intro h2
+            by_cases h1 : SReaches sys s v
+            · exact h1
+            · exfalso; rw [if_neg h1, if_pos h2] at hhead; exact absurd hhead (by decide)
+      | tail _ hmem => exact ih htail u hmem
+
+end MaskLevel
+
+#print axioms maskReach_mono
+#print axioms maskReach_pointwise
+
+theorem maskReach_lt {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) :
+    ∀ l : List S, maskReach sys s l < 2 ^ l.length
+  | [] => Nat.zero_lt_one
+  | u :: rest => by
+      show (if SReaches sys s u then 1 else 0) + 2 * maskReach sys s rest
+        < 2 ^ (rest.length + 1)
+      have hr : maskReach sys s rest + 1 ≤ 2 ^ rest.length := maskReach_lt sys s rest
+      have h2 : 2 * maskReach sys s rest + 2 ≤ 2 * 2 ^ rest.length := by
+        calc 2 * maskReach sys s rest + 2 = 2 * (maskReach sys s rest + 1) := by
+              rw [Nat.mul_add, Nat.mul_one]
+          _ ≤ 2 * 2 ^ rest.length := Nat.mul_le_mul_left 2 hr
+      have hpow : (2:Nat) ^ (rest.length + 1) = 2 * 2 ^ rest.length := by
+        rw [Nat.pow_succ, Nat.mul_comm]
+      rw [hpow]
+      by_cases hu : SReaches sys s u
+      · rw [if_pos hu]
+        refine Nat.lt_of_lt_of_le ?_ h2
+        rw [Nat.add_comm 1 (2 * maskReach sys s rest)]
+        exact Nat.lt_succ_self _
+      · rw [if_neg hu, Nat.zero_add]
+        exact Nat.lt_of_lt_of_le
+          (Nat.lt_of_lt_of_le (Nat.lt_succ_self _) (Nat.le_succ _)) h2
+
+/-- The level of `s`: its reachable SET, as a mask.  Unlike `reachLevel` this is
+injective on the condensation. -/
+noncomputable def reachMask {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) : Nat :=
+  maskReach sys s sys.states
+
+theorem reachMask_bound {S : Type} (sys : GkatThompson.GSystem S A T) (s : S) :
+    reachMask sys s < 2 ^ sys.states.length :=
+  maskReach_lt sys s sys.states
+
+theorem reachMask_mono {S : Type} (sys : GkatThompson.GSystem S A T) :
+    ∀ s, ∀ tr ∈ sys.trans s, reachMask sys tr.2.2 ≤ reachMask sys s := by
+  intro s tr htr
+  exact maskReach_mono sys s tr.2.2 (fun u hu => SReaches.step ⟨tr.1, tr.2.1, htr⟩ hu)
+    sys.states
+
+/-- **382's fix, stated.**  Two listed states at the same `reachMask` are
+MUTUALLY REACHABLE — so a level really is one SCC, not a union of unrelated ones.
+This is what `reachLevel` could not give, and it is why the count had to become a
+mask. -/
+theorem mutual_of_reachMask_eq {S : Type} (sys : GkatThompson.GSystem S A T)
+    {u v : S} (hu : u ∈ sys.states) (hv : v ∈ sys.states)
+    (h : reachMask sys u = reachMask sys v) :
+    SReaches sys u v ∧ SReaches sys v u := by
+  have hp := maskReach_pointwise sys u v sys.states h
+  exact ⟨(hp v hv).mpr (SReaches.refl v), (hp u hu).mp (SReaches.refl u)⟩
+
+#print axioms reachMask_bound
+#print axioms reachMask_mono
+#print axioms mutual_of_reachMask_eq
+
 end LevelExistence
 
 #print axioms reachLevel_mono

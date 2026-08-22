@@ -17834,3 +17834,49 @@ time (352, 375), by the same mechanism: quantifying over more than what was
 measured.
 
 **Next.** A level function that separates SCCs, and re-instantiating 375.
+
+## 383 — the fix: weight the count, and the level becomes exact
+
+382 showed `reachLevel` collides — it counts how many states `s` can reach, so
+two unrelated SCCs of the same size share a level, and a third of multi-state
+levels then cannot agree. The fix does not need the graph theory 339 avoided.
+
+**The reachable SET is a perfect invariant**: `reach u = reach v` gives
+`v ∈ reach u` and `u ∈ reach v`, hence mutual reachability; and mutually
+reachable states reach the same things. So build the level from the set rather
+than its size — the same induction `countReach` already used, with the terms
+weighted by powers of two:
+
+```lean
+noncomputable def maskReach (sys) (s) : List S → Nat
+  | []       => 0
+  | u :: rest => (if SReaches sys s u then 1 else 0) + 2 * maskReach sys s rest
+```
+
+| | |
+|---|---|
+| `maskReach_mono` | subset gives `≤`, term by term |
+| `maskReach_pointwise` | **equal masks force the indicators equal** — parity of the sum pins the head bit (`Nat.add_mul_mod_self_left`, `Nat.mul_mod_right`), then induction |
+| `reachMask_bound` | `< 2 ^ states.length` |
+| `reachMask_mono` | no transition raises the mask |
+| **`mutual_of_reachMask_eq`** | **two listed states at the same mask are MUTUALLY REACHABLE** |
+
+That last one is exactly what `reachLevel` could not give and why the count had
+to become a mask: **a level is now one SCC, not a union of unrelated ones**, so
+the grouping the predicate quantifies over finally matches the grouping every
+measurement used.
+
+File compiles with 0 errors.
+
+**What this costs.** The bound goes from `states.length + 1` to
+`2 ^ states.length`. Nothing in the peel cares — `layeredOn_of_levels` needs only
+*some* bound to terminate its downward induction — but it is worth noting that
+the level values are now exponential rather than linear, so any future step that
+wanted to enumerate levels would be affected.
+
+**Odds: 96%, unchanged.** The retraction is repaired at the level of the
+ingredient, and 382's measurement should now be re-run against `reachMask` before
+anything is built on it — which is the discipline 382 was a lesson in.
+
+**Next.** Re-run 382's measurement with the mask grouping, then re-instantiate
+375.
