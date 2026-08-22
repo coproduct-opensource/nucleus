@@ -15953,3 +15953,60 @@ theorem proved here makes it obvious what they are.
 
 **Next.** The halt agreement — the smaller of the two, and independent of the
 shared-list question.
+
+## 346 — the halt half, and the shared tests constructed
+
+345 discharged `solvesBA_of_behaviour`'s transition premise at a state. 346 does
+the halt premise, and along the way settles something that had been waved at
+since 341: **what `bs n` and `h₀s n` actually ARE.**
+
+**They cannot be sets of atoms** — `T` is abstract, there is no atom type to
+carve up. They do not have to be. Both are finite `BExp` folds over tests the
+level already has:
+
+- `bs n` := `bigOr` of the level's loop guards;
+- `h₀s n` := `bigOr` of the level's halt tests.
+
+`bval_bigOr_true` / `bval_bigOr_false` characterise them (`[propext]`), and that
+is the whole construction — no atom reasoning anywhere.
+
+**The theorem.**
+
+```lean
+theorem bval_peel_hlt_eq (W x) (rawHlt qh) (levelLoops levelHlts)
+    (hmem     : qh ∈ levelHlts)
+    (hraw     : bval W qh x = true → bval W rawHlt x = true)
+    (hloopoff : bval W qh x = true → ∀ g ∈ levelLoops, bval W g x = false)
+    (hnot     : bval W qh x = false → bval W rawHlt x = true →
+                  (∃ g ∈ levelLoops, bval W g x = true) ∨
+                  (∀ h ∈ levelHlts, bval W h x = false)) :
+    bval W ((rawHlt ∧ ¬ bigOr levelLoops) ∧ bigOr levelHlts) x = bval W qh x
+```
+
+`[propext]`. Read the hypotheses and they are 343's condition again, on the halt
+side: where `s` halts it is not raw and no loop guard of the level fires; where
+`s` does not halt but is still non-raw, either a loop guard fires (so `¬ bs n`
+kills the test) or nothing in the level halts (so `h₀s n` does) — that last
+disjunct being exactly the **"exits shadow halting"** clause 343 measured.
+
+**Both premises of `solvesBA_of_behaviour` are now discharged at the state level**
+— transitions by 345, halt by 346, from the same measured condition.
+
+**The one thing left, and how it goes.** `loops n` / `exits n` must be ONE list
+per level, while 345 uses each state's own filtered part. The shared list should
+be the concatenation of every level state's part, and working through it shows
+the agreement condition is not merely sufficient but *exactly* what is needed,
+in both directions:
+
+- when `s`'s own part fires at an atom, some entry of the concatenation fires
+  there too, and agreement forces it to have the same target;
+- when `s`'s part does NOT fire but another state's entry does, `s` would be
+  dragged into a loop it should not take — unless agreement rules that atom out,
+  which it does, because a state that is non-raw and non-dead must agree in kind
+  with the one that loops.
+
+The second direction is the one that would have been missed by treating the
+condition as a convenience. It is not: it is load-bearing.
+
+**Next.** The shared list itself — the concatenation, and the two directions
+above as one lemma.

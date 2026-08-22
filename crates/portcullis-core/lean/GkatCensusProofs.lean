@@ -12318,6 +12318,101 @@ end GuardNormalisation
 #print axioms firstMatch_disjoin
 #print axioms disjoin_exclusive
 
+
+section HaltAgreement
+
+/-! ### The halt test
+
+`peeledSys.hlt s = (raw.hlt s ∧ ¬ bs n) ∧ h₀s n`, and `bs n`, `h₀s n` are shared
+by the whole level.  They cannot be defined as sets of atoms — `T` is abstract —
+but they do not have to be: both are finite `BExp` folds over the level's own
+tests.  `bs n` is the disjunction of the level's loop guards, `h₀s n` the
+disjunction of the level's halt tests. -/
+
+def bigOr : List (BExp T) → BExp T
+  | [] => BExp.zero
+  | g :: tl => BExp.or g (bigOr tl)
+
+theorem bval_bigOr_true {X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T)), GkatGS.bval W (bigOr L) x = true ↔
+      ∃ g ∈ L, GkatGS.bval W g x = true := by
+  intro L
+  induction L with
+  | nil => exact ⟨fun h => Bool.noConfusion h, fun ⟨_, hg, _⟩ => by cases hg⟩
+  | cons g tl ih =>
+      constructor
+      · intro h
+        have h' : (GkatGS.bval W g x || GkatGS.bval W (bigOr tl) x) = true := h
+        cases (Bool.or_eq_true _ _).mp h' with
+        | inl hg => exact ⟨g, List.mem_cons_self .., hg⟩
+        | inr ht =>
+            obtain ⟨g', hg', hb⟩ := ih.mp ht
+            exact ⟨g', List.mem_cons_of_mem _ hg', hb⟩
+      · rintro ⟨g', hg', hb⟩
+        show (GkatGS.bval W g x || GkatGS.bval W (bigOr tl) x) = true
+        refine (Bool.or_eq_true _ _).mpr ?_
+        cases hg' with
+        | head => exact Or.inl hb
+        | tail _ h => exact Or.inr (ih.mpr ⟨g', h, hb⟩)
+
+theorem bval_bigOr_false {X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T)) :
+    GkatGS.bval W (bigOr L) x = false ↔ ∀ g ∈ L, GkatGS.bval W g x = false := by
+  constructor
+  · intro h g hg
+    cases hb : GkatGS.bval W g x with
+    | false => rfl
+    | true =>
+        have := (bval_bigOr_true W x L).mpr ⟨g, hg, hb⟩
+        rw [h] at this; exact Bool.noConfusion this
+  · intro h
+    cases hb : GkatGS.bval W (bigOr L) x with
+    | false => rfl
+    | true =>
+        obtain ⟨g, hg, hgt⟩ := (bval_bigOr_true W x L).mp hb
+        rw [h g hg] at hgt; exact Bool.noConfusion hgt
+
+/-- **The halt agreement.**  The peel's halt test at `s` has the same value as the
+quotient's, given exactly 343's condition read on the halt side: where `s` halts
+it is not raw and no loop guard of the level fires; and where `s` does NOT halt
+but is still non-raw, either a loop guard fires (so `¬ bs n` kills it) or nothing
+in the level halts (so `h₀s n` kills it) — the latter being the "exits shadow
+halting" clause. -/
+theorem bval_peel_hlt_eq {X : Type} (W : T → X → Bool) (x : X)
+    (rawHlt qh : BExp T) (levelLoops levelHlts : List (BExp T))
+    (hmem : qh ∈ levelHlts)
+    (hraw : GkatGS.bval W qh x = true → GkatGS.bval W rawHlt x = true)
+    (hloopoff : GkatGS.bval W qh x = true → ∀ g ∈ levelLoops,
+      GkatGS.bval W g x = false)
+    (hnot : GkatGS.bval W qh x = false → GkatGS.bval W rawHlt x = true →
+      (∃ g ∈ levelLoops, GkatGS.bval W g x = true) ∨
+      (∀ h ∈ levelHlts, GkatGS.bval W h x = false)) :
+    GkatGS.bval W (BExp.and (BExp.and rawHlt (BExp.not (bigOr levelLoops)))
+      (bigOr levelHlts)) x = GkatGS.bval W qh x := by
+  show ((GkatGS.bval W rawHlt x && !GkatGS.bval W (bigOr levelLoops) x)
+    && GkatGS.bval W (bigOr levelHlts) x) = _
+  cases hq : GkatGS.bval W qh x with
+  | true =>
+      rw [hraw hq, (bval_bigOr_false W x levelLoops).mpr (hloopoff hq),
+        (bval_bigOr_true W x levelHlts).mpr ⟨qh, hmem, hq⟩]
+      rfl
+  | false =>
+      cases hr : GkatGS.bval W rawHlt x with
+      | false => rfl
+      | true =>
+          cases hnot hq hr with
+          | inl hloop =>
+              rw [(bval_bigOr_true W x levelLoops).mpr hloop]
+              simp
+          | inr hnone =>
+              rw [(bval_bigOr_false W x levelHlts).mpr hnone]
+              simp
+
+end HaltAgreement
+
+#print axioms bval_bigOr_true
+#print axioms bval_peel_hlt_eq
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
