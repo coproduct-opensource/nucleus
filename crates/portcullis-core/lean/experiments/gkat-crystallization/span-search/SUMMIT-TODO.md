@@ -20727,3 +20727,54 @@ dissolution. The field's prior that this problem does not close still stands.
 **Next.** Break the depth-3 ceiling, since six iterations have now been limited
 by it: enumerate depth-4 expressions restricted to those whose automata could
 realise one of the 22 refuting languages, rather than enumerating all of them.
+
+## 438 — the depth-3 ceiling breaks, and 437's degeneracy dissolves: a NON-DEGENERATE refutation.
+
+Web search: exhausted (200/200).
+
+437 found all 22 refuting languages have exactly one expression at depth ≤ 3 and
+called 436's refutation degenerate — with the caveat that a deeper expression
+could change that. A full depth-4 enumeration is 1.4M² pairs and infeasible, so
+enumerate only `op(depth-3, leaf)`, `op(leaf, depth-3)` and `wh(g, depth-3)`:
+
+| | G=4 |
+|---|---|
+| depth-3 automata | 552,977 |
+| refuting languages | 6 |
+| **depth-4 candidates built** | **14,047,408** |
+| **landing in a refuting language** | **326** |
+| **distinct refuting languages hit** | **6 / 6** |
+
+```
+NEW k=3 ih=101 it=[0,1,0] | q0: hl=000 st=[2,1,3] | q1: hl=000 st=[2,1,3] | q2: hl=101 st=[0,1,0]
+OLD k=2 ih=101 it=[0,1,0] | q0: hl=000 st=[1,1,2] | q1: hl=101 st=[0,1,0]
+```
+
+**Two syntactically distinct expressions, same language, and their common
+minimal automaton refutes `LevelAgreementActive`.** Every one of the 6 refuting
+languages has such a pair — 437's "class size 1" was the depth-3 ceiling, not a
+fact about the languages.
+
+**This is the first refutation in this program to survive the degeneracy check.**
+413 needed `e = f`, 429/430 needed W1, 436 needed a one-expression language. This
+one needs nothing: the pair is distinct, the automata differ in state count (3 vs
+2), so `EquivBA e f` is a real obligation rather than reflexivity, and the
+witness is the CANONICAL minimal quotient rather than the forced pullback.
+
+**What is still unchecked, and it is the one thing that could dissolve this too.**
+The hypothesis is `∃ quot`. The minimal automaton is the MOST-merged valid
+quotient; I have not tested the LESS-merged ones between it and the sum. 430 and
+434 both went the other way — collapsing MORE rescued — and 433 showed larger
+components fail more often, so less-merged quotients should be worse. That is an
+argument, not a measurement, and this program has punished exactly that
+substitution three times.
+
+**Odds: 55% → 50%.** Holding the ±5 cap even though this is the strongest
+negative yet, because the cap exists precisely for iterations that feel decisive.
+If the less-merged quotients also fail next iteration, that is the
+counterexample-survives-every-quotient condition I named, and the cap comes off.
+The field's prior that this problem does not close still stands.
+
+**Next.** Enumerate the quotients BETWEEN the sum and the minimal automaton for
+one of the 326 pairs, and test each. That closes the existential in the only
+direction still open.

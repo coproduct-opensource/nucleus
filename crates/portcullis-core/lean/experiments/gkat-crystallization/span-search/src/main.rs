@@ -3706,6 +3706,98 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
 /// Minimise every expression automaton and histogram the largest SCC.  For any
 /// with a multi-state SCC, test `LevelAgreementActive` — those are the cases the
 /// architecture stands or falls on.
+/// **`PAD_D4HUNT`** (iteration 438).
+///
+/// Six iterations have been limited by the depth-3 ceiling.  437 found all 22
+/// refuting languages have exactly ONE expression at depth <= 3, which makes
+/// 436's refutation degenerate — but only if no DEEPER expression realises one
+/// of them.  A full depth-4 enumeration is 1.4M^2 pairs and infeasible.
+///
+/// So enumerate the depth-4 expressions of the form `op(depth-3, leaf)`,
+/// `op(leaf, depth-3)` and `wh(g, depth-3)` — about 7M combinations rather than
+/// 10^12 — and keep only those whose BEHAVIOUR matches one of the 22 refuting
+/// languages and whose automaton DIFFERS from the known representative.  One hit
+/// turns 436 into a clean, non-degenerate refutation.
+fn d4hunt<const NA: usize>(nguards: u8) {
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
+        if d == 0 {
+            out.push(a_act::<NA>());
+            for g in 0..nguards { out.push(a_test::<NA>(g)); }
+            return;
+        }
+        let mut sm: Vec<Aut<NA>> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut sm);
+        let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+        sm.retain(|e| seen.insert(e.clone()));
+        out.extend(sm.iter().cloned());
+        for l in &sm {
+            for g in 0..nguards { out.push(a_wh::<NA>(g, l)); }
+            for r in &sm {
+                if let Some(q) = a_seq::<NA>(l, r) { out.push(q); }
+                for g in 0..nguards {
+                    if let Some(q) = a_ite::<NA>(g, l, r) { out.push(q); }
+                }
+            }
+        }
+    }
+    let mut raw: Vec<Aut<NA>> = Vec::new();
+    build::<NA>(nguards, 3, &mut raw);
+    let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+    let d3: Vec<Aut<NA>> = raw.into_iter().filter_map(|a| canon(&a))
+        .filter(|a| seen.insert(a.clone())).collect();
+    // the refuting languages, and their known depth-3 representative
+    let mut refute: std::collections::HashMap<Vec<u8>, Aut<NA>> = std::collections::HashMap::new();
+    for a in &d3 {
+        let (blk, nb) = bisim_blocks(a);
+        let m = match quotient_by(a, &blk, nb).and_then(|q| canon(&q)) { Some(q) => q, None => continue };
+        if sccs_of(&m).iter().map(|c| c.len()).max().unwrap_or(0) < 2 { continue; }
+        if laa_satisfiable(&m) == Some(false) { refute.insert(behaviour(&m), a.clone()); }
+    }
+    println!("PAD_D4HUNT  depth-3 automata: {}   refuting languages: {}", d3.len(), refute.len());
+    let mut leaves: Vec<Aut<NA>> = vec![a_act::<NA>()];
+    for g in 0..nguards { leaves.push(a_test::<NA>(g)); }
+    let (mut built, mut hits) = (0usize, 0usize);
+    let mut hit_langs: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut first_hit: Option<String> = None;
+    let mut consider = |c: Option<Aut<NA>>, built: &mut usize, hits: &mut usize,
+                        hit_langs: &mut std::collections::HashSet<Vec<u8>>,
+                        first_hit: &mut Option<String>| {
+        let c = match c.and_then(|x| canon(&x)) { Some(v) => v, None => return };
+        *built += 1;
+        let b = behaviour(&c);
+        if let Some(known) = refute.get(&b) {
+            if &c != known {
+                *hits += 1;
+                hit_langs.insert(b);
+                if first_hit.is_none() {
+                    *first_hit = Some(format!("{}   vs known {}",
+                        show_aut("NEW", &c), show_aut("OLD", known)));
+                }
+            }
+        }
+    };
+    for e in &d3 {
+        for g in 0..nguards {
+            consider(Some(a_wh::<NA>(g, e)), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+        }
+        for l in &leaves {
+            consider(a_seq::<NA>(e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+            consider(a_seq::<NA>(l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+            for g in 0..nguards {
+                consider(a_ite::<NA>(g, e, l), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+                consider(a_ite::<NA>(g, l, e), &mut built, &mut hits, &mut hit_langs, &mut first_hit);
+            }
+        }
+    }
+    println!("  depth-4 candidates built            : {}", built);
+    println!("  landing in a REFUTING language      : {}", hits);
+    println!("  distinct refuting languages hit     : {} / {}", hit_langs.len(), refute.len());
+    match first_hit {
+        Some(h) => println!("  *** NON-DEGENERATE PAIR FOUND:\n    {}", h),
+        None => println!("  no depth-4 expression realises any refuting language"),
+    }
+}
+
 fn minscc<const NA: usize>(nguards: u8, maxdepth: usize) {
     fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
         if d == 0 {
@@ -10995,6 +11087,11 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(20000);
         deeppull::<3>(g, d, c);
+        return;
+    }
+    if std::env::var("PAD_D4HUNT").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        d4hunt::<3>(g);
         return;
     }
     if std::env::var("PAD_MINSCC").is_ok() {
