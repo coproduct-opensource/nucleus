@@ -11979,6 +11979,10 @@ pullback: {ok} / {}", res.len());
          (true, true, 3, 1, "everything x1")].iter() {
         let mut rescued = 0usize;
         let mut biggest = 0usize;
+        let mut feat = [[[0usize; 2]; 2]; 4];
+        let mut ksize = [[0usize; 12]; 2];
+        let mut ncand = [0usize; 2];
+        let mut nseen = [0usize; 2];
         for &(i, j) in unsolved.iter() {
             let p = match pullback(&list[i], &list[j]).and_then(|p| canon(&p)) {
                 Some(p) => p, None => continue,
@@ -12013,13 +12017,56 @@ pullback: {ok} / {}", res.len());
                     if frontier.len() > 12000 { frontier.truncate(12000); }
                 }
             }
-            if found { rescued += 1; } else if rounds == 2 && mode_dup && mode_cyc >= 2 {
-                print!("    resistant: |P|={} cands={}", p.k, cands.len());
-                println!(" twoHalt={}", two_halt_cycle(&p).is_some());
+            // 452: cross-tabulate FEATURES of rescued vs resistant, on the best
+            // setting only, so the 929 survivors can be characterised rather than
+            // merely counted.
+            if rounds == 2 && mode_dup && mode_cyc >= 2 {
+                let mx = sccs_of(&p).iter().map(|c| c.len()).max().unwrap_or(0);
+                let red = reducible(&p);
+                let th = two_halt_cycle(&p).is_some();
+                let shl = {
+                    let mut hit = false;
+                    for comp in sccs_of(&p) {
+                        for x in 0..NA {
+                            let mut hs = false; let mut hh = false;
+                            for &u in &comp {
+                                if p.st[u][x] == (u + 1) as u8 { hs = true; }
+                                if (p.hl[u] >> x) & 1 == 1 && p.st[u][x] == 0 { hh = true; }
+                            }
+                            if hs && hh { hit = true; }
+                        }
+                    }
+                    hit
+                };
+                let idx = if found { 1usize } else { 0 };
+                feat[0][idx][(mx >= 3) as usize] += 1;
+                feat[1][idx][red as usize] += 1;
+                feat[2][idx][th as usize] += 1;
+                feat[3][idx][shl as usize] += 1;
+                if p.k < 12 { ksize[idx][p.k as usize] += 1; }
+                ncand[idx] += cands.len();
+                nseen[idx] += 1;
             }
+            if found { rescued += 1; }
         }
         println!("  {label:<14}: rescued {rescued} / {}  (largest variant {biggest} states)",
             unsolved.len());
+        if rounds == 2 && mode_dup && mode_cyc >= 2 {
+            let names = ["max SCC >= 3", "reducible", "two-HALT cycle", "selfloop+halt (413)"];
+            println!("    --- 452: what distinguishes the survivors? (resistant | rescued) ---");
+            for (fi, nm) in names.iter().enumerate() {
+                let (r0, r1) = (feat[fi][0][1], feat[fi][1][1]);
+                let (n0, n1) = (feat[fi][0][0] + r0, feat[fi][1][0] + r1);
+                println!("      {:<22} resistant {:5}/{:<5} ({:5.1}%)   rescued {:5}/{:<5} ({:5.1}%)",
+                    nm, r0, n0, 100.0 * r0 as f64 / n0.max(1) as f64,
+                    r1, n1, 100.0 * r1 as f64 / n1.max(1) as f64);
+            }
+            println!("      |P| histogram resistant: {:?}", &ksize[0][..12]);
+            println!("      |P| histogram rescued  : {:?}", &ksize[1][..12]);
+            println!("      mean #candidates  resistant {:.1}   rescued {:.1}",
+                ncand[0] as f64 / nseen[0].max(1) as f64,
+                ncand[1] as f64 / nseen[1].max(1) as f64);
+        }
     }
     }
 

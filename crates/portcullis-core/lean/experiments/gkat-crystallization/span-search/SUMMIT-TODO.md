@@ -21446,3 +21446,41 @@ field's prior that this problem does not close still stands.
 
 **Next.** Unchanged from 450: characterise the 929. They are now the only
 measured obstruction that has survived every artefact check this program applies.
+
+## 452 — characterising the 929: a cross-tab on the only surviving obstruction.
+
+Web search: exhausted (200/200).
+
+450 established that ~929 of 3,347 uncoverable pullbacks resist refinement
+independently of the state bound, and 451 confirmed the obstruction is absent at
+k ≤ 4 by two independent code paths. So the 929 are the one measured obstruction
+this program has that survives every artefact check. This iteration asks what
+they *are*.
+
+**Extended `PAD_MECH`'s best setting** (`W1+dup+cyc2 x2`) to cross-tabulate four
+features of rescued versus resistant pullbacks, with both rates printed so the
+base rate is visible — the discipline 425 established after 424 nearly credited
+irreducibility with the whole phenomenon:
+
+* `max SCC ≥ 3` — 425's best predictor of coverage failure;
+* `reducible` — 423/424's mechanism, which 432 undercut and 433 restored;
+* `two-HALT cycle` — the census's long-standing correlate;
+* `selfloop + halt in one SCC` — 413's configuration, the shape behind every
+  `LevelAgreementActive` refutation and now a theorem (440).
+
+Plus the `|P|` size histogram and the mean number of candidate covers tried, so
+that "resistant" can be separated from "under-searched": a pullback with few
+candidates may resist because there was little to try, not because it is hard.
+
+**Why these four.** Each has been proposed at some point in this program as *the*
+obstruction, and each has been partly refuted: irreducibility explains only 37%
+(424), 413's configuration scored zero on reducible pullbacks (425), component
+size is the strongest but far from determining (425). If one of them separates
+the 929 cleanly, that settles a question open since 424; if none does, the
+obstruction is something not yet named, which is itself worth knowing.
+
+Running.
+
+**Odds: 25%, unchanged.** No result yet.
+
+**Next.** Read the cross-tab.
