@@ -9199,4 +9199,49 @@ theorem saturation_is_union {S S' : Type} (f : S → S') (C : S → Prop)
 #print axioms saturation_closed
 #print axioms saturation_is_union
 
+
+/-! ### 300 — SATURATEDNESS IS AN INVARIANT, SO DISJOINTNESS IS FREE
+
+    299 left two things to check when a block is replaced by its saturation:
+    the enlarged block must still be DISJOINT from `P`, and it must still be
+    SOLVABLE.  The first is free, and for a reason worth stating: **saturatedness
+    is an INVARIANT of the recursion.**
+
+      * the recursion starts at `P = ∅`, which is saturated vacuously;
+      * `split` replaces `P` by `P ∪ C`, and a union of saturated sets is
+        saturated;
+      * `seq` and `loop` do not change the block at all.
+
+    So at every node the block is a union of classes — and then disjointness
+    transports: if `P` is a union of classes and misses `C`, it misses
+    everything class-equivalent to `C` as well, because a member of `P`
+    equivalent to a member of `C` would drag that member into `P`.
+
+    **This reduces 299's two open sub-conditions to ONE.**  What remains is
+    whether the ENLARGED block is still layered — and that is the whole
+    difficulty, not a side condition: the saturation of a `seq`'s right half
+    contains every left-half state bisimilar to a right-half one, so the block
+    a `split` must solve mixes the two halves. -/
+theorem saturated_empty {S S' : Type} (f : S → S') :
+    ∀ s t : S, f s = f t → (fun _ : S => False) s → (fun _ : S => False) t :=
+  fun _ _ _ h => h.elim
+
+theorem saturated_or {S S' : Type} (f : S → S') (P C : S → Prop)
+    (hP : ∀ s t, f s = f t → P s → P t) (hC : ∀ s t, f s = f t → C s → C t) :
+    ∀ s t, f s = f t → (P s ∨ C s) → (P t ∨ C t) :=
+  fun s t h => Or.imp (hP s t h) (hC s t h)
+
+/-- **DISJOINTNESS SURVIVES SATURATION**, provided the block it must miss is
+    itself a union of classes — which the invariant guarantees. -/
+theorem saturation_disjoint {S S' : Type} (f : S → S') (P C : S → Prop)
+    (hPsat : ∀ s t, f s = f t → P s → P t)
+    (hdisj : ∀ s, P s → ¬ C s) :
+    ∀ s, P s → ¬ (∃ u, f u = f s ∧ C u) := by
+  intro s hPs hsat
+  obtain ⟨u, hu, hCu⟩ := hsat
+  exact hdisj u (hPsat s u hu.symm hPs) hCu
+
+#print axioms saturated_or
+#print axioms saturation_disjoint
+
 end GkatCensus

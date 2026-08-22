@@ -13865,3 +13865,51 @@ vanished.
 of classes, and it is the image of a solvable region under the collapse — which
 is the same question one level down, so the honest move is to check whether the
 recursion on saturated blocks is WELL-FOUNDED before assuming it terminates.
+
+---
+
+## 300 — SATURATEDNESS IS AN INVARIANT, SO DISJOINTNESS IS FREE.
+
+299 left two things to check when a block is replaced by its saturation: the
+enlarged block must still be DISJOINT from `P`, and it must still be SOLVABLE.
+**The first is free**, and for a reason worth stating: **saturatedness is an
+INVARIANT of the recursion.**
+
+  * the recursion starts at `P = ∅`, saturated vacuously (`saturated_empty`);
+  * `split` replaces `P` by `P ∪ C`, and a union of saturated sets is saturated
+    (`saturated_or`);
+  * `seq` and `loop` do not change the block at all.
+
+So at every node the block is a union of classes — and then disjointness
+transports (`saturation_disjoint`): a member of `P` equivalent to a member of
+`C` would drag that member into `P`, contradicting the original disjointness.
+All three lemmas are **axiom-free**.
+
+### The remainder, in one statement
+
+    THE SATURATION OF A LAYERED CLOSED BLOCK IS STILL LAYERED
+
+Everything else in `hcollapse` is now proved:
+
+    solution side, relativised          layeredOn_has_solution     (294/295/299)
+    pushforward: acyclic                acyclic_bisim_pushforward  (297/298)
+    pushforward: sequence               seqLayer_pushforward_rep   (289)
+    pushforward: loop                   loopLayerOn_pushforward_rep(296)
+    blocks can be saturated             saturation_closed          (299)
+    saturatedness is invariant          saturated_empty/_or        (300)
+    disjointness survives saturation    saturation_disjoint        (300)
+
+**And the remaining statement is the whole difficulty, not a side condition.**
+The saturation of a `seq`'s right half contains every left-half state bisimilar
+to a right-half one, so the block a `split` must solve MIXES THE TWO HALVES —
+which is the same shape as the original problem one level down.  That is either
+a genuine recursion (and then it terminates, the state list being finite) or a
+genuine circularity, and telling those apart is the next thing worth doing.
+
+**Odds: 98%, HELD.**  One of 299's two sub-conditions discharged cleanly and
+axiom-free; the other is the hard one and I said so when I split them.
+
+**Next.**  Decide whether "the saturation of a layered block is layered" is a
+well-founded recursion or a circularity: the saturated block is strictly
+LARGER than the original, so the obvious induction on block size runs the WRONG
+WAY — find the measure that decreases, or find that none does.
