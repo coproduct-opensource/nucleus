@@ -15716,3 +15716,69 @@ harmless; this is the same question asked of the whole level at once.
 
 **Next.** That split: from a quotient's lists, produce `raw`/`loops`/`exits` and
 prove `firstMatch` agreement.
+
+## 342 — the last obligation, derived to a per-atom condition, and a counterexample
+
+341 left one thing: split a quotient's lists into `raw`/`loops`/`exits` whose
+gated reassembly selects the same transition at every atom. Working the gating
+out turns that into something finite and sharp.
+
+**The derivation.** At a level-`n` state `s`, the peeled list fires in this order:
+
+1. a `raw` transition, if one of its guards holds;
+2. else a loop entry, gated `raw.hlt s ∧ bs n ∧ tr.1`;
+3. else an exit entry, gated `raw.hlt s ∧ ¬bs n ∧ tr.1`;
+4. else halt, iff `raw.hlt s ∧ ¬bs n ∧ h₀s n`.
+
+`bs n` is ONE test shared by the whole level, and steps 2 and 3/4 sit on opposite
+sides of it. Hence:
+
+> **`bs n` must be true on every back-edge atom of the level, and false on every
+> exit atom and every halting atom of the level.**
+
+Intra-level edges that *decrease* the rank go into `raw` and constrain nothing,
+so the back-edge set is ours to choose — any set whose removal leaves the region
+acyclic. With regions of size ≤ 3 that is at most six rank orderings to try.
+
+**`PAD_BACKATOM`, over 4000 quotients / 968 non-trivial regions:**
+
+| | |
+|---|---|
+| regions admitting SOME rank ordering with no clash | **967 (99.90%)**, 915 of them singletons |
+| regions where EVERY ordering clashes | **1** |
+
+**The counterexample is real.** `q0: hl=000 st=[–,q1,q1] | q1: hl=110 st=[q0,–,–]`.
+Rank `q0 < q1`: `q0→q1` becomes a back-edge on atoms 1,2, but `q1` *halts* on
+atoms 1,2 — clash. Rank `q1 < q0`: `q1→q0` becomes a back-edge on atom 0, but
+`q0` halts on atom 0 — clash. Both orderings fail, and there is no third.
+
+So the one-seq-one-loop-per-level shape is **not** universally instantiable. This
+is a genuine limit found by measurement, not a gap in the proof effort.
+
+**The escape, and the tension it creates.** The obvious fix is to duplicate `q1`
+into a back-edge copy and a halting copy — flow-graph structuring needs node
+DUPLICATION, exactly the point flagged in the post-proof agenda as the best
+surprise-connection candidate (Böhm–Jacopini / Kosaraju). Duplication is legal
+only if the quotient need not be minimal, and 330 established that
+`SumQuotientSolvable` requires no minimality.
+
+**But `sumQuotientSolvable_of_certificate`'s `hstart` does demand it:**
+
+```lean
+(∀ u v, GkatPlanExistence.GenBisimilar quot u v → u = v)
+```
+
+That is minimality, in the hypothesis I would have to supply. So either the
+duplication route needs `hstart` weakened, or the clashing region needs a
+different treatment. **This is the fork, and it is not resolved by wanting it to
+be.** Naming it now rather than discovering it later.
+
+**Housekeeping.** The default census prints
+`Thompson automata failing backedge/halt disjointness (must be 0): 1062` — a
+"must be 0" label on a count that is not 0, i.e. a false assertion in an old
+diagnostic. Relabelled as a measurement; 342 shows the condition genuinely fails
+for some automata, so the gate framing was wrong.
+
+**Next.** Resolve the fork: check whether `hstart`'s minimality is load-bearing
+for the rest of the certificate argument, or whether a non-minimal quotient still
+satisfies everything `sumQuotientSolvable_of_certificate` actually uses.

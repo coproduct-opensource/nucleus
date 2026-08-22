@@ -2287,6 +2287,106 @@ fn build_pool<const NA: usize>(nguards: u8, rounds: usize, cap: usize) -> Vec<Au
     pool
 }
 
+/// **`PAD_BACKATOM`** (iteration 342).
+///
+/// 341 left exactly one obligation: from a quotient's transition lists, produce
+/// `raw` / `loops` / `exits` whose gated reassembly selects the same transition
+/// at every atom.  Working the gating out gives a sharp, finite condition.
+///
+/// The peeled list at a level-`n` state `s` fires, at atom `x`, in this order:
+///   1. a `raw` transition, if one of its guards holds;
+///   2. else a loop entry, gated `raw.hlt s ∧ bs n ∧ tr.1`;
+///   3. else an exit entry, gated `raw.hlt s ∧ ¬bs n ∧ tr.1`;
+///   4. else halt, iff `raw.hlt s ∧ ¬bs n ∧ h₀s n`.
+///
+/// `bs n` is ONE test shared by the whole level.  Steps 2 and 3/4 sit on opposite
+/// sides of it.  So an atom that is a BACK-EDGE atom for one state of the level
+/// may not be an EXIT-or-HALT atom for another state of the same level:
+///
+/// > **`bs n` must be true on every back-edge atom of the level and false on
+/// > every exit atom and every halting atom of the level.**
+///
+/// Intra-level edges that DECREASE the rank go into `raw` and constrain nothing,
+/// so the back-edge set is ours to choose — any set whose removal leaves the
+/// region acyclic.  With regions of size ≤ 3 that is at most 6 rank orderings to
+/// try.  This measures whether SOME ordering avoids the clash.
+fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut regions, mut ok, mut bad) = (0usize, 0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    let mut singleton_ok = 0usize;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        for comp in sccs_of(&q) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| q.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            regions += 1;
+            // try every rank ordering of the region (size <= 3 in practice)
+            let m = comp.len();
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut any = false;
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                // per-atom demand on bs: 1 = must be true, 2 = must be false
+                let mut demand = [0u8; 16];
+                let mut clash = false;
+                for &u in &comp {
+                    for x in 0..NA {
+                        let tv = q.st[u][x];
+                        let want = if tv == 0 {
+                            2                                   // halting atom
+                        } else {
+                            let t = (tv - 1) as usize;
+                            if !comp.contains(&t) { 2 }         // exit atom
+                            else if rank[t] < rank[u] { 0 }     // raw edge: free
+                            else { 1 }                          // back-edge atom
+                        };
+                        if want == 0 { continue; }
+                        if demand[x] == 0 { demand[x] = want; }
+                        else if demand[x] != want { clash = true; }
+                    }
+                }
+                if !clash { any = true; break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if any {
+                ok += 1;
+                if m == 1 { singleton_ok += 1; }
+            } else {
+                bad += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("region {comp:?}\n    {}", show_aut("quot ", &q)));
+                }
+            }
+        }
+    }
+    println!("BACKATOM: {regions} non-trivial regions in quotients");
+    println!("  {ok} admit a rank ordering with NO back-atom/exit-atom clash ({:.2}%), \
+              of which {singleton_ok} are singletons", 100.0 * ok as f64 / regions.max(1) as f64);
+    println!("  {bad} where EVERY ordering clashes");
+    match first_bad {
+        None => println!("  no clash anywhere: the shared level test `bs n` always exists"),
+        Some(m) => println!("  FIRST CLASH\n    {m}"),
+    }
+}
+
+/// Next lexicographic permutation, in place; false when the last is reached.
+fn next_perm(p: &mut [usize]) -> bool {
+    let n = p.len();
+    if n < 2 { return false; }
+    let mut i = n - 1;
+    while i > 0 && p[i - 1] >= p[i] { i -= 1; }
+    if i == 0 { return false; }
+    let mut j = n - 1;
+    while p[j] <= p[i - 1] { j -= 1; }
+    p.swap(i - 1, j);
+    p[i..].reverse();
+    true
+}
+
 /// **`PAD_CONDENSATION`** (iteration 334).
 ///
 /// 334 proved `layeredOn_empty_of_levels`: a level function that never increases
@@ -8013,6 +8113,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         llee_test::<NA>(nguards as u8);
         return;
     }
+    if std::env::var("PAD_BACKATOM").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        backatom::<3>(g, r, c);
+        return;
+    }
     if std::env::var("PAD_CONDENSATION").is_ok() {
         let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -8246,7 +8353,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let bad = list.par_iter().filter(|a| !reducible(a)).count();
         println!("  irreducible Thompson automata (must be 0): {bad}");
         let bh = list.par_iter().filter(|a| !backedge_halt_disjoint(a)).count();
-        println!("  Thompson automata failing backedge/halt disjointness (must be 0): {bh}");
+        // NOT an assertion: 342 derived the real disjointness condition and found it
+        // genuinely fails for some automata, so a "must be 0" label here was wrong.
+        println!("  Thompson automata failing backedge/halt disjointness: {bh} \
+                  (a measurement, not a gate — see 342)");
     }
     phase("reducibility sweep", &mut mark);
     if std::env::var("DUMP").is_ok() {
