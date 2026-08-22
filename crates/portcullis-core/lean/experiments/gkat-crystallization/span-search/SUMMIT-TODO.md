@@ -19425,3 +19425,63 @@ not close still stands.
 **Next.** Sweep the second refuting class — two active states stepping to
 different targets — over the same exhaustive expression enumeration, at the
 syntactic level.
+
+## 415 — the level is forced from BOTH sides: nesting depth AND SCC-within-depth.
+
+Web search: exhausted (200/200).
+
+414 swept one refuting class. This sweeps `SourceLevelAgrees` itself — every
+same-level pair, every atom — over the exhaustive expression enumeration. The
+rank search decomposes: `rawPred` needs `lvl t = lvl s`, so a step LEAVING a
+level is non-raw whatever the rank, and levels can be searched independently.
+
+**First result: the syntactic level ALONE is refuted, badly.**
+
+| level = syntactic nesting depth | count |
+|---|---|
+| distinct (automaton, level) at depth ≤ 3, 4 guards | 686,032 |
+| `SourceLevelAgrees` satisfiable | 517,711 |
+| **NO rank satisfies it** | **168,321 (24.5%)** |
+
+The small counterexample reads clearly: `lvl = [0,0,1,0]`, level 0 = `{q0,q1,q3}`.
+`q1` steps to `q2`, which is at level 1 — a step LEAVING the level is non-raw
+under every rank, so `q1` is always active with outcome `some q2`. `q3` halts
+everywhere, so it is always active with outcome `none`. Two states of one
+sequence, never agreeing, no rank available.
+
+**The diagnosis: the SCC level was doing real work.** It separates SEQUENTIAL
+states — a sequence is acyclic, so its states lie in distinct SCCs. Syntactic
+depth throws that away and lumps a whole sequence into one level. 413 showed the
+converse: the SCC merges an inner loop with its enclosing one, which depth
+separates. **Neither notion alone is the level; each fixes the other's failure.**
+
+**The refinement: depth first, then SCC of the subgraph restricted to that
+depth.**
+
+| level = (depth, SCC within depth) | count |
+|---|---|
+| distinct (automaton, level), G=2 | 10,440 |
+| satisfiable | **10,440** |
+| distinct (automaton, level), G=4 | 686,032 |
+| satisfiable | **686,032** |
+| NO rank satisfies it | **0** |
+
+Exhaustive over every expression of depth ≤ 3, not sampled.
+
+**The Lean work of 414 is untouched.** `SourceLevelAgrees` takes an ARBITRARY
+level function — that generality is exactly what lets the refined level be
+plugged in. What 415 refutes is one *instantiation* (syntactic depth alone), not
+the definition or `levelAgreementActive_of_sourceLevelAgrees`. Had 414 hard-wired
+the syntactic level into the statement, this iteration would have been a
+retraction instead of a substitution.
+
+**Odds: 87% → 88%.** The level function is no longer a guess: it is pinned from
+two sides by two independent refutations, and the result is exhaustively clean
+where each half alone fails. Only one point, because this is the third refuted
+hypothesis in the program (`LevelAgreement` 359, `SourceSccAgrees` 413,
+syntactic-depth-`SourceLevelAgrees` 415) and depth 3 is still a bound, not a
+proof. The field's prior that this problem does not close still stands.
+
+**Next.** Define the refined level in Lean by recursion on the expression —
+depth from `wh`, components from the `seq`/`ite` structure — and prove it agrees
+with the graph computation.

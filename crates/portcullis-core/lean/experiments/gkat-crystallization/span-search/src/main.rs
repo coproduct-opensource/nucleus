@@ -2448,6 +2448,167 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 ///
 /// And per 413's method lesson this enumerates EXPRESSIONS exhaustively to a
 /// depth bound, rather than sampling a capped closure.
+/// **`PAD_LVLAGREE`** (iteration 415).
+///
+/// 414 swept one refuting class (a self-loop against a halt).  This sweeps
+/// `SourceLevelAgrees` ITSELF — every same-level pair, every atom — over the
+/// same exhaustive expression enumeration.
+///
+/// The search decomposes.  `rawPred` requires `lvl t = lvl s`, so a step
+/// LEAVING a level is non-raw whatever the rank, and the rank only decides
+/// rawness within a level.  So the levels are independent: search each level's
+/// permutations on its own and the whole rank space is covered without a
+/// product.
+fn lvlagree<const NA: usize>(nguards: u8, maxdepth: usize) {
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<(Aut<NA>, Vec<usize>)>) {
+        if d == 0 {
+            out.push((a_act::<NA>(), vec![0]));
+            for g in 0..nguards { out.push((a_test::<NA>(g), vec![0; 1])); }
+            return;
+        }
+        let mut smaller: Vec<(Aut<NA>, Vec<usize>)> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut smaller);
+        let mut seen: std::collections::HashSet<(Aut<NA>, Vec<usize>)> =
+            std::collections::HashSet::new();
+        smaller.retain(|e| seen.insert(e.clone()));
+        out.extend(smaller.iter().cloned());
+        for (l, ld) in &smaller {
+            for g in 0..nguards {
+                out.push((a_wh::<NA>(g, l), ld.iter().map(|z| z + 1).collect()));
+            }
+            for (r, rd) in &smaller {
+                if let Some(sq) = a_seq::<NA>(l, r) {
+                    let mut dv = ld.clone(); dv.extend(rd.iter().cloned());
+                    out.push((sq, dv));
+                }
+                for g in 0..nguards {
+                    if let Some(it) = a_ite::<NA>(g, l, r) {
+                        let mut dv = ld.clone(); dv.extend(rd.iter().cloned());
+                        out.push((it, dv));
+                    }
+                }
+            }
+        }
+    }
+    let mut exprs: Vec<(Aut<NA>, Vec<usize>)> = Vec::new();
+    build::<NA>(nguards, maxdepth, &mut exprs);
+    // canonicalise, transport the level, and dedup on (automaton, level vector)
+    let mut cases: std::collections::HashSet<(Aut<NA>, Vec<usize>)> =
+        std::collections::HashSet::new();
+    for (a, depths) in &exprs {
+        let k = a.k as usize;
+        if k == 0 || depths.len() < k { continue; }
+        let ord = canon_order(a);
+        let mut lvl = vec![0usize; k];
+        let mut okmap = true;
+        for i in 0..k {
+            if (ord[i] as usize) < k { lvl[ord[i] as usize] = depths[i]; } else { okmap = false; }
+        }
+        if !okmap { continue; }
+        if let Some(c) = canon(a) {
+            if c.k as usize == k {
+                if std::env::var("REFINE").is_ok() {
+                    // REFINED level: nesting depth, then SCC of the subgraph
+                    // restricted to states at that same depth.  Depth separates an
+                    // inner loop from its enclosing one (413); the SCC separates
+                    // sequential states (415).  Neither alone suffices.
+                    let mut comp_id = vec![usize::MAX; k];
+                    let mut next_id = 0usize;
+                    for u in 0..k {
+                        if comp_id[u] != usize::MAX { continue; }
+                        // states at u's depth mutually reachable from u using only
+                        // same-depth edges
+                        let du = lvl[u];
+                        let mut fwd = vec![false; k]; fwd[u] = true;
+                        let mut st = vec![u];
+                        while let Some(v) = st.pop() {
+                            for x in 0..NA {
+                                if c.st[v][x] == 0 { continue; }
+                                let t = (c.st[v][x] - 1) as usize;
+                                if lvl[t] != du || fwd[t] { continue; }
+                                fwd[t] = true; st.push(t);
+                            }
+                        }
+                        let mut bwd = vec![false; k]; bwd[u] = true;
+                        let mut st2 = vec![u];
+                        while let Some(v) = st2.pop() {
+                            for w in 0..k {
+                                if lvl[w] != du || bwd[w] { continue; }
+                                let hits = (0..NA).any(|x| c.st[w][x] != 0
+                                    && (c.st[w][x] - 1) as usize == v);
+                                if hits { bwd[w] = true; st2.push(w); }
+                            }
+                        }
+                        for w in 0..k {
+                            if fwd[w] && bwd[w] { comp_id[w] = next_id; }
+                        }
+                        next_id += 1;
+                    }
+                    let refined: Vec<usize> = (0..k).map(|u| lvl[u] * 1000 + comp_id[u]).collect();
+                    cases.insert((c, refined));
+                } else {
+                    cases.insert((c, lvl));
+                }
+            }
+        }
+    }
+    let (mut tested, mut ok, mut bad) = (0usize, 0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    for (a, lvl) in &cases {
+        let k = a.k as usize;
+        tested += 1;
+        let mut levels: Vec<usize> = lvl.clone();
+        levels.sort_unstable(); levels.dedup();
+        let mut all_ok = true;
+        for &n in &levels {
+            let comp: Vec<usize> = (0..k).filter(|&u| lvl[u] == n).collect();
+            let m = comp.len();
+            if m < 2 { continue; }            // a lone state cannot disagree
+            if m > 7 { continue; }
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut level_ok = false;
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let mut agree = true;
+                for x in 0..NA {
+                    let mut outs: Vec<Option<usize>> = Vec::new();
+                    for &u in &comp {
+                        let tv = a.st[u][x];
+                        let halts = (a.hl[u] >> x) & 1 == 1;
+                        let isact = if tv == 0 { halts } else {
+                            let t = (tv - 1) as usize;
+                            // raw needs SAME LEVEL and a rank decrease
+                            !(lvl[t] == lvl[u] && rank[t] < rank[u])
+                        };
+                        if !isact { continue; }
+                        outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                    }
+                    if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                }
+                if agree { level_ok = true; break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if !level_ok {
+                all_ok = false;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("level={} states={:?} lvl={:?} {}",
+                        n, comp, lvl, show_aut("a", a)));
+                }
+            }
+        }
+        if all_ok { ok += 1; } else { bad += 1; }
+    }
+    println!("PAD_LVLAGREE  expressions built (depth <= {}) : {}", maxdepth, exprs.len());
+    println!("  distinct (automaton, syntactic level)      : {}", tested);
+    println!("  SourceLevelAgrees satisfiable              : {}", ok);
+    println!("  NO rank satisfies it                       : {}", bad);
+    match first_bad {
+        Some(b) => println!("  *** REFUTES SourceLevelAgrees:\n    {}", b),
+        None => println!("  nothing refutes SourceLevelAgrees at this depth"),
+    }
+}
+
 fn synlevel<const NA: usize>(nguards: u8, maxdepth: usize) {
     // an expression is built directly; we carry (automaton, per-state syntactic depth)
     fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<(Aut<NA>, Vec<usize>)>) {
@@ -9991,6 +10152,12 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_LVLAGREE").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        lvlagree::<3>(g, d);
         return;
     }
     if std::env::var("PAD_SYNLEVEL").is_ok() {
