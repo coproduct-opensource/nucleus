@@ -16072,3 +16072,62 @@ every state, like each state's own part.
 
 **Next.** That construction — `sharedLoop := (level states).flatMap loopPart` and
 the two hypotheses discharged from agreement.
+
+## 348 — the shared lists BUILT, not assumed
+
+347 closed the transition obligation but left `hagree` and `hback` as hypotheses.
+348 constructs the shared lists and discharges both.
+
+```lean
+sharedLoop := states.flatMap (fun s' => (disjoin (L s')).filter loopPart)
+```
+
+`shared_flatMap` — the two hypotheses fall straight out:
+
+- **`hback`** because a state's own part is a sublist of the concatenation, so
+  the witness is the entry itself;
+- **`hagree`** because agreement says any firing entry of ANY state's part is the
+  entry that EVERY state's part fires.
+
+Neither needs a case analysis; the work was choosing the construction so they
+would be immediate, which is what `List.mem_flatMap` in both directions gives.
+
+**`firstMatch_peel_level`** then says: every state of a level fires exactly as
+`peeledSys.trans` does there, with the shared lists **built** rather than
+assumed. Its only remaining inputs are the gate conditions and the agreement
+condition — both of them 343's measurement, now stated as Lean hypotheses at a
+single `(W, x)`.
+
+**Where the route stands.**
+
+```
+level function, free for every system                    339
+every SyntacticallyLayered system solves                 338
+the peel constructed, every level at once                341
+solutions survive reshaping                              340
+minimality required nowhere                              343
+transition premise, shared lists BUILT                   348
+halt premise                                             346
+------------------------------------------------------------------
+the capstone: instantiate peeledSys from a quotient      THE REMAINDER
+```
+
+**What the capstone needs, concretely.** All four ingredients are now
+constructible from a quotient and nothing else:
+
+| ingredient | construction |
+|---|---|
+| `levelStates n` | `aut.states.filter (lvl · = n)` |
+| `loops n` / `exits n` | `flatMap` of the level states' parts (348) |
+| `bs n` | `bigOr` of the level's loop guards (346) |
+| `h₀s n` | `bigOr` of the level's halt tests (346) |
+| `raw.trans s` | `(disjoin (aut.trans s)).filter p` |
+| `raw.hlt s` | the state's non-raw non-dead test |
+
+so the capstone is an instantiation, not a new idea. What it will cost is
+hypothesis bookkeeping: the gate, agreement and halt conditions have to be
+carried per level and per `(W, x)`, and `solvesBA_peeled`'s region conditions
+have to be met by the same classifiers `p`, `q` and rank.
+
+**Next.** That instantiation, with `levelStates` defined and the two behaviour
+premises of `solvesBA_of_behaviour` produced from it.

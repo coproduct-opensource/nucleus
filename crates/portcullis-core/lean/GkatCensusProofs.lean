@@ -12572,6 +12572,81 @@ theorem firstMatch_peel_shared_agrees {S X : Type} (W : T → X → Bool) (x : X
 #print axioms firstMatch_shared_exit
 #print axioms firstMatch_peel_shared_agrees
 
+/-- **Building the shared list.**  It is the concatenation of every level state's
+own part, and the two hypotheses 347 left open fall straight out of the agreement
+condition — `hback` because a state's part is a sublist of the concatenation, and
+`hagree` because agreement says any firing entry of any state's part is the entry
+every state's part fires. -/
+theorem shared_flatMap {S X : Type} (W : T → X → Bool) (x : X)
+    (states : List S) (part : S → List (BExp T × A × S))
+    (hagree0 : ∀ s ∈ states, ∀ s' ∈ states, ∀ tr ∈ part s',
+      GkatGS.bval W tr.1 x = true → GkatKleene.firstMatch W x (part s) = some tr.2) :
+    ∀ s ∈ states,
+      (∀ tr ∈ states.flatMap part, GkatGS.bval W tr.1 x = true →
+        GkatKleene.firstMatch W x (part s) = some tr.2) ∧
+      (∀ tr ∈ part s, GkatGS.bval W tr.1 x = true →
+        ∃ tr' ∈ states.flatMap part, GkatGS.bval W tr'.1 x = true) := by
+  intro s hs
+  constructor
+  · intro tr htr hb
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hagree0 s hs s' hs' tr hmem hb
+  · intro tr htr hb
+    exact ⟨tr, List.mem_flatMap.mpr ⟨s, hs, htr⟩, hb⟩
+
+/-- **THE LEVEL'S TRANSITION AGREEMENT.**  Every state of a level fires exactly as
+`peeledSys.trans` does there, with the shared lists BUILT — not assumed — as the
+concatenations of the states' own parts.  The only remaining inputs are the gate
+conditions and the agreement condition, both of them 343's measurement. -/
+theorem firstMatch_peel_level {S X : Type} (W : T → X → Bool) (x : X)
+    (states : List S) (L : S → List (BExp T × A × S))
+    (rawHlt : S → BExp T) (b : BExp T) (p q : (BExp T × A × S) → Bool)
+    (hgateL : ∀ s ∈ states, ∀ s' ∈ states,
+      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (rawHlt s) x = true ∧ GkatGS.bval W b x = true)
+    (hgateE : ∀ s ∈ states, ∀ s' ∈ states,
+      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && !q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (rawHlt s) x = true ∧ GkatGS.bval W b x = false)
+    (hagreeL : ∀ s ∈ states, ∀ s' ∈ states,
+      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x ((disjoin (L s)).filter (fun tr => !p tr && q tr))
+            = some tr.2)
+    (hagreeE : ∀ s ∈ states, ∀ s' ∈ states,
+      ∀ tr ∈ (disjoin (L s')).filter (fun tr => !p tr && !q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x ((disjoin (L s)).filter (fun tr => !p tr && !q tr))
+            = some tr.2) :
+    ∀ s ∈ states,
+      GkatKleene.firstMatch W x (L s)
+        = GkatKleene.firstMatch W x
+            (((disjoin (L s)).filter p
+               ++ (states.flatMap (fun s' =>
+                    (disjoin (L s')).filter (fun tr => !p tr && q tr))).map
+                      (fun tr => (BExp.and (rawHlt s) (BExp.and b tr.1), tr.2)))
+              ++ (states.flatMap (fun s' =>
+                    (disjoin (L s')).filter (fun tr => !p tr && !q tr))).map
+                      (fun tr => (BExp.and (BExp.and (rawHlt s) (BExp.not b)) tr.1, tr.2))) := by
+  intro s hs
+  obtain ⟨hagL, hbkL⟩ :=
+    shared_flatMap W x states (fun s' => (disjoin (L s')).filter (fun tr => !p tr && q tr))
+      (fun a ha c hc tr htr hb => hagreeL a ha c hc tr htr hb) s hs
+  obtain ⟨hagE, hbkE⟩ :=
+    shared_flatMap W x states (fun s' => (disjoin (L s')).filter (fun tr => !p tr && !q tr))
+      (fun a ha c hc tr htr hb => hagreeE a ha c hc tr htr hb) s hs
+  refine firstMatch_peel_shared_agrees W x (L s) (rawHlt s) b p q _ _ ?_ hagL hbkL ?_ hagE hbkE
+  · intro tr htr hb
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hgateL s hs s' hs' tr hmem hb
+  · intro tr htr hb
+    obtain ⟨s', hs', hmem⟩ := List.mem_flatMap.mp htr
+    exact hgateE s hs s' hs' tr hmem hb
+
+#print axioms shared_flatMap
+#print axioms firstMatch_peel_level
+
 end SharedList
 
 #print axioms firstMatch_some_guard
