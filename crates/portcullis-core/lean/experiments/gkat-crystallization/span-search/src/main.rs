@@ -11976,7 +11976,12 @@ pullback: {ok} / {}", res.len());
          (true, false, 2, 1, "W1+cyc2 x1"), (true, false, 2, 2, "W1+cyc2 x2"),
          (true, false, 2, 3, "W1+cyc2 x3"),
          (true, true, 2, 1, "W1+dup+cyc2 x1"), (true, true, 2, 2, "W1+dup+cyc2 x2"),
-         (true, true, 3, 1, "everything x1")].iter() {
+         (true, true, 3, 1, "everything x1"),
+         // 454: the rounds axis, untested until now.  453 found resistance rises
+         // monotonically with |P| while candidate counts stay flat -- the
+         // signature of a DEPTH limit rather than an obstruction.
+         (true, true, 2, 4, "W1+dup+cyc2 x4"),
+         (true, true, 2, 6, "W1+dup+cyc2 x6")].iter() {
         let mut rescued = 0usize;
         let mut biggest = 0usize;
         let mut feat = [[[0usize; 2]; 2]; 4];

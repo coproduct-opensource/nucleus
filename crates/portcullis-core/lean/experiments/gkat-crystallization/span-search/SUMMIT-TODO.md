@@ -21543,3 +21543,38 @@ exactly that move. Testing it is one iteration away.
 **Next.** Run `W1+dup+cyc2` at x4 and x6. If the residue falls and keeps falling
 with rounds, it is a depth artefact and 450's obstruction dissolves like the four
 before it. If it plateaus, size is a real obstruction.
+
+## 454 — the rounds experiment, with the prediction recorded first.
+
+Web search: exhausted (200/200).
+
+453 found the 929 resisters are characterised by SIZE, not by any named shape,
+with the resistance rate climbing 12.6% → 26.8% → 34.7% → 44.6% → 57.1% as `|P|`
+goes 5 → 10, while the mean candidate count stays flat (80.9 vs 77.2). That is
+the signature of a **depth** limit: bigger objects need more refinement steps to
+reach, and the mechanism table has never exceeded **3 rounds**, with the best
+setting at **x2**.
+
+450 ruled out the *state* bound (MAXK 16 → 22, counts identical). It never
+touched the *rounds* bound. So: added `W1+dup+cyc2 x4` and `x6` to the sweep.
+
+**Prediction, recorded before the result** — as at 449, where recording it first
+is what made the outcome mean something:
+
+* **If depth-limited:** x4 beats x2's 2,418, x6 beats x4, and the gains
+  concentrate in the large-`|P|` bins where 453 measured the highest resistance.
+* **If a real obstruction:** the counts plateau at ~2,418 and the extra rounds
+  buy little or nothing, mirroring 450's flat response to the state bound.
+
+**One caveat that could muddy either reading.** The refinement frontier is
+truncated at 12,000 nodes per round. More rounds against a truncated frontier can
+saturate for a reason that is neither depth nor obstruction — the search may
+simply be discarding the branches that would have paid. If the counts plateau I
+will check whether the frontier is hitting that cap before calling it an
+obstruction.
+
+Running.
+
+**Odds: 25%, unchanged.** No result yet.
+
+**Next.** Read the x4/x6 counts against the prediction above.
