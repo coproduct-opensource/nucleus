@@ -14660,3 +14660,57 @@ never states, so it cannot change the weights.  The same fact that made
 an INJECTION rather than an identity, which 316's definition was built to make
 immediate: `stateWeight (.ite b e f) (inl u) = stateWeight e u`, so a maximal
 `inl` witness upstairs is a maximal witness downstairs.  Then the induction.
+
+---
+
+## 319 — `hout` IS FALSE IN THE CASE OF INTEREST.
+
+Attempting the `ite` case on 318's bundle hits a mismatch, and it is not
+mechanical.
+
+**Every case lemma carries `hout : ∀ s, ¬ B (j s)`** — "the block misses the
+image".  It is what discharges `LayeredOn.loop`'s requirement that a layer's
+entry targets lie OUTSIDE the block, and the analogous condition on base
+targets.  It has been in the shape since 303.
+
+**The split makes it false.**  `LayeredOn.split` hands its second obligation the
+block `P ∨ C`.  Split `ite b e f` at the RIGHT classes and the `e`-call's block
+contains every class with an `inr` preimage — so `hout` for `j ∘ inl` fails at
+exactly those `e`-states whose class also contains an `f`-state.  Split at the
+LEFT classes instead and the failure moves to the `f`-call, symmetrically.
+**Whichever way the split goes, the second call's `hout` fails on
+cross-half-identified classes.**
+
+**And those are not an edge case — they are the point.**  In the completeness
+application `e ≈ f`, so essentially every reachable class has preimages in BOTH
+halves.  The hypothesis threaded through the entire induction is false precisely
+where the theorem is needed.
+
+### Why it bites, concretely
+
+Inside `e`, a `wh`'s shared entry list may have targets whose classes lie in the
+block.  `LayeredOn.loop` demands they do not.  `LayeredOn.seq` demands they ALL
+do.  **A shared entry list with SOME targets in the block and some outside fits
+neither constructor** — and nothing rules that out.
+
+### Resolution direction
+
+If an entry lands in the block, the back edge exits into already-solved
+territory, so relative to the block the region has no cycle through that entry —
+which is `acyclic`-relative territory (288's `solExt`), not `loop` territory.
+So the constructor that applies depends on WHERE THE ENTRY LANDS, and the mixed
+case needs either a constructor that splits the entry list or a prior
+observation that mixing cannot occur.
+
+**Odds: 97%** (−1).  A hypothesis carried since 303 is false in the target case,
+and the fix is at the level of the case lemmas' shape rather than their proofs.
+This is the third time assembly has surfaced a real mismatch (283, 305, now
+319), which is exactly why I have refused to price assembly as free — but it is
+still a genuine setback, and a larger one than either earlier instance because
+it touches every case.
+
+**Next.**  Weaken `hout` to what the cases actually NEED, per case: `loop` needs
+its entry outside the block, `seq` needs its entry inside, and the choice
+between them is a property of the layer, not of the whole induction.  Decide
+whether a mixed entry list can occur — measurable with 314's harness — before
+designing a constructor for it.
