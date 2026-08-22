@@ -14926,3 +14926,41 @@ is not made and the loop case is not re-proved.
 **Next.**  Strengthen `layeredOn_has_solution`'s contract to "`sol₀` solves the
 block", re-prove its four cases under it (three are pass-through), then weaken
 `LayeredOn.loop`'s entry field and close 319.
+
+---
+
+## 325 — THE ZERO PROPAGATES; THE HYPOTHESIS DOES NOT COMPOSE THROUGH `split`.
+
+324 identified the missing hypothesis as "`sol₀` is zero at stuck block states".
+Two things about it.
+
+**Good — zero propagates through the loop case's family.**  That family is
+`(sol₀ t ; W) ; F`, and if `sol₀ t ≈ 0` the whole thing is `0` by `s2` twice.
+So at a stuck block target BOTH labellings are zero and 324's congruence fires.
+`seq_seq_zero`, **no axioms**.
+
+**Not good — the hypothesis does NOT compose through `split`'s FIRST call.**
+`split` passes the OUTER `sol₀` to a call whose block is `¬C`, and the
+hypothesis is known only on `P`.  `P ∩ C = ∅` gives `P ⊆ ¬C`, so it covers PART
+of the new block and not the rest — and `sol₀` is arbitrary there, so nothing
+supplies the remainder.  324 checked composition at three call sites and I
+believed it; this is the fourth, and it fails.
+
+**The fix, and its cost.**  NORMALISE: pass `fun t => if stuck t then 0 else
+sol₀ t` to the first call, which satisfies the hypothesis by construction.  The
+cost is that the theorem's conclusion `sol s = sol₀ s` on the block must weaken
+to `EquivBA` — the normalised input differs from `sol₀` exactly at stuck block
+states, where the hypothesis itself says the two are equivalent.
+
+**Affordable for the usual reason**: the block's values are only ever CONSUMED
+through a guarded fold, and `fold_congr_step` compares folds up to `EquivBA`.
+**Fifth instance of the same trade** (283, 292, 299, 323, 325).  What it costs
+concretely is re-proving `split`'s gluing step, which currently uses `rw` on a
+syntactic equality.
+
+**Odds: 97%, HELD.**  One axiom-free lemma, and a composition failure found by
+checking the fourth call site after asserting three — which is the right way
+round, but 324 should have checked all four before claiming it composed.
+
+**Next.**  Weaken the conclusion to `EquivBA` on the block, normalise at
+`split`'s first call, and re-prove the gluing step with `fold_congr_step`.

@@ -10684,4 +10684,44 @@ theorem congr_with_zero_targets {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms congr_with_zero_targets
 
+
+/-! ### 325 — THE ZERO PROPAGATES, AND WHERE THE HYPOTHESIS DOES NOT COMPOSE
+
+    324 identified the missing hypothesis as "`sol₀` is zero at stuck block
+    states".  Two things about it, one good and one not.
+
+    **The good: zero propagates through the loop case's family.**  The family
+    there is `(sol₀ t ; W) ; F`, and if `sol₀ t ≈ 0` the whole thing is `0` by
+    `s2` applied twice.  So at a stuck block target both labellings are zero and
+    324's congruence fires.  That is `seq_seq_zero`.
+
+    **The not: the hypothesis does NOT compose through `split`'s FIRST call.**
+    `split` passes the OUTER `sol₀` to a call whose block is `¬C`, and the
+    hypothesis is known only on `P`.  Since `P ∩ C = ∅` gives `P ⊆ ¬C`, that
+    covers part of the new block and not the rest — and `sol₀` is arbitrary
+    there, so nothing supplies the missing part.
+
+    **The fix, and its cost.**  NORMALISE: pass `fun t => if stuck t then 0 else
+    sol₀ t` to the first call, which satisfies the hypothesis by construction.
+    The cost is that the theorem's conclusion `sol s = sol₀ s` on the block must
+    weaken to `EquivBA`, because the normalised input differs from `sol₀` at
+    stuck block states — where, by the hypothesis itself, the two are equivalent
+    anyway.
+
+    That weakening is affordable for the same reason everything else in this
+    stretch has been: the block's values are only ever CONSUMED through a
+    guarded fold, and 292's `fold_congr_step` compares folds up to `EquivBA`.
+    **Fifth instance of the same trade.**  What it costs is re-proving the
+    `split` case's gluing step, which currently uses `rw` on a syntactic
+    equality. -/
+theorem seq_seq_zero (x w F : Exp A T) (h : EquivBA x (.test .zero)) :
+    EquivBA (Exp.seq (Exp.seq x w) F) (.test .zero) := by
+  refine EquivBA.trans (EquivBA.seq_c
+    (EquivBA.trans (EquivBA.seq_c h (EquivBA.base (Equiv.refl w)))
+      (EquivBA.base (Equiv.s2 w)))
+    (EquivBA.base (Equiv.refl F))) ?_
+  exact EquivBA.base (Equiv.s2 F)
+
+#print axioms seq_seq_zero
+
 end GkatCensus
