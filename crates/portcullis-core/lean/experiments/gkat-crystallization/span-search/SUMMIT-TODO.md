@@ -18909,3 +18909,60 @@ that this problem does not close still stands.
 
 **Next.** Build the level/rank for `certifiedThompson` and discharge `hbodyRaw`
 + `RankTopEntry` from it.
+
+## 407 — RETRACTION. `hbodyRaw` is unsatisfiable for nested loops. 404-406 cover the non-nested case only.
+
+Web search: exhausted (200/200).
+
+The plan was to build the level/rank for `certifiedThompson` and discharge
+`hbodyRaw`. Before building on it I checked whether it is satisfiable at all.
+It is not.
+
+**The argument.** `hbodyRaw` says every body step is raw — rank-decreasing at
+the same level — so the component's only non-raw edges are the outer
+back-edges. Equivalently: *the component minus one back-edge class is acyclic.*
+But 405 already established that **nested loops share a level** (the inner SCC
+reaches and is reached by the outer). So one component can hold two independent
+cycles, and a rank can break only one of them.
+
+**The measurement (`PAD_NESTRANK`, new Rust mode).** Per cyclic component, over
+all ranks, the minimum number of DISTINCT TARGETS among intra-component edges
+that fail to decrease rank. 1 = a single back-edge class, `hbodyRaw` holds.
+
+| pool | cyclic components | single class | >= 2 classes |
+|---|---|---|---|
+| 4,000 | 974 | 974 | **0** |
+| 20,000 | 5,738 | 5,738 | **0** |
+| 60,000 | 18,194 | 18,192 | **2** |
+
+**The first two pools would have let me claim it.** 974/974 and 5,738/5,738 are
+exactly the kind of clean sweep that reads as a theorem. The counterexamples
+only appear at 60k: `k=2, comp=[0,1], min_backedge_targets=2` — a self-loop plus
+a 2-cycle, which is a loop whose body contains a loop. Structurally confirmed:
+with rank(0)<rank(1), the up-edges are `0→1` (target 1) and the self-loop `0→0`
+(target 0); symmetric in the other order. Two classes under every rank.
+
+**What this costs 404, 405 and 406 — stated plainly.**
+- `activityGated_loop` (404) takes `hbodyRaw`. Non-nested only.
+- `noHaltBackClash_loop` (405), `noHaltBackClash_of_allRaw` (406) take it. Same.
+- `no_inner_active_of_hbodyRaw` (406) takes it. So **406's collapse of the
+  all-inner and mixed branches holds for non-nested loops only.**
+- `step_nonRaw_of_peelRawHlt` (406) does NOT take it and is **unaffected** — it
+  is an unconditional fact about the peel and still stands.
+
+The theorems are all still true; the hypothesis is assumed, not proved, and the
+file now carries a scope warning saying it is not dischargeable in general.
+Nothing was claimed that is false. But the reduction I reported at 406 — "the
+`wh` case has one branch" — is true only outside the nested case, and the nested
+case is precisely where the difficulty lives.
+
+**Odds: 98% → 93%.** Not 98%. The `wh` case is closed for non-nested loops and
+reopened for nested ones, and nesting is the case the n-ary uniqueness axiom
+exists to handle. Three iterations of structure survive; the hardest sub-case
+does not. The field's prior that this problem does not close still stands, and
+this is the kind of iteration that is evidence for it.
+
+**Next.** Nested loops need a rank that is not a single total order — a
+LEXICOGRAPHIC rank, one component per nesting depth, so each cycle class is
+broken at its own level. Measure whether `PAD_NESTRANK`'s counterexamples admit
+a 2-level lexicographic rank before assuming they do.

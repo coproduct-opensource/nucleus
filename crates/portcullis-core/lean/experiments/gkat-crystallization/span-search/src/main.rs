@@ -2354,6 +2354,71 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_NESTRANK`** (iteration 407).
+///
+/// 404-406 all lean on `hbodyRaw`: inside a loop, EVERY body step is raw, so the
+/// only non-raw edges of the component are the outer back-edges.  Equivalently,
+/// the component minus its back-edge class must be ACYCLIC.
+///
+/// But nested loops share a level (405: the inner SCC reaches and is reached by
+/// the outer), so one component can hold two nested cycles, and a rank can only
+/// break one class.  If that happens, `hbodyRaw` is UNSATISFIABLE and 404-406
+/// only cover loops whose body has no nested loop.
+///
+/// Measured per component, over all ranks: the minimum number of DISTINCT
+/// TARGETS among the intra-component edges that fail to decrease rank.  1 means
+/// a single back-edge class -- `hbodyRaw` holds.  >= 2 means two independent
+/// cycle classes and `hbodyRaw` is false for that component.
+fn nestrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut comps, mut one, mut multi) = (0usize, 0usize, 0usize);
+    let mut worst = 0usize;
+    let mut first_bad: Option<String> = None;
+    for a in &pool {
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            comps += 1;
+            let m = comp.len();
+            if m > 7 { continue; }
+            let mut perm: Vec<usize> = (0..m).collect();
+            let mut best = usize::MAX;
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let mut tgts: Vec<usize> = Vec::new();
+                for &u in &comp {
+                    for x in 0..NA {
+                        let tv = a.st[u][x];
+                        if tv == 0 { continue; }
+                        let t = (tv - 1) as usize;
+                        if !comp.contains(&t) { continue; }        // leaves the component
+                        if rank[t] < rank[u] { continue; }         // raw: decreases
+                        if !tgts.contains(&t) { tgts.push(t); }
+                    }
+                }
+                if tgts.len() < best { best = tgts.len(); }
+                if best <= 1 { break; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if best == usize::MAX { continue; }
+            if best <= 1 { one += 1; } else {
+                multi += 1;
+                if best > worst { worst = best; }
+                if first_bad.is_none() {
+                    first_bad = Some(format!("k={} comp={:?} min_backedge_targets={}",
+                        a.k, comp, best));
+                }
+            }
+        }
+    }
+    println!("PAD_NESTRANK  pool={}  cyclic_components={}", pool.len(), comps);
+    println!("  single back-edge class (hbodyRaw OK) : {}", one);
+    println!("  >=2 classes  (hbodyRaw FALSE)        : {}  worst={}", multi, worst);
+    if let Some(b) = first_bad { println!("  first counterexample: {}", b); }
+}
+
 /// **`PAD_BLOCKRANK`** (iteration 391).
 ///
 /// 390 found the source rank must factor through bisimilarity — `active_transport`
@@ -9307,6 +9372,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_NESTRANK").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        nestrank::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_BLOCKRANK").is_ok() {

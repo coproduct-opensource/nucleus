@@ -15879,7 +15879,20 @@ theorem noHaltBackClash_seq_inl {S₁ S₂ : Type}
 
 #print axioms noHaltBackClash_seq_inl
 
-/-! ### The induction is shallower than it looks
+/-! ### ⚠️ SCOPE (407): `hbodyRaw` holds only for NON-NESTED loops
+
+Measured (`PAD_NESTRANK`, 18,194 cyclic components): 2 components admit **no**
+rank whose non-decreasing intra-component edges share a single target.  The
+shape is a self-loop plus a 2-cycle — a loop whose body contains a loop.  Nested
+loops share a level (405), so one component holds two independent cycle classes,
+and a rank can break only one of them.
+
+So `hbodyRaw` — *every* body step is raw — is **unsatisfiable when the body
+contains a loop**, and everything below that takes it as a hypothesis covers the
+non-nested case only.  The hypothesis is honest (it is assumed, not proved), but
+it is not dischargeable in general.
+
+### The induction is shallower than it looks
 
 `noHaltBackClash_seq_inl` needs `hsplit`: the two halves sit at different
 levels.  That is 397 — but 397 is about `seqGSystem` **in isolation**.  Put the
