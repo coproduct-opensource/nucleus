@@ -16010,3 +16010,65 @@ condition as a convenience. It is not: it is load-bearing.
 
 **Next.** The shared list itself — the concatenation, and the two directions
 above as one lemma.
+
+## 347 — the shared list, and the transition obligation closed
+
+346 left one thing on the transition side: `loops n` and `exits n` are ONE list
+per level, while 345 reasoned with each state's own filtered part.
+
+**`firstMatch_shared`** bridges them, and both directions of 343's agreement
+appear as hypotheses because both are used:
+
+- **`hagree`** — when an entry of the SHARED list fires, this state's own part
+  fires with the same target. Drop it and the shared list hands `s` another
+  state's back-edge.
+- **`hback`** — when this state's own part fires, something in the shared list
+  fires too. Drop it and `s` silently stops looping.
+
+The proof needed two small facts that turned out not to be in the corpus:
+`firstMatch_some_guard` (a `some` result comes from an entry whose guard actually
+holds — **axiom-free**) and `firstMatch_none_all_false` (its converse). The
+existing `firstMatch_mem_of_some` gives membership but *not* that the guard is
+true, which is the half the argument needs.
+
+`firstMatch_shared_exit` is the same argument at the opposite polarity of `b`.
+
+**And the assembly:**
+
+```lean
+theorem firstMatch_peel_shared_agrees … :
+    firstMatch W x L
+      = firstMatch W x (((disjoin L).filter p ++ sharedLoop.map loopGate)
+                          ++ sharedExit.map exitGate)
+```
+
+A state's transition list fires exactly as `peeledSys.trans` does at that state —
+its own raw part, then the LEVEL's shared loop list gated by its own halt test,
+then the LEVEL's shared exit list. **That is `solvesBA_of_behaviour`'s first
+premise in the form the construction actually produces**, and with 346 the second
+premise is done too.
+
+**Where the route stands.**
+
+```
+level function, free for every system                  339
+every SyntacticallyLayered system solves               338
+the peel constructed, every level at once              341
+solutions survive reshaping                            340
+minimality required nowhere                            343
+transition premise, SHARED lists                       347
+halt premise                                           346
+------------------------------------------------------------------
+build sharedLoop/sharedExit from a quotient and
+discharge hagree/hback from the agreement condition     THE REMAINDER
+```
+
+**What the remainder is, precisely.** `hagree` and `hback` are currently
+hypotheses, stated per state and per atom. They *encode* 343's measured
+condition, but nothing yet constructs the two shared lists from a quotient and
+proves them. The construction is the concatenation of every level state's part;
+what has to be proved is that 343's agreement makes that concatenation behave, at
+every state, like each state's own part.
+
+**Next.** That construction — `sharedLoop := (level states).flatMap loopPart` and
+the two hypotheses discharged from agreement.

@@ -12413,6 +12413,170 @@ end HaltAgreement
 #print axioms bval_bigOr_true
 #print axioms bval_peel_hlt_eq
 
+
+section SharedList
+
+/-! ### One list for the whole level
+
+`loops n` and `exits n` are single lists shared by every state of a level, gated
+per state.  345 proved agreement using each state's OWN part.  Bridging the two
+is where 343's condition earns its keep — and it is needed in both directions,
+not one. -/
+
+theorem firstMatch_some_guard {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)) (r : A × S),
+      GkatKleene.firstMatch W x L = some r →
+        ∃ g, (g, r) ∈ L ∧ GkatGS.bval W g x = true := by
+  intro L
+  induction L with
+  | nil => intro r h; exact nomatch h
+  | cons e tl ih =>
+      intro r h
+      obtain ⟨g, q, s'⟩ := e
+      cases hg : GkatGS.bval W g x with
+      | true =>
+          have h' : (if GkatGS.bval W g x then some (q, s') else
+            GkatKleene.firstMatch W x tl) = some r := h
+          rw [if_pos (by rw [hg])] at h'
+          exact ⟨g, by rw [← Option.some.inj h']; exact List.mem_cons_self .., hg⟩
+      | false =>
+          have h' : (if GkatGS.bval W g x then some (q, s') else
+            GkatKleene.firstMatch W x tl) = some r := h
+          rw [if_neg (by rw [hg]; exact Bool.false_ne_true)] at h'
+          obtain ⟨g', hm, hb⟩ := ih r h'
+          exact ⟨g', List.mem_cons_of_mem _ hm, hb⟩
+
+theorem firstMatch_none_all_false {S X : Type} (W : T → X → Bool) (x : X) :
+    ∀ (L : List (BExp T × A × S)), GkatKleene.firstMatch W x L = none →
+      ∀ tr ∈ L, GkatGS.bval W tr.1 x = false := by
+  intro L
+  induction L with
+  | nil => intro _ tr htr; cases htr
+  | cons e tl ih =>
+      intro h tr htr
+      obtain ⟨g, q, s'⟩ := e
+      have hg : GkatGS.bval W g x = false := by
+        cases hb : GkatGS.bval W g x with
+        | false => rfl
+        | true =>
+            have h' : (if GkatGS.bval W g x then some (q, s') else
+              GkatKleene.firstMatch W x tl) = none := h
+            rw [if_pos (by rw [hb])] at h'
+            exact (Option.some_ne_none _ h').elim
+      have h' : GkatKleene.firstMatch W x tl = none := by
+        have h'' : (if GkatGS.bval W g x then some (q, s') else
+          GkatKleene.firstMatch W x tl) = none := h
+        rwa [if_neg (by rw [hg]; exact Bool.false_ne_true)] at h''
+      cases htr with
+      | head => exact hg
+      | tail _ hm => exact ih h' tr hm
+
+/-- **The shared list stands in for the state's own part.**  Both directions of
+343's agreement appear as hypotheses and both are used:
+
+* `hagree` — when an entry of the SHARED list fires, this state's own part fires
+  with the same target.  Without it the shared list could hand `s` another
+  state's back-edge.
+* `hback` — when this state's own part fires, something in the shared list fires
+  too.  Without it `s` would silently stop looping.
+
+`hgate` is the gate condition of 345. -/
+theorem firstMatch_shared {S X : Type} (W : T → X → Bool) (x : X)
+    (rawHlt b : BExp T) (shared part : List (BExp T × A × S))
+    (hgate : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true ∧ GkatGS.bval W b x = true)
+    (hagree : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatKleene.firstMatch W x part = some tr.2)
+    (hback : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      ∃ tr' ∈ shared, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x
+        (shared.map (fun tr => (BExp.and rawHlt (BExp.and b tr.1), tr.2)))
+      = GkatKleene.firstMatch W x part := by
+  rw [firstMatch_gated W x rawHlt b shared hgate]
+  cases hs : GkatKleene.firstMatch W x shared with
+  | some r =>
+      obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x shared r hs
+      exact (hagree (g, r) hm hb).symm ▸ rfl
+  | none =>
+      cases hp : GkatKleene.firstMatch W x part with
+      | none => rfl
+      | some r =>
+          obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x part r hp
+          obtain ⟨tr', hm', hb'⟩ := hback (g, r) hm hb
+          have := firstMatch_none_all_false W x shared hs tr' hm'
+          rw [this] at hb'
+          exact Bool.noConfusion hb'
+
+/-- The exit-shaped twin: same argument, opposite polarity on `b`. -/
+theorem firstMatch_shared_exit {S X : Type} (W : T → X → Bool) (x : X)
+    (rawHlt b : BExp T) (shared part : List (BExp T × A × S))
+    (hgate : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true ∧ GkatGS.bval W b x = false)
+    (hagree : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatKleene.firstMatch W x part = some tr.2)
+    (hback : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      ∃ tr' ∈ shared, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x
+        (shared.map (fun tr => (BExp.and (BExp.and rawHlt (BExp.not b)) tr.1, tr.2)))
+      = GkatKleene.firstMatch W x part := by
+  rw [firstMatch_exit_gated W x rawHlt b shared hgate]
+  cases hs : GkatKleene.firstMatch W x shared with
+  | some r =>
+      obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x shared r hs
+      exact (hagree (g, r) hm hb).symm ▸ rfl
+  | none =>
+      cases hp : GkatKleene.firstMatch W x part with
+      | none => rfl
+      | some r =>
+          obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x part r hp
+          obtain ⟨tr', hm', hb'⟩ := hback (g, r) hm hb
+          have := firstMatch_none_all_false W x shared hs tr' hm'
+          rw [this] at hb'
+          exact Bool.noConfusion hb'
+
+/-- **THE TRANSITION OBLIGATION, WITH SHARED LISTS.**  A state's transition list
+fires exactly as `peeledSys.trans` does at that state — its own raw part first,
+then the LEVEL's shared loop list gated by its own halt test, then the LEVEL's
+shared exit list.  This is `solvesBA_of_behaviour`'s first premise in the form
+the construction actually produces. -/
+theorem firstMatch_peel_shared_agrees {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) (rawHlt b : BExp T)
+    (p q : (BExp T × A × S) → Bool)
+    (sharedLoop sharedExit : List (BExp T × A × S))
+    (hgateL : ∀ tr ∈ sharedLoop, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true ∧ GkatGS.bval W b x = true)
+    (hagreeL : ∀ tr ∈ sharedLoop, GkatGS.bval W tr.1 x = true →
+      GkatKleene.firstMatch W x ((disjoin L).filter (fun tr => !p tr && q tr))
+        = some tr.2)
+    (hbackL : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && q tr),
+      GkatGS.bval W tr.1 x = true → ∃ tr' ∈ sharedLoop, GkatGS.bval W tr'.1 x = true)
+    (hgateE : ∀ tr ∈ sharedExit, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true ∧ GkatGS.bval W b x = false)
+    (hagreeE : ∀ tr ∈ sharedExit, GkatGS.bval W tr.1 x = true →
+      GkatKleene.firstMatch W x ((disjoin L).filter (fun tr => !p tr && !q tr))
+        = some tr.2)
+    (hbackE : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && !q tr),
+      GkatGS.bval W tr.1 x = true → ∃ tr' ∈ sharedExit, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x L
+      = GkatKleene.firstMatch W x
+          (((disjoin L).filter p
+             ++ sharedLoop.map (fun tr => (BExp.and rawHlt (BExp.and b tr.1), tr.2)))
+            ++ sharedExit.map
+                 (fun tr => (BExp.and (BExp.and rawHlt (BExp.not b)) tr.1, tr.2))) := by
+  refine (firstMatch_split W x L p q).trans ?_
+  refine (firstMatch_append_congr W x _ _ _ _
+    (firstMatch_append_congr W x _ _ _ _ rfl ?_) ?_).symm
+  · exact firstMatch_shared W x rawHlt b sharedLoop _ hgateL hagreeL hbackL
+  · exact firstMatch_shared_exit W x rawHlt b sharedExit _ hgateE hagreeE hbackE
+
+#print axioms firstMatch_shared_exit
+#print axioms firstMatch_peel_shared_agrees
+
+end SharedList
+
+#print axioms firstMatch_some_guard
+#print axioms firstMatch_shared
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared
