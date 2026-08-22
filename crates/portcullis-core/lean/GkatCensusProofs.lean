@@ -6293,6 +6293,44 @@ theorem RestrictedTo.map {S S' : Type} {b : BExp T} {l l' : List (BExp T × A ×
   | nil => exact RestrictedTo.nil
   | cons hg _ ih => exact RestrictedTo.cons hg ih
 
+/-- `RestrictedTo` is compatible with concatenation. -/
+theorem RestrictedTo.append {S : Type} {b : BExp T}
+    {l₁ l₁' l₂ l₂' : List (BExp T × A × S)}
+    (h₁ : RestrictedTo b l₁ l₁') (h₂ : RestrictedTo b l₂ l₂') :
+    RestrictedTo b (l₁ ++ l₂) (l₁' ++ l₂') := by
+  induction h₁ with
+  | nil => exact h₂
+  | cons hg _ ih => exact RestrictedTo.cons hg ih
+
+/-- Two maps over the SAME list, whose guards are pointwise related, are
+    `RestrictedTo`.  This is how the trailing entry-block of a sequence relates
+    across a layer: same transitions, guards conjoined with the layer's guard on
+    one side. -/
+theorem RestrictedTo.of_map {S S' : Type} {b : BExp T}
+    (l : List (BExp T × A × S)) (f g : BExp T × A × S → BExp T × A × S')
+    (htgt : ∀ t, (f t).2 = (g t).2)
+    (hg : ∀ t, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (g t).1 x = (!GkatGS.bval W b x && GkatGS.bval W (f t).1 x)) :
+    RestrictedTo b (l.map f) (l.map g) := by
+  induction l with
+  | nil => exact RestrictedTo.nil
+  | cons t ts ih =>
+      have := htgt t
+      obtain ⟨g1, gr⟩ : ∃ a c, f t = (a, c) := ⟨(f t).1, (f t).2, rfl⟩
+      simp only [List.map_cons]
+      cases hft : f t with
+      | mk a1 c1 =>
+        cases hgt : g t with
+        | mk a2 c2 =>
+          have hc : c1 = c2 := by
+            rw [hft] at this; rw [hgt] at this; exact this
+          subst hc
+          exact RestrictedTo.cons (by
+            intro X W x
+            have := hg t X W x
+            rw [hft, hgt] at this
+            exact this) ih
+
 structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
     (b : BExp T) (dom : S → Prop) : Prop where
   /-- **ON THE LAYER** (iteration 256's shape).  A layer splits a state's
@@ -6311,8 +6349,14 @@ structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
     sys.trans s = pre ++ extra ++ post' ∧
     (∀ tr ∈ extra, GuardImplies tr.1 b) ∧
     RestrictedTo b post post'
-  /-- ON THE LAYER: halts are `base`'s, restricted to outside the guard -/
-  hlt_eq : ∀ s, dom s → sys.hlt s = .and (base.hlt s) (.not b)
+  /-- ON THE LAYER: halts are `base`'s, restricted to outside the guard.
+      SEMANTIC for the same reason the guards are (255): in a sequence
+      `sys.hlt (inl s)` comes out as `(L'.hlt s ∧ ¬b) ∧ R.initHlt` while the
+      equation wants `(L'.hlt s ∧ R.initHlt) ∧ ¬b` — the same Boolean function,
+      associated differently. -/
+  hlt_eq : ∀ s, dom s → ∀ (X : Type) (W : T → X → Bool) (x : X),
+    GkatGS.bval W (sys.hlt s) x
+      = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)
   /-- OFF THE LAYER: `sys` and `base` agree (248). -/
   outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
 
@@ -6336,7 +6380,10 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
      by simpa using loop_core_trans b e s,
      fun tr h => wh_backedge_guard_implies b e s tr h,
      RestrictedTo.nil⟩
-  hlt_eq s _ := loop_core_hlt b e s
+  hlt_eq s _ := by
+    intro X W x
+    rw [loop_core_hlt b e s]
+    rfl
   outside s h := absurd trivial h
 
 #print axioms wh_isLayer
@@ -6552,6 +6599,70 @@ theorem layered_seq_acyclic {S₁ S₂ : Type}
     exact h₂ y t ht
 
 #print axioms layered_seq_acyclic
+
+/-- **A LAYER IN THE LEFT HALF OF A SEQUENCE IS A LAYER OF THE SEQUENCE.**
+
+    The case 251 found blocked and 252-256 rebuilt the definition for.  Two
+    things happen at once, and the shape now expresses both: the back edges are
+    INSERTED (they sit between the left half's own transitions and the right
+    half's entry block), and the entry block is RESTRICTED — its guards pick up
+    `¬b`, because control may proceed to the right half only where the loop is
+    not iterating.
+
+    `pre` and `extra` come from the layer; `post` is the left half's remaining
+    transitions FOLLOWED BY the right half's entry block, and `post'` is the
+    same with `¬b` conjoined — the first part by `RestrictedTo.map`, the second
+    by `RestrictedTo.of_map`, joined by `RestrictedTo.append`. -/
+theorem seq_isLayer_left {S₁ S₂ : Type}
+    (L L' : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    {b : BExp T} {dom : S₁ → Prop} (h : IsLayer L L' b dom) :
+    IsLayer (GkatThompson.seqGSystem L R) (GkatThompson.seqGSystem L' R) b
+      (fun x => match x with | .inl s => dom s | .inr _ => False) where
+  split
+    | .inl s, hs => by
+        obtain ⟨pre, extra, post, post', hbase, hsys, hg, hr⟩ := h.split s hs
+        refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
+                extra.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)),
+                post.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)) ++
+                  R.initTrans.map (fun t =>
+                    (BExp.and (L'.hlt s) t.1, t.2.1, Sum.inr t.2.2)),
+                post'.map (fun t => (t.1, t.2.1, Sum.inl t.2.2)) ++
+                  R.initTrans.map (fun t =>
+                    (BExp.and (L.hlt s) t.1, t.2.1, Sum.inr t.2.2)),
+                ?_, ?_, ?_, ?_⟩
+        · show (L'.trans s).map _ ++ _ = _
+          rw [hbase, List.map_append]
+          simp [List.append_assoc]
+        · show (L.trans s).map _ ++ _ = _
+          rw [hsys, List.map_append, List.map_append]
+          simp [List.append_assoc]
+        · intro tr htr
+          simp only [List.mem_map] at htr
+          obtain ⟨t, ht, rfl⟩ := htr
+          exact hg t ht
+        · refine RestrictedTo.append (hr.map _) (RestrictedTo.of_map _ _ _
+            (fun _ => rfl) ?_)
+          intro t X W x
+          simp only [GkatGS.bval, h.hlt_eq s hs X W x]
+          cases GkatGS.bval W (L'.hlt s) x <;>
+            cases GkatGS.bval W b x <;> cases GkatGS.bval W t.1 x <;> rfl
+    | .inr _, hs => absurd hs (by simp)
+  hlt_eq
+    | .inl s, hs => by
+        intro X W x
+        simp only [GkatThompson.seqGSystem, GkatGS.bval, h.hlt_eq s hs X W x]
+        cases GkatGS.bval W (L'.hlt s) x <;>
+          cases GkatGS.bval W b x <;> cases GkatGS.bval W R.initHlt x <;> rfl
+    | .inr _, hs => absurd hs (by simp)
+  outside
+    | .inl s, hs => by
+        obtain ⟨ht, hh⟩ := h.outside s hs
+        exact ⟨by simp only [GkatThompson.seqGSystem, ht, hh], by
+          simp only [GkatThompson.seqGSystem, hh]⟩
+    | .inr _, _ => ⟨rfl, rfl⟩
+
+#print axioms seq_isLayer_left
+
 
 
 end GkatCensus

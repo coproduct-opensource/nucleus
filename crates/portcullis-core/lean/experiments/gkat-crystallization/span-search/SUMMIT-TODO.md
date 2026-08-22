@@ -11834,3 +11834,48 @@ But this is the first time the definition has no known obstruction ahead of it:
 `post` = the right half's entry block at guards `L'.hlt s ∧ g`, `post'` = the
 same at `(L'.hlt s ∧ ¬b) ∧ g`, and `RestrictedTo` holds because both sides
 compute `hlt && !b && g`.
+
+---
+
+## 257 — `seq_isLayer_left` PROVED.  The case blocked since 251 is closed.
+
+Two further migrations were needed, both found by attempting the case rather
+than by inspection, and both landed whole:
+
+  * **`hlt_eq` had to go semantic too.**  In a sequence `sys.hlt (inl s)` is
+    `(L'.hlt s ∧ ¬b) ∧ R.initHlt` while the field demanded
+    `(L'.hlt s ∧ R.initHlt) ∧ ¬b` — 255's associativity mismatch again, in the
+    halt component this time.  256 had fixed it only for the transition guards.
+  * **Two `RestrictedTo` combinators**: `.append`, and `.of_map` for two maps
+    over the SAME list with pointwise-related guards — which is exactly how a
+    sequence's trailing entry block relates across a layer.
+
+**`seq_isLayer_left`** then goes through.  The proof says what 252 diagnosed:
+a `seq` layer does two things at once, and the shape now expresses both —
+`pre` and `extra` from the layer, `post` = the left half's remaining transitions
+FOLLOWED BY the right half's entry block, `post'` = the same with `¬b` conjoined.
+`RestrictedTo.map` handles the first part, `RestrictedTo.of_map` the second,
+`RestrictedTo.append` joins them.
+
+**Zero errors, no `sorryAx`, ten theorems proved.**
+
+    layered_test / act / wh / sum / ite    PROVED
+    layered_seq  acyclic case              PROVED  (251)
+    seq_isLayer_left                       PROVED  (257)
+    layered_seq  assembled                 open — mechanical now
+    hsum                                   open
+
+**What is left of `hsum` is assembly.**  `layered_seq` needs the induction on
+the two `Layered` derivations, exactly as `layered_sum` at 250: acyclic/acyclic
+is `layered_seq_acyclic`, a layer on the left is `seq_isLayer_left`, and a layer
+on the right needs its mirror — which is simpler, since `seqGSystem`'s right
+half is untouched by the construction (241's `seq_inr_closed`).
+
+**Odds: 82%, up 1.**  The `seq` layer case is the obstacle that consumed 251
+through 256 — six iterations of definition work, three `IsLayer` migrations —
+and it is now proved.  Every remaining step of `hsum` has a worked precedent:
+`layered_sum` is the template for the assembly, and the right-hand mirror is
+easier than the left.  Not more than +1 because `hsum` still is not closed and
+`hcollapse`/`hsolve` remain untouched.
+
+**Next.**  `seq_isLayer_right`, then `layered_seq`, then `hsum`.
