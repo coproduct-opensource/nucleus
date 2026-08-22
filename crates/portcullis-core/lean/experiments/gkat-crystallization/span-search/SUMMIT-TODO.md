@@ -21153,3 +21153,45 @@ close still stands.
 **Next.** Read the `EXPAND_K=5` result. If the 54 shrink, the witness search was
 merely too small and the programme survives at larger k; if they persist, that is
 the sharpest evidence yet that the conjecture is false.
+
+## 446 — the expansion test at k=5, and the distinction that decides the programme.
+
+Web search: exhausted (200/200).
+
+445 launched `EXPAND_K=5`. It finished — 24.4 billion canonical fully-reachable
+automata scanned — and the headline is:
+
+```
+EXPANSION TEST (the whole space, not just pullbacks), kmax = 5
+  productive AND bisimilar to an exp : 236,158
+  DIRECTLY covered by an expression  :  38,059
+  COVER a Thompson automaton (hyp.)  : 152,734
+  rescued by refinement              :  40,372
+  RESIST *within the hypothesis*     :  77,960   <- refutes ThompsonCofinal if > 0
+```
+
+**But that number does not bear on the programme, and the harness says so.**
+`ThompsonCofinal` is already known false — it is in the refuted-span-era
+inventory. The header is explicit that this is *the whole space, not just
+pullbacks*, and the harness's own comment at the call site draws the line:
+
+> "An uncovered automaton that is **not a pullback** refutes the general statement
+> **without touching the programme**."
+
+**The line that decides the question is `of the uncovered, ARE a crux pullback`.**
+My grep window (12 lines after "expan") cut it off, because the 77,960 resisters
+print one per line before the summary. Relaunched with full output; running.
+
+**Why this distinction is the whole iteration.** 444 asked whether the 54
+witness-less pairs are a real obstruction or a small-search artefact. At k=5 the
+space is 24.4 billion automata and 77,960 resist — but if none of them is a crux
+pullback, the programme is untouched and the 54 were a k ≤ 4 artefact. If some
+are, the conjecture is in serious trouble. **Same number, opposite conclusions,
+decided by one summary line.** That is exactly the confusion 445 caught me making
+with two adjacent lines, one iteration ago.
+
+**Odds: 25%, unchanged.** No result yet — the measurement is running, and I am
+not going to price it before reading it. The field's prior that this problem does
+not close still stands.
+
+**Next.** Read `of the uncovered, ARE a crux pullback` from the completed run.
