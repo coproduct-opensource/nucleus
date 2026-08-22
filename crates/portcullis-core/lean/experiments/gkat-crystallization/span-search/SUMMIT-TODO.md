@@ -21389,3 +21389,18 @@ program has produced.
 
 **Next.** Characterise the 929: what distinguishes them from the 2,418 that
 refinement rescues? If they share a shape, that shape is the obstruction.
+
+### 450a — the best setting confirms it
+
+```
+  W1+dup+cyc2 x2: rescued 2418 / 3347   (largest variant 20 states)   [MAXK=22]
+  W1+dup+cyc2 x2: rescued 2418 / 3347   (largest variant 16 states)   [MAXK=16]
+```
+
+The best setting explored **20-state** variants under the raised bound and
+rescued **exactly the same 2,418**. All thirteen mechanism settings agree: the
+counts are invariant under MAXK 16 → 22 while the explored variants grow. **929
+resist, independent of the state bound.**
+
+`MAXK` reverted to 16 — 22 costs memory and time for an identical answer, and
+this is now a recorded fact rather than a setting worth carrying.
