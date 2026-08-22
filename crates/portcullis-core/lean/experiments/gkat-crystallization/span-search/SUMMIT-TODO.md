@@ -12588,3 +12588,53 @@ cancels it.  No proof, so no movement.
 **Next.**  Generalise `loop_subsystem` from `loopInitialized` to `IsLayer` — the
 statement is the same, and 246's insight that a layer is a DIFFERENCE between
 two automata is what should let the proof go through without the constructor.
+
+---
+
+## 273 — `IsLayer` IS MISSING THE THING THAT MAKES A LAYER A LOOP.
+
+Tried to generalise `loop_subsystem` from `loopInitialized` to abstract
+`IsLayer`.  It does not go through, and the reason is a gap in `IsLayer`, not in
+the algebra.
+
+**Unfolding both sides.**  With `sys.trans s = pre ++ extra ++ post'` and
+`base.trans s = pre ++ post`:
+
+  * **on `¬b`**: the extra edges cannot fire (their guards imply `b`), `post'`
+    behaves as `post` (that is what `RestrictedTo` says), and
+    `hlt_sys s = hlt_base s`.  The two sides agree.
+  * **on `b`**: the layer takes a back edge, `post'` is switched off, and
+    `hlt_sys s = 0`.  So the layer's behaviour there must be the loop step.
+
+For that step to be `wh b E` with a **shared** `E` — which 272 established is
+the shape, since the back edge returns to the layer's ENTRY rather than to `s` —
+the extra edges at each state must factor as
+
+    (base.hlt s ∧ b ∧ gᵢ, aᵢ, tᵢ)     for ONE entry list (gᵢ, aᵢ, tᵢ)
+                                       common to the whole layer
+
+**`loopInitialized` does exactly that** — its back edges are
+`body.initTrans` guarded by `hlt_body s ∧ b`.  **`IsLayer` does not record it.**
+It says only that each state's extra guards imply `b`, which permits every state
+to have its OWN unrelated back edges.  That is not a loop; it is an arbitrary
+addition of `b`-guarded transitions.
+
+**So `IsLayer` is too weak, and in the one respect that matters for `hsolve`.**
+An eighth migration is needed: carry the layer's shared ENTRY LIST, with each
+state's extra edges being that list gated by the state's own base-halt.
+
+**Worth noting what this predicts about the other obligations.**  `hsum` and
+`hcollapse`'s acyclic case were proved WITHOUT the entry condition, so they
+survive strengthening — a stronger `IsLayer` only makes `wh_isLayer` harder to
+establish, and `loopInitialized` satisfies the condition definitionally, so that
+should be `rfl`-adjacent.  The sum and seq lifting lemmas carry the entry list
+through their injections.  So this is a strengthening the existing proofs should
+absorb rather than resist.
+
+**Odds: 86%, held.**  A gap found by attempting the proof rather than by
+inspection — the eighth time in this series, and the pattern is now completely
+consistent: every deficiency in `IsLayer` has surfaced when a consumer needed
+something the definition did not promise.  No proof, so no movement.
+
+**Next.**  The eighth migration: add the shared entry list to `IsLayer`, re-prove
+`wh_isLayer` and the four lifting lemmas, then `loop_subsystem` for `IsLayer`.
