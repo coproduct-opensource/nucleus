@@ -16395,6 +16395,47 @@ theorem solvesBA_of_mapped {S S' : Type} (aut : GkatKleene.GAut S A T)
 #print axioms eqRHS_of_mapped
 #print axioms solvesBA_of_mapped
 
+/-! ### 421: `hfib` is dischargeable without W3 — UNROLLING is a finite axiom
+
+420 showed the duplication route costs `hfib`: the solution must be constant on
+`f`'s fibres, and fibre-mates are bisimilar, so `hfib` looked like the very
+uniqueness statement this program eliminates.
+
+It is not, and the reason is that **not all duplications are arbitrary**.  The
+finite theory already contains one:
+
+```
+w1 : wh b e ≡ ite b (e ; wh b e) 1
+```
+
+W1 is UNROLLING, and it sits beside U1–U5 and S1–S5 in the finite fragment —
+**W3, the uniqueness axiom, is a separate constructor and is not used.**  So a
+duplication that unrolls a loop once has its fibre-constancy obligation
+discharged by axiom, not assumed.
+
+`salomaa_solution_exists` (corpus, derived from W1/U5/S1/S4) is exactly that
+obligation for the one-state case.  Lifting it to `EquivBA` gives the fibre
+identity in the form `solvesBA_of_mapped` consumes. -/
+theorem fibConstant_of_unroll (b : BExp T) (e f : Exp A T) :
+    EquivBA (Exp.seq (Exp.wh b e) f)
+      (Exp.ite b (Exp.seq e (Exp.seq (Exp.wh b e) f)) f) :=
+  EquivBA.base (GkatSyntax.salomaa_solution_exists b e f)
+
+/-- The same fact packaged as a fibre-constancy discharge: if a state's copy is
+the ONE-STEP UNROLLING of the original, the two solutions are `EquivBA`, from the
+finite axioms alone.  This is the shape `solvesBA_of_mapped`'s `hfib` needs at
+each duplicated state. -/
+theorem hfib_at_unrolled_copy {S' : Type} (sol' : S' → Exp A T)
+    (orig copy : S') (b : BExp T) (e f : Exp A T)
+    (horig : sol' orig = Exp.seq (Exp.wh b e) f)
+    (hcopy : sol' copy = Exp.ite b (Exp.seq e (Exp.seq (Exp.wh b e) f)) f) :
+    EquivBA (sol' orig) (sol' copy) := by
+  rw [horig, hcopy]
+  exact fibConstant_of_unroll b e f
+
+#print axioms fibConstant_of_unroll
+#print axioms hfib_at_unrolled_copy
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

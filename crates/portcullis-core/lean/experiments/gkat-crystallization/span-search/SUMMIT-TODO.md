@@ -19824,3 +19824,67 @@ similar size. The field's prior that this problem does not close still stands.
 
 **Next.** Ask whether a layered solver can assign fibre-mates equal expressions
 by construction — that is, whether `hfib` can be built in rather than assumed.
+
+## 421 — `hfib` is NOT a uniqueness axiom. Unrolling is finite, and it discharges the obligation.
+
+Web search: exhausted (200/200).
+
+420 ended with the worry that the duplication route's `hfib` — the solution must
+be constant on the fibres of `f` — is a uniqueness statement, since fibre-mates
+are bisimilar. That worry is answered, and the answer was sitting in the axiom
+list.
+
+**Not all duplications are arbitrary.** The finite theory contains
+
+```
+w1 : wh b e ≡ ite b (e ; wh b e) 1
+```
+
+**W1 is UNROLLING**, and it sits beside U1–U5 and S1–S5 in the finite fragment.
+**W3 — the uniqueness axiom — is a separate constructor.** So a duplication that
+unrolls a loop once has its fibre-constancy obligation discharged **by axiom**,
+not assumed.
+
+**Proved, axiom-free.**
+
+```lean
+theorem fibConstant_of_unroll (b) (e f) :
+    EquivBA (seq (wh b e) f) (ite b (seq e (seq (wh b e) f)) f)
+
+theorem hfib_at_unrolled_copy (sol') (orig copy) …
+    (horig : sol' orig = seq (wh b e) f)
+    (hcopy : sol' copy = ite b (seq e (seq (wh b e) f)) f) :
+    EquivBA (sol' orig) (sol' copy)
+```
+
+Both **depend on no axioms at all**, and the second is exactly the shape
+`solvesBA_of_mapped`'s `hfib` needs at each duplicated state.
+
+**W3-freedom verified at the proof term, not from prose.** My own steelman list
+says to check transitive dependencies rather than doc comments, and I had just
+cited a doc comment. Reading the actual term: `salomaa_solution_exists` is built
+from `seq_c`, `w1`, `symm`, `u5`, `ite_c`, `s1`, `s4`, `trans` — **no `w3`**. The
+neighbouring `salomaa_solution_unique` IS `Equiv.w3` applied directly, and it is
+a different theorem that I did not use.
+
+**Where the route now stands.** 417/418 refuted the state-preserving peel; 419
+diagnosed it as forbidding node duplication; 420 proved duplication transports
+solvability at the cost of `hfib`; 421 discharges `hfib` for unrolling-shaped
+duplication from the finite axioms. **The chain has no uniqueness axiom in it.**
+
+**The open question, now sharp.** Does UNROLLING-shaped duplication suffice? The
+structured-programming theorems say irreducible graphs need duplication, but not
+that one-step loop unrolling is the right kind — a multi-entry loop (408: 235 of
+them at pool 200k, 117 multi-entry) is not obviously fixed by unrolling its body.
+That is the next thing to measure, and it is the historically hard part.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 40% → 45%.** 420's central worry is answered with two axiom-free
+theorems and a verified W3-freedom check. Only five points, because sufficiency
+of unrolling is exactly the question the whole literature says is hard, and
+because I have twice in this program mistaken "the repair is available" for "the
+repair works". The field's prior that this problem does not close still stands.
+
+**Next.** Measure whether one-step unrolling structures the multi-entry loops
+408 found — build them and check, rather than sampling.
