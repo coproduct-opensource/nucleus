@@ -16926,3 +16926,52 @@ unchanged and still unrefuted at scale.
 
 **Next.** The quotient-level single-target-exit statement, and whether the
 collapse argument of 355-356 delivers it.
+
+## 364 — probing the joints: exits never coincide, and 693/695 regions have one header
+
+363 left the proof needing "all exits of a region at one atom share a target".
+Rather than reason further about the lifting joints, `PAD_TWOEXIT` probes them.
+
+```
+695 multi-state quotient regions
+  0  (region, atom) pairs where TWO OR MORE blocks exit at once
+693  of 695 regions have a SINGLE HEADER — a state whose removal from the
+     edge set leaves the region acyclic
+```
+
+**The exit half is not just single-valued, it is single-SOURCE.** No two blocks
+of a region ever exit at the same atom — 0 of 695. So the statement 363 asked
+for is true for a stronger reason than expected: there is nothing to agree
+*about*, because at most one block exits per atom.
+
+**Which relocates 363's 23 exceptions.** If exits never coincide, the 23 regions
+where two states are simultaneously active cannot be two exiters. They must be
+two **back-edges** — and by agreement, to the same target.
+
+**And that half is structural too, almost.** 693 of 695 regions have a single
+header: every cycle passes through one state, so every back-edge points at it,
+so two simultaneous back-edges necessarily share a target. That is the dual of
+the exit fact and it settles the loop half of agreement for 99.7% of regions.
+
+**The residue is exactly 2 regions**, which have no single header — irreducible,
+multi-entry loops. Agreement still held there (it held everywhere, 41 885/41 885),
+but not for this reason. Irreducibility is not an artefact either: the default
+census reports 11 139 irreducible Thompson automata, so it is a real
+sub-population and not a rounding error.
+
+So `LevelAgreementActive` now decomposes into three parts with three different
+statuses:
+
+| part | why | status |
+|---|---|---|
+| exits agree | at most one block exits per atom | measured 0/695 violations |
+| back-edges agree | single header, all back-edges point at it | measured 693/695 |
+| halting vs active | exits-shadow-halting | measured (343) |
+| irreducible regions | — | **2 regions, no structural reason yet** |
+
+**Odds: 97%, unchanged.** The decomposition is sharper and two of its three parts
+have a structural reason rather than a bare measurement. The residue is small and
+named, which is not the same as handled.
+
+**Next.** The 2 irreducible regions — whether agreement there has a reason, or
+whether the route needs to exclude them.

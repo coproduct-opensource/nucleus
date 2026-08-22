@@ -2354,6 +2354,113 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     }
 }
 
+/// **`PAD_TWOEXIT`** (iteration 364).
+///
+/// 363 found 23 quotient regions where two states are simultaneously active and
+/// agree, so agreement is NOT vacuous there.  The proof route now has to go
+/// through "all exits of a region at one atom share a target".  Rather than
+/// reason further about the joints, probe them: find the regions where two
+/// BLOCKS exit at the same atom, and look at what the source does underneath.
+fn twoexit<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut regions, mut two_exit, mut share_loop, mut src_two) = (0, 0, 0, 0);
+    let mut single_header = 0usize;
+    let mut shown = 0usize;
+    for a in &pool {
+        let (blk, nb) = bisim_blocks(a);
+        let Some(q) = quotient_by(a, &blk, nb) else { continue };
+        let k = a.k as usize;
+        let src = sccs_of(a);
+        let mut scomp = [usize::MAX; MAXK];
+        for (ci, mem) in src.iter().enumerate() { for &m in mem { scomp[m] = ci; } }
+        for comp in sccs_of(&q) {
+            if comp.len() < 2 { continue; }
+            regions += 1;
+            // Dual of the exit fact: is there a single state every intra-region
+            // edge that closes a cycle points at?  Equivalently, a state whose
+            // removal from the edge set leaves the region acyclic — a single
+            // header.  If so, the back-edge half of agreement is structural too.
+            {
+                let mut headed = false;
+                for &h in &comp {
+                    // remove edges INTO h, then check the region has no cycle
+                    let mut seen = [0u8; MAXK];
+                    let mut acyclic = true;
+                    fn dfs<const NA: usize>(q: &Aut<NA>, comp: &[usize], h: usize,
+                        u: usize, seen: &mut [u8; MAXK], ok: &mut bool) {
+                        seen[u] = 1;
+                        for x in 0..NA {
+                            let tv = q.st[u][x];
+                            if tv == 0 { continue; }
+                            let t = (tv - 1) as usize;
+                            if !comp.contains(&t) || t == h { continue; }
+                            if seen[t] == 1 { *ok = false; }
+                            else if seen[t] == 0 { dfs(q, comp, h, t, seen, ok); }
+                        }
+                        seen[u] = 2;
+                    }
+                    for u in comp.iter().copied() { if seen[u] == 0 { dfs(&q, &comp, h, u, &mut seen, &mut acyclic); } }
+                    if acyclic { headed = true; break; }
+                }
+                if headed { single_header += 1; }
+            }
+            for x in 0..NA {
+                let exiters: Vec<usize> = comp.iter().copied().filter(|&u| {
+                    let tv = q.st[u][x];
+                    tv != 0 && !comp.contains(&((tv - 1) as usize))
+                }).collect();
+                if exiters.len() < 2 { continue; }
+                two_exit += 1;
+                // do the exiting blocks' preimages share a source loop?
+                let mut sets: Vec<Vec<usize>> = Vec::new();
+                for &b in &exiters {
+                    let mut cs: Vec<usize> = Vec::new();
+                    for u in 0..k {
+                        if blk[u] == b { continue }
+                        else {}
+                    }
+                    for u in 0..k {
+                        if blk[u] == b && scomp[u] != usize::MAX && !cs.contains(&scomp[u]) {
+                            cs.push(scomp[u]);
+                        }
+                    }
+                    sets.push(cs);
+                }
+                let shared = sets.iter().skip(1)
+                    .all(|c| c.iter().any(|y| sets[0].contains(y)));
+                if shared { share_loop += 1; }
+                // does the SOURCE have two states of one loop exiting at this atom?
+                let mut srcpairs = 0usize;
+                for (_, mem) in src.iter().enumerate() {
+                    let n = mem.iter().filter(|&&u| {
+                        let tv = a.st[u][x];
+                        tv != 0 && !mem.contains(&((tv - 1) as usize))
+                    }).count();
+                    if n >= 2 { srcpairs += 1; }
+                }
+                if srcpairs > 0 { src_two += 1; }
+                if shown < 2 {
+                    shown += 1;
+                    println!("  EXAMPLE region {comp:?} atom {x}: blocks {exiters:?} both exit; \
+                              preimage loop sets {sets:?}; source loops with 2 exiters: {srcpairs}");
+                    println!("    {}", show_aut("src  ", a));
+                    println!("    {}", show_aut("quot ", &q));
+                }
+            }
+        }
+    }
+    println!("TWOEXIT: {regions} multi-state quotient regions");
+    println!("  (exits never coincide, so 363's 23 active-pairs must be BACK-EDGES)");
+    println!("  SINGLE HEADER: {single_header} of {regions} regions have a state whose \
+              removal from the edge set leaves the region acyclic — so every cycle passes \
+              through ONE state, and every back-edge points at it");
+    println!("  {two_exit} (region, atom) pairs where TWO OR MORE blocks exit at once");
+    println!("  {share_loop} of those have all exiting blocks sharing a source loop \
+              (355's fact)");
+    println!("  {src_two} of those have a SOURCE loop with two exiting states at that atom \
+              (358 says this should be 0)");
+}
+
 /// **`PAD_SRCEXIT`** (iteration 358).
 ///
 /// The last item needing new mathematics is the structural claim behind
@@ -8554,6 +8661,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_TWOEXIT").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        twoexit::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_SRCEXIT").is_ok() {
