@@ -11563,6 +11563,29 @@ fn show_aut<const NA: usize>(tag: &str, a: &Aut<NA>) -> String {
 ///
 /// So the decisive question is not about steps at all — it is whether a
 /// component's states get identified with non-component states.  Count it.
+/// Backward reachability from halting states: a state is PRODUCTIVE when some
+/// run from it can halt.  A non-productive state is behaviourally `0`, so a
+/// transition into one is dead weight in a guarded fold — which is why 322 asks
+/// whether the split entry lists 321 found are made only of such targets.
+fn productive_states<const NA: usize>(a: &Aut<NA>) -> [bool; MAXK] {
+    let mut p = [false; MAXK];
+    for s in 0..a.k as usize {
+        if a.hl[s] != 0 { p[s] = true; }
+    }
+    loop {
+        let mut changed = false;
+        for s in 0..a.k as usize {
+            if p[s] { continue; }
+            for i in 0..NA {
+                let t = a.st[s][i];
+                if t != 0 && p[(t - 1) as usize] { p[s] = true; changed = true; break; }
+            }
+        }
+        if !changed { break; }
+    }
+    p
+}
+
 /// **`PAD_MIXED_ENTRY`** (iteration 321).
 ///
 /// 320 showed cross-class identification is common, which makes the block
@@ -11614,7 +11637,9 @@ fn mixed_entry<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
         if pool.len() >= cap { break; }
     }
     let (mut total, mut multi, mut mixed) = (0usize, 0usize, 0usize);
+    let mut mixed_live = 0usize;
     let mut first: Option<String> = None;
+    let mut first_live: Option<String> = None;
     for body in &pool {
         for g2 in 0..nguards {
             let lw = a_wh::<NA>(g2, body);
@@ -11641,6 +11666,17 @@ fn mixed_entry<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                         }
                         if any_in && any_out {
                             mixed += 1;
+                            let prod = productive_states(&a);
+                            let live_in = tgts.iter().any(|&t| in_c[blk[t]] && prod[t]);
+                            if live_in {
+                                mixed_live += 1;
+                                if first_live.is_none() {
+                                    first_live = Some(format!(
+                                        "guard {g2:0w$b}, entry targets {tgts:?}\n    {}\n    {}\n    {}",
+                                        show_aut("whole", &a), show_aut("body ", body),
+                                        show_aut("right", r), w = NA));
+                                }
+                            }
                             if first.is_none() {
                                 first = Some(format!(
                                     "guard {g2:0w$b}, entry targets {tgts:?}\n    {}\n    {}\n    {}",
@@ -11656,10 +11692,17 @@ fn mixed_entry<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     println!("MIXED ENTRY: {total} (wh-in-ite) configurations, {multi} with >1 distinct \
               entry target, {mixed} with a SPLIT entry list ({:.2}%)",
         100.0 * mixed as f64 / total.max(1) as f64);
+    println!("  of those, {mixed_live} have a LIVE (productive) in-block entry target");
     match first {
         None => println!("  none: a wh's entry targets never straddle the block, so every \
                           layer is either loop-shaped or seq-shaped"),
         Some(msg) => println!("  FIRST SPLIT\n    {msg}"),
+    }
+    match first_live {
+        None => println!("  NO LIVE SPLIT: every split entry list has only NON-PRODUCTIVE \
+                          targets in the block, so pruning dead branches removes the \
+                          configuration entirely"),
+        Some(msg) => println!("  FIRST LIVE SPLIT\n    {msg}"),
     }
 }
 

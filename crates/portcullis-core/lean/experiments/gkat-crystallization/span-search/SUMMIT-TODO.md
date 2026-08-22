@@ -14796,3 +14796,54 @@ argument rather than a new constructor.  That is the next measurement, and it is
 cheap: re-run counting only splits whose in-block targets are live.
 
 **Next.**  Are the in-block targets of a split entry list ever LIVE?
+
+---
+
+## 322 — MEASURED: EVERY SPLIT ENTRY LIST IS MADE OF DEAD TARGETS.
+
+321 exhibited the configuration the constructor set cannot express and noted its
+example was degenerate in a suggestive way — the in-block entry target was
+STUCK.  Extended `PAD_MIXED_ENTRY` with backward reachability from halting
+states (`productive_states`) and re-ran:
+
+    744 split entry lists
+      0 with a LIVE (productive) in-block entry target
+
+**Every one of them has only NON-PRODUCTIVE targets in the block.**
+
+### Why that closes the gap rather than dodging it
+
+A non-productive state is behaviourally `0`.  `LayeredOn.loop`'s
+`∀ tr ∈ entry, ¬ P tr.2.2` exists to guarantee the solution's equation at a
+non-block state references only non-block values — so that the family
+`stdL · F` and the actual `sol` agree at every target.  **If the offending
+target is behaviourally `0`, they agree anyway**: `sol₀ t ≈ 0` and
+`stdL t ; F ≈ 0 ; F ≈ 0`.  The congruence goes through unchanged.
+
+So the requirement weakens from
+
+    every entry target lies outside the block
+
+to
+
+    every entry target lies outside the block OR is behaviourally zero
+
+which is a side condition on the LAYER, provable where it holds, rather than a
+new constructor.  And 283's selection machinery is already the right tool for
+the `≈ 0` half.
+
+**Odds: 97%** (+1, undoing 321's drop).  The exhibited failure is confined to a
+mechanism with a known fix, which is a materially better position than 321's —
+but the fix is not built and the measurement is one shape (`wh`-in-`ite`) at
+NA = 2, k ≤ 5, so it is evidence and not a theorem.
+
+**The conjecture it suggests**, worth stating because it would make the side
+condition automatic: *a LIVE entry target cannot lie in the block.*  Intuition —
+if it did, the loop would return to it and continue productively, so the loop's
+behaviour is realised in the other half too, which forces enough further
+identification that the entry list stops being split.  Unproved, and the
+measurement is consistent with it.
+
+**Next.**  Weaken `LayeredOn.loop`'s entry condition to "outside the block or
+behaviourally zero", and re-prove the loop case of `layeredOn_has_solution` with
+the `≈ 0` targets discharged by `fold_congr_step`.
