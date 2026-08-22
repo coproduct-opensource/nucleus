@@ -2383,6 +2383,268 @@ fn strongagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// states of the component have the same outcome (same successor, or all
 /// halting)?  Split by headedness so the headless ones — the only ones that can
 /// refute anything — are visible on their own.
+/// **`PAD_ALLRANK`** (iteration 411b).
+///
+/// 410 showed every component admits SOME rank giving agreement.  That leaves a
+/// question with direct consequences for the proof: must the rank be CHOSEN, or
+/// does agreement hold for EVERY rank?
+///
+/// If every rank works, the `wh` case needs no rank construction at all — the
+/// cross-half configuration 411 could not exclude would then be excluded by the
+/// guards alone, whatever the rank.  If only some ranks work, the proof must
+/// build one, and the census should say how rare the good ones are.
+/// **`PAD_TOPENTRY`** (iteration 412).
+///
+/// `PAD_ALLRANK` shows 1,028 of 67,233 components agree only for SOME ranks —
+/// as few as 1 in 6.  So the `wh` case cannot be proved by the guards alone;
+/// the proof must CONSTRUCT the rank.  Which one?
+///
+/// Reading the first counterexample by hand, the agreeing rank is the one that
+/// puts the component's ENTRY — the state entered from outside the component —
+/// at the TOP.  That is exactly `RankTopEntry` (402).
+///
+/// Measured: restrict to ranks where every entry of the component is maximal,
+/// and ask whether agreement then always holds.  If yes, 402's constraint is
+/// the construction the `wh` case needs, and it was already in the file.
+/// **`PAD_DISTRANK`** (iteration 412).
+///
+/// `PAD_TOPENTRY` shows `RankTopEntry` is necessary but NOT sufficient: 5
+/// components admit a top-entry rank that still disagrees.  The counterexample
+/// is a 3-cycle `0 -> 1 -> 2 -> 0` with `2` halting at two atoms, and the good
+/// top-entry rank is the one that ALSO decreases along the body path.
+///
+/// So the construction to test is the canonical one: rank by DISTANCE FROM THE
+/// ENTRY, descending — the entry at the top, each step into the body one lower.
+/// This is a single named rank, not a search, so if it always agrees it is
+/// directly implementable in Lean.
+fn distrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut tested, mut ok, mut bad) = (0usize, 0usize, 0usize, 0usize);
+    let mut skipped_multi = 0usize;
+    let mut first_bad: Option<String> = None;
+    for a in &pool {
+        let k = a.k as usize;
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let mut ents: Vec<usize> = Vec::new();
+            for x in 0..NA {
+                if a.it[x] != 0 {
+                    let t = (a.it[x] - 1) as usize;
+                    if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                }
+            }
+            for u in 0..k {
+                if comp.contains(&u) { continue; }
+                for x in 0..NA {
+                    if a.st[u][x] != 0 {
+                        let t = (a.st[u][x] - 1) as usize;
+                        if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                    }
+                }
+            }
+            if ents.len() != 1 { skipped_multi += 1; continue; }
+            let e = ents[0];
+            // BFS distance from the entry within the component
+            let mut dist = [usize::MAX; MAXK];
+            dist[e] = 0;
+            let mut q = vec![e];
+            let mut qi = 0;
+            while qi < q.len() {
+                let u = q[qi]; qi += 1;
+                for x in 0..NA {
+                    if a.st[u][x] == 0 { continue; }
+                    let t = (a.st[u][x] - 1) as usize;
+                    if !comp.contains(&t) || dist[t] != usize::MAX { continue; }
+                    dist[t] = dist[u] + 1; q.push(t);
+                }
+            }
+            let maxd = comp.iter().map(|&u| dist[u]).filter(|&d| d != usize::MAX).max().unwrap_or(0);
+            let mut rank = [0usize; MAXK];
+            for &u in &comp {
+                rank[u] = if dist[u] == usize::MAX { 0 } else { maxd - dist[u] };
+            }
+            tested += 1;
+            let mut agree = true;
+            for x in 0..NA {
+                let mut outs: Vec<Option<usize>> = Vec::new();
+                for &u in &comp {
+                    let tv = a.st[u][x];
+                    let halts = (a.hl[u] >> x) & 1 == 1;
+                    let isact = if tv == 0 { halts } else {
+                        let t = (tv - 1) as usize;
+                        !(comp.contains(&t) && rank[t] < rank[u])
+                    };
+                    if !isact { continue; }
+                    outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                }
+                if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+            }
+            if agree { ok += 1; } else {
+                bad += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("k={} comp={:?} entry={} hl={:?} st={:?}",
+                        a.k, comp, e, &a.hl[..k], &a.st[..k]));
+                }
+            }
+        }
+    }
+    println!("PAD_DISTRANK  pool={}  non-trivial SCCs={}", pool.len(), sccs);
+    println!("  skipped (0 or >1 entry)        : {}", skipped_multi);
+    println!("  tested with distance-rank      : {}", tested);
+    println!("  AGREES                         : {}", ok);
+    println!("  DISAGREES                      : {}", bad);
+    match first_bad {
+        Some(b) => println!("  *** distance-rank is NOT sufficient: {}", b),
+        None => println!("  the distance-rank always agrees on this pool"),
+    }
+}
+
+fn topentry<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut with_entry, mut top_ok, mut top_bad) = (0usize, 0usize, 0usize, 0usize);
+    let mut multi_entry = 0usize;
+    let mut first_bad: Option<String> = None;
+    for a in &pool {
+        let k = a.k as usize;
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let m = comp.len();
+            if m > 7 { continue; }
+            // entries: states of comp entered from outside comp (or initially)
+            let mut ents: Vec<usize> = Vec::new();
+            for x in 0..NA {
+                if a.it[x] != 0 {
+                    let t = (a.it[x] - 1) as usize;
+                    if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                }
+            }
+            for u in 0..k {
+                if comp.contains(&u) { continue; }
+                for x in 0..NA {
+                    if a.st[u][x] != 0 {
+                        let t = (a.st[u][x] - 1) as usize;
+                        if comp.contains(&t) && !ents.contains(&t) { ents.push(t); }
+                    }
+                }
+            }
+            if ents.is_empty() { continue; }
+            with_entry += 1;
+            if ents.len() > 1 { multi_entry += 1; continue; }   // cannot all be maximal
+            let e = ents[0];
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut any_top, mut all_top_agree) = (false, true);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                // entry maximal?
+                let emax = comp.iter().all(|&u| rank[u] <= rank[e]);
+                if emax {
+                    any_top = true;
+                    let mut agree = true;
+                    for x in 0..NA {
+                        let mut outs: Vec<Option<usize>> = Vec::new();
+                        for &u in &comp {
+                            let tv = a.st[u][x];
+                            let halts = (a.hl[u] >> x) & 1 == 1;
+                            let isact = if tv == 0 { halts } else {
+                                let t = (tv - 1) as usize;
+                                !(comp.contains(&t) && rank[t] < rank[u])
+                            };
+                            if !isact { continue; }
+                            outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                        }
+                        if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                    }
+                    if !agree { all_top_agree = false; }
+                }
+                if !next_perm(&mut perm) { break; }
+            }
+            if !any_top { continue; }
+            if all_top_agree { top_ok += 1; } else {
+                top_bad += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("k={} comp={:?} entry={} hl={:?} st={:?}",
+                        a.k, comp, e, &a.hl[..k], &a.st[..k]));
+                }
+            }
+        }
+    }
+    println!("PAD_TOPENTRY  pool={}  non-trivial SCCs={}", pool.len(), sccs);
+    println!("  with an identifiable entry     : {}", with_entry);
+    println!("  several entries (skipped)      : {}", multi_entry);
+    println!("  EVERY top-entry rank agrees    : {}", top_ok);
+    println!("  some top-entry rank DISAGREES  : {}", top_bad);
+    match first_bad {
+        Some(b) => println!("  *** RankTopEntry is NOT sufficient: {}", b),
+        None => println!("  RankTopEntry always suffices on this pool"),
+    }
+}
+
+fn allrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let pool = build_pool::<NA>(nguards, rounds, cap);
+    let (mut sccs, mut all_ok, mut some_ok, mut none_ok) = (0usize, 0usize, 0usize, 0usize);
+    let mut worst_frac = (1usize, 1usize);
+    let mut first_partial: Option<String> = None;
+    for a in &pool {
+        for comp in sccs_of(a) {
+            let selfloop = comp.len() == 1
+                && (0..NA).any(|x| a.st[comp[0]][x] == (comp[0] + 1) as u8);
+            if comp.len() == 1 && !selfloop { continue; }
+            sccs += 1;
+            let m = comp.len();
+            if m > 7 { continue; }
+            let mut perm: Vec<usize> = (0..m).collect();
+            let (mut good, mut total) = (0usize, 0usize);
+            loop {
+                let mut rank = [0usize; MAXK];
+                for (i, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i; }
+                let mut agree = true;
+                for x in 0..NA {
+                    let mut outs: Vec<Option<usize>> = Vec::new();
+                    for &u in &comp {
+                        let tv = a.st[u][x];
+                        let halts = (a.hl[u] >> x) & 1 == 1;
+                        let isact = if tv == 0 { halts } else {
+                            let t = (tv - 1) as usize;
+                            !(comp.contains(&t) && rank[t] < rank[u])
+                        };
+                        if !isact { continue; }
+                        outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                    }
+                    if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                }
+                total += 1;
+                if agree { good += 1; }
+                if !next_perm(&mut perm) { break; }
+            }
+            if good == 0 { none_ok += 1; }
+            else if good == total { all_ok += 1; }
+            else {
+                some_ok += 1;
+                if good * worst_frac.1 < worst_frac.0 * total {
+                    worst_frac = (good, total);
+                }
+                if first_partial.is_none() {
+                    first_partial = Some(format!("k={} comp={:?} good={}/{} hl={:?} st={:?}",
+                        a.k, comp, good, total, &a.hl[..a.k as usize], &a.st[..a.k as usize]));
+                }
+            }
+        }
+    }
+    println!("PAD_ALLRANK  pool={}  non-trivial SCCs={}", pool.len(), sccs);
+    println!("  EVERY rank agrees      : {}", all_ok);
+    println!("  only SOME ranks agree  : {}", some_ok);
+    println!("  NO rank agrees         : {}", none_ok);
+    println!("  scarcest good fraction : {}/{}", worst_frac.0, worst_frac.1);
+    if let Some(b) = first_partial { println!("  first partial: {}", b); }
+}
+
 fn srcagree<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut sccs, mut headed_ok, mut headless, mut headless_agree) =
@@ -9507,6 +9769,27 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         strongagree::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_DISTRANK").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        distrank::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_TOPENTRY").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        topentry::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_ALLRANK").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        allrank::<3>(g, r, c);
         return;
     }
     if std::env::var("PAD_SRCAGREE").is_ok() {

@@ -19213,3 +19213,68 @@ problem does not close still stands.
 **Next.** The cross-half case: when an enclosing loop merges the halves, its own
 `¬guard` enters both halves' halts — so the enclosing loop may supply the
 exclusion the halves cannot supply for each other.
+
+## 412 — the rank must be CONSTRUCTED, `RankTopEntry` is not enough, and the DISTANCE RANK is.
+
+Web search: exhausted (200/200).
+
+Three measurements, two negative and one positive. The negatives came first and
+they are what make the positive worth anything.
+
+**1. The rank is load-bearing (`PAD_ALLRANK`).** 410 showed every component
+admits SOME agreeing rank. Does agreement hold for EVERY rank — in which case
+the `wh` case needs no rank construction at all?
+
+| | count |
+|---|---|
+| EVERY rank agrees | 66,205 |
+| only SOME ranks agree | **1,028** |
+| NO rank agrees | 0 |
+| scarcest good fraction | **1 / 6** |
+
+So no. 1.5% of components agree only for particular ranks, sometimes 1 in 6.
+**The `wh` case cannot be proved from the guards alone** — the proof must
+exhibit a rank. That closes off the direction 411 was heading in.
+
+**2. `RankTopEntry` is necessary but NOT sufficient (`PAD_TOPENTRY`).** Reading
+`PAD_ALLRANK`'s first counterexample by hand, the agreeing rank put the
+component's entry at the top — 402's constraint. Restricting to top-entry ranks
+and asking whether they all agree:
+
+| | count |
+|---|---|
+| every top-entry rank agrees | 66,993 |
+| some top-entry rank DISAGREES | **5** |
+
+Five is enough. The counterexample is a 3-cycle `0 → 1 → 2 → 0` with `2` halting
+at two atoms and entry `0`. Both top-entry ranks put `0` at the top; the one
+that also decreases along `0 → 1 → 2` agrees, the one that does not puts states
+`1` and `2` both active at atom 0 with different targets. So the entry being
+maximal is not the whole constraint — the rank must descend along the body path.
+
+**3. The distance rank (`PAD_DISTRANK`).** That reading names a canonical rank:
+**rank = distance from the entry, descending.** Entry at the top, each step into
+the body one lower. Every forward edge then decreases rank and is raw; only
+edges back toward the entry are non-raw. One named rank, no search.
+
+| pool | tested | AGREES | DISAGREES |
+|---|---|---|---|
+| 60,000 | 20,106 | **20,106** | **0** |
+| 200,000 | 66,998 | **66,998** | **0** |
+
+Unlike 407's clean sweeps this one has a mechanism behind it, and it holds at
+both pool sizes rather than only the small one.
+
+**Scope, stated rather than buried.** 235 components at 200k were skipped: they
+have zero or several entries. Those are exactly 408's multi-header components —
+the irreducible ones GKAT's per-atom entry creates. The distance rank is defined
+for single-entry components only, and the multi-entry ones still need their own
+treatment. That is a real hole in the construction, not a rounding error.
+
+**Odds: 95% → 96%.** A named, checkable construction where there was a search,
+with the two weaker candidate constraints eliminated first. Not higher, because
+the multi-entry components have no construction at all yet, and a census is not
+a proof. The field's prior that this problem does not close still stands.
+
+**Next.** Define the distance rank in Lean and prove `SourceSccAgrees` for
+single-entry components from it; then the multi-entry case separately.
