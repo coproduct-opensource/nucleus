@@ -2317,6 +2317,8 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let mut singleton_ok = 0usize;
     let (mut multi, mut multi_ok, mut some_ordering_fails, mut every_ordering_fails) =
         (0usize, 0usize, 0usize, 0usize);
+    let mut exit_conflict = 0usize;
+    let mut first_exit_conflict: Option<String> = None;
     for a in &pool {
         let (blk, nb) = bisim_blocks(a);
         let Some(q) = quotient_by(a, &blk, nb) else { continue };
@@ -2373,6 +2375,30 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                 if nclash > 0 { some_ordering_fails += 1; }
                 if nclash == ntried { every_ordering_fails += 1; }
             }
+            // RANK-INDEPENDENT necessary condition: an exit leaves the level, so it
+            // is never raw whatever the rank.  If two region states exit to
+            // DIFFERENT targets at the same atom, LevelAgreement fails outright and
+            // no choice of rank can save it.  A hit here refutes the hypothesis.
+            {
+                let mut exit_tgt = [usize::MAX; 16];
+                for &u in &comp {
+                    for x in 0..NA {
+                        let tv = q.st[u][x];
+                        if tv == 0 { continue; }
+                        let t = (tv - 1) as usize;
+                        if comp.contains(&t) { continue; }        // intra-level
+                        if exit_tgt[x] == usize::MAX { exit_tgt[x] = t; }
+                        else if exit_tgt[x] != t {
+                            exit_conflict += 1;
+                            if first_exit_conflict.is_none() {
+                                first_exit_conflict =
+                                    Some(format!("region {comp:?} atom {x}\n    {}",
+                                        show_aut("quot ", &q)));
+                            }
+                        }
+                    }
+                }
+            }
             if any {
                 ok += 1;
                 if m == 1 { singleton_ok += 1; }
@@ -2394,6 +2420,11 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     println!("  base-rate control: {some_ordering_fails} multi-state regions have at least \
               ONE ordering that clashes (so the condition bites and the choice matters); \
               {every_ordering_fails} have all orderings clash");
+    println!("  RANK-FREE REFUTATION TEST: {exit_conflict} regions where two states exit to \
+              DIFFERENT targets at the SAME atom (any hit refutes LevelAgreement outright)");
+    if let Some(m) = &first_exit_conflict {
+        println!("  FIRST EXIT CONFLICT\n    {m}");
+    }
     match first_bad {
         None => println!("  no clash anywhere: the shared level test `bs n` always exists"),
         Some(m) => println!("  FIRST CLASH\n    {m}"),

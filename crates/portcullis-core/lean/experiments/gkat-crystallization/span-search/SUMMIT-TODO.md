@@ -16339,3 +16339,54 @@ as a proof, and the field's prior that this problem does not close still stands.
 
 **Next.** Prove `HaltDeterministic` for the quotient construction, then attack the
 rank existential.
+
+## 353 — an attempted REFUTATION of `LevelAgreement`, and why it survives
+
+352 made `LevelAgreement` load-bearing on measurement alone. The right response to
+that is not another confirmatory run — it is an attempt to break it.
+
+**A rank-free necessary condition.** An exit leaves its level, so it is never
+raw, whatever the rank. Therefore:
+
+> if two states of a region exit to DIFFERENT targets at the SAME atom,
+> `LevelAgreement` fails outright and no choice of rank can save it.
+
+That is a hard refutation test with no existential to search over. Added to
+`PAD_BACKATOM` and run at increasing scale:
+
+| pool | regions | multi-state | **exit conflicts** | control: some ordering fails |
+|---|---|---|---|---|
+| G=2 R=3 cap 4k | 968 | 53 | **0** | 51/53 |
+| G=3 R=4 cap 30k | 7 882 | 196 | **0** | 190/196 |
+| G=4 R=5 cap 120k | **41 885** | 695 | **0** | 672/695 |
+
+Ten times the earlier scale, and the hypothesis does not break. The control keeps
+passing throughout — 672 of 695 multi-state regions have a rank ordering that
+*fails*, so the existential is real work, not a triviality.
+
+**A process note.** The first attempt at this run reported three identical
+results for three different parameter sets. zsh does not word-split unquoted
+variables, so `set -- $cfg` left every run on the defaults. Three identical
+numbers for three different configurations is the signature of a harness that
+isn't reading its inputs; it should be checked for, not explained away.
+
+**Why it survives — the mechanism.** Exit agreement is not luck. In GKAT, an SCC
+comes from a **while-loop**, and a while-loop has exactly **one exit
+continuation**: every state of the body, when the loop test fails, goes to the
+same successor. So exits from a region agree *structurally*, not accidentally.
+That is also why the census's `entry/body-separated subclass` counter exists.
+
+The open question is whether the collapse can break it — by merging states from
+two different loops into one SCC, whose exits would then differ. The measurement
+says it does not, over 41 885 regions.
+
+**This is now the shape of the remaining proof**, and it is a much better shape
+than "a measured existential":
+
+1. exits from a loop body in a Thompson automaton go to a single continuation —
+   structural, provable by induction on the expression;
+2. a behavioural quotient preserves that;
+3. hence `LevelAgreement`, with the rank read off the body's own order.
+
+**Next.** Measure step 2 directly — whether any collapse merges two loops into a
+single SCC — since that is the one place the structural argument could fail.
