@@ -12353,6 +12353,63 @@ theorem loopInitialized_halt_backedge_exclusive' {S X : Type} (W : T → X → B
 
 #print axioms loopInitialized_halt_backedge_exclusive'
 
+/-- **Agreement for a loop, assembled.**  Two states of `loopInitialized guard
+body` whose BODY part is silent at an atom, and which both halt in the body, take
+the SAME step there.
+
+That is the whole back-edge case: `firstMatch` skips the silent body prefix
+(`firstMatch_append_none`), leaving the appended entries, and those agree by
+`loop_entry_agree`.  The other cases need no agreement — a state whose body part
+fires is raw under any rank that orders the body, and a state that is silent and
+does not halt is dead. -/
+theorem loopInitialized_agree_of_body_silent {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (s s' : S)
+    (hbs : GkatKleene.firstMatch W x (body.core.trans s) = none)
+    (hbs' : GkatKleene.firstMatch W x (body.core.trans s') = none)
+    (hh : GkatGS.bval W (body.core.hlt s) x = true)
+    (hh' : GkatGS.bval W (body.core.hlt s') x = true) :
+    GkatKleene.firstMatch W x ((GkatThompson.loopInitialized guard body).core.trans s)
+      = GkatKleene.firstMatch W x
+          ((GkatThompson.loopInitialized guard body).core.trans s') := by
+  show GkatKleene.firstMatch W x (body.core.trans s ++ body.initTrans.map (fun tr =>
+      (BExp.and (body.core.hlt s) (BExp.and guard tr.1), tr.2)))
+    = GkatKleene.firstMatch W x (body.core.trans s' ++ body.initTrans.map (fun tr =>
+      (BExp.and (body.core.hlt s') (BExp.and guard tr.1), tr.2)))
+  rw [GkatKleene.firstMatch_append_none W x _ _ hbs,
+    GkatKleene.firstMatch_append_none W x _ _ hbs']
+  exact loop_entry_agree W x guard _ _ body.initTrans hh hh'
+
+#print axioms loopInitialized_agree_of_body_silent
+
+/-- The loop's halt test carries `¬guard`, so a state halting in the loop pins the
+guard FALSE at that atom — for every state, not just itself. -/
+theorem guard_false_of_loop_halt {X : Type} (W : T → X → Bool) (x : X)
+    (P g : BExp T) (h : GkatGS.bval W (BExp.and P (BExp.not g)) x = true) :
+    GkatGS.bval W g x = false := by
+  have h2 : (GkatGS.bval W P x && !GkatGS.bval W g x) = true := h
+  cases hgv : GkatGS.bval W g x with
+  | false => rfl
+  | true => rw [hgv] at h2; simp at h2
+
+/-- **The cross-case.**  If ANY state of the loop halts at an atom, then NO state
+back-edges there — the guard is a single value at a given atom, and the two gates
+sit on opposite sides of it.  `guard_split_exclusive` handled this only when both
+gates ran through the same state's halt test; this is the general form. -/
+theorem loop_halt_blocks_all_backedges {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (s s' : S)
+    (hhalt : GkatGS.bval W
+      ((GkatThompson.loopInitialized guard body).core.hlt s) x = true)
+    (tr : BExp T × A × S) :
+    GkatGS.bval W (BExp.and (body.core.hlt s') (BExp.and guard tr.1)) x = false := by
+  have hg : GkatGS.bval W guard x = false :=
+    guard_false_of_loop_halt W x (body.core.hlt s) guard hhalt
+  show (GkatGS.bval W (body.core.hlt s') x
+    && (GkatGS.bval W guard x && GkatGS.bval W tr.1 x)) = false
+  rw [hg]; simp
+
+#print axioms guard_false_of_loop_halt
+#print axioms loop_halt_blocks_all_backedges
+
 end LevelExistence
 
 #print axioms reachLevel_mono

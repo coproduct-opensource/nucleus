@@ -18364,3 +18364,43 @@ structural concern I could name for `wh`. What is still missing is the assembly
 satisfies `LevelAgreementActive` — plus `seq`/`ite`, which create no cycles.
 
 **Next.** Assemble the `wh` facts into agreement for a loop component.
+
+## 395 — the `wh` case's agreement, assembled
+
+**`loopInitialized_agree_of_body_silent`** — two states of `loopInitialized guard
+body` whose BODY part is silent at an atom, and which both halt in the body, take
+the **same step** there. `firstMatch` skips the silent body prefix
+(`firstMatch_append_none`), leaving the appended entries, which agree by 393's
+`loop_entry_agree`. That is the whole back-edge case.
+
+**`loop_halt_blocks_all_backedges`** — if ANY state of the loop halts at an atom,
+then NO state back-edges there.
+
+**And that second one needed strengthening 394.** `guard_split_exclusive` handles
+both gates only when they run through the **same** state's halt test — the
+hypothesis and conclusion share its `P`. The cross-case has one state halting
+(`body.hlt s ∧ ¬guard`) and a *different* state back-edging
+(`body.hlt s' ∧ guard ∧ tr.1`), with different `P`s, so 394's lemma does not
+apply. The fix is to extract the guard first: a loop halt pins `guard` FALSE at
+that atom, **for every state**, and then every back-edge gate is dead. I found
+this by trying to use 394's lemma and watching it not typecheck.
+
+**The `wh` case is now covered by cases:**
+
+| at an atom, a loop state… | |
+|---|---|
+| body part fires | raw under any rank ordering the body — not active |
+| body silent, halts in body, guard true | back-edges; **all such agree** (395) |
+| body silent, halts in body, guard false | halts; **then nothing back-edges** (395) |
+| body silent, does not halt | dead |
+| inner loop nested inside | separated by the inner guard (394) |
+
+None of it needs a measurement, and none of it needs the rank except in the first
+row, where the rank is exactly what the induction hypothesis on the body supplies.
+
+**Odds: 96%, unchanged.** The `wh` case's structure is complete; what is not done
+is tying these to `LevelAgreementActive`'s statement — which speaks of levels,
+`nonRaw` lists and `peelRawHlt`, not of loop bodies — and `seq`/`ite`.
+
+**Next.** Connect the case analysis to `nonRaw`/`peelRawHlt`, which is where the
+statement actually lives.
