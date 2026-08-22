@@ -14540,3 +14540,46 @@ weaker.**
 **Next.**  Build the weight by recursion on the expression: `test`/`act` give
 anything, `ite`/`seq` give left-then-right with a strict offset, `wh` inherits
 its body's.
+
+---
+
+## 316 — THE WEIGHT, BY RECURSION ON THE EXPRESSION.  305's OBLIGATION IS DISCHARGED.
+
+315 reduced 305's "leaf ordering" to supplying, at each `ite`/`seq` node, a
+weight in which every RIGHT state outweighs every LEFT one.  Built:
+
+  * the recursion must carry a BOUND alongside the weight — to place the right
+    half strictly above the left, one has to know where the left half ENDS — so
+    `stateWeight g` returns a PAIR, weight and bound, built together;
+  * `test` has no states, `act` has one, both bound `0`;
+  * `ite` and `seq` place the left half at its own weights and the right half
+    OFFSET past the left's bound, so **the strict inequality is by construction
+    rather than by comparison**;
+  * `wh` inherits its body's unchanged — a loop adds transitions, never states,
+    which is the same fact `LoopLayer.states_eq` records.
+
+**That `ite` and `seq` get the IDENTICAL clause is 289's observation once more**:
+they differ in what they connect, never in what states they have.
+
+`stateWeight`, `stateWeight_le`, `stateWeight_ite_lt`, `stateWeight_seq_lt`.
+
+**So 305's obligation — raised, shrunk by 307, deleted by 311, resurrected by
+314 — is now DISCHARGED**, and by construction rather than by hypothesis.  The
+cycle is worth naming: an obligation that keeps coming back is usually real, and
+the versions of it that "dissolve" are usually the ones stated in terms of
+something incidental.
+
+**Odds: 99%, HELD.**
+
+**What is left of the whole thing**
+
+  1. **the witness selection** — pick, in each class, a preimage of maximal
+     `stateWeight`; `minOf1`/`minOfList` (264) already give maxima over a list,
+     and the state list is finite;
+  2. **the induction on `Exp`**, assembling 307-310's five witness-form cases
+     with `max_is_inr` (315) supplying each node's preference from (1) and
+     `max_inl_all_inl` (315) letting the recursion descend into the left half;
+  3. **the connection to `sumQuotientSolvable_of_certificate`**.
+
+**Next.**  (1) — the witness selection, which is the last construction; (2) and
+(3) are assembly.

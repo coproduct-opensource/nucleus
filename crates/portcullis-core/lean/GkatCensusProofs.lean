@@ -10293,4 +10293,88 @@ theorem max_inl_all_inl {S₁ S₂ : Type} (w : Sum S₁ S₂ → Nat)
 #print axioms max_is_inr
 #print axioms max_inl_all_inl
 
+
+/-! ### 316 — THE WEIGHT, BY RECURSION ON THE EXPRESSION
+
+    315 reduced 305's "leaf ordering" to supplying, at each `ite`/`seq` node, a
+    weight in which every RIGHT state outweighs every LEFT one.  Here it is,
+    and the only wrinkle is that the recursion must carry a BOUND alongside the
+    weight: to place the right half strictly above the left, one needs to know
+    where the left half ends.
+
+    So `stateWeight g` returns a PAIR — the weight and an upper bound for it —
+    and the two are built together:
+
+      * `test` has no states, `act` has one; both bound `0`;
+      * `ite` and `seq` place the left half at its own weights and the right
+        half OFFSET past the left's bound, so the strict inequality is by
+        construction rather than by comparison;
+      * `wh` inherits its body's, unchanged — a loop adds transitions, never
+        states, which is the same fact `LoopLayer.states_eq` records.
+
+    That `ite` and `seq` get the identical clause is 289's observation once
+    more: they differ in what they connect, never in what states they have. -/
+def stateWeight : (g : Exp A T) →
+    ((GkatThompson.certifiedThompson A T g).State → Nat) × Nat
+  | .test _ => ((fun s => nomatch s), 0)
+  | .act _ => ((fun _ => 0), 0)
+  | .ite _ e f =>
+      ((fun s => match s with
+        | .inl u => (stateWeight e).1 u
+        | .inr t => (stateWeight e).2 + 1 + (stateWeight f).1 t),
+       (stateWeight e).2 + 1 + (stateWeight f).2)
+  | .seq e f =>
+      ((fun s => match s with
+        | .inl u => (stateWeight e).1 u
+        | .inr t => (stateWeight e).2 + 1 + (stateWeight f).1 t),
+       (stateWeight e).2 + 1 + (stateWeight f).2)
+  | .wh _ e => stateWeight e
+
+/-- The bound is a bound. -/
+theorem stateWeight_le : ∀ (g : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T g).State),
+    (stateWeight g).1 s ≤ (stateWeight g).2
+  | .test _, s => nomatch s
+  | .act _, _ => Nat.le_refl 0
+  | .ite _ e f, s => by
+      cases s with
+      | inl u =>
+          exact Nat.le_trans (stateWeight_le e u)
+            (Nat.le_trans (Nat.le_succ _) (Nat.le_add_right _ _))
+      | inr t =>
+          exact Nat.add_le_add_left (stateWeight_le f t) _
+  | .seq e f, s => by
+      cases s with
+      | inl u =>
+          exact Nat.le_trans (stateWeight_le e u)
+            (Nat.le_trans (Nat.le_succ _) (Nat.le_add_right _ _))
+      | inr t =>
+          exact Nat.add_le_add_left (stateWeight_le f t) _
+  | .wh _ e, s => stateWeight_le e s
+
+/-- **RIGHT OUTWEIGHS LEFT**, at an `ite` node — the hypothesis `max_is_inr`
+    consumes. -/
+theorem stateWeight_ite_lt (b : BExp T) (e f : Exp A T)
+    (u : (GkatThompson.certifiedThompson A T e).State)
+    (t : (GkatThompson.certifiedThompson A T f).State) :
+    (stateWeight (.ite b e f)).1 (Sum.inl u)
+      < (stateWeight (.ite b e f)).1 (Sum.inr t) := by
+  show (stateWeight e).1 u < (stateWeight e).2 + 1 + (stateWeight f).1 t
+  exact Nat.lt_of_le_of_lt (stateWeight_le e u)
+    (Nat.lt_of_lt_of_le (Nat.lt_succ_self _) (Nat.le_add_right _ _))
+
+/-- And at a `seq` node, by the same clause. -/
+theorem stateWeight_seq_lt (e f : Exp A T)
+    (u : (GkatThompson.certifiedThompson A T e).State)
+    (t : (GkatThompson.certifiedThompson A T f).State) :
+    (stateWeight (.seq e f)).1 (Sum.inl u)
+      < (stateWeight (.seq e f)).1 (Sum.inr t) := by
+  show (stateWeight e).1 u < (stateWeight e).2 + 1 + (stateWeight f).1 t
+  exact Nat.lt_of_le_of_lt (stateWeight_le e u)
+    (Nat.lt_of_lt_of_le (Nat.lt_succ_self _) (Nat.le_add_right _ _))
+
+#print axioms stateWeight_le
+#print axioms stateWeight_ite_lt
+#print axioms stateWeight_seq_lt
+
 end GkatCensus
