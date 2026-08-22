@@ -16131,3 +16131,61 @@ have to be met by the same classifiers `p`, `q` and rank.
 
 **Next.** That instantiation, with `levelStates` defined and the two behaviour
 premises of `solvesBA_of_behaviour` produced from it.
+
+## 349 — THE CAPSTONE: the peel instantiated from a quotient
+
+Every object the construction needs is now built from `aut`, `lvl`, the two
+classifiers `p`, `q` and `rawHlt` — nothing exhibited by hand, nothing assumed to
+exist:
+
+```lean
+def levelStates aut lvl n := aut.states.filter (lvl · = n)
+def peelRaw    aut p rawHlt := ⟨aut.states, rawHlt, fun s => (disjoin (aut.trans s)).filter p⟩
+def peelLoops  aut lvl p q n := (levelStates aut lvl n).flatMap (…filter loopPart)
+def peelExits  aut lvl p q n := (levelStates aut lvl n).flatMap (…filter exitPart)
+def peelBs     aut lvl p q n := bigOr ((peelLoops …).map (·.1))
+def peelH0     aut lvl n     := bigOr ((levelStates …).map aut.hlt)
+def peelAut    aut lvl p q rawHlt := peeledSys (peelRaw …) (peelBs …) (peelH0 …) …
+```
+
+- **`peelAut_trans_agrees`** — every listed state fires exactly as the built peel
+  does, from the gate and agreement conditions.
+- **`peelAut_hlt_agrees`** — same for the halt test, from 346's conditions.
+- **`solvesBA_of_peel`** — the two together plus
+  `SyntacticallyLayered (peelAut …)` give `∃ sol, SolvesBA aut sol`.
+
+One correction on the way: the hypotheses first went in stated for a single state
+`s`, but `firstMatch_peel_level` needs them across the whole level — agreement is
+a statement about a level, not about a state, and writing it per-state made it
+look weaker than it is. Restated by level index, it goes through.
+
+`solvesBA_of_behaviour` also had to be weakened from `∀ s` to `∀ s ∈ aut.states`;
+it was only ever used at listed states, and the stronger form is not provable for
+a peel that says nothing about unlisted ones.
+
+**Where the route stands.**
+
+```
+level function, free for every system                    339
+every SyntacticallyLayered system solves                 338
+the peel constructed, every level at once                341
+solutions survive reshaping                              340
+minimality required nowhere                              343
+transition + halt premises, shared lists built           346-348
+the peel INSTANTIATED from a quotient                    349
+------------------------------------------------------------------
+the classifiers p, q and the rank, and the region
+conditions they must satisfy                             THE REMAINDER
+```
+
+**What the remainder is.** `solvesBA_of_peel` takes
+`SyntacticallyLayered (peelAut …)` as a hypothesis; 341's
+`syntacticallyLayered_peeled` supplies it, but its region conditions are
+statements about `p`, `q` and a rank: `p` must pick the rank-decreasing
+intra-level edges, `q` the intra-level back-edges, and the rest must exit
+downward. Producing those classifiers from a quotient is the condensation fact
+(339: levels ARE the SCCs) plus a rank on each region — the rank ordering 343
+measured and found always to exist.
+
+**Next.** Define `p`, `q` and the rank from the quotient's own graph, and
+discharge 341's region conditions.

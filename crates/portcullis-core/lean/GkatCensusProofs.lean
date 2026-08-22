@@ -11581,14 +11581,14 @@ theorem eqRHS_equiv_of_behaviour {S : Type} (aut aut' : GkatKleene.GAut S A T)
 peel-shaped automaton may be solved in place of the one that was handed over. -/
 theorem solvesBA_of_behaviour {S : Type} (aut aut' : GkatKleene.GAut S A T)
     (hstates : ∀ s, s ∈ aut.states → s ∈ aut'.states)
-    (htr : ∀ (s : S) (X : Type) (W : T → X → Bool) (x : X),
+    (htr : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
       GkatKleene.firstMatch W x (aut.trans s) = GkatKleene.firstMatch W x (aut'.trans s))
-    (hh : ∀ (s : S) (X : Type) (W : T → X → Bool) (x : X),
+    (hh : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
       GkatGS.bval W (aut.hlt s) x = GkatGS.bval W (aut'.hlt s) x)
     (sol : S → Exp A T) (h : GkatKleene.SolvesBA aut' sol) :
     GkatKleene.SolvesBA aut sol := fun s hs =>
   EquivBA.trans (h s (hstates s hs))
-    (EquivBA.symm (eqRHS_equiv_of_behaviour aut aut' sol s (htr s) (hh s)))
+    (EquivBA.symm (eqRHS_equiv_of_behaviour aut aut' sol s (htr s hs) (hh s hs)))
 
 /-- The Salomaa right-hand side and the parametric one at ending `1` differ only
 in their fallback, and those agree by S5. -/
@@ -12651,6 +12651,148 @@ end SharedList
 
 #print axioms firstMatch_some_guard
 #print axioms firstMatch_shared
+
+
+section Instantiation
+
+/-! ### The peel, instantiated from a quotient
+
+Every ingredient below is built from `aut`, `lvl` and the two classifiers alone.
+Nothing is chosen by hand and nothing is assumed to exist. -/
+
+variable {S : Type}
+
+def levelStates (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (n : Nat) : List S :=
+  aut.states.filter (fun s => decide (lvl s = n))
+
+def peelRaw (aut : GkatKleene.GAut S A T) (p : (BExp T × A × S) → Bool)
+    (rawHlt : S → BExp T) : GkatThompson.GSystem S A T where
+  states := aut.states
+  hlt := rawHlt
+  trans := fun s => (disjoin (aut.trans s)).filter p
+
+def peelLoops (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
+  (levelStates aut lvl n).flatMap
+    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p tr && q tr))
+
+def peelExits (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (n : Nat) : List (BExp T × A × S) :=
+  (levelStates aut lvl n).flatMap
+    (fun s => (disjoin (aut.trans s)).filter (fun tr => !p tr && !q tr))
+
+/-- The level's loop test: the disjunction of its loop guards. -/
+def peelBs (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (n : Nat) : BExp T :=
+  bigOr ((peelLoops aut lvl p q n).map (fun tr => tr.1))
+
+/-- The level's halt test: the disjunction of its states' halt tests. -/
+def peelH0 (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (n : Nat) : BExp T :=
+  bigOr ((levelStates aut lvl n).map aut.hlt)
+
+/-- The peeled system built from a quotient. -/
+def peelAut (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T) :
+    GkatThompson.GSystem S A T :=
+  peeledSys (peelRaw aut p rawHlt) (peelBs aut lvl p q) (peelH0 aut lvl)
+    (peelLoops aut lvl p q) (peelExits aut lvl p q) lvl
+
+theorem mem_levelStates {aut : GkatKleene.GAut S A T} {lvl : S → Nat} {s : S}
+    (hs : s ∈ aut.states) : s ∈ levelStates aut lvl (lvl s) :=
+  List.mem_filter.mpr ⟨hs, by simp⟩
+
+/-- **The transition premise, instantiated.**  Every listed state of the quotient
+fires exactly as the built peel does, given the gate and agreement conditions —
+which are 343's measurement and nothing else. -/
+theorem peelAut_trans_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (hgateL : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (rawHlt a) x = true ∧
+            GkatGS.bval W (peelBs aut lvl p q n) x = true)
+    (hgateE : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && !q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (rawHlt a) x = true ∧
+            GkatGS.bval W (peelBs aut lvl p q n) x = false)
+    (hagreeL : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter (fun tr => !p tr && q tr)) = some tr.2)
+    (hagreeE : ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter (fun tr => !p tr && !q tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter (fun tr => !p tr && !q tr)) = some tr.2) :
+    ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s)
+        = GkatKleene.firstMatch W x ((peelAut aut lvl p q rawHlt).trans s) := by
+  intro s hs X W x
+  exact firstMatch_peel_level W x (levelStates aut lvl (lvl s)) aut.trans rawHlt
+    (peelBs aut lvl p q (lvl s)) p q
+    (hgateL X W x (lvl s)) (hgateE X W x (lvl s))
+    (hagreeL X W x (lvl s)) (hagreeE X W x (lvl s))
+    s (mem_levelStates (lvl := lvl) hs)
+
+/-- **The halt premise, instantiated.** -/
+theorem peelAut_hlt_agrees (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (hraw : ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = true → GkatGS.bval W (rawHlt s) x = true)
+    (hloopoff : ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = true →
+        ∀ g ∈ (peelLoops aut lvl p q (lvl s)).map (fun tr => tr.1),
+          GkatGS.bval W g x = false)
+    (hnot : ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = false → GkatGS.bval W (rawHlt s) x = true →
+        (∃ g ∈ (peelLoops aut lvl p q (lvl s)).map (fun tr => tr.1),
+            GkatGS.bval W g x = true) ∨
+        (∀ h ∈ (levelStates aut lvl (lvl s)).map aut.hlt, GkatGS.bval W h x = false)) :
+    ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (aut.hlt s) x
+        = GkatGS.bval W ((peelAut aut lvl p q rawHlt).hlt s) x := by
+  intro s hs X W x
+  exact (bval_peel_hlt_eq W x (rawHlt s) (aut.hlt s)
+    ((peelLoops aut lvl p q (lvl s)).map (fun tr => tr.1))
+    ((levelStates aut lvl (lvl s)).map aut.hlt)
+    (List.mem_map.mpr ⟨s, mem_levelStates (lvl := lvl) hs, rfl⟩)
+    (hraw X W x s hs) (hloopoff X W x s hs) (hnot X W x s hs)).symm
+
+/-- **THE CAPSTONE.**  A quotient is solvable as soon as the peel built from it is
+`SyntacticallyLayered` and the gate, agreement and halt conditions hold.  Every
+object in sight is constructed from `aut`, `lvl`, `p`, `q` and `rawHlt`; nothing
+is exhibited by hand and nothing is assumed to exist. -/
+theorem solvesBA_of_peel (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (p q : (BExp T × A × S) → Bool) (rawHlt : S → BExp T)
+    (htr : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s)
+        = GkatKleene.firstMatch W x ((peelAut aut lvl p q rawHlt).trans s))
+    (hh : ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (aut.hlt s) x
+        = GkatGS.bval W ((peelAut aut lvl p q rawHlt).hlt s) x)
+    (hlayer : SyntacticallyLayered (peelAut aut lvl p q rawHlt)) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
+  let peeled : GkatKleene.GAut S A T :=
+    { states := (peelAut aut lvl p q rawHlt).states
+      hlt := (peelAut aut lvl p q rawHlt).hlt
+      trans := (peelAut aut lvl p q rawHlt).trans
+      start := aut.start }
+  match solvesBA_of_syntacticallyLayered peeled hlayer with
+  | ⟨sol, hsol⟩ =>
+      ⟨sol, solvesBA_of_behaviour aut peeled (fun _ hs => hs) htr hh sol hsol⟩
+
+#print axioms peelAut_hlt_agrees
+#print axioms solvesBA_of_peel
+
+end Instantiation
+
+#print axioms peelAut_trans_agrees
 
 section CycleDemo
 
