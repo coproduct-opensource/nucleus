@@ -2369,15 +2369,22 @@ fn pushrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let pool = build_pool::<NA>(nguards, rounds, cap);
     let (mut regions, mut push_agree, mut push_vac, mut any_agree) = (0usize, 0usize, 0usize, 0usize);
     let mut per_ok = [0usize; 4];
+    let (mut shown_fail, mut shown_nonvac) = (0usize, 0usize);
     for a in &pool {
         let k = a.k as usize;
         // source: per-SCC head (the unique exiting state, 358) and BFS distance
         let mut dist = [usize::MAX; MAXK];
         for comp in sccs_of(a) {
+            // The head is the state through which control LEAVES the region.  An
+            // exiting edge is one way out; HALTING is the other, and a region can
+            // have no exiting edge at all (a pure loop that only halts).  Falling
+            // back to comp[0] there picks an arbitrary state and makes the
+            // pushforward meaningless, which is what the single failure was.
             let head = comp.iter().copied().find(|&u| (0..NA).any(|x| {
                 let tv = a.st[u][x];
                 tv != 0 && !comp.contains(&((tv - 1) as usize))
-            })).unwrap_or(comp[0]);
+            })).or_else(|| comp.iter().copied().find(|&u| a.hl[u] != 0))
+              .unwrap_or(comp[0]);
             let mut frontier = vec![head];
             dist[head] = 0;
             let mut d = 0usize;
@@ -2437,8 +2444,17 @@ fn pushrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
             if ok { best_ok = true; per_ok[variant] += 1; }
             if vac { best_vac = true; }
             }
-            if best_ok { push_agree += 1; }
-            if best_vac { push_vac += 1; }
+            if best_ok { push_agree += 1; } else if shown_fail < 1 {
+                shown_fail += 1;
+                println!("  PUSHFORWARD FAILURE region {comp:?}");
+                println!("    {}", show_aut("src  ", a));
+                println!("    {}", show_aut("quot ", &q));
+            }
+            if best_vac { push_vac += 1; } else if shown_nonvac < 2 {
+                shown_nonvac += 1;
+                println!("  AGREES BUT NOT VACUOUS region {comp:?}");
+                println!("    {}", show_aut("quot ", &q));
+            }
             // for comparison: does ANY rank agree?
             let m = comp.len();
             let mut perm: Vec<usize> = (0..m).collect();

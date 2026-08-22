@@ -17264,3 +17264,46 @@ commit shipped code with no ledger entry, exactly as in 354. Recorded then as
 
 **Next.** The one region the pushforward misses, and the 44 where it agrees but
 is not vacuous.
+
+## 371 — the pushforward result was sensitive to a modelling choice; 368 is reinstated
+
+370's single pushforward failure turned out to be my own fallback: that region
+has **no exiting edge at all** — a pure loop that only halts — so "distance to
+head" was undefined and the code defaulted to `comp[0]`, an arbitrary state.
+The natural head there is the **halting** state, since halting is the other way
+control leaves a region.
+
+Refining the head to *exiting-or-halting* and re-running:
+
+| | head = exiting, else `comp[0]` (370) | head = exiting, else halting (371) |
+|---|---|---|
+| best of four encodings | **99.95%** | 98.36% |
+| min forward | 69 | **1 808** |
+| max forward | 65 | **2 122** |
+| min reversed | 1 047 | 68 |
+| **max reversed** | **2 185** | 93 |
+
+**The winning orientation flipped completely.** Under the better head definition
+the winner is *max forward* — raw edges go **toward** the head, back-edges go
+deeper — which is **368's hand-derived orientation**, the one 370 withdrew.
+
+So I am reinstating 368. And more importantly, retracting the confidence in 370's
+number: 99.95% was partly an artefact of the arbitrary fallback, and the refined,
+more defensible head definition scores *worse* (98.36%). Neither is clean.
+
+**The real finding is what this sensitivity means.** Both runs infer the head
+from the finished automaton's graph, and the answer depends on how. That is a
+defect of the measurement, not of the object: **in an induction on `wh b e` the
+head is a specific state of the construction and needs no inference at all.**
+A measurement over finished automata has to guess it; a proof by induction does
+not. So the pushforward question cannot be settled by this kind of census, and
+the two conflicting numbers above are both weak evidence about the wrong thing.
+
+**Odds: 97%, unchanged.** Two iterations of measurement on the transport have
+produced a withdrawal and a re-instatement of the same claim, which is worth
+nothing net. The useful residue is knowing why: the head is construction data,
+and no census over finished automata recovers it.
+
+**Next.** Stop inferring the head. The remaining work on `LevelAgreementActive`
+is an induction where `wh` supplies its own head — which is Lean work, not
+harness work.
