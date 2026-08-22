@@ -8672,4 +8672,212 @@ theorem seqLayer_extends {S : Type} {sys base : GkatThompson.GSystem S A T}
 #print axioms solExtF_has_solution
 #print axioms seqLayer_extends
 
+
+/-! ### 293 — THE LOOP CASE, RELATIVISED
+
+    The last case of the relativised recursion.  A loop confined to a DOMAIN,
+    over a base on which the domain is closed, solves exactly as 284's total
+    loop does — the construction never looks outside the domain, because the
+    entry list points into it and the base's own transitions stay in it.
+
+    One mechanical obstacle, and its fix is worth recording.  284 finished with
+    `StandardSolvesBA.withContinuation`, whose hypothesis quantifies over
+    `aut.states` while the relativised hypothesis holds only on the domain.  But
+    `withContinuation`'s proof is PER-STATE: it uses the hypothesis at the state
+    it is proving about and nowhere else, and `eqRHSParam` reads only `trans`
+    and `hlt`, never `states`.  So it can be applied to the system with its
+    state list replaced by the SINGLETON `[s]`, which is definitionally the same
+    automaton everywhere `eqRHSParam` looks.  A hypothesis over one state is
+    exactly what is available. -/
+structure LoopLayerOn {S : Type} (sys base : GkatThompson.GSystem S A T)
+    (b : BExp T) (entry : List (BExp T × A × S)) (dom : S → Prop) : Prop where
+  trans_eq : ∀ s, dom s → sys.trans s = base.trans s ++ entry.map (fun tr =>
+    (BExp.and (base.hlt s) (BExp.and b tr.1), tr.2))
+  hlt_eq : ∀ s, dom s → ∀ (X : Type) (W : T → X → Bool) (x : X),
+    GkatGS.bval W (sys.hlt s) x
+      = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)
+  outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
+  states_eq : sys.states = base.states
+
+/-- A total loop layer is a loop layer on every state. -/
+theorem LoopLayer.toOn {S : Type} {sys base : GkatThompson.GSystem S A T}
+    {b : BExp T} {entry : List (BExp T × A × S)} (h : LoopLayer sys base b entry) :
+    LoopLayerOn sys base b entry (fun _ => True) where
+  trans_eq s _ := h.trans_eq s
+  hlt_eq s _ := h.hlt_eq s
+  outside _ hs := absurd trivial hs
+  states_eq := h.states_eq
+
+/-- **`hsolve`'s LOOP CASE, ON A DOMAIN.** -/
+theorem loopLayerOn_has_solution {S : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (h : LoopLayerOn sys base b entry dom)
+    (std : S → Exp A T)
+    (hstd : ∀ s, dom s → EquivBA (std s)
+      (GkatThompson.eqRHSParam base std (.test .one) s))
+    (D W : Exp A T)
+    (hD : D = guardedFold (transitionBranches entry std) (.test .zero))
+    (hW : W = .wh b D) :
+    ∀ s, dom s → EquivBA (.seq (std s) W)
+      (GkatThompson.eqRHSParam sys (fun t => .seq (std t) W) (.test .one) s) := by
+  intro s hs
+  have hEW : EquivBA
+      (guardedFold
+        (transitionBranches (entry.map (fun tr => (BExp.and b tr.1, tr.2)))
+          (fun t => Exp.seq (std t) W))
+        (GkatThompson.paramFallback (BExp.not b) (.test .one))) W := by
+    rw [transitionBranches_gate]
+    refine EquivBA.trans (guardedFold_fallback_congr (notb_fallback b)) ?_
+    have hpart : EquivBA
+        (Exp.ite b (guardedFold
+            (transitionBranches entry (fun t => Exp.seq (std t) W)) (.test .zero))
+          (Exp.test BExp.one))
+        (guardedFold
+          ((transitionBranches entry (fun t => Exp.seq (std t) W)).map
+            (fun br => (BExp.and b br.1, br.2)))
+          (Exp.ite b (.test .zero) (.test .one))) := by
+      have hp := ite_guardedFold_partition b
+        (transitionBranches entry (fun t => Exp.seq (std t) W)) []
+        (Exp.test BExp.zero) (Exp.test BExp.one)
+      simpa only [List.map_nil, List.append_nil] using hp
+    refine EquivBA.trans (EquivBA.symm hpart) ?_
+    refine EquivBA.trans (EquivBA.ite_c (entryFold_seq entry std W)
+      (EquivBA.base (Equiv.refl _))) ?_
+    rw [← hD, hW]
+    exact EquivBA.symm (EquivBA.base (Equiv.w1 b D))
+  refine EquivBA.symm (EquivBA.trans
+    (layer_subsystem (fun t => Exp.seq (std t) W) (.test .one) s entry
+      (h.trans_eq s hs) (h.hlt_eq s hs)) ?_)
+  refine EquivBA.trans (guardedFold_fallback_congr
+    (EquivBA.seq_c (EquivBA.base (Equiv.refl _)) hEW)) ?_
+  exact EquivBA.symm (GkatThompson.StandardSolvesBA.withContinuation
+    ⟨⟨[s], base.hlt, base.trans⟩, .one, []⟩ std
+    (fun t ht => by
+      have hts : t = s := by simpa using ht
+      subst hts
+      exact hstd t hs) W s (by simp))
+
+#print axioms loopLayerOn_has_solution
+
+
+section LayeredRelative
+open Classical
+
+/-! ### 294 — THE RELATIVISED RECURSION, ASSEMBLED
+
+    `LayeredOn sys P` — "given a solution on the block `P`, the rest of `sys`
+    can be solved".  Three constructors, one per lemma proved over the last
+    six iterations:
+
+      * **acyclic**, relative to the block (288/292);
+      * **sequence layer** whose shared entry points INTO the block (289/291) —
+        the finish it needs is then computable from the block's solution alone,
+        which is exactly why the entry must point there and not back;
+      * **loop layer** confined to the complement, over a base on which the
+        complement is CLOSED (284/293) — the loop must not be able to leave, and
+        it cannot, because the sequence layers that carry the exits have already
+        been peeled.
+
+    The loop case delivers its solution at finish `1`, since 284's construction
+    is tied to `w1`; the recursion needs it at `F`.  That is repaired by
+    right-multiplication, which is sound HERE precisely because the complement
+    is closed: no branch escapes into the block, so every branch carries the
+    `F`. -/
+inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop) → Prop where
+  | acyclic {S : Type} {sys : GkatThompson.GSystem S A T} {P : S → Prop} :
+      (∃ rank : S → Nat, ∀ s, ¬ P s →
+        ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+        GkatKleene.firstMatch W x (sys.trans s) = some r →
+          P r.2 ∨ rank r.2 < rank s) →
+      LayeredOn sys P
+  | seq {S : Type} {sys base : GkatThompson.GSystem S A T} {P : S → Prop}
+      {h₀ : BExp T} {entry : List (BExp T × A × S)} :
+      SeqLayer sys base h₀ entry (fun s => ¬ P s) →
+      (∀ tr ∈ entry, P tr.2.2) →
+      LayeredOn base P → LayeredOn sys P
+  | loop {S : Type} {sys base : GkatThompson.GSystem S A T} {P : S → Prop}
+      {b : BExp T} {entry : List (BExp T × A × S)} :
+      LoopLayerOn sys base b entry (fun s => ¬ P s) →
+      (∀ tr ∈ entry, ¬ P tr.2.2) →
+      (∀ s, ¬ P s → ∀ tr ∈ base.trans s, ¬ P tr.2.2) →
+      LayeredOn base P → LayeredOn sys P
+
+/-- **`hsolve`, RELATIVISED: a layered complement is solvable at any finish,
+    given any solution on the block.** -/
+theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A T}
+    {P : S → Prop}, LayeredOn sys P → ∀ (sol₀ : S → Exp A T) (F : Exp A T),
+      ∃ sol : S → Exp A T, (∀ s, P s → sol s = sol₀ s) ∧
+        (∀ s, ¬ P s → EquivBA (sol s) (GkatThompson.eqRHSParam sys sol F s)) := by
+  intro S sys P h
+  induction h with
+  | @acyclic sys P hr =>
+      intro sol₀ F
+      obtain ⟨rank, hrank⟩ := hr
+      exact solExtF_has_solution sys P sol₀ F rank hrank
+  | @seq sys base P h₀ entry hlay hentry _ ih =>
+      intro sol₀ F
+      obtain ⟨solB, hin, hout⟩ := ih sol₀
+        (guardedFold (transitionBranches entry sol₀)
+          (GkatThompson.paramFallback h₀ F))
+      refine ⟨solB, hin, ?_⟩
+      have hG : guardedFold (transitionBranches entry sol₀)
+            (GkatThompson.paramFallback h₀ F)
+          = guardedFold (transitionBranches entry solB)
+            (GkatThompson.paramFallback h₀ F) :=
+        guardedFold_trans_congr _ sol₀ solB entry
+          (fun tr htr => (hin tr.2.2 (hentry tr htr)).symm)
+      rw [hG] at hout
+      exact seqLayer_extends hlay solB F hout
+  | @loop sys base P b entry hlay hentry hclosed _ ih =>
+      intro sol₀ F
+      obtain ⟨solB, hin, hout⟩ := ih sol₀ (.test .one)
+      have hloop := loopLayerOn_has_solution hlay solB hout
+        (guardedFold (transitionBranches entry solB) (.test .zero))
+        (.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))
+        rfl rfl
+      refine ⟨fun t => if P t then sol₀ t else
+        Exp.seq (Exp.seq (solB t)
+          (Exp.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))) F,
+        ?_, ?_⟩
+      · intro s hs
+        show (if P s then sol₀ s else _) = _
+        rw [if_pos hs]
+      · intro s hs
+        have htargets : ∀ tr ∈ sys.trans s, ¬ P tr.2.2 := by
+          intro tr htr
+          rw [hlay.trans_eq s hs, List.mem_append] at htr
+          rcases htr with htr | htr
+          · exact hclosed s hs tr htr
+          · simp only [List.mem_map] at htr
+            obtain ⟨t, ht, rfl⟩ := htr
+            exact hentry t ht
+        have hcongr : GkatThompson.eqRHSParam sys
+              (fun t => Exp.seq (Exp.seq (solB t)
+                (.wh b (guardedFold (transitionBranches entry solB) (.test .zero)))) F)
+              F s
+            = GkatThompson.eqRHSParam sys
+              (fun t => if P t then sol₀ t else
+                Exp.seq (Exp.seq (solB t)
+                  (.wh b (guardedFold (transitionBranches entry solB)
+                    (.test .zero)))) F) F s :=
+          guardedFold_trans_congr _ _ _ (sys.trans s)
+            (fun tr htr => by
+              show _ = (if P tr.2.2 then _ else _)
+              rw [if_neg (htargets tr htr)])
+        show EquivBA (if P s then sol₀ s else _) _
+        rw [if_neg hs, ← hcongr]
+        exact GkatThompson.StandardSolvesBA.withContinuation
+          ⟨⟨[s], sys.hlt, sys.trans⟩, .one, []⟩
+          (fun t => Exp.seq (solB t)
+            (.wh b (guardedFold (transitionBranches entry solB) (.test .zero))))
+          (fun t ht => by
+            have hts : t = s := by simpa using ht
+            subst hts
+            exact hloop t hs) F s (by simp)
+
+#print axioms layeredOn_has_solution
+
+end LayeredRelative
+
 end GkatCensus

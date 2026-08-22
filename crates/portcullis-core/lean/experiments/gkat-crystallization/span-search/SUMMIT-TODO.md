@@ -13564,3 +13564,61 @@ continues.
 **Next.**  Define `LayeredOn sys dom` — acyclic-relative / loop over a CLOSED
 domain / sequence layer whose entry points OUTSIDE the domain — and prove
 `layeredOn_has_solution` by induction, then the pushforward.
+
+---
+
+## 293–294 — THE RELATIVISED RECURSION, ASSEMBLED.  IT COMPILES.
+
+### 293 — the loop case, relativised.
+
+`LoopLayerOn` (a loop confined to a domain, with `outside` as `SeqLayer` has
+it), `LoopLayer.toOn`, and `loopLayerOn_has_solution` — 284's construction on a
+domain.  The construction never looks outside the domain, because the entry
+list points into it and the base's transitions stay in it.
+
+**One mechanical obstacle worth recording.**  284 finished with
+`StandardSolvesBA.withContinuation`, whose hypothesis quantifies over
+`aut.states`, while the relativised hypothesis holds only on the domain.  But
+`withContinuation`'s proof is PER-STATE — it uses the hypothesis at the state it
+is proving about and nowhere else — and `eqRHSParam` reads only `trans` and
+`hlt`, never `states`.  So apply it to the system with its state list replaced
+by the SINGLETON `[s]`: definitionally the same automaton everywhere
+`eqRHSParam` looks, and a hypothesis over one state is exactly what is
+available.
+
+### 294 — the inductive, and `hsolve` relativised.
+
+`LayeredOn sys P` — "given a solution on the block `P`, the rest of `sys` can be
+solved" — with one constructor per lemma of the last six iterations:
+
+  * **acyclic** relative to the block (288/292);
+  * **sequence layer** whose shared entry points INTO the block (289/291).  The
+    finish it needs is then computable from the block's solution ALONE, which is
+    exactly why the entry must point there and not back;
+  * **loop layer** confined to the complement, over a base on which the
+    complement is CLOSED (284/293) — the loop must not be able to leave, and it
+    cannot, because the sequence layers carrying the exits have already been
+    peeled.
+
+`layeredOn_has_solution`: **a layered complement is solvable at any finish,
+given any solution on the block.**  The loop case delivers at finish `1` (284's
+construction is tied to `w1`) and is lifted to `F` by right-multiplication —
+sound HERE precisely because the complement is closed, so no branch escapes into
+the block and every branch carries the `F`.
+
+**Zero errors, zero `sorryAx`, 8 883 lines.**
+
+**Odds: 99%** (+1), and raised under the policy set in 291: I said I would not
+price the assembly until it compiled.  It compiles, and — unlike 283 — no
+hypothesis mismatch surfaced when the pieces met.
+
+**What is honestly left.**  The SOLUTION side is complete and general.  The
+PUSHFORWARD side is not assembled: `LayeredOn` must be shown to survive a
+quotient, with cases at 264 (acyclic), 281 (loop — needs relativising to
+`LoopLayerOn`) and 289 (sequence, done).  Then `LayeredOn` must be connected to
+the architecture's `sumQuotientSolvable_of_certificate`.  That is real work, not
+bookkeeping.
+
+**Next.**  `layeredOn_pushforward` by induction — relativise 281 to
+`LoopLayerOn` first, since 289's sequence case is already relativised and 264's
+acyclic case is already stated for a behavioural quotient.
