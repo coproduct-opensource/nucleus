@@ -12503,3 +12503,43 @@ corrected before it cost anything.  Neither moves the estimate.
 **Next.**  The acyclic case of `hsolve`: `sol s := solFuel sys (rank s) s`
 satisfies `sol s = eqRHS sys sol s`, by `solFuel_stable` at the targets — then
 `decomp_solves` gives `SolvesBA`.
+
+---
+
+## 271 — `hsolve`'s ACYCLIC CASE, PROVED WITH NO AXIOMS AT ALL.
+
+    solFuel_solves        sol s = the guarded fold of s's transitions over sol
+    acyclic_has_solution  an acyclic system HAS a solution
+
+Reading `sol s := solFuel sys (rank s) s`, each state's label IS the right-hand
+side of its own equation.  At rank `0` a state has no transitions and the fold
+is its halt test; above `0` the fuel is one more than every target's rank, so
+`solFuel_stable` replaces the lower-fuel labels by `sol` itself.
+
+**Both need NO axioms — not `propext`, not `Quot.sound`, nothing.**  And the
+equation holds ON THE NOSE rather than up to `EquivBA`, which is stronger than
+`decomp_solves` asks for: this is `StateRole.fold`, its easiest case.
+
+**All three obligations now have their base case proved:**
+
+    hsum       PROVED outright                                      258
+    hcollapse  acyclic case PROVED (acyclic_quotient)               264
+               layer case                                           open
+    hsolve     acyclic case PROVED (acyclic_has_solution)           271
+               layer case                                           open
+
+**And the two open halves are the same shape**: given `IsLayer sys base b dom`
+and something known about `base`, establish it for `sys`.  For `hcollapse` that
+is "carries the certificate"; for `hsolve` it is "has a solution", where the
+construction is `wh` — which is what rules 1-6 do, case by case, and what
+`decomp_solves` assembles.
+
+**Odds: 86%, up 1.**  A third obligation's base case closed, with the cleanest
+proof in the development — zero axioms, definitional equality.  Only +1 because
+both remaining halves are layer cases, which is where every difficulty in this
+program has lived since 218.
+
+**Next.**  `hsolve`'s layer case: from a solution of `base` and
+`IsLayer sys base b dom`, build one for `sys`.  The shape is
+`sol_sys s = wh b (…) ; sol_base s`, which is `salomaa_solution_exists` plus the
+guard bookkeeping rules 5 and 6 already carry.

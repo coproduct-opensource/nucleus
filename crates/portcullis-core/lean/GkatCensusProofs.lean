@@ -7045,4 +7045,61 @@ theorem solFuel_stable {S : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms solFuel
 
+
+/-- **THE ACYCLIC CASE OF `hsolve`: the fuelled solution satisfies its own
+    equation.**
+
+    Reading `sol s := solFuel sys (rank s) s`, each state's label IS the guarded
+    fold of its transitions over the labels of its targets — which is exactly the
+    right-hand side of that state's equation.  At rank `0` a state has no
+    transitions and the fold is its halt test; above `0` the fuel is one more
+    than every target's rank, so `solFuel_stable` replaces the lower-fuel labels
+    by `sol` itself.
+
+    No `EquivBA` reasoning is needed: the equation holds ON THE NOSE, which is
+    `StateRole.fold` and hence `decomp_solves`'s easiest case. -/
+theorem solFuel_solves {S : Type} (sys : GkatThompson.GSystem S A T)
+    (rank : S → Nat)
+    (hmem : ∀ s, ∀ tr ∈ sys.trans s, rank tr.2.2 < rank s) (s : S) :
+    solFuel sys (rank s) s
+      = GkatFaithful.guardedFold
+          (GkatKleene.transitionBranches (sys.trans s)
+            (fun t => solFuel sys (rank t) t))
+          (.test (sys.hlt s)) := by
+  cases hr : rank s with
+  | zero =>
+      have hnil : sys.trans s = [] := by
+        cases hl : sys.trans s with
+        | nil => rfl
+        | cons tr rest =>
+            have := hmem s tr (by rw [hl]; exact List.Mem.head _)
+            rw [hr] at this
+            exact absurd this (Nat.not_lt_zero _)
+      rw [hnil]
+      rfl
+  | succ n =>
+      show GkatFaithful.guardedFold
+        (GkatKleene.transitionBranches (sys.trans s) (solFuel sys n)) _ = _
+      refine guardedFold_trans_congr _ _ _ _ (fun tr htr => ?_)
+      have hlt : rank tr.2.2 < rank s := hmem s tr htr
+      rw [hr] at hlt
+      exact solFuel_stable sys rank hmem n (rank tr.2.2) tr.2.2
+        (Nat.le_of_lt_succ hlt) (Nat.le_refl _)
+
+#print axioms solFuel_solves
+
+/-- **THE ACYCLIC CASE OF `hsolve`, AS A SOLUTION.**  An acyclic system has a
+    labelling solving its equations — built, not assumed, and satisfying them
+    definitionally rather than up to `EquivBA`. -/
+theorem acyclic_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
+    (rank : S → Nat)
+    (hmem : ∀ s, ∀ tr ∈ sys.trans s, rank tr.2.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s, sol s
+      = GkatFaithful.guardedFold
+          (GkatKleene.transitionBranches (sys.trans s) sol)
+          (.test (sys.hlt s)) :=
+  ⟨fun s => solFuel sys (rank s) s, solFuel_solves sys rank hmem⟩
+
+#print axioms acyclic_has_solution
+
 end GkatCensus
