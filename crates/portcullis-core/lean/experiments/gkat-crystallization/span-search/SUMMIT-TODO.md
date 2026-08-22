@@ -14255,3 +14255,39 @@ loop does NOT stop and does NOT drift — it switches to, in order:
      in that memory.
 
 **Next.**  Migrate `wh` and `seq_left` to the witness form.
+
+---
+
+## 309 — `wh` IN WITNESS FORM.
+
+303's construction survives the migration unchanged in spirit: the base system
+downstairs is still BUILT rather than assumed, so `LoopLayerOn`'s `outside`
+clause holds by construction.  What changes is what it is built FROM — a `dite`
+on the class lying outside the block, whose positive branch carries the very
+proof it needs to name the witness.  **That is the shape 307's fix makes
+available and the `rep` version could not express: the witness exists only where
+there is something to witness.**
+
+Note the two uses of the SAME witness — transitions and halt — which is why
+`hwit` packages them in ONE existential.  Split into two, the halt could come
+from a different state than the transitions, and the layer's halt equation would
+then be about the wrong automaton.
+
+**A second rewriting lesson, sharper than 303's.**  `rw` failed here with
+"motive is not type correct", and the reason generalises: **the witness's TYPE
+mentions the term being rewritten** (`Classical.choose (hwit c hc)` depends on a
+proof about `Qsys.trans c`), so abstracting that term makes the witness
+ill-typed.  Term application has no motive to typecheck, so the fix is the same
+one 303 reached for a different reason: `Eq.trans` and `congrArg` throughout,
+never `rw`, once dependent witnesses are in play.
+
+    test    quotient_layered_test'          (307)
+    act     quotient_layered_act'           (307)
+    ite/seq quotient_layered_split_right'   (308)
+    wh      quotient_layered_wh'            (309)
+    seq     seq_left — LAST ONE TO MIGRATE
+
+**Odds: 99%, HELD.**
+
+**Next.**  `quotient_layered_seq_left` in witness form — the same `dite`
+construction, over `sumGSystem L R.core` instead of `e`'s core.

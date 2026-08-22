@@ -9873,4 +9873,94 @@ theorem quotient_layered_split_right' {S₁ S₂ Q : Type}
 #print axioms right_block_closed'
 #print axioms quotient_layered_split_right'
 
+
+section QuotientLayeredWhWitness
+open Classical
+
+/-! ### 309 — `wh` IN WITNESS FORM
+
+    The construction of 303 survives the migration unchanged in spirit: the base
+    system downstairs is still BUILT rather than assumed, so `LoopLayerOn`'s
+    `outside` clause holds by construction.  What changes is what it is built
+    FROM — a `dite` on the class lying outside the block, whose positive branch
+    has the very proof it needs to name the witness.  That is the shape 307's
+    fix makes available and the `rep` version could not express: the witness
+    exists only where there is something to witness.
+
+    Note the two uses of the SAME witness — transitions and halt — which is why
+    `hwit` must package them in one existential.  Splitting it into two
+    existentials would let the halt come from a different state than the
+    transitions, and the layer's halt equation would then be about the wrong
+    automaton. -/
+theorem quotient_layered_wh' (b : BExp T) (e : Exp A T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T e).State → Q)
+    (hout : ∀ s, ¬ B (j s))
+    (hwit : ∀ c, ¬ B c → ∃ s, Qsys.trans c
+        = ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.trans s).map
+            (fun tr => (tr.1, tr.2.1, j tr.2.2))
+      ∧ Qsys.hlt c = (GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt s)
+    (ih : ∀ base : GkatThompson.GSystem Q A T,
+      (∀ c, ¬ B c → ∃ s, base.trans c
+          = ((GkatThompson.certifiedThompson A T e).aut.core.trans s).map
+              (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        ∧ base.hlt c = (GkatThompson.certifiedThompson A T e).aut.core.hlt s) →
+      LayeredOn base B) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.loop
+    (base := ⟨Qsys.states,
+      fun c => if h : ¬ B c then
+          (GkatThompson.certifiedThompson A T e).aut.core.hlt
+            (Classical.choose (hwit c h))
+        else Qsys.hlt c,
+      fun c => if h : ¬ B c then
+          ((GkatThompson.certifiedThompson A T e).aut.core.trans
+            (Classical.choose (hwit c h))).map (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        else Qsys.trans c⟩)
+    (b := b)
+    (entry := (GkatThompson.certifiedThompson A T e).aut.initTrans.map
+      (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    ⟨?_, ?_, ?_, rfl⟩ ?_ ?_ (ih _ ?_)
+  · -- trans_eq
+    intro c hc
+    have hs := (Classical.choose_spec (hwit c hc)).1
+    show Qsys.trans c = (dite _ _ _) ++ _
+    simp only [dif_pos hc]
+    refine Eq.trans hs ?_
+    refine Eq.trans (congrArg (List.map (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+      (loop_core_trans b e _)) ?_
+    refine Eq.trans (map_append' _ _ _) ?_
+    congr 1
+    exact gate_map_comm _ _ _ _
+  · -- hlt_eq
+    intro c hc X W x
+    have hh := (Classical.choose_spec (hwit c hc)).2
+    show GkatGS.bval W (Qsys.hlt c) x = (GkatGS.bval W (dite _ _ _) x && _)
+    simp only [dif_pos hc]
+    refine Eq.trans (congrArg (fun z => GkatGS.bval W z x) hh) ?_
+    exact congrArg (fun z => GkatGS.bval W z x) (loop_core_hlt b e _)
+  · -- outside
+    intro c hc
+    exact ⟨by show Qsys.trans c = dite _ _ _; rw [dif_neg hc],
+      by show Qsys.hlt c = dite _ _ _; rw [dif_neg hc]⟩
+  · -- entry targets outside the block
+    intro tr htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · -- base targets outside the block
+    intro c hc tr htr
+    simp only [dif_pos hc, List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · -- the recursive hypothesis' data
+    intro c hc
+    exact ⟨Classical.choose (hwit c hc),
+      by show dite _ _ _ = _; rw [dif_pos hc],
+      by show dite _ _ _ = _; rw [dif_pos hc]⟩
+
+#print axioms quotient_layered_wh'
+
+end QuotientLayeredWhWitness
+
 end GkatCensus
