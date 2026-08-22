@@ -7745,4 +7745,135 @@ theorem sum_layer_subsystem {S₁ S₂ : Type}
 
 #print axioms sum_layer_subsystem
 
+
+/-! ### 283 — THE JOIN: FIRSTMATCH-ACYCLIC AUTOMATA ARE SOLVABLE
+
+    Assembling `hcollapse`'s acyclic case with `hsolve`'s exposes a mismatch
+    that 270 knew about and left standing.  `acyclic_quotient` (264) produces
+    the FIRSTMATCH rank condition — every step the automaton can actually TAKE
+    decreases the rank — because that is the only form a bisimulation can
+    supply, bisimilarity comparing selections rather than lists.
+    `acyclic_has_solution` (271) consumes the LIST condition — every LISTED
+    transition decreases.  The list form is strictly stronger: a branch whose
+    guard is covered by earlier guards never wins a first match, so it may point
+    anywhere at all without making the automaton cyclic.
+
+    So the two halves do not compose, and the gap is real rather than
+    bureaucratic: after a quotient, dead branches are exactly what one expects
+    to find.
+
+    **The join.**  A dead branch cannot be pruned constructively — deciding
+    whether a guard is ever reached first is not a computation available here —
+    but it does not need to be.  `solFuel` still builds the right expression;
+    what fails is `solFuel_stable`, which asked for SYNTACTIC equality of two
+    fuel levels and gets it only when every listed target is smaller.  Replace
+    it by EquivBA-stability, proved by selection: two fuel levels agree at every
+    world because at every world only a LIVE branch is selected, and live
+    branches do decrease.  Dead branches are carried along, differing
+    syntactically and observed by nothing.
+
+    That is 233's lemma doing the work it was built for — `guardedFold` is
+    compared by what it SELECTS, never by what it lists — and it turns the
+    weaker hypothesis into the same conclusion. -/
+theorem firstMatch_none_of_rank_zero {S : Type}
+    (sys : GkatThompson.GSystem S A T) (rank : S → Nat)
+    (hstep : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s)
+    (s : S) (hz : rank s = 0) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (sys.trans s) = none := by
+  intro X W x
+  cases hfm : GkatKleene.firstMatch W x (sys.trans s) with
+  | none => rfl
+  | some r =>
+      exact absurd (hstep s X W x r hfm) (by rw [hz]; exact Nat.not_lt_zero _)
+
+/-- A state no step can leave solves to its halt test alone — whatever its
+    transition list happens to contain. -/
+theorem solFuel_none {S : Type} (sys : GkatThompson.GSystem S A T) (s : S)
+    (hnone : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (sys.trans s) = none)
+    (sol : S → Exp A T) :
+    EquivBA (guardedFold (transitionBranches (sys.trans s) sol)
+      (.test (sys.hlt s))) (.test (sys.hlt s)) := by
+  refine guardedFold_select_congr _ [] _ (.test (sys.hlt s)) ?_
+  intro X W x
+  rw [selectFull_transitionBranches W x sol (sys.hlt s), hnone X W x]
+  exact EquivBA.base (Equiv.refl _)
+
+/-- Two labellings that agree on every LIVE target give equivalent folds.  Dead
+    branches may disagree freely. -/
+theorem solFuel_congr_step {S : Type} (sys : GkatThompson.GSystem S A T) (s : S)
+    (sol sol' : S → Exp A T)
+    (h : ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → EquivBA (sol r.2) (sol' r.2)) :
+    EquivBA (guardedFold (transitionBranches (sys.trans s) sol) (.test (sys.hlt s)))
+      (guardedFold (transitionBranches (sys.trans s) sol') (.test (sys.hlt s))) := by
+  refine guardedFold_select_congr _ _ _ _ ?_
+  intro X W x
+  rw [selectFull_transitionBranches W x sol (sys.hlt s),
+    selectFull_transitionBranches W x sol' (sys.hlt s)]
+  cases hfm : GkatKleene.firstMatch W x (sys.trans s) with
+  | none => exact EquivBA.base (Equiv.refl _)
+  | some r => exact EquivBA.seq_c (EquivBA.base (Equiv.refl _)) (h X W x r hfm)
+
+/-- **EquivBA-STABILITY OF THE FUELLED SOLUTION**, under the FIRSTMATCH rank
+    condition.  271's `solFuel_stable` gave syntactic equality and needed every
+    LISTED target to be smaller; this gives equivalence and needs it only of
+    targets a world can actually reach. -/
+theorem solFuel_stable_sem {S : Type} (sys : GkatThompson.GSystem S A T)
+    (rank : S → Nat)
+    (hstep : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s) :
+    ∀ (n m : Nat) (s : S), rank s ≤ n → rank s ≤ m →
+      EquivBA (solFuel sys n s) (solFuel sys m s) := by
+  intro n
+  induction n with
+  | zero =>
+      intro m s hn _
+      have hnone := firstMatch_none_of_rank_zero sys rank hstep s (Nat.le_zero.mp hn)
+      cases m with
+      | zero => exact EquivBA.base (Equiv.refl _)
+      | succ m' => exact EquivBA.symm (solFuel_none sys s hnone (solFuel sys m'))
+  | succ n ih =>
+      intro m s hn hm
+      cases m with
+      | zero =>
+          have hnone := firstMatch_none_of_rank_zero sys rank hstep s (Nat.le_zero.mp hm)
+          exact solFuel_none sys s hnone (solFuel sys n)
+      | succ m' =>
+          refine solFuel_congr_step sys s (solFuel sys n) (solFuel sys m') ?_
+          intro X W x r hfm
+          have hr := hstep s X W x r hfm
+          exact ih m' r.2 (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hr hn))
+            (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hr hm))
+
+/-- **`hsolve`'s ACYCLIC CASE, FROM THE HYPOTHESIS `hcollapse` ACTUALLY
+    SUPPLIES.**  The two halves now compose. -/
+theorem acyclic_has_solution_sem {S : Type} (sys : GkatThompson.GSystem S A T)
+    (rank : S → Nat)
+    (hstep : ∀ s, ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → rank r.2 < rank s) :
+    ∃ sol : S → Exp A T, ∀ s, EquivBA (sol s)
+      (guardedFold (transitionBranches (sys.trans s) sol) (.test (sys.hlt s))) := by
+  refine ⟨fun s => solFuel sys (rank s) s, ?_⟩
+  intro s
+  show EquivBA (solFuel sys (rank s) s)
+    (guardedFold (transitionBranches (sys.trans s) (fun t => solFuel sys (rank t) t))
+      (.test (sys.hlt s)))
+  cases hr : rank s with
+  | zero =>
+      have hnone := firstMatch_none_of_rank_zero sys rank hstep s hr
+      exact EquivBA.symm (solFuel_none sys s hnone _)
+  | succ k =>
+      refine solFuel_congr_step sys s (solFuel sys k)
+        (fun t => solFuel sys (rank t) t) ?_
+      intro X W x r hfm
+      have hlt := hstep s X W x r hfm
+      rw [hr] at hlt
+      exact solFuel_stable_sem sys rank hstep k (rank r.2) r.2
+        (Nat.le_of_lt_succ hlt) (Nat.le_refl _)
+
+#print axioms acyclic_has_solution_sem
+
 end GkatCensus

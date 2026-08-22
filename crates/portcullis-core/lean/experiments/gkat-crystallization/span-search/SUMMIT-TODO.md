@@ -13095,3 +13095,51 @@ The field's prior that the problem does not close still stands.
 **Next.**  Assemble: a `Layered` built on `LoopLayer` (acyclic | loop), its
 pushforward by induction combining 264's `acyclic_quotient` with 281, and the
 bisimulation obligation for the representative quotient.
+
+---
+
+## 283 — THE JOIN: `hcollapse`'s OUTPUT NOW FEEDS `hsolve`'s INPUT.
+
+Assembling the two halves exposed a mismatch 270 knew about and left standing.
+
+  * `acyclic_quotient` (264) produces the **FIRSTMATCH** rank condition — every
+    step the automaton can actually TAKE decreases the rank.  That is the only
+    form a bisimulation can supply: bisimilarity compares SELECTIONS, never
+    lists.
+  * `acyclic_has_solution` (271) consumes the **LIST** condition — every LISTED
+    transition decreases.
+
+The list form is strictly stronger: a branch whose guard is covered by earlier
+guards never wins a first match, so it may point ANYWHERE without making the
+automaton cyclic.  The two halves did not compose, and the gap is real rather
+than bureaucratic — after a quotient, dead branches are exactly what one expects
+to find.
+
+**The join, proved.**  A dead branch cannot be pruned constructively; deciding
+whether a guard is ever reached first is not a computation available here.  (The
+literature agrees: this iteration's search finds the analogous "cleaning" rule
+in GKAT decision procedures **requires Boolean satisfiability checking** to
+eliminate dead branches.  Avoiding the prune was the right call, not a
+shortcut.)  It does not need to be pruned.  `solFuel` still builds the right
+expression; what fails is `solFuel_stable`, which asked for SYNTACTIC equality
+of two fuel levels and gets it only when every listed target is smaller.
+Replace it by **EquivBA-stability** (`solFuel_stable_sem`), proved by selection:
+two fuel levels agree at every world because at every world only a LIVE branch
+is selected, and live branches do decrease.  Dead branches are carried along,
+differing syntactically and observed by nothing.
+
+That is 233's `guardedFold_select_congr` doing exactly the work it was built for
+— a guarded fold is compared by what it SELECTS, never by what it LISTS — and it
+turns the weaker hypothesis into the same conclusion.
+
+`acyclic_has_solution_sem`: **`hsolve`'s acyclic case, from the hypothesis
+`hcollapse` actually supplies.**  Plus `firstMatch_none_of_rank_zero`,
+`solFuel_none`, `solFuel_congr_step`.  All zero-`sorry`; whole file green.
+
+**Odds: 94%** (+1).  The acyclic half of the remainder now composes end to end —
+quotient in, solution out — with no hypothesis mismatch left between the two
+theorems.  The field's prior that the problem does not close still stands.
+
+**Next.**  The same join for the LAYER half: `LayeredL` (acyclic | `LoopLayer`)
+with the firstMatch form in the acyclic constructor, its pushforward by
+induction (264 + 281), and solvability by recursion (283 + 277/282).
