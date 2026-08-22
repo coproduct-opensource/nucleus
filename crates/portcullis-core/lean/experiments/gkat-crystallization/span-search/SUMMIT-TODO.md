@@ -16877,3 +16877,52 @@ it. I am not calling this a milestone.
 
 **Next.** The structural route to `LevelAgreementActive`: at most one state of a
 region is active at any atom.
+
+## 363 — 358's structural route is nearly exact, and "nearly" is measurable
+
+358 proposed reducing `LevelAgreementActive` to vacuity: *only the head of a loop
+body is ever non-raw, so at most one state of a region is active at any atom, so
+agreement holds trivially.* Measured, on 41 885 quotient regions:
+
+```
+under the FIRST clash-free ordering: 27 (region, atom) pairs have >1 active
+                                     state; max active 2
+searching ALL orderings:             672 of 695 multi-state regions admit an
+                                     ordering that is clash-free AND leaves
+                                     at most one active state per atom
+```
+
+Two things follow, and the second is the one that matters.
+
+**The choice of ordering is not incidental.** Reading off the first clash-free
+permutation understates what a better choice achieves — 27 offending pairs
+becomes 23 offending *regions* once every ordering is searched. Any measurement
+that picks "the first one that works" is measuring the search order as much as
+the object.
+
+**The route is exact for 96.7% and false for the rest.** 23 of 695 multi-state
+regions (3.3%) admit **no** ordering that makes agreement vacuous. In those,
+two states of a region are simultaneously active and genuinely **agree** —
+agreement is doing real work, not standing in for a triviality.
+
+**Why that is consistent with 358.** 358 measured the SOURCE: only one state per
+loop body has an exiting edge, 0 of 12 780. The 23 exceptions are in QUOTIENTS,
+where the collapse can put two blocks in one region and let both exit at the same
+atom — to the same target, which is why agreement survives while vacuity does
+not. The rank-free test confirms the surviving half directly: **0 regions where
+two states exit to different targets at the same atom**, over all 41 885.
+
+So the proof of `LevelAgreementActive` cannot route through vacuity. It has to go
+through the statement the measurements have never contradicted:
+
+> every exit of a quotient region, at a given atom, goes to the same target.
+
+which is 353's original mechanism, relocated from the source to the quotient
+where it belongs.
+
+**Odds: 97%, unchanged.** A proposed shortcut was bounded rather than refuted —
+it covers 96.7% and the remainder is characterised. The target predicate is
+unchanged and still unrefuted at scale.
+
+**Next.** The quotient-level single-target-exit statement, and whether the
+collapse argument of 355-356 delivers it.

@@ -2643,6 +2643,8 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     let (mut multi, mut multi_ok, mut some_ordering_fails, mut every_ordering_fails) =
         (0usize, 0usize, 0usize, 0usize);
     let mut exit_conflict = 0usize;
+    let (mut multi_active, mut max_active) = (0usize, 0usize);
+    let mut vacuous_regions = 0usize;
     let mut first_exit_conflict: Option<String> = None;
     for a in &pool {
         let (blk, nb) = bisim_blocks(a);
@@ -2656,6 +2658,7 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
             let m = comp.len();
             let mut perm: Vec<usize> = (0..m).collect();
             let mut any = false;
+            let mut vacuous_ok = false;
             let mut nclash = 0usize;
             let mut ntried = 0usize;
             loop {
@@ -2691,11 +2694,55 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
                         else if demand[x] != want { clash = true; }
                     }
                 }
-                if !clash { any = true; } else { nclash += 1; }
+                if !clash {
+                    // Does THIS ordering also make agreement vacuous (<=1 active
+                    // per atom)?  Search all orderings, not just the first that
+                    // avoids a clash — "the first one that works" is an arbitrary
+                    // choice and would understate what a better choice achieves.
+                    {
+                        let mut worst = 0usize;
+                        for x in 0..NA {
+                            let mut act = 0usize;
+                            for &u in &comp {
+                                let tv = q.st[u][x];
+                                let halts = (q.hl[u] >> x) & 1 == 1;
+                                let a = if tv == 0 { halts } else {
+                                    let t = (tv - 1) as usize;
+                                    !(comp.contains(&t) && rank[t] < rank[u])
+                                };
+                                if a { act += 1; }
+                            }
+                            if act > worst { worst = act; }
+                        }
+                        if worst <= 1 { vacuous_ok = true; }
+                    }
+                    if !any {
+                        // First ordering that works: how many states of the region
+                        // are ACTIVE (non-raw firing, or halting) at a single atom?
+                        // 358's structural route claims at most one — if that is
+                        // right, agreement is vacuous rather than merely satisfied.
+                        for x in 0..NA {
+                            let mut act = 0usize;
+                            for &u in &comp {
+                                let tv = q.st[u][x];
+                                let halts = (q.hl[u] >> x) & 1 == 1;
+                                let a = if tv == 0 { halts } else {
+                                    let t = (tv - 1) as usize;
+                                    !(comp.contains(&t) && rank[t] < rank[u])
+                                };
+                                if a { act += 1; }
+                            }
+                            if act > 1 { multi_active += 1; }
+                            if act > max_active { max_active = act; }
+                        }
+                    }
+                    any = true;
+                } else { nclash += 1; }
                 if !next_perm(&mut perm) { break; }
             }
             if m > 1 {
                 multi += 1;
+                if vacuous_ok { vacuous_regions += 1; }
                 if any { multi_ok += 1; }
                 if nclash > 0 { some_ordering_fails += 1; }
                 if nclash == ntried { every_ordering_fails += 1; }
@@ -2745,6 +2792,12 @@ fn backatom<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
     println!("  base-rate control: {some_ordering_fails} multi-state regions have at least \
               ONE ordering that clashes (so the condition bites and the choice matters); \
               {every_ordering_fails} have all orderings clash");
+    println!("  STRUCTURAL ROUTE (358): under the FIRST working ordering, {multi_active} \
+              (region, atom) pairs have MORE THAN ONE active state; max active {max_active}. \
+              1 means agreement is VACUOUS, not merely satisfied");
+    println!("  BEST ORDERING: {vacuous_regions} of {multi} multi-state regions admit a \
+              clash-free ordering that ALSO leaves at most one active state per atom \
+              (i.e. agreement vacuous, 358's structural route exact)");
     println!("  RANK-FREE REFUTATION TEST: {exit_conflict} regions where two states exit to \
               DIFFERENT targets at the SAME atom (any hit refutes LevelAgreement outright)");
     if let Some(m) = &first_exit_conflict {
