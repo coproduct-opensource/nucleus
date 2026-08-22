@@ -13622,3 +13622,54 @@ bookkeeping.
 **Next.**  `layeredOn_pushforward` by induction — relativise 281 to
 `LoopLayerOn` first, since 289's sequence case is already relativised and 264's
 acyclic case is already stated for a behavioural quotient.
+
+---
+
+## 295 — GROW THE BLOCK; AND THE ACYCLIC CASE PUSHES FORWARD WITHOUT A BISIMULATION.
+
+### The `split` constructor.
+
+294's `seq` constructor demands that a layer's entry point INTO the block, so a
+recursion starting from an EMPTY block must be able to ENLARGE it.  `split` does
+that: pick a CLOSED region `C` disjoint from the block, solve `C` first —
+legitimate at any input, since a closed region's equations mention nothing
+outside it — then solve the rest with `P ∪ C` as the block.  **This is what
+turns `seqGSystem`'s right half into something a sequence layer may point at.**
+Its case in `layeredOn_has_solution` is three lines plus a transport of the
+`C`-equations through `guardedFold_trans_congr`, and it compiled first try.
+
+### The acyclic pushforward, without the bisimulation.
+
+264 proved `hcollapse`'s acyclic case USING the bisimulation: `rank'` was the
+MINIMUM rank over a class's preimages, and a step downstairs was pushed
+BACKWARDS through the bisimulation to find a preimage achieving it.
+
+**Relativised, it needs neither.**  Choose the representative RANK-MINIMAL in
+its class among members outside the block; then `rank' := rank ∘ rep` works
+directly:
+
+  * if the target's class meets the BLOCK, the preferring representative puts
+    the target's representative in the block, and the first disjunct discharges
+    it with NO rank comparison at all;
+  * otherwise every member of the target's class is outside the block, so the
+    rank-minimal representative has rank at most the actual target's — already
+    below `rank (rep c)`.
+
+**The two properties do not conflict, because they apply to DISJOINT cases**:
+preference decides classes meeting the block, minimality decides the rest.  That
+is why one representative can serve both, and it is what removes the
+bisimulation from the argument.
+
+`acyclic_rel_pushforward` and `layeredOn_acyclic_push`, taking both properties as
+hypotheses; both are satisfiable, `preferringRep` (287) being the first half.
+`firstMatch_map` turned out to be already proved (2902) — reused rather than
+duplicated.
+
+**Odds: 99%, HELD.**  One more constructor on the solution side and the first
+pushforward case, both clean — but the pushforward's `seq` and `loop` cases are
+still unassembled and the connection to the architecture is untouched.
+
+**Next.**  The `seq` and `loop` cases of `layeredOn_pushforward` (289 and 281,
+relativised), then the induction, then the transport lemmas that carry a
+component's `LayeredOn` into a `sum`/`seq` — which is what `thompson_layeredOn`
+needs.

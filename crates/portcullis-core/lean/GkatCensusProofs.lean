@@ -8802,6 +8802,19 @@ inductive LayeredOn : {S : Type} → GkatThompson.GSystem S A T → (S → Prop)
       (∀ tr ∈ entry, ¬ P tr.2.2) →
       (∀ s, ¬ P s → ∀ tr ∈ base.trans s, ¬ P tr.2.2) →
       LayeredOn base P → LayeredOn sys P
+  /-- **GROW THE BLOCK.**  The `seq` constructor demands that a layer's entry
+      point INTO the block, so a recursion that starts from an empty block must
+      be able to ENLARGE it.  Splitting off a CLOSED region `C` does exactly
+      that: solve `C` first — legitimate at any input, since a closed region's
+      equations mention nothing outside it — and then solve the rest with
+      `P ∪ C` as the block.  This is what turns `seqGSystem`'s right half into
+      something a sequence layer may point at. -/
+  | split {S : Type} {sys : GkatThompson.GSystem S A T} {P C : S → Prop} :
+      (∀ s, P s → ¬ C s) →
+      (∀ s, C s → ∀ tr ∈ sys.trans s, C tr.2.2) →
+      LayeredOn sys (fun s => ¬ C s) →
+      LayeredOn sys (fun s => P s ∨ C s) →
+      LayeredOn sys P
 
 /-- **`hsolve`, RELATIVISED: a layered complement is solvable at any finish,
     given any solution on the block.** -/
@@ -8875,9 +8888,96 @@ theorem layeredOn_has_solution : ∀ {S : Type} {sys : GkatThompson.GSystem S A 
             have hts : t = s := by simpa using ht
             subst hts
             exact hloop t hs) F s (by simp)
+  | @split sys P C hdisj hCclosed _ _ ih1 ih2 =>
+      intro sol₀ F
+      obtain ⟨sol1, hin1, hout1⟩ := ih1 sol₀ F
+      obtain ⟨sol2, hin2, hout2⟩ := ih2 sol1 F
+      refine ⟨sol2, ?_, ?_⟩
+      · intro s hs
+        rw [hin2 s (Or.inl hs), hin1 s (hdisj s hs)]
+      · intro s hs
+        by_cases hC : C s
+        · have hagree : ∀ tr ∈ sys.trans s, sol2 tr.2.2 = sol1 tr.2.2 :=
+            fun tr htr => hin2 tr.2.2 (Or.inr (hCclosed s hC tr htr))
+          have hcongr : GkatThompson.eqRHSParam sys sol2 F s
+              = GkatThompson.eqRHSParam sys sol1 F s :=
+            guardedFold_trans_congr _ sol2 sol1 (sys.trans s) hagree
+          rw [hcongr, hin2 s (Or.inr hC)]
+          exact hout1 s (fun h => h hC)
+        · exact hout2 s (fun h => h.elim hs hC)
 
 #print axioms layeredOn_has_solution
 
 end LayeredRelative
+
+
+/-! ### 295 — THE ACYCLIC CASE PUSHES FORWARD WITHOUT A BISIMULATION
+
+    264 proved the acyclic case of `hcollapse` using the bisimulation: `rank'`
+    was the MINIMUM rank over a class's preimages, and a step downstairs was
+    pushed BACKWARDS through the bisimulation to find a preimage achieving it.
+
+    Relativised, it needs neither.  Choose the representative to be RANK-MINIMAL
+    in its class — among the class's members outside the block — and then
+    `rank' := rank ∘ rep` works directly:
+
+      * if the step's target has a preimage IN the block, the preferring
+        representative puts the target's representative in the block too, and
+        the first disjunct discharges it with no rank comparison at all;
+      * otherwise every member of the target's class is outside the block, so
+        the rank-minimal representative has rank at most the actual target's,
+        which is already below `rank (rep c)`.
+
+    The two properties do not conflict, because they apply to DISJOINT cases:
+    preference decides classes that meet the block, minimality decides the rest.
+    Taken as hypotheses here; both are satisfiable, `preferringRep` (287) being
+    the first half. -/
+/-- **THE ACYCLIC CASE OF THE PUSHFORWARD, RELATIVISED.** -/
+theorem acyclic_rel_pushforward {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s)
+    (f : S → S') (rep : S' → S)
+    (hpref : ∀ (c : S') (t : S), f t = c → P t → P (rep c))
+    (hmin : ∀ (c : S') (t : S), f t = c → ¬ P (rep c) → rank (rep c) ≤ rank t)
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ c, sys'.trans c
+      = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+    ∀ c, ¬ P (rep c) → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S'),
+      GkatKleene.firstMatch W x (sys'.trans c) = some r →
+        P (rep r.2) ∨ rank (rep r.2) < rank (rep c) := by
+  intro c hc X W x r hfm
+  rw [htrans, firstMatch_map] at hfm
+  cases hfm0 : GkatKleene.firstMatch W x (sys.trans (rep c)) with
+  | none => rw [hfm0] at hfm; exact absurd hfm (by simp)
+  | some qt =>
+      rw [hfm0] at hfm
+      have hr : r = (qt.1, f qt.2) := by
+        have := hfm
+        simp only [Option.map_some] at this
+        exact (Option.some.inj this).symm
+      subst hr
+      rcases hstep (rep c) hc X W x qt hfm0 with hP | hlt
+      · exact Or.inl (hpref (f qt.2) qt.2 rfl hP)
+      · by_cases hP2 : P (rep (f qt.2))
+        · exact Or.inl hP2
+        · exact Or.inr (Nat.lt_of_le_of_lt (hmin (f qt.2) qt.2 rfl hP2) hlt)
+
+/-- Packaged as the constructor it feeds. -/
+theorem layeredOn_acyclic_push {S S' : Type} (sys : GkatThompson.GSystem S A T)
+    (P : S → Prop) (rank : S → Nat)
+    (hstep : ∀ s, ¬ P s → ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × S),
+      GkatKleene.firstMatch W x (sys.trans s) = some r → P r.2 ∨ rank r.2 < rank s)
+    (f : S → S') (rep : S' → S)
+    (hpref : ∀ (c : S') (t : S), f t = c → P t → P (rep c))
+    (hmin : ∀ (c : S') (t : S), f t = c → ¬ P (rep c) → rank (rep c) ≤ rank t)
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ c, sys'.trans c
+      = (sys.trans (rep c)).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+    LayeredOn sys' (fun c => P (rep c)) :=
+  LayeredOn.acyclic ⟨fun c => rank (rep c),
+    acyclic_rel_pushforward sys P rank hstep f rep hpref hmin sys' htrans⟩
+
+#print axioms layeredOn_acyclic_push
 
 end GkatCensus
