@@ -8980,4 +8980,52 @@ theorem layeredOn_acyclic_push {S S' : Type} (sys : GkatThompson.GSystem S A T)
 
 #print axioms layeredOn_acyclic_push
 
+
+/-! ### 296 — THE LOOP PUSHFORWARD, RELATIVISED
+
+    The last LAYER-LEVEL pushforward.  281 proved it for a total loop layer;
+    289 proved the sequence version with a domain.  This is the loop version
+    with a domain, and it is 289's proof with the two extra fields the loop
+    carries — the semantic halt equation, and the `outside` clause.
+
+    With this, all three layer shapes push forward along a representative
+    quotient: acyclic (295), sequence (289), loop (296).  What is NOT yet
+    assembled is the INDUCTION over `LayeredOn`, and 295 identified the one
+    thing standing in its way: the acyclic case wants the representative to be
+    RANK-MINIMAL, but the rank is existential INSIDE each acyclic node while
+    the representative is global to the quotient, so a single representative
+    cannot be minimal for every node at once.  The resolution is 264's: use the
+    BISIMULATION to transfer the step, which is available in the application and
+    is what `acyclic_quotient` already assumes. -/
+theorem loopLayerOn_pushforward_rep {S S' : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (h : LoopLayerOn sys base b entry dom)
+    (f : S → S') (hsurj : ∀ s' : S', ∃ s, f s = s')
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ s' : S', sys'.trans s'
+      = (sys.trans (Classical.choose (hsurj s'))).map
+          (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (hhlt : ∀ s' : S', sys'.hlt s' = sys.hlt (Classical.choose (hsurj s'))) :
+    LoopLayerOn sys' (pushBase f hsurj base sys') b
+      (entry.map (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+      (fun s' => dom (Classical.choose (hsurj s'))) where
+  trans_eq s' hs := by
+    simp only [pushBase]
+    rw [htrans s', h.trans_eq (Classical.choose (hsurj s')) hs, List.map_append]
+    congr 1
+    simp only [List.map_map, Function.comp_def]
+  hlt_eq s' hs := by
+    intro X W x
+    simp only [pushBase]
+    rw [hhlt s']
+    exact h.hlt_eq (Classical.choose (hsurj s')) hs X W x
+  outside s' hs := by
+    obtain ⟨ht, hh⟩ := h.outside (Classical.choose (hsurj s')) hs
+    exact ⟨by simp only [pushBase]; rw [htrans s', ht],
+      by simp only [pushBase]; rw [hhlt s', hh]⟩
+  states_eq := rfl
+
+#print axioms loopLayerOn_pushforward_rep
+
 end GkatCensus

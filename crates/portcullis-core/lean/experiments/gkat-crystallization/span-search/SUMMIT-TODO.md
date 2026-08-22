@@ -13673,3 +13673,38 @@ still unassembled and the connection to the architecture is untouched.
 relativised), then the induction, then the transport lemmas that carry a
 component's `LayeredOn` into a `sum`/`seq` — which is what `thompson_layeredOn`
 needs.
+
+---
+
+## 296 — THE LOOP PUSHFORWARD, RELATIVISED.  ALL THREE LAYER SHAPES NOW PUSH FORWARD.
+
+`loopLayerOn_pushforward_rep` — 281's theorem with a domain, which is 289's
+proof plus the two extra fields the loop carries (the semantic halt equation and
+the `outside` clause).  Compiled first try, `propext + Classical.choice`.
+
+    acyclic     layeredOn_acyclic_push          (295)
+    sequence    seqLayer_pushforward_rep        (289)
+    loop        loopLayerOn_pushforward_rep     (296)
+
+**What is NOT yet assembled, and the precise reason.**  The INDUCTION over
+`LayeredOn`.  295 identified what stands in its way: the acyclic case wants the
+representative to be RANK-MINIMAL, but **the rank is existential INSIDE each
+acyclic node while the representative is GLOBAL to the quotient**, so one
+representative cannot be minimal for every node at once.  Nor does taking
+`rank'` to be the fibre-minimum rescue it: the step downstairs is the
+REPRESENTATIVE's step, so the minimum must be ACHIEVED at the representative or
+the comparison does not close.
+
+The resolution is 264's and it is available: use the BISIMULATION to transfer
+the step to a minimising preimage.  That is exactly what `acyclic_quotient`
+already assumes, and it is true in the application.  Confirmed this iteration
+that `Nat.find` is in scope in this file (four uses), so the minimum-over-
+preimages construction 264 used can be reused rather than rebuilt.
+
+**Odds: 99%, HELD.**  The layer-level pushforwards are complete, but the
+induction is the step where the hypothesis forms have to agree, and that is
+exactly where 283 found a real mismatch.  Not pricing it until it compiles.
+
+**Next.**  `layeredOn_pushforward` by induction, with the acyclic case taking
+the bisimulation (264's argument, relativised to a block) and the sequence and
+loop cases taking 289 and 296.
