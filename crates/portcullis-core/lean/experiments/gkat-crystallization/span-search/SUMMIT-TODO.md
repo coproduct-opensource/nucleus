@@ -18065,3 +18065,51 @@ regression caught. Neither is progress on the source induction.
 
 **Next.** `source-headed ⟹ quotient-headed`, now that both halves speak the same
 reachability.
+
+## 388 — SOURCE HEADEDNESS ⟹ COMPLETENESS
+
+The transport is assembled:
+
+**`headedRegion_of_sourceHeaded`** — source headedness transports to the
+quotient. Two blocks of one level are mutually reachable
+(`mutual_of_reachMask_eq`, made semantic by `NoInert`); their preimages meet in a
+common source component (`exists_mutual_over_pair`); activity transports both
+ways (`active_transport`); so source headedness identifies the preimages and
+their images are the two blocks.
+
+**`finiteAxiomsComplete_of_sourceHeaded`** — the chain end to end. For each
+equivalent pair, exhibit a quotient of their sum identifying the two starts,
+well-formed, inert-free on both sides, such that **within each strongly connected
+component of the SUM at most one state is active at any atom** — and the finite
+GKAT axioms are complete.
+
+**An overclaim, caught in my own docstring.** I first wrote that the remaining
+condition is "a statement about a Thompson automaton alone: no quotient, no
+levels". It is not. `SourceSccHeaded` is instantiated with the level and rank
+**pulled back from the quotient**, so `quot` and `π` still appear in it. What is
+true is weaker and worth stating precisely: the condition is about the sum
+automaton's *own* components and its *own* states' activity, with a level
+borrowed from downstairs. Making it intrinsic — choosing the source level without
+reference to the quotient — is the remaining reduction, and I corrected the
+docstring rather than let the stronger reading stand.
+
+**Where the route is.**
+
+| | |
+|---|---|
+| completeness from sum-quotient solvability | corpus, `sorry`-free |
+| solvability from level agreement | 362, 384 |
+| level agreement from headedness | 372, 387 |
+| headedness from source headedness | **388** |
+| level is exactly one SCC | 383, measured 384 |
+| preimages share a source component | 381 |
+| activity, raw-ness, level, rank transport | 385, 386 |
+| **source headedness itself** | **open** — 358's measured claim |
+
+**Odds: 96%, unchanged.** The transport half of the problem is finished and the
+open statement has moved from the quotient to the source, which is where 367
+proved it has to be settled. But it is the same statement it was at 358, and
+nothing this iteration made it more likely to be true.
+
+**Next.** Make `SourceSccHeaded` intrinsic — a source level chosen without the
+quotient — then the GKAT induction.

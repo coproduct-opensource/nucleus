@@ -14734,6 +14734,102 @@ theorem active_transport {S Q X : Type} {aut : GkatKleene.GAut S A T}
 
 #print axioms active_transport
 
+/-- **The source-side statement**: within one strongly connected component, at
+most one state is active at any atom.  This is 358's measured claim — only the
+head of a loop body is ever non-raw — said without reference to a quotient. -/
+def SourceSccHeaded {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S),
+    SemReaches aut u w → SemReaches aut w u →
+    GkatGS.bval W (peelRawHlt aut slvl srank u) x = true →
+    GkatGS.bval W (peelRawHlt aut slvl srank w) x = true → u = w
+
+/-- **THE LAST LINK.**  Source headedness transports to the quotient.
+
+Two blocks of one level are mutually reachable (`mutual_of_reachMask_eq`, and
+`NoInert` makes that semantic); their preimages meet in a common source
+component (`exists_mutual_over_pair`); activity transports both ways
+(`active_transport`); so source headedness identifies the two preimages, and
+their images are the two blocks. -/
+theorem headedRegion_of_sourceHeaded {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (hwf : GkatKleene.UniformWF aut)
+    (hniS : NoInert aut) (hniQ : NoInert quot)
+    (rank : Nat → Q → Nat)
+    (hsrc : SourceSccHeaded aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState s))
+      (fun n s => rank n (π.mapState s))) :
+    ∀ n : Nat, HeadedRegion quot
+      (reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)) rank n := by
+  intro n X W x b1 hb1 b2 hb2 hact1 hact2
+  have hm1 : b1 ∈ quot.states := (List.mem_filter.mp hb1).1
+  have hm2 : b2 ∈ quot.states := (List.mem_filter.mp hb2).1
+  have heq : reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) b1
+      = reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) b2 := by
+    rw [levelStates_lvl hb1, levelStates_lvl hb2]
+  obtain ⟨hr12, hr21⟩ := mutual_of_reachMask_eq
+    (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) hm1 hm2 heq
+  have hs12 : SemReaches quot b1 b2 := semReaches_of_sreaches quot hniQ hr12
+  have hs21 : SemReaches quot b2 b1 := semReaches_of_sreaches quot hniQ hr21
+  obtain ⟨s0, hs0mem, hs0map⟩ := π.onto_states b1 hm1
+  obtain ⟨u, w, hu, hw, huw, hwu⟩ :=
+    exists_mutual_over_pair π hwf hs12 hs21 s0 hs0map hs0mem
+  have hactu : GkatGS.bval W (peelRawHlt aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState s))
+      (fun n s => rank n (π.mapState s)) u) x = true :=
+    (active_transport π _ rank u W x).mpr (by rw [hu]; exact hact1)
+  have hactw : GkatGS.bval W (peelRawHlt aut
+      (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans) (π.mapState s))
+      (fun n s => rank n (π.mapState s)) w) x = true :=
+    (active_transport π _ rank w W x).mpr (by rw [hw]; exact hact2)
+  have := hsrc X W x u w (semReaches_of_sreaches aut hniS huw)
+    (semReaches_of_sreaches aut hniS hwu) hactu hactw
+  rw [← hu, ← hw, this]
+
+#print axioms headedRegion_of_sourceHeaded
+
+/-- # SOURCE HEADEDNESS ⟹ COMPLETENESS
+
+The chain, end to end.  For each equivalent pair, exhibit a quotient of their sum
+identifying the two starts such that
+
+* it is well-formed (`UniformWF` — halt determinism, target closure);
+* neither it nor the sum has inert transitions (`NoInert`, satisfiable by
+  construction since 340 makes the lists ours to choose);
+* **within each strongly connected component of the SUM, at most one state is
+  active at any atom** (`SourceSccHeaded`) —
+
+and the finite GKAT axioms are complete.
+
+That last condition is about the SUM automaton's own components and its own
+states' activity — but note honestly that the level and rank it is stated with
+are PULLED BACK from the quotient, so it is not yet a statement about a Thompson
+automaton in isolation.  Making it one means choosing the level intrinsically,
+which is the remaining reduction.  It is 358's measured claim, and reaching even
+this form is what the whole transport (381, 383-387) was for. -/
+theorem finiteAxiomsComplete_of_sourceHeaded
+    (hquot : ∀ e f : Exp A T, GkatKleene.UniformLanguageEquivalent e f →
+      ∃ (Q : Type) (quot : GkatKleene.GAut Q A T)
+        (π : GkatKleene.UniformBehavioralGAutQuotient (GkatTrim.SUMof A T e f) quot)
+        (rank : Nat → Q → Nat),
+        π.mapState (Sum.inl none) = π.mapState (Sum.inr none) ∧
+        GkatKleene.UniformWF quot ∧
+        GkatKleene.UniformWF (GkatTrim.SUMof A T e f) ∧
+        NoInert (GkatTrim.SUMof A T e f) ∧ NoInert quot ∧
+        SourceSccHeaded (GkatTrim.SUMof A T e f)
+          (fun s => reachMask (GkatThompson.GSystem.mk quot.states quot.hlt quot.trans)
+            (π.mapState s))
+          (fun n s => rank n (π.mapState s))) :
+    GkatKleene.FiniteAxiomsCompleteBA A T := by
+  refine finiteAxiomsComplete_of_maskAgreement (fun e f hef => ?_)
+  obtain ⟨Q, quot, π, rank, hπ, hwfQ, hwfS, hniS, hniQ, hsrc⟩ := hquot e f hef
+  exact ⟨Q, quot, π, rank, hπ, hwfQ,
+    levelAgreementActive_of_headed quot _ rank
+      (headedRegion_of_sourceHeaded π hwfS hniS hniQ rank hsrc)⟩
+
+#print axioms finiteAxiomsComplete_of_sourceHeaded
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
