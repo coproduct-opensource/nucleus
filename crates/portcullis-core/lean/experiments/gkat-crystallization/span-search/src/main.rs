@@ -3512,6 +3512,8 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     let mut maxcomp = 0usize;
     let (mut big_pairs, mut big_sat, mut big_uns) = (0usize, 0usize, 0usize);
     let (mut resc, mut doom, mut red_doom) = (0usize, 0usize, 0usize);
+    let mut shrink = [[0usize; 10]; 10];
+    let mut states_dropped = 0usize;
     let mut first_red_doom: Option<String> = None;
     let mut first_big: Option<String> = None;
     let (mut red_sat, mut red_uns, mut irr_sat, mut irr_uns) = (0usize, 0usize, 0usize, 0usize);
@@ -3617,7 +3619,37 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
                             None => false,
                         }
                     } else { false };
-                    if rescued { resc += 1 } else {
+                    if rescued {
+                        resc += 1;
+                        // 435: WHY does the collapse rescue?  It cannot merge the
+                        // offending pair -- they have different outcomes, so they
+                        // are not bisimilar.  Measure what it actually changes.
+                        if let Some(q) = quotient_by(&p, &blk, nb).and_then(|q| canon(&q)) {
+                            let mxq = {
+                                let kq = q.k as usize;
+                                let mut lv = vec![0usize; kq];
+                                for u in 0..kq {
+                                    let mut sr = vec![false; kq]; sr[u] = true;
+                                    let mut st = vec![u];
+                                    while let Some(v) = st.pop() {
+                                        for x in 0..NA {
+                                            if q.st[v][x] == 0 { continue; }
+                                            let t = (q.st[v][x] - 1) as usize;
+                                            if !sr[t] { sr[t] = true; st.push(t); }
+                                        }
+                                    }
+                                    let mut m = 0usize;
+                                    for w in 0..kq { if sr[w] { m |= 1 << w; } }
+                                    lv[u] = m;
+                                }
+                                let mut lvs = lv.clone(); lvs.sort_unstable(); lvs.dedup();
+                                lvs.iter().map(|&n| (0..kq).filter(|&u| lv[u] == n).count())
+                                   .max().unwrap_or(0)
+                            };
+                            if mx_here < 10 && mxq < 10 { shrink[mx_here][mxq] += 1; }
+                            if q.k < p.k { states_dropped += 1; }
+                        }
+                    } else {
                         doom += 1;
                         if red {
                             red_doom += 1;
@@ -3645,6 +3677,12 @@ fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
     println!("  --- existential check on every failure (434) ---");
     println!("  rescued by the bisimulation collapse : {}", resc);
     println!("  survive BOTH extremal quotients      : {}", doom);
+    println!("  of the rescued, the collapse DROPPED states : {}", states_dropped);
+    println!("  max-component BEFORE -> AFTER collapse (rescued cases):");
+    for b in 0..10 {
+        let row: Vec<usize> = (0..10).map(|a| shrink[b][a]).collect();
+        if row.iter().any(|&v| v > 0) { println!("    before={}  after: {:?}", b, row); }
+    }
     println!("    of those, REDUCIBLE                : {}", red_doom);
     if let Some(b) = first_red_doom { println!("    sharpest artefact: {}", b); }
     println!("  --- the untested regime (component >= 3) ---");

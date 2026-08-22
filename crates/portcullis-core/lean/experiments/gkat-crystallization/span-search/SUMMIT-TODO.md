@@ -20581,3 +20581,52 @@ problem does not close still stands.
 **Next.** Prove it rather than measure it: `∃ quot` instantiated at the
 bisimulation-minimal automaton, with `LevelAgreementActive` derived from
 minimality — the census says that is the theorem.
+
+## 435 — the rescue mechanism is VACUITY. Every rescued component collapses to a singleton.
+
+Web search: exhausted (200/200).
+
+434 found the minimal quotient rescues all 400 failures and called it actionable.
+Before building a proof on it I asked *why* it works — the collapse cannot merge
+the offending pair, since two states with different outcomes are not bisimilar.
+
+| max component BEFORE collapse | after |
+|---|---|
+| 2 | **1** (148 cases) |
+| 3 | **1** (158) |
+| 4 | **1** (76) |
+| 5 | **1** (12) |
+
+**All 400: every component becomes a singleton.** The collapse drops states in
+every case, and the rescue is not that agreement starts holding — it is that
+**there is nothing left to agree.** `LevelAgreementActive` quantifies over pairs
+in a level; with singleton components it is **vacuously true**.
+
+**This is the vacuity check from the steelman agenda, arriving early and
+positive-looking.** My own post-proof list asks: *"is the predicate VACUOUS or
+trivially satisfiable anywhere it matters (the base-rate control that caught
+205)"*. Here it is vacuous at exactly the witness 434 recommended instantiating.
+
+**Vacuity is not automatically fatal here, and the reason matters.** An automaton
+whose every SCC is a singleton has no multi-state cycles; each self-loop is a
+single-state Salomaa equation, which W3 closes — and W3 is finite (422). So the
+architecture genuinely solves that shape rather than merely not objecting to it.
+The route would be: minimal quotient → singleton SCCs → per-state W3. That is a
+coherent proof plan, and it does not route through the peel at all.
+
+**But "minimal ⟹ singleton SCCs" is FALSE in general**, and I am not going to let
+this pass as one. A 3-cycle of pairwise-distinguishable states is already minimal
+and has a 3-element component. So what 435 measures is a property of THIS
+population — pullbacks of depth-3 expressions over 6 guards — not a theorem. The
+satisfiable 23,219 were never collapsed, so I do not know whether their minimal
+forms have large components either.
+
+**Odds: 55%, unchanged** — inside the ±5 cap 434 set, and the iteration is
+genuinely mixed: the mechanism is now understood and suggests a cleaner proof
+plan, while the recommended witness turns out to satisfy the hypothesis
+vacuously, which is the failure mode my own checklist warns about first.
+
+**Next.** Settle whether minimal GKAT quotients can have multi-state SCCs at all:
+construct a minimal automaton with a 3-cycle of distinguishable states, check it
+is realisable as a quotient of a `SUMof`, and test `LevelAgreementActive` on it.
+That is the case the whole architecture stands or falls on.
