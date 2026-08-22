@@ -9304,4 +9304,52 @@ theorem sum_quotient_layered_of_split {S₁ S₂ Q : Type}
 
 #print axioms sum_quotient_layered_of_split
 
+
+/-! ### 302 — THE RECURSION IS WELL-FOUNDED DOWNSTAIRS, AND 299 SURVIVES ITS STRATEGY
+
+    301 redirected to building the quotient's derivation directly, and left the
+    worry that the same circularity recurs one level down: inside `ite c e₁ e₂`
+    a split at `e₂`'s states need not be a union of classes either, and
+    saturating it mixes `e₁` with `e₂` again.
+
+    **It does not recur, and the reason is worth stating.**  Bisimilar states
+    have the SAME CLASS, so the IMAGE of a saturated block is the image of the
+    half it started from — the extra states saturation pulled in contribute no
+    new classes.  Mixing is an UPSTAIRS phenomenon; downstairs a block is always
+    "the image of a sub-automaton", and the recursion is on EXPRESSION
+    STRUCTURE, which is well-founded.  That is the difference between 299's
+    route and 301's, stated exactly: same construction, but measured downstairs
+    it decreases and measured upstairs it does not.
+
+    **And 299's lemma survives its strategy's death.**  Obligation B needs: the
+    `R`-states having an `L`-partner form a CLOSED set in the sum.  That is
+    `saturation_closed` applied with `C` = "is `inl`" — the saturation of
+    "is `inl`" IS "has an `L`-partner".  The lemma proved for a dead strategy is
+    exactly the lemma the live one wants. -/
+theorem inl_partner_closed {S₁ S₂ Q : Type} (L : GkatThompson.GSystem S₁ A T)
+    (R : GkatThompson.GSystem S₂ A T) (q : Sum S₁ S₂ → Q)
+    (hbisim : ∀ s t : Sum S₁ S₂, q s = q t →
+      ∀ (X : Type) (W : T → X → Bool) (x : X),
+      (GkatKleene.firstMatch W x ((GkatThompson.sumGSystem L R).trans s)).map
+          (fun z => (z.1, q z.2))
+        = (GkatKleene.firstMatch W x ((GkatThompson.sumGSystem L R).trans t)).map
+          (fun z => (z.1, q z.2))) :
+    ∀ s : Sum S₁ S₂, (∃ t, q t = q s ∧ ∃ u, t = Sum.inl u) →
+      ∀ (X : Type) (W : T → X → Bool) (x : X) (r : A × Sum S₁ S₂),
+        GkatKleene.firstMatch W x ((GkatThompson.sumGSystem L R).trans s) = some r →
+          ∃ t, q t = q r.2 ∧ ∃ u, t = Sum.inl u := by
+  refine saturation_closed (GkatThompson.sumGSystem L R) q
+    (fun t => ∃ u, t = Sum.inl u) ?_ hbisim
+  intro s hs X W x r hfm
+  obtain ⟨u, rfl⟩ := hs
+  obtain ⟨g, hg⟩ := firstMatch_mem_of_some W x
+    ((GkatThompson.sumGSystem L R).trans (Sum.inl u)) r.1 r.2 (by rw [← hfm])
+  have hmem : (g, r.1, r.2)
+      ∈ (L.trans u).map (fun z => (z.1, z.2.1, Sum.inl z.2.2)) := hg
+  simp only [List.mem_map] at hmem
+  obtain ⟨z, _, hz⟩ := hmem
+  exact ⟨z.2.2, (congrArg (fun w => w.2.2) hz).symm⟩
+
+#print axioms inl_partner_closed
+
 end GkatCensus

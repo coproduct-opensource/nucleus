@@ -13958,3 +13958,40 @@ iterations cost, and no more.
 about the image of `R` restricted to classes with no `L`-partner, and 287's
 argument shows that region's complement is closed in `R`, so the recursion has
 somewhere to go.
+
+---
+
+## 302 — THE RECURSION IS WELL-FOUNDED DOWNSTAIRS, AND 299 SURVIVES ITS STRATEGY.
+
+300 asked whether "the saturation of a layered block is layered" is a genuine
+recursion or a genuine circularity.  301 redirected downstairs but left the
+worry that the circularity recurs one level down: inside `ite c e₁ e₂` a split
+at `e₂`'s states need not be a union of classes either, and saturating it mixes
+`e₁` with `e₂` again.
+
+**It does not recur, and the reason is the whole point.**  Bisimilar states have
+the SAME CLASS, so **the IMAGE of a saturated block is the image of the half it
+started from** — the extra states saturation pulled in contribute NO NEW
+CLASSES.  Mixing is an UPSTAIRS phenomenon.  Downstairs a block is always "the
+image of a sub-automaton", and the recursion is on EXPRESSION STRUCTURE.
+
+**So 300's question has an answer: a genuine recursion, not a circularity** —
+the same construction decreases when measured downstairs and does not when
+measured upstairs.  That is exactly the difference between 299's route and
+301's, and it is why 301's redirect was the right move rather than a lateral
+one.
+
+**And 299's lemma survives its strategy's death.**  Obligation B needs: the
+`R`-states having an `L`-partner form a CLOSED set.  That is `saturation_closed`
+applied with `C` = "is `inl`" — **the saturation of "is `inl`" IS "has an
+`L`-partner"**.  The lemma proved for a dead strategy is exactly the lemma the
+live one wants.  `inl_partner_closed`, `propext + Quot.sound`.
+
+**Odds: 99%** (+1).  300 posed a fork — recursion or circularity — and it
+resolved on the recursion side, which is the side the programme needs.  The
+field's prior that the problem does not close still stands.
+
+**Next.**  State the induction on expressions: for every `g` and every closed
+block of classes `B`, the image of `Thompson(g)`'s automaton is `LayeredOn`
+relative to `B`.  The `ite` case is 301's split plus this iteration's closure;
+`seq` is the same with 289's layer; `wh` is 296's; `test`/`act` are acyclic.
