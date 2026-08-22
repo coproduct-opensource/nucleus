@@ -17213,3 +17213,54 @@ proof strategies did.
 
 **Next.** Back to the transport itself, with the head-distance rank of 368 as the
 thing to transport rather than an arbitrary one.
+
+## 370 — a CANONICAL rank for the transport, and a correction to 368
+
+A transport proof needs the quotient's rank to be *derived* from the source's,
+not merely to exist by search. The natural candidate is the pushforward of 368's
+head-distance rank. Over 2 193 multi-state quotient regions:
+
+| encoding | agrees |
+|---|---|
+| min over block, forward | 69 (3.1%) |
+| max over block, forward | 65 (3.0%) |
+| min over block, reversed | 1 047 (47.7%) |
+| **max over block, reversed** | **2 185 (99.6%)** |
+| best of the four | 2 192 (**99.95%**), vacuous in 97.99% |
+| some rank, by search | 2 193 (100%) |
+
+**The pushforward works — but only in one of four encodings.** I ran the first,
+got 3.15%, and was on the point of recording "the natural canonical candidate
+fails, so the transport cannot push the rank forward". That would have been wrong
+by a factor of thirty, and only testing the variants caught it. One encoding of
+an idea failing is not the idea failing.
+
+**The winning rank.** `rank(block) = −max{ dist-to-head(u) : u in block }` — a
+block whose deepest source member is further from the head gets a *lower* rank.
+Raw edges are then those going **deeper into the body**; the back-edges are the
+**returns toward the head**.
+
+**Which contradicts 368.** 368 derived by hand that the rank must be
+head-distance with the head's *entry* as the back-edge, and argued the opposite
+breaks agreement. That derivation was never tested — 368 measured only that
+*some* rank works on source loops, not which — and the quotient measurement now
+points the other way, 99.6% against 3.0%. **I am withdrawing 368's orientation
+claim.**
+
+**What is left.** The pushforward misses 1 region of 2 193, and vacuity misses 44.
+A proof along this line gets agreement for 99.95% by a canonical construction and
+needs a separate argument for a handful — much better than "a rank exists, found
+by exhaustive search over permutations", since search does not generalise past
+three-state regions.
+
+**Odds: 97%, unchanged.** A canonical witness is real progress; withdrawing an
+unverified claim from two iterations ago is not.
+
+**A harness note, second occurrence.** `cat >> <dir> && cat >> <file>` —
+the first redirect failed on a directory path, `&&` short-circuited, and the
+commit shipped code with no ledger entry, exactly as in 354. Recorded then as
+"use absolute paths"; the actual rule is **never chain a ledger write behind
+`&&`**, since any failure upstream silently drops it.
+
+**Next.** The one region the pushforward misses, and the 44 where it agrees but
+is not vacuous.
