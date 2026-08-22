@@ -14714,3 +14714,43 @@ its entry outside the block, `seq` needs its entry inside, and the choice
 between them is a property of the layer, not of the whole induction.  Decide
 whether a mixed entry list can occur — measurable with 314's harness — before
 designing a constructor for it.
+
+---
+
+## 320 — MEASURED: CROSS-CLASS IDENTIFICATION IS COMMON, NOT EXOTIC.
+
+319 sharpened to this: `LayeredOn.loop`'s `hentry`/`hclosed` are conditions on
+CLASSES, not on transitions.  A loop body's transitions stay inside the body —
+but a body state's CLASS can contain a state from OUTSIDE it, and then the class
+lies in a block the loop is supposed to avoid.  So the decisive question is not
+about steps at all: **does a component's states get identified with
+non-component states?**
+
+New mode `PAD_CROSS_CLASS`:
+
+    1570 components, 251 with a state identified outside the component (16.0%)
+    FIRST: ite g (act a) (act a) — the two halves' single states are bisimilar
+
+**Common, and trivially so.**  The smallest example is two identical branches.
+And in the completeness application `e ≈ f`, so it is not 16% but essentially
+universal.
+
+**So 319's concern is confirmed at the level it was raised**: the class-level
+conditions will fail routinely, and the `hout`-carrying shape cannot be patched
+by choosing the split direction more cleverly.
+
+**What is NOT yet settled, and it is the whole question.**  Cross-class
+identification makes the block INTERSECT the image; it does not by itself make
+an entry list MIXED.  If ALL of a component's classes are in the block, a `wh`'s
+entries are all in it too — that is `seq`-shaped, and fine.  If NONE are, it is
+`loop`-shaped, and fine.  **Only a genuinely SPLIT entry list fits neither**, and
+whether that occurs is one more measurement, not an inference from 16%.
+
+**Odds: 97%, HELD.**  The measurement confirmed the mechanism and did not
+resolve the question — which is what it was for.  Confirming a concern is not
+the same as confirming the failure it points at, and 313→314 already taught me
+not to conflate those.
+
+**Next.**  Measure MIXEDNESS directly: for a `wh` inside a composite, and the
+block "classes with a preimage in the other half", are the entry targets' classes
+ever split between block and non-block?

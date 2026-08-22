@@ -7690,6 +7690,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         llee_test::<NA>(nguards as u8);
         return;
     }
+    if std::env::var("PAD_CROSS_CLASS").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(3);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(250);
+        cross_class::<NA>(nguards as u8, rounds, cap);
+        return;
+    }
     if std::env::var("PAD_BISIM_TRANSPORT").is_ok() {
         let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -11535,6 +11543,94 @@ fn show_aut<const NA: usize>(tag: &str, a: &Aut<NA>) -> String {
         out.push(']');
     }
     out
+}
+
+/// **`PAD_CROSS_CLASS`** (iteration 320).
+///
+/// 319 found that `LayeredOn.loop`'s `hentry`/`hclosed` are conditions on
+/// CLASSES, not on transitions: a loop body's transitions stay inside the body,
+/// but a body state's CLASS can contain a state from outside it, and then the
+/// class lies in a block the loop is supposed to avoid.  That is what would make
+/// a shared entry list "mixed", which fits neither `loop` nor `seq`.
+///
+/// So the decisive question is not about steps at all — it is whether a
+/// component's states get identified with non-component states.  Count it.
+fn cross_class_count<const NA: usize>(a: &Aut<NA>, lo: usize, hi: usize) -> usize {
+    let (blk, _) = bisim_blocks(a);
+    let mut n = 0usize;
+    for s in lo..hi {
+        for t in 0..a.k as usize {
+            if t >= lo && t < hi { continue; }
+            if blk[s] == blk[t] { n += 1; }
+        }
+    }
+    n
+}
+
+fn cross_class<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    {
+        let a = a_act::<NA>();
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    let (mut comps, mut crossed) = (0usize, 0usize);
+    let mut first: Option<String> = None;
+    for round in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        // the LEFT half is the component; is any of its states
+                        // identified with a state of the right half?
+                        comps += 1;
+                        let n = cross_class_count(&a, 0, l.k as usize);
+                        if n > 0 {
+                            crossed += 1;
+                            if first.is_none() {
+                                first = Some(format!(
+                                    "ite: {n} cross-half identifications\n    {}\n    {}\n    {}",
+                                    show_aut("whole", &a), show_aut("left ", l),
+                                    show_aut("right", r)));
+                            }
+                        }
+                        if pool.len() < cap {
+                            if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                        }
+                    }
+                }
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    comps += 1;
+                    if cross_class_count(&a, 0, l.k as usize) > 0 { crossed += 1; }
+                    if pool.len() < cap {
+                        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap {
+                    if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                }
+            }
+        }
+        println!("  round {round}: pool = {}, components = {comps}, with cross-class = {crossed}",
+            pool.len());
+        if pool.len() >= cap { break; }
+    }
+    println!("CROSS-CLASS: {comps} components, {crossed} with a state identified outside \
+              the component ({:.1}%)",
+        100.0 * crossed as f64 / comps.max(1) as f64);
+    match first {
+        None => println!("  none: a component's states are never identified with states \
+                          outside it, so 319's mixed entry list cannot arise"),
+        Some(msg) => println!("  FIRST\n    {msg}"),
+    }
 }
 
 fn bisim_transport<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
