@@ -21047,3 +21047,16 @@ position, and I should have been quoting it rather than reconstructing it.
 model** in which a productive guarded system has two distinct solutions. That
 would settle the conjecture negatively, is not blocked by anything found in
 404-442, and is where the remaining tractable work is.
+
+### 443a — correction to 443's account of my own memory
+
+443 said "my memory note recorded the target as 'holy grail TRUE' and I never
+checked what that meant." Checking the note while filing the correction: its
+"holy grail" is `operationalTax = rank H¹` in `AlignmentTaxBridge` — **a
+different conjecture entirely**. My memory never claimed the GKAT target was
+true; I attributed that belief to it while writing 443.
+
+The substance of 443 is unaffected — the target's status is what
+`GkatUniquenessFrontierProofs` says, and I had not established it in 404-442. But
+the diagnosis was wrong: I was not misled by a stale note, I simply never checked
+the problem's status at all, which is worse and worth recording as such.
