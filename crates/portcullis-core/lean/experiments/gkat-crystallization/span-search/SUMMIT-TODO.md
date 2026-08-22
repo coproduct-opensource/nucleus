@@ -11879,3 +11879,55 @@ easier than the left.  Not more than +1 because `hsum` still is not closed and
 `hcollapse`/`hsolve` remain untouched.
 
 **Next.**  `seq_isLayer_right`, then `layered_seq`, then `hsum`.
+
+---
+
+## 258 — **`hsum` IS PROVED.**  One of 239's three obligations is closed.
+
+`thompson_layered : ∀ e, Layered (certifiedThompson A T e).aut.core` — every
+Thompson automaton carries the certificate, by induction on the expression, no
+`sorry` and no axioms beyond `propext`/`Quot.sound`.
+
+    test, act   no transitions at all                          247
+    ite         layered_ite via layered_sum                    250
+    wh          Layered.layer applied to a fact `rfl` since 220 247
+    seq         layered_seq                                    258
+
+**What closed the `seq` case.**  `seq_isLayer_right` — simpler than the left, as
+241 predicted: `seqGSystem` touches the right half not at all, so the layer
+passes straight through and the whole left half is discharged by `outside`.
+Then `layered_seq` by induction on both derivations, the `layered_sum` template.
+
+**And a fourth `IsLayer` migration, forced like the other three.**  The induction
+needs `InitTargetsListed` to survive passage to the base, which requires knowing
+a layer does not change the STATE LIST.  True of every construction —
+`loopInitialized` keeps the body's list verbatim — but not recorded, so
+`states_eq` was added and threaded through all four lifting lemmas.  Four
+migrations (248 domain, 254 shape, 256 syntax/semantics, 258 states), every one
+discovered by attempting the next case rather than by inspection, every one
+landed whole.
+
+**Where the whole thing stands.**
+
+    hsum        every Thompson automaton carries the certificate   PROVED
+    hcollapse   the certificate survives a minimal quotient        measured 100%
+                (13 126/13 126 at NA=2 and NA=3, iteration 237)    unproved
+    hsolve      the certificate implies a solution exists          unproved
+                (Grabmayer's "every prechart with LLEE admits a
+                 solution", in the neighbouring setting)
+
+    sumQuotientSolvable_of_certificate  chains the three           PROVED (239)
+    completeness_of_sumQuotientSolvable carries it to completeness PROVED (repo)
+
+**Odds: 84%, up 2.**  The first of the three obligations is closed outright, and
+it is the one that ran through thirty iterations of certificate-hunting
+(228-257) — five formulations, two soundness breaks, four definition migrations.
+It is now a theorem.  Not more than +2 because the two remaining obligations are
+untouched by this proof and `hsolve` in particular is the one Grabmayer proves
+by a different route than anything here.
+
+**Next.**  `hcollapse`: the certificate survives passage to a minimal
+behavioural quotient.  237 measured it at 100% and 223 measured the underlying
+property at 131 714/131 714, and 243 established GKAT sits on the favourable
+side of the proper-step/empty-step divide — so the target is right; the proof is
+open.

@@ -6359,6 +6359,11 @@ structure IsLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
       = (GkatGS.bval W (base.hlt s) x && !GkatGS.bval W b x)
   /-- OFF THE LAYER: `sys` and `base` agree (248). -/
   outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
+  /-- A layer adds back EDGES, never states (258).  True of every construction —
+      `loopInitialized` keeps the body's state list verbatim, and `sum`/`seq`
+      build theirs from the components' — and needed because
+      `InitTargetsListed` must survive passage to the base. -/
+  states_eq : sys.states = base.states
 
 /-- **`wh b e`'s automaton is exactly ONE LAYER over `e`'s.**
 
@@ -6385,6 +6390,7 @@ theorem wh_isLayer (b : BExp T) (e : Exp A T) :
     rw [loop_core_hlt b e s]
     rfl
   outside s h := absurd trivial h
+  states_eq := rfl
 
 #print axioms wh_isLayer
 
@@ -6469,6 +6475,9 @@ theorem sum_isLayer_left {S₁ S₂ : Type}
         exact ⟨by simp only [GkatThompson.sumGSystem, ht], by
           simp only [GkatThompson.sumGSystem, hh]⟩
     | .inr _, _ => ⟨rfl, rfl⟩
+  states_eq := by
+    show _ ++ _ = _ ++ _
+    rw [h.states_eq]
 
 /-- Symmetric: a layer in the RIGHT component is a layer of the sum. -/
 theorem sum_isLayer_right {S₁ S₂ : Type}
@@ -6502,6 +6511,9 @@ theorem sum_isLayer_right {S₁ S₂ : Type}
         obtain ⟨ht, hh⟩ := h.outside s hs
         exact ⟨by simp only [GkatThompson.sumGSystem, ht], by
           simp only [GkatThompson.sumGSystem, hh]⟩
+  states_eq := by
+    show _ ++ _ = _ ++ _
+    rw [h.states_eq]
 
 #print axioms sum_isLayer_left
 #print axioms sum_isLayer_right
@@ -6660,9 +6672,114 @@ theorem seq_isLayer_left {S₁ S₂ : Type}
         exact ⟨by simp only [GkatThompson.seqGSystem, ht, hh], by
           simp only [GkatThompson.seqGSystem, hh]⟩
     | .inr _, _ => ⟨rfl, rfl⟩
+  states_eq := by
+    show _ ++ _ = _ ++ _
+    rw [h.states_eq]
 
 #print axioms seq_isLayer_left
 
+/-- **A LAYER IN THE RIGHT HALF OF A SEQUENCE IS A LAYER OF THE SEQUENCE.**
 
+    Simpler than the left case, and 241 said why: `seqGSystem` touches the right
+    half not at all — a right state's transitions are its own, retargeted.  So
+    the layer passes straight through, and the entire left half is discharged by
+    `outside`.  Only the CORE varies; the initial data is shared, which is what
+    lets the sequence itself stay fixed. -/
+theorem seq_isLayer_right {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T)
+    (core base : GkatThompson.GSystem S₂ A T)
+    (ih : BExp T) (it : List (BExp T × A × S₂))
+    {b : BExp T} {dom : S₂ → Prop} (h : IsLayer core base b dom) :
+    IsLayer (GkatThompson.seqGSystem L ⟨core, ih, it⟩)
+      (GkatThompson.seqGSystem L ⟨base, ih, it⟩) b
+      (fun x => match x with | .inl _ => False | .inr s => dom s) where
+  split
+    | .inl _, hs => absurd hs (by simp)
+    | .inr s, hs => by
+        obtain ⟨pre, extra, post, post', hbase, hsys, hg, hr⟩ := h.split s hs
+        refine ⟨pre.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                extra.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                post.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)),
+                post'.map (fun t => (t.1, t.2.1, Sum.inr t.2.2)), ?_, ?_, ?_, ?_⟩
+        · show (base.trans s).map _ = _
+          rw [hbase, List.map_append]
+        · show (core.trans s).map _ = _
+          rw [hsys, List.map_append, List.map_append]
+        · intro tr htr
+          simp only [List.mem_map] at htr
+          obtain ⟨t, ht, rfl⟩ := htr
+          exact hg t ht
+        · exact hr.map _
+  hlt_eq
+    | .inl _, hs => absurd hs (by simp)
+    | .inr s, hs => h.hlt_eq s hs
+  outside
+    | .inl _, _ => ⟨rfl, rfl⟩
+    | .inr s, hs => by
+        obtain ⟨ht, hh⟩ := h.outside s hs
+        exact ⟨by simp only [GkatThompson.seqGSystem, ht], by
+          simp only [GkatThompson.seqGSystem, hh]⟩
+  states_eq := by
+    show _ ++ _ = _ ++ _
+    rw [h.states_eq]
+
+#print axioms seq_isLayer_right
+
+/-- **THE `seq` CASE OF `hsum`, ASSEMBLED.**  Induction on both derivations, the
+    same shape as `layered_sum` (250): acyclic/acyclic is `layered_seq_acyclic`,
+    and a layer on either side lifts by the two lemmas above. -/
+theorem layered_seq {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T)
+    (hinit : GkatThompson.InitTargetsListed R)
+    (hL : Layered L) (hR : Layered R.core) :
+    Layered (GkatThompson.seqGSystem L R) := by
+  -- `R.core` must be a variable for the inner induction; destructure, then
+  -- restate the hypothesis against the bare core.
+  obtain ⟨Rc, Rh, Rt⟩ := R
+  have hRc : Layered Rc := hR
+  clear hR
+  induction hL with
+  | acyclic h1 =>
+      induction hRc with
+      | acyclic h2 =>
+          obtain ⟨r1, hr1⟩ := h1
+          obtain ⟨r2, hr2⟩ := h2
+          exact layered_seq_acyclic _ _ hinit r1 hr1 r2 hr2
+      | layer hlay _ ih =>
+          exact Layered.layer (seq_isLayer_right _ _ _ Rh Rt hlay)
+            (ih (fun tr htr => hlay.states_eq ▸ hinit tr htr))
+  | layer hlay _ ih =>
+      exact Layered.layer (seq_isLayer_left _ _ ⟨Rc, Rh, Rt⟩ hlay) ih
+
+#print axioms layered_seq
+
+
+
+
+
+/-- **`hsum`: EVERY THOMPSON AUTOMATON CARRIES THE CERTIFICATE.**
+
+    By induction on the expression, with every case now proved:
+
+        test, act   no transitions at all                     (247)
+        ite         `layered_ite` via `layered_sum`           (250)
+        seq         `layered_seq`                             (258)
+        wh          `layered_wh` — `Layered.layer` applied to
+                    a fact that has been `rfl` since 220      (247)
+
+    This is the first of 239's three obligations, closed.  The `seq` case needs
+    the right component's `InitTargetsListed`, which its own certificate
+    supplies. -/
+theorem thompson_layered : ∀ e : Exp A T,
+    Layered (GkatThompson.certifiedThompson A T e).aut.core
+  | .test t => layered_test t
+  | .act a => layered_act a
+  | .ite b e f => layered_ite b e f (thompson_layered e) (thompson_layered f)
+  | .seq e f =>
+      layered_seq _ _ (GkatThompson.certifiedThompson A T f).certificate.initTargets
+        (thompson_layered e) (thompson_layered f)
+  | .wh b e => layered_wh b e (thompson_layered e)
+
+#print axioms thompson_layered
 
 end GkatCensus
