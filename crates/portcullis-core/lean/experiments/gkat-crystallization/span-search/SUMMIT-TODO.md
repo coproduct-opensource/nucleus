@@ -19765,3 +19765,62 @@ punished. The field's prior that this problem does not close still stands.
 **Next.** A duplication-permitting layered system: restate `solvesBA_of_peel`
 over a system with a state map `f : S' → S` instead of `S' = S`, and check the
 existing peel lemmas survive the generalisation.
+
+## 420 — the duplication route, proved — and it costs a UNIQUENESS obligation.
+
+Web search: exhausted (200/200).
+
+419 named the fix: let the layered system have its own state type `S'` with a
+map `f : S' → S` back to the automaton, so node duplication becomes available.
+This iteration builds it, and the build reveals the price.
+
+**Two theorems, both `propext` alone.**
+
+```lean
+theorem eqRHS_of_mapped (aut) (sys) (f) (sol) (s')
+    (hhlt : aut.hlt (f s') = sys.hlt s')
+    (htr  : aut.trans (f s') = (sys.trans s').map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+  eqRHS aut sol (f s') = eqRHS sys (fun t' => sol (f t')) s'
+
+theorem solvesBA_of_mapped (aut) (sys) (f) (r) (hsec) (hmem) (hhlt) (htr)
+    (sol') (hsol : SolvesBA sys sol')
+    (hfib : ∀ a b : S', f a = f b → EquivBA (sol' a) (sol' b)) :
+  SolvesBA aut (fun s => sol' (r s))
+```
+
+The automaton's equation at `s` is *literally* the duplicated system's equation
+at `r s` with the solution precomposed by `f` — a `foldr`-over-`map` identity, no
+reasoning required. So duplication transports solvability. **`sys` is free to
+have as many states as it likes.**
+
+**The price, and it is the program's nemesis.** `hfib`: the solution must be
+constant, up to `EquivBA`, on `f`'s fibres. Fibre-mates map to the same state of
+`aut`, so they are bisimilar — **`hfib` is a uniqueness statement**, the very
+kind of hypothesis the n-ary Uniqueness Axiom supplies and this program exists to
+eliminate.
+
+**And it cannot be dodged by choosing `r` well.** In the proof `hfib` is invoked
+at exactly `(r (f e.2.2), e.2.2)` for each transition target of `sys` — that is,
+precisely where the layered system's transitions leave the chosen section, which
+is precisely where duplication is doing work. Duplicate nothing and `hfib` is
+trivial and the route reduces to the refuted state-preserving peel; duplicate
+something and `hfib` bites exactly there.
+
+**Why this is not simply a dead end.** `hfib` is strictly weaker than `UABA`. UA
+says ANY two solutions of an automaton are equivalent; `hfib` says ONE
+constructed solution is constant on fibres. That is a property of a construction,
+and a solver that assigns fibre-mates equal expressions BY CONSTRUCTION would
+discharge it without any uniqueness axiom. Whether the layered solver can be made
+to do that is the new question.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 40%, unchanged.** The positive and the negative genuinely cancel. The
+replacement for a refuted architecture is now a proved theorem rather than a
+hope, which is real progress; but its one hypothesis is uniqueness-flavoured, and
+uniqueness is what the whole program is trying to avoid. I decline to move the
+number on an iteration where I learned both a good thing and a bad thing of
+similar size. The field's prior that this problem does not close still stands.
+
+**Next.** Ask whether a layered solver can assign fibre-mates equal expressions
+by construction — that is, whether `hfib` can be built in rather than assumed.

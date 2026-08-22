@@ -16334,6 +16334,67 @@ theorem hh_fails_of_loop_and_halt {S X : Type} (W : T → X → Bool) (x : X)
 
 #print axioms hh_fails_of_loop_and_halt
 
+/-! ### 420: solvability along a state map — what duplication actually costs
+
+419 identified the peel's fatal restriction: it is STATE-PRESERVING, and
+structuring an irreducible flow graph without auxiliary variables needs node
+DUPLICATION.  The generalisation is to let the layered system have its own state
+type `S'` with a map `f : S' → S` back to the automaton.
+
+This makes the price explicit.  A solution transports along `f` only if it is
+constant on `f`'s fibres — and fibre-mates are bisimilar, so that is a
+uniqueness statement, exactly the kind of thing this program exists to avoid.
+Naming it as a hypothesis is the honest move: the theorem below is true and the
+obligation is visible, rather than buried in a construction. -/
+theorem eqRHS_of_mapped {S S' : Type} (aut : GkatKleene.GAut S A T)
+    (sys : GkatKleene.GAut S' A T) (f : S' → S) (sol : S → Exp A T) (s' : S')
+    (hhlt : aut.hlt (f s') = sys.hlt s')
+    (htr : aut.trans (f s')
+      = (sys.trans s').map (fun tr => (tr.1, tr.2.1, f tr.2.2))) :
+    GkatKleene.eqRHS aut sol (f s')
+      = GkatKleene.eqRHS sys (fun t' => sol (f t')) s' := by
+  show (aut.trans (f s')).foldr
+      (fun t acc => Exp.ite t.1 (Exp.seq (Exp.act t.2.1) (sol t.2.2)) acc)
+      (Exp.test (aut.hlt (f s'))) = _
+  rw [htr, hhlt, List.foldr_map]
+  rfl
+
+/-- **Solvability transports along a functional bisimulation — at the price of
+fibre-constancy.**  `sys` may have more states than `aut`; `f` maps them back and
+`r` picks a representative.  The last hypothesis is the whole cost of
+duplication. -/
+theorem solvesBA_of_mapped {S S' : Type} (aut : GkatKleene.GAut S A T)
+    (sys : GkatKleene.GAut S' A T) (f : S' → S) (r : S → S')
+    (hsec : ∀ s, f (r s) = s)
+    (hmem : ∀ s ∈ aut.states, r s ∈ sys.states)
+    (hhlt : ∀ s' : S', aut.hlt (f s') = sys.hlt s')
+    (htr : ∀ s' : S', aut.trans (f s')
+      = (sys.trans s').map (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (sol' : S' → Exp A T) (hsol : GkatKleene.SolvesBA sys sol')
+    (hfib : ∀ a b : S', f a = f b → EquivBA (sol' a) (sol' b)) :
+    GkatKleene.SolvesBA aut (fun s => sol' (r s)) := by
+  intro s hs
+  -- the automaton's equation at `s`, rewritten over `sys`'s transition list
+  have hmap : GkatKleene.eqRHS aut (fun t => sol' (r t)) s
+      = GkatKleene.eqRHS sys (fun t' => sol' (r (f t'))) (r s) := by
+    have := eqRHS_of_mapped aut sys f (fun t => sol' (r t)) (r s)
+      (hhlt (r s)) (htr (r s))
+    rw [hsec s] at this
+    exact this
+  -- fibre-constancy makes that the same equation `sol'` already solves
+  have hcong : EquivBA
+      (GkatKleene.eqRHS sys (fun t' => sol' (r (f t'))) (r s))
+      (GkatKleene.eqRHS sys sol' (r s)) :=
+    eqRHS_congr_equivBA sys (r s)
+      (fun e _ => hfib (r (f e.2.2)) e.2.2 (hsec (f e.2.2)))
+  have hs' := hsol (r s) (hmem s hs)
+  show EquivBA (sol' (r s)) (GkatKleene.eqRHS aut (fun t => sol' (r t)) s)
+  rw [hmap]
+  exact EquivBA.trans hs' (EquivBA.symm hcong)
+
+#print axioms eqRHS_of_mapped
+#print axioms solvesBA_of_mapped
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
