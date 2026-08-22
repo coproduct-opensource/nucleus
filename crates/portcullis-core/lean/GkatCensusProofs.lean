@@ -9352,4 +9352,162 @@ theorem inl_partner_closed {S₁ S₂ Q : Type} (L : GkatThompson.GSystem S₁ A
 
 #print axioms inl_partner_closed
 
+
+/-! ### 303 — THE EXPRESSION INDUCTION: ITS SHAPE, AND ITS BASE CASES
+
+    302 established that the recursion belongs downstairs and runs on EXPRESSION
+    STRUCTURE.  Writing its statement is the next commitment, and the shape is
+    the thing to get right, because every later case has to fit it.
+
+        for every expression `g`, every quotient `Qsys` of `g`'s Thompson
+        automaton, and every block `B` lying OUTSIDE the quotient's image,
+        `Qsys` is `LayeredOn B`
+
+    Three points about the shape.
+
+    **The block is outside the image.**  `B` is what has already been solved —
+    the classes this call is not responsible for — and the image of `j` is what
+    it must solve.  `hout` says exactly that, and it makes `¬ B c` synonymous
+    with "`c` is a class of `g`'s automaton", which is what lets `rep` be a
+    section only where it is needed.
+
+    **The dynamics is read off representatives, only off the block.**  A
+    quotient's dynamics elsewhere is not this call's business, and demanding it
+    everywhere would make the `ite` case unusable — there `Qsys` also carries
+    the other branch's classes.
+
+    **`rep` need not be total in any useful sense.**  For `test` its codomain is
+    `Empty`, and that is not a degenerate case to be worked around: it is what
+    PROVES the base case.  A class outside the block would have to have a
+    representative, and there are none, so the block is everything and the
+    acyclic constructor fires vacuously.
+
+    `act` is the same shape one step up: one state, no transitions, so no
+    `firstMatch` step exists to decrease anything. -/
+theorem quotient_layered_test (t : BExp T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (rep : Q → (GkatThompson.certifiedThompson A T (.test t)).State) :
+    LayeredOn Qsys B :=
+  LayeredOn.acyclic ⟨fun _ => 0, fun c _ => nomatch (rep c)⟩
+
+theorem quotient_layered_act (a : A) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T (.act a)).State → Q)
+    (rep : Q → (GkatThompson.certifiedThompson A T (.act a)).State)
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = ((GkatThompson.certifiedThompson A T (.act a)).aut.core.trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.acyclic ⟨fun _ => 0, ?_⟩
+  intro c hc X W x r hfm
+  rw [htrans c hc] at hfm
+  have hnil : (GkatThompson.certifiedThompson A T (.act a)).aut.core.trans (rep c) = [] :=
+    rfl
+  rw [hnil] at hfm
+  exact absurd hfm (by simp [GkatKleene.firstMatch])
+
+#print axioms quotient_layered_test
+#print axioms quotient_layered_act
+
+
+section QuotientLayeredWh
+open Classical
+
+private theorem map_append' {α β : Type} (f : α → β) :
+    ∀ l₁ l₂ : List α, (l₁ ++ l₂).map f = l₁.map f ++ l₂.map f
+  | [], _ => rfl
+  | a :: t, l₂ => by
+      show f a :: ((t ++ l₂).map f) = f a :: (t.map f ++ l₂.map f)
+      rw [map_append' f t l₂]
+
+private theorem gate_map_comm {S S' : Type} (H b : BExp T) (j : S → S') :
+    ∀ l : List (BExp T × A × S),
+      (l.map (fun tr => (BExp.and H (BExp.and b tr.1), tr.2))).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))
+        = (l.map (fun tr => (tr.1, tr.2.1, j tr.2.2))).map
+          (fun tr => (BExp.and H (BExp.and b tr.1), tr.2))
+  | [] => rfl
+  | a :: t => by
+      show (BExp.and H (BExp.and b a.1), a.2.1, j a.2.2) :: _
+        = (BExp.and H (BExp.and b a.1), a.2.1, j a.2.2) :: _
+      rw [gate_map_comm H b j t]
+
+private theorem map_map' {α β γ : Type} (g : β → γ) (f : α → β) :
+    ∀ l : List α, (l.map f).map g = l.map (fun a => g (f a))
+  | [] => rfl
+  | a :: t => by
+      show g (f a) :: ((t.map f).map g) = g (f a) :: t.map (fun a => g (f a))
+      rw [map_map' g f t]
+
+
+/-- **THE `wh` CASE OF THE EXPRESSION INDUCTION.**  The base system downstairs
+    is BUILT, not assumed: off the block it is `e`'s dynamics read through the
+    representative, and on the block it is whatever `Qsys` already had — which
+    makes `LoopLayerOn`'s `outside` clause true by construction rather than by
+    hypothesis.  That is the trick that lets a TOTAL loop upstairs become a
+    loop CONFINED TO THE IMAGE downstairs, which is what the recursion needs. -/
+theorem quotient_layered_wh (b : BExp T) (e : Exp A T) {Q : Type}
+    (Qsys : GkatThompson.GSystem Q A T) (B : Q → Prop)
+    (j : (GkatThompson.certifiedThompson A T e).State → Q)
+    (rep : Q → (GkatThompson.certifiedThompson A T e).State)
+    (hout : ∀ s, ¬ B (j s))
+    (htrans : ∀ c, ¬ B c → Qsys.trans c
+      = ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    (hhlt : ∀ c, ¬ B c → Qsys.hlt c
+      = (GkatThompson.certifiedThompson A T (.wh b e)).aut.core.hlt (rep c))
+    (ih : ∀ base : GkatThompson.GSystem Q A T,
+      (∀ c, ¬ B c → base.trans c
+        = ((GkatThompson.certifiedThompson A T e).aut.core.trans (rep c)).map
+            (fun tr => (tr.1, tr.2.1, j tr.2.2))) →
+      (∀ c, ¬ B c → base.hlt c
+        = (GkatThompson.certifiedThompson A T e).aut.core.hlt (rep c)) →
+      LayeredOn base B) :
+    LayeredOn Qsys B := by
+  refine LayeredOn.loop
+    (base := ⟨Qsys.states,
+      fun c => if B c then Qsys.hlt c
+        else (GkatThompson.certifiedThompson A T e).aut.core.hlt (rep c),
+      fun c => if B c then Qsys.trans c
+        else ((GkatThompson.certifiedThompson A T e).aut.core.trans (rep c)).map
+          (fun tr => (tr.1, tr.2.1, j tr.2.2))⟩)
+    (b := b)
+    (entry := (GkatThompson.certifiedThompson A T e).aut.initTrans.map
+      (fun tr => (tr.1, tr.2.1, j tr.2.2)))
+    ⟨?_, ?_, ?_, rfl⟩ ?_ ?_ (ih _ ?_ ?_)
+  · -- trans_eq
+    intro c hc
+    show Qsys.trans c = (if B c then _ else _) ++ _
+    simp only [if_neg hc]
+    rw [htrans c hc, loop_core_trans b e (rep c)]
+    refine Eq.trans (map_append' _ _ _) ?_
+    congr 1
+    exact gate_map_comm _ _ _ _
+  · -- hlt_eq
+    intro c hc X W x
+    show GkatGS.bval W (Qsys.hlt c) x = (GkatGS.bval W (if B c then _ else _) x && _)
+    rw [hhlt c hc, loop_core_hlt b e (rep c), if_neg hc]
+    rfl
+  · -- outside
+    intro c hc
+    have hB : B c := Classical.not_not.mp hc
+    exact ⟨by show Qsys.trans c = (if B c then _ else _); rw [if_pos hB],
+      by show Qsys.hlt c = (if B c then _ else _); rw [if_pos hB]⟩
+  · -- entry targets are outside the block
+    intro tr htr
+    simp only [List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · -- the base's targets are outside the block
+    intro c hc tr htr
+    simp only [if_neg hc, List.mem_map] at htr
+    obtain ⟨t, _, rfl⟩ := htr
+    exact hout t.2.2
+  · intro c hc; show (if B c then _ else _) = _; rw [if_neg hc]
+  · intro c hc; show (if B c then _ else _) = _; rw [if_neg hc]
+
+#print axioms quotient_layered_wh
+
+end QuotientLayeredWh
+
 end GkatCensus

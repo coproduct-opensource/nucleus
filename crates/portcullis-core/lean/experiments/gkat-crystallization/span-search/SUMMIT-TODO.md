@@ -13995,3 +13995,52 @@ field's prior that the problem does not close still stands.
 block of classes `B`, the image of `Thompson(g)`'s automaton is `LayeredOn`
 relative to `B`.  The `ite` case is 301's split plus this iteration's closure;
 `seq` is the same with 289's layer; `wh` is 296's; `test`/`act` are acyclic.
+
+---
+
+## 303 — THE EXPRESSION INDUCTION: SHAPE, BASE CASES, AND `wh`.
+
+302 established the recursion belongs downstairs and runs on expression
+structure.  Committing to its statement:
+
+    for every expression `g`, every quotient `Qsys` of `g`'s Thompson
+    automaton, and every block `B` lying OUTSIDE the quotient's image,
+    `Qsys` is `LayeredOn B`
+
+Three points about the shape, each load-bearing:
+
+  * **the block is OUTSIDE the image** — `B` is what has already been solved,
+    the image is what this call must solve, and that makes `¬ B c` synonymous
+    with "`c` is a class of `g`'s automaton";
+  * **the dynamics is read off representatives only OFF the block** — demanding
+    it everywhere would make the `ite` case unusable, since there `Qsys` also
+    carries the other branch's classes;
+  * **`rep` need not be total in any useful sense** — for `test` its codomain is
+    `Empty`, and that is not a degeneracy to work around, it is what PROVES the
+    base case: a class outside the block would need a representative, there are
+    none, so the block is everything and `acyclic` fires vacuously.
+
+`quotient_layered_test`, `quotient_layered_act`, and `quotient_layered_wh`.
+
+**The `wh` case is the substantive one**, and its trick is worth recording: the
+base system downstairs is **BUILT, not assumed** — off the block it is `e`'s
+dynamics read through the representative, on the block it is whatever `Qsys`
+already had.  That makes `LoopLayerOn`'s `outside` clause true BY CONSTRUCTION,
+which is what turns a TOTAL loop upstairs into a loop CONFINED TO THE IMAGE
+downstairs — exactly what the recursion needs.
+
+**A mechanical note that cost most of the iteration.**  `List.map_append` and
+`List.map_map` exist and work in isolation but would NOT fire in this goal —
+neither by `rw` nor by `simp`, the latter reporting the argument as unused.
+Three local structural-recursion helpers (`map_append'`, `map_map'`,
+`gate_map_comm`) replaced them, applied as TERMS via `Eq.trans` and `congr 1`
+rather than as rewrite rules.  When a standard list lemma refuses to match a
+goal that visibly contains its pattern, stop probing and supply the term.
+
+**Odds: 99%, HELD.**  Three of five cases of the induction, including the one
+carrying the loop machinery.  `ite` and `seq` remain, and they are where the
+split and the sequence layer have to meet the recursion.
+
+**Next.**  The `ite` case: `sum_quotient_layered_of_split` (301) supplies the
+split, `inl_partner_closed` (302) supplies its closure, and the two branches are
+recursive calls on `e` and `f`.
