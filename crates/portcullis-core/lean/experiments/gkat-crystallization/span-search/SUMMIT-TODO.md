@@ -17604,3 +17604,43 @@ pigeonhole", and it is the last piece of 356's argument.
 option 1.
 
 **Next.** The bisimulation transport as a Lean object, so the chain can be built.
+
+## 378 — the bisimulation transport, from `autStep_eq` alone
+
+377 left the chain construction needing *`v ~ v'` and `v' ⇝ u'` gives `v ⇝ u''`
+in the same block*, and I expected that to require a bisimulation relation as a
+Lean object — which this file does not have. It does not require one.
+
+The corpus's `UniformBehavioralGAutQuotient.autStep_eq` says the quotient's step
+**is** the image of the source's step. Read that equation at two source states
+with the same image and the transport falls out:
+
+```lean
+theorem step_transport (π : UniformBehavioralGAutQuotient aut quot) (W x)
+    (huv : π.mapState u = π.mapState v)
+    (hstep : autStep W aut v x = some (q, w)) :
+    ∃ w', autStep W aut u x = some (q, w') ∧ π.mapState w' = π.mapState w
+```
+
+**Axiom-free.** Two states with the same image take the same step, up to landing
+in the same block.
+
+**Third time.** 355's circular lifting, 377's pigeonhole, and now this: each was
+named as a missing prerequisite, and each turned out to be available from
+machinery already present once the statement was framed right. The corpus is
+larger than my working memory of it, and "this needs a new object" has been wrong
+three times running.
+
+**What remains of 356's argument.** The chain itself. With `step_transport` the
+missing lemma is now concrete: *a quotient path lifts to a source path from any
+preimage of its start*, by induction on the path. Then the chain alternates
+`b₁ ⇝ b₂ ⇝ b₁` downstairs, lifts upstairs from any chosen start, and
+`exists_mutual_along_chain` (377) closes it. The one fiddly part left is that
+each lift step returns an existential, so building `g : Nat → S` needs dependent
+choice — available, but it is real plumbing rather than a new idea.
+
+**Odds: 97%, unchanged.** Another named blocker gone, and the remaining pieces
+are assembly rather than discovery. That is a better position than a week ago,
+but the open statement is still open.
+
+**Next.** `path_lifts` by induction, then the chain.

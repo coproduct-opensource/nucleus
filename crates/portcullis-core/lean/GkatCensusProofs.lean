@@ -11662,6 +11662,42 @@ theorem exists_mutual_along_chain {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms exists_stable
 #print axioms exists_mutual_along_chain
 
+/-! ### The bisimulation transport, from `autStep_eq` alone
+
+377 left the chain construction needing "`v ~ v'` and `v' ⇝ u'` gives `v ⇝ u''`
+in the same block", and I expected that to require a bisimulation relation as a
+Lean object.  It does not.  The corpus's `UniformBehavioralGAutQuotient.autStep_eq`
+says the quotient's step IS the image of the source's step, and that equation
+read at two source states with the same image gives the transport directly. -/
+
+/-- **One-step transport.**  Two source states with the same image take the same
+step, up to landing in the same block. -/
+theorem step_transport {S Q : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    {X : Type} (W : T → X → Bool) (x : X) {u v w : S} {q : A}
+    (huv : π.mapState u = π.mapState v)
+    (hstep : GkatKleene.autStep W aut v x = some (q, w)) :
+    ∃ w', GkatKleene.autStep W aut u x = some (q, w') ∧
+      π.mapState w' = π.mapState w := by
+  have h1 : some (q, π.mapState w) = GkatKleene.autStep W quot (π.mapState v) x := by
+    rw [← π.autStep_eq W v x, hstep]; rfl
+  rw [← huv] at h1
+  have h2 := π.autStep_eq W u x
+  rw [← h1] at h2
+  cases hu : GkatKleene.autStep W aut u x with
+  | none =>
+      rw [hu] at h2
+      exact (Option.some_ne_none _ h2.symm).elim
+  | some y =>
+      rw [hu] at h2
+      have h3 := Option.some.inj h2
+      have hq : y.1 = q := congrArg Prod.fst h3
+      have hm : π.mapState y.2 = π.mapState w := congrArg Prod.snd h3
+      exact ⟨y.2, by rw [← hq], hm⟩
+
+#print axioms step_transport
+
 end LevelExistence
 
 #print axioms reachLevel_mono
