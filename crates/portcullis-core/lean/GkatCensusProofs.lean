@@ -7563,4 +7563,65 @@ theorem loopLayer_fiber_agree {S S' : Type}
 
 #print axioms loopLayer_fiber_agree
 
+
+/-! ### 280 — THE PUSHFORWARD
+
+    279 showed a loop layer's base is determined by its image.  That is exactly
+    the well-definedness a pushforward needs, so the pushforward can now be
+    BUILT: choose a section of the surjection, define the base downstairs by
+    transporting the base upstairs through it, and 279 says the choice of
+    representative does not matter.
+
+    This is `hcollapse`'s layer case in the generality 278's search pointed at —
+    an arbitrary surjective structural homomorphism, not a minimal quotient.
+    The minimal quotient is one instance; a single merged pair (the step-wise
+    construction Grabmayer–Fokkink use, 279) is another. -/
+noncomputable def pushBase {S S' : Type} (f : S → S')
+    (hsurj : ∀ s' : S', ∃ s, f s = s')
+    (base : GkatThompson.GSystem S A T)
+    (sys' : GkatThompson.GSystem S' A T) :
+    GkatThompson.GSystem S' A T where
+  states := sys'.states
+  hlt s' := base.hlt (Classical.choose (hsurj s'))
+  trans s' := (base.trans (Classical.choose (hsurj s'))).map
+    (fun tr => (tr.1, tr.2.1, f tr.2.2))
+
+/-- **A LOOP LAYER PUSHES FORWARD ALONG A SURJECTIVE STRUCTURAL HOMOMORPHISM.**
+    The layer downstairs has the SAME guard and the image of the entry list. -/
+theorem loopLayer_pushforward {S S' : Type}
+    {sys base : GkatThompson.GSystem S A T} {b : BExp T}
+    {tr₀ : BExp T × A × S} {rest : List (BExp T × A × S)}
+    (h : LoopLayer sys base b (tr₀ :: rest))
+    (f : S → S') (hsurj : ∀ s' : S', ∃ s, f s = s')
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ s, sys'.trans (f s)
+      = (sys.trans s).map (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (hhlt : ∀ s, sys'.hlt (f s) = sys.hlt s) :
+    LoopLayer sys' (pushBase f hsurj base sys') b
+      ((tr₀ :: rest).map (fun tr => (tr.1, tr.2.1, f tr.2.2))) := by
+  have hsec : ∀ s' : S', f (Classical.choose (hsurj s')) = s' :=
+    fun s' => Classical.choose_spec (hsurj s')
+  have hfib : ∀ s : S,
+      (base.trans (Classical.choose (hsurj (f s)))).map
+          (fun tr => (tr.1, tr.2.1, f tr.2.2))
+        = (base.trans s).map (fun tr => (tr.1, tr.2.1, f tr.2.2))
+      ∧ base.hlt (Classical.choose (hsurj (f s))) = base.hlt s := by
+    intro s
+    refine loopLayer_fiber_agree h f (Classical.choose (hsurj (f s))) s ?_
+    rw [← htrans, ← htrans, hsec (f s)]
+  refine ⟨?_, ?_, rfl⟩
+  · intro s'
+    obtain ⟨s, rfl⟩ : ∃ s, f s = s' := hsurj s'
+    simp only [pushBase]
+    rw [htrans s, (hfib s).1, (hfib s).2, h.trans_eq s, List.map_append]
+    congr 1
+    simp only [List.map_map, Function.comp_def]
+  · intro s' X W x
+    obtain ⟨s, rfl⟩ : ∃ s, f s = s' := hsurj s'
+    simp only [pushBase]
+    rw [hhlt s, (hfib s).2]
+    exact h.hlt_eq s X W x
+
+#print axioms loopLayer_pushforward
+
 end GkatCensus

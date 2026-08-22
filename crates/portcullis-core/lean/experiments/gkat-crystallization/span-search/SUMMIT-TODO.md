@@ -12982,3 +12982,52 @@ the setting nearest mine, and needed a new construction to repair.
 given a surjective structural hom `f : sys → sys'`, construct `base'` via a
 section and show `LoopLayer sys' base' b (entry.map f)`.  Then attempt it
 STEP-WISE — one merged pair at a time — rather than for an arbitrary quotient.
+
+---
+
+## 280 — THE PUSHFORWARD (PROVED).  `hcollapse`'s LAYER CASE, AT FULL GENERALITY.
+
+`loopLayer_pushforward`: **a loop layer pushes forward along an arbitrary
+SURJECTIVE STRUCTURAL HOMOMORPHISM**, with the same guard and the image of the
+entry list.  The base downstairs is built by `pushBase` — choose a section of
+the surjection and transport the base upstairs through it — and 279 is exactly
+what says the choice of representative does not matter.  Axioms
+`propext, Classical.choice`; the choice is the section and nothing else.
+
+**This is the generality 278's search pointed at**: not a minimal quotient, an
+arbitrary surjective structural hom.  The minimal quotient is one instance; a
+SINGLE MERGED PAIR — the step-wise construction Grabmayer–Fokkink use, 279 — is
+another, and it comes for free from the same theorem.
+
+**265's blockage is now resolved, not worked around.**  265 located the
+obstruction; 279 named it (the existential split is not determined by the
+image); 280 removes it (with `post = []` it IS determined, so `pushBase` is well
+defined).
+
+**Scope, stated honestly.**  `LoopLayer` is TOTAL (every state) and has
+`post = []`, so as it stands only a TOP-LEVEL `wh` satisfies it —
+`seq (wh b e) f` is not a `LoopLayer` over anything.  The intended route is to
+compose with `seq_subsystem`/`sum_subsystem` (both proved), which reduce a
+composite's equations to its components', and apply the pushforward where the
+loop actually is.  Until that composition is done, the pushforward is a tool of
+narrow applicability with a broad statement.
+
+**The other open gap, named.**  The theorem assumes the quotient map is a
+STRUCTURAL hom — transition lists map exactly, same order, same guards.  A
+behavioural quotient need not be.  This iteration's search gives partial
+support: "every stutter-insensitive bisimulation on any deterministic labelled
+transition system admits a deterministic quotient", and GKAT automata are
+deterministic per atom.  It also gives the general warning, which is the field's
+prior in one sentence: **"the factorization (collapse) of infinite transition
+graphs with respect to bisimulation equivalence shows that almost none of the
+more complex classes of the process taxonomy are preserved by this operation."**
+
+**Odds: 92%** (+1).  The layer case of `hcollapse` machine-checked at a
+generality that also delivers the step-wise construction, against a scope
+caveat that is real and now written down.  The field's prior that the problem
+does not close still stands.
+
+**Next.**  Compose: `seq_subsystem`/`sum_subsystem` to reduce a composite to its
+components, so the pushforward applies where the loop is; and check whether a
+behavioural quotient of a GKAT automaton is a structural hom in the list
+representation, or only up to guard equivalence.
