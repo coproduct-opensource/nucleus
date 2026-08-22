@@ -10186,4 +10186,59 @@ theorem sum_bisim_restrict {S₁ S₂ Q : Type}
 
 #print axioms sum_bisim_restrict
 
+
+/-! ### 313 — HOW NARROW 312's CORNER ACTUALLY IS
+
+    312 said `hbisim` does not transport through `wh` or `seq`.  True, but the
+    statement was looser than the facts, and the correction matters because it
+    is the difference between "usually broken" and "broken only in a corner one
+    can hope to rule out".
+
+    **A layer's added transitions come AFTER the sub-automaton's.**  Both
+    `loop_core_trans` and `seqGSystem` append the entry block to the component's
+    own list, and `firstMatch` scans in order.  So **wherever the component
+    FIRES, the composite takes the component's step, unchanged** — that is this
+    lemma, and it holds with no hypothesis about halts or guards at all.
+
+    So a divergence between "bisimilar in the whole" and "bisimilar in the part"
+    cannot happen at a world where BOTH states' components fire: there the two
+    behaviours are literally the same steps.  It requires a world where one
+    component fires and the OTHER does not, and where the second state's ENTRY
+    step matches the first's component step in BOTH action and target class.
+
+    That is a much narrower requirement than 312 stated, and it is the kind of
+    coincidence that a structural property of Thompson automata might exclude.
+    Whether it does is now a sharp, checkable question rather than a worry. -/
+theorem firstMatch_append_left {S X : Type} (W : T → X → Bool) (x : X)
+    (l₂ : List (BExp T × A × S)) (r : A × S) :
+    ∀ l₁ : List (BExp T × A × S),
+      GkatKleene.firstMatch W x l₁ = some r →
+      GkatKleene.firstMatch W x (l₁ ++ l₂) = some r
+  | [], h => by exact absurd h (by simp [GkatKleene.firstMatch])
+  | tr :: tl, h => by
+      obtain ⟨g, a, t⟩ := tr
+      cases hb : GkatGS.bval W g x
+      · simp only [List.cons_append, GkatKleene.firstMatch, hb, if_neg]
+        simp only [GkatKleene.firstMatch, hb, if_neg] at h
+        exact firstMatch_append_left W x l₂ r tl h
+      · simp only [List.cons_append, GkatKleene.firstMatch, hb, if_pos]
+        simp only [GkatKleene.firstMatch, hb, if_pos] at h
+        exact h
+
+/-- **WHERE THE BODY FIRES, THE LOOP TAKES THE BODY'S STEP.**  No hypothesis
+    about halts or guards — the back edges are simply LATER in the list. -/
+theorem wh_step_eq_body_step (b : BExp T) (e : Exp A T)
+    (s : (GkatThompson.certifiedThompson A T e).State)
+    {X : Type} (W : T → X → Bool) (x : X)
+    (r : A × (GkatThompson.certifiedThompson A T e).State)
+    (h : GkatKleene.firstMatch W x
+      ((GkatThompson.certifiedThompson A T e).aut.core.trans s) = some r) :
+    GkatKleene.firstMatch W x
+      ((GkatThompson.certifiedThompson A T (.wh b e)).aut.core.trans s) = some r := by
+  rw [loop_core_trans b e s]
+  exact firstMatch_append_left W x _ r _ h
+
+#print axioms firstMatch_append_left
+#print axioms wh_step_eq_body_step
+
 end GkatCensus

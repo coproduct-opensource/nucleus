@@ -14410,3 +14410,41 @@ compiled lemma (the `ite` half) against one re-opened problem.
 **Next.**  Define `BisimAll` and carry it through the induction — that at least
 makes the five cases compose — and then attack the existence question it
 creates, which is the real remainder.
+
+---
+
+## 313 — HOW NARROW 312's CORNER ACTUALLY IS.
+
+312 said `hbisim` does not transport through `wh` or `seq`.  True, but looser
+than the facts, and the correction matters: it is the difference between
+"usually broken" and "broken only in a corner one can hope to rule out".
+
+**A layer's added transitions come AFTER the sub-automaton's.**  Both
+`loop_core_trans` and `seqGSystem` APPEND the entry block to the component's own
+list, and `firstMatch` scans in order.  So **wherever the component FIRES, the
+composite takes the component's step, unchanged** — `firstMatch_append_left` and
+`wh_step_eq_body_step`, with no hypothesis about halts or guards at all.
+
+So the divergence 312 described cannot happen at a world where BOTH states'
+components fire: there the two behaviours are literally the same steps.  It
+requires
+
+  * a world where ONE component fires and the OTHER does not, AND
+  * the second state's ENTRY step to match the first's component step in BOTH
+    action and target class.
+
+That is far narrower than 312 stated.  It is a coincidence between an internal
+step and an entry step — and the entry block is SHARED across the whole layer,
+so the coincidence has to hold against a fixed list, not an arbitrary one.
+
+**Odds: 98%, HELD.**  Narrowing an obstruction is not removing it, and I have
+been burned this week by treating the two as the same (312's own correction of
+302).  The number moves when the corner is excluded or exhibited, not before.
+
+**Next.**  MEASURE it.  Enumerate small expressions, build their Thompson
+automata, compute the coarsest bisimulation of the whole, and check whether it
+ever identifies two states of a sub-automaton that are NOT bisimilar within that
+sub-automaton.  If it never does, `hbisim` transports in practice and 312's
+worry is theoretical; if it does, the witness is the counterexample that decides
+the shape of the fix.  **Rust, per the standing mandate — a new mode in the
+existing harness, not a script.**
