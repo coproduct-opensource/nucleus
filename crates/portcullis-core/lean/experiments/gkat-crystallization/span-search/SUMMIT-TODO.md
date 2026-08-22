@@ -19158,3 +19158,58 @@ close still stands.
 **Next.** Prove the `wh` case in the atom-independent setting: all back-edges
 non-raw, and 394's nested exclusivity to separate the classes — the route 407
 mistakenly closed off.
+
+## 411 — halting kills the guards BELOW it. Two propagation lemmas, and the remaining gap named exactly.
+
+Web search: exhausted (200/200).
+
+410 restored the atom-independent route. The `wh` case then needs one fact that
+394 does not give on its own.
+
+**Why 394 is not enough.** 394 says a loop's halt excludes its OWN guard, which
+settles the case where the same state might do both. The `wh` case is about two
+DIFFERENT states of one component: `u` takes the outer back-edge, `w` takes an
+inner one. `u`'s guard mentions `body.hlt u`; `w`'s mentions the inner guard.
+Different tests on the same atom — no contradiction, unless halting kills the
+guards *below* it too.
+
+**It does, and it propagates.**
+
+```lean
+def HaltKillsGuards (aut) (gs : List (BExp T)) : Prop :=
+  ∀ X W x s, bval W (aut.hlt s) x = true → ∀ g ∈ gs, bval W g x = false
+```
+
+- `haltKillsGuards_loop` — `loopInitialized`'s halt is `body.hlt ∧ ¬guard`, so
+  it kills `guard` outright *and* everything the body's halt already killed.
+  Axioms: **`propext`** alone.
+- `haltKillsGuards_seq_inl` — `seqGSystem`'s halt at `inl s` is
+  `left.hlt s ∧ right.initHlt`, so it kills the left half's guards *and*
+  everything the right half's INITIAL halt kills. This is the step that carries
+  the exclusion across a sequence. Axioms: **`propext`** alone.
+
+**The remaining gap, named exactly rather than glossed.** Propagation is
+one-directional. `seqGSystem`'s halt at `inr s` is `right.core.hlt s`, which
+kills the right half's guards but says nothing about the LEFT half's; likewise
+`sumGSystem`'s halt at `inl` kills only the left's. So the open case is:
+**`u` halting in one half while `w` is active in the other, with an enclosing
+loop merging the halves into one component.** Within `seq` or `ite` alone this
+cannot arise (`seq_no_mixed_component`, `sum_no_mixed_component`); it needs the
+enclosing loop's back-edge to merge them, which is exactly 406's finding.
+
+**What is known about that case.** 410's `PAD_SRCAGREE` used GLOBAL SCCs — the
+same quantifier structure as the Lean `SourceSccAgrees`, with mutual
+reachability across varying atoms and agreement demanded at a single atom. It
+found 67,233/67,233 agreeing at pool 200k. So the cross-half case is a **proof**
+gap, not a truth gap, as far as the census can see.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 95%, unchanged.** Two lemmas landed and the gap narrowed to one named
+configuration, but narrowing a gap is not closing it, and the two constructors
+that propagate were the two I already expected to. The field's prior that this
+problem does not close still stands.
+
+**Next.** The cross-half case: when an enclosing loop merges the halves, its own
+`¬guard` enters both halves' halts — so the enclosing loop may supply the
+exclusion the halves cannot supply for each other.

@@ -16085,6 +16085,100 @@ theorem firstMatch_congr_guards {S X Y : Type} (W : T → X → Bool)
 
 #print axioms firstMatch_congr_guards
 
+/-! ### Halting kills the guards below it (410's route to the `wh` case)
+
+410 restored the atom-independent route and 394 gives the shape: a loop's halt
+is `body.hlt ∧ ¬guard`, so halting excludes its own guard.  For the `wh` case
+that is not enough on its own — `u` may take the OUTER back-edge while `w`,
+a different state of the same component, takes an inner one.  `u`'s guard
+mentions `body.hlt u`; `w`'s mentions the inner guard.  Different tests, no
+contradiction, unless halting kills the guards *below* it too.
+
+It does, and it propagates, because every loop conjoins `¬guard` into its halt
+and `seq` conjoins the right half's `initHlt` into the left half's. -/
+def HaltKillsGuards {S : Type} (aut : GkatKleene.GAut S A T)
+    (gs : List (BExp T)) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S),
+    GkatGS.bval W (aut.hlt s) x = true → ∀ g ∈ gs, GkatGS.bval W g x = false
+
+/-- Same, for an initial halt condition rather than a per-state one. -/
+def InitKillsGuards (h : BExp T) (gs : List (BExp T)) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X),
+    GkatGS.bval W h x = true → ∀ g ∈ gs, GkatGS.bval W g x = false
+
+/-- **The loop case.**  `loopInitialized`'s halt is `body.hlt ∧ ¬guard`, so it
+kills `guard` outright and everything the body's halt already killed. -/
+theorem haltKillsGuards_loop {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (gs : List (BExp T)) (st : S)
+    (hbody : HaltKillsGuards
+      { states := body.core.states, hlt := body.core.hlt
+        trans := body.core.trans, start := st } gs) :
+    HaltKillsGuards
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := st } (guard :: gs) := by
+  intro X W x s hh g hg
+  have h2 : (GkatGS.bval W (body.core.hlt s) x
+      && !(GkatGS.bval W guard x)) = true := hh
+  have hgf : GkatGS.bval W guard x = false := by
+    cases hv : GkatGS.bval W guard x with
+    | false => rfl
+    | true =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.not_true, Bool.and_false] at h2
+        exact Bool.noConfusion h2
+  have hbh : GkatGS.bval W (body.core.hlt s) x = true := by
+    cases hv : GkatGS.bval W (body.core.hlt s) x with
+    | true => rfl
+    | false =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.false_and] at h2
+        exact Bool.noConfusion h2
+  cases List.mem_cons.mp hg with
+  | inl he => rw [he]; exact hgf
+  | inr ht => exact hbody X W x s hbh g ht
+
+/-- **The `seq` case, left half.**  `seqGSystem`'s halt at `inl s` is
+`left.hlt s ∧ right.initHlt`, so it kills the left half's guards *and*
+everything the right half's initial halt kills.  This is the propagation step
+that makes the `wh` case's exclusion work across a sequence. -/
+theorem haltKillsGuards_seq_inl {S₁ S₂ : Type}
+    (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.InitializedGAut S₂ A T)
+    (lgs rgs : List (BExp T)) (st : S₁)
+    (hleft : HaltKillsGuards
+      { states := left.states, hlt := left.hlt, trans := left.trans
+        start := st } lgs)
+    (hright : InitKillsGuards right.initHlt rgs)
+    {X : Type} (W : T → X → Bool) (x : X) (s : S₁)
+    (hh : GkatGS.bval W ((GkatThompson.seqGSystem left right).hlt (Sum.inl s)) x
+      = true) :
+    ∀ g ∈ lgs ++ rgs, GkatGS.bval W g x = false := by
+  intro g hg
+  have h2 : (GkatGS.bval W (left.hlt s) x
+      && GkatGS.bval W right.initHlt x) = true := hh
+  have hl : GkatGS.bval W (left.hlt s) x = true := by
+    cases hv : GkatGS.bval W (left.hlt s) x with
+    | true => rfl
+    | false =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.false_and] at h2
+        exact Bool.noConfusion h2
+  have hr : GkatGS.bval W right.initHlt x = true := by
+    cases hv : GkatGS.bval W right.initHlt x with
+    | true => rfl
+    | false =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.and_false] at h2
+        exact Bool.noConfusion h2
+  cases List.mem_append.mp hg with
+  | inl hin => exact hleft X W x s hl g hin
+  | inr hin => exact hright X W x hr g hin
+
+#print axioms haltKillsGuards_loop
+#print axioms haltKillsGuards_seq_inl
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
