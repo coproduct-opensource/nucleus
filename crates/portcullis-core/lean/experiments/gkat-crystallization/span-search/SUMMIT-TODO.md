@@ -18787,3 +18787,64 @@ list. The field's prior that this problem does not close still stands.
 **Next.** Thread `ActivityGated` + `GateExcludesHalt` through the induction —
 the `seq`/`ite` inheritance (they add no non-raw intra-component edges, by 397)
 and the `wh` discharge.
+
+## 405 — the strengthened hypothesis, threaded. All three constructors proved.
+
+Web search: exhausted (200/200).
+
+404 left the `wh` case's mixed branch excluded but the strengthening un-threaded:
+`ActivityGated` carries a **gate**, and computing a `seq`'s or an `ite`'s gate
+from its halves is unpleasant. So first: find the gate-free form.
+
+**The gate-free predicate.** What the `wh` case actually consumes is
+
+```lean
+def NoHaltBackClash (aut) (slvl) (srank) : Prop :=
+  ∀ X W x u w r, bval W (aut.hlt u) x = true → autStep W aut w x = some r →
+    loopPred slvl w (one, r) = true →              -- same level
+    rawPred slvl srank w (one, r) = false → False  -- non-raw
+```
+
+*It never halts at one state and takes a same-level non-raw step at another, at
+the same atom.*
+
+**The same-level restriction is load-bearing, and I found that out by reading
+the constructor rather than by assuming.** Without `loopPred` the statement is
+**FALSE for `seq`**: `seqGSystem`'s halt at `inl s` is `left.hlt s ∧
+right.initHlt`, and the cross edge out of `inl s` is gated by `left.hlt s` — a
+`seq` halts and steps at the same atom *by construction*. This is the same trap
+as 402, one iteration later, and this time it was caught before the proof was
+written rather than after. The cross edges leave the component (397), so they
+change level, and `loopPred` excludes exactly them.
+
+**Three constructors, three theorems, all clean.**
+
+- `noHaltBackClash_loop` — from 404's pair. A loop's same-level non-raw steps
+  are its back-edges (need `guard`); its halt is `body.hlt ∧ ¬guard`.
+  Axioms: `propext, Quot.sound`.
+- `noHaltBackClash_sum_inl` — `sumGSystem` copies each half's halt and
+  transitions verbatim, so an `ite`-clash is a clash in a half. Needs only the
+  rank-transport `slvl ∘ inl = lslvl`, `srank n ∘ inl = lsrank n`.
+  Axioms: **`propext` alone.**
+- `noHaltBackClash_seq_inl` — the interesting one. Split `firstMatch` on the
+  append: the cross branch's target is `inr`, and `hsplit` (397: no component
+  spans the halves) says its level differs from `inl w`'s, contradicting
+  `loopPred`; the left branch reduces to left's own clash, with `left.hlt u`
+  projected out of `left.hlt u ∧ right.initHlt`. Axioms: `propext, Quot.sound`.
+
+`hbodyRaw` — "the body's own steps are raw" — sits where it belongs, as a **rank
+obligation** (`RankTopEntry`, 402), not a body-induction one. Nested loops share
+a level (the inner SCC is reachable from and reaches the outer), so it is the
+*rank* that separates them: the inner back-edge decreases rank, the outer one is
+at the top and does not.
+
+File: 0 errors, no `sorry`.
+
+**Odds: 97%.** Unchanged — this is the assembly 404 already predicted, done
+without surprises. The one surprise (seq's halt/step coincidence) was absorbed
+into the statement rather than costing a retraction. The field's prior that this
+problem does not close still stands.
+
+**Next.** The `inr` mirrors, then the recursion itself: `NoHaltBackClash` for
+`certifiedThompson` by structural induction, with the rank-transport hypotheses
+discharged from the level/rank construction rather than assumed.

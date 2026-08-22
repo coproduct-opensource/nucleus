@@ -15703,6 +15703,182 @@ theorem loop_split_exclusive {S X : Type} (W : T → X → Bool) (x : X)
 
 #print axioms loop_split_exclusive
 
+/-! ### The gate-free form that threads through the induction
+
+`ActivityGated` carries a gate, and computing the gate of a `seq` or an `ite`
+from its halves is unpleasant.  The property the `wh` case actually consumes is
+gate-free: *the automaton cannot both halt at one state and take a same-level
+non-raw step at another, at the same atom.*
+
+The same-level restriction is not cosmetic.  Without it the statement is FALSE
+for `seq`: `seqGSystem`'s halt at `inl s` is `left.hlt s ∧ right.initHlt`, and
+the cross edge out of `inl s` is gated by `left.hlt s` — so a `seq` halts and
+steps at the same atom, by construction.  Those cross edges leave the component
+(397), so they change level, and `loopPred` excludes them. -/
+def NoHaltBackClash {S : Type} (aut : GkatKleene.GAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) : Prop :=
+  ∀ (X : Type) (W : T → X → Bool) (x : X) (u w : S) (r : A × S),
+    GkatGS.bval W (aut.hlt u) x = true →
+    GkatKleene.autStep W aut w x = some r →
+    loopPred slvl w ((BExp.one : BExp T), r) = true →
+    rawPred slvl srank w ((BExp.one : BExp T), r) = false →
+    False
+
+/-- **The `wh` case.**  A loop's same-level non-raw steps are its back-edges,
+which need `guard`; its halt condition is `body.hlt ∧ ¬guard`.  So it never
+halts and back-edges at the same atom. -/
+theorem noHaltBackClash_loop {S : Type} (guard : BExp T)
+    (body : GkatThompson.InitializedGAut S A T) (slvl : S → Nat)
+    (srank : Nat → S → Nat) (st : S)
+    (hbodyRaw : ∀ (X : Type) (W : T → X → Bool) (x : X) (s : S) (r : A × S),
+      GkatKleene.firstMatch W x (body.core.trans s) = some r →
+      rawPred slvl srank s ((BExp.one : BExp T), r) = true) :
+    NoHaltBackClash
+      { states := (GkatThompson.loopInitialized guard body).core.states
+        hlt := (GkatThompson.loopInitialized guard body).core.hlt
+        trans := (GkatThompson.loopInitialized guard body).core.trans
+        start := st } slvl srank := by
+  intro X W x u w r hhalt hstep _ hraw
+  have hg : GkatGS.bval W guard x = true :=
+    activityGated_loop guard body slvl srank st hbodyRaw X W x w r hstep hraw
+  have hng : GkatGS.bval W guard x = false :=
+    gateExcludesHalt_loop guard body st X W x u hhalt
+  rw [hng] at hg
+  exact Bool.noConfusion hg
+
+/-- **The `ite` case.**  `sumGSystem` keeps the halves' halts and transitions
+verbatim, so a clash inside either half is a clash in that half.  Stated for the
+`inl` side; `inr` is the mirror image. -/
+theorem noHaltBackClash_sum_inl {S₁ S₂ : Type}
+    (left : GkatThompson.GSystem S₁ A T) (right : GkatThompson.GSystem S₂ A T)
+    (slvl : Sum S₁ S₂ → Nat) (srank : Nat → Sum S₁ S₂ → Nat)
+    (lslvl : S₁ → Nat) (lsrank : Nat → S₁ → Nat) (st : S₁)
+    (hlvl : ∀ s : S₁, slvl (Sum.inl s) = lslvl s)
+    (hrank : ∀ n (s : S₁), srank n (Sum.inl s) = lsrank n s)
+    (hleft : NoHaltBackClash
+      { states := left.states, hlt := left.hlt, trans := left.trans
+        start := st } lslvl lsrank)
+    {X : Type} (W : T → X → Bool) (x : X) (u w : S₁) (r : A × Sum S₁ S₂)
+    (hhalt : GkatGS.bval W ((GkatThompson.sumGSystem left right).hlt
+      (Sum.inl u)) x = true)
+    (hstep : GkatKleene.autStep W
+      { states := (GkatThompson.sumGSystem left right).states
+        hlt := (GkatThompson.sumGSystem left right).hlt
+        trans := (GkatThompson.sumGSystem left right).trans
+        start := Sum.inl st } (Sum.inl w) x = some r)
+    (hloop : loopPred slvl (Sum.inl w) ((BExp.one : BExp T), r) = true)
+    (hraw : rawPred slvl srank (Sum.inl w) ((BExp.one : BExp T), r) = false) :
+    False := by
+  -- the step out of `inl w` is a left step, tagged
+  have hmap : GkatKleene.firstMatch W x
+      ((left.trans w).map (fun tr => (tr.1, tr.2.1, Sum.inl tr.2.2))) = some r :=
+    hstep
+  rw [firstMatch_map W x Sum.inl (left.trans w)] at hmap
+  cases hf : GkatKleene.firstMatch W x (left.trans w) with
+  | none => rw [hf] at hmap; exact (Option.some_ne_none r hmap.symm).elim
+  | some r' =>
+      rw [hf] at hmap
+      have hrr : r = (r'.1, Sum.inl r'.2) := (Option.some.inj hmap).symm
+      refine hleft X W x u w r' hhalt hf ?_ ?_
+      · have h1 : slvl r.2 = slvl (Sum.inl w) := by
+          have := hloop
+          simp only [loopPred, decide_eq_true_eq] at this
+          exact this
+        rw [hrr] at h1
+        simp only [loopPred, decide_eq_true_eq]
+        rw [← hlvl, ← hlvl]
+        exact h1
+      · have := hraw
+        rw [hrr] at this
+        simp only [rawPred, hlvl, hrank] at this ⊢
+        exact this
+
+#print axioms noHaltBackClash_loop
+#print axioms noHaltBackClash_sum_inl
+
+/-- **The `seq` case, left half.**  `seqGSystem`'s transitions out of `inl w` are
+left's own, tagged, followed by cross edges into the right half.  The cross
+edges land in `inr`, and by 397 no component spans the halves — so they change
+level and `loopPred` rules them out.  What is left is a left step, and the halt
+`left.hlt u ∧ right.initHlt` gives `left.hlt u`. -/
+theorem noHaltBackClash_seq_inl {S₁ S₂ : Type}
+    (left : GkatThompson.GSystem S₁ A T)
+    (right : GkatThompson.InitializedGAut S₂ A T)
+    (slvl : Sum S₁ S₂ → Nat) (srank : Nat → Sum S₁ S₂ → Nat)
+    (lslvl : S₁ → Nat) (lsrank : Nat → S₁ → Nat) (st : S₁)
+    (hlvl : ∀ s : S₁, slvl (Sum.inl s) = lslvl s)
+    (hrank : ∀ n (s : S₁), srank n (Sum.inl s) = lsrank n s)
+    (hsplit : ∀ (a : S₁) (b : S₂), slvl (Sum.inl a) ≠ slvl (Sum.inr b))
+    (hleft : NoHaltBackClash
+      { states := left.states, hlt := left.hlt, trans := left.trans
+        start := st } lslvl lsrank)
+    {X : Type} (W : T → X → Bool) (x : X) (u w : S₁) (r : A × Sum S₁ S₂)
+    (hhalt : GkatGS.bval W ((GkatThompson.seqGSystem left right).hlt
+      (Sum.inl u)) x = true)
+    (hstep : GkatKleene.autStep W
+      { states := (GkatThompson.seqGSystem left right).states
+        hlt := (GkatThompson.seqGSystem left right).hlt
+        trans := (GkatThompson.seqGSystem left right).trans
+        start := Sum.inl st } (Sum.inl w) x = some r)
+    (hloop : loopPred slvl (Sum.inl w) ((BExp.one : BExp T), r) = true)
+    (hraw : rawPred slvl srank (Sum.inl w) ((BExp.one : BExp T), r) = false) :
+    False := by
+  have hlvlr : slvl r.2 = slvl (Sum.inl w) := by
+    have := hloop; simp only [loopPred, decide_eq_true_eq] at this; exact this
+  have hhu : GkatGS.bval W (left.hlt u) x = true := by
+    have h2 : (GkatGS.bval W (left.hlt u) x
+      && GkatGS.bval W right.initHlt x) = true := hhalt
+    cases hv : GkatGS.bval W (left.hlt u) x with
+    | true => rfl
+    | false =>
+        exfalso; rw [hv] at h2
+        simp only [Bool.false_and] at h2
+        exact Bool.noConfusion h2
+  have happ : GkatKleene.firstMatch W x
+      ((left.trans w).map (fun tr => (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+        right.initTrans.map (fun tr =>
+          (BExp.and (left.hlt w) tr.1, tr.2.1, Sum.inr tr.2.2))) = some r := hstep
+  cases hf : GkatKleene.firstMatch W x
+      ((left.trans w).map (fun tr => (tr.1, tr.2.1, Sum.inl tr.2.2))) with
+  | none =>
+      -- the step is a cross edge: its target is `inr`, so the level differs
+      exfalso
+      have hcross : GkatKleene.firstMatch W x
+          (right.initTrans.map (fun tr =>
+            (BExp.and (left.hlt w) tr.1, tr.2.1, Sum.inr tr.2.2))) = some r := by
+        rw [← GkatKleene.firstMatch_append_none W x _ _ hf]; exact happ
+      obtain ⟨g, hgm, _⟩ := firstMatch_some_guard W x _ r hcross
+      obtain ⟨e, _, heq⟩ := List.mem_map.mp hgm
+      have : r.2 = Sum.inr e.2.2 := by
+        have := congrArg (fun p => p.2.2) heq
+        exact this.symm
+      rw [this] at hlvlr
+      exact hsplit w e.2.2 hlvlr.symm
+  | some r' =>
+      have hsome : GkatKleene.firstMatch W x
+          ((left.trans w).map (fun tr => (tr.1, tr.2.1, Sum.inl tr.2.2)) ++
+            right.initTrans.map (fun tr =>
+              (BExp.and (left.hlt w) tr.1, tr.2.1, Sum.inr tr.2.2))) = some r' :=
+        GkatKleene.firstMatch_append_some W x _ _ hf
+      have hrr : r = r' := Option.some.inj (happ.symm.trans hsome)
+      rw [firstMatch_map W x Sum.inl (left.trans w)] at hf
+      cases hl : GkatKleene.firstMatch W x (left.trans w) with
+      | none => rw [hl] at hf; exact (Option.some_ne_none r' hf.symm).elim
+      | some p =>
+          rw [hl] at hf
+          have hpr : r' = (p.1, Sum.inl p.2) := (Option.some.inj hf).symm
+          refine hleft X W x u w p hhu hl ?_ ?_
+          · have h1 : slvl (Sum.inl p.2) = slvl (Sum.inl w) := by
+              rw [hrr, hpr] at hlvlr; exact hlvlr
+            simp only [loopPred, decide_eq_true_eq]
+            rw [← hlvl, ← hlvl]; exact h1
+          · have h2 := hraw
+            rw [hrr, hpr] at h2
+            simp only [rawPred, hlvl, hrank] at h2 ⊢
+            exact h2
+
+#print axioms noHaltBackClash_seq_inl
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees
