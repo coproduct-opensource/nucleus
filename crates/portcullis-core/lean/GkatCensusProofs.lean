@@ -13572,6 +13572,208 @@ theorem peelBs_of_loop {S X : Type} (W : T → X → Bool) (x : X)
 #print axioms peelRawHlt_of_nonRaw
 #print axioms peelBs_of_loop
 
+/-- `hbE`, on the active hypothesis: the level's loop test is FALSE at an exit
+atom.  If any loop guard of the level fired there, agreement — applicable because
+the exiting state is itself active — would send it to that same INTRA-level
+target, while it is firing OUT of the level. -/
+theorem bE_of_active {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && !loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+          GkatGS.bval W (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x = false := by
+  intro X W x n c hc tr htr hb
+  have hnr := mem_nonRaw_of_exit aut lvl rank c tr htr
+  have hcfire := nonRaw_fire W x aut lvl rank c tr hnr hb
+  have hact := peelRawHlt_of_nonRaw W x aut lvl rank c tr hnr hb
+  cases hbs : GkatGS.bval W
+    (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) n) x with
+  | false => rfl
+  | true =>
+      exfalso
+      obtain ⟨g, hgm, hgb⟩ := (bval_bigOr_true W x _).mp hbs
+      obtain ⟨e, hem, heg⟩ := List.mem_map.mp hgm
+      obtain ⟨c', hc', hem'⟩ := List.mem_flatMap.mp hem
+      have henr := mem_nonRaw_of_loop aut lvl rank c' e hem'
+      have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hgb
+      have := hagree X W x n c hc c' hc' e.2
+        (nonRaw_fire W x aut lvl rank c' e henr heb) hact
+      have hEq : e.2 = tr.2 := Option.some.inj (this.symm.trans hcfire)
+      have hin : lvl e.2.2 = lvl c' :=
+        of_decide_eq_true ((Bool.and_eq_true _ _).mp (List.mem_filter.mp hem').2).2
+      have hout : lvl tr.2.2 ≠ lvl c :=
+        of_decide_eq_false ((Bool.not_eq_true' _).mp
+          ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).2)
+      exact hout (hEq ▸ hin |>.trans ((levelStates_lvl hc').trans (levelStates_lvl hc).symm))
+
+/-- The loop agreement, on the active hypothesis. -/
+theorem agreeL_of_active {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+        GkatGS.bval W (peelRawHlt aut lvl rank a) x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter
+              (fun tr => !rawPred lvl rank a tr && loopPred lvl a tr)) = some tr.2 := by
+  intro X W x n a ha c hc tr htr hb hact
+  have hnr := mem_nonRaw_of_loop aut lvl rank c tr htr
+  have hafire := hagree X W x n a ha c hc tr.2
+    (nonRaw_fire W x aut lvl rank c tr hnr hb) hact
+  obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+  have hloop : loopPred lvl a (g, tr.2) = true := by
+    have h1 : lvl tr.2.2 = lvl c :=
+      of_decide_eq_true ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).2
+    exact decide_eq_true (h1.trans ((levelStates_lvl hc).trans (levelStates_lvl ha).symm))
+  exact firstMatch_filter_of_mem W x _ (disjoin_exclusive W x (aut.trans a)) _
+    (g, tr.2) (List.mem_filter.mp hgm).1
+    ((Bool.and_eq_true _ _).mpr ⟨(List.mem_filter.mp hgm).2, hloop⟩) hgb
+
+/-- The exit agreement, on the active hypothesis. -/
+theorem agreeE_of_active {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
+      ∀ a ∈ levelStates aut lvl n, ∀ c ∈ levelStates aut lvl n,
+      ∀ tr ∈ (disjoin (aut.trans c)).filter
+        (fun tr => !rawPred lvl rank c tr && !loopPred lvl c tr),
+        GkatGS.bval W tr.1 x = true →
+        GkatGS.bval W (peelRawHlt aut lvl rank a) x = true →
+          GkatKleene.firstMatch W x
+            ((disjoin (aut.trans a)).filter
+              (fun tr => !rawPred lvl rank a tr && !loopPred lvl a tr)) = some tr.2 := by
+  intro X W x n a ha c hc tr htr hb hact
+  have hnr := mem_nonRaw_of_exit aut lvl rank c tr htr
+  have hafire := hagree X W x n a ha c hc tr.2
+    (nonRaw_fire W x aut lvl rank c tr hnr hb) hact
+  obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (nonRaw aut lvl rank a) tr.2 hafire
+  have hout : lvl tr.2.2 ≠ lvl c :=
+    of_decide_eq_false ((Bool.not_eq_true' _).mp
+      ((Bool.and_eq_true _ _).mp (List.mem_filter.mp htr).2).2)
+  have hnotloop : (!loopPred lvl a (g, tr.2)) = true := by
+    refine (Bool.not_eq_true' _).mpr (decide_eq_false ?_)
+    intro heq
+    exact hout (heq.trans ((levelStates_lvl ha).trans (levelStates_lvl hc).symm))
+  exact firstMatch_filter_of_mem W x _ (disjoin_exclusive W x (aut.trans a)) _
+    (g, tr.2) (List.mem_filter.mp hgm).1
+    ((Bool.and_eq_true _ _).mpr ⟨(List.mem_filter.mp hgm).2, hnotloop⟩) hgb
+
+#print axioms bE_of_active
+#print axioms agreeL_of_active
+#print axioms agreeE_of_active
+
+theorem loopoff_of_active {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = true →
+        ∀ g ∈ (peelLoops aut lvl (rawPred lvl rank) (loopPred lvl) (lvl s)).map
+          (fun tr => tr.1), GkatGS.bval W g x = false := by
+  intro X W x s hs hhalt g hg
+  cases hb : GkatGS.bval W g x with
+  | false => rfl
+  | true =>
+      exfalso
+      obtain ⟨e, hem, heg⟩ := List.mem_map.mp hg
+      obtain ⟨c, hc, hem'⟩ := List.mem_flatMap.mp hem
+      have henr := mem_nonRaw_of_loop aut lvl rank c e hem'
+      have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hb
+      have := hagree X W x (lvl s) s (mem_levelStates (lvl := lvl) hs) c hc e.2
+        (nonRaw_fire W x aut lvl rank c e henr heb)
+        (rawHlt_of_halt aut lvl rank X W x s hhalt)
+      rw [nonRaw_none_of_halt W x aut lvl rank hdet s hs hhalt] at this
+      exact Option.some_ne_none e.2 this.symm
+
+theorem hnot_of_active {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
+    (rank : Nat → S → Nat) (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ (X : Type) (W : T → X → Bool) (x : X), ∀ s ∈ aut.states,
+      GkatGS.bval W (aut.hlt s) x = false →
+      GkatGS.bval W (peelRawHlt aut lvl rank s) x = true →
+        (∃ g ∈ (peelLoops aut lvl (rawPred lvl rank) (loopPred lvl) (lvl s)).map
+            (fun tr => tr.1), GkatGS.bval W g x = true) ∨
+        (∀ h ∈ (levelStates aut lvl (lvl s)).map aut.hlt,
+            GkatGS.bval W h x = false) := by
+  intro X W x s hs hnh hrh
+  have hor : (GkatGS.bval W (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x
+      || GkatGS.bval W (aut.hlt s) x) = true := hrh
+  have hbig : GkatGS.bval W
+      (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x = true := by
+    cases (Bool.or_eq_true _ _).mp hor with
+    | inl h => exact h
+    | inr h => rw [hnh] at h; exact absurd h Bool.false_ne_true
+  obtain ⟨g, hgm, hgb⟩ := (bval_bigOr_true W x _).mp hbig
+  obtain ⟨e, hem, heg⟩ := List.mem_map.mp hgm
+  have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hgb
+  have hsfire := nonRaw_fire W x aut lvl rank s e hem heb
+  cases hlp : loopPred lvl s e with
+  | true =>
+      refine Or.inl ⟨e.1, ?_, heb⟩
+      refine List.mem_map.mpr ⟨e, ?_, rfl⟩
+      refine List.mem_flatMap.mpr ⟨s, mem_levelStates (lvl := lvl) hs, ?_⟩
+      exact List.mem_filter.mpr ⟨(List.mem_filter.mp hem).1,
+        (Bool.and_eq_true _ _).mpr ⟨(List.mem_filter.mp hem).2, hlp⟩⟩
+  | false =>
+      refine Or.inr (fun h hh => ?_)
+      obtain ⟨c, hc, hcg⟩ := List.mem_map.mp hh
+      cases hb : GkatGS.bval W h x with
+      | false => rfl
+      | true =>
+          exfalso
+          have hch : GkatGS.bval W (aut.hlt c) x = true := by rw [hcg]; exact hb
+          have := hagree X W x (lvl s) c hc s (mem_levelStates (lvl := lvl) hs) e.2 hsfire
+            (rawHlt_of_halt aut lvl rank X W x c hch)
+          rw [nonRaw_none_of_halt W x aut lvl rank hdet c
+            (List.mem_filter.mp hc).1 hch] at this
+          exact Option.some_ne_none e.2 this.symm
+
+/-- The transition premise, on the active hypothesis. -/
+theorem peelAut_trans_agrees_active {S : Type} (aut : GkatKleene.GAut S A T)
+    (lvl : S → Nat) (rank : Nat → S → Nat)
+    (hagree : LevelAgreementActive aut lvl rank) :
+    ∀ s ∈ aut.states, ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s)
+        = GkatKleene.firstMatch W x
+            ((peelAut aut lvl (rawPred lvl rank) (loopPred lvl)
+              (peelRawHlt aut lvl rank)).trans s) := by
+  intro s hs X W x
+  exact firstMatch_peel_level_weak W x (levelStates aut lvl (lvl s)) aut.trans
+    (peelRawHlt aut lvl rank)
+    (peelBs aut lvl (rawPred lvl rank) (loopPred lvl) (lvl s))
+    (rawPred lvl rank) (loopPred lvl)
+    (fun a _ tr htr hb => peelRawHlt_of_nonRaw W x aut lvl rank a tr
+      (mem_nonRaw_of_loop aut lvl rank a tr htr) hb)
+    (fun a _ tr htr hb => peelRawHlt_of_nonRaw W x aut lvl rank a tr
+      (mem_nonRaw_of_exit aut lvl rank a tr htr) hb)
+    (fun c hc tr htr hb => peelBs_of_loop W x aut lvl rank (lvl s) c hc tr htr hb)
+    (bE_of_active aut lvl rank hagree X W x (lvl s))
+    (agreeL_of_active aut lvl rank hagree X W x (lvl s))
+    (agreeE_of_active aut lvl rank hagree X W x (lvl s))
+    s (mem_levelStates (lvl := lvl) hs)
+
+/-- # THE THEOREM, REPAIRED
+Same conclusion as 352, on the hypothesis 359 showed to be the satisfiable one. -/
+theorem solvesBA_of_levelAgreementActive {S : Type} (aut : GkatKleene.GAut S A T)
+    (lvl : S → Nat) (rank : Nat → S → Nat) (B : Nat)
+    (hbound : ∀ s, lvl s < B)
+    (hmono : ∀ s, ∀ tr ∈ aut.trans s, lvl tr.2.2 ≤ lvl s)
+    (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreementActive aut lvl rank) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
+  solvesBA_of_agreement aut lvl rank B (peelRawHlt aut lvl rank) hbound hmono
+    (peelAut_trans_agrees_active aut lvl rank hagree)
+    (peelAut_hlt_agrees aut lvl (rawPred lvl rank) (loopPred lvl)
+      (peelRawHlt aut lvl rank)
+      (fun X W x s _ => rawHlt_of_halt aut lvl rank X W x s)
+      (loopoff_of_active aut lvl rank hdet hagree)
+      (hnot_of_active aut lvl rank hdet hagree))
+
+#print axioms peelAut_trans_agrees_active
+#print axioms solvesBA_of_levelAgreementActive
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

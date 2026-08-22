@@ -16826,3 +16826,54 @@ three steps in, not finished.
 **Odds: 97%, unchanged.**
 
 **Next.** `hbE` from `LevelAgreementActive`, then the capstone.
+
+## 362 — the repair lands: `solvesBA_of_levelAgreementActive`
+
+```lean
+theorem solvesBA_of_levelAgreementActive (aut) (lvl) (rank) (B)
+    (hbound) (hmono) (hdet : HaltDeterministic aut)
+    (hagree : LevelAgreementActive aut lvl rank) :
+    ∃ sol, GkatKleene.SolvesBA aut sol
+```
+
+Same conclusion as 352, on the hypothesis 359 showed to be the satisfiable one.
+`[propext, Classical.choice, Quot.sound]`, no `sorry`.
+
+The six lemmas that carry it, all compiled first try:
+
+| | |
+|---|---|
+| `bE_of_active` | the level's loop test is FALSE at an exit atom — the one premise that still needs agreement, applicable because the exiting state is itself active |
+| `agreeL_of_active`, `agreeE_of_active` | `[propext]` only |
+| `loopoff_of_active`, `hnot_of_active` | the halt premises; both apply agreement at a HALTING state, whose activity comes free from `rawHlt_of_halt` |
+| `peelAut_trans_agrees_active` | the transition premise |
+
+**Does the hypothesis match what was measured?** This is the question 359 punished
+me for not asking, so: `LevelAgreementActive` demands agreement among states with
+`bval (peelRawHlt a) x = true`, i.e. those that fire a non-raw transition **or
+halt**. `PAD_BACKATOM` builds a per-atom demand from exactly three kinds —
+back-edge-to-`t`, exit-to-`t`, halt — and counts any mismatch as a clash,
+skipping raw and dead states. **The two are the same set and the same
+disagreement.** So the 100% (5 722 regions, control 126/126) is evidence for this
+predicate, not a neighbouring one.
+
+**Where the route stands.**
+
+| item | status |
+|---|---|
+| bounded non-raising level function | **free** (339) |
+| `HaltDeterministic` | **proved** (357, from `UniformWF`) |
+| the whole peel, layers, shared lists, gates | **proved** (338-351, 360-362) |
+| `LevelAgreementActive` | **measured** 100%, control passing; not proved |
+
+So the remainder is one predicate again — but this time it is the predicate the
+measurement actually tests, and the structural route to it (358: only the head of
+a loop body is ever non-raw, so at most one state of a region is active, so
+agreement is vacuous) is stated and unrefuted.
+
+**Odds: 97%, unchanged.** The repair is complete and the hypothesis is now
+honestly matched to its evidence. That restores what 359 cost; it does not add to
+it. I am not calling this a milestone.
+
+**Next.** The structural route to `LevelAgreementActive`: at most one state of a
+region is active at any atom.
