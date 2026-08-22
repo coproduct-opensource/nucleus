@@ -13366,3 +13366,54 @@ remaining path.  The field's prior that the problem does not close still stands.
 **Next.**  Relativise the `LayeredL` recursion to a complement — `LoopLayer`
 outside a closed block — so `split` accepts a layered complement, not only an
 acyclic one.
+
+---
+
+## 289 — A SEQUENCE IS A LAYER TOO.  THE HARD CASE IS THE CASE ALREADY SOLVED.
+
+286 and 287 both named the `seq` constructor as the hard case for the quotient.
+Looking at what `seqGSystem` actually does to a left state:
+
+    sys.trans s = base.trans s ++ (R's ENTRY block, gated by `base.hlt s`)
+
+— which is, letter for letter, `LoopLayer`'s shape.  **A SEQUENCE AND A LOOP ARE
+THE SAME CONSTRUCTION.**  Both append ONE SHARED entry list to every state of a
+region, gated by that state's own halt.  They differ in exactly two places: the
+loop's entry block carries the guard `b` and targets the region ITSELF, while
+the sequence's carries no guard and targets a CLOSED BLOCK; and the loop's halt
+becomes `base.hlt ∧ ¬b` where the sequence's becomes `base.hlt ∧ R.initHlt`.
+
+This matters because everything 279-281 proved about loop layers was proved
+about the SHAPE, not about the loop.  In particular the pushforward: the base
+downstairs is built from representatives, and the shared entry block — being
+shared and of fixed length — pins the cut.
+
+**Proved**: `SeqLayer`; `seq_seqLayer` (a sequence IS a layer over the DISJOINT
+UNION of its halves, `sumGSystem L R.core` — the sequence with its connecting
+block removed; every field `rfl` or one `List.map_map`); and
+`seqLayer_pushforward_rep`, by 281's argument verbatim.  `propext` and
+`Classical.choice` only.
+
+**And removing a `seq` layer leaves a `sum`**, which is what makes the recursion
+terminate — the connecting block is the only thing a sequence adds.
+
+The literature's loop elimination is the same move: it "repeatedly identifies a
+loop subgraph, DROPS ITS LOOP-ENTRY TRANSITIONS, and performs garbage
+collection."  Dropping the shared entry block is exactly what removing either
+layer does.
+
+**What is untouched, and it is now the only thing.**  The `sum` constructor
+under a quotient — where the MERGING ACROSS HALVES actually happens, and the
+reason `Q` is not a sum of quotients at all.  287's `quotient_closed_block` and
+`preferringRep` are aimed at it and are proved; the induction using them is not.
+
+**Odds: 98%** (+1).  The case twice named hard dissolved into the case already
+solved, and the pattern is now five for five — 271→283, 272→284, 280's gaps→281
+and 282, 287→288, 286/287's `seq`→289 — every named obstruction in this stretch
+has turned out smaller than its name.  Against that, the `sum` case genuinely
+has not been attempted, and it is the one where the collapse does its work.  The
+field's prior that the problem does not close still stands.
+
+**Next.**  The `sum` case under a quotient: assemble `quotient_closed_block` and
+`preferringRep` into the induction step, using that a quotient of a two-block
+automaton is a two-block automaton even when it is not a sum.

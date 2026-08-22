@@ -8320,4 +8320,93 @@ theorem split_acyclic_has_solution {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms solExt_has_solution
 #print axioms split_acyclic_has_solution
 
+
+/-! ### 289 — A SEQUENCE IS A LAYER TOO
+
+    286 and 287 called the `seq` constructor the hard case for the quotient.
+    Looking at what `seqGSystem` actually DOES to a left state:
+
+        sys.trans s = base.trans s ++ (R's ENTRY block, gated by `base.hlt s`)
+
+    — which is, letter for letter, `LoopLayer`'s shape.  **A sequence and a loop
+    are the same construction.**  Both append ONE SHARED entry list to every
+    state of a region, gated by that state's own halt.  They differ in exactly
+    two places: the loop's entry block carries the loop guard `b` and targets
+    the region itself, while the sequence's carries nothing and targets a CLOSED
+    BLOCK; and the loop's halt becomes `base.hlt ∧ ¬b` where the sequence's
+    becomes `base.hlt ∧ R.initHlt`.
+
+    That is worth having, because everything 279-281 proved about loop layers
+    was proved about the SHAPE, not about the loop.  In particular the
+    pushforward: the base downstairs is built from representatives, and the
+    entry block — being shared and of fixed length — pins the cut.  So the
+    sequence constructor pushes through a quotient by the same argument, and the
+    case 286 called hard is the case already solved.
+
+    `base` for a sequence is the DISJOINT UNION of its two halves:
+    `sumGSystem L R.core`, the sequence with its connecting block removed.  So
+    removing a `seq` layer leaves a `sum`, which is what makes the recursion
+    terminate. -/
+structure SeqLayer {S : Type} (sys base : GkatThompson.GSystem S A T)
+    (h₀ : BExp T) (entry : List (BExp T × A × S)) (dom : S → Prop) : Prop where
+  trans_eq : ∀ s, dom s → sys.trans s = base.trans s ++ entry.map (fun tr =>
+    (BExp.and (base.hlt s) tr.1, tr.2))
+  hlt_eq : ∀ s, dom s → sys.hlt s = BExp.and (base.hlt s) h₀
+  outside : ∀ s, ¬ dom s → sys.trans s = base.trans s ∧ sys.hlt s = base.hlt s
+  states_eq : sys.states = base.states
+
+/-- **A SEQUENCE IS A LAYER OVER THE DISJOINT UNION OF ITS HALVES.**  Entry list
+    the right half's own initial transitions, injected; guard-free; domain the
+    left half.  Every field is `rfl` or one `List.map_map`. -/
+theorem seq_seqLayer {S₁ S₂ : Type}
+    (L : GkatThompson.GSystem S₁ A T) (R : GkatThompson.InitializedGAut S₂ A T) :
+    SeqLayer (GkatThompson.seqGSystem L R)
+      (GkatThompson.sumGSystem L R.core) R.initHlt
+      (R.initTrans.map (fun tr => (tr.1, tr.2.1, Sum.inr tr.2.2)))
+      (fun x => match x with | .inl _ => True | .inr _ => False) where
+  trans_eq
+    | .inl s, _ => by
+        show (L.trans s).map _ ++ _ = (L.trans s).map _ ++ _
+        simp only [List.map_map, Function.comp_def, GkatThompson.sumGSystem]
+    | .inr _, hs => absurd hs (by simp)
+  hlt_eq
+    | .inl _, _ => rfl
+    | .inr _, hs => absurd hs (by simp)
+  outside
+    | .inl _, hs => absurd trivial hs
+    | .inr _, _ => ⟨rfl, rfl⟩
+  states_eq := rfl
+
+/-- **AND IT PUSHES FORWARD**, by 281's argument verbatim: the base downstairs
+    is built from representatives, and the shared entry block pins the cut. -/
+theorem seqLayer_pushforward_rep {S S' : Type}
+    {sys base : GkatThompson.GSystem S A T} {h₀ : BExp T}
+    {entry : List (BExp T × A × S)} {dom : S → Prop}
+    (h : SeqLayer sys base h₀ entry dom)
+    (f : S → S') (hsurj : ∀ s' : S', ∃ s, f s = s')
+    (sys' : GkatThompson.GSystem S' A T)
+    (htrans : ∀ s' : S', sys'.trans s'
+      = (sys.trans (Classical.choose (hsurj s'))).map
+          (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+    (hhlt : ∀ s' : S', sys'.hlt s' = sys.hlt (Classical.choose (hsurj s'))) :
+    SeqLayer sys' (pushBase f hsurj base sys') h₀
+      (entry.map (fun tr => (tr.1, tr.2.1, f tr.2.2)))
+      (fun s' => dom (Classical.choose (hsurj s'))) where
+  trans_eq s' hs := by
+    simp only [pushBase]
+    rw [htrans s', h.trans_eq (Classical.choose (hsurj s')) hs, List.map_append]
+    congr 1
+    simp only [List.map_map, Function.comp_def]
+  hlt_eq s' hs := by
+    simp only [pushBase]
+    rw [hhlt s', h.hlt_eq (Classical.choose (hsurj s')) hs]
+  outside s' hs := by
+    obtain ⟨ht, hh⟩ := h.outside (Classical.choose (hsurj s')) hs
+    exact ⟨by simp only [pushBase]; rw [htrans s', ht],
+      by simp only [pushBase]; rw [hhlt s', hh]⟩
+  states_eq := rfl
+
+#print axioms seq_seqLayer
+#print axioms seqLayer_pushforward_rep
+
 end GkatCensus
