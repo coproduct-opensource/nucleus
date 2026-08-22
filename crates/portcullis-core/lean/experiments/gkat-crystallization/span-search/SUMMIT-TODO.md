@@ -21195,3 +21195,56 @@ not going to price it before reading it. The field's prior that this problem doe
 not close still stands.
 
 **Next.** Read `of the uncovered, ARE a crux pullback` from the completed run.
+
+## 447 — the 54 witness-less pullbacks are ALL rescued by refinement. And `dup` is one of the mechanisms.
+
+Web search: exhausted (200/200).
+
+446 said the deciding line was in the expansion test. It was not — it was in a
+mode gated behind `PAD_MECH`, which explains why the "refinement test on 54
+uncoverable pullbacks (MAXK=16)" header prints with **nothing under it** by
+default: the header is unconditional, the search is not. (That also confirms
+445's correction over 444: the refinement had never run.)
+
+**Running it settles 444's question, and in the programme's favour:**
+
+```
+refinement test on 54 uncoverable pullbacks (MAXK=16):
+  W1 x1          : rescued 10 / 54   (largest variant  8 states)
+  W1 x2          : rescued 16 / 54   (largest variant 12 states)
+  W1+dup x1      : rescued 34 / 54   (largest variant  8 states)
+  cyc2 alone x1  : rescued 28 / 54   (largest variant  8 states)
+  W1+cyc2 x2     : rescued 48 / 54   (largest variant 13 states)
+  W1+cyc2 x3     : rescued 54 / 54   (largest variant 16 states)
+  W1+dup+cyc2 x1 : rescued 54 / 54   (largest variant  8 states)
+  everything x1  : rescued 54 / 54   (largest variant  8 states)
+```
+
+**All 54 are rescued, and the cheapest full rescue needs variants of only 8
+states.** So the witness-less pairs of 444 were a search-bound artefact after
+all: a guard-pullback witness exists for every one of them once refinement is
+allowed. The concrete, quantified obstruction I identified three iterations ago
+is gone.
+
+**The mechanism breakdown is the interesting part.** W1 alone rescues 10; adding
+**duplication** takes it to 34; 2-cycle refinement alone reaches 28; the three
+together reach 54 in a single round. **Duplication is load-bearing** — which
+partially vindicates 419-423. 442 proved duplication cannot give two copies
+different branches, and that theorem stands; what this shows is that duplication
+is useful for something other than branch-splitting, and I had written the route
+off entirely on the strength of the one thing it cannot do.
+
+**What this does not show.** These are the k ≤ 4 crux pairs with 2 atoms. All 54
+being rescued at 8-state variants is evidence that the witness search was too
+small, not proof that witnesses always exist — `GkatHardFrontier` proves the
+converse fails in general, so some pair somewhere has no syntactic witness. What
+changed is that the *measured* obstruction dissolved.
+
+**Odds: 25% → 33%.** The one concrete, enumerated obstruction this program had
+identified is discharged, and a technique I had written off turns out to carry a
+third of the work. Not higher: 443's framing is untouched — the conjecture is
+open, its originators suspect it false, and one census at k ≤ 4 does not move
+that. The field's prior that this problem does not close still stands.
+
+**Next.** Push `PAD_MECH` to the k = 5 crux pairs and see whether "everything x1"
+still rescues everything, or whether a residue appears as the space grows.
