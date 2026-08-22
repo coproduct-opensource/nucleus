@@ -12501,7 +12501,11 @@ theorem firstMatch_none_all_false {S X : Type} (W : T → X → Bool) (x : X) :
       | head => exact hg
       | tail _ hm => exact ih h' tr hm
 
-/-- **The shared list stands in for the state's own part.**  Both directions of
+/-- ⚠️ **SUPERSEDED** by `firstMatch_shared_weak` (360): this version routes
+through `firstMatch_gated`, which demands the gate be INVISIBLE and so forces
+every state of a level to be active whenever any is.
+
+**The shared list stands in for the state's own part.**  Both directions of
 343's agreement appear as hypotheses and both are used:
 
 * `hagree` — when an entry of the SHARED list fires, this state's own part fires
@@ -12564,7 +12568,10 @@ theorem firstMatch_shared_exit {S X : Type} (W : T → X → Bool) (x : X)
           rw [this] at hb'
           exact Bool.noConfusion hb'
 
-/-- **THE TRANSITION OBLIGATION, WITH SHARED LISTS.**  A state's transition list
+/-- ⚠️ **SUPERSEDED** by `firstMatch_peel_shared_weak` (360), which conditions its
+agreement premises on the state being active.
+
+**THE TRANSITION OBLIGATION, WITH SHARED LISTS.**  A state's transition list
 fires exactly as `peeledSys.trans` does at that state — its own raw part first,
 then the LEVEL's shared loop list gated by its own halt test, then the LEVEL's
 shared exit list.  This is `solvesBA_of_behaviour`'s first premise in the form
@@ -13187,7 +13194,9 @@ def peelRawHlt {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
     (rank : Nat → S → Nat) (s : S) : BExp T :=
   BExp.or (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) (aut.hlt s)
 
-/-- **343's condition.** -/
+/-- ⚠️ **SUPERSEDED — DO NOT USE.**  Unsatisfiable for 98% of multi-state regions
+(359); it quantifies over ALL states of a level where only the ACTIVE ones can
+agree.  Use `LevelAgreementActive`. -/
 def LevelAgreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
     (rank : Nat → S → Nat) : Prop :=
   ∀ (X : Type) (W : T → X → Bool) (x : X) (n : Nat),
@@ -13211,7 +13220,10 @@ theorem firstMatch_filter_of_mem {S X : Type} (W : T → X → Bool) (x : X)
   firstMatch_of_exclusiveAt W x (D.filter f) (exclusiveAt_filter W x D hex f)
     tr (List.mem_filter.mpr ⟨htr, hf⟩) hb
 
-/-- **The loop gate, derived.**  A firing loop entry of any level state makes the
+/-- ⚠️ **SUPERSEDED** by `gateL_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**The loop gate, derived.**  A firing loop entry of any level state makes the
 level's loop test true, and makes the firing state's own halt test true — the
 latter because `peelRawHlt` is by construction the disjunction of exactly those
 guards. -/
@@ -13257,7 +13269,10 @@ theorem nonRaw_fire {S X : Type} (W : T → X → Bool) (x : X)
   firstMatch_of_exclusiveAt W x _
     (exclusiveAt_filter W x _ (disjoin_exclusive W x (aut.trans c)) _) tr htr hb
 
-/-- **The loop agreement, derived.**  Kind agreement is free: the two states fire
+/-- ⚠️ **SUPERSEDED** by `agreeL_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**The loop agreement, derived.**  Kind agreement is free: the two states fire
 to the SAME target, and that target is inside the level, so both classify it as a
 loop. -/
 theorem agreeL_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
@@ -13285,7 +13300,10 @@ theorem agreeL_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S �
   exact firstMatch_filter_of_mem W x _ (disjoin_exclusive W x (aut.trans a)) _
     (g, tr.2) hgD ((Bool.and_eq_true _ _).mpr ⟨hgraw, hloop⟩) hgb
 
-/-- **The exit gate, derived.**  The interesting half is that the level's loop
+/-- ⚠️ **SUPERSEDED** by `gateE_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**The exit gate, derived.**  The interesting half is that the level's loop
 test must be FALSE at an exit atom: if any loop guard of the level fired there,
 agreement would force this state to fire to that same intra-level target — but it
 is firing OUT of the level. -/
@@ -13332,7 +13350,10 @@ theorem gateE_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S →
 #print axioms agreeL_of_agreement
 #print axioms gateE_of_agreement
 
-/-- **The exit agreement, derived.**  Same shape as the loop case: the two states
+/-- ⚠️ **SUPERSEDED** by `agreeE_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**The exit agreement, derived.**  Same shape as the loop case: the two states
 fire to the same target, and that target is outside the level, so both classify
 it as an exit. -/
 theorem agreeE_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
@@ -13406,7 +13427,10 @@ theorem nonRaw_none_of_halt {S X : Type} (W : T → X → Bool) (x : X)
   rw [firstMatch_disjoin]
   exact hdet X W x s hs h
 
-/-- **`hloopoff`, derived.**  If the level's loop test fired where `s` halts,
+/-- ⚠️ **SUPERSEDED** by `loopoff_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**`hloopoff`, derived.**  If the level's loop test fired where `s` halts,
 agreement would make `s` fire there too — and a halting state fires nothing. -/
 theorem loopoff_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → Nat)
     (rank : Nat → S → Nat) (hdet : HaltDeterministic aut)
@@ -13431,7 +13455,10 @@ theorem loopoff_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S �
       rw [nonRaw_none_of_halt W x aut lvl rank hdet s hs hhalt] at this
       exact Option.some_ne_none e.2 this.symm
 
-/-- **`hnot`, derived.**  Where `s` does not halt but is still non-raw, it fires
+/-- ⚠️ **SUPERSEDED** by `hnot_of_active`: takes the unsatisfiable strong
+`LevelAgreement` (359).
+
+**`hnot`, derived.**  Where `s` does not halt but is still non-raw, it fires
 something: if that something stays in the level it is a loop entry, and if it
 leaves the level then nothing in the level can halt there — because agreement
 would make a halting state fire too. -/
@@ -13480,7 +13507,13 @@ theorem hnot_of_agreement {S : Type} (aut : GkatKleene.GAut S A T) (lvl : S → 
 #print axioms loopoff_of_agreement
 #print axioms hnot_of_agreement
 
-/-- # THE THEOREM OF THE ARC
+/-- ⚠️ **SUPERSEDED — DO NOT USE.**  Its hypothesis `LevelAgreement` was measured
+UNSATISFIABLE for 98% of multi-state regions (359): it demands that if one state
+of a level fires a non-raw transition, EVERY state fires.  The theorem is true
+and `sorry`-free and, for the case that matters, vacuous.  Use
+`solvesBA_of_levelAgreementActive` instead.
+
+# (former) THE THEOREM OF THE ARC
 
 A quotient automaton is **solvable** as soon as three things hold of it:
 

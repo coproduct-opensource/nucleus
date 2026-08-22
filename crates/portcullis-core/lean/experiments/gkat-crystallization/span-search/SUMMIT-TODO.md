@@ -17405,3 +17405,55 @@ simultaneously-active states, which headedness does not cover in any form.
 
 **Next.** Those 1.9% — they agree because both back-edge to `b.it[x]`, so the
 per-atom head may cover them after all under a slightly different reading.
+
+## 374 — audit: ten vacuous-hypothesis theorems marked, and an inventory
+
+The residual 1.9% does not fold into headedness: every unification I tried either
+reduces to agreement itself or over-shoots into the 359 trap (an `AtomFocused`
+form demands active states FIRE, which fails where one halts and none fires,
+while agreement holds vacuously). Agreement is the primitive; headedness is a
+sufficient condition covering 98.1%. So this iteration audits instead.
+
+**The live hazard.** 352's `solvesBA_of_levelAgreement` is still in the file next
+to its repair. Its hypothesis was measured unsatisfiable for 98% of multi-state
+regions, yet it is a true, `sorry`-free theorem with an inviting name — precisely
+the thing a future iteration would pick up and build on. The same is true of
+`LevelAgreement` itself and of eight lemmas that consume it.
+
+**Ten declarations marked `⚠️ SUPERSEDED`**, each naming its replacement:
+
+| superseded | replacement |
+|---|---|
+| `solvesBA_of_levelAgreement`, `LevelAgreement` | `solvesBA_of_levelAgreementActive`, `LevelAgreementActive` |
+| `firstMatch_shared`, `firstMatch_peel_shared_agrees` | `…_weak` (360) |
+| `gateL/agreeL/gateE/agreeE/loopoff/hnot_of_agreement` | `…_of_active` (362) |
+
+File still compiles with **0 errors** and no `sorry`.
+
+**Inventory of the route, as it now stands.**
+
+| | status | axioms |
+|---|---|---|
+| `reachLevel` — bounded non-raising level function | **proved**, free for every system | propext, choice, Quot.sound |
+| `haltDeterministic_of_uniformWF` | **proved** | **none** |
+| the peel: layers, shared lists, gates, guard normalisation | **proved** | propext, choice, Quot.sound |
+| `syntacticallyLayered_peelAut` — the six region conditions | **proved** | ″ |
+| `solvesBA_of_peel`, `solvesBA_of_agreement` | **proved** | ″ |
+| `levelAgreementActive_of_headed` — vacuity ⟹ agreement | **proved** | ″ |
+| `solvesBA_of_headed` | **proved** | ″ |
+| `sumQuotientSolvable_of_solver` — minimality is only plumbing | **proved** | propext, Quot.sound |
+| **`HeadedRegion` for the quotients** | **open** — measured 98.1% | — |
+| the residual 1.9% | **open** — needs agreement proper | — |
+
+**Why this is worth an iteration.** Six of my corrections this stretch came from
+building on something whose status I had mis-recorded. Ten theorems with
+known-vacuous hypotheses sitting unmarked in a 13 000-line file is the same
+failure mode waiting to happen, and the marking costs one pass. It is also the
+first item on the post-proof agenda — *does any theorem's statement quantify in
+a way that makes it unusable* — applied before the proof closes rather than after.
+
+**Odds: 97%, unchanged.** No mathematics moved. The accumulated work is now
+labelled so that the next iteration cannot silently rest on a vacuity.
+
+**Next.** `HeadedRegion` for quotients — the one open item, with the residual
+1.9% as a separate obligation.
