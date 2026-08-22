@@ -7690,6 +7690,14 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         llee_test::<NA>(nguards as u8);
         return;
     }
+    if std::env::var("PAD_MIXED_ENTRY").is_ok() {
+        let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(2);
+        let cap: usize = std::env::var("PAD_BT_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(120);
+        mixed_entry::<NA>(nguards as u8, rounds, cap);
+        return;
+    }
     if std::env::var("PAD_CROSS_CLASS").is_ok() {
         let rounds: usize = std::env::var("PAD_BT_ROUNDS").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -11555,6 +11563,106 @@ fn show_aut<const NA: usize>(tag: &str, a: &Aut<NA>) -> String {
 ///
 /// So the decisive question is not about steps at all — it is whether a
 /// component's states get identified with non-component states.  Count it.
+/// **`PAD_MIXED_ENTRY`** (iteration 321).
+///
+/// 320 showed cross-class identification is common, which makes the block
+/// INTERSECT a component's image.  That alone is harmless: if ALL of a `wh`'s
+/// entry targets land in the block the layer is `seq`-shaped, and if NONE do it
+/// is `loop`-shaped.  **Only a SPLIT entry list fits neither constructor**, and
+/// that is what this measures.
+///
+/// Build `ite g (wh g2 body) r`.  The block is the classes with a preimage in
+/// the RIGHT half.  The `wh`'s back edges target the BODY's initial targets, at
+/// the same state indices in the composite since `a_wh` keeps the body's states
+/// and `a_ite` places the left half at offset 0.  Ask whether those targets'
+/// classes fall on both sides of the block.
+fn mixed_entry<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
+    let mut pool: Vec<Aut<NA>> = Vec::new();
+    let mut seen: FxSet<Aut<NA>> = FxSet::default();
+    for g in 0..nguards {
+        let a = a_test::<NA>(g);
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    {
+        let a = a_act::<NA>();
+        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+    }
+    for _ in 0..rounds {
+        let cur: Vec<Aut<NA>> = pool.clone();
+        for l in &cur {
+            for r in &cur {
+                if let Some(a) = a_seq::<NA>(l, r) {
+                    if pool.len() < cap {
+                        if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                    }
+                }
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, l, r) {
+                        if pool.len() < cap {
+                            if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                        }
+                    }
+                }
+            }
+            for g in 0..nguards {
+                let a = a_wh::<NA>(g, l);
+                if pool.len() < cap {
+                    if let Some(c) = canon(&a) { if seen.insert(c) { pool.push(c); } }
+                }
+            }
+        }
+        if pool.len() >= cap { break; }
+    }
+    let (mut total, mut multi, mut mixed) = (0usize, 0usize, 0usize);
+    let mut first: Option<String> = None;
+    for body in &pool {
+        for g2 in 0..nguards {
+            let lw = a_wh::<NA>(g2, body);
+            // the wh's back-edge targets, as state indices of the composite
+            let mut tgts: Vec<usize> = Vec::new();
+            for i in 0..NA {
+                if bit(g2, i) && body.it[i] != 0 {
+                    let t = (body.it[i] - 1) as usize;
+                    if !tgts.contains(&t) { tgts.push(t); }
+                }
+            }
+            if tgts.is_empty() { continue; }
+            for r in &pool {
+                for g in 0..nguards {
+                    if let Some(a) = a_ite::<NA>(g, &lw, r) {
+                        total += 1;
+                        if tgts.len() > 1 { multi += 1; }
+                        let (blk, _) = bisim_blocks(&a);
+                        let mut in_c = [false; MAXK];
+                        for t in lw.k as usize..a.k as usize { in_c[blk[t]] = true; }
+                        let (mut any_in, mut any_out) = (false, false);
+                        for &t in &tgts {
+                            if in_c[blk[t]] { any_in = true; } else { any_out = true; }
+                        }
+                        if any_in && any_out {
+                            mixed += 1;
+                            if first.is_none() {
+                                first = Some(format!(
+                                    "guard {g2:0w$b}, entry targets {tgts:?}\n    {}\n    {}\n    {}",
+                                    show_aut("whole", &a), show_aut("body ", body),
+                                    show_aut("right", r), w = NA));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("MIXED ENTRY: {total} (wh-in-ite) configurations, {multi} with >1 distinct \
+              entry target, {mixed} with a SPLIT entry list ({:.2}%)",
+        100.0 * mixed as f64 / total.max(1) as f64);
+    match first {
+        None => println!("  none: a wh's entry targets never straddle the block, so every \
+                          layer is either loop-shaped or seq-shaped"),
+        Some(msg) => println!("  FIRST SPLIT\n    {msg}"),
+    }
+}
+
 fn cross_class_count<const NA: usize>(a: &Aut<NA>, lo: usize, hi: usize) -> usize {
     let (blk, _) = bisim_blocks(a);
     let mut n = 0usize;

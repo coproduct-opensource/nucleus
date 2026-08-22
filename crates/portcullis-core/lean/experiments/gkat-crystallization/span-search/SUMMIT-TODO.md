@@ -14754,3 +14754,45 @@ not to conflate those.
 **Next.**  Measure MIXEDNESS directly: for a `wh` inside a composite, and the
 block "classes with a preimage in the other half", are the entry targets' classes
 ever split between block and non-block?
+
+---
+
+## 321 — MEASURED: SPLIT ENTRY LISTS OCCUR.  THE CONSTRUCTOR SET IS INCOMPLETE.
+
+320 left the decisive question open: cross-class identification makes the block
+INTERSECT a component's image, but only a genuinely SPLIT entry list fits
+neither `loop` nor `seq`.  New mode `PAD_MIXED_ENTRY` builds `ite g (wh g2 body) r`,
+takes the block to be the classes with a RIGHT-half preimage, and asks whether
+the `wh`'s back-edge targets straddle it.
+
+    139 200 (wh-in-ite) configurations
+     19 200 with more than one distinct entry target
+        744 with a SPLIT entry list  —  0.53% of all, 3.9% of those that could
+
+    FIRST — guard 11, entry targets {q0, q1}
+      body        q0 halts always;  q1 stuck
+      wh 11 body  q0 -a0-> q0,  q0 -a1-> q1
+      right       one stuck state q2
+      so q1 ~ q2 (both stuck, never halting) and the block {q1,q2}
+      contains q1 but NOT q0 — the entry list straddles it
+
+**So 319's gap is real, not hypothetical.**  A shared entry list can have some
+targets in the block and some outside, and the constructor set covers neither
+that configuration nor any refinement of it: `LayeredOn.loop` requires all
+entries outside, `LayeredOn.seq` requires all inside, and the entries are ONE
+list whose order matters, so they cannot simply be separated — guarded folds are
+order-sensitive and the entry guards need not be disjoint.
+
+**Odds: 96%** (−1).  This is the failure the concern pointed at, now exhibited,
+which is a different thing from 320's confirmation of the mechanism — and I
+priced them differently on purpose.  The constructor set needs either a new
+case or a reason the configuration cannot arise where it matters; neither is in
+hand.
+
+**What is NOT ruled out.**  The example is degenerate in a suggestive way: the
+in-block entry target `q1` is STUCK — it neither halts nor steps.  If split
+entry lists only ever arise with dead targets, the fix could be a pruning
+argument rather than a new constructor.  That is the next measurement, and it is
+cheap: re-run counting only splits whose in-block targets are live.
+
+**Next.**  Are the in-block targets of a split entry list ever LIVE?
