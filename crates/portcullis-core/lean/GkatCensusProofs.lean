@@ -14602,6 +14602,97 @@ theorem loopPred_pullback {S Q : Type} {aut : GkatKleene.GAut S A T}
 #print axioms rawPred_pullback
 #print axioms loopPred_pullback
 
+/-! ### The list correspondence
+
+`peelRawHlt` is built from a state's own `nonRaw` LIST, and a state and its image
+have different lists.  But `rawPred` inspects only an entry's TARGET, never its
+guard, so "the non-raw part fires at `x`" is decided by `autStep`'s result alone
+— and `autStep` transports.  That is what turns the list question into a step
+question. -/
+
+/-- **The non-raw part fires exactly when the step's target is non-raw.**
+`disjoin` makes the guards exclusive, so the entry `firstMatch` selects is the
+only one that can fire; whether it is raw depends only on where it goes. -/
+theorem bigOr_nonRaw_iff {S X : Type} (W : T → X → Bool) (x : X)
+    (aut : GkatKleene.GAut S A T) (lvl : S → Nat) (rank : Nat → S → Nat) (s : S) :
+    GkatGS.bval W (bigOr ((nonRaw aut lvl rank s).map (fun tr => tr.1))) x = true ↔
+      ∃ r : A × S, GkatKleene.autStep W aut s x = some r ∧
+        rawPred lvl rank s ((BExp.one : BExp T), r) = false := by
+  constructor
+  · intro h
+    obtain ⟨g, hgm, hgb⟩ := (bval_bigOr_true W x _).mp h
+    obtain ⟨e, hem, heg⟩ := List.mem_map.mp hgm
+    have heb : GkatGS.bval W e.1 x = true := by rw [heg]; exact hgb
+    have hfm : GkatKleene.firstMatch W x (disjoin (aut.trans s)) = some e.2 :=
+      firstMatch_of_exclusiveAt W x (disjoin (aut.trans s))
+        (disjoin_exclusive W x (aut.trans s)) e (List.mem_filter.mp hem).1 heb
+    refine ⟨e.2, ?_, ?_⟩
+    · show GkatKleene.firstMatch W x (aut.trans s) = some e.2
+      rw [← firstMatch_disjoin W x (aut.trans s)]; exact hfm
+    · exact (Bool.not_eq_true' _).mp (List.mem_filter.mp hem).2
+  · rintro ⟨r, hstep, hraw⟩
+    have hfm : GkatKleene.firstMatch W x (disjoin (aut.trans s)) = some r := by
+      rw [firstMatch_disjoin W x (aut.trans s)]; exact hstep
+    obtain ⟨g, hgm, hgb⟩ := firstMatch_some_guard W x (disjoin (aut.trans s)) r hfm
+    refine (bval_bigOr_true W x _).mpr ⟨g, List.mem_map.mpr ⟨(g, r), ?_, rfl⟩, hgb⟩
+    exact List.mem_filter.mpr ⟨hgm, (Bool.not_eq_true' _).mpr hraw⟩
+
+#print axioms bigOr_nonRaw_iff
+
+/-- **THE LIST CORRESPONDENCE.**  A state is active exactly when its image is.
+
+Both sides reduce, by `bigOr_nonRaw_iff`, to *"the step's target is non-raw, or
+the state halts"*.  The step transports by `autStep_eq`, halting by `hlt_ba`, and
+raw-ness by `rawPred_pullback` — so the two lists never have to be compared. -/
+theorem active_transport {S Q X : Type} {aut : GkatKleene.GAut S A T}
+    {quot : GkatKleene.GAut Q A T}
+    (π : GkatKleene.UniformBehavioralGAutQuotient aut quot)
+    (lvl : Q → Nat) (rank : Nat → Q → Nat) (u : S)
+    (W : T → X → Bool) (x : X) :
+    GkatGS.bval W (peelRawHlt aut (fun s => lvl (π.mapState s))
+      (fun n s => rank n (π.mapState s)) u) x = true ↔
+    GkatGS.bval W (peelRawHlt quot lvl rank (π.mapState u)) x = true := by
+  have hstep := π.autStep_eq W u x
+  constructor
+  · intro h
+    have hor : (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt u) x) = true := h
+    show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (quot.hlt (π.mapState u)) x) = true
+    cases (Bool.or_eq_true _ _).mp hor with
+    | inr hh =>
+        refine (Bool.or_eq_true _ _).mpr (Or.inr ?_)
+        rw [← π.hlt_ba u X W x]; exact hh
+    | inl hb =>
+        obtain ⟨r, hr, hraw⟩ := (bigOr_nonRaw_iff W x aut _ _ u).mp hb
+        refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+        refine (bigOr_nonRaw_iff W x quot lvl rank (π.mapState u)).mpr
+          ⟨(r.1, π.mapState r.2), ?_, ?_⟩
+        · rw [hr] at hstep; exact hstep.symm
+        · exact hraw
+  · intro h
+    have hor : (GkatGS.bval W (bigOr _) x
+      || GkatGS.bval W (quot.hlt (π.mapState u)) x) = true := h
+    show (GkatGS.bval W (bigOr _) x || GkatGS.bval W (aut.hlt u) x) = true
+    cases (Bool.or_eq_true _ _).mp hor with
+    | inr hh =>
+        refine (Bool.or_eq_true _ _).mpr (Or.inr ?_)
+        rw [π.hlt_ba u X W x]; exact hh
+    | inl hb =>
+        obtain ⟨r, hr, hraw⟩ := (bigOr_nonRaw_iff W x quot lvl rank (π.mapState u)).mp hb
+        refine (Bool.or_eq_true _ _).mpr (Or.inl ?_)
+        cases hau : GkatKleene.autStep W aut u x with
+        | none => rw [hau, hr] at hstep; exact (Option.some_ne_none r hstep.symm).elim
+        | some y =>
+            rw [hau, hr] at hstep
+            have h3 := Option.some.inj hstep
+            refine (bigOr_nonRaw_iff W x aut _ _ u).mpr ⟨y, hau, ?_⟩
+            have : π.mapState y.2 = r.2 := congrArg Prod.snd h3
+            show rawPred (fun s => lvl (π.mapState s))
+              (fun n s => rank n (π.mapState s)) u ((BExp.one : BExp T), y) = false
+            rw [rawPred_pullback π lvl rank u ((BExp.one : BExp T), y), this]
+            exact hraw
+
+#print axioms active_transport
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

@@ -17971,3 +17971,46 @@ recording, but it converts a confusion into a to-do rather than closing anything
 
 **Next.** The list correspondence: quotient-active iff a preimage is
 source-active.
+
+## 386 — the list correspondence, closed
+
+385 left one thing: `peelRawHlt` is built from a state's own `nonRaw` **list**,
+and a state and its image have different lists. The way through is to notice that
+**`rawPred` inspects only an entry's TARGET, never its guard** — so the list
+question is really a step question, and steps transport.
+
+**`bigOr_nonRaw_iff`** — the non-raw part fires at `x` exactly when `autStep`'s
+result has a non-raw target. `disjoin` makes the guards exclusive, so the entry
+`firstMatch` selects is the only one that can fire, and whether it is raw depends
+only on where it goes.
+
+**`active_transport`** — a state is active exactly when its image is:
+
+```lean
+bval W (peelRawHlt aut (lvl ∘ mapState) (rank · ∘ mapState) u) x = true
+  ↔ bval W (peelRawHlt quot lvl rank (π.mapState u)) x = true
+```
+
+Both sides reduce to *"the step's target is non-raw, or the state halts"*; the
+step transports by `autStep_eq`, halting by `hlt_ba`, raw-ness by
+`rawPred_pullback`. **The two lists are never compared.**
+
+**The last link is now assembled except for its source half.** Everything the
+transport needs is a theorem:
+
+| | |
+|---|---|
+| a level is exactly one SCC | `mutual_of_reachMask_eq` (383), measured 0/2 193 (384) |
+| two states of a level have preimages in a common source SCC | `exists_mutual_over_pair` (381) |
+| level, rank and raw-ness transport | `pullback_mono`, `rawPred_pullback` (385) |
+| **activity transports** | `active_transport` (386) |
+
+So *at most one active state per quotient level* reduces to the same statement
+about a **source SCC** — which is 358's measured claim, and needs the induction
+on GKAT syntax that 367 showed is unavoidable.
+
+**Odds: 96%, unchanged.** The transport half of the last link is done; the source
+half is the Thompson induction, untouched. I am not moving odds for machinery.
+
+**Next.** Assemble *source-headed ⟹ quotient-headed*, which would leave exactly
+the induction.
