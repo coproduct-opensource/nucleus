@@ -15240,3 +15240,34 @@ worth BUILDING rather than worth more measuring.
 below it as a block, its exits as a `SeqLayer` into that block, and the
 remaining closed region as a `LoopLayerOn`.  331's `reachClosure_closed` gives
 the block; 329 gives that it does not cut the cycle.
+
+---
+
+## 333 — THE CONDENSATION FRAME, MADE CONCRETE.
+
+331 proposed it, 332 measured its obstacle away.  The frame is exactly two
+moves, both now statable against the existing constructors, both axiom-free:
+
+  * **`layeredOn_split_reach`** — take any set, close it under reachability,
+    split there.  331 proves such a set is closed so `LayeredOn.split` accepts it
+    with no further argument; 329 adds that it never cuts a cycle.  Every
+    down-set of the condensation is a legal block, and the recursion down the
+    condensation is this move iterated.
+  * **`layeredOn_region`** — a strongly connected region above a block: peel its
+    EXITS as a `SeqLayer` into the block (`LayeredOn.seq`, and 332 measured those
+    exits per-atom single-valued), leaving a region closed w.r.t. the block, then
+    peel that as a `LoopLayerOn`.  **The order is forced, exactly as 305 found:**
+    the loop constructor needs its region closed, which it is only after the
+    exits are gone.
+
+**Both are two-line compositions, and that is the finding.**  The frame's content
+is CHOOSING the decomposition, not proving anything new about it — the
+constructors built over 294–326 already accept this shape.  Twelve iterations
+were spent making them accept the EXPRESSION's shape, which they never did.
+
+**Odds: 98%, HELD.**  Framing made concrete is not new content, and I said so in
+the file rather than letting two short theorems read as progress.
+
+**Next.**  The induction over the condensation, and the construction of the two
+layers at each region — neither needs a new constructor, which is what 333
+establishes.

@@ -10919,4 +10919,55 @@ theorem reachClosure_closed {S : Type} (sys : GkatThompson.GSystem S A T)
 #print axioms Reaches.snoc
 #print axioms reachClosure_closed
 
+
+/-! ### 333 — THE CONDENSATION FRAME, MADE CONCRETE
+
+    331 proposed it and 332 measured its one obstacle away.  The frame consists
+    of exactly two moves, and both are now statable against the existing
+    constructors.
+
+    **The block move.**  Take any set of states, close it under reachability, and
+    split there.  331 proves such a set is closed, so `LayeredOn.split` accepts
+    it with no further argument — and 329 adds that it never cuts a cycle in
+    half.  Every down-set of the condensation is therefore a legal block, and
+    the recursion down the condensation is just this move iterated.
+
+    **The single-region move.**  A strongly connected region sitting immediately
+    above a block: peel its EXITS as a `SeqLayer` whose entry points into the
+    block — which is what `LayeredOn.seq` is for and what 332 measured to be
+    per-atom single-valued — leaving a region closed w.r.t. the block, then peel
+    that as a `LoopLayerOn`.
+
+    Both are short.  That is the point: **the frame's content is choosing the
+    decomposition, not proving anything new about it**, and the constructors
+    built over 294-326 already accept exactly this shape.  What remains is the
+    induction over the condensation and the construction of the two layers at
+    each region — neither of which needs a new constructor. -/
+theorem layeredOn_split_reach {S : Type} (sys : GkatThompson.GSystem S A T)
+    (P X : S → Prop)
+    (hdisj : ∀ s, P s → ¬ (∃ u, X u ∧ Reaches sys u s))
+    (h1 : LayeredOn sys (fun s => ¬ ∃ u, X u ∧ Reaches sys u s))
+    (h2 : LayeredOn sys (fun s => P s ∨ ∃ u, X u ∧ Reaches sys u s)) :
+    LayeredOn sys P :=
+  LayeredOn.split hdisj (reachClosure_closed sys X) h1 h2
+
+/-- **THE SINGLE-REGION MOVE.**  Exits first, then the loop — and the order is
+    forced, exactly as 305 found for `seq`: the loop constructor needs its region
+    closed w.r.t. the block, which it is only after the exits have been peeled. -/
+theorem layeredOn_region {S : Type} {sys mid base : GkatThompson.GSystem S A T}
+    {P : S → Prop} {h₀ : BExp T} {entry : List (BExp T × A × S)}
+    (hseq : SeqLayer sys mid h₀ entry (fun s => ¬ P s))
+    (hentryP : ∀ tr ∈ entry, P tr.2.2)
+    {b : BExp T} {loopEntry : List (BExp T × A × S)}
+    (hloop : LoopLayerOn mid base b loopEntry (fun s => ¬ P s))
+    (hle : ∀ tr ∈ loopEntry, ¬ P tr.2.2 ∨ StuckAt mid tr.2.2)
+    (hlc : ∀ s, ¬ P s → ∀ tr ∈ base.trans s,
+      ¬ P tr.2.2 ∨ StuckAt mid tr.2.2)
+    (hbase : LayeredOn base P) :
+    LayeredOn sys P :=
+  LayeredOn.seq hseq hentryP (LayeredOn.loop hloop hle hlc hbase)
+
+#print axioms layeredOn_split_reach
+#print axioms layeredOn_region
+
 end GkatCensus
