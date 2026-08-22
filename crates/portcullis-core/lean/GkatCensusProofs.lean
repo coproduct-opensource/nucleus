@@ -12222,6 +12222,82 @@ theorem quotMask_eq_of_source_mutual {S Q : Type} {aut : GkatKleene.GAut S A T}
 #print axioms semReaches_image
 #print axioms quotMask_eq_of_source_mutual
 
+/-! ### The `wh` case, for agreement
+
+`loopInitialized` appends `body.initTrans` at every body state, each entry gated
+as `body.hlt s ∧ guard ∧ tr.1`.  The list is the SAME for every state; the only
+state-dependent part is the conjunct `body.hlt s`.  So at an atom where two body
+states both halt, both gates reduce to `guard ∧ tr.1`, the SAME entry is selected
+in each, and the two back-edges have the SAME target.
+
+That is agreement for the `wh` case, and it is a fact about the construction
+rather than about any quotient. -/
+theorem loop_entry_agree {S X : Type} (W : T → X → Bool) (x : X)
+    (guard hltS hltS' : BExp T) (entry : List (BExp T × A × S))
+    (hs : GkatGS.bval W hltS x = true) (hs' : GkatGS.bval W hltS' x = true) :
+    GkatKleene.firstMatch W x
+        (entry.map (fun tr => (BExp.and hltS (BExp.and guard tr.1), tr.2)))
+      = GkatKleene.firstMatch W x
+        (entry.map (fun tr => (BExp.and hltS' (BExp.and guard tr.1), tr.2))) := by
+  induction entry with
+  | nil => rfl
+  | cons e rest ih =>
+      obtain ⟨g, q, t⟩ := e
+      have e1 : GkatGS.bval W (BExp.and hltS (BExp.and guard g)) x
+          = GkatGS.bval W (BExp.and guard g) x := by
+        show (GkatGS.bval W hltS x && GkatGS.bval W (BExp.and guard g) x) = _
+        rw [hs]; rfl
+      have e2 : GkatGS.bval W (BExp.and hltS' (BExp.and guard g)) x
+          = GkatGS.bval W (BExp.and guard g) x := by
+        show (GkatGS.bval W hltS' x && GkatGS.bval W (BExp.and guard g) x) = _
+        rw [hs']; rfl
+      show (if GkatGS.bval W (BExp.and hltS (BExp.and guard g)) x then some (q, t)
+            else GkatKleene.firstMatch W x _)
+        = (if GkatGS.bval W (BExp.and hltS' (BExp.and guard g)) x then some (q, t)
+            else GkatKleene.firstMatch W x _)
+      rw [e1, e2, ih]
+
+/-- The same, said of the construction: two body states that both halt at an atom
+take the SAME back-edge out of `loopInitialized`. -/
+theorem loopInitialized_backedge_agree {S X : Type} (W : T → X → Bool) (x : X)
+    (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (s s' : S)
+    (hs : GkatGS.bval W (body.core.hlt s) x = true)
+    (hs' : GkatGS.bval W (body.core.hlt s') x = true) :
+    GkatKleene.firstMatch W x
+        (body.initTrans.map (fun tr =>
+          (BExp.and (body.core.hlt s) (BExp.and guard tr.1), tr.2)))
+      = GkatKleene.firstMatch W x
+        (body.initTrans.map (fun tr =>
+          (BExp.and (body.core.hlt s') (BExp.and guard tr.1), tr.2))) :=
+  loop_entry_agree W x guard _ _ body.initTrans hs hs'
+
+#print axioms loop_entry_agree
+#print axioms loopInitialized_backedge_agree
+
+/-- **Halting and back-edging are mutually exclusive in a `wh`.**  The loop halts
+where `body.hlt s ∧ ¬guard`, and back-edges where `body.hlt s ∧ guard ∧ tr.1`.
+The two are separated by `guard` itself, so no atom can carry both.
+
+This is the "exits shadow halting" clause 343 measured and 346 needed —
+here it is structural, and it is one line. -/
+theorem loopInitialized_halt_backedge_exclusive {S X : Type} (W : T → X → Bool)
+    (x : X) (guard : BExp T) (body : GkatThompson.InitializedGAut S A T) (s : S)
+    (hhalt : GkatGS.bval W (BExp.and (body.core.hlt s) (BExp.not guard)) x = true) :
+    ∀ tr : BExp T × A × S,
+      GkatGS.bval W (BExp.and (body.core.hlt s) (BExp.and guard tr.1)) x = false := by
+  intro tr
+  have hg : GkatGS.bval W guard x = false := by
+    have h2 : (GkatGS.bval W (body.core.hlt s) x && !GkatGS.bval W guard x) = true := hhalt
+    cases hgv : GkatGS.bval W guard x with
+    | false => rfl
+    | true => rw [hgv] at h2; simp at h2
+  show (GkatGS.bval W (body.core.hlt s) x
+    && (GkatGS.bval W guard x && GkatGS.bval W tr.1 x)) = false
+  rw [hg]
+  simp
+
+#print axioms loopInitialized_halt_backedge_exclusive
+
 end LevelExistence
 
 #print axioms reachLevel_mono

@@ -18283,3 +18283,46 @@ itself, which is where 384 left it.
 **Next.** The `wh` case for AGREEMENT — all back-edging body states share the
 entry that fires at that atom, which `loopInitialized` makes syntactically
 evident.
+
+## 393 — the `wh` case for agreement, from the construction
+
+392 showed headedness fails in `wh` and agreement is what survives. This
+iteration proves agreement's `wh` case, and both halves come straight out of
+`loopInitialized`.
+
+**Back-edges agree.** The appended entries are `body.initTrans` — the **same
+list at every body state** — each gated `body.hlt s ∧ guard ∧ tr.1`. The only
+state-dependent part is the conjunct `body.hlt s`, so where two body states both
+halt, both gates reduce to `guard ∧ tr.1`, the same entry is selected in each,
+and the two back-edges have the **same target**.
+
+```lean
+theorem loop_entry_agree (W x) (guard hltS hltS') (entry)
+    (hs : bval W hltS x = true) (hs' : bval W hltS' x = true) :
+    firstMatch W x (entry.map (gate hltS)) = firstMatch W x (entry.map (gate hltS'))
+```
+
+**Axiom-free**, with `loopInitialized_backedge_agree` saying it of the
+construction.
+
+**Halting and back-edging cannot collide.** The loop halts where
+`body.hlt s ∧ ¬guard` and back-edges where `body.hlt s ∧ guard ∧ tr.1` — the two
+are separated by `guard` itself. `loopInitialized_halt_backedge_exclusive`,
+`[propext]`, one line.
+
+That second one is worth pausing on: it is the **"exits shadow halting" clause**
+that 343 measured and 346 took as a hypothesis. Structurally it is trivial, and
+it was only hard-looking because I met it downstairs, in a quotient, where
+`guard` is no longer visible.
+
+**What remains of the source condition.** The body's own transitions — raw under
+a rank on the body — and the composition through `seq`/`ite`, which create no
+cycles so their components are inherited. Neither is the `wh` case, which was the
+one 367 identified as carrying all the content.
+
+**Odds: 96%, unchanged.** The `wh` case's two structural facts are proved and
+they are the ones the measurements kept circling. But they are facts about a
+loop's own entries, not yet a proof that a whole Thompson automaton satisfies
+agreement.
+
+**Next.** The body's transitions under a rank, then `seq`/`ite`.
