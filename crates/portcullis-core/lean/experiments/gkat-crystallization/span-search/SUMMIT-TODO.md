@@ -21404,3 +21404,45 @@ resist, independent of the state bound.**
 
 `MAXK` reverted to 16 — 22 costs memory and time for an identical answer, and
 this is now a recorded fact rather than a setting worth carrying.
+
+## 451 — 446's pending line lands: ZERO of the whole-space resisters are crux pullbacks.
+
+Web search: exhausted (200/200).
+
+The waiter armed at 446 finally delivered the line the expansion test's verdict
+hangs on:
+
+```
+RESIST *within the hypothesis*            : 77960
+of the uncovered, ARE a crux pullback     : 0
+of the uncovered, COVER a Thompson autom. : 77960
+```
+
+**None of the 77,960 whole-space resisters at k=5 is a crux pullback.** By the
+harness's own criterion — *"an uncovered automaton that is not a pullback refutes
+the general statement without touching the programme"* — the whole-space residue
+is irrelevant to the conjecture. It refutes `ThompsonCofinal`, which was already
+known false.
+
+**And it does not contradict 450, because the two runs use different crux sets.**
+`EXPAND_K` inherited the default arguments (`2 4 3`), so its `pulls` is the
+**273-pair** crux from the k ≤ 4 closure — the same set 447 showed is fully
+rescued. 450's residue lives in the **9,245-pair** crux from `2 5 4`. So:
+
+* k ≤ 4 crux (273 pairs): **0 pullbacks resist**, confirmed twice now, by two
+  different code paths — `PAD_MECH`'s mechanism sweep (447) and the whole-space
+  expansion test (451).
+* k ≤ 5 crux (9,245 pairs): **929 pullbacks resist**, invariant under MAXK
+  16 → 22 (450).
+
+**The agreement across code paths is the value here.** 447 and 451 reach the
+same conclusion about the same 273-pair set by unrelated routes, which is the
+first cross-method confirmation this program has had. The obstruction is not at
+k ≤ 4; it appears when the crux set grows.
+
+**Odds: 25%, unchanged.** A pending question closed, consistently, with no new
+information about the larger scale where the obstruction actually lives. The
+field's prior that this problem does not close still stands.
+
+**Next.** Unchanged from 450: characterise the 929. They are now the only
+measured obstruction that has survived every artefact check this program applies.
