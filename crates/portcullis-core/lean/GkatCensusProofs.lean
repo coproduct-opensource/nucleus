@@ -16588,6 +16588,30 @@ theorem fibre_mates_share_transitions {S S' : Type}
 
 #print axioms fibre_mates_share_transitions
 
+/-! ### 448: what duplication is FOR — expressibility, not branching
+
+442 proved duplication cannot give two copies different branches, and I read that
+as retiring the route.  447 then measured the harness's refinement search and
+found **duplication carries a third of the rescues** (`W1 x1` reaches 10/54,
+`W1+dup x1` reaches 34/54).  Both are right, and together they say what
+duplication is for.
+
+`htr` forces fibre-mates to share transitions (442); this companion forces them
+to share halt conditions.  So a duplicate is a **behaviourally identical copy** —
+never a branch split.  Its value is structural: the unfolded automaton can lie in
+the Thompson image where the folded one does not, and Thompson automata are
+solvable.  The route is
+*unfold to a bisimilar copy → that copy is expressible → solve it → transport
+back by `solvesBA_of_mapped`, with `hfib` discharged by W3 (422)*. -/
+theorem fibre_mates_share_halt {S S' : Type}
+    (aut : GkatKleene.GAut S A T) (sys : GkatKleene.GAut S' A T) (f : S' → S)
+    (hhlt : ∀ s' : S', aut.hlt (f s') = sys.hlt s')
+    (a b : S') (hf : f a = f b) :
+    sys.hlt a = sys.hlt b := by
+  rw [← hhlt a, ← hhlt b, hf]
+
+#print axioms fibre_mates_share_halt
+
 end Instantiation
 
 #print axioms peelAut_trans_agrees

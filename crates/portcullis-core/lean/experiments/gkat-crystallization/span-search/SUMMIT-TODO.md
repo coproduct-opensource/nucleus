@@ -21248,3 +21248,48 @@ that. The field's prior that this problem does not close still stands.
 
 **Next.** Push `PAD_MECH` to the k = 5 crux pairs and see whether "everything x1"
 still rescues everything, or whether a residue appears as the space grows.
+
+## 448 — at k=5 a residue appears, and 447's "54/54" does not generalise.
+
+Web search: exhausted (200/200).
+
+447 rescued all 54 witness-less pullbacks and I took eight points. Pushing the
+same test to `gkat-span 2 5 4` — closure to 5 states, crux pairs from k ≤ 4:
+
+| | k ≤ 4 (447) | **k ≤ 5** |
+|---|---|---|
+| Thompson automata | 156,601 | **2,902,884** |
+| crux pairs | 273 | **9,245** |
+| uncoverable pullbacks | 54 | **3,347** |
+| `W1 x1` | 10 / 54 | 895 / 3,347 |
+| `W1+dup x1` | 34 / 54 | 1,410 / 3,347 |
+| `W1+cyc2 x3` | **54 / 54** | **2,229 / 3,347** |
+| `W1+dup+cyc2 x1` | **54 / 54** | 2,028 / 3,347 |
+
+**The 100% becomes 67%, and roughly 1,118 pullbacks resist.** 447's headline was
+a 54-item result at the smallest population; at twenty times the size it does not
+hold. I gave that result eight points one iteration ago on a sample I already
+knew was small.
+
+**But the residue is probably a ceiling, not an obstruction — and the table says
+so.** Every setting that reaches its best score reports *"largest variant 16
+states"*, and 16 is `MAXK`. The refinement search is saturating against its own
+bound, exactly as the k ≤ 4 closure bound produced the phantom 54 that 444
+mistook for the open case and 447 dissolved. The honest reading is that the
+rescue rate is bounded below by 67% and the true figure is unknown above it.
+
+**The ratios are stable across the scale-up, which is the informative part.**
+`dup` adds ~500 rescues over `W1` alone at both scales; `W1+cyc2` beats
+`W1+dup` at both; the ordering of mechanisms is unchanged. So 447's mechanism
+finding — duplication is load-bearing — survives even though its headline
+number does not.
+
+**Odds: 33% → 30%.** Returning most of 447's move. The concrete obstruction is
+not dissolved, only pushed to a larger scale where the tool runs out of room; and
+I should not have priced a 54-item sweep at eight points when this program has
+been repeatedly burned by exactly that. The field's prior that this problem does
+not close still stands.
+
+**Next.** Raise `MAXK` above 16 and re-run the k = 5 mechanism test. If the
+residue shrinks with the bound, it is an artefact; if it plateaus, it is real —
+and that is the first genuinely diagnostic version of this measurement.
