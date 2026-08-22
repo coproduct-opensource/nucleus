@@ -7630,6 +7630,10 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         exhaustive::<NA>();
         return;
     }
+    if std::env::var("PAD_CONNECT").is_ok() {
+        connect_test::<NA>(nguards as u8);
+        return;
+    }
     if std::env::var("PAD_CERTQ").is_ok() {
         cert_arbitrary_quotient::<NA>(nguards as u8);
         return;
@@ -12529,4 +12533,93 @@ fn cert_arbitrary_quotient<const NA: usize>(nguards: u8) {
     println!("  cert_arbitrary_quotient NA={NA}: {auts} certified Thompson automata; \
         {quots} behavioural quotients ({nonmin} of them NON-minimal); \
         certificate LOST on {bad}");
+}
+
+/// **CONNECT-THROUGH, AND DOES GKAT NEED PROP 6.4's CARE?** (iteration 267.)
+///
+/// Grabmayer Def 6.1: the connect-`w1`-through-to-`w2` chart redirects all
+/// incoming transitions at `w1` over to `w2`, then garbage-collects `w1`.  Lemma
+/// 6.2 says the result is bisimilar — but Example 6.3 shows the LLEE property
+/// CAN BE LOST, which is why closure needs Prop 6.4's three-way case analysis
+/// and three level-adapting transformations.
+///
+/// Crucially that example lives in the LICS'20 paper, which is the PROPER-STEP
+/// (1-free) setting — so being proper-step does not by itself avoid the
+/// difficulty.  But GKAT has structure Milner's charts lack: every transition
+/// carries a GUARD, and at each state the guards are determined by tests.  If
+/// that constrains bisimilar pairs enough, GKAT's collapse may not need the
+/// case analysis.  Measure before importing three transformations.
+fn connect_through<const NA: usize>(a: &Aut<NA>, w1: usize, w2: usize) -> Option<Aut<NA>> {
+    let k = a.k as usize;
+    if w1 == w2 || w1 >= k || w2 >= k { return None; }
+    // redirect every transition targeting w1 to w2, and the initial arrows too
+    let mut b = *a;
+    for s in 0..k {
+        for y in 0..NA {
+            if b.st[s][y] == (w1 + 1) as u8 { b.st[s][y] = (w2 + 1) as u8; }
+        }
+    }
+    for y in 0..NA {
+        if b.it[y] == (w1 + 1) as u8 { b.it[y] = (w2 + 1) as u8; }
+    }
+    // garbage-collect w1 (now unreachable) by renumbering
+    let mut idx = vec![usize::MAX; k];
+    let mut n = 0usize;
+    for s in 0..k { if s != w1 { idx[s] = n; n += 1; } }
+    let mut c = Aut::<NA>::blank();
+    c.k = n as u8;
+    c.ih = b.ih;
+    for y in 0..NA {
+        c.it[y] = if b.it[y] == 0 { 0 } else { (idx[(b.it[y] - 1) as usize] + 1) as u8 };
+    }
+    for s in 0..k {
+        if s == w1 { continue; }
+        let d = idx[s];
+        c.hl[d] = b.hl[s];
+        for y in 0..NA {
+            c.st[d][y] = if b.st[s][y] == 0 { 0 }
+                else { (idx[(b.st[s][y] - 1) as usize] + 1) as u8 };
+        }
+    }
+    Some(c)
+}
+
+fn connect_test<const NA: usize>(nguards: u8) {
+    let mut st0: u64 = 0xBB67AE8584CAA73B;
+    let mut rnd = move || { st0 ^= st0 << 13; st0 ^= st0 >> 7; st0 ^= st0 << 17; st0 };
+    let (mut pairs, mut lost) = (0usize, 0usize);
+    let mut shown = 0usize;
+    for _ in 0..20_000 {
+        let a = match genexp::<NA>(&mut rnd, 5, nguards, MAXK - 1) {
+            Some((a, _, _)) => a, None => continue };
+        if a.k < 2 { continue; }
+        let mut bud = 200_000usize;
+        if !llee_L123(&a, &mut bud) { continue; }
+        let (blk, _) = bisim_blocks(&a);
+        for w1 in 0..(a.k as usize) {
+            for w2 in 0..(a.k as usize) {
+                if w1 == w2 || blk[w1] != blk[w2] { continue; }
+                let c = match connect_through(&a, w1, w2) { Some(c) => c, None => continue };
+                pairs += 1;
+                let mut b2 = 200_000usize;
+                if !llee_L123(&c, &mut b2) {
+                    lost += 1;
+                    if shown < 3 {
+                        shown += 1;
+                        println!("    LEE LOST connecting q{w1} -> q{w2} (k {} -> {}):",
+                            a.k, c.k);
+                        for s in 0..(a.k as usize) {
+                            let row: Vec<String> = (0..NA).map(|i| {
+                                let t = a.st[s][i];
+                                if t == 0 { "-".to_string() } else { format!("q{}", t - 1) }
+                            }).collect();
+                            println!("      q{s}: hl={:03b} st=[{}]", a.hl[s], row.join(","));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("  connect_test NA={NA}: {pairs} connect-through steps on bisimilar pairs \
+        of certified automata; certificate LOST on {lost}");
 }

@@ -12307,3 +12307,53 @@ which is what the closure proof manipulates — or to look for a GKAT-specific
 argument that avoids Prop. 6.4's case analysis.  GKAT is proper-step, and 223's
 0-in-131 714 suggests its collapse may be better behaved than the general case;
 that is worth checking before importing three transformations.
+
+---
+
+## 267 — GKAT MAY NOT NEED PROP. 6.4 AT ALL.  0 losses in 47 584 connect-throughs.
+
+266 read Grabmayer's Def. 6.1 and the warning that follows it: connect-through
+on a bisimilar pair yields a bisimilar chart, but "its application to a
+LLEE-witness does not need to yield a LLEE-witness again" — hence Prop. 6.4's
+three-way selection and three level-adapting transformations.  Before importing
+that machinery, measure whether GKAT needs it.
+
+Implemented connect-through exactly as defined — redirect all incoming
+transitions at `w1` to `w2`, redirect the initial arrows, garbage-collect `w1` —
+and applied it to EVERY bisimilar pair of certified Thompson automata:
+
+    NA=2   18 736 connect-through steps   certificate LOST on 0
+    NA=3   15 262                         LOST 0
+    NA=4   13 586                         LOST 0
+
+**47 584 steps, zero losses.**  In GKAT, connect-through on ANY bisimilar pair
+preserves the certificate — no careful pair selection, no case analysis.
+
+**A hypothesis for why, flagged as a hypothesis.**  266 noted that Example 6.3
+lives in LICS'20, which IS the proper-step paper, so being proper-step cannot be
+the reason.  But **Milner's charts are NONDETERMINISTIC** — a vertex may carry
+several `a`-transitions — while **GKAT automata are DETERMINISTIC**: each
+state's behaviour is a decision list over atoms, and `CoreHaltDisjoint` plus the
+construction make the outgoing choice a function of the atom.  Bisimilar GKAT
+states therefore have identical guard structure, which constrains what
+redirection can do far more than in the general case.  If that is the mechanism,
+it is DETERMINISM, not proper-step, that makes GKAT's collapse well-behaved —
+and Prop. 6.4's care is machinery for a difficulty GKAT does not have.
+
+**This is now the third independent measurement pointing the same way**: 223
+(collapse never breaks solvability, 0 in 131 714), 260 (certificate survives
+arbitrary quotients, 0 in 41 716), and now 267 (connect-through never loses it,
+0 in 47 584).  Different operations, different populations, same answer.
+
+**Odds: 86%, up 2 — restoring 266's drop.**  266 lowered the estimate on the
+belief that `hcollapse` requires several pages of case analysis over a
+representation I lack.  That belief is now measured false FOR GKAT, on the
+operation the case analysis exists to control.  I am not going above 86%:
+this is a measurement, the mechanism is a hypothesis, and a proof still has to
+be written — but the specific reason for the markdown is gone.
+
+**Next.**  Test the determinism hypothesis directly: construct a
+NONDETERMINISTIC chart in Milner's style where connect-through loses the
+certificate (Example 6.3's shape), and confirm the GKAT analogue cannot be
+built.  If determinism is the mechanism, `hcollapse` should be provable by a
+direct argument, and that argument is the next target.
