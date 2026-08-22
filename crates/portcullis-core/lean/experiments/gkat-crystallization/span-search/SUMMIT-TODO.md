@@ -14583,3 +14583,42 @@ something incidental.
 
 **Next.**  (1) — the witness selection, which is the last construction; (2) and
 (3) are assembly.
+
+---
+
+## 317 — THE WITNESS SELECTION.  EVERY CONSTRUCTION IS NOW DONE.
+
+316 built the weight; what remained was to pick, in each class, a preimage of
+MAXIMAL weight.  264 built minima over a list of NATURALS for `hcollapse`'s
+acyclic case; the natural object here is an ARGMAX over a list of STATES, and
+carrying the element rather than its weight is worth the separate development —
+it avoids having to recover a witness from an achieved minimum afterwards.
+
+`argMax` with `argMax_start`, `argMax_or`, `argMax_ge`, and
+**`exists_max_witness`: a maximal witness exists in every inhabited class.**
+
+**Note the shape of the hypothesis.**  The lemma takes `s₀ ∈ L` with
+`j s₀ = c` rather than asserting the class is nonempty.  The caller always has
+that preimage in hand — a class IS the image of something — and asking for it
+keeps the conclusion free of any choice the caller cannot see.  That is 307's
+lesson applied before the fact rather than after: **state the hypothesis in the
+form the call site can actually supply.**
+
+### Every construction the proof needs is now built
+
+    the weight                   stateWeight            (316)
+    right outweighs left         stateWeight_ite/seq_lt (316)
+    max witness ⇒ preference     max_is_inr             (315)
+    left witness ⇒ all left      max_inl_all_inl        (315)
+    a maximal witness exists     exists_max_witness     (317)
+    the five case lemmas         307-310
+
+**What is left is ASSEMBLY**: the induction on `Exp` tying the five cases
+together, and the connection to `sumQuotientSolvable_of_certificate`.
+
+**Odds: 99%, HELD.**  Every piece is built and nothing is assumed that cannot be
+supplied — but assembly has surfaced genuine mismatches twice in this series
+(283, 305), and once produced a theorem that could not be instantiated at all
+(307).  The number moves when the induction compiles.
+
+**Next.**  The induction on `Exp`.

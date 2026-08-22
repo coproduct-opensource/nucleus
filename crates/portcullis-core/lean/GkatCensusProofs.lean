@@ -10377,4 +10377,90 @@ theorem stateWeight_seq_lt (e f : Exp A T)
 #print axioms stateWeight_ite_lt
 #print axioms stateWeight_seq_lt
 
+
+section WitnessSelection
+open Classical
+
+/-! ### 317 — THE WITNESS SELECTION.  THE LAST CONSTRUCTION.
+
+    316 built the weight; what remains is to pick, in each class, a preimage of
+    MAXIMAL weight.  264 built minima over a list of naturals for `hcollapse`'s
+    acyclic case; here the natural object is an ARGMAX over a list of STATES,
+    which is slightly different and worth having directly: carrying the element
+    rather than its weight avoids having to recover a witness from an achieved
+    minimum afterwards.
+
+    The selection needs a starting element, and there always is one — a class is
+    by definition the image of something.  That is why the statement takes
+    `s₀ ∈ L` with `j s₀ = c` as a hypothesis rather than asserting the class is
+    nonempty: the caller has the preimage in hand, and asking for it keeps the
+    lemma choice-free in its conclusion. -/
+private def argMax {S : Type} (w : S → Nat) : S → List S → S
+  | best, [] => best
+  | best, y :: ys => argMax w (if w best < w y then y else best) ys
+
+private theorem argMax_start {S : Type} (w : S → Nat) :
+    ∀ (l : List S) (b : S), w b ≤ w (argMax w b l)
+  | [], b => Nat.le_refl _
+  | y :: ys, b => by
+      show w b ≤ w (argMax w (if w b < w y then y else b) ys)
+      refine Nat.le_trans ?_ (argMax_start w ys _)
+      by_cases h : w b < w y
+      · rw [if_pos h]; exact Nat.le_of_lt h
+      · rw [if_neg h]; exact Nat.le_refl _
+
+private theorem argMax_or {S : Type} (w : S → Nat) :
+    ∀ (l : List S) (b : S), argMax w b l = b ∨ argMax w b l ∈ l
+  | [], _ => Or.inl rfl
+  | y :: ys, b => by
+      show argMax w (if w b < w y then y else b) ys = b
+        ∨ argMax w (if w b < w y then y else b) ys ∈ y :: ys
+      by_cases hb : w b < w y
+      · rw [if_pos hb]
+        rcases argMax_or w ys y with h | h
+        · exact Or.inr (by rw [h]; exact List.mem_cons_self ..)
+        · exact Or.inr (List.mem_cons_of_mem _ h)
+      · rw [if_neg hb]
+        rcases argMax_or w ys b with h | h
+        · exact Or.inl h
+        · exact Or.inr (List.mem_cons_of_mem _ h)
+
+private theorem argMax_ge {S : Type} (w : S → Nat) :
+    ∀ (l : List S) (b : S) (y : S), y ∈ l → w y ≤ w (argMax w b l)
+  | [], _, _, h => absurd h (by simp)
+  | z :: zs, b, y, h => by
+      show w y ≤ w (argMax w (if w b < w z then z else b) zs)
+      rcases List.mem_cons.1 h with rfl | h'
+      · refine Nat.le_trans ?_ (argMax_start w zs _)
+        by_cases hb : w b < w y
+        · rw [if_pos hb]; exact Nat.le_refl _
+        · rw [if_neg hb]; exact Nat.le_of_not_lt hb
+      · exact argMax_ge w zs _ y h'
+
+/-- **A MAXIMAL WITNESS EXISTS IN EVERY INHABITED CLASS.**  This is the
+    hypothesis `max_is_inr` (315) consumes, and with 316's weight it delivers
+    each node's preference. -/
+theorem exists_max_witness {S Q : Type} (w : S → Nat) (j : S → Q)
+    (L : List S) (c : Q) (s₀ : S) (hs₀ : s₀ ∈ L) (hjs₀ : j s₀ = c) :
+    ∃ s, s ∈ L ∧ j s = c ∧ ∀ y, y ∈ L → j y = c → w y ≤ w s := by
+  have hfib : s₀ ∈ L.filter (fun s => decide (j s = c)) :=
+    List.mem_filter.2 ⟨hs₀, by simp [hjs₀]⟩
+  have hsub : ∀ z, z ∈ L.filter (fun s => decide (j s = c)) → z ∈ L ∧ j z = c := by
+    intro z hz
+    obtain ⟨hzL, hzc⟩ := List.mem_filter.1 hz
+    exact ⟨hzL, by simpa using hzc⟩
+  refine ⟨argMax w s₀ (L.filter (fun s => decide (j s = c))), ?_, ?_, ?_⟩
+  · rcases argMax_or w (L.filter (fun s => decide (j s = c))) s₀ with h | h
+    · rw [h]; exact hs₀
+    · exact (hsub _ h).1
+  · rcases argMax_or w (L.filter (fun s => decide (j s = c))) s₀ with h | h
+    · rw [h]; exact hjs₀
+    · exact (hsub _ h).2
+  · intro y hyL hyc
+    exact argMax_ge w _ s₀ y (List.mem_filter.2 ⟨hyL, by simp [hyc]⟩)
+
+#print axioms exists_max_witness
+
+end WitnessSelection
+
 end GkatCensus
