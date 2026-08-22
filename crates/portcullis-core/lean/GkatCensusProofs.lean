@@ -11501,6 +11501,89 @@ end LevelExistence
 #print axioms reachLevel_scc
 #print axioms syntacticallyLayered_of_regions
 
+
+section ShapeFreedom
+
+/-! ### The quotient's SHAPE is free
+
+`UniformBehavioralGAutQuotient` carries `mapState`, `maps_states`, `onto_states`
+and `bisim_graph` — and **nothing syntactic about `quot.trans` or `quot.hlt`**.
+Two candidate quotients that select the same transition at every atom and halt on
+the same atoms are equally valid quotients of the same automaton.
+
+That is only useful if solutions survive the reshaping, which is what this
+section proves.  It is the same move as 283/292/299/323/325 — compare folds by
+SELECTION, not by list — applied one level up, to the automaton itself. -/
+
+/-- **Reshaping is free.**  Automata that pick the same transition at every atom
+and halt on the same atoms have `EquivBA`-equal Salomaa right-hand sides — even
+when their transition LISTS differ in length, order, and guards. -/
+theorem eqRHS_equiv_of_behaviour {S : Type} (aut aut' : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) (s : S)
+    (htr : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s) = GkatKleene.firstMatch W x (aut'.trans s))
+    (hh : ∀ (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (aut.hlt s) x = GkatGS.bval W (aut'.hlt s) x) :
+    EquivBA (GkatKleene.eqRHS aut sol s) (GkatKleene.eqRHS aut' sol s) := by
+  rw [GkatKleene.eqRHS_eq_guardedFold, GkatKleene.eqRHS_eq_guardedFold]
+  refine guardedFold_select_congr _ _ _ _ (fun X W x => ?_)
+  rw [selectFull_transitionBranches W x sol (aut.hlt s) (aut.trans s),
+    selectFull_transitionBranches W x sol (aut'.hlt s) (aut'.trans s), htr X W x]
+  cases GkatKleene.firstMatch W x (aut'.trans s) with
+  | none => exact EquivBA.baTest hh
+  | some r => exact EquivBA.base (Equiv.refl _)
+
+/-- **A solution transports across any behaviour-preserving reshaping.**  So a
+peel-shaped automaton may be solved in place of the one that was handed over. -/
+theorem solvesBA_of_behaviour {S : Type} (aut aut' : GkatKleene.GAut S A T)
+    (hstates : ∀ s, s ∈ aut.states → s ∈ aut'.states)
+    (htr : ∀ (s : S) (X : Type) (W : T → X → Bool) (x : X),
+      GkatKleene.firstMatch W x (aut.trans s) = GkatKleene.firstMatch W x (aut'.trans s))
+    (hh : ∀ (s : S) (X : Type) (W : T → X → Bool) (x : X),
+      GkatGS.bval W (aut.hlt s) x = GkatGS.bval W (aut'.hlt s) x)
+    (sol : S → Exp A T) (h : GkatKleene.SolvesBA aut' sol) :
+    GkatKleene.SolvesBA aut sol := fun s hs =>
+  EquivBA.trans (h s (hstates s hs))
+    (EquivBA.symm (eqRHS_equiv_of_behaviour aut aut' sol s (htr s) (hh s)))
+
+/-- The Salomaa right-hand side and the parametric one at ending `1` differ only
+in their fallback, and those agree by S5. -/
+theorem eqRHS_equiv_eqRHSParam {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T) (s : S) :
+    EquivBA (GkatKleene.eqRHS aut sol s)
+      (GkatThompson.eqRHSParam
+        { states := aut.states, hlt := aut.hlt, trans := aut.trans } sol
+        (Exp.test BExp.one) s) := by
+  rw [GkatKleene.eqRHS_eq_guardedFold]
+  exact guardedFold_fallback_congr (GkatSumQuotient.fallback_equiv _)
+
+/-- **The chain's output IS `hsolve`.**  A parametric solution at ending `1` for
+the system underlying a G-automaton is a `SolvesBA` solution for that automaton —
+which is exactly what `sumQuotientSolvable_of_certificate` consumes. -/
+theorem solvesBA_of_paramSolution {S : Type} (aut : GkatKleene.GAut S A T)
+    (sol : S → Exp A T)
+    (h : ∀ s, EquivBA (sol s) (GkatThompson.eqRHSParam
+      { states := aut.states, hlt := aut.hlt, trans := aut.trans } sol
+      (Exp.test BExp.one) s)) :
+    GkatKleene.SolvesBA aut sol := fun s _ =>
+  EquivBA.trans (h s) (EquivBA.symm (eqRHS_equiv_eqRHSParam aut sol s))
+
+/-- **`hsolve` for the condensation certificate, in the target's own language.** -/
+theorem solvesBA_of_syntacticallyLayered {S : Type} (aut : GkatKleene.GAut S A T)
+    (h : SyntacticallyLayered
+      { states := aut.states, hlt := aut.hlt, trans := aut.trans }) :
+    ∃ sol : S → Exp A T, GkatKleene.SolvesBA aut sol :=
+  match solves_of_syntacticallyLayered h (Exp.test BExp.one) with
+  | ⟨sol, hsol⟩ => ⟨sol, solvesBA_of_paramSolution aut sol hsol⟩
+
+#print axioms solvesBA_of_paramSolution
+#print axioms solvesBA_of_syntacticallyLayered
+
+end ShapeFreedom
+
+#print axioms eqRHS_equiv_of_behaviour
+#print axioms solvesBA_of_behaviour
+
 section CycleDemo
 
 /-! **The two-state cycle.**  336's demo had one state, so `LoopLayerOn`'s shared

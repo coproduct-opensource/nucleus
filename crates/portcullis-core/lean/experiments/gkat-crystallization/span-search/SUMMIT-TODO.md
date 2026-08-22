@@ -15592,3 +15592,66 @@ every SyntacticallyLayered system solves      PROVED (338)
 **Next.** The peel construction itself: given a level and the automaton's lists,
 produce `mid`, `base`, `h₀`, `b`, `entry`, `loopEntry` and the rank — the one
 step that is still done by hand in `d2_region_one`.
+
+## 340 — the quotient's SHAPE is free, and the chain now speaks the target's language
+
+**The fact that changes the construction problem.** `UniformBehavioralGAutQuotient`
+carries `mapState`, `maps_states`, `onto_states` and `bisim_graph` — and **nothing
+syntactic about `quot.trans` or `quot.hlt`**. Two candidate quotients that select
+the same transition at every atom and halt on the same atoms are equally valid
+quotients of the same automaton. 330 established that no *minimality* is
+required; this is stronger and more useful: the transition LISTS themselves are
+ours to choose — length, order, guards, and inert padding included.
+
+That matters because every layer equation in the peel is syntactic. The peel does
+not have to be *discovered* in a quotient handed over; it can be *built into* the
+quotient. 339's `reachLevel` is unaffected either way, since it depends only on
+which targets appear.
+
+**But only if solutions survive the reshaping**, which is the content here:
+
+```lean
+theorem eqRHS_equiv_of_behaviour (aut aut' : GAut S A T) (sol) (s)
+    (htr : ∀ X W x, firstMatch W x (aut.trans s) = firstMatch W x (aut'.trans s))
+    (hh  : ∀ X W x, bval W (aut.hlt s) x = bval W (aut'.hlt s) x) :
+    EquivBA (eqRHS aut sol s) (eqRHS aut' sol s)
+```
+
+and its consequence `solvesBA_of_behaviour`. This is the recurring move of
+283/292/299/323/325 — **compare folds by SELECTION, not by list** — applied one
+level up, to the automaton rather than to a fold. `selectFull` on a transition
+list's branches is `firstMatch` on the list (4954), so agreement of `firstMatch`
+is agreement of the selected branch, and `guardedFold_select_congr` does the rest.
+The `none` branch is where the two halt tests meet, and `EquivBA.baTest` takes
+exactly the `bval` agreement hypothesis.
+
+**And the chain now lands in the target's own language.**
+
+```lean
+theorem solvesBA_of_syntacticallyLayered (aut : GAut S A T)
+    (h : SyntacticallyLayered ⟨aut.states, aut.hlt, aut.trans⟩) :
+    ∃ sol, GkatKleene.SolvesBA aut sol
+```
+
+via `solvesBA_of_paramSolution` (**axiom-free**), which is `foldr_fallback_congr`
+plus `fallback_equiv` — `eqRHS` and `eqRHSParam` at ending `1` differ only in
+their fallback, and those agree by S5. So `hsolve` for
+`sumQuotientSolvable_of_certificate` is now a theorem, stated in the exact form
+that theorem consumes.
+
+**Where the route stands.**
+
+```
+hsolve  = solvesBA_of_syntacticallyLayered              PROVED (340)
+hsum    = every Thompson automaton SyntacticallyLayered  open, but 286 proved the
+                                                         LayeredL analogue
+hcollapse = the quotient is SyntacticallyLayered         THE REMAINDER
+```
+
+and `hcollapse` is now a *construction* problem with the shape constraint lifted:
+build a quotient in peeled form, then transport the solution back with
+`solvesBA_of_behaviour`.
+
+**Next.** The peel construction, exploiting the freedom: given a level's states
+and their behaviour, emit `base`, `mid` and `sys` directly — the generic version
+of `d2Base`/`d2Mid`/`d2Sys`.
