@@ -3252,6 +3252,133 @@ fn allrank<const NA: usize>(nguards: u8, rounds: usize, cap: usize) {
 /// Build it.  `e = wh g0 (seq (wh g1 act) act)` with g0 = 1, g1 = 3, the exact
 /// 413 expression; form the forced quotient of the pair `(a, a)`; and check
 /// whether a self-loop and a halt still share an SCC.
+/// **`PAD_DEEPPULL`** (iteration 427).
+///
+/// Three iterations have now hit the same wall: the census's pullback
+/// population comes from k <= 3 pairs and does not contain the shapes that
+/// matter (407, 413, 425/426).  So build the population instead of sampling it:
+/// enumerate expressions to a depth bound, group by BEHAVIOUR, take genuinely
+/// equivalent non-identical pairs, and form their pullbacks.
+///
+/// Then test the TOP-LEVEL hypothesis on them directly — `LevelAgreementActive`
+/// with `reachMask` levels, searched over all ranks — rather than a source-side
+/// proxy.  Cross-tabulated against reducibility so the base rates stay visible.
+fn deeppull<const NA: usize>(nguards: u8, maxdepth: usize, cap_pairs: usize) {
+    fn build<const NA: usize>(nguards: u8, d: usize, out: &mut Vec<Aut<NA>>) {
+        if d == 0 {
+            out.push(a_act::<NA>());
+            for g in 0..nguards { out.push(a_test::<NA>(g)); }
+            return;
+        }
+        let mut sm: Vec<Aut<NA>> = Vec::new();
+        build::<NA>(nguards, d - 1, &mut sm);
+        let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+        sm.retain(|e| seen.insert(e.clone()));
+        out.extend(sm.iter().cloned());
+        for l in &sm {
+            for g in 0..nguards { out.push(a_wh::<NA>(g, l)); }
+            for r in &sm {
+                if let Some(q) = a_seq::<NA>(l, r) { out.push(q); }
+                for g in 0..nguards {
+                    if let Some(q) = a_ite::<NA>(g, l, r) { out.push(q); }
+                }
+            }
+        }
+    }
+    let mut raw: Vec<Aut<NA>> = Vec::new();
+    build::<NA>(nguards, maxdepth, &mut raw);
+    let mut seen: std::collections::HashSet<Aut<NA>> = std::collections::HashSet::new();
+    let exprs: Vec<Aut<NA>> = raw.into_iter()
+        .filter_map(|a| canon(&a))
+        .filter(|a| seen.insert(a.clone()))
+        .collect();
+    // group by behaviour
+    let mut byb: std::collections::HashMap<Vec<u8>, Vec<usize>> = std::collections::HashMap::new();
+    for (i, a) in exprs.iter().enumerate() { byb.entry(behaviour(a)).or_default().push(i); }
+    let mut classes = 0usize;
+    let (mut pairs, mut pb_ok, mut sat, mut unsat) = (0usize, 0usize, 0usize, 0usize);
+    let (mut red_sat, mut red_uns, mut irr_sat, mut irr_uns) = (0usize, 0usize, 0usize, 0usize);
+    let mut first_bad: Option<String> = None;
+    'outer: for (_k, idxs) in byb.iter() {
+        if idxs.len() < 2 { continue; }
+        classes += 1;
+        for ii in 0..idxs.len() {
+            for jj in (ii + 1)..idxs.len() {
+                if pairs >= cap_pairs { break 'outer; }
+                pairs += 1;
+                let p = match pullback(&exprs[idxs[ii]], &exprs[idxs[jj]]) { Some(v) => v, None => continue };
+                let p = match canon(&p) { Some(v) => v, None => continue };
+                pb_ok += 1;
+                let k = p.k as usize;
+                if k == 0 || k > 7 { continue; }
+                // reachMask levels
+                let mut lvl = vec![0usize; k];
+                for u in 0..k {
+                    let mut seenr = vec![false; k]; seenr[u] = true;
+                    let mut st = vec![u];
+                    while let Some(v) = st.pop() {
+                        for x in 0..NA {
+                            if p.st[v][x] == 0 { continue; }
+                            let t = (p.st[v][x] - 1) as usize;
+                            if !seenr[t] { seenr[t] = true; st.push(t); }
+                        }
+                    }
+                    let mut m = 0usize;
+                    for w in 0..k { if seenr[w] { m |= 1 << w; } }
+                    lvl[u] = m;
+                }
+                let mut levels = lvl.clone(); levels.sort_unstable(); levels.dedup();
+                let mut all_ok = true;
+                for &n in &levels {
+                    let comp: Vec<usize> = (0..k).filter(|&u| lvl[u] == n).collect();
+                    if comp.len() < 2 { continue; }
+                    let mut perm: Vec<usize> = (0..comp.len()).collect();
+                    let mut lok = false;
+                    loop {
+                        let mut rank = [0usize; MAXK];
+                        for (i2, &pi) in perm.iter().enumerate() { rank[comp[pi]] = i2; }
+                        let mut agree = true;
+                        for x in 0..NA {
+                            let mut outs: Vec<Option<usize>> = Vec::new();
+                            for &u in &comp {
+                                let tv = p.st[u][x];
+                                let halts = (p.hl[u] >> x) & 1 == 1;
+                                let isact = if tv == 0 { halts } else {
+                                    let t = (tv - 1) as usize;
+                                    !(lvl[t] == lvl[u] && rank[t] < rank[u])
+                                };
+                                if !isact { continue; }
+                                outs.push(if tv == 0 { None } else { Some((tv - 1) as usize) });
+                            }
+                            if outs.windows(2).any(|w| w[0] != w[1]) { agree = false; break; }
+                        }
+                        if agree { lok = true; break; }
+                        if !next_perm(&mut perm) { break; }
+                    }
+                    if !lok { all_ok = false; break; }
+                }
+                let red = reducible(&p);
+                if all_ok { sat += 1; if red { red_sat += 1 } else { irr_sat += 1 } }
+                else {
+                    unsat += 1;
+                    if red { red_uns += 1 } else { irr_uns += 1 }
+                    if first_bad.is_none() {
+                        first_bad = Some(format!("reducible={} {}", red, show_aut("P", &p)));
+                    }
+                }
+            }
+        }
+    }
+    println!("PAD_DEEPPULL  expressions (depth <= {}, canon-deduped): {}", maxdepth, exprs.len());
+    println!("  behaviour classes with >= 2 members : {}", classes);
+    println!("  equivalent pairs tried              : {}   pullbacks formed: {}", pairs, pb_ok);
+    println!("  LevelAgreementActive SATISFIABLE    : {}", sat);
+    println!("  UNSATISFIABLE (no rank)             : {}", unsat);
+    println!("    reducible   : {:5} sat / {:5} unsat", red_sat, red_uns);
+    println!("    irreducible : {:5} sat / {:5} unsat", irr_sat, irr_uns);
+    if let Some(b) = first_bad { println!("  first refuter: {}", b); }
+}
+
 fn q413<const NA: usize>() {
     let act = a_act::<NA>();
     let inner = a_wh::<NA>(3, &act);
@@ -10452,6 +10579,13 @@ fn run<const NA: usize>(maxk: usize, pairk: usize) {
         let r: usize = std::env::var("R").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         allrank::<3>(g, r, c);
+        return;
+    }
+    if std::env::var("PAD_DEEPPULL").is_ok() {
+        let g: u8 = std::env::var("G").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let d: usize = std::env::var("D").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let c: usize = std::env::var("CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(20000);
+        deeppull::<3>(g, d, c);
         return;
     }
     if std::env::var("PAD_413QUOT").is_ok() { q413::<3>(); return; }

@@ -20168,3 +20168,55 @@ that matter — three iterations have now hit that. Generate pullbacks from
 TARGETED expression pairs at depth 3+, rather than from the k ≤ 3 closure, and
 re-run 424's cross-tabulation on a population that can actually contain the
 failures.
+
+## 427 — built the pullback population instead of sampling it. The refutation may be DEGENERATE.
+
+Web search: exhausted (200/200).
+
+Three iterations hit the same wall: the census's pullbacks come from k ≤ 3 pairs
+and cannot contain the shapes that matter. So `PAD_DEEPPULL` builds the
+population — enumerate expressions to depth 3, group by BEHAVIOUR, take
+genuinely equivalent NON-IDENTICAL pairs, form their pullbacks — and tests the
+top-level hypothesis directly: `LevelAgreementActive` with `reachMask` levels,
+searched over all ranks.
+
+| | G=2, D=3 | G=3, D=3 |
+|---|---|---|
+| expressions (canon-deduped) | 6,838 | 150,673 |
+| behaviour classes with ≥ 2 members | 1,352 | 4,366 |
+| pullbacks formed | 7,158 | 50,000 |
+| **`LevelAgreementActive` satisfiable** | **5,662** | **33,073** |
+| **unsatisfiable** | **0** | **0** |
+| irreducible | 0 | 0 |
+
+**Zero refuters, and zero irreducible pullbacks.**
+
+**What this does to 417/418.** Their refuting automaton (413's) reaches the
+hypothesis only through `e = f` — 426 confirmed the forced quotient of
+`SUMof e e` is the source automaton itself. Here, across 33,073 pullbacks of
+genuinely DISTINCT equivalent pairs, nothing refutes. So **the only known
+instance of the refutation is degenerate**, and `e = f` is precisely the case
+where the conclusion `EquivBA e e` is free by reflexivity.
+
+That is a defect in how the hypothesis is STATED, not in the mathematics: it
+demands a solvable quotient even for identical expressions, where completeness
+needs nothing. The refutation stands as stated and the theorems 417/418 proved
+are unaffected — `mono_forces_same_level` and `hh_fails_of_loop_and_halt` are
+still true — but their bite on the actual completeness argument now looks much
+smaller than I priced it at.
+
+**The coverage gap, stated rather than buried.** `sat + unsat` is 33,073 against
+50,000 pullbacks formed: **16,927 had more than 7 states and were skipped** by
+the rank search. That is 34% of the population untested, and large pullbacks are
+exactly where a component big enough to fail would live — 425 found SCC size ≥ 3
+is the best failure predictor. So this is evidence, not a result.
+
+**Odds: 50% → 55%.** The architecture's refutation looks degenerate and a large
+targeted population found no non-degenerate counterexample. Held to five points
+because a third of the population went untested precisely where failures are
+predicted, and because a census zero has meant "not in this pool" three times in
+this program already.
+
+**Next.** Close the coverage gap: raise the state bound past 7 with a smarter
+rank search, and re-run — the untested 34% is where 425's size predictor says
+the failures are.
