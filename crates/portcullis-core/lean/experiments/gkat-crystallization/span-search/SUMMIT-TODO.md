@@ -16733,3 +16733,53 @@ had already called finished. The field's prior that this problem does not close
 still stands, and I should be slower to name milestones.
 
 **Next.** The `firstMatch_shared` restructure, so the weak agreement suffices.
+
+## 360 — the repair: shared lists without the strong hypothesis
+
+359 found the fault: `firstMatch_shared` routed through `firstMatch_gated`, which
+demands the gate be **invisible**. That forces every state of a level to be
+active whenever any is — false for 98% of multi-state regions.
+
+All that is actually needed is that **both sides agree**, and where the gate is
+false at a state, both sides are *silent* and agree for free. Splitting on the
+state's own halt test instead of assuming it away:
+
+```lean
+theorem firstMatch_shared_weak (W x) (rawHlt b) (shared part)
+    (hactive : ∀ tr ∈ part,   bval W tr.1 x = true → bval W rawHlt x = true)
+    (hbtrue  : ∀ tr ∈ shared, bval W tr.1 x = true → bval W b x = true)
+    (hagree  : ∀ tr ∈ shared, bval W tr.1 x = true →
+                 bval W rawHlt x = true →        -- ← the state is ACTIVE
+                   firstMatch W x part = some tr.2)
+    (hback   : …) :
+    firstMatch W x (shared.map loopGate) = firstMatch W x part
+```
+
+`[propext, Quot.sound]`. The proof is a case split the old one never made:
+
+* **`rawHlt` false** — the state is inactive. Every gated guard is false, so the
+  gated list is silent; and by `hactive` the state's own part is silent too.
+  Both `none`. This is the case the old proof assumed away.
+* **`rawHlt` true** — the gate is transparent *on this list*, by `hbtrue`, and
+  the old argument runs unchanged.
+
+`firstMatch_shared_exit_weak` is the twin at the opposite polarity of `b`, and
+`firstMatch_peel_shared_weak` assembles both into the same conclusion 345 had —
+with every agreement premise now conditioned on the state being active.
+
+**What the new premises cost: nothing.** `hbtrue`/`hbfalse` hold by construction,
+since `peelBs` *is* the disjunction of the level's loop guards; `hactive` holds
+by construction, since `peelRawHlt` *is* the disjunction of the state's non-raw
+guards (plus its halt test). So the weak form's premises are two definitional
+facts and the weak agreement — the form 343 measured.
+
+**Not yet done.** The weak lemmas exist; the chain above them
+(`firstMatch_peel_level` → `peelAut_trans_agrees` → `solvesBA_of_levelAgreement`)
+still consumes the strong form. Threading it through is mechanical but it is not
+done, and until it is, 352 remains vacuous for multi-state regions.
+
+**Odds: 97%, unchanged.** The repair works where it was diagnosed; that is
+evidence the diagnosis was right, not that the theorem is fixed.
+
+**Next.** Thread the weak lemmas up through `firstMatch_peel_level` and restate
+`LevelAgreement` in the active form.

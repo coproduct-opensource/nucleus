@@ -12684,6 +12684,160 @@ theorem firstMatch_peel_level {S X : Type} (W : T → X → Bool) (x : X)
 #print axioms shared_flatMap
 #print axioms firstMatch_peel_level
 
+/-! ### 359's repair: the shared list without the strong hypothesis
+
+`firstMatch_shared` routed through `firstMatch_gated`, which demands the gate be
+INVISIBLE — and that forces every state of the level to be active whenever any
+is, which 359 measured false for 98% of multi-state regions.
+
+All that is actually needed is that **both sides agree**, and where the gate is
+false at a state both sides are SILENT and agree for free.  Splitting on the
+state's own halt test instead of assuming it away gives a version whose
+agreement hypothesis is restricted to states that are active — the weak form,
+which is what 343 measured. -/
+theorem firstMatch_shared_weak {S X : Type} (W : T → X → Bool) (x : X)
+    (rawHlt b : BExp T) (shared part : List (BExp T × A × S))
+    (hactive : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true)
+    (hbtrue : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W b x = true)
+    (hagree : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true →
+        GkatKleene.firstMatch W x part = some tr.2)
+    (hback : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      ∃ tr' ∈ shared, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x
+        (shared.map (fun tr => (BExp.and rawHlt (BExp.and b tr.1), tr.2)))
+      = GkatKleene.firstMatch W x part := by
+  cases hr : GkatGS.bval W rawHlt x with
+  | false =>
+      -- the state is inactive: every gated guard is false, and so is every
+      -- guard of its own part
+      rw [firstMatch_none_of_all_false W x _ (fun tr htr => ?_),
+        firstMatch_none_of_all_false W x part (fun tr htr => ?_)]
+      · cases hb : GkatGS.bval W tr.1 x with
+        | false => rfl
+        | true => rw [hactive tr htr hb] at hr; exact Bool.noConfusion hr
+      · obtain ⟨tr', _, heq⟩ := List.mem_map.mp htr
+        rw [← heq]
+        show (GkatGS.bval W rawHlt x && _) = false
+        rw [hr]; rfl
+  | true =>
+      -- the state is active: the gate is transparent on this list
+      rw [firstMatch_map_guard W x (fun g => BExp.and rawHlt (BExp.and b g)) shared
+        (fun tr htr => ?_)]
+      · cases hs : GkatKleene.firstMatch W x shared with
+        | some r =>
+            obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x shared r hs
+            exact (hagree (g, r) hm hb hr).symm ▸ rfl
+        | none =>
+            cases hp : GkatKleene.firstMatch W x part with
+            | none => rfl
+            | some r =>
+                obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x part r hp
+                obtain ⟨tr', hm', hb'⟩ := hback (g, r) hm hb
+                rw [firstMatch_none_all_false W x shared hs tr' hm'] at hb'
+                exact Bool.noConfusion hb'
+      · show (GkatGS.bval W rawHlt x && (GkatGS.bval W b x && GkatGS.bval W tr.1 x))
+          = GkatGS.bval W tr.1 x
+        rw [hr]
+        cases hb : GkatGS.bval W tr.1 x with
+        | false => rw [Bool.and_false]; rfl
+        | true => rw [hbtrue tr htr hb]; rfl
+
+#print axioms firstMatch_shared_weak
+
+/-- The exit-shaped twin of `firstMatch_shared_weak`. -/
+theorem firstMatch_shared_exit_weak {S X : Type} (W : T → X → Bool) (x : X)
+    (rawHlt b : BExp T) (shared part : List (BExp T × A × S))
+    (hactive : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true)
+    (hbfalse : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W b x = false)
+    (hagree : ∀ tr ∈ shared, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true →
+        GkatKleene.firstMatch W x part = some tr.2)
+    (hback : ∀ tr ∈ part, GkatGS.bval W tr.1 x = true →
+      ∃ tr' ∈ shared, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x
+        (shared.map (fun tr => (BExp.and (BExp.and rawHlt (BExp.not b)) tr.1, tr.2)))
+      = GkatKleene.firstMatch W x part := by
+  cases hr : GkatGS.bval W rawHlt x with
+  | false =>
+      rw [firstMatch_none_of_all_false W x _ (fun tr htr => ?_),
+        firstMatch_none_of_all_false W x part (fun tr htr => ?_)]
+      · cases hb : GkatGS.bval W tr.1 x with
+        | false => rfl
+        | true => rw [hactive tr htr hb] at hr; exact Bool.noConfusion hr
+      · obtain ⟨tr', _, heq⟩ := List.mem_map.mp htr
+        rw [← heq]
+        show ((GkatGS.bval W rawHlt x && _) && _) = false
+        rw [hr]; rfl
+  | true =>
+      rw [firstMatch_map_guard W x
+        (fun g => BExp.and (BExp.and rawHlt (BExp.not b)) g) shared (fun tr htr => ?_)]
+      · cases hs : GkatKleene.firstMatch W x shared with
+        | some r =>
+            obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x shared r hs
+            exact (hagree (g, r) hm hb hr).symm ▸ rfl
+        | none =>
+            cases hp : GkatKleene.firstMatch W x part with
+            | none => rfl
+            | some r =>
+                obtain ⟨g, hm, hb⟩ := firstMatch_some_guard W x part r hp
+                obtain ⟨tr', hm', hb'⟩ := hback (g, r) hm hb
+                rw [firstMatch_none_all_false W x shared hs tr' hm'] at hb'
+                exact Bool.noConfusion hb'
+      · show ((GkatGS.bval W rawHlt x && !GkatGS.bval W b x) && GkatGS.bval W tr.1 x)
+          = GkatGS.bval W tr.1 x
+        rw [hr]
+        cases hb : GkatGS.bval W tr.1 x with
+        | false => rw [Bool.and_false]
+        | true => rw [hbfalse tr htr hb]; simp
+
+/-- **The state-level agreement, on the WEAK hypothesis.**  Identical conclusion
+to `firstMatch_peel_shared_agrees`, but every agreement premise is now
+conditioned on the state being active — which is the form 343 measured and 359
+found to be the only satisfiable one. -/
+theorem firstMatch_peel_shared_weak {S X : Type} (W : T → X → Bool) (x : X)
+    (L : List (BExp T × A × S)) (rawHlt b : BExp T)
+    (p q : (BExp T × A × S) → Bool)
+    (sharedLoop sharedExit : List (BExp T × A × S))
+    (hactL : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && q tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W rawHlt x = true)
+    (hbL : ∀ tr ∈ sharedLoop, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W b x = true)
+    (hagreeL : ∀ tr ∈ sharedLoop, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true →
+        GkatKleene.firstMatch W x ((disjoin L).filter (fun tr => !p tr && q tr))
+          = some tr.2)
+    (hbackL : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && q tr),
+      GkatGS.bval W tr.1 x = true → ∃ tr' ∈ sharedLoop, GkatGS.bval W tr'.1 x = true)
+    (hactE : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && !q tr),
+      GkatGS.bval W tr.1 x = true → GkatGS.bval W rawHlt x = true)
+    (hbE : ∀ tr ∈ sharedExit, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W b x = false)
+    (hagreeE : ∀ tr ∈ sharedExit, GkatGS.bval W tr.1 x = true →
+      GkatGS.bval W rawHlt x = true →
+        GkatKleene.firstMatch W x ((disjoin L).filter (fun tr => !p tr && !q tr))
+          = some tr.2)
+    (hbackE : ∀ tr ∈ (disjoin L).filter (fun tr => !p tr && !q tr),
+      GkatGS.bval W tr.1 x = true → ∃ tr' ∈ sharedExit, GkatGS.bval W tr'.1 x = true) :
+    GkatKleene.firstMatch W x L
+      = GkatKleene.firstMatch W x
+          (((disjoin L).filter p
+             ++ sharedLoop.map (fun tr => (BExp.and rawHlt (BExp.and b tr.1), tr.2)))
+            ++ sharedExit.map
+                 (fun tr => (BExp.and (BExp.and rawHlt (BExp.not b)) tr.1, tr.2))) := by
+  refine (firstMatch_split W x L p q).trans ?_
+  refine (firstMatch_append_congr W x _ _ _ _
+    (firstMatch_append_congr W x _ _ _ _ rfl ?_) ?_).symm
+  · exact firstMatch_shared_weak W x rawHlt b sharedLoop _ hactL hbL hagreeL hbackL
+  · exact firstMatch_shared_exit_weak W x rawHlt b sharedExit _ hactE hbE hagreeE hbackE
+
+#print axioms firstMatch_shared_exit_weak
+#print axioms firstMatch_peel_shared_weak
+
 end SharedList
 
 #print axioms firstMatch_some_guard
